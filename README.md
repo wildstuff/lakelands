@@ -16,6 +16,13 @@ Lakelands
 └── Search    — retrieval
 ```
 
+![Lakelands, the mechanism: in one lake, ingest streams and authored writes append to a hash-chained log that is the truth; a per-field fold governed by the ontology rebuilds a disposable projection; a catalog generated from the ontology serves typed tools to agents over MCP; below the seam line The Wild plugs in through named seams.](docs/architecture.svg)
+
+*In one lake: writes append to the log, the fold rebuilds the
+projection, the ontology governs the fold and generates the tools. The
+change feed is the log itself. Below the line, The Wild attaches through
+seams — Lakelands never knows a bus, a sandbox or a model.*
+
 Lakelands is the open ground. The Wild is one world that lives and works on it:
 the agents, the tools they use, the connectors that bring water in, and
 the runtime that keeps everything moving. The ground is Apache-2.0 and
