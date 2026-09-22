@@ -1,0 +1,156 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" role="img" aria-label="Lakelands, the mechanism: in one lake, ingest streams and authored writes append to a hash-chained log that is the truth; a per-field fold governed by the ontology rebuilds a disposable projection of records, index, edges, full-text and vectors; a catalog generated from the ontology serves typed tools to agents over MCP; the change feed is the log filtered by kind. Below a seam line, The Wild's connectors, runtime, tools and agents plug in through named seams." font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1e2a2c"/>
+    </marker>
+    <marker id="arrow-wild" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#a2652f"/>
+    </marker>
+  </defs>
+
+  <!-- card -->
+  <rect x="0" y="0" width="1200" height="720" fill="#fbfbf9"/>
+  <text x="24" y="34" font-size="17" font-weight="600" fill="#1e2a2c">Lakelands — the mechanism</text>
+  <text x="24" y="54" fill="#6b7a7d">One lake. The log is the truth, the projection is a disposable index, the ontology is the map. Below the line, The Wild plugs in through seams.</text>
+
+  <!-- other lakes, behind -->
+  <rect x="44" y="66" width="1132" height="404" rx="10" fill="none" stroke="#b8c9c2" stroke-dasharray="6 5"/>
+  <text x="1168" y="80" text-anchor="end" fill="#6b7a7d" font-size="11">other lakes — data crosses only as a mirror that carries provenance · no query across lakes</text>
+
+  <!-- the lake -->
+  <rect x="24" y="86" width="1132" height="384" rx="10" fill="#f2f7f5" stroke="#2b6e5c" stroke-width="1.5"/>
+  <text x="40" y="108" font-size="13" font-weight="600" fill="#2b6e5c">Lake — one world · one writer · one log · one map</text>
+
+  <!-- ontology -->
+  <rect x="48" y="126" width="230" height="104" rx="6" fill="#ffffff" stroke="#1e2a2c"/>
+  <text x="60" y="146" font-weight="600" fill="#1e2a2c">Ontology — the map</text>
+  <text x="60" y="166" fill="#1e2a2c">types · fields · relations</text>
+  <text x="60" y="184" fill="#1e2a2c">value types · derived fields</text>
+  <text x="60" y="202" fill="#1e2a2c">authority per field &amp; principal</text>
+  <text x="60" y="220" fill="#1e2a2c">sys.* namespace</text>
+
+  <!-- inputs -->
+  <rect x="48" y="300" width="210" height="52" rx="6" fill="#ffffff" stroke="#1e2a2c"/>
+  <text x="60" y="320" font-weight="600" fill="#1e2a2c">ingest stream</text>
+  <text x="60" y="338" fill="#6b7a7d" font-size="11">source-mirror · content-addressed id</text>
+  <rect x="48" y="366" width="210" height="52" rx="6" fill="#ffffff" stroke="#1e2a2c"/>
+  <text x="60" y="386" font-weight="600" fill="#1e2a2c">upsert · verb call</text>
+  <text x="60" y="404" fill="#6b7a7d" font-size="11">authored · principal · idempotency key</text>
+
+  <line x1="258" y1="326" x2="330" y2="326" stroke="#1e2a2c" marker-end="url(#arrow)"/>
+  <line x1="258" y1="392" x2="330" y2="392" stroke="#1e2a2c" marker-end="url(#arrow)"/>
+  <text x="294" y="318" text-anchor="middle" fill="#6b7a7d" font-size="11">append</text>
+  <text x="294" y="384" text-anchor="middle" fill="#6b7a7d" font-size="11">append</text>
+
+  <!-- log: layered -->
+  <rect x="332" y="262" width="160" height="190" rx="6" fill="#ffffff" stroke="#2b6e5c" stroke-width="1.5"/>
+  <text x="412" y="282" text-anchor="middle" font-weight="600" fill="#2b6e5c">Log — the truth</text>
+  <g fill="#dfeae5" stroke="#b8c9c2">
+    <rect x="344" y="292" width="136" height="12"/>
+    <rect x="344" y="308" width="136" height="12"/>
+    <rect x="344" y="324" width="136" height="12"/>
+    <rect x="344" y="340" width="136" height="12"/>
+    <rect x="344" y="356" width="136" height="12"/>
+  </g>
+  <text x="412" y="386" text-anchor="middle" fill="#1e2a2c" font-size="11">append-only · hash-chained</text>
+  <text x="412" y="402" text-anchor="middle" fill="#1e2a2c" font-size="11">position n · writer</text>
+  <text x="412" y="416" text-anchor="middle" fill="#1e2a2c" font-size="11">known_at · seen_at</text>
+  <text x="412" y="432" text-anchor="middle" fill="#6b7a7d" font-size="11">history: as_of any position</text>
+  <text x="412" y="446" text-anchor="middle" fill="#6b7a7d" font-size="11">valid time per record</text>
+
+  <!-- fold -->
+  <line x1="492" y1="356" x2="610" y2="356" stroke="#1e2a2c" marker-end="url(#arrow)"/>
+  <text x="551" y="344" text-anchor="middle" fill="#1e2a2c" font-size="11" font-weight="600">fold</text>
+  <text x="551" y="374" text-anchor="middle" fill="#6b7a7d" font-size="10.5">per field · by authority</text>
+  <text x="551" y="388" text-anchor="middle" fill="#6b7a7d" font-size="10.5">replay = same bytes</text>
+
+  <!-- ontology governs the fold and generates the catalog -->
+  <polyline points="163,230 163,250 551,250 551,338" fill="none" stroke="#1e2a2c" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+  <text x="360" y="245" text-anchor="middle" fill="#6b7a7d" font-size="11">governs</text>
+  <polyline points="278,178 1036,178 1036,262" fill="none" stroke="#1e2a2c" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+  <text x="660" y="173" text-anchor="middle" fill="#6b7a7d" font-size="11">generates the tools · one schema per type</text>
+
+  <!-- projection -->
+  <rect x="612" y="262" width="262" height="190" rx="6" fill="#ffffff" stroke="#1e2a2c"/>
+  <text x="743" y="282" text-anchor="middle" font-weight="600" fill="#1e2a2c">Projection — disposable index</text>
+  <g fill="#1e2a2c" font-size="11">
+    <text x="626" y="306">records</text><text x="708" y="306" fill="#6b7a7d">value + meta per field</text>
+    <text x="626" y="326">index</text><text x="708" y="326" fill="#6b7a7d">scalar num / txt</text>
+    <text x="626" y="346">edges</text><text x="708" y="346" fill="#6b7a7d">property graph</text>
+    <text x="626" y="366">full-text</text><text x="708" y="366" fill="#6b7a7d">BM25</text>
+    <text x="626" y="386">vectors</text><text x="708" y="386" fill="#6b7a7d">kNN · rank fusion</text>
+  </g>
+  <line x1="626" y1="396" x2="860" y2="396" stroke="#d6ddda"/>
+  <text x="743" y="416" text-anchor="middle" fill="#6b7a7d" font-size="10.5">one SQLite file per lake · PostgreSQL behind the same seam</text>
+  <text x="743" y="432" text-anchor="middle" fill="#6b7a7d" font-size="10.5">delete it, replay the log, get it back byte-identically</text>
+
+  <!-- projection -> catalog -->
+  <line x1="874" y1="356" x2="918" y2="356" stroke="#1e2a2c" marker-end="url(#arrow)"/>
+  <text x="896" y="346" text-anchor="middle" fill="#6b7a7d" font-size="11">reads</text>
+
+  <!-- catalog -->
+  <rect x="920" y="262" width="232" height="190" rx="6" fill="#ffffff" stroke="#1e2a2c"/>
+  <text x="1036" y="282" text-anchor="middle" font-weight="600" fill="#1e2a2c">Catalog — typed tools</text>
+  <g fill="#1e2a2c" font-size="11" text-anchor="middle">
+    <text x="1036" y="306">find · get · upsert · retire</text>
+    <text x="1036" y="324">one tool per declared verb</text>
+    <text x="1036" y="342">describe · query · search</text>
+  </g>
+  <line x1="934" y1="354" x2="1138" y2="354" stroke="#d6ddda"/>
+  <g fill="#6b7a7d" font-size="11" text-anchor="middle">
+    <text x="1036" y="374">rights filtered per field</text>
+    <text x="1036" y="392">every reply carries its position</text>
+    <text x="1036" y="410">as_of pins a whole turn</text>
+    <text x="1036" y="428">Applied | Proposed | Refused</text>
+  </g>
+
+  <!-- seam line -->
+  <line x1="24" y1="500" x2="1176" y2="500" stroke="#a2652f" stroke-dasharray="8 5"/>
+  <text x="24" y="515" fill="#2b6e5c" font-size="11" font-weight="600">Lakelands · Apache-2.0 · the ground</text>
+  <text x="1176" y="515" text-anchor="end" fill="#a2652f" font-size="11" font-weight="600">The Wild · commercial · what lives on it</text>
+  <text x="600" y="515" text-anchor="middle" fill="#6b7a7d" font-size="11">seams — Lakelands never knows a bus, a sandbox or a model</text>
+
+  <!-- the wild -->
+  <rect x="48" y="560" width="220" height="120" rx="6" fill="#fbf5ee" stroke="#a2652f"/>
+  <text x="60" y="580" font-weight="600" fill="#a2652f">Connectors</text>
+  <text x="60" y="600" fill="#1e2a2c" font-size="11">SharePoint, files, APIs, feeds</text>
+  <text x="60" y="618" fill="#6b7a7d" font-size="11">bring water in as an ingest stream</text>
+  <text x="60" y="636" fill="#6b7a7d" font-size="11">cursor per source stays theirs</text>
+
+  <rect x="340" y="560" width="164" height="120" rx="6" fill="#fbf5ee" stroke="#a2652f"/>
+  <text x="352" y="580" font-weight="600" fill="#a2652f">Runtime</text>
+  <text x="352" y="600" fill="#1e2a2c" font-size="11">relay → bus (NATS)</text>
+  <text x="352" y="618" fill="#1e2a2c" font-size="11">VerbExecutor · effect gate</text>
+  <text x="352" y="636" fill="#1e2a2c" font-size="11">PrincipalResolver · RBAC</text>
+  <text x="352" y="654" fill="#6b7a7d" font-size="11">workers, schedules, fleet</text>
+
+  <rect x="520" y="560" width="150" height="120" rx="6" fill="#fbf5ee" stroke="#a2652f"/>
+  <text x="532" y="580" font-weight="600" fill="#a2652f">Tools</text>
+  <text x="532" y="600" fill="#1e2a2c" font-size="11">FunctionBacking</text>
+  <text x="532" y="618" fill="#1e2a2c" font-size="11">wasm functions</text>
+  <text x="532" y="636" fill="#1e2a2c" font-size="11">procedures, models</text>
+  <text x="532" y="654" fill="#6b7a7d" font-size="11">forged, sandboxed</text>
+
+  <rect x="920" y="560" width="232" height="120" rx="6" fill="#fbf5ee" stroke="#a2652f"/>
+  <text x="932" y="580" font-weight="600" fill="#a2652f">Agents</text>
+  <text x="932" y="600" fill="#1e2a2c" font-size="11">chief, Elder, any MCP client</text>
+  <text x="932" y="618" fill="#6b7a7d" font-size="11">read and write through typed tools</text>
+  <text x="932" y="636" fill="#6b7a7d" font-size="11">never a query language</text>
+  <text x="932" y="654" fill="#6b7a7d" font-size="11">see where every value came from</text>
+
+  <!-- seam arrows -->
+  <line x1="200" y1="560" x2="200" y2="420" stroke="#a2652f" marker-end="url(#arrow-wild)"/>
+  <text x="208" y="486" fill="#a2652f" font-size="11">ingest stream (NDJSON)</text>
+
+  <line x1="422" y1="452" x2="422" y2="558" stroke="#a2652f" marker-end="url(#arrow-wild)"/>
+  <text x="430" y="536" fill="#a2652f" font-size="11">change feed = the log filtered by kind</text>
+  <text x="430" y="551" fill="#a2652f" font-size="11">cursor = position · pulled, acked</text>
+
+  <line x1="595" y1="560" x2="595" y2="470" stroke="#a2652f" marker-end="url(#arrow-wild)"/>
+  <text x="602" y="486" fill="#a2652f" font-size="11">backs a function · runs a verb by risk</text>
+
+  <line x1="1036" y1="560" x2="1036" y2="454" stroke="#a2652f" marker-end="url(#arrow-wild)"/>
+  <text x="1028" y="486" text-anchor="end" fill="#a2652f" font-size="11">MCP · stdio or HTTP · one lake per session</text>
+
+  <text x="600" y="706" text-anchor="middle" fill="#1e2a2c" font-size="13" font-weight="600">The Wild runs on Lakelands.</text>
+</svg>
