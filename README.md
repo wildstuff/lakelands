@@ -8,14 +8,12 @@ typed tools to read and write it; every value they see says where it came
 from and since when.
 
 ```
-Lakelands                               The Wild
-├── Lakes     — domain data             ├── Agents
-├── Streams   — changes and events      ├── Tools
-├── Ontology  — world model             ├── Connectors
-├── History   — bitemporal state        └── Runtime
+Lakelands
+├── Lakes     — domain data
+├── Streams   — changes and events
+├── Ontology  — world model
+├── History   — bitemporal state
 └── Search    — retrieval
-
-The Wild runs on Lakelands.
 ```
 
 ![Lakelands, the mechanism: in one lake, ingest streams and authored writes append to a hash-chained log that is the truth; a per-field fold governed by the ontology rebuilds a disposable projection; a catalog generated from the ontology serves typed tools to agents over MCP; below the seam line The Wild plugs in through named seams.](docs/architecture.svg)
@@ -25,7 +23,7 @@ projection, the ontology governs the fold and generates the tools. The
 change feed is the log itself. Below the line, The Wild attaches through
 seams — Lakelands never knows a bus, a sandbox or a model.*
 
-Lakelands is the open ground. The Wild is what lives and works on it:
+Lakelands is the open ground. The Wild is one world that lives and works on it:
 the agents, the tools they use, the connectors that bring water in, and
 the runtime that keeps everything moving. The ground is Apache-2.0 and
 belongs to whoever stands on it; the life on top is Wildstuff's product.
