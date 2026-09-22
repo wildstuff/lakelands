@@ -1,6 +1,6 @@
 # CLAUDE.md — how an agent works in this repository
 
-Ontolake is an ontology-driven, event-sourced store for AI agents, built
+Lakelands is an ontology-driven, event-sourced store for AI agents, built
 greenfield here. Nothing is installable yet; the repository holds
 commitments and a plan, and the work is turning them into code without
 importing the shape of the platform the organs come from.
@@ -22,9 +22,9 @@ importing the shape of the platform the organs come from.
 - **No external decisions.** A decision-record citation of the source
   platform (its three-letter prefix, a dash, four digits), a planning
   thread reference, and a bare hash followed by four or more digits
-  (anything but `ontolake#N` or a full URL) occur nowhere:
+  (anything but `lakelands#N` or a full URL) occur nowhere:
   not in code, comments, docs, WIT, commit messages, PR bodies or
-  issues. Ontolake's rationale is its own, in `docs/decisions/`.
+  issues. Lakelands' rationale is its own, in `docs/decisions/`.
 - **One catalog.** Every LLM-facing tool name is produced by the catalog
   generator; a string-literal tool name outside it fails.
 - **Budgets.** `cfg(feature)` sites ≤ 20 (features are one per engine);
@@ -48,7 +48,7 @@ violation, show the red run in the PR, then make it green.
   table: stop and ask before importing it.
 - **Citations do not cross.** Every reference to the source platform's
   decision records in imported doc comments is removed, and the
-  rationale it pointed at is restated in Ontolake's own words — in the
+  rationale it pointed at is restated in Lakelands' own words — in the
   module doc where local, in `docs/decisions/` where it is a design
   commitment — or dropped if it cannot be stated without that context.
   This is review work, not a `sed`. The PR names the decision records
@@ -64,7 +64,7 @@ violation, show the red run in the PR, then make it green.
   enforces it). English everywhere.
 - The core ladder (O0 → O6) is serial: one agent, one branch at a time.
   The door, spec and infra lanes run in parallel after O1 merges, each
-  against `ontolake-api` with the in-memory mock.
+  against `lakelands-api` with the in-memory mock.
 - No new query language, no model calls inside the store, no network
   the caller did not configure.
 - If the plan and the tree disagree, the tree wins and the plan is

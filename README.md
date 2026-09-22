@@ -1,11 +1,69 @@
-# Ontolake
+# Lakelands
 
-Ontology-driven, event-sourced memory for AI agents. Declare types and
-relations, ingest with enforced provenance, query as-of any point in
-time, and hand agents typed tools. One file per tenant on SQLite,
-PostgreSQL optional.
+**The ground that AI agents work on.** A landscape of typed, auditable
+lakes — not a data lake. Every lake has a map (its ontology), keeps its
+whole history in layers (its event log), is fed and drained by streams
+(its changes), and can be searched from any point on the map. Agents get
+typed tools to read and write it; every value they see says where it came
+from and since when.
 
-> **Status: pre-release.** Ontolake is being extracted from a
+```
+Lakelands                               The Wild
+├── Lakes     — domain data             ├── Agents
+├── Streams   — changes and events      ├── Tools
+├── Ontology  — world model             ├── Connectors
+├── History   — bitemporal state        └── Runtime
+└── Search    — retrieval
+
+The Wild runs on Lakelands.
+```
+
+Lakelands is the open ground. The Wild is what lives and works on it:
+the agents, the tools they use, the connectors that bring water in, and
+the runtime that keeps everything moving. The ground is Apache-2.0 and
+belongs to whoever stands on it; the life on top is Wildstuff's product.
+
+## The story, in five parts
+
+- **Lakes.** A lake is one world with one truth. Your invoices, your
+  partners, your transactions live in one lake; another tenant's world
+  is another lake. There is no query across lakes, and water only
+  crosses between them as a mirror that carries its provenance. Many
+  lakes live in one process; each has one writer, one log, one map.
+- **Ontology.** The map of a lake. Types, fields, relations that can
+  carry their own fields, value types with constraints, derived fields
+  the lake computes itself. Every field on the map says who may write
+  it — the source feed, an author, a computation — and rights are held
+  per field and per principal. A re-import never overwrites a verdict a
+  human or an agent wrote; a second writer never erases a first.
+- **History.** A lake keeps everything that ever happened to it, in
+  order, in layers: the append-only event log is the truth, and the
+  current state is only a projection of it. Delete the projection,
+  replay the log, get the same bytes back. Every reply carries the
+  position it was read at, so "what did the agent see when it decided"
+  is a question the lake answers. Records carry valid time as well as
+  transaction time, and every field remembers when the lake learned it,
+  when its source saw it, and who wrote it.
+- **Streams.** Water moves. Every change is an event in the log — a
+  write, a fired trigger, an object-set membership change — and the
+  change feed is that log filtered by kind, read from any position.
+  Consumers keep their own cursor; the lake keeps no consumer state.
+  Ingest arrives as a stream too, content-addressed, so a message
+  delivered twice is a no-op.
+- **Search.** Finding your way. Full-text, vector kNN with rank
+  fusion, and typed filters over one catalog, in the same file; a
+  pattern query walks relations from a typed start. Embeddings come
+  from the caller or from a pluggable, OpenAI-compatible client. The
+  map is what makes search precise: a search never returns a shape the
+  ontology did not declare.
+
+**For agents.** Pin a type and the lake exposes four doors — `find`,
+`get`, `upsert`, `retire` — each with a JSON schema derived from the
+type and filtered by the caller's rights, plus one tool per declared
+verb, `describe`, `query` and `search`. Served over MCP (stdio and HTTP)
+from one catalog. Agents never write a query language.
+
+> **Status: pre-release.** Lakelands is being extracted from a
 > commercial platform built by Wildstuff, where it has run as the data
 > core since 2026. The repository currently holds the project's
 > commitments, not its code. The code arrives once the extraction
@@ -13,50 +71,17 @@ PostgreSQL optional.
 > platform it came from, and its conformance suite passes on its own.
 > Until then, nothing here is installable.
 
-## What it is
-
-Ontolake is a store whose schema gives data its meaning and whose
-history is the truth.
-
-- **A declared ontology, with authority per field.** Types, fields,
-  relations (relations are first-class and can carry their own fields),
-  value types with constraints, derived fields computed inside the
-  store. Every field declares who may write it: the source feed, an
-  author, or a computation. A re-import never overwrites a human's or
-  an agent's verdict.
-- **An append-only event log as the source of truth.** Current state
-  is a pure projection of the log. Delete the projection, replay the
-  log, and you get the same bytes back. Every read can be pinned to a
-  log position, so "what did the agent see when it decided" is a store
-  operation, not a forensic exercise. Records carry valid time as well
-  as transaction time.
-- **Provenance the writer cannot skip.** Every event records who wrote
-  it, at which position, from which source, through which procedure
-  version. Ingested records carry a source locator and a lineage edge
-  the store derives itself.
-- **Typed tools for agents, generated from the schema.** Pin a type and
-  the store exposes `list`, `get`, `find`, `range`, `count`, `sum`,
-  `group`, `view`, plus governed writes, each with a JSON schema derived
-  from the type and filtered by the caller's rights. Served over MCP
-  (stdio and HTTP) and REST from one catalog. Agents never write a
-  query language.
-- **Five models in one file.** Document, scalar index, property graph,
-  full-text (BM25) and vector kNN with rank fusion, co-resident in one
-  SQLite file per tenant. PostgreSQL is a second engine behind the same
-  contract; an in-memory engine is the reference. A conformance suite
-  is what "supports Ontolake" means for any engine.
-
 ## What it is not
 
-- **Not autonomous.** Ontolake detects when something is due (a
-  trigger matched, a schedule fired, a verb was called) and records
-  it durably. Executing it is behind a seam: an HTTP endpoint, a local
+- **Not a data lake.** A data lake stores raw files and lets meaning
+  arrive later. Lakelands is the opposite: schema-first, every write
+  governed by declared authority, every value traceable to its event.
+- **Not autonomous.** Lakelands detects when something is due — a
+  trigger matched, a schedule fired, a verb was called — and records it
+  durably. Executing it is behind a seam: an HTTP endpoint, a local
   process, a webhook, or whatever you plug in. Nothing in the store
   calls a model, runs a sandbox, or reaches the network on its own.
-- **Not a vector database.** Embeddings are supplied by the caller or
-  fetched through a pluggable, OpenAI-compatible client. The store is
-  model-agnostic by construction.
-- **Not a new query language.** Ontolake sits on SQLite and PostgreSQL
+- **Not a new query language.** Lakelands sits on SQLite and PostgreSQL
   and keeps them visible. The projection is a plain database you can
   open with any tool; only the log is authoritative.
 
@@ -79,10 +104,8 @@ history is the truth.
 
 1. The log format specification and the seam contracts land here as
    documents.
-2. The core crates arrive with their history, once the extraction
-   trigger is met.
-3. The standalone door: the `ontolake` CLI, the MCP and REST server,
-   a WIT package for component hosts.
+2. The core arrives, one organ at a time, transformed on arrival.
+3. The standalone door: the `lakelands` CLI and the MCP server.
 4. The repository goes public.
 
 ## Licence

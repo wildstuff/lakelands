@@ -1,4 +1,4 @@
-# Contributing to Ontolake
+# Contributing to Lakelands
 
 Thank you for considering a contribution. Until the code lands (see the
 status note in the README), the useful contributions are reviews of the
@@ -6,7 +6,7 @@ specifications and the seam contracts as they appear here.
 
 ## Developer Certificate of Origin
 
-Ontolake does not use a contributor licence agreement. Every commit is
+Lakelands does not use a contributor licence agreement. Every commit is
 signed off under the [Developer Certificate of Origin 1.1](https://developercertificate.org/):
 by adding a `Signed-off-by:` line you certify that you wrote the change
 or have the right to submit it under the project's licence, Apache-2.0.
