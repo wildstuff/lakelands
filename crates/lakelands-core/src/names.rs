@@ -14,6 +14,18 @@
 //! so a canonical form can never depend on which one an implementation
 //! picked.
 
+/// Whether a name can name a lake: 1 to 63 characters of lower-case
+/// ASCII letters, digits, `-` and `_`, starting with a letter or a
+/// digit. A lake id names files and directories, so it is narrower than
+/// an identifier in case and wider in `-`.
+pub fn is_lake_id(id: &str) -> bool {
+    (1..=63).contains(&id.len())
+        && id.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
 /// Whether a name is an ASCII identifier.
 pub fn is_identifier(name: &str) -> bool {
     let mut chars = name.chars();
@@ -62,6 +74,34 @@ mod tests {
         }
         for bad in ["", "1a", "a-b", "a.b", "a b", "grüße", "a\0b", "\u{1f600}"] {
             assert!(!is_identifier(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn lake_ids_are_short_lower_case_and_file_safe() {
+        for ok in [
+            "finance",
+            "hr-2026",
+            "a",
+            "0lake",
+            "ops_eu",
+            &"a".repeat(63),
+        ] {
+            assert!(is_lake_id(ok), "{ok}");
+        }
+        let long = "a".repeat(64);
+        for bad in [
+            "",
+            "Finance",
+            "-lake",
+            "_lake",
+            "a.b",
+            "a/b",
+            "a b",
+            "grüße",
+            long.as_str(),
+        ] {
+            assert!(!is_lake_id(bad), "{bad:?}");
         }
     }
 

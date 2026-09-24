@@ -8,6 +8,11 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[dependencies]
+async-trait.workspace = true
+lakelands-api.workspace = true
+serde.workspace = true
+
 [dev-dependencies]
 lakelands-mock.workspace = true
 
