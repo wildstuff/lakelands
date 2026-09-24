@@ -8,7 +8,7 @@
 //! `lakelands_core::engines`, the rules every engine shares; this engine
 //! only finds the states they apply to. Edges are derived from the
 //! records and the declarations in force at the view's position, and
-//! full text from those at the head, kept when live and unrestricted at
+//! full text from those at the head, kept when live at
 //! the view's position; neither is stored: `Out` gives the links a record declares, `In` the links
 //! that point at it, `Both` their union with each link once. A link to a
 //! retired or missing record is returned as it is; hiding that end is the
@@ -107,7 +107,7 @@ impl ProjectionView for MemView {
     fn lexical(&self, ty: &TypeName, text: &str, k: u32) -> Result<Vec<(RecordKey, f64)>> {
         Ok(self.read(|p, at| {
             // Ranked by the text at the head; kept when live and
-            // unrestricted at the view's position (`docs/seams.md`).
+            // live at the view's position (`docs/seams.md`).
             let Some(decl) = p.type_at(ty, p.folded) else {
                 return Vec::new();
             };

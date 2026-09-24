@@ -52,3 +52,13 @@ computes it like any derived field, recomputing it on replay. In this
 release only the `expr` backing computes fields; a field whose function
 needs any other backing is refused when declared, until the backings that
 reach outside the lake arrive with their recorded outputs.
+
+## Extended: a redeclared function recomputes its fields
+
+When a function is declared again, the fold computes, in that `declared`
+event, every live record's fields the function computes, and likewise
+when a type's own derived expressions are revised. The values take the
+event's position and name the function's new version as their
+procedure's; a function-computed value names its function's version
+from its first computation on. The record's version stays, since no
+write touched it.

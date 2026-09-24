@@ -49,3 +49,12 @@ a current read on every engine, which is what makes it usable for audit
 rather than a special operation. The engine seam states it
 (`docs/seams.md`), and the conformance suite compares every as-of read
 with a replay to that position.
+
+## Extended: a version from before a retirement never applies
+
+Compare-and-set compares a write's `expected_version` with the record's
+version, a retired record's included: a record's count continues across
+retirement, so a version read before the retirement is stale after it,
+and the conflict names the retired record's version. A write expecting
+that version re-creates the record and continues the count. Only a key
+never written is at version 0.

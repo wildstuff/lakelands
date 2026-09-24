@@ -47,9 +47,9 @@ engine_check!(
 );
 
 engine_check!(
-    /// Lexical hits come from the pipeline over searchable, live, unrestricted records.
-    LEXICAL_HITS = lexical_hits_are_the_pipelines_over_searchable_live_unrestricted_records,
-    "025 and seams §lexical: a hit holds a token the one pipeline makes of the query in a searchable field, live and unrestricted; the hit set is the same on every engine, ties by key, at most k"
+    /// Lexical hits come from the pipeline over searchable, live records.
+    LEXICAL_HITS = lexical_hits_are_the_pipelines_over_searchable_live_records,
+    "025 and seams §lexical: a hit holds a token the one pipeline makes of the query in a searchable field of a live record, restricted ones included (the store applies grants); the hit set is the same on every engine, ties by key, at most k"
 );
 
 engine_check!(
@@ -61,7 +61,7 @@ engine_check!(
 engine_check!(
     /// Lexical search at an earlier position ranks by the head.
     LEXICAL_EARLIER = lexical_at_an_earlier_position_ranks_by_the_head_and_keeps_what_was_visible_then,
-    "seams §lexical: a view answers from the full-text index at the head and keeps only the records live and unrestricted at its own position"
+    "seams §lexical: a view answers from the full-text index at the head and keeps only the records live at its own position"
 );
 
 engine_check!(
@@ -385,7 +385,7 @@ fn hit_keys(hits: &[(RecordKey, f64)]) -> Vec<String> {
     hits.iter().map(|(k, _)| k.to_string()).collect()
 }
 
-fn lexical_hits_are_the_pipelines_over_searchable_live_unrestricted_records(
+fn lexical_hits_are_the_pipelines_over_searchable_live_records(
     engine: &dyn LakeEngine,
 ) -> Result<(), Failure> {
     fold(engine, 1, |p| {
@@ -410,14 +410,14 @@ fn lexical_hits_are_the_pipelines_over_searchable_live_unrestricted_records(
     let ty = TypeName::from("doc");
     let hits = at.lexical(&ty, "run rivers", 10).must("searching")?;
     ensure!(
-        hit_keys(&hits) == ["two", "one-a", "one-b"],
+        hit_keys(&hits) == ["two", "held", "one-a", "one-b"],
         "searching `run rivers` answered {:?}; the English pipeline makes `run` and `river` of \
-         it, `two` holds both, `one-a` and `one-b` one each (ties by key), `note` holds them \
-         only in an unsearchable field, and retired or restricted records are no hits",
+         it, `two` holds both, `held` (restricted), `one-a` and `one-b` one each (ties by key), \
+         `note` holds them only in an unsearchable field, and a retired record is no hit",
         hit_keys(&hits)
     );
     ensure!(
-        hits[0].1 > hits[1].1 && hits[1].1 == hits[2].1,
+        hits[0].1 > hits[1].1 && hits[1].1 == hits[2].1 && hits[2].1 == hits[3].1,
         "the scores {hits:?} must rank the better match higher and tie the equal ones"
     );
     let one = at.lexical(&ty, "run rivers", 1).must("searching for one")?;

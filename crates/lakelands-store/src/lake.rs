@@ -396,6 +396,33 @@ impl Lake {
                 schema_hash,
                 version,
             } => {
+                // What computes a type's derived fields: its derived
+                // expressions and the functions its fields name.
+                let computes = |t: &lakelands_api::ontology::TypeDecl| -> Vec<_> {
+                    t.fields
+                        .iter()
+                        .map(|f| (f.name.clone(), f.derived.clone(), f.function.clone()))
+                        .collect()
+                };
+                let rederive: Vec<TypeName> = match declaration {
+                    Declaration::Function(f) => w
+                        .ontology
+                        .types
+                        .values()
+                        .filter(|t| {
+                            t.decl
+                                .fields
+                                .iter()
+                                .any(|d| d.function.as_deref() == Some(f.name.as_str()))
+                        })
+                        .map(|t| t.decl.name.clone())
+                        .collect(),
+                    Declaration::Type(t) => match w.ontology.types.get(&t.name) {
+                        Some(old) if computes(&old.decl) != computes(t) => vec![t.name.clone()],
+                        _ => vec![],
+                    },
+                    _ => vec![],
+                };
                 w.ontology
                     .put(declaration.clone(), *version, schema_hash.clone());
                 projection.put_declaration(
@@ -404,6 +431,31 @@ impl Lake {
                     schema_hash.as_deref(),
                     e.position,
                 )?;
+                // A redeclared function, or revised derived expressions,
+                // compute every live record's derived fields again, in this
+                // event.
+                for ty in rederive {
+                    let records = view.scan(
+                        &ty,
+                        &lakelands_api::engine::Scan {
+                            limit: u32::MAX,
+                            restricted: true,
+                            ..Default::default()
+                        },
+                    )?;
+                    // The records written earlier in this append are staged,
+                    // not yet in the view.
+                    let mut all: BTreeMap<RecordKey, StoredRecord> =
+                        records.into_iter().map(|r| (r.key.clone(), r)).collect();
+                    all.extend(staged.of_type(&ty).map(|r| (r.key.clone(), r.clone())));
+                    for r in all.into_values() {
+                        if let Some(next) = record::rederive(&w.ontology, &r, e, &w.settings)? {
+                            projection.put_record(&next)?;
+                            self.index_vectors(&w.ontology, &next)?;
+                            staged.put(next);
+                        }
+                    }
+                }
             }
             EventBody::Migrated {
                 migration,
@@ -790,6 +842,14 @@ impl Staged {
     /// A record written earlier in this append.
     pub fn get(&self, ty: &TypeName, key: &RecordKey) -> Option<&StoredRecord> {
         self.records.get(&(ty.clone(), key.clone()))
+    }
+
+    /// The records of one type written in this append.
+    pub fn of_type<'a>(&'a self, ty: &'a TypeName) -> impl Iterator<Item = &'a StoredRecord> + 'a {
+        self.records
+            .range((ty.clone(), RecordKey::from(""))..)
+            .take_while(move |((t, _), _)| t == ty)
+            .map(|(_, r)| r)
     }
 
     /// Remember a record written in this append.

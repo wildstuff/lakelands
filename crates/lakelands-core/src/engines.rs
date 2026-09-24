@@ -25,7 +25,8 @@
 //!   token pipeline (`crate::stem`), stemmed by the type's language, as
 //!   they stand at the head; a record scores the number of distinct query
 //!   tokens it holds, one holding none is not a hit, and a view keeps the
-//!   hits live and unrestricted at its own position. Best first, ties by
+//!   hits live at its own position — restricted ones included, since
+//!   the store applies the principal's grants to them. Best first, ties by
 //!   key.
 //! - **Proposals** come newest first, ties by id.
 //! - **Vectors.** Similarity is the cosine of the angle between two
@@ -324,7 +325,7 @@ pub fn record_tokens(decl: &TypeDecl, record: &StoredRecord) -> BTreeSet<String>
 /// Full-text hits, as `docs/seams.md` §`lexical` defines them: the
 /// records of one type as they stand at the head, `decl` the type's
 /// declaration there, are hits when their searchable text holds a query
-/// token; `visible` keeps those live and unrestricted at the view's own
+/// token; `visible` keeps those live at the view's own
 /// position. A hit scores the distinct query tokens its head text holds;
 /// best first, ties by key, at most `k`.
 pub fn lexical<'a>(
@@ -346,10 +347,11 @@ pub fn lexical<'a>(
     hits
 }
 
-/// Whether a record's state is live and unrestricted: what `lexical`
-/// keeps at a view's position.
+/// Whether a record's state is live: what `lexical` keeps at a view's
+/// position. A restricted record is a candidate like any other; whether a
+/// principal may see it is the store's, as for `find` and `get`.
 pub fn searchable(state: Option<&StoredRecord>) -> bool {
-    state.is_some_and(|r| !r.retired && !r.restricted)
+    state.is_some_and(|r| !r.retired)
 }
 
 /// Best first by score, ties by key, at most `k`.
