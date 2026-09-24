@@ -62,8 +62,9 @@ for a walk on any day from 1 November 2025 to 28 February 2030.
   validates the set together and appends it as one append; `lakelands
   apply` calls it, and `declare` keeps refusing a dangling reference.
   Held by `declaring_the_bundle_one_by_one_in_the_loaders_order_is_refused`
-  in `lakelands-store`; the answers test beside it is ignored until the
-  door lands in O4.
+  in `lakelands-store`. Resolved: `Catalog::apply` is in, `lakelands
+  apply` calls it, and the answers test beside that one applies the
+  bundle through it.
 - **The bundle declared `money` without a scale.** `money` was a bare
   decimal, so `gross = net × 1.19` kept all four fractional digits
   (`4760.0000`) and so did every sum over it: exactly what that
@@ -120,7 +121,10 @@ September.
 
 ## The commands
 
-From a fresh clone, in the repository's root:
+From a fresh clone, in the repository's root. The walk runs on the
+SQLite engine, the default of `lake new`: a lake kept in memory lives
+only as long as its process, so a sequence of CLI commands cannot walk
+one.
 
 ```sh
 cargo install --path crates/lakelands-cli
@@ -143,19 +147,18 @@ What each must print:
 | Command | Expected |
 |---|---|
 | `init`, `lake new` | the root and the lake's location, exit 0 |
-| `apply` | the bundle's eight declarations, value types first, then `invoice`, `partner`, `transaction`, `pay_invoice`, `invoice_overdue`, `overdue`. With `Catalog::apply`, all at one position. |
-| partners ingest | `committed … record(s)` lines adding up to **4 records, 0 already in the lake**, through position **14** |
-| August ingest | **10 records, 0 already in the lake**, through position **38**: ten invoices, and for each of the seven that are open and overdue one `trigger_fired` and one `object_set_changed` |
-| September ingest | **3 records, 9 already in the lake**, through position **44**. The nine unchanged rows append nothing. INV-3002 is now paid and leaves `overdue`; INV-1004 is new and not overdue; INV-4003 is new, overdue, fires the trigger and joins `overdue`. |
+| `apply` | `applied 8 declaration(s), in force from position 10`, then the eight: value types `invoice_status`, `money`, types `invoice`, `partner`, `transaction`, verb `pay_invoice`, trigger `invoice_overdue`, object set `overdue` |
+| partners ingest | `committed … record(s)` lines adding up to **4 records, 0 already in the lake**, through position **15** |
+| August ingest | **10 records, 0 already in the lake**, through position **40**: ten invoices, and for each of the seven that are open and overdue one `trigger_fired` and one `object_set_changed` |
+| September ingest | **3 records, 9 already in the lake**, through position **47**. The nine unchanged rows append nothing. INV-3002 is now paid and leaves `overdue`; INV-1004 is new and not overdue; INV-4003 is new, overdue, fires the trigger and joins `overdue`. |
 | `feed --kind trigger_fired` | eight `trigger_fired` events: INV-1001, 1002, 2001, 2002, 3001, 3002, 4001 in August, INV-4003 in September |
 
-The positions assume the store's layout at the time of writing: the
-lake's first append (`lake_created`, `lease_taken`, the `sys.setting`
-declaration) at 0 to 2, and the eight declarations at 3 to 10, one each.
-If `Catalog::apply` lays the bundle out differently, every later
-position moves with it. Write down the position the August ingest
-prints: it is the one the walk pins. A different number is not a rift if
-the records and the answers are right.
+The positions are the store's as of `0.1.0`: the lake's first append
+(`lake_created`, `lease_taken`, the `sys.setting` declaration), then,
+for every command that writes, one `lease_taken` as that process becomes
+the lake's writer before its own events. Write down the position the
+August ingest prints: it is the one the walk pins. A different number is
+not a rift if the records and the answers are right.
 
 ## The agent's calls
 
@@ -167,7 +170,13 @@ Without a chat product in the loop, the calls are made with the
 `mcp_call` example client from the `walk` directory. It starts the
 server, makes its requests in one session, and prints each answer's
 position line and structured content. A pin holds within one session
-only, so each run below makes a pinned turn's calls together:
+only, so each run below makes a pinned turn's calls together.
+
+Every `serve --mcp` process becomes the lake's writer and appends one
+`lease_taken`, so each run moves the head by one: it is 48 in the first
+run after the September ingest, 49 in the next, and so on. `<head>`
+below is the run's own head. A reply's `position` is the position it
+reflects; `pin`'s reply also says what is `pinned`.
 
 ```sh
 cargo run -q -p lakelands-server --example mcp_call -- --server "lakelands serve --mcp" tools/list
@@ -184,8 +193,8 @@ The lake's types (`invoice`, `partner`,
 with its authority: `invoice.gross` derived, `invoice.status` shared,
 `partner.credit_limit` from a source.
 
-**2. `pin`** — `{}`. Pins the head for the turn: `{ "position": 44,
-"pinned": 44 }`. Calls 2 to 4 are one turn, so one run:
+**2. `pin`** — `{}`. Pins the head for the turn: `{ "position": <head>,
+"pinned": <head> }`. Calls 2 to 4 are one turn, so one run:
 
 ```sh
 cargo run -q -p lakelands-server --example mcp_call -- --server "lakelands serve --mcp" \
@@ -209,7 +218,7 @@ cargo run -q -p lakelands-server --example mcp_call -- --server "lakelands serve
 }
 ```
 
-Expected, at position 44:
+Expected, at the pinned head:
 
 ```json
 { "shape": "groups", "rows": [
@@ -230,7 +239,7 @@ it came from, for example P-300's:
 ```json
 "credit_limit": { "origin": "source", "source": "crm",
                   "seen_at": "2026-08-31T18:00:00.000000Z",
-                  "position": 13, "writer": "…", "known_at": "…" }
+                  "position": 14, "writer": "…", "known_at": "…" }
 ```
 
 `writer` is the principal the CLI ingested as (the root's owner), and
@@ -240,12 +249,12 @@ it came from, for example P-300's:
 10000.00) and P-200 Northwind Tools (5950.00 against 5000.00), with
 their credit limits taken from `crm`'s export of 31 August.
 
-**5. `pin`** — `{ "as_of": 38 }` (the August ingest's position):
-`{ "position": 38, "pinned": 38 }`. Calls 5 to 8 are one turn, so one run:
+**5. `pin`** — `{ "as_of": 40 }` (the August ingest's position):
+`{ "position": <head>, "pinned": 40 }`. Calls 5 to 8 are one turn, so one run:
 
 ```sh
 cargo run -q -p lakelands-server --example mcp_call -- --server "lakelands serve --mcp" \
-  tools/call pin '{"as_of": 38}' \
+  tools/call pin '{"as_of": 40}' \
   tools/call invoice_find "{\"where\": \"status = 'open' and due_on < now() - 30d\", \"aggregate\": {\"measures\": [{\"name\": \"overdue_gross\", \"func\": \"sum\", \"field\": \"gross\"}], \"group_by\": [\"partner\"]}}" \
   tools/call partner_get '{"key": "P-100", "with_meta": true}' \
   tools/call partner_get '{"key": "P-200", "with_meta": true}' \
@@ -254,7 +263,7 @@ cargo run -q -p lakelands-server --example mcp_call -- --server "lakelands serve
   tools/call pin '{"clear": true}'
 ```
 
-**6. `invoice_find`**, the same arguments. Expected, at position 38:
+**6. `invoice_find`**, the same arguments. Expected, at position 40:
 P-100 `10710.00`, P-200 `5950.00`, **P-300 `8330.00`**, P-400
 `7140.00`.
 
@@ -264,7 +273,7 @@ partners did not change.
 **The agent's answer as of last month:** P-100, P-200 and **P-300 Cedar
 Logistics** (8330.00 against 8000.00).
 
-**8. `pin`** — `{ "clear": true }`: `{ "position": 44, "pinned": null }`.
+**8. `pin`** — `{ "clear": true }`: `{ "position": <head>, "pinned": null }`.
 
 ## Recording the walk
 

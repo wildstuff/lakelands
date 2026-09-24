@@ -68,13 +68,53 @@ type and filtered by the caller's rights, plus one tool per declared
 verb, `describe`, `query` and `search`. Served over MCP (stdio and HTTP)
 from one catalog. Agents never write a query language.
 
-> **Status: pre-release.** Lakelands is being extracted from a
-> commercial platform built by Wildstuff, where it has run as the data
-> core since 2026. The repository currently holds the project's
-> commitments, not its code. The code arrives once the extraction
-> reaches a measurable state: the core builds with no dependency on the
-> platform it came from, and its conformance suite passes on its own.
-> Until then, nothing here is installable.
+> **Status: `0.1.0`.** Lakelands `0.1.0` is the `lakelands` CLI and its
+> MCP server (stdio and streamable HTTP) over the SQLite and in-memory
+> engines, both passing the whole conformance suite, installable from
+> the release; the PostgreSQL engine, a REST door and the
+> OpenAI-compatible embedding client are not in it and come right after,
+> and so do the ticker for schedules, relations with fields of their
+> own, and the mirror between lakes.
+
+## Try it
+
+This follows the first walk (`docs/walks/walk-1.md`), whose example
+lake ships in `examples/liquidity/`. It runs on the SQLite engine, the
+default: a lake kept in memory lives only as long as its process, so a
+sequence of commands cannot walk one.
+
+```sh
+cargo install --path crates/lakelands-cli    # or the binary from the release
+lakelands init walk && cd walk
+lakelands lake new liquidity
+lakelands apply ../examples/liquidity
+d=../examples/liquidity/data
+lakelands ingest $d/partners.csv --source crm --map $d/partners.map.json
+lakelands ingest $d/invoices-august.csv --source erp --map $d/invoices.map.json
+lakelands ingest $d/invoices-september.csv --source erp --map $d/invoices.map.json
+lakelands serve --mcp                        # point an MCP client at this command
+# Ask it: which debtors are over their credit limit and more than 30 days overdue?
+```
+
+The agent finds the answer with the lake's generated tools
+(`invoice_find` with an aggregate, `partner_get` with provenance), and
+can pin an earlier position to ask what the lake knew last month. The
+walk's page lists every call and the answer it must give.
+
+## Read further
+
+- [`docs/log-format.md`](docs/log-format.md): the event log, byte for
+  byte, with test vectors a verifier in any language can check.
+- [`docs/seams.md`](docs/seams.md): the engine contract and the seams a
+  host plugs into; [`docs/hosting.md`](docs/hosting.md): the same seen
+  from a platform that embeds Lakelands.
+- [`docs/conformance.md`](docs/conformance.md): the suite that defines
+  what it means for an engine to support Lakelands, and every check in
+  it.
+- [`docs/decisions/`](docs/decisions/): why Lakelands is built the way
+  it is, one decision per record.
+- [`docs/walks/walk-1.md`](docs/walks/walk-1.md): the first walk, end
+  to end, with its expected answers.
 
 ## What it is not
 
@@ -86,8 +126,8 @@ from one catalog. Agents never write a query language.
   durably. Executing it is behind a seam: an HTTP endpoint, a local
   process, a webhook, or whatever you plug in. Nothing in the store
   calls a model, runs a sandbox, or reaches the network on its own.
-- **Not a new query language.** Lakelands sits on SQLite and PostgreSQL
-  and keeps them visible. The projection is a plain database you can
+- **Not a new query language.** Lakelands sits on SQLite (and
+  PostgreSQL, right after `0.1.0`) and keeps them visible. The projection is a plain database you can
   open with any tool; only the log is authoritative.
 
 ## Commitments
@@ -107,11 +147,13 @@ from one catalog. Agents never write a query language.
 
 ## Roadmap, at the altitude this file can promise
 
-1. The log format specification and the seam contracts land here as
-   documents.
-2. The core arrives, one organ at a time, transformed on arrival.
-3. The standalone door: the `lakelands` CLI and the MCP server.
-4. The repository goes public.
+`0.1.0` holds what is on disk, in every reply, or in a trait: the log
+format, per-field provenance, positions on every answer, the engine
+contract and the seams. What comes right after arrives through those
+seams without changing them: the PostgreSQL engine, a REST door, the
+OpenAI-compatible embedding client, webhook delivery of the change feed,
+and MCP notifications. The repository goes public once The Wild runs on a
+tagged Lakelands.
 
 ## Licence
 
