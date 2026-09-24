@@ -1,0 +1,11 @@
+name: partner
+label: Partner
+description: A business the lake invoices, with the credit it is allowed.
+key: id
+fields:
+  id: { type: text, required: true, authority: source }
+  name: { type: text, required: true, authority: source, searchable: true }
+  credit_limit:
+    type: money
+    authority: source
+    description: The most this partner may owe at one time.

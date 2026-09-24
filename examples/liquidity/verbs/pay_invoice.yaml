@@ -1,0 +1,10 @@
+name: pay_invoice
+on: invoice
+risk: low
+description: Record that an open invoice was paid.
+requires: "status = 'open'"
+payload:
+  paid_on: { type: date_time, required: true }
+set:
+  status: "'paid'"
+  paid_on: payload.paid_on
