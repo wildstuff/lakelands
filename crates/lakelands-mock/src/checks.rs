@@ -70,6 +70,7 @@ macro_rules! door_checks {
             a_rejected_proposal_writes_nothing_and_stays_decided,
             only_a_reviewer_decides_proposals,
             sys_types_cannot_be_declared,
+            an_embedding_is_unbound_where_no_backend_is_bound,
             a_retired_record_leaves_reads_but_not_its_past,
             a_narrow_writer_cannot_retire,
             a_proposer_sees_only_its_own_proposals,
@@ -118,6 +119,7 @@ fn text(name: &str) -> FieldDecl {
         searchable: false,
         description: None,
         label: None,
+        embed: None,
     }
 }
 
@@ -1062,6 +1064,54 @@ pub async fn sys_types_cannot_be_declared(store: Arc<dyn LakeStore>) {
         .await
         .unwrap_err();
     assert_eq!(refusal(&e).1, &Refusal::Reserved);
+}
+
+/// An embedding is declared only where a backend of its model is bound;
+/// these doors bind none.
+pub async fn an_embedding_is_unbound_where_no_backend_is_bound(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let decl: TypeDecl = serde_json::from_value(json!({
+        "name": "note",
+        "fields": [
+            {"name": "body", "type": {"kind": "text"}},
+            {"name": "vec", "type": {"kind": "vector", "dimensions": 2}, "authority": "derived",
+             "embed": {"from": ["body"], "model": "m"}}
+        ]
+    }))
+    .unwrap();
+    let e = f
+        .catalog
+        .declare(&f.cast.owner, Declaration::Type(decl))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&e, Error::Unbound { seam } if seam.contains("`m`")),
+        "{e:?}"
+    );
+    // Added to a type already declared, the same.
+    let vec = |from: &str| -> FieldDecl {
+        serde_json::from_value(json!({
+            "name": "vec", "type": {"kind": "vector", "dimensions": 2}, "authority": "derived",
+            "embed": {"from": [from], "model": "m"}
+        }))
+        .unwrap()
+    };
+    let e = f
+        .catalog
+        .add_field(&f.cast.owner, &INVOICE.into(), vec("verdict"))
+        .await
+        .unwrap_err();
+    assert!(matches!(&e, Error::Unbound { .. }), "{e:?}");
+    // Declared against the rules, it is invalid before it is unbound.
+    let e = f
+        .catalog
+        .add_field(&f.cast.owner, &INVOICE.into(), vec("nowhere"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(refusal(&e), (Some(field), Refusal::Invalid { .. }) if field.as_str() == "vec"),
+        "{e:?}"
+    );
 }
 
 /// A retired record is gone from later reads; its history is not.

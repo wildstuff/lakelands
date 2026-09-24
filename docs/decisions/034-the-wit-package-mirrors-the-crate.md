@@ -53,3 +53,11 @@ A field's provenance gained `error`, the reason a field computed by a
 function holds no value when its backing failed (010, extended). A WIT
 caller sees it in `field-meta`, so the package is now
 `lakelands:data@0.2.0`.
+
+## Extended: one unreleased version gathers its changes
+
+A caller sees only what a release ships. So the changes made between
+two releases join the one package version the next release ships,
+without a version of their own. `lakelands:data@0.2.0` stays `0.2.0`
+until `v0.2.0` ships. A field's declaration gained `embed` (022,
+extended), and `field-decl` carries it at `0.2.0`.

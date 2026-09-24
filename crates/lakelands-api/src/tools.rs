@@ -854,6 +854,7 @@ mod tests {
             searchable: false,
             description: None,
             label: None,
+            embed: None,
         };
         FieldDescription::of(&decl, access)
     }

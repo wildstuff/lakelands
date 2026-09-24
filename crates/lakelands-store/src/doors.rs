@@ -291,15 +291,37 @@ impl Catalog for Doors {
         if let (
             lakelands_api::query::SearchMode::Hybrid {
                 text,
+                field,
                 vector: vector @ None,
-                ..
             },
             Some(embed),
         ) = (&mut search.mode, &self.lake.seams.embed)
         {
-            // Whatever the backend answers as a failure, the search is
-            // unavailable: never ranked lexically instead, and never
-            // another kind of error a caller would act on differently.
+            // A field declared as the embedding of a model is searched with
+            // that model's vectors only: another bound model, or one making
+            // vectors of other dimensions, is a configuration to fix, not
+            // weather.
+            let declared = {
+                let w = self.lake.writer();
+                w.ontology.ty(&search.ty).ok().and_then(|t| {
+                    let f = t.fields.iter().find(|f| &f.name == field)?;
+                    let e = f.embed.as_ref()?;
+                    Some((e.model.clone(), f.ty.dimensions.unwrap_or(0)))
+                })
+            };
+            if let Some((model, dimensions)) = declared
+                && (model != embed.model() || dimensions != embed.dimensions())
+            {
+                return Err(Error::Unbound {
+                    seam: format!(
+                        "the embedding model `{model}` with {dimensions} dimensions that \
+                         `{}.{field}` is declared with (the bound one is `{}` with {})",
+                        search.ty,
+                        embed.model(),
+                        embed.dimensions()
+                    ),
+                });
+            }
             let mut vectors =
                 embed
                     .embed(std::slice::from_ref(text))

@@ -89,6 +89,12 @@ engine_check!(
 );
 
 engine_check!(
+    /// A later output replaces an earlier one.
+    LATER_OUTPUT_HOLDS = a_later_output_for_the_same_call_replaces_the_earlier_from_its_position,
+    "022, extended, and seams §ProjectionView: the log may hold two outputs for one seam and input (a failure, then the answer a redeclaration asked for); the later one holds from its position, the earlier one before it"
+);
+
+engine_check!(
     /// The first applied position is kept.
     FIRST_APPLIED = the_first_applied_position_is_kept,
     "seams §ProjectionStore: marking an id applied twice keeps the first position, so a redelivery is recognised where the event first took effect"
@@ -831,5 +837,30 @@ fn lexical_finds_every_token_the_pipeline_makes_beyond_ascii(
             crate::engines::tokens(query, "")
         );
     }
+    Ok(())
+}
+
+fn a_later_output_for_the_same_call_replaces_the_earlier_from_its_position(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    let failed = json!({"error": "timed out"});
+    fold(engine, 2, |p| {
+        p.put_output("embed:m", &Digest::zero(), &failed, Position(2))
+    })?;
+    fold(engine, 4, |p| {
+        p.put_output("embed:m", &Digest::zero(), &json!([1.0, 0.0]), Position(4))
+    })?;
+    let at = |position: Option<Position>| -> Result<Option<serde_json::Value>, Failure> {
+        view(engine, position)?
+            .output("embed:m", &Digest::zero())
+            .must("reading an output")
+    };
+    let (before, between, after) = (at(Some(Position(1)))?, at(Some(Position(3)))?, at(None)?);
+    ensure!(
+        before.is_none() && between == Some(failed.clone()) && after == Some(json!([1.0, 0.0])),
+        "a failure recorded at 2 and an answer for the same call at 4: at 1 the view must \
+         answer nothing ({before:?}), at 3 the failure ({between:?}), at the head the answer \
+         ({after:?})"
+    );
     Ok(())
 }

@@ -138,6 +138,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     reads::ZERO_AND_WRONG_LENGTH,
     reads::PUT_AND_REMOVE,
     reads::EARLIER_STATES,
+    reads::LATER_OUTPUT_HOLDS,
     reads::FIRST_APPLIED,
     reads::PROPOSALS,
 ];

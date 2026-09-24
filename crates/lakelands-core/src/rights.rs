@@ -92,9 +92,14 @@ pub fn visible(
     for f in &decl.fields {
         let Some(value) = stored.fields.get(&f.name).filter(|v| !v.is_null()) else {
             // A computed field whose function failed holds no value; its
-            // metadata says why, to whoever may read the field.
+            // metadata says why, to whoever may read the field. An
+            // embedding with nothing to embed keeps metadata without an
+            // error, which says so.
             if with_meta
-                && let Some(m) = stored.meta.get(&f.name).filter(|m| m.error.is_some())
+                && let Some(m) = stored
+                    .meta
+                    .get(&f.name)
+                    .filter(|m| m.error.is_some() || f.embed.is_some())
                 && field_access(who, &decl.name, f).reads()
             {
                 meta.insert(f.name.clone(), m.clone());
@@ -252,6 +257,7 @@ mod tests {
             searchable: false,
             description: None,
             label: None,
+            embed: None,
         }
     }
 

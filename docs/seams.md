@@ -194,7 +194,7 @@ state again); it never adds a second one.
 | `put_record(record)` | A record's whole state as of `record.position`: values, per-field meta, flags. The state it supersedes is kept. The engine derives its own indexes, full-text entries and edges from it and the declarations in force at that position. |
 | `put_proposal(proposal, at)` | A proposal's state from `at`, the position of its latest event; earlier states kept. A view at a position inside a multi-event append sees each state from its own event, not from the commit. |
 | `put_membership(…, at)` | Whether a record is in an object set from a position on; earlier membership kept. |
-| `put_output(…, at)` | A seam's recorded output, by seam and input digest, valid from `at`, the position of the event that recorded it. |
+| `put_output(…, at)` | A seam's recorded output, by seam and input digest, valid from `at`, the position of the event that recorded it. A later output for the same seam and input replaces the earlier one from its position on (022, extended: a redeclaration retries a failure). |
 | `mark_applied(id, at)` | Remember an applied event id, so a redelivery is recognised. The first position marked for an id is kept. |
 | `clear` | Delete everything, kept history and the vector index included, for a rebuild; `folded_through` is none afterwards. |
 
@@ -221,7 +221,7 @@ masking are the store's.
 | `proposals(filter)` | Every proposal whose latest state at the position matches `filter.state` and `filter.type` (a `call`'s type is its verb's `on` type in force at the position), newest first — by the position of that latest state, descending, then by id — and at most `filter.limit`. `order_by`, `cursor` and the read position in the filter are the store's and the engine ignores them: the store applies the caller's `order_by` to the engine's answer, and refuses as `Invalid` an `order_by` naming a member a proposal does not have. |
 | `is_member(set, type, key)` | Whether the record is in the object set at the position; false if never put. |
 | `applied(id)` | The position `id` was applied at, if that is at or before the view's position. |
-| `output(seam, input)` | The recorded output valid at the position, if any. |
+| `output(seam, input)` | The recorded output valid at the position, if any: the latest recorded for that seam and input at or before it. |
 
 **`scan`.** A record qualifies when all of these hold:
 
@@ -401,7 +401,10 @@ function (`docs/decisions/022-functions-are-declarations.md`, extended):
   `{ "function", "inputs", "config" }` (`docs/log-format.md` §2.5).
 - It never sends one input to a backing twice: a recorded output is
   read back for every later call with the same input, failures
-  included.
+  included. The one exception is deliberate: declaring the function, or
+  a type whose fields it computes, again calls once more for an input
+  whose recorded output is a failure. The later output holds
+  (`docs/decisions/022-functions-are-declarations.md`, extended).
 - A failure (an error, a timeout, or an output that is not a value of
   the field's type) clears the field, and the field's metadata carries
   the reason as `error`. A cleared field without `error` is one whose
@@ -480,18 +483,72 @@ environment.
 `model()`, `dimensions()`, `embed(texts) -> vectors`, one vector per
 text, in order.
 
-The store calls the backend for one thing: a hybrid `search` without a
-caller's vector embeds its query text through the bound backend and
-ranks over the result. That is a read, and nothing is recorded. A
-backend that answers other than one vector for the one text makes the
-search `Unavailable`, and so does a backend that cannot be reached or
-fails, whatever error it answers: the lexical fallback is for an absent backend, never a failing
-one, so the same query never ranks differently by the network's weather.
-A vector search, and a hybrid search that brings its own vector, never
-call the backend. Vectors stored in records come from callers. Embedding
-a field's value when it is written is planned (lakelands#76); each such
-vector is then recorded as `output_recorded`, with the model as its
-procedure, and read back on replay.
+The store calls the backend for two things.
+
+**A hybrid `search` without a caller's vector** embeds its query text
+through the bound backend and ranks over the result. That is a read,
+and nothing is recorded. A backend that answers other than one vector
+for the one text makes the search `Unavailable`, and so does a backend
+that cannot be reached or fails, whatever error it answers. The lexical
+fallback is for an absent backend, never a failing one, so the same
+query never ranks differently by the network's weather. A search over a
+field declared with `embed` whose model or dimensions are not the bound
+backend's is refused as `Unbound`, naming both: that is a configuration to
+fix, not weather. A vector search, and a hybrid search that brings its
+own vector, never call the backend.
+
+**A field declared with `embed`** is the embedding of text fields of its
+record (`docs/decisions/022-functions-are-declarations.md`, extended):
+
+```yaml
+- name: summary_vec
+  type: { kind: vector, dimensions: 1536 }
+  authority: derived
+  embed:
+    from: [title, summary]
+    model: text-embedding-3-small
+```
+
+- The field is a `vector` with `dimensions`, of authority `derived`,
+  with neither a `derived` expression nor a `function`. `from` names one
+  or more `text` fields of the same type, not the field itself, each
+  once. `depends_on` is implied by `from` and is not written beside it.
+- `from` names a `sensitive` field only if the embedding field is
+  `sensitive` too. A vector gives its text away to whoever can read it,
+  and the text is sent to the operator's endpoint in any case.
+- It is declared only where the bound backend names the model and
+  answers the field's `dimensions`; otherwise the declaration is refused
+  as `Unbound`, naming what it needs. A due embedding whose backend is
+  gone, or names another model or other dimensions, when the call would
+  be made is not made; the field waits. A retried embedding waits the
+  same way: it reads as waiting (no value, no metadata) though the
+  log's latest output for its text is still the failure.
+- The text is the `from` fields' values, in declared order, joined with
+  one blank line; a field without a value is left out. With no text,
+  the field is cleared and keeps its metadata without an `error`
+  ("nothing to embed"), and nothing is called. A field waiting for its
+  vector has neither a value nor metadata.
+- Each vector is recorded as `output_recorded` under the seam
+  `embed:<model>`, keyed by the digest of `{"texts": [text]}`
+  (`docs/log-format.md` §2.5), with the model as the procedure's name
+  and the type's version that declared the `embed` as its version.
+  The field's `procedure_version` is the type's version when the vector
+  was produced. A later declaration of the type that leaves the vector's
+  text and model as they are rewrites no record, so the metadata keeps
+  that version. One
+  text is embedded once per model in a lake; a replay, and every later
+  record with the same text, read the recorded vector.
+- A change to `from` or `model` is a redeclaration of the type. It makes
+  the field due on every live record, as adding the field does.
+- A failure is recorded as `{"error": …}` and clears the field with its
+  reason. A redeclaration retries it.
+- **At most 64 texts of one model and dimensions go in one request**
+  (the store's `EMBED_BATCH`).
+  The store never holds more than one batch of vectors at a time,
+  however many records a backfill makes due, so its memory per drain
+  stays bounded. The client splits a batch further by its own
+  `max_batch`. A request that fails records a failure for each text it
+  carried.
 
 There is no default backend: without one, `search` ranks lexically and
 over vectors callers supply, and says in its answer which ranking it

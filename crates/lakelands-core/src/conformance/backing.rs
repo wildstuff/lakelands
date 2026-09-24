@@ -17,11 +17,13 @@
 //!
 //! The suite's embedding backend, [`embedder`], is bound in the lakes of
 //! the checks that ask for it. Its model is [`EMBED_MODEL`], its vectors
-//! have two dimensions, and every text becomes `(1, 0)`, except that a
-//! text starting with [`UNREACHABLE`] fails the whole call. It fails with
-//! a refusal, not `Unavailable`: whatever a backend answers as a failure,
-//! the store makes the search unavailable. It counts its calls
-//! ([`embed_calls`]).
+//! have two dimensions, and every text becomes `(1, 0)`. A call fails
+//! when one of its texts starts with [`UNREACHABLE`], or was unplugged
+//! ([`unplug_text`], until [`plug_text`]). It fails with a refusal, not
+//! `Unavailable`: whatever a backend answers as a failure, the store makes
+//! a search unavailable and records a failure for each text. It counts its
+//! calls ([`embed_calls`]) and how often each text was sent
+//! ([`embedded`]); a check uses texts of its own.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -106,8 +108,15 @@ pub const EMBED_MODEL: &str = "conformance-embed";
 /// A text the suite's embedding backend fails on.
 pub const UNREACHABLE: &str = "unreachable";
 
-fn embeds() -> &'static Mutex<usize> {
-    static EMBEDS: OnceLock<Mutex<usize>> = OnceLock::new();
+#[derive(Default)]
+struct Embeds {
+    calls: usize,
+    texts: BTreeMap<String, usize>,
+    unplugged: BTreeSet<String>,
+}
+
+fn embeds() -> &'static Mutex<Embeds> {
+    static EMBEDS: OnceLock<Mutex<Embeds>> = OnceLock::new();
     EMBEDS.get_or_init(Mutex::default)
 }
 
@@ -125,8 +134,15 @@ impl EmbedBackend for Embedder {
     }
 
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        *embeds().lock().unwrap_or_else(|p| p.into_inner()) += 1;
-        if texts.iter().any(|t| t.starts_with(UNREACHABLE)) {
+        let mut e = embeds().lock().unwrap_or_else(|p| p.into_inner());
+        e.calls += 1;
+        for t in texts {
+            *e.texts.entry(t.clone()).or_default() += 1;
+        }
+        if texts
+            .iter()
+            .any(|t| t.starts_with(UNREACHABLE) || e.unplugged.contains(t))
+        {
             return Err(Error::Refused {
                 field: None,
                 reason: lakelands_api::Refusal::Invalid {
@@ -147,5 +163,34 @@ pub fn embedder() -> Arc<dyn EmbedBackend> {
 /// process. The suite runs its checks one at a time, so a check reads
 /// its own calls as the difference.
 pub fn embed_calls() -> usize {
-    *embeds().lock().unwrap_or_else(|p| p.into_inner())
+    embeds().lock().unwrap_or_else(|p| p.into_inner()).calls
+}
+
+/// How many times a text was sent to the suite's embedding backend.
+pub fn embedded(text: &str) -> usize {
+    embeds()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .texts
+        .get(text)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// Make every later call carrying this text fail.
+pub fn unplug_text(text: &str) {
+    embeds()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .unplugged
+        .insert(text.to_owned());
+}
+
+/// Undo [`unplug_text`].
+pub fn plug_text(text: &str) {
+    embeds()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .unplugged
+        .remove(text);
 }

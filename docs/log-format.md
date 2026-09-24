@@ -318,9 +318,32 @@ has the canonical bytes
 and `input` is
 `a4702edebf8e4f34b65be7b55b963f930ac4e6f13d0b9a8773ca942814bc77aa`.
 
+An embedding's `texts` hold one text: the `from` fields' values in
+declared order, joined with one blank line, empty ones left out. The
+store may send several texts in one request, but each vector is recorded
+on its own, with the digest of its own one-text call; how calls were
+batched never reaches the log. For example, `title` "Harbour crane", an
+empty `subtitle` and `summary` "A crane on the quay." make the call with
+the canonical bytes
+
+```text
+{"texts":["Harbour crane\n\nA crane on the quay."]}
+```
+
+and `input` is
+`6ff3bba9eed9f7899ca52fb42794fb32c315850b3bc9470dab44481773826ed0`.
+
 A seam that failed is recorded with the output `{"error": "<why>"}`,
 an object whose one member is `error`, a string. A replay reads it like
-any other output: the call is not made again.
+any other output: the call is not made again. A request that carried
+several texts and failed records a failure for each of them.
+
+The log may hold two outputs for one `seam` + `input`: a settle forced
+by a declaration calls again for an input whose recorded output is a
+failure (`docs/decisions/022-functions-are-declarations.md`, extended).
+The later output holds. The fold, and a projection's recorded outputs,
+answer the latest output recorded for a call from its position on, and
+the earlier one before it.
 
 `output` is written in the JSON form of §5. When `field` names the field
 the output fills, it is that field's kind's form: an embedding is a

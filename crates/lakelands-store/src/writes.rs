@@ -1368,6 +1368,39 @@ impl Call<'_> {
                 ),
             });
         }
+        if let Declaration::Type(t) = d {
+            self.check_embeddings(t)?;
+        }
+        Ok(())
+    }
+
+    /// A type's embeddings are declared only where the bound embedding
+    /// backend names their model and makes vectors of their dimensions.
+    fn check_embeddings(&self, t: &TypeDecl) -> Result<()> {
+        for f in &t.fields {
+            let Some(e) = &f.embed else {
+                continue;
+            };
+            let dimensions = f.ty.dimensions.unwrap_or(0);
+            let bound = self.lake.seams.embed.as_ref();
+            if bound.is_some_and(|b| b.model() == e.model && b.dimensions() == dimensions) {
+                continue;
+            }
+            let found = match bound {
+                None => "none is bound".to_owned(),
+                Some(b) => format!(
+                    "the bound one is `{}` with {} dimensions",
+                    b.model(),
+                    b.dimensions()
+                ),
+            };
+            return Err(Error::Unbound {
+                seam: format!(
+                    "the embedding model `{}` with {dimensions} dimensions, for `{}.{}` ({found})",
+                    e.model, t.name, f.name
+                ),
+            });
+        }
         Ok(())
     }
 
@@ -1631,6 +1664,7 @@ impl Call<'_> {
                 },
             });
         }
+        self.check_embeddings(&m.to)?;
         let schema_hash = shape::schema_hash(&m.to).map_err(|e| invalid(e.to_string()))?;
         let version = w.ontology.next_version(&Declaration::Type(m.to.clone()));
         let now = self.lake.clock(&mut w);

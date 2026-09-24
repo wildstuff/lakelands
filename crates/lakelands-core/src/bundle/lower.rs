@@ -10,8 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{
-    Assignment, FieldDecl, FieldType, Measure, RelationDecl, StorageKind, TriggerDecl, TypeDecl,
-    ValueTypeDecl, VerbDecl, VerbEffect, ViewDecl,
+    Assignment, EmbedDecl, FieldDecl, FieldType, Measure, RelationDecl, StorageKind, TriggerDecl,
+    TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, ViewDecl,
 };
 use lakelands_api::write::{FunctionDecl, ObjectSetDecl};
 use lakelands_api::{FieldName, RelationName, TriggerName, TypeName, ValueTypeName, VerbName};
@@ -150,6 +150,7 @@ impl<'a> Lower<'a> {
                     searchable: false,
                     description: None,
                     label: None,
+                    embed: None,
                 };
             }
             StrOr::Map(body) => body,
@@ -157,6 +158,10 @@ impl<'a> Lower<'a> {
         let ty = self.field_type(&at, body.ty);
         let derived = self.opt_cond(&format!("{at}, `derived`"), body.derived);
         let depends_on = self.names("field", body.depends_on.0);
+        let embed = body.embed.map(|e| EmbedDecl {
+            from: self.names("field", e.from.0),
+            model: e.model,
+        });
         FieldDecl {
             name: FieldName::new(name),
             ty,
@@ -170,6 +175,7 @@ impl<'a> Lower<'a> {
             searchable: body.searchable,
             description: body.description,
             label: body.label,
+            embed,
         }
     }
 

@@ -72,6 +72,7 @@ fn field(name: &str, kind: StorageKind) -> FieldDecl {
         searchable: false,
         description: None,
         label: None,
+        embed: None,
     }
 }
 
@@ -1667,4 +1668,368 @@ async fn numbers_and_vectors_read_in_their_one_json_form_live_and_after_a_rebuil
     assert_eq!((&live["n"], &live["v"]), (&json!(2), &json!([0, 1])));
     store.rebuild().await.unwrap();
     assert_eq!(read().await, live);
+}
+
+/// An embedding backend that keeps how many texts each call carried, and
+/// fails every call when told to.
+struct Counting {
+    model: &'static str,
+    dimensions: u32,
+    fail: bool,
+    calls: std::sync::Mutex<Vec<usize>>,
+}
+
+impl Counting {
+    fn new(model: &'static str, fail: bool) -> Arc<Counting> {
+        Counting::sized(model, 2, fail)
+    }
+
+    fn sized(model: &'static str, dimensions: u32, fail: bool) -> Arc<Counting> {
+        Arc::new(Counting {
+            model,
+            dimensions,
+            fail,
+            calls: Default::default(),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl lakelands_api::seam::EmbedBackend for Counting {
+    fn model(&self) -> &str {
+        self.model
+    }
+    fn dimensions(&self) -> u32 {
+        self.dimensions
+    }
+    async fn embed(&self, texts: &[String]) -> lakelands_api::Result<Vec<Vec<f32>>> {
+        self.calls.lock().unwrap().push(texts.len());
+        if self.fail {
+            return Err(Error::Unavailable {
+                message: "the endpoint timed out".into(),
+            });
+        }
+        Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect())
+    }
+}
+
+async fn open_with(lake: &str, embed: Arc<Counting>, mode: OpenMode) -> Arc<dyn LakeStore> {
+    lakelands_store::open(
+        Location::memory(lake),
+        Seams {
+            embed: Some(embed),
+            ..seams()
+        },
+        mode,
+    )
+    .await
+    .unwrap()
+}
+
+fn embedding(model: &str) -> FieldDecl {
+    let mut v = field("vec", StorageKind::Vector);
+    v.ty.dimensions = Some(2);
+    v.authority = Authority::Derived;
+    v.embed = Some(lakelands_api::ontology::EmbedDecl {
+        from: vec!["body".into()],
+        model: model.into(),
+    });
+    v
+}
+
+/// Seventy records with sixty-nine distinct texts, then an embedding
+/// declared on their type: the backfill sends each distinct text once, at
+/// most `EMBED_BATCH` to a request, and fills every record.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_backfill_sends_each_distinct_text_once_in_batches_of_at_most_sixty_four() {
+    let lake = name();
+    let backend = Counting::new("m", false);
+    let store = open_with(&lake, backend.clone(), OpenMode::Create).await;
+    let cat = store.catalog(WriteContext::default());
+    let o = owner(&lake);
+    cat.declare(
+        &o,
+        Declaration::Type(ty("doc", vec![field("body", StorageKind::Text)])),
+    )
+    .await
+    .unwrap();
+    for i in 0..70 {
+        let text = format!("text {}", i.min(68));
+        cat.upsert(
+            &o,
+            &"doc".into(),
+            &format!("d{i}").as_str().into(),
+            patch(json!({ "body": text })),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    }
+    cat.add_field(&o, &"doc".into(), embedding("m"))
+        .await
+        .unwrap();
+    assert_eq!(*backend.calls.lock().unwrap(), [64, 5]);
+    for i in [0, 63, 68, 69] {
+        let r = cat
+            .get(&o, &"doc".into(), get(&format!("d{i}")))
+            .await
+            .unwrap()
+            .data;
+        assert!(r.fields.contains_key("vec"), "d{i}: {r:?}");
+    }
+}
+
+/// A request that fails records a failure for each text it carried.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_request_records_a_failure_for_each_text() {
+    let lake = name();
+    let backend = Counting::new("m", true);
+    let store = open_with(&lake, backend.clone(), OpenMode::Create).await;
+    let cat = store.catalog(WriteContext::default());
+    let o = owner(&lake);
+    cat.declare(
+        &o,
+        Declaration::Type(ty("doc", vec![field("body", StorageKind::Text)])),
+    )
+    .await
+    .unwrap();
+    for (k, text) in [("a", "one"), ("b", "two")] {
+        cat.upsert(
+            &o,
+            &"doc".into(),
+            &k.into(),
+            patch(json!({ "body": text })),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    }
+    cat.add_field(&o, &"doc".into(), embedding("m"))
+        .await
+        .unwrap();
+    assert_eq!(*backend.calls.lock().unwrap(), [2]);
+    for k in ["a", "b"] {
+        let r = cat.get(&o, &"doc".into(), get(k)).await.unwrap().data;
+        let why = r.meta.get("vec").and_then(|m| m.error.clone());
+        assert!(
+            !r.fields.contains_key("vec") && why.as_deref() == Some("the endpoint timed out"),
+            "{k}: {r:?}"
+        );
+    }
+}
+
+/// A lake whose embedding was declared with one model, opened again with
+/// a backend of another: a hybrid search over the field is `unbound`,
+/// naming both models, and a due embedding waits instead of being made.
+#[tokio::test(flavor = "multi_thread")]
+async fn another_model_bound_later_is_unbound_for_search_and_makes_no_embedding() {
+    let lake = name();
+    let first = open_with(&lake, Counting::new("m", false), OpenMode::Create).await;
+    let cat = first.catalog(WriteContext::default());
+    let o = owner(&lake);
+    let mut body = field("body", StorageKind::Text);
+    body.searchable = true;
+    cat.declare(&o, Declaration::Type(ty("doc", vec![body, embedding("m")])))
+        .await
+        .unwrap();
+    first.close().await.unwrap();
+
+    let other = Counting::new("n", false);
+    let store = open_with(&lake, other.clone(), OpenMode::Write).await;
+    let cat = store.catalog(WriteContext::default());
+    cat.upsert(
+        &o,
+        &"doc".into(),
+        &"d".into(),
+        patch(json!({ "body": "apple" })),
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    let r = cat.get(&o, &"doc".into(), get("d")).await.unwrap().data;
+    assert!(!r.fields.contains_key("vec"), "{r:?}");
+    assert!(other.calls.lock().unwrap().is_empty());
+    let got = cat
+        .search(
+            &o,
+            Search {
+                ty: "doc".into(),
+                mode: SearchMode::Hybrid {
+                    text: "apple".into(),
+                    field: "vec".into(),
+                    vector: None,
+                },
+                k: 5,
+                cursor: None,
+                filter: None,
+                with_meta: false,
+                at: ReadAt::default(),
+            },
+        )
+        .await;
+    match got {
+        Err(Error::Unbound { seam }) => {
+            assert!(seam.contains("`m`") && seam.contains("`n`"), "{seam}");
+        }
+        other => panic!("expected unbound, got {other:?}"),
+    }
+    store.close().await.unwrap();
+
+    // The same model making vectors of other dimensions: unbound too.
+    let wider = Counting::sized("m", 3, false);
+    let store = open_with(&lake, wider.clone(), OpenMode::Write).await;
+    let cat = store.catalog(WriteContext::default());
+    let got = cat
+        .search(
+            &o,
+            Search {
+                ty: "doc".into(),
+                mode: SearchMode::Hybrid {
+                    text: "apple".into(),
+                    field: "vec".into(),
+                    vector: None,
+                },
+                k: 5,
+                cursor: None,
+                filter: None,
+                with_meta: false,
+                at: ReadAt::default(),
+            },
+        )
+        .await;
+    assert!(
+        matches!(&got, Err(Error::Unbound { seam }) if seam.contains("2 dimensions") && seam.contains("with 3")),
+        "{got:?}"
+    );
+    assert!(wider.calls.lock().unwrap().is_empty());
+}
+
+/// A redeclaration that touches nothing an embedding reads rewrites no
+/// record: the vector, its position and the version in its metadata stay
+/// those that produced it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_redeclaration_touching_nothing_rewrites_no_embedded_record() {
+    let lake = name();
+    let backend = Counting::new("m", false);
+    let store = open_with(&lake, backend.clone(), OpenMode::Create).await;
+    let cat = store.catalog(WriteContext::default());
+    let o = owner(&lake);
+    let decl = ty(
+        "doc",
+        vec![field("body", StorageKind::Text), embedding("m")],
+    );
+    cat.declare(&o, Declaration::Type(decl.clone()))
+        .await
+        .unwrap();
+    cat.upsert(
+        &o,
+        &"doc".into(),
+        &"d".into(),
+        patch(json!({ "body": "apple" })),
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    let before = cat.get(&o, &"doc".into(), get("d")).await.unwrap().data;
+    let mut described = decl;
+    described.description = Some("Documents.".into());
+    cat.declare(&o, Declaration::Type(described)).await.unwrap();
+    let after = cat.get(&o, &"doc".into(), get("d")).await.unwrap().data;
+    assert_eq!(after.fields, before.fields);
+    assert_eq!(after.meta.get("vec"), before.meta.get("vec"));
+    assert_eq!(
+        before.meta["vec"].procedure_version.as_deref(),
+        Some("1"),
+        "the version that declared the embedding"
+    );
+    assert_eq!(*backend.calls.lock().unwrap(), [1]);
+    // Describe shows what the vector is made from, and with which model.
+    let d = cat
+        .describe_type(&o, &"doc".into(), ReadAt::default())
+        .await
+        .unwrap()
+        .data;
+    let vec = d.fields.iter().find(|f| f.name.as_str() == "vec").unwrap();
+    let embed = vec
+        .embed
+        .as_ref()
+        .expect("an embedding describes its source");
+    assert_eq!((embed.from.len(), embed.model.as_str()), (1, "m"));
+}
+
+fn get(key: &str) -> Get {
+    Get {
+        key: key.into(),
+        with_meta: true,
+        at: ReadAt::default(),
+    }
+}
+
+/// An embedding is a derived vector made from other text fields of its
+/// type, sensitive where any of them is; anything else is refused as
+/// invalid, naming the field.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_embedding_declared_wrongly_is_refused_naming_the_field() {
+    let lake = name();
+    let store = open_with(&lake, Counting::new("m", false), OpenMode::Create).await;
+    let cat = store.catalog(WriteContext::default());
+    let o = owner(&lake);
+    let with = |from: &[&str], edit: fn(&mut FieldDecl)| {
+        let mut v = embedding("m");
+        v.embed.as_mut().unwrap().from = from.iter().map(|f| (*f).into()).collect();
+        edit(&mut v);
+        let mut secret = field("secret", StorageKind::Text);
+        secret.sensitive = true;
+        ty(
+            "doc",
+            vec![
+                field("body", StorageKind::Text),
+                field("n", StorageKind::Number),
+                secret,
+                v,
+            ],
+        )
+    };
+    let cases: Vec<(&str, TypeDecl)> = vec![
+        ("not text", with(&["n"], |_| {})),
+        ("not one of its fields", with(&["nowhere"], |_| {})),
+        ("from itself", with(&["vec"], |_| {})),
+        ("twice", with(&["body", "body"], |_| {})),
+        ("names the fields", with(&[], |_| {})),
+        ("sensitive", with(&["secret"], |_| {})),
+        (
+            "authority",
+            with(&["body"], |v| v.authority = Authority::Authored),
+        ),
+        (
+            "`depends_on`",
+            with(&["body"], |v| v.depends_on = vec!["body".into()]),
+        ),
+        (
+            "only a vector",
+            with(&["body"], |v| {
+                v.ty = FieldType::kind(StorageKind::Text);
+            }),
+        ),
+        (
+            "only one",
+            with(&["body"], |v| v.derived = Some(Condition::from("body"))),
+        ),
+    ];
+    for (why, decl) in cases {
+        let got = cat.declare(&o, Declaration::Type(decl)).await;
+        match got {
+            Err(Error::Refused {
+                field: Some(f),
+                reason: Refusal::Invalid { message },
+            }) => {
+                assert_eq!(f.as_str(), "vec", "{why}: {message}");
+                assert!(message.contains(why), "{why}: {message}");
+            }
+            other => panic!("{why}: expected invalid, got {other:?}"),
+        }
+    }
+    // Sensitive where its source is: accepted.
+    let ok = with(&["secret"], |v| v.sensitive = true);
+    cat.declare(&o, Declaration::Type(ok)).await.unwrap();
 }

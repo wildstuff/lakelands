@@ -373,11 +373,19 @@ impl Lake {
                 version,
             } => {
                 // What computes a type's derived fields: its derived
-                // expressions and the functions its fields name.
+                // expressions, the functions its fields name and what its
+                // embeddings are made from.
                 let computes = |t: &lakelands_api::ontology::TypeDecl| -> Vec<_> {
                     t.fields
                         .iter()
-                        .map(|f| (f.name.clone(), f.derived.clone(), f.function.clone()))
+                        .map(|f| {
+                            (
+                                f.name.clone(),
+                                f.derived.clone(),
+                                f.function.clone(),
+                                f.embed.clone(),
+                            )
+                        })
                         .collect()
                 };
                 let rederive: Vec<TypeName> = match declaration {
@@ -393,8 +401,25 @@ impl Lake {
                         })
                         .map(|t| t.decl.name.clone())
                         .collect(),
+                    // A type whose fields are computed outside the lake is
+                    // settled again whenever it is declared again: that is
+                    // how an operator retries a recorded failure (022,
+                    // extended).
                     Declaration::Type(t) => match w.ontology.types.get(&t.name) {
-                        Some(old) if computes(&old.decl) != computes(t) => vec![t.name.clone()],
+                        Some(old)
+                            if computes(&old.decl) != computes(t)
+                                || t.fields.iter().any(|f| {
+                                    f.embed.is_some()
+                                        || f.function
+                                            .as_deref()
+                                            .and_then(|n| w.ontology.functions.get(n))
+                                            .is_some_and(|func| {
+                                                crate::backed::is_backed(&func.decl)
+                                            })
+                                }) =>
+                        {
+                            vec![t.name.clone()]
+                        }
                         _ => vec![],
                     },
                     _ => vec![],

@@ -190,6 +190,97 @@ pub struct FieldDecl {
     /// A short label. Not part of the schema hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// For a `derived` vector: the text fields it is the embedding of, and
+    /// the model that makes it. Not part of the schema hash: it says how
+    /// the value is computed, not what the field is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed: Option<EmbedDecl>,
+}
+
+/// What a vector field is the embedding of
+/// (`docs/decisions/022-functions-are-declarations.md`, extended).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmbedDecl {
+    /// The text fields of the same record whose values, joined in this
+    /// order with one blank line, are embedded.
+    pub from: Vec<FieldName>,
+    /// The model the vectors come from; the bound embedding backend must
+    /// name it.
+    pub model: String,
+}
+
+impl TypeDecl {
+    /// The first of this type's embeddings declared against the rules,
+    /// with why: an embedding is a `derived` vector with dimensions,
+    /// neither derived from an expression nor computed by a function,
+    /// with no `depends_on` beside its `from`; `from` names, each once,
+    /// text fields of the type other than itself, sensitive only where
+    /// the embedding is; and it names its model. `None` when every
+    /// embedding keeps them. Every door checks this before it asks
+    /// whether a backend is bound.
+    pub fn embedding_problem(&self) -> Option<(FieldName, String)> {
+        self.fields.iter().find_map(|f| {
+            let why = embedding_problem(self, f)?;
+            Some((
+                f.name.clone(),
+                format!("type `{}`, field `{}`: {why}", self.name, f.name),
+            ))
+        })
+    }
+}
+
+fn embedding_problem(t: &TypeDecl, f: &FieldDecl) -> Option<String> {
+    let e = f.embed.as_ref()?;
+    if f.ty.kind != StorageKind::Vector || f.ty.dimensions.is_none() {
+        return Some("only a vector with dimensions is the embedding of text".into());
+    }
+    if f.derived.is_some() || f.function.is_some() {
+        return Some(
+            "a field is an embedding, derived from an expression or computed by a function, \
+             only one"
+                .into(),
+        );
+    }
+    if f.authority != Authority::Derived {
+        return Some("an embedding has the authority `derived`".into());
+    }
+    if !f.depends_on.is_empty() {
+        return Some(
+            "an embedding depends on its `from` fields; `depends_on` is not written beside it"
+                .into(),
+        );
+    }
+    if e.from.is_empty() {
+        return Some("an embedding names the fields it is made `from`".into());
+    }
+    if e.model.trim().is_empty() {
+        return Some("an embedding names its model".into());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for name in &e.from {
+        if !seen.insert(name) {
+            return Some(format!("it names `{name}` in `from` twice"));
+        }
+        if name == &f.name {
+            return Some("it cannot be made from itself".into());
+        }
+        let Some(source) = t.fields.iter().find(|d| &d.name == name) else {
+            return Some(format!(
+                "it is made from `{name}`, which is not one of its fields"
+            ));
+        };
+        if source.ty.kind != StorageKind::Text {
+            return Some(format!("it is made from `{name}`, which is not text"));
+        }
+        // A vector gives its text away to whoever may read it.
+        if source.sensitive && !f.sensitive {
+            return Some(format!(
+                "it is made from the sensitive field `{name}` and is not sensitive itself"
+            ));
+        }
+    }
+    None
 }
 
 /// How many records a relation links on each side.

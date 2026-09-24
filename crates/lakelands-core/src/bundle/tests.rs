@@ -54,6 +54,7 @@ fn field(name: &str, ty: FieldType) -> FieldDecl {
         searchable: false,
         description: None,
         label: None,
+        embed: None,
     }
 }
 
@@ -422,6 +423,44 @@ fields:
             ..field("body", kind(StorageKind::Text))
         }
     );
+}
+
+#[test]
+fn an_embedding_arrives_with_its_fields_and_model_and_a_bare_field_is_one_source() {
+    let bundle = load(&[(
+        "types/memo.yaml",
+        r#"
+name: memo
+fields:
+  title: text
+  body: text
+  both:
+    type: vector(2)
+    authority: derived
+    embed: { from: [title, body], model: tiny }
+  one:
+    type: vector(2)
+    authority: derived
+    embed: { from: body, model: tiny }
+"#,
+    )])
+    .expect("loads");
+    let Declaration::Type(t) = &bundle.declarations[0] else {
+        panic!("a type")
+    };
+    let embed = |from: &[&str]| {
+        Some(lakelands_api::ontology::EmbedDecl {
+            from: from.iter().map(|f| FieldName::new(*f)).collect(),
+            model: "tiny".into(),
+        })
+    };
+    assert_eq!(t.fields[2].embed, embed(&["title", "body"]));
+    assert_eq!(t.fields[3].embed, embed(&["body"]));
+    let unknown = refused(&[(
+        "types/memo.yaml",
+        "name: memo\nfields:\n  v:\n    type: vector(2)\n    embed: { from: body, model: m, dims: 2 }\n",
+    )]);
+    assert!(!unknown.is_empty());
 }
 
 #[test]

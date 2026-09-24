@@ -149,6 +149,14 @@ interface types {
         searchable: bool,
         description: option<string>,
         label: option<string>,
+        embed: option<embed-decl>,
+    }
+
+    /// What a vector field is the embedding of: text fields of the same
+    /// record, joined in order with one blank line, and the model.
+    record embed-decl {
+        %from: list<field-name>,
+        model: string,
     }
 
     enum cardinality { one-to-one, one-to-many, many-to-one, many-to-many }
@@ -634,6 +642,7 @@ interface types {
         on-input-change: on-input-change,
         filterable: bool,
         description: option<string>,
+        embed: option<embed-decl>,
     }
 
     record type-description {

@@ -239,6 +239,27 @@ fn identity_version(st: &State, d: &Declaration) -> (Option<String>, u32) {
     }
 }
 
+/// A type's embeddings: refused as invalid when declared against the
+/// rules, as the store does first, and otherwise as unbound, since the
+/// mock binds no embedding backend.
+fn embeddings(t: &lakelands_api::ontology::TypeDecl) -> Result<()> {
+    if let Some((field, message)) = t.embedding_problem() {
+        return Err(on(&field, Refusal::Invalid { message }));
+    }
+    if let Some((f, e)) = t.fields.iter().find_map(|f| Some((f, f.embed.as_ref()?))) {
+        return Err(Error::Unbound {
+            seam: format!(
+                "the embedding model `{}` with {} dimensions, for `{}.{}` (none is bound)",
+                e.model,
+                f.ty.dimensions.unwrap_or(0),
+                t.name,
+                f.name
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Check one declaration against the lake as `st` holds it: reserved
 /// names, a revision that would reshape records, every type it refers to
 /// declared (or itself), and every name able to become a tool.
@@ -247,6 +268,9 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
     let mut verbs: Vec<VerbName> = st.verbs.keys().cloned().collect();
     let known =
         |ty: &TypeName, own: Option<&TypeName>| own == Some(ty) || st.types.contains_key(ty);
+    if let Declaration::Type(t) = d {
+        embeddings(t)?;
+    }
     match d {
         // The mock binds no function backing; `expr` is computed inside.
         Declaration::Function(f) if f.backing != "expr" => {
@@ -1823,6 +1847,7 @@ impl Catalog for MockCatalog {
         }
         let mut decl = t.decl.clone();
         decl.fields.push(f);
+        embeddings(&decl)?;
         let mut batch = Batch::at(&log);
         let position = batch.push(Draft::new(
             who,
