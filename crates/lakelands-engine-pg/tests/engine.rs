@@ -326,3 +326,31 @@ fn the_engine_answers_to_its_name() {
     drop(engine);
     common::drop_schema(&url, &schema);
 }
+
+/// A location that names no schema puts the lake in `lakelands_<lake>`,
+/// as the server itself answers.
+#[test]
+fn a_location_without_a_schema_puts_the_lake_in_lakelands_and_its_name() {
+    let Some(url) = common::url_or_skip("the default schema") else {
+        return;
+    };
+    // A lake name under this process's prefix, so a schema left behind by
+    // a failed run is dropped with the others.
+    let lake = format!("test_{}_defaults", std::process::id());
+    let mut location = common::location(&url, &lake, "unused");
+    if let EngineConfig::Postgres { schema, .. } = &mut location.engine {
+        *schema = None;
+    }
+    let engine = PgOpener
+        .open(&location, OpenMode::Create)
+        .expect("a lake opens in its default schema");
+    drop(engine);
+    let expected = format!("lakelands_{lake}");
+    let rows = admin(
+        &url,
+        &format!("SELECT nspname FROM pg_catalog.pg_namespace WHERE nspname = '{expected}'"),
+    );
+    assert_eq!(rows.len(), 1, "the server holds the schema `{expected}`");
+    // Only this test's schema: the other tests' lakes are still open.
+    admin(&url, &format!("DROP SCHEMA \"{expected}\" CASCADE"));
+}

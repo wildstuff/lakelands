@@ -173,6 +173,25 @@
 < lakelands-position: 10
 < {"error":"refused","reason":{"message":"`If-Match: W/\"2\"` names no version","refusal":"invalid"},"todo":"give the record's version as its `ETag` answered it; a weak `W/` one is not taken","what":"`If-Match: W/\"2\"` names no version"}
 
+# A body of another media type is refused before it is read (415).
+> PUT /lakes/finance/types/invoice/records/INV-1
+> authorization: Bearer k-clerk
+> content-type: text/plain
+> {"status":"open"}
+< 415
+< content-type: application/json
+< lakelands-position: 10
+< {"error":"refused","reason":{"message":"send the body as application/json","refusal":"invalid"},"todo":"send the body as JSON","what":"send the body as application/json"}
+
+> POST /lakes/finance/ingest/bank
+> authorization: Bearer k-owner
+> content-type: text/csv
+> {"type":"invoice","key":"INV-9","fields":{"amount":"1.00"}}
+< 415
+< content-type: application/json
+< lakelands-position: 10
+< {"error":"refused","reason":{"message":"ingest takes application/x-ndjson","refusal":"invalid"},"todo":"send one record per line as NDJSON","what":"ingest takes application/x-ndjson"}
+
 # A field the clerk may not write refuses the whole write.
 > PUT /lakes/finance/types/invoice/records/INV-1
 > authorization: Bearer k-clerk

@@ -441,3 +441,124 @@ async fn find_aggregates_on_the_store() {
         task.abort();
     }
 }
+
+/// A JSON body over the server's limit of 4 MiB is refused as too large
+/// (413) before any of it reaches a door, and the lake is unchanged.
+#[tokio::test]
+async fn a_body_over_four_mebibytes_is_413() {
+    let store = rest_lake(Backend::Mock).await;
+    let head = store.head().await.unwrap();
+    let (addr, task) = serve(store.clone()).await;
+    let note = "x".repeat(4 << 20);
+    let body = format!("{{\"note\":\"{note}\"}}");
+    let (status, pinned, answer) = exchange(
+        addr,
+        &[
+            "PUT /lakes/finance/types/invoice/records/INV-1",
+            "authorization: Bearer k-owner",
+            "content-type: application/json",
+            &body,
+        ],
+    )
+    .await;
+    task.abort();
+    assert_eq!(status, "413", "{answer}");
+    let answer: serde_json::Value = serde_json::from_str(&answer).unwrap();
+    assert_eq!(
+        (&answer["error"], &answer["reason"]["refusal"]),
+        (&json!("refused"), &json!("invalid")),
+        "{answer}"
+    );
+    assert!(
+        pinned.contains(&format!("lakelands-position: {}", head.0)),
+        "{pinned:?}"
+    );
+    assert_eq!(store.head().await.unwrap(), head, "nothing was written");
+}
+
+/// A lake the server cannot open answers `unavailable` (503), whatever
+/// the route, and carries no position: there is no log it was read at.
+#[tokio::test]
+async fn a_lake_that_cannot_be_opened_is_503() {
+    let open = Arc::new(
+        |lake: &lakelands_api::LakeId| -> lakelands_api::Result<Arc<dyn LakeStore>> {
+            Err(lakelands_api::Error::Unavailable {
+                message: format!("the lake `{lake}` is down"),
+            })
+        },
+    );
+    let config = HttpConfig {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        allowed_origins: vec![],
+        session_idle_secs: 1800,
+        feed_poll_millis: 20,
+    };
+    let server = serve_http(config, common::resolver(), open).await.unwrap();
+    let addr = server.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let _ = server.run().await;
+    });
+    let (status, pinned, answer) = exchange(
+        addr,
+        &[
+            "GET /lakes/finance/describe",
+            "authorization: Bearer k-owner",
+        ],
+    )
+    .await;
+    task.abort();
+    assert_eq!(status, "503", "{answer}");
+    let answer: serde_json::Value = serde_json::from_str(&answer).unwrap();
+    assert_eq!(answer["error"], json!("unavailable"), "{answer}");
+    assert!(
+        !pinned.iter().any(|h| h.starts_with("lakelands-position:")),
+        "{pinned:?}"
+    );
+}
+
+/// A caught-up feed sends a comment every fifteen seconds, so a proxy
+/// keeps it open, and nothing before that. Slow by nature: it waits for
+/// one keep-alive.
+#[tokio::test]
+async fn a_quiet_feed_sends_a_keep_alive_every_fifteen_seconds() {
+    let store = common::lake_on(Backend::Mock).await;
+    let next = store.head().await.unwrap().0 + 1;
+    let (addr, task) = serve(store).await;
+    let from = format!("GET /lakes/finance/feed?from={next}");
+    let (status, _, events) = Events::open(addr, &[&from, "authorization: Bearer k-owner"]).await;
+    assert_eq!(status, "200");
+    let mut events = events.unwrap();
+    let opened = std::time::Instant::now();
+    let mut seen = String::new();
+    let mut buf = [0u8; 256];
+    while !seen.contains(": keep-alive") {
+        let n = tokio::time::timeout(
+            std::time::Duration::from_secs(25),
+            events.reader.read(&mut buf),
+        )
+        .await
+        .expect("a keep-alive within 25 seconds")
+        .unwrap();
+        assert!(n > 0, "the stream ended: {seen:?}");
+        seen.push_str(&String::from_utf8_lossy(&buf[..n]));
+    }
+    let waited = opened.elapsed().as_secs_f64();
+    task.abort();
+    assert!(
+        (14.0..20.0).contains(&waited),
+        "the first keep-alive came after {waited:.1} seconds; a quiet feed sends one every \
+         fifteen"
+    );
+    assert!(
+        !seen.contains("id: "),
+        "nothing was written, so the feed sent no event: {seen:?}"
+    );
+}
+
+/// The server's configuration: a caught-up feed polls the lake every 250
+/// milliseconds unless the configuration says otherwise.
+#[test]
+fn the_feed_polls_every_250_milliseconds_unless_configured() {
+    let config: HttpConfig = serde_json::from_value(json!({"bind": "127.0.0.1:7700"})).unwrap();
+    assert_eq!(config.feed_poll_millis, 250);
+}
