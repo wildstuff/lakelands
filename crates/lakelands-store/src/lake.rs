@@ -57,6 +57,9 @@ pub struct Writer {
     /// The calls of backed functions the appends made due and
     /// [`crate::backed::settle`] has not taken yet.
     pub due: Vec<Due>,
+    /// A fold failed after its events were in the log: the projection is
+    /// behind the log, and nothing is appended until it has caught up.
+    pub behind: bool,
 }
 
 /// One open lake.
@@ -157,6 +160,7 @@ impl Lake {
                 ontology: Ontology::default(),
                 settings: BTreeMap::new(),
                 due: Vec::new(),
+                behind: false,
             }),
             head: AtomicU64::new(0),
             holds_lease: AtomicBool::new(false),
@@ -208,7 +212,14 @@ impl Lake {
             }
             lake.append(&mut w, drafts)?;
         }
-        lake.publish(&lake.writer());
+        {
+            // A read-only handle keeps the folded position `catch_up`
+            // published; only the writer publishes its tip.
+            let w = lake.writer();
+            if w.lease.is_some() {
+                lake.publish(&w);
+            }
+        }
         Ok(lake)
     }
 
@@ -260,7 +271,15 @@ impl Lake {
         {
             w.last_known_at = e.known_at;
         }
-        self.publish(&w);
+        if w.lease.is_some() {
+            self.publish(&w);
+        } else {
+            // A read-only handle reads what the writer folded: its head is
+            // the projection's position, which it can be read at.
+            self.head
+                .store(folded.map_or(0, |p| p.0), Ordering::Release);
+            self.holds_lease.store(false, Ordering::Release);
+        }
         Ok(())
     }
 
@@ -297,6 +316,12 @@ impl Lake {
                     .into(),
             });
         };
+        // Nothing is appended while the projection is behind the log: a
+        // fold that failed after its events were durable is done again
+        // first, or the append answers its error and appends nothing.
+        if w.behind {
+            self.refold(w)?;
+        }
         let mut events = Vec::with_capacity(drafts.len());
         let mut stored: Vec<CanonicalEvent> = Vec::with_capacity(drafts.len());
         let (mut prev_pos, mut prev_hash) = match &w.tip {
@@ -319,11 +344,13 @@ impl Lake {
         }
         self.engine.append(&lease, &stored)?;
         w.tip = prev_pos.map(|p| (p, prev_hash));
-        self.publish(w);
         if let Some(last) = events.last() {
             w.last_known_at = w.last_known_at.max(last.known_at);
         }
         self.fold_all(w, &events)?;
+        // Published only once the fold has committed: a position `head()`
+        // answers is one a read can be answered at, on every engine.
+        self.publish(w);
         Ok(events)
     }
 
@@ -334,6 +361,7 @@ impl Lake {
         };
         let projection = self.engine.projection();
         projection.begin()?;
+        let due = w.due.len();
         let mut staged: Staged = Staged::default();
         let result = (|| {
             let view = self.engine.view(None)?;
@@ -341,14 +369,42 @@ impl Lake {
                 self.fold(w, view.as_ref(), &mut staged, e)?;
             }
             Ok(())
-        })();
+        })()
+        .and_then(|()| projection.commit(last.position));
         match result {
-            Ok(()) => projection.commit(last.position),
+            Ok(()) => {
+                w.behind = false;
+                Ok(())
+            }
             Err(e) => {
+                // The projection is as it was; so is what the writer read
+                // from it while folding.
                 projection.rollback();
+                w.behind = true;
+                w.due.truncate(due);
+                if let Ok(view) = self.engine.view(None) {
+                    if let Ok(d) = view.declarations() {
+                        w.ontology = Ontology::from_declared(&d);
+                    }
+                    if let Ok(s) = settings_in(view.as_ref()) {
+                        w.settings = s;
+                    }
+                }
                 Err(e)
             }
         }
+    }
+
+    /// Fold the events the log holds past the projection, in one fold
+    /// transaction, and publish the head once they are folded.
+    fn refold(&self, w: &mut Writer) -> Result<()> {
+        let folded = self.engine.projection().folded_through()?;
+        let from = folded.map_or(Position::GENESIS, Position::next);
+        let events = self.read_events(from, None)?;
+        self.fold_all(w, &events)?;
+        w.behind = false;
+        self.publish(w);
+        Ok(())
     }
 
     /// What one event does to the projection.
@@ -683,6 +739,8 @@ impl Lake {
         self.fold_all(&mut w, &events)?;
         // A rebuild reads the recorded outputs; it never calls a backing.
         w.due.clear();
+        // Everything the log holds is folded again: the head is its tip.
+        self.publish(&w);
         Ok(w.tip.as_ref().map_or(Position::GENESIS, |t| t.0))
     }
 
@@ -736,6 +794,10 @@ impl Lake {
         let lease = w.lease.clone().ok_or_else(|| Error::Unavailable {
             message: "this lake is open read-only here".into(),
         })?;
+        // A segment is sealed only over events the projection has folded.
+        if w.behind {
+            self.refold(&mut w)?;
+        }
         let Some((through, hash)) = w.tip.clone() else {
             return Ok(Position::GENESIS);
         };
@@ -762,13 +824,16 @@ impl Lake {
     pub fn close(&self) -> Result<()> {
         let mut w = self.writer();
         if let Some(lease) = w.lease.take() {
-            self.publish(&w);
+            // The head stays the last folded position; only the lease goes.
+            self.holds_lease.store(false, Ordering::Release);
             self.engine.release_lease(&lease)?;
         }
         Ok(())
     }
 
-    /// The last position of the log, as this handle last wrote or read it.
+    /// The last position folded into the projection, as this handle last
+    /// folded it or, opened only to read, found it folded: a position a
+    /// read can be answered at.
     pub fn head(&self) -> Position {
         Position(self.head.load(Ordering::Acquire))
     }

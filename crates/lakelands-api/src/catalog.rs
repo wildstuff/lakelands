@@ -247,7 +247,9 @@ pub trait LakeStore: Send + Sync {
     /// The limits the lake was opened with: its location's.
     fn limits(&self) -> crate::location::Limits;
 
-    /// The position of the last event in the log.
+    /// The last position the projection has folded, which a read can be
+    /// answered at at once: the last event in the log, except while a fold
+    /// that failed has not been done again.
     async fn head(&self) -> Result<Position>;
 
     /// The doors, for callers of this host. Writes through them carry

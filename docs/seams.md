@@ -891,6 +891,16 @@ hold, not what hosts implement:
   `checkpoint`), restriction (`restrict`, `unrestrict`), `age` (above,
   under `SystemVocabulary`), and `purge_source` (below).
 
+`LakeStore::head` answers the last position the projection has folded:
+a position a read can be answered at at once, on every engine. An
+append is durable before it is folded; the store publishes its head
+only once the fold has committed. When a fold fails after its events are
+in the log, the append answers the fold's error, the head stays at the
+last folded position, and nothing more is appended until the projection
+has caught up: the next append first folds what the log holds past the
+projection, or answers that fold's error and appends nothing. A handle
+opened only to read names the position the writer has folded.
+
 `LakeStore::purge_source(source)` retires every live record one source
 brought in, across every type it reached, restricted records and the
 source's link records included, in one append
