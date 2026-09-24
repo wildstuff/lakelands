@@ -62,3 +62,11 @@ event's position and name the function's new version as their
 procedure's; a function-computed value names its function's version
 from its first computation on. The record's version stays, since no
 write touched it.
+
+## Extended: the `expr` backing is the one `FunctionBacking`
+
+In `0.1.0` the `expr` backing is the only implementation of the
+`FunctionBacking` seam: `lakelands_store::ExprBacking`, with the
+expression in the call's `config`. The fold computes a function field
+with the same evaluator in process and never calls a backing, so a
+replay recomputes the field exactly and nothing is recorded.

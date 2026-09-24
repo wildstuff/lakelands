@@ -63,6 +63,39 @@ fn no_record(ty: &TypeName, key: &RecordKey) -> Error {
     }
 }
 
+/// Whether a revision of a type would reshape stored records, so that it
+/// needs `migrate` (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`):
+/// a field removed, or its kind, value type, target or dimensions
+/// changed, or made required; a new field required; the key changed. A
+/// change of meaning, an added optional field or relation, a loosened
+/// requirement is a declaration.
+fn reshapes(
+    old: &lakelands_api::ontology::TypeDecl,
+    new: &lakelands_api::ontology::TypeDecl,
+) -> bool {
+    if old.key != new.key {
+        return true;
+    }
+    let changed = old.fields.iter().any(|o| match field(new, &o.name) {
+        None => true,
+        Some(n) => {
+            n.ty.kind != o.ty.kind
+                || n.ty.value_type != o.ty.value_type
+                || n.ty.target != o.ty.target
+                || n.ty.dimensions != o.ty.dimensions
+                || (n.required && !o.required)
+        }
+    });
+    let required_added = new
+        .fields
+        .iter()
+        .any(|n| n.required && field(old, &n.name).is_none());
+    changed || required_added
+}
+
+/// Whether declaring a type of this name is reserved: a `sys.` type is
+/// declared only by the system. Records of a `sys.` type are written by
+/// whoever the grants allow, like any other.
 fn reserved(name: &str, who: &Principal) -> bool {
     name.starts_with("sys.") && who.kind != PrincipalKind::System
 }
@@ -199,7 +232,7 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
                 return Err(refused(Refusal::Reserved));
             }
             if let Some(old) = st.types.get(&t.name) {
-                if old.schema_hash != value::schema_hash(t) {
+                if reshapes(&old.decl, t) {
                     return Err(invalid(format!(
                         "this declaration reshapes the records of `{}`; change it with `migrate`",
                         t.name
@@ -555,6 +588,99 @@ fn check_references(
     Ok(())
 }
 
+/// One key field's value as a component of a record's key: its string
+/// form, `%` written `%25` and `:` written `%3A`.
+fn key_component(v: &Value) -> Option<String> {
+    let text = match v {
+        Value::String(s) => s.clone(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n.to_string(),
+        _ => return None,
+    };
+    Some(text.replace('%', "%25").replace(':', "%3A"))
+}
+
+/// The key rule (`docs/log-format.md` §2.3): on a create, the key fields a
+/// patch leaves out are read from the key's components; and a key must
+/// agree with the key fields the record then holds.
+fn with_key_fields(
+    t: &DeclaredType,
+    st: &State,
+    who: &Principal,
+    live: Option<&StoredRecord>,
+    key: &RecordKey,
+    patch: &mut Patch,
+    door: Origin,
+) -> Result<()> {
+    let fields = &t.decl.key;
+    if fields.is_empty() {
+        return Ok(());
+    }
+    if live.is_none() && !fields.iter().all(|f| patch.contains_key(f)) {
+        let parts: Vec<String> = key
+            .as_str()
+            .split(':')
+            .map(|c| c.replace("%3A", ":").replace("%25", "%"))
+            .collect();
+        if parts.len() != fields.len() {
+            return Err(invalid(format!(
+                "`{}` is keyed by {} field(s), and the key `{key}` has {} component(s)",
+                t.decl.name,
+                fields.len(),
+                parts.len()
+            )));
+        }
+        for (name, part) in fields.iter().zip(parts) {
+            if patch.contains_key(name) {
+                continue;
+            }
+            let f = field(&t.decl, name).expect("a key names a field");
+            let v = match f.ty.kind {
+                lakelands_api::ontology::StorageKind::Number => part
+                    .parse::<serde_json::Number>()
+                    .map(Value::Number)
+                    .map_err(|_| invalid(format!("the key component `{part}` is not a number")))?,
+                lakelands_api::ontology::StorageKind::Boolean => match part.as_str() {
+                    "true" => Value::Bool(true),
+                    "false" => Value::Bool(false),
+                    _ => {
+                        return Err(invalid(format!(
+                            "the key component `{part}` is not a boolean"
+                        )));
+                    }
+                },
+                _ => Value::String(part),
+            };
+            if !door_writes(door, f.authority) {
+                return Err(on(name, Refusal::WrongDoor));
+            }
+            if !access(who, &t.decl.name, f).writes() {
+                return Err(on(name, Refusal::NotGranted));
+            }
+            if let Some(message) = value::misfit(&f.ty, &v, &st.value_types) {
+                return Err(on(name, Refusal::Constraint { message }));
+            }
+            patch.insert(name.clone(), v);
+        }
+    }
+    let derived: Option<Vec<String>> = fields
+        .iter()
+        .map(|f| {
+            patch
+                .get(f)
+                .or_else(|| live.and_then(|r| r.fields.get(f)))
+                .and_then(key_component)
+        })
+        .collect();
+    match derived.map(|d| d.join(":")) {
+        Some(d) if d != key.as_str() => Err(invalid(format!(
+            "the key `{key}` and the key fields of `{}` (which make `{d}`) disagree",
+            t.decl.name
+        ))),
+        _ => Ok(()),
+    }
+}
+
 /// Refuse a record that would lack a required field its door writes.
 fn check_required(
     t: &DeclaredType,
@@ -608,9 +734,22 @@ fn plan_upsert(
     opts: &WriteOpts,
 ) -> Result<Version> {
     let By { st, who, cause } = *by;
+    if patch.is_empty() {
+        return Err(invalid("nothing to write: the patch carries no field"));
+    }
     let t = check_patch(st, who, ty, &patch, Origin::Authored)?;
     check_references(st, t, &patch, &BTreeMap::new())?;
     let actual = check_version(st, ty, key, opts)?;
+    let mut patch = patch;
+    with_key_fields(
+        t,
+        st,
+        who,
+        st.live(ty, key),
+        key,
+        &mut patch,
+        Origin::Authored,
+    )?;
     check_required(t, st.live(ty, key), &patch, Origin::Authored)?;
     let version = Version(actual.0 + 1);
     let mut d = Draft::new(
@@ -892,15 +1031,26 @@ fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationRepor
 }
 
 /// The content address of one ingested record.
-fn content_id(source: &SourceId, r: &SourceRecord) -> EventId {
+/// An ingested record's id, from what the log format derives it from: its
+/// source, type, key, the record's version before it and its values. When
+/// it was seen is not part of it, so a re-export of the same values is the
+/// same event.
+fn content_id(
+    source: &SourceId,
+    r: &SourceRecord,
+    version_before: Version,
+    fields: &Patch,
+) -> EventId {
     let bytes =
-        serde_json::to_vec(&(source, &r.ty, &r.key, &r.fields, r.seen_at)).unwrap_or_default();
+        serde_json::to_vec(&(source, &r.ty, &r.key, version_before.0, fields)).unwrap_or_default();
     EventId(value::hex(&bytes, 2))
 }
 
 /// The positions and versions an ingest window planned so far.
 struct Window {
     batch: Batch,
+    /// The fields each record holds after what the window planned so far.
+    planned: BTreeMap<(TypeName, RecordKey), BTreeMap<FieldName, Value>>,
     versions: BTreeMap<(TypeName, RecordKey), Version>,
     ids: BTreeSet<EventId>,
     records: u32,
@@ -1737,27 +1887,63 @@ fn plan_window(
 ) -> Result<Window> {
     let mut w = Window {
         batch: Batch::at(log),
+        planned: BTreeMap::new(),
         versions: BTreeMap::new(),
         ids: BTreeSet::new(),
         records: 0,
         duplicates: 0,
     };
     for r in chunk {
+        if r.fields.is_empty() {
+            return Err(invalid("nothing to write: the patch carries no field"));
+        }
         let t = check_patch(st, who, &r.ty, &r.fields, Origin::Source)?;
         // A record earlier in this window counts as there.
         check_references(st, t, &r.fields, &w.versions)?;
-        let id = content_id(source, r);
-        if st.ingested.contains(&id) || !w.ids.insert(id.clone()) {
-            w.duplicates += 1;
-            continue;
-        }
-        check_required(t, st.live(&r.ty, &r.key), &r.fields, Origin::Source)?;
         let slot = (r.ty.clone(), r.key.clone());
         let before = w
             .versions
             .get(&slot)
             .copied()
             .unwrap_or_else(|| st.version(&r.ty, &r.key));
+        let id = content_id(source, r, before, &r.fields);
+        // A record that would change no field is a duplicate too, so a full
+        // re-import of unchanged data appends nothing.
+        let now = w
+            .planned
+            .get(&slot)
+            .cloned()
+            .or_else(|| st.live(&r.ty, &r.key).map(|l| l.fields.clone()));
+        let unchanged = now.as_ref().is_some_and(|fields| {
+            r.fields.iter().all(|(f, v)| match fields.get(f) {
+                Some(stored) => stored == v,
+                None => v.is_null(),
+            })
+        });
+        if unchanged || st.ingested.contains(&id) || !w.ids.insert(id.clone()) {
+            w.duplicates += 1;
+            continue;
+        }
+        let mut fields = r.fields.clone();
+        with_key_fields(
+            t,
+            st,
+            who,
+            st.live(&r.ty, &r.key),
+            &r.key,
+            &mut fields,
+            Origin::Source,
+        )?;
+        check_required(t, st.live(&r.ty, &r.key), &fields, Origin::Source)?;
+        let mut after = now.unwrap_or_default();
+        for (f, v) in &fields {
+            if v.is_null() {
+                after.remove(f);
+            } else {
+                after.insert(f.clone(), v.clone());
+            }
+        }
+        w.planned.insert(slot.clone(), after);
         let version = Version(before.0 + 1);
         w.versions.insert(slot, version);
         let mut d = Draft::new(
@@ -1767,7 +1953,7 @@ fn plan_window(
                 ty: r.ty.clone(),
                 key: r.key.clone(),
                 version,
-                patch: r.fields.clone(),
+                patch: fields,
             },
         );
         d.source = Some(source.clone());

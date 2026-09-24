@@ -1,4 +1,10 @@
-//! The lake and the principals every server test uses.
+//! The lake and the principals every server test uses, on the mock and on
+//! the real store over both engines.
+//!
+//! A refusal's sentence is not part of the contract; its kind and field
+//! are. The transcripts pin what the mock and the store answer alike, and
+//! a test that checks a refusal checks its kind and field, never its
+//! sentence.
 
 #![allow(dead_code)]
 
@@ -11,9 +17,59 @@ use lakelands_mock::MockLake;
 use lakelands_server::resolver::{Entry, StaticResolver};
 use serde_json::json;
 
+/// Where a test's lake is kept: the mock, or the real store on one of
+/// its engines. Every server test runs on each, unchanged: that is how the
+/// mock is proven honest.
+#[derive(Clone, Copy, Debug)]
+pub enum Backend {
+    /// `lakelands-mock`.
+    Mock,
+    /// `lakelands-store` over the in-memory engine.
+    Memory,
+    /// `lakelands-store` over the SQLite engine.
+    Sqlite,
+}
+
+/// Every backend, in the order the tests run them.
+pub const BACKENDS: [Backend; 3] = [Backend::Mock, Backend::Memory, Backend::Sqlite];
+
+/// An empty lake `finance` on a backend. A memory lake belongs to the
+/// opener that made it, so every lake here is a fresh one.
+pub async fn empty(backend: Backend) -> Arc<dyn LakeStore> {
+    let seams = || lakelands_api::seam::Seams {
+        engines: vec![
+            Arc::new(lakelands_engine_mem::MemoryOpener::new()),
+            Arc::new(lakelands_engine_sqlite::SqliteOpener),
+        ],
+        ..Default::default()
+    };
+    let create = lakelands_api::engine::OpenMode::Create;
+    match backend {
+        Backend::Mock => Arc::new(MockLake::new("finance")),
+        Backend::Memory => {
+            lakelands_store::open(lakelands_api::Location::memory("finance"), seams(), create)
+                .await
+                .expect("the memory lake opens")
+        }
+        Backend::Sqlite => {
+            let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+                .join(format!("server-{}", std::process::id()))
+                .join(format!("{:?}", std::thread::current().id()).replace(['(', ')'], ""));
+            let _ = std::fs::remove_dir_all(&dir);
+            lakelands_store::open(
+                lakelands_api::Location::sqlite("finance", dir),
+                seams(),
+                create,
+            )
+            .await
+            .expect("the sqlite lake opens")
+        }
+    }
+}
+
 /// The fixture lake with one invoice written, at a known position.
-pub async fn lake() -> Arc<dyn LakeStore> {
-    let store: Arc<dyn LakeStore> = Arc::new(MockLake::new("finance"));
+pub async fn lake_on(backend: Backend) -> Arc<dyn LakeStore> {
+    let store = empty(backend).await;
     let f = lakelands_mock::checks::setup(store.clone()).await;
     let c = store.catalog(WriteContext::default());
     c.upsert(

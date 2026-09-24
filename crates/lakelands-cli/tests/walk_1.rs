@@ -1,7 +1,8 @@
 //! Walk 1's materials, kept from rotting: the liquidity bundle in
 //! `examples/liquidity/` loads, and the commands `docs/walks/walk-1.md`
 //! types — `init`, `lake new`, `apply`, and the three `ingest --map` runs
-//! — succeed on the in-memory lake, in the script's order.
+//! — succeed in the script's order, on the mock and on the binary's own
+//! `open_store`, the real store over SQLite, with the same counts.
 //!
 //! The answers the walk expects are checked on the real store, in
 //! `lakelands-store`'s `walk_1` test; the mock computes no derived fields
@@ -11,23 +12,20 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::future::Future;
 use std::path::PathBuf;
-use std::pin::pin;
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
 
+use lakelands_api::LakeStore;
 use lakelands_api::location::Location;
 use lakelands_api::write::Declaration;
-use lakelands_api::{LakeStore, Result};
+use lakelands_cli::Opening;
 use lakelands_mock::MockLake;
 
 fn block_on<F: Future>(f: F) -> F::Output {
-    let mut f = pin!(f);
-    let mut cx = Context::from_waker(Waker::noop());
-    loop {
-        if let Poll::Ready(out) = f.as_mut().poll(&mut cx) {
-            return out;
-        }
-    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime")
+        .block_on(f)
 }
 
 fn example() -> PathBuf {
@@ -67,25 +65,31 @@ fn the_liquidity_bundle_loads_with_every_lane_the_walk_needs() {
     );
 }
 
-/// A root in a fresh directory whose lakes are in-memory mocks.
+/// A root in a fresh directory whose lakes are mocks, or opened as the
+/// binary opens them.
 struct Shell {
     root: PathBuf,
+    mock: bool,
     lakes: Mutex<BTreeMap<String, MockLake>>,
 }
 
 impl Shell {
-    fn open(&self, l: &Location) -> Result<Arc<dyn LakeStore>> {
+    fn open(&self, l: Location, mode: lakelands_api::engine::OpenMode) -> Opening {
+        if !self.mock {
+            return lakelands_cli::open_store(l, mode);
+        }
         let mut lakes = self.lakes.lock().unwrap();
         let lake = lakes
             .entry(l.lake.to_string())
-            .or_insert_with(|| MockLake::open(l));
-        Ok(Arc::new(lake.clone()))
+            .or_insert_with(|| MockLake::open(&l))
+            .clone();
+        Box::pin(async move { Ok(Arc::new(lake) as Arc<dyn LakeStore>) })
     }
 
     /// `lakelands <args>`, answering the exit status and what it printed.
     fn run(&self, args: &[&str]) -> (u8, String, String) {
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        let open = |l: &Location| self.open(l);
+        let open = |l: Location, m: lakelands_api::engine::OpenMode| self.open(l, m);
         let code = block_on(lakelands_cli::run(
             std::iter::once("lakelands").chain(args.iter().copied()),
             &mut out,
@@ -107,11 +111,31 @@ impl Shell {
 }
 
 #[test]
-fn the_walks_commands_run_in_order_on_the_in_memory_lake() {
-    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("walk-1");
+fn the_walks_commands_run_in_order_on_the_mock() {
+    walk(true, "sqlite");
+}
+
+#[test]
+fn the_walks_commands_run_in_order_on_the_real_store_over_sqlite() {
+    walk(false, "sqlite");
+}
+
+/// A lake in memory lives as long as its process; this test's commands
+/// all run in one, as a host that embeds the CLI's library runs them.
+#[test]
+fn the_walks_commands_run_in_order_on_the_real_store_in_memory() {
+    walk(false, "memory");
+}
+
+fn walk(mock: bool, engine: &str) {
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "walk-1-{}-{engine}",
+        if mock { "mock" } else { "store" }
+    ));
     let _ = fs::remove_dir_all(&root);
     let sh = Shell {
         root,
+        mock,
         lakes: Mutex::new(BTreeMap::new()),
     };
     let root = sh.root.display().to_string();
@@ -119,7 +143,15 @@ fn the_walks_commands_run_in_order_on_the_in_memory_lake() {
     let path = |name: &str| data.join(name).display().to_string();
 
     sh.ok(&["init", &root]);
-    sh.ok(&["--root", &root, "lake", "new", "liquidity"]);
+    sh.ok(&[
+        "--root",
+        &root,
+        "lake",
+        "new",
+        "liquidity",
+        "--engine",
+        engine,
+    ]);
     let applied = sh.ok(&["--root", &root, "apply", &example().display().to_string()]);
     assert!(
         applied.starts_with("applied 8 declaration(s), in force from position ")
@@ -150,10 +182,9 @@ fn the_walks_commands_run_in_order_on_the_in_memory_lake() {
     let august = ingest("invoices-august.csv", "erp", "invoices.map.json");
     assert_eq!(counted(&august), (10, 0), "{august}");
     let september = ingest("invoices-september.csv", "erp", "invoices.map.json");
-    let (records, duplicates) = counted(&september);
     assert_eq!(
-        records + duplicates,
-        12,
-        "the September export has twelve rows: {september}"
+        counted(&september),
+        (3, 9),
+        "the September export has twelve rows, three of them changed: {september}"
     );
 }

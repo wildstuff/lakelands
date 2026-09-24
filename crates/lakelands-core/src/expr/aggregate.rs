@@ -159,7 +159,7 @@ fn fold(
 
 /// A computed value in its JSON form, for a group's answer: numbers as
 /// exact decimal strings, instants in the canonical form.
-fn to_value(v: &Val) -> Value {
+pub fn to_value(v: &Val) -> Value {
     match v {
         Val::Null => Value::Null,
         Val::Bool(b) => Value::Bool(*b),

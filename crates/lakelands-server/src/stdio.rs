@@ -1,7 +1,7 @@
 //! MCP over stdio: one JSON-RPC message per line in, one per line out.
 //! The session serves one lake as one principal, both fixed by whoever
-//! starts the server, never by the client. The CLI's `serve --mcp` is
-//! wired to it once the store exists.
+//! starts the server, never by the client. The CLI's `serve --mcp` serves
+//! the root's lake with it, as the principal the command acts as.
 
 use std::io;
 use std::sync::Arc;

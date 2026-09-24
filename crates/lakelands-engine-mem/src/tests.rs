@@ -46,8 +46,13 @@ pub(crate) fn chain(start: u64, n: u64, fence: u64, prev: Digest) -> Vec<Canonic
         .collect()
 }
 
+thread_local! {
+    /// Each test's opener: the lakes a test opens are its own.
+    static OPENER: MemoryOpener = MemoryOpener::new();
+}
+
 fn open(name: &str, mode: OpenMode) -> Result<Box<dyn LakeEngine>> {
-    MemoryOpener.open(&Location::memory(name), mode)
+    OPENER.with(|o| o.open(&Location::memory(name), mode))
 }
 
 fn fresh() -> Box<dyn LakeEngine> {
@@ -94,7 +99,7 @@ fn scan(limit: u32) -> Scan {
 
 #[test]
 fn the_opener_answers_to_memory() {
-    assert_eq!(MemoryOpener.name(), "memory");
+    assert_eq!(MemoryOpener::new().name(), "memory");
     assert_eq!(fresh().name(), "memory");
 }
 
@@ -129,7 +134,7 @@ fn a_lake_that_was_never_created_is_unavailable_to_read_and_write() {
 fn a_location_for_another_engine_is_refused() {
     let at = Location::sqlite("elsewhere", "/nowhere");
     assert!(matches!(
-        MemoryOpener.open(&at, OpenMode::Create),
+        MemoryOpener::new().open(&at, OpenMode::Create),
         Err(Error::Refused { .. })
     ));
 }

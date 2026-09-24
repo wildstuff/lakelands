@@ -7,9 +7,11 @@
 //! command and the catalog.
 //!
 //! Opening a lake is one function, [`open_store`], and [`run`] takes it
-//! as a parameter so that tests pass an in-memory lake instead. Until the
-//! store exists, `open_store` refuses every lake and says why; the store
-//! step replaces its body with the store's own `open`.
+//! as a parameter so that tests can pass another. `open_store` opens a
+//! lake through `lakelands_store::open` with the engines this binary
+//! carries (SQLite and in-memory), once per lake for the life of the
+//! process: a lake has one writer, and the store that holds its lease is
+//! the one every command and every server session of this process uses.
 //!
 //! Everything comes from the root's files and the flags; no environment
 //! variable is read at run time. The `env!` in this crate (the version
@@ -19,15 +21,20 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::future::Future;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::pin::Pin;
+use std::sync::{Arc, OnceLock};
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
+use lakelands_api::engine::OpenMode;
 use lakelands_api::error::{Error, Result};
-use lakelands_api::id::Position;
+use lakelands_api::id::{LakeId, Position};
 use lakelands_api::location::Location;
+use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, WriteContext};
 
 mod commands;
@@ -37,19 +44,59 @@ use lakelands_server::say;
 pub use root::{CONFIG, Config};
 pub use say::Failure;
 
-/// Opens a lake at its location.
-pub type Opener<'a> = dyn Fn(&Location) -> Result<Arc<dyn LakeStore>> + Sync + 'a;
+/// A lake being opened.
+pub type Opening = Pin<Box<dyn Future<Output = Result<Arc<dyn LakeStore>>> + Send>>;
 
-/// The one place the CLI opens a lake.
-///
-/// This build has no store, so every lake is refused with a sentence
-/// saying so. When the store exists, this body becomes its `open`.
-pub fn open_store(location: &Location) -> Result<Arc<dyn LakeStore>> {
-    Err(Error::Unavailable {
-        message: format!(
-            "this build of lakelands has no storage engine yet, so lake `{}` cannot be opened",
-            location.lake
-        ),
+/// Opens a lake at its location, to write or only to read.
+pub type Opener<'a> = dyn Fn(Location, OpenMode) -> Opening + Sync + 'a;
+
+/// The lakes this process has opened, by where they are kept: the
+/// location's engine configuration and the lake's name.
+type Opened = tokio::sync::Mutex<BTreeMap<String, Arc<dyn LakeStore>>>;
+
+fn opened() -> &'static Opened {
+    static OPENED: OnceLock<Opened> = OnceLock::new();
+    OPENED.get_or_init(Opened::default)
+}
+
+/// This process's in-memory engine: its lakes live as long as the
+/// process, and every command of the process finds them.
+fn memory() -> lakelands_engine_mem::MemoryOpener {
+    static MEMORY: OnceLock<lakelands_engine_mem::MemoryOpener> = OnceLock::new();
+    MEMORY
+        .get_or_init(lakelands_engine_mem::MemoryOpener::new)
+        .clone()
+}
+
+/// The one place the CLI opens a lake: through the store, with the SQLite
+/// and in-memory engines. To write, it creates the lake at its location
+/// the first time and takes the lease (the log records each writer's
+/// `lease_taken`); to only read, it takes no lease and appends nothing. A
+/// lake is opened once per process, keyed by its location's engine and
+/// name, and its store kept for the process's life, so every command and
+/// server session shares one store.
+pub fn open_store(location: Location, mode: OpenMode) -> Opening {
+    Box::pin(async move {
+        let key = serde_json::to_string(&(&location.lake, &location.engine))
+            .expect("a location serialises");
+        let mut lakes = opened().lock().await;
+        if let Some(store) = lakes.get(&key) {
+            return Ok(store.clone());
+        }
+        let seams = Seams {
+            engines: vec![
+                Arc::new(lakelands_engine_sqlite::SqliteOpener),
+                Arc::new(memory()),
+            ],
+            ..Seams::default()
+        };
+        let mode = match mode {
+            OpenMode::Read => OpenMode::Read,
+            OpenMode::Write | OpenMode::Create => OpenMode::Create,
+        };
+        let store = lakelands_store::open(location, seams, mode).await?;
+        lakes.insert(key, store.clone());
+        Ok(store)
     })
 }
 
@@ -243,7 +290,17 @@ async fn dispatch(
 
     let root = root::Root::open(&root_dir)?;
     let location = root.location(text(sub, "lake").as_deref())?;
-    let store = open(&location)?;
+    // `feed` only reads: it takes no lease and appends nothing, unless the
+    // lake was never opened yet, which the first open creates.
+    let store = if name == "feed" {
+        match open(location.clone(), OpenMode::Read).await {
+            Ok(store) => store,
+            Err(Error::Unavailable { .. }) => open(location, OpenMode::Create).await?,
+            Err(e) => return Err(e.into()),
+        }
+    } else {
+        open(location, OpenMode::Create).await?
+    };
     let who = root
         .principal(store.lake(), text(sub, "as").as_deref())
         .await?;
@@ -279,10 +336,51 @@ async fn dispatch(
             commands::feed(out, &store, from, kinds).await
         }
         "rebuild" => commands::rebuild(out, &store).await,
-        "serve" => Err(Failure::new(
-            "this build of lakelands has no MCP server yet; nothing was started",
-            "use the library in-process until the server door is built",
-        )),
+        "serve" => serve(&root, store, who, open).await,
         other => unreachable!("clap knows no command `{other}`"),
     }
+}
+
+/// `serve --mcp`: the lake on standard input and output, as the principal
+/// the command acts as; and, when the root configures the HTTP door, every
+/// lake of the root over HTTP, each caller resolved from the root's
+/// principals. Standard output carries the protocol only.
+async fn serve(
+    root: &root::Root,
+    store: Arc<dyn LakeStore>,
+    who: lakelands_api::Principal,
+    open: &Opener<'_>,
+) -> std::result::Result<(), Failure> {
+    let failed = |e: std::io::Error| {
+        Failure::new(
+            format!("the server stopped: {e}"),
+            "check the server section of the configuration and that the port is free",
+        )
+    };
+    let Some(config) = root.config.server.clone() else {
+        return lakelands_server::serve_stdio(store, who)
+            .await
+            .map_err(failed);
+    };
+    let mut lakes = BTreeMap::new();
+    for name in root.lakes() {
+        let location = root.location(Some(&name))?;
+        lakes.insert(
+            location.lake.clone(),
+            open(location, OpenMode::Create).await?,
+        );
+    }
+    let lookup = move |lake: &LakeId| -> Result<Arc<dyn LakeStore>> {
+        lakes.get(lake).cloned().ok_or_else(|| Error::Unavailable {
+            message: format!("this server serves no lake `{lake}`"),
+        })
+    };
+    let resolver = Arc::new(lakelands_server::resolver::StaticResolver::new(
+        root.config.principals.clone(),
+    ));
+    let http = lakelands_server::serve_http(config, resolver, Arc::new(lookup))
+        .await
+        .map_err(failed)?;
+    let (stdio, http) = tokio::join!(lakelands_server::serve_stdio(store, who), http.run());
+    stdio.and(http).map_err(failed)
 }

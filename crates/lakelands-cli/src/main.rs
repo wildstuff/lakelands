@@ -1,22 +1,28 @@
-//! The `lakelands` binary: parses the command line and runs it on one
-//! thread, opening lakes with [`lakelands_cli::open_store`].
+//! The `lakelands` binary: parses the command line and runs it, opening
+//! lakes with [`lakelands_cli::open_store`].
 
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let runtime = match tokio::runtime::Builder::new_current_thread().build() {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: could not start: {e}");
             return ExitCode::FAILURE;
         }
     };
-    let (mut out, mut err) = (std::io::stdout().lock(), std::io::stderr().lock());
+    // Unlocked handles: `serve --mcp` writes the protocol to standard output
+    // from the server's own task, which a lock held here for the whole run
+    // would block.
+    let (mut out, mut err) = (std::io::stdout(), std::io::stderr());
     let code = runtime.block_on(lakelands_cli::run(
         std::env::args_os(),
         &mut out,
         &mut err,
-        &lakelands_cli::open_store,
+        &|l, m| lakelands_cli::open_store(l, m),
     ));
     ExitCode::from(code)
 }

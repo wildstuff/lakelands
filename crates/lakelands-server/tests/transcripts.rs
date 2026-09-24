@@ -10,6 +10,8 @@
 
 mod common;
 
+use common::{BACKENDS, Backend};
+
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,20 +27,70 @@ fn path(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// Compare, or record when the file has no answers yet.
-fn check(name: &str, requests_only: bool, recorded: String, file: String) {
+/// A `known_at` is the lake's wall clock when it wrote: the mock keeps a
+/// clock of its own and the store reads the real one, so the transcripts
+/// show `{known_at}` where an instant was answered, as they show
+/// `{session}` for the session id. Everything else is compared as it is.
+fn mask_known_at(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find("known_at") {
+        let (head, tail) = rest.split_at(i + "known_at".len());
+        out.push_str(head);
+        // Past the member's closing quote, the colon, spaces and the
+        // value's opening quote, escaped or not.
+        let skip = tail
+            .char_indices()
+            .find(|(_, c)| c.is_ascii_digit())
+            .map(|(j, _)| j)
+            .filter(|j| {
+                tail[..*j]
+                    .chars()
+                    .all(|c| matches!(c, '"' | '\\' | ':' | ' '))
+            });
+        match skip {
+            Some(j) => {
+                out.push_str(&tail[..j]);
+                let value = &tail[j..];
+                let end = value
+                    .find(|c: char| {
+                        !(c.is_ascii_digit() || matches!(c, '-' | ':' | '.' | 'T' | 'Z'))
+                    })
+                    .unwrap_or(value.len());
+                out.push_str("{known_at}");
+                rest = &value[end..];
+            }
+            None => rest = tail,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Compare, or record when the file has no answers yet. Every backend
+/// answers the one file; a difference is written beside it, named by the
+/// backend.
+fn check(backend: Backend, name: &str, requests_only: bool, recorded: String, file: String) {
+    let recorded = mask_known_at(&recorded);
     if requests_only {
         std::fs::write(path(name), &recorded).unwrap();
         panic!("recorded {name}; read it, then commit it");
     }
     if recorded != file {
-        std::fs::write(path(&format!("{name}.actual")), &recorded).unwrap();
-        panic!("{name} differs from what the server answers; see {name}.actual");
+        let actual = format!("{name}.{backend:?}.actual").to_lowercase();
+        std::fs::write(path(&actual), &recorded).unwrap();
+        panic!("on {backend:?}, {name} differs from what the server answers; see {actual}");
     }
 }
 
 #[tokio::test]
 async fn stdio_answers_byte_for_byte() {
+    for backend in BACKENDS {
+        stdio_answers_byte_for_byte_on(backend).await;
+    }
+}
+
+async fn stdio_answers_byte_for_byte_on(backend: Backend) {
     let file = std::fs::read_to_string(path("stdio.txt")).unwrap();
     let requests: Vec<&str> = file.lines().filter_map(|l| l.strip_prefix("> ")).collect();
     let requests_only = !file.lines().any(|l| l.starts_with("< "));
@@ -47,7 +99,7 @@ async fn stdio_answers_byte_for_byte() {
     let (input, mut to_server) = tokio::io::duplex(1 << 20);
     let (mut from_server, output) = tokio::io::duplex(1 << 20);
     let server = tokio::spawn(serve_io(
-        common::lake().await,
+        common::lake_on(backend).await,
         common::owner(),
         BufReader::new(input),
         output,
@@ -84,7 +136,7 @@ async fn stdio_answers_byte_for_byte() {
     drop(to_server);
     server.await.unwrap().unwrap();
     let _ = requests;
-    check("stdio.txt", requests_only, recorded, file);
+    check(backend, "stdio.txt", requests_only, recorded, file);
 }
 
 /// Send one raw HTTP/1.1 request; answer the status, the pinned headers
@@ -145,9 +197,15 @@ async fn exchange(
 
 #[tokio::test]
 async fn streamable_http_answers_byte_for_byte() {
+    for backend in BACKENDS {
+        streamable_http_answers_byte_for_byte_on(backend).await;
+    }
+}
+
+async fn streamable_http_answers_byte_for_byte_on(backend: Backend) {
     let file = std::fs::read_to_string(path("http.txt")).unwrap();
     let requests_only = !file.lines().any(|l| l.starts_with("< "));
-    let store = common::lake().await;
+    let store = common::lake_on(backend).await;
     let open = Arc::new(
         move |_: &lakelands_api::LakeId| -> lakelands_api::Result<Arc<dyn LakeStore>> {
             Ok(store.clone())
@@ -199,14 +257,20 @@ async fn streamable_http_answers_byte_for_byte() {
         }
     }
     task.abort();
-    check("http.txt", requests_only, recorded, file);
+    check(backend, "http.txt", requests_only, recorded, file);
 }
 
 /// Sessions end when idle, are replaced when their key initializes
 /// again, and exist only when initialize answered a result.
 #[tokio::test]
 async fn sessions_end_idle_are_replaced_and_never_orphaned() {
-    let store = common::lake().await;
+    for backend in BACKENDS {
+        sessions_end_idle_are_replaced_and_never_orphaned_on(backend).await;
+    }
+}
+
+async fn sessions_end_idle_are_replaced_and_never_orphaned_on(backend: Backend) {
+    let store = common::lake_on(backend).await;
     let open = Arc::new(
         move |_: &lakelands_api::LakeId| -> lakelands_api::Result<Arc<dyn LakeStore>> {
             Ok(store.clone())

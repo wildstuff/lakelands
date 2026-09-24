@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use lakelands_api::engine::{CanonicalEvent, LakeEngine, Lease, OpenMode, ProjectionView};
 use lakelands_api::event::{Digest, Event, EventBody, LOG_FORMAT_VERSION, SegmentDigest};
 use lakelands_api::location::{EngineConfig, Limits, Location};
-use lakelands_api::ontology::{Authority, FieldDecl, FieldType, StorageKind, TypeDecl};
+use lakelands_api::ontology::StorageKind;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::Seams;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposalState};
@@ -39,46 +39,7 @@ use crate::log::{self, Draft};
 use crate::ontology::Ontology;
 use crate::record;
 
-/// The type holding a lake's named settings (`docs/seams.md`,
-/// §SystemVocabulary).
-pub const SETTING_TYPE: &str = "sys.setting";
-
-/// The declaration of `sys.setting`, made by the store when it creates a
-/// lake.
-pub fn setting_type() -> TypeDecl {
-    let field = |name: &str, kind| FieldDecl {
-        name: name.into(),
-        ty: FieldType::kind(kind),
-        required: true,
-        authority: Authority::Authored,
-        derived: None,
-        function: None,
-        depends_on: vec![],
-        on_input_change: Default::default(),
-        sensitive: false,
-        searchable: false,
-        description: None,
-        label: None,
-    };
-    TypeDecl {
-        name: SETTING_TYPE.into(),
-        key: vec!["key".into()],
-        fields: vec![
-            field("key", StorageKind::Text),
-            field("value", StorageKind::Json),
-        ],
-        relations: vec![],
-        view: None,
-        valid_from: None,
-        valid_to: None,
-        field_meta: true,
-        language: None,
-        description: Some(
-            "One named setting of the lake: `setting('key')` reads its value.".into(),
-        ),
-        label: None,
-    }
-}
+pub use lakelands_api::seam::{SETTING_TYPE, setting_type};
 
 /// What only the writer changes.
 pub struct Writer {

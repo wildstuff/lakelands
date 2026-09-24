@@ -40,13 +40,14 @@ fn mcp_call_lists_the_tools_and_calls_one_in_one_session() {
             "tools/list did not list {tool}:\n{stdout}"
         );
     }
-    // The fixture's four declarations follow the lake's first event.
+    // The fixture's four declarations follow the lake's first append
+    // (`lake_created`, `lease_taken`, `sys.setting`), at 3 to 6.
     assert!(
-        stdout.contains("position 4\n"),
+        stdout.contains("position 6\n"),
         "a call prints its position line:\n{stdout}"
     );
     assert!(
-        stdout.contains("\"pinned\": 4"),
+        stdout.contains("\"pinned\": 6"),
         "the pin answers the head:\n{stdout}"
     );
     assert!(

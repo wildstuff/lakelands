@@ -14,5 +14,11 @@ futures-core.workspace = true
 lakelands-api.workspace = true
 serde_json.workspace = true
 
+[dev-dependencies]
+lakelands-engine-mem.workspace = true
+lakelands-engine-sqlite.workspace = true
+lakelands-store.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
 [lints]
 workspace = true

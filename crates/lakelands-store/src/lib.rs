@@ -9,6 +9,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod backing;
 pub mod declare;
 pub mod doors;
 pub mod exec;
@@ -20,4 +21,5 @@ pub mod reads;
 pub mod record;
 pub mod writes;
 
+pub use backing::ExprBacking;
 pub use doors::open;

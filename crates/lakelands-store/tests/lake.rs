@@ -31,9 +31,16 @@ fn name() -> String {
     format!("store-test-{}", NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
+/// The tests' one opener: a test that reopens a lake finds it again, and
+/// every test's lakes carry names of their own.
+fn opener() -> MemoryOpener {
+    static OPENER: std::sync::OnceLock<MemoryOpener> = std::sync::OnceLock::new();
+    OPENER.get_or_init(MemoryOpener::new).clone()
+}
+
 fn seams() -> Seams {
     Seams {
-        engines: vec![Arc::new(MemoryOpener)],
+        engines: vec![Arc::new(opener())],
         ..Seams::default()
     }
 }
@@ -574,7 +581,7 @@ async fn a_tampered_checkpoint_is_reported_by_verify() {
 
     // A writer that is not the store appends a checkpoint that does not
     // follow the segment it seals.
-    let engine = MemoryOpener
+    let engine = opener()
         .open(&Location::memory(lake.as_str()), OpenMode::Write)
         .unwrap();
     let lease = engine.take_lease("tamperer").unwrap();

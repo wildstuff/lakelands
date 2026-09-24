@@ -29,6 +29,8 @@ futures-core = "0.3"
 regex = "1"
 lakelands-core = { path = "crates/lakelands-core" }
 lakelands-store = { path = "crates/lakelands-store" }
+lakelands-engine-mem = { path = "crates/lakelands-engine-mem" }
+lakelands-engine-sqlite = { path = "crates/lakelands-engine-sqlite" }
 rust_decimal = "1"
 ryu = "1"
 rust-stemmers = "1"

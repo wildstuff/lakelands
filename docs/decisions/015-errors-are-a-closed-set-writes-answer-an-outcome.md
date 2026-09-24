@@ -46,3 +46,12 @@ engine will never produce.
   request that is wrong is `refused`; `unavailable` is for a lake that
   cannot answer a correct request right now.
 - Adding a variant is a change to the contract, not an extension point.
+
+## Extended: a refusal's sentence is not part of the contract
+
+A refusal's kind and the field it names are the contract; its sentence
+is for people and belongs to the implementation. The mock and the store
+word their refusals each their own way, and no door test pins a
+refusal's sentence: a test checks the kind, the field and, for a door,
+its own framing lines. What would otherwise tie a second implementation
+to the first one's wording is left free.
