@@ -59,6 +59,10 @@ use crate::lake::{AGING_RULE_TYPE, Lake, Writer, find_proposal};
 use crate::log::{self, Draft};
 use crate::record;
 
+/// How many events after an external verb's call a retry reads for the
+/// output recorded for it.
+const RETRY_REACH: u32 = 4_096;
+
 fn invalid(message: impl Into<String>) -> Error {
     Error::Refused {
         field: None,
@@ -177,7 +181,44 @@ impl Call<'_> {
         if events.is_empty() {
             return Ok(None);
         }
-        Ok(Some(outcome_of(&events)))
+        let outcome = outcome_of(&events);
+        // An external verb answered with its executor's output, recorded in
+        // a later append that other writes may precede: a retry answers
+        // that output too, at the verb's own position.
+        let external = events.iter().any(|e| {
+            e.position == outcome.position() && matches!(e.body, EventBody::VerbCalled { .. })
+        });
+        match (outcome, external) {
+            (
+                Outcome::Applied {
+                    position, version, ..
+                },
+                true,
+            ) => Ok(Some(Outcome::Applied {
+                position,
+                version,
+                output: self.recorded_output(position)?,
+            })),
+            (outcome, _) => Ok(Some(outcome)),
+        }
+    }
+
+    /// The output recorded for the external verb called at `called`: the
+    /// `output_recorded` that event caused, among the [`RETRY_REACH`]
+    /// events after it. Its `input` digest holds the record as the executor
+    /// was given it, which a retry cannot rebuild to look it up by digest;
+    /// the read is bounded so that a retry never reads to the head of a
+    /// large lake (`docs/seams.md` §`VerbExecutor`).
+    fn recorded_output(&self, called: Position) -> Result<Option<Value>> {
+        let events = self.lake.read_events(called.next(), Some(RETRY_REACH))?;
+        Ok(events.into_iter().find_map(|e| match e.body {
+            EventBody::OutputRecorded { seam, output, .. }
+                if e.cause == Some(called) && seam.starts_with("verb:") =>
+            {
+                Some(output)
+            }
+            _ => None,
+        }))
     }
 }
 
@@ -202,11 +243,16 @@ fn outcome_of(events: &[Event]) -> Outcome {
             why: why.clone(),
         },
         EventBody::VerbCalled { .. } | EventBody::WriteAccepted { .. } => {
+            // What the call or the acceptance wrote: not a reaction to it,
+            // and not an external verb's recorded output, which answers at
+            // the verb's own position.
             let caused = events.iter().skip(1).position(|n| {
                 n.cause == Some(e.position)
                     && !matches!(
                         n.body,
-                        EventBody::TriggerFired { .. } | EventBody::ObjectSetChanged { .. }
+                        EventBody::TriggerFired { .. }
+                            | EventBody::ObjectSetChanged { .. }
+                            | EventBody::OutputRecorded { .. }
                     )
             });
             match caused {

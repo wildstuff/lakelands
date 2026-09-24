@@ -641,6 +641,15 @@ agent that called an external verb has the answer in the reply. The verb
 is not run again for that position. A host that wants a retry calls the verb again, which is a new
 position.
 
+A call retried with the same idempotency key runs nothing and answers
+the first outcome: the position that made the verb due and the recorded
+output. The output's `input` digest holds the record as the executor was
+given it, which a retry cannot rebuild, so the retry finds the output as
+the `output_recorded` caused by that position, among the 4,096 events
+after it. An output not among them (not recorded yet, or recorded after
+the lake took that many other events while the executor ran) is answered
+as none; the position stands, and nothing runs again.
+
 There is no default: a verb whose executor is not bound is refused as
 `Unbound`, never faked. The store checks it when the verb is called and
 again when a proposal to call it is accepted, before anything is

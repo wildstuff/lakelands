@@ -21,7 +21,7 @@ use lakelands_api::write::{
 };
 use lakelands_api::{
     Error, Get, Grants, LakeStore, Location, Patch, Position, Principal, PrincipalKind, ReadAt,
-    Refusal, SourceRecord, WriteContext,
+    Refusal, SourceRecord, WriteContext, WriteOpts,
 };
 use lakelands_engine_mem::MemoryOpener;
 use serde_json::json;
@@ -1092,6 +1092,110 @@ async fn an_external_verb_answers_its_executors_output_or_its_failure() {
     assert!(
         matches!(upserted, Outcome::Applied { output: None, .. }),
         "only an external verb carries an output"
+    );
+}
+
+/// Counts its calls, and answers the count.
+struct Counter(std::sync::atomic::AtomicU32);
+
+#[async_trait::async_trait]
+impl lakelands_api::seam::VerbExecutor for Counter {
+    fn name(&self) -> &str {
+        "bank"
+    }
+    async fn execute(
+        &self,
+        _: &lakelands_api::seam::VerbInvocation,
+    ) -> lakelands_api::Result<serde_json::Value> {
+        let n = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        Ok(json!({ "call": n }))
+    }
+}
+
+/// A retry with the same idempotency key answers the first outcome
+/// (`WriteOpts::idempotency_key`): for an external verb, the verb's own
+/// position and the output recorded for it, even after other writes, and
+/// the executor is not called again (lakelands#98).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retried_external_verb_answers_its_first_position_and_output() {
+    let lake = name();
+    let counter = Arc::new(Counter(Default::default()));
+    let store = lakelands_store::open(
+        Location::memory(lake.as_str()),
+        Seams {
+            executors: vec![counter.clone()],
+            ..seams()
+        },
+        OpenMode::Create,
+    )
+    .await
+    .unwrap();
+    let cat = store.catalog(WriteContext::default());
+    let o = owner(&lake);
+    for d in invoice_with_verbs() {
+        cat.declare(&o, d).await.unwrap();
+    }
+    let open = |k: &'static str| {
+        let (cat, o) = (cat.clone(), o.clone());
+        async move {
+            cat.upsert(
+                &o,
+                &"invoice".into(),
+                &k.into(),
+                patch(json!({"status": "open"})),
+                Default::default(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+    open("i1").await;
+    let pay = || {
+        let (cat, o) = (cat.clone(), o.clone());
+        async move {
+            cat.call(
+                &o,
+                &"pay".into(),
+                &"i1".into(),
+                patch(json!({})),
+                WriteOpts {
+                    idempotency_key: Some("pay-i1".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let first = pay().await;
+    let Outcome::Applied {
+        position, output, ..
+    } = &first
+    else {
+        panic!("a low verb runs: {first:?}")
+    };
+    assert_eq!(output, &Some(json!({"call": 1})));
+    let feed = store
+        .feed()
+        .poll(*position, &FeedFilter::default(), 1)
+        .await
+        .unwrap();
+    assert_eq!(
+        feed.events[0].body.kind(),
+        "verb_called",
+        "the first call answers the verb's own position"
+    );
+    let head = store.head().await.unwrap();
+    assert_eq!(pay().await, first, "a retry answers the first outcome");
+    assert_eq!(store.head().await.unwrap(), head, "a retry appends nothing");
+    // Other writes after the output was recorded: still the first outcome.
+    open("i2").await;
+    open("i3").await;
+    assert_eq!(pay().await, first);
+    assert_eq!(
+        counter.0.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the executor runs once for the call"
     );
 }
 
