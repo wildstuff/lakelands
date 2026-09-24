@@ -49,6 +49,10 @@ pub struct Config {
     /// bound and search ranks lexically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embed: Option<lakelands_backings::EmbedConfig>,
+    /// The webhook endpoints `serve` delivers fired triggers and object-set
+    /// changes to. Absent, nothing is delivered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deliver: Option<lakelands_backings::DeliverConfig>,
 }
 
 /// An opened root.
@@ -85,6 +89,7 @@ pub fn init(dir: &Path, owner: &str) -> Result<(), Failure> {
         server: None,
         backings: None,
         embed: None,
+        deliver: None,
     };
     fs::create_dir_all(dir.join("lakes")).map_err(|e| io(dir, e))?;
     write_new(&file, &config)
@@ -141,6 +146,14 @@ impl Root {
 
     /// Open the root in `dir`.
     pub fn open(dir: &Path) -> Result<Root, Failure> {
+        let root = Root::open_to_add_a_lake(dir)?;
+        root.deliver_to_held_lakes()?;
+        Ok(root)
+    }
+
+    /// Open the root in `dir` to create a lake in it: as [`Root::open`],
+    /// except that a `deliver` endpoint may name the lake not created yet.
+    pub fn open_to_add_a_lake(dir: &Path) -> Result<Root, Failure> {
         let file = dir.join(CONFIG);
         let text = match fs::read_to_string(&file) {
             Ok(t) => t,
@@ -166,6 +179,14 @@ impl Root {
                 Failure::new(
                     format!("{}: {why}", show(&file)),
                     "fix the backings section of the configuration",
+                )
+            })?;
+        }
+        if let Some(deliver) = &config.deliver {
+            deliver.check().map_err(|why| {
+                Failure::new(
+                    format!("{}: {why}", show(&file)),
+                    "fix the deliver section of the configuration",
                 )
             })?;
         }
@@ -228,6 +249,62 @@ impl Root {
         fs::create_dir_all(self.dir.join("lakes")).map_err(|e| io(&self.dir, e))?;
         write_new(&file, &location)?;
         Ok(location)
+    }
+
+    /// Refuse a `deliver` endpoint naming a lake the root does not hold:
+    /// a misspelt name would otherwise deliver nothing without a word.
+    fn deliver_to_held_lakes(&self) -> Result<(), Failure> {
+        let Some(deliver) = &self.config.deliver else {
+            return Ok(());
+        };
+        let held = self.lakes();
+        for e in &deliver.endpoints {
+            if let Some(lake) = e.lakes.iter().find(|l| !held.contains(l)) {
+                return Err(Failure::new(
+                    format!(
+                        "{}: the endpoint `{}` names the lake `{lake}`, which this root does \
+                         not hold",
+                        show(&self.dir.join(CONFIG)),
+                        e.name
+                    ),
+                    "fix the deliver section of the configuration, or create the lake with \
+                     `lakelands lake new`",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Start a deliverer for every endpoint of the `deliver` section that
+    /// names a lake in `lakes`, for each lake this process holds as its
+    /// writer. Each runs until the process ends. A deliverer that cannot
+    /// start (a secret it cannot read, a position file another process
+    /// holds) stops the command before it serves anything.
+    pub fn deliver(&self, lakes: &[Arc<dyn lakelands_api::LakeStore>]) -> Result<(), Failure> {
+        let Some(config) = &self.config.deliver else {
+            return Ok(());
+        };
+        let mut started = std::collections::BTreeSet::new();
+        for store in lakes.iter().filter(|s| s.is_writer()) {
+            if !started.insert(store.lake().clone()) {
+                continue;
+            }
+            let deliverers = lakelands_backings::deliver::deliverers(
+                config,
+                &self.dir,
+                store.lake(),
+            )
+            .map_err(|why| {
+                Failure::new(
+                    format!("{}: {why}", show(&self.dir.join(CONFIG))),
+                    "fix the deliver section of the configuration, or stop the other process",
+                )
+            })?;
+            for d in deliverers {
+                tokio::spawn(d.run(store.clone()));
+            }
+        }
+        Ok(())
     }
 
     /// The lakes this root holds, by name.

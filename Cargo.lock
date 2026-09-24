@@ -922,6 +922,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "fs4",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -929,9 +930,11 @@ dependencies = [
  "lakelands-core",
  "lakelands-engine-mem",
  "lakelands-store",
+ "ring",
  "rustls",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "tokio-rustls",
 ]

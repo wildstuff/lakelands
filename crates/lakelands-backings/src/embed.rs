@@ -207,7 +207,12 @@ impl Embed {
             .post(&self.target, &headers, body)
             .await
             .map_err(|f| match f {
-                Failure::Refused(why) | Failure::Failed(why) => self.failed(why),
+                Failure::Refused(why) | Failure::Failed(why) | Failure::Body(why) => {
+                    self.failed(why)
+                }
+                Failure::Status(status) => {
+                    self.failed(Failure::status_sentence(status, "the embedding client"))
+                }
                 // The reason may name a bundle's path on the server, which
                 // is the operator's to read, not every caller's.
                 Failure::Tls(_) => self.failed(

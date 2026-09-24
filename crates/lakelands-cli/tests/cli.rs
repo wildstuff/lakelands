@@ -681,6 +681,66 @@ fn the_root_configuration_carries_the_embedding_client_and_refuses_a_key_it_cann
     assert_eq!(s.code, 0, "{}", s.err);
 }
 
+#[test]
+fn the_root_configuration_carries_the_deliverer_and_refuses_an_endpoint_it_should_not_reach() {
+    let config: lakelands_cli::Config = serde_json::from_str(
+        r#"{"lakelands": 1, "owner": "owner",
+            "deliver": {"endpoints": [{"name": "billing", "url": "https://hooks.example/x",
+                                       "lakes": ["finance"]}]}}"#,
+    )
+    .unwrap();
+    let deliver = config.deliver.expect("the deliver section reads");
+    assert_eq!(
+        (
+            deliver.poll_millis,
+            deliver.retry_first_secs,
+            deliver.retry_max_secs
+        ),
+        (1000, 1, 300)
+    );
+    assert_eq!(
+        deliver.endpoints[0].kinds,
+        ["trigger_fired", "object_set_changed"]
+    );
+
+    let sh = Shell::on("deliver-config", Backend::Store);
+    sh.lake();
+    let config = r#"{"lakelands": 1, "owner": "owner",
+        "deliver": {"endpoints": [{"name": "billing", "url": "https://u:hunter2@hooks.example/x",
+                                   "lakes": ["finance"]}]}}"#;
+    fs::write(sh.root.join("lakelands.json"), config).unwrap();
+    let s = sh.run(&["feed"]);
+    assert_eq!(s.code, 1, "{}", s.out);
+    assert!(
+        s.err.starts_with("error: <root>/lakelands.json: ")
+            && s.err
+                .contains("\n  what to do: fix the deliver section of the configuration")
+            && !s.err.contains("hunter2"),
+        "{}",
+        s.err
+    );
+
+    // An endpoint naming a lake the root does not hold stops every
+    // command, except the one that creates that lake.
+    let config = r#"{"lakelands": 1, "owner": "owner",
+        "deliver": {"endpoints": [{"name": "billing", "url": "https://hooks.example/x",
+                                   "lakes": ["finance", "payroll"]}]}}"#;
+    fs::write(sh.root.join("lakelands.json"), config).unwrap();
+    let s = sh.run(&["feed", "--lake", "finance"]);
+    assert_eq!(s.code, 1, "{}", s.out);
+    assert!(
+        s.err
+            .contains("names the lake `payroll`, which this root does not hold")
+            && s.err.contains("\n  what to do: fix the deliver section"),
+        "{}",
+        s.err
+    );
+    let s = sh.run(&["lake", "new", "payroll"]);
+    assert_eq!(s.code, 0, "{}", s.err);
+    let s = sh.run(&["feed", "--lake", "finance"]);
+    assert_eq!(s.code, 0, "{}", s.err);
+}
+
 /// A root that allows an `exec` command computes a field with it: the
 /// lake declares a function naming the command, a record is ingested,
 /// and the store calls the command and records its answer. The mock

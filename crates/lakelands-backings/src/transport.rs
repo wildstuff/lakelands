@@ -103,6 +103,12 @@ pub(crate) enum Failure {
     Tls(String),
     /// The exchange took longer than the timeout.
     TimedOut(Duration),
+    /// The host answered with a status other than `2xx`, a redirect
+    /// included (never followed). Its body is not read.
+    Status(hyper::StatusCode),
+    /// The host answered `2xx`, and its body could not be read within the
+    /// limit. The status has been given; what the body says is lost.
+    Body(String),
     /// The exchange failed, or its answer is not a `2xx` reply within the
     /// limit.
     Failed(String),
@@ -116,6 +122,18 @@ pub(crate) struct Transport {
     timeout: Duration,
     max_reply_bytes: u64,
     tls: Mutex<Option<Arc<rustls::ClientConfig>>>,
+}
+
+impl Failure {
+    /// A status as the sentence a caller's failure carries: `who` names
+    /// the caller, for a redirect ("the http backing").
+    pub(crate) fn status_sentence(status: hyper::StatusCode, who: &str) -> String {
+        if status.is_redirection() {
+            format!("it answered a redirect ({status}), which {who} does not follow")
+        } else {
+            format!("it answered {status}")
+        }
+    }
 }
 
 impl std::fmt::Debug for Transport {
@@ -257,59 +275,51 @@ impl Transport {
         let exchange = async {
             let tcp = TcpStream::connect((address.as_str(), port))
                 .await
-                .map_err(|e| format!("cannot connect to {host}:{port}: {e}"))?;
+                .map_err(|e| Failure::Failed(format!("cannot connect to {host}:{port}: {e}")))?;
             match tls {
                 Some((name, connector)) => {
-                    let tls = connector
-                        .connect(name, tcp)
-                        .await
-                        .map_err(|e| format!("TLS with {host}:{port} failed: {e}"))?;
-                    send(tls, request, limit, self.who).await
+                    let tls = connector.connect(name, tcp).await.map_err(|e| {
+                        Failure::Failed(format!("TLS with {host}:{port} failed: {e}"))
+                    })?;
+                    send(tls, request, limit).await
                 }
-                None => send(tcp, request, limit, self.who).await,
+                None => send(tcp, request, limit).await,
             }
         };
         tokio::time::timeout(self.timeout, exchange)
             .await
             .map_err(|_| Failure::TimedOut(self.timeout))?
-            .map_err(Failure::Failed)
     }
 }
 
 /// One request over one connection; the reply body when the status is
 /// `2xx`.
-async fn send<S>(
-    io: S,
-    request: Request<Full<Bytes>>,
-    limit: u64,
-    who: &str,
-) -> Result<Bytes, String>
+async fn send<S>(io: S, request: Request<Full<Bytes>>, limit: u64) -> Result<Bytes, Failure>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(io))
         .await
-        .map_err(|e| format!("HTTP failed: {e}"))?;
+        .map_err(|e| Failure::Failed(format!("HTTP failed: {e}")))?;
     tokio::spawn(async move {
         let _ = connection.await;
     });
     let reply = sender
         .send_request(request)
         .await
-        .map_err(|e| format!("HTTP failed: {e}"))?;
+        .map_err(|e| Failure::Failed(format!("HTTP failed: {e}")))?;
     let status = reply.status();
-    if status.is_redirection() {
-        return Err(format!(
-            "it answered a redirect ({status}), which {who} does not follow"
-        ));
-    }
     if !status.is_success() {
-        return Err(format!("it answered {status}"));
+        return Err(Failure::Status(status));
     }
     let limit = usize::try_from(limit).unwrap_or(usize::MAX);
     Limited::new(reply.into_body(), limit)
         .collect()
         .await
         .map(|b| b.to_bytes())
-        .map_err(|e| format!("its reply could not be read (at most {limit} bytes): {e}"))
+        .map_err(|e| {
+            Failure::Body(format!(
+                "its reply could not be read (at most {limit} bytes): {e}"
+            ))
+        })
 }

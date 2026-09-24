@@ -117,6 +117,7 @@ pub const ALL: &[Check] = &[
     feed::REBUILD_LEAVES_THE_FEED,
     feed::TRIGGER_FIRES,
     feed::OBJECT_SET_CHANGES,
+    feed::PAGED_FROM_NEXT,
     retire::RETIRE_NEEDS_EVERY_FIELD,
     ingest::REVERT_IS_A_CHANGE,
     views::VIEW_KEY_IS_ITS_GROUP,

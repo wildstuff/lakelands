@@ -71,6 +71,12 @@ async fn all_events(store: &dyn LakeStore, from: Position) -> Result<Vec<Event>,
         .events)
 }
 
+check!(
+    /// Paging with `next` loses and repeats nothing.
+    PAGED_FROM_NEXT = polling_from_next_in_small_pages_sees_every_matching_event_once_in_order,
+    "004: a consumer that polls from the `next` each answer gives, in pages of one or two events and with writes landing between polls, sees every matching event once, in log order; this is the position a deliverer keeps"
+);
+
 async fn the_feed_answers_the_log_from_a_position_by_kind_and_type(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
@@ -270,5 +276,75 @@ async fn an_object_set_change_is_written_only_when_membership_changes(
             appended.iter().map(|e| e.body.kind()).collect::<Vec<_>>()
         );
     }
+    Ok(())
+}
+
+async fn polling_from_next_in_small_pages_sees_every_matching_event_once_in_order(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    invoices(store.as_ref()).await?;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let invoices_only = FeedFilter {
+        kinds: vec!["record_upserted".into()],
+        types: vec!["invoice".into()],
+    };
+    let mut next = store.head().await.must("reading the head")?.next();
+    let mut seen: Vec<Position> = Vec::new();
+    let mut written: Vec<Position> = Vec::new();
+    let feed = store.feed();
+    for round in 0..6 {
+        // Writes land between polls: one or two invoices back to back
+        // (so a page can end right before another match), and a memo the
+        // filter leaves out every other round.
+        for n in 0..(2 - round % 2) {
+            let key = format!("p{round}-{n}");
+            written.push(
+                upsert(
+                    cat.as_ref(),
+                    &own,
+                    "invoice",
+                    &key,
+                    json!({"status": "open"}),
+                )
+                .await?
+                .position(),
+            );
+        }
+        if round % 2 == 0 {
+            let key = format!("m{round}");
+            upsert(cat.as_ref(), &own, "memo", &key, json!({"text": "aside"})).await?;
+        }
+        let limit = 1 + round % 2;
+        let batch = feed
+            .poll(next, &invoices_only, limit)
+            .await
+            .must("polling the feed from `next`")?;
+        ensure!(
+            batch.events.len() <= limit as usize && batch.next > next || batch.events.is_empty(),
+            "a poll from {next} with limit {limit} answered {} events and next {}",
+            batch.events.len(),
+            batch.next
+        );
+        seen.extend(batch.events.iter().map(|e| e.position));
+        next = batch.next;
+    }
+    // Drain what is left.
+    loop {
+        let batch = feed
+            .poll(next, &invoices_only, 1)
+            .await
+            .must("polling the rest of the feed")?;
+        if batch.events.is_empty() {
+            break;
+        }
+        seen.extend(batch.events.iter().map(|e| e.position));
+        next = batch.next;
+    }
+    ensure!(
+        seen == written,
+        "polling from `next` in pages of one and two, with writes between the polls, must see \
+         each invoice write once and in log order: written at {written:?}, seen at {seen:?}"
+    );
     Ok(())
 }
