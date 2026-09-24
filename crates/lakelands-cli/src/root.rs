@@ -53,6 +53,12 @@ pub struct Config {
     /// changes to. Absent, nothing is delivered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deliver: Option<lakelands_backings::DeliverConfig>,
+    /// The ticker: the UTC offset `serve` reads the date at, and how
+    /// often it looks whether the date rolled over, to age each lake it
+    /// writes once a day. Absent, `serve` ages nothing, and aging is
+    /// `lakelands age --today` or the host's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aging: Option<crate::ticker::AgingConfig>,
 }
 
 /// An opened root.
@@ -90,6 +96,7 @@ pub fn init(dir: &Path, owner: &str) -> Result<(), Failure> {
         backings: None,
         embed: None,
         deliver: None,
+        aging: None,
     };
     fs::create_dir_all(dir.join("lakes")).map_err(|e| io(dir, e))?;
     write_new(&file, &config)
@@ -179,6 +186,14 @@ impl Root {
                 Failure::new(
                     format!("{}: {why}", show(&file)),
                     "fix the backings section of the configuration",
+                )
+            })?;
+        }
+        if let Some(aging) = &config.aging {
+            aging.check().map_err(|why| {
+                Failure::new(
+                    format!("{}: {why}", show(&file)),
+                    "fix the aging section of the configuration",
                 )
             })?;
         }

@@ -84,8 +84,8 @@ HTTP) and REST from one catalog. Agents never write a query language.
 > deliverer, relations with fields of their own, carried by link
 > records, aging by date (`lakelands age`), retracting a source as one
 > act (`lakelands purge`), and MCP notifications of the changes a
-> session may see. The ticker that runs aging daily and the mirror
-> between lakes come after.
+> session may see, and the ticker in `serve` that runs aging daily.
+> The mirror between lakes comes after.
 
 ## Try it
 
