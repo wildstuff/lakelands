@@ -64,8 +64,9 @@ pub(crate) fn unknown_argument(spec: &ToolSpec, arguments: &Map<String, Value>) 
 }
 
 /// Run one catalog door with its arguments, as `who`. `label` names the
-/// door in a refusal of the arguments. [`Door::Pin`] belongs to the MCP
-/// session, which answers it itself; here it is refused.
+/// door in a refusal of the arguments. [`Door::Pin`], [`Door::Subscribe`] and
+/// [`Door::Unsubscribe`] belong to the MCP session, which answers them
+/// itself; here they are refused.
 pub(crate) async fn run(
     c: &dyn Catalog,
     who: &Principal,
@@ -136,6 +137,12 @@ pub(crate) async fn run(
             return Err(Fault::Arguments(
                 format!("`{label}` pins an MCP session; there is none here"),
                 "name `as_of` on each read instead".into(),
+            ));
+        }
+        Door::Subscribe | Door::Unsubscribe => {
+            return Err(Fault::Arguments(
+                format!("`{label}` belongs to an MCP session; there is none here"),
+                "read the change feed instead".into(),
             ));
         }
         Door::Query => to_json(&c.query(who, args::<Pattern>(label, &a)?).await?),

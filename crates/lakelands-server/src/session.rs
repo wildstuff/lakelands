@@ -2,11 +2,10 @@
 //! may use, and the session's `as_of` pin.
 //!
 //! [`Session::handle`] takes one JSON-RPC message and answers the
-//! messages to send back: the response to a request first, then any
-//! notification it caused. Both transports use it. stdio writes every
-//! message; streamable HTTP answers the response as JSON today, and the
-//! same list is what an SSE stream will carry when notifications go over
-//! HTTP too.
+//! messages to send back. Both transports use it. What the session is
+//! told of without asking comes from its pump ([`crate::watch`]), which
+//! stdio interleaves with the answers and streamable HTTP sends on the
+//! session's event stream.
 //!
 //! The tools are exactly [`tools`] over what `describe` shows the
 //! session's principal, generated again for every `tools/list` and every
@@ -26,6 +25,7 @@ use serde_json::{Map, Value, json};
 
 use crate::doors::{self, Fault, args, to_json, unknown_argument};
 use crate::say::Failure;
+use crate::watch::Watch;
 
 /// The protocol versions this server speaks, newest first.
 pub const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
@@ -59,14 +59,16 @@ pub struct Session {
     catalog: Arc<dyn Catalog>,
     who: Principal,
     pin: Option<Position>,
-    /// Whether the transport can carry `notifications/tools/list_changed`.
+    /// Whether the transport can carry notifications.
     notifies: bool,
+    /// What the session is told of, shared with its pump.
+    watch: Arc<Watch>,
 }
 
 impl Session {
     /// A session for `who` over one lake. `notifies` says whether the
-    /// transport can carry server notifications (stdio can; HTTP cannot
-    /// until it streams).
+    /// transport can carry server notifications: stdio and streamable HTTP
+    /// both do.
     pub fn new(store: Arc<dyn LakeStore>, who: Principal, notifies: bool) -> Session {
         let catalog = store.catalog(WriteContext::default());
         Session {
@@ -75,7 +77,30 @@ impl Session {
             who,
             pin: None,
             notifies,
+            watch: Watch::new(),
         }
+    }
+
+    /// The session's watch, for the pump its transport runs
+    /// ([`crate::watch::pump`]).
+    pub fn watch(&self) -> Arc<Watch> {
+        self.watch.clone()
+    }
+
+    /// The pump that tells this session of changes, sending into `queue`
+    /// until it is dropped; `pause` is how long a caught-up pump waits.
+    pub fn pump(
+        &self,
+        queue: tokio::sync::mpsc::Sender<crate::watch::Queued>,
+        pause: std::time::Duration,
+    ) -> impl std::future::Future<Output = ()> + Send + 'static {
+        crate::watch::pump(
+            self.store.clone(),
+            self.who.clone(),
+            self.watch.clone(),
+            queue,
+            pause,
+        )
     }
 
     /// The position reads are pinned to, if any.
@@ -151,7 +176,10 @@ impl Session {
             .unwrap_or(PROTOCOL_VERSIONS[0]);
         json!({
             "protocolVersion": version,
-            "capabilities": {"tools": {"listChanged": self.notifies}},
+            "capabilities": {
+                "tools": {"listChanged": self.notifies},
+                "experimental": {"lakelands/changes": {}},
+            },
             "serverInfo": {"name": "lakelands", "version": env!("CARGO_PKG_VERSION")},
             "instructions": format!(
                 "This session serves one lake, `{}`. Every answer carries the position it was read or written at. Call `describe` to see what the lake holds.",
@@ -201,8 +229,6 @@ impl Session {
                 format!("there is no tool `{name}` for you in this lake"),
             )];
         };
-        let reshapes = matches!(spec.door, Door::DeclareType | Door::AddField)
-            || (spec.door == Door::Migrate && arguments.contains_key("report_id"));
         let outcome = match unknown_argument(&spec, arguments) {
             Some(fault) => Err(fault),
             None => self.door(&spec, arguments.clone()).await,
@@ -225,12 +251,9 @@ impl Session {
                 json!({"content": [{"type": "text", "text": text}], "isError": true})
             }
         };
-        let ok = answer["isError"] == false;
-        let mut out = vec![result(id, answer)];
-        if ok && reshapes && self.notifies {
-            out.push(json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}));
-        }
-        out
+        // A declaration's `tools/list_changed` is the pump's to send, to
+        // every session, when the feed shows it.
+        vec![result(id, answer)]
     }
 
     /// Pin reads: a read tool that names no `as_of` is read at the pin.
@@ -242,6 +265,9 @@ impl Session {
     }
 
     async fn door(&mut self, spec: &ToolSpec, a: Map<String, Value>) -> Result<Value, Fault> {
+        if matches!(spec.door, Door::Subscribe | Door::Unsubscribe) {
+            return self.subscription(&spec.door, &spec.name, a).await;
+        }
         if spec.door != Door::Pin {
             let a = match spec.door {
                 Door::Find { .. }
@@ -274,6 +300,52 @@ impl Session {
             (false, at) => Some(at.unwrap_or(head)),
         };
         Ok(json!({"position": head.0, "pinned": self.pin.map(|p| p.0)}))
+    }
+}
+
+impl Session {
+    /// `subscribe` and `unsubscribe`.
+    async fn subscription(
+        &mut self,
+        door: &Door,
+        label: &str,
+        a: Map<String, Value>,
+    ) -> Result<Value, Fault> {
+        let head = self.store.head().await?;
+        if *door == Door::Unsubscribe {
+            let _: Map<String, Value> = args(label, &a)?;
+            let next = self.watch.unsubscribe();
+            return Ok(json!({"position": head.0, "subscribed": false, "next": next.0}));
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct S {
+            #[serde(default)]
+            from: Option<Position>,
+            #[serde(default)]
+            kinds: Option<Vec<String>>,
+            #[serde(default)]
+            types: Option<Vec<lakelands_api::id::TypeName>>,
+        }
+        let s: S = args(label, &a)?;
+        let from = s.from.unwrap_or(head.next());
+        if from > head.next() {
+            return Err(Fault::Contract(Error::Refused {
+                field: Some("from".into()),
+                reason: Refusal::OutOfRange { head },
+            }));
+        }
+        let kinds = crate::watch::kinds(s.kinds).map_err(|bad| {
+            Fault::Arguments(
+                format!("`{label}` takes no kind `{bad}`"),
+                format!(
+                    "name kinds among {}",
+                    lakelands_api::tools::CHANGE_KINDS.join(", ")
+                ),
+            )
+        })?;
+        self.watch.subscribe(from, kinds, s.types);
+        Ok(json!({"position": head.0, "subscribed": true, "from": from.0}))
     }
 }
 

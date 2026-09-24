@@ -681,7 +681,13 @@ that relay elsewhere (a remote client, a bridge onto a bus) and need to
 know what they may release. The dedup key of a change is its lake and its
 position.
 
-**The webhook deliverer** is Lakelands' own consumer, in
+Lakelands has two consumers of its own: the MCP session's pump, which
+tells a session of the changes its principal may see
+(`lakelands-server`'s `watch`; `docs/hosting.md`), and the webhook
+deliverer below. Both read the feed as the host does, never through a
+door, and both keep their state on the host's side.
+
+**The webhook deliverer** is one of them, in
 `lakelands-backings`. `lakelands serve --mcp` runs one per endpoint of the
 `deliver` section of the root's `lakelands.json` and per lake that
 endpoint names, and only for the lakes the process holds as their

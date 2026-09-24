@@ -89,6 +89,12 @@ pub enum Door {
     /// `pin`: a door of the MCP session, not of the catalog. It pins
     /// `as_of` for the session's later reads until cleared.
     Pin,
+    /// `subscribe`: a door of the MCP session. The session is sent
+    /// `notifications/lakelands/changed` for every change it may see from a
+    /// position on.
+    Subscribe,
+    /// `unsubscribe`: ends the session's subscription.
+    Unsubscribe,
     /// `query`.
     Query,
     /// `search`.
@@ -127,6 +133,8 @@ pub struct ToolSpec {
 
 const DESCRIBE: &str = "describe";
 const PIN: &str = "pin";
+const SUBSCRIBE: &str = "subscribe";
+const UNSUBSCRIBE: &str = "unsubscribe";
 const QUERY: &str = "query";
 const SEARCH: &str = "search";
 const PROPOSE: &str = "propose";
@@ -137,11 +145,24 @@ const DECLARE_TYPE: &str = "declare_type";
 const ADD_FIELD: &str = "add_field";
 const MIGRATE: &str = "migrate";
 
+/// The kinds of change a session may subscribe to: the log's event kinds
+/// that change a record, or say something happened to one.
+pub const CHANGE_KINDS: [&str; 6] = [
+    "record_upserted",
+    "record_ingested",
+    "record_retired",
+    "output_recorded",
+    "trigger_fired",
+    "object_set_changed",
+];
+
 /// The names of the generic tools, which no type or verb may produce.
 /// The generator emits these constants and no other generic name.
-pub const GENERIC_TOOLS: [&str; 11] = [
+pub const GENERIC_TOOLS: [&str; 13] = [
     DESCRIBE,
     PIN,
+    SUBSCRIBE,
+    UNSUBSCRIBE,
     QUERY,
     SEARCH,
     PROPOSE,
@@ -787,6 +808,57 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
         door: Door::Pin,
     });
 
+    out.push(ToolSpec {
+        name: SUBSCRIBE.into(),
+        description: "Be told of changes without polling: from `from` on (by default, from now), this session is sent a `notifications/lakelands/changed` for every change of a record it may read, of the kinds and types asked (by default every kind, and every type it may read when the change happens). A notification names the position, the kind, the type, the key and the changed fields it may read; never a value. Subscribing again replaces the subscription; it ends with the session.".into(),
+        input_schema: obj(
+            props([
+                (
+                    "from",
+                    json!({"type": "integer", "minimum": 0,
+                           "description": "The first position to be told of; the one after the current head when left out."}),
+                ),
+                (
+                    "kinds",
+                    json!({"type": "array", "items": {"enum": CHANGE_KINDS},
+                           "description": "Only these kinds of change; every kind when left out."}),
+                ),
+                (
+                    "types",
+                    json!({"type": "array", "items": names(|t| t.may.find),
+                           "description": "Only these types, fixed now; every type readable at each change when left out."}),
+                ),
+            ]),
+            &[],
+        ),
+        output_schema: json!({
+            "type": "object",
+            "properties": {
+                "position": {"type": "integer"},
+                "subscribed": {"type": "boolean"},
+                "from": {"type": "integer"},
+            },
+            "required": ["position", "subscribed", "from"],
+        }),
+        door: Door::Subscribe,
+    });
+
+    out.push(ToolSpec {
+        name: UNSUBSCRIBE.into(),
+        description: "Stop being told of changes. Answers the position the session had reached, to subscribe `from` later.".into(),
+        input_schema: obj(props([]), &[]),
+        output_schema: json!({
+            "type": "object",
+            "properties": {
+                "position": {"type": "integer"},
+                "subscribed": {"type": "boolean"},
+                "next": {"type": "integer"},
+            },
+            "required": ["position", "subscribed", "next"],
+        }),
+        door: Door::Unsubscribe,
+    });
+
     if findable {
         let mut p = props([
             (
@@ -1118,6 +1190,8 @@ mod tests {
                 "query",
                 "reject",
                 "search",
+                "subscribe",
+                "unsubscribe",
             ]
         );
     }
@@ -1143,7 +1217,9 @@ mod tests {
                 "invoice_get",
                 "pin",
                 "query",
-                "search"
+                "search",
+                "subscribe",
+                "unsubscribe",
             ]
         );
     }
@@ -1204,7 +1280,8 @@ mod tests {
     fn twenty_types_offer_about_eighty_tools() {
         let types = (0..20).map(|i| ty(&format!("t{i}"), ALL, vec![])).collect();
         let t = tools_ok(&lake(types, vec![], LakeRights::default()));
-        assert_eq!(t.len(), 80 + 5); // describe, pin, query, search, propose
+        // describe, pin, subscribe, unsubscribe, query, search, propose
+        assert_eq!(t.len(), 80 + 7);
     }
 
     #[test]

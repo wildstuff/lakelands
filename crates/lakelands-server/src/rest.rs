@@ -64,7 +64,7 @@ const MAX_LINE: usize = 4 << 20;
 const FEED_BATCH: u32 = 256;
 /// A quiet feed sends a comment this often, so a proxy keeps it open and
 /// a closed connection is noticed.
-const KEEP_ALIVE: Duration = Duration::from_secs(15);
+pub(crate) const KEEP_ALIVE: Duration = Duration::from_secs(15);
 
 // ---------------------------------------------------------------- replies
 
@@ -811,7 +811,7 @@ impl Body for Chunks {
     }
 }
 
-fn streamed(content_type: &'static str, rx: mpsc::Receiver<Bytes>) -> Answer {
+pub(crate) fn streamed(content_type: &'static str, rx: mpsc::Receiver<Bytes>) -> Answer {
     let mut r = Response::new(Chunks(rx).boxed());
     r.headers_mut()
         .insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
