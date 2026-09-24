@@ -925,6 +925,62 @@ fn the_built_binary_serves_a_lake_over_mcp_on_stdio() {
     );
 }
 
+/// With a `server` section, `serve --mcp` still ends when its stdio client
+/// closes: the HTTP door beside it does not keep the process alive, and
+/// the lake's writer lease is free for the next command.
+#[test]
+fn serve_mcp_ends_with_its_stdio_client_even_with_a_server_section() {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let sh = Shell::on("binary-server", Backend::Store);
+    let root = sh.root.display().to_string();
+    let lakelands = env!("CARGO_BIN_EXE_lakelands");
+    let run = |args: &[&str]| {
+        Command::new(lakelands)
+            .args(["--root", root.as_str()])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["init"]).status.success());
+    assert!(run(&["lake", "new", "finance"]).status.success());
+    let file = sh.root.join("lakelands.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    config["server"] = serde_json::json!({"bind": "127.0.0.1:0"});
+    fs::write(&file, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+
+    let mut server = Command::new(lakelands)
+        .args(["--root", root.as_str(), "serve", "--mcp"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // The client goes away at once.
+    drop(server.stdin.take());
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = server.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() > Duration::from_secs(10) {
+            let _ = server.kill();
+            panic!("serve --mcp with a server section did not end with its client");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(status.success(), "serve --mcp exited with {status}");
+    // The lease is free: a write goes through.
+    let out = run(&["apply", &sh.fixture()]);
+    assert!(
+        out.status.success(),
+        "the next write was refused: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 #[test]
 fn help_is_plain_and_a_wrong_command_line_exits_2() {
     for backend in BACKENDS {
