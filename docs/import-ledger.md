@@ -63,6 +63,10 @@ At the tag the core crates hold **30,999** lines (`lakelands-core`
 `src/` with its inline tests), against the **70,000** the `core-size`
 gate allows. The roots above held 135,643 lines at the freeze.
 
+Since the PostgreSQL engine was imported, `core-size` counts
+`lakelands-engine-pg` too (the in-memory engine, written here, stays
+out): **35,356** lines on develop after it.
+
 ## Where the tree corrects the steps
 
 - **O2, cut:** the row counted 10,950. The tree adds `{types}/guards.rs`

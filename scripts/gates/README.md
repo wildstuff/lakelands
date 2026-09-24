@@ -21,7 +21,7 @@ what it counts.
 | `vocabulary` | the platform's words stay out of `src/` and every `.rs` under `crates/`; one of them stays out of the repository and its commit messages |
 | `single-catalog` | tool names come only from the generator in `lakelands-api` |
 | `seam-width` | the store facade (`LakeStore`) and the engine traits have at most 110 methods together |
-| `core-size` | core + store + sqlite engine at most 70k lines, against a ratchet base (`core-size.base`) that only moves down |
+| `core-size` | core + store + sqlite and pg engines at most 70k lines, against a ratchet base (`core-size.base`) that only moves down |
 | `conformance-required` | every engine crate is on `conformance/roster`, and CI runs the suite for every required one |
 | `dco` | every commit is signed off |
 | `no-external-decisions` | no citation of the platform's decision records, planning threads or issue numbers, in files or commit messages |

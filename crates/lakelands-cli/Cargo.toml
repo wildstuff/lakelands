@@ -19,7 +19,7 @@ lakelands-api.workspace = true
 lakelands-backings.workspace = true
 lakelands-core.workspace = true
 lakelands-engine-mem.workspace = true
-lakelands-engine-pg.workspace = true
+lakelands-engine-pg = { workspace = true, optional = true }
 lakelands-engine-sqlite.workspace = true
 lakelands-server = { path = "../lakelands-server" }
 lakelands-store.workspace = true
@@ -30,6 +30,12 @@ tokio = { workspace = true, features = ["rt", "sync", "macros", "time", "net", "
 [dev-dependencies]
 lakelands-mock.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[features]
+# The PostgreSQL engine links a database client; a build without it
+# (`--no-default-features`) opens SQLite and in-memory lakes only.
+default = ["pg"]
+pg = ["dep:lakelands-engine-pg"]
 
 [lints]
 workspace = true
