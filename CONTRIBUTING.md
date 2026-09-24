@@ -15,8 +15,15 @@ or have the right to submit it under the project's licence, Apache-2.0.
 git commit -s
 ```
 
-adds the line for you. Pull requests whose commits lack a sign-off are
-not merged; a bot checks it.
+adds the line for you. The `DCO` check is required on `develop` and
+`main`: every commit in a pull request, merge commits aside, must carry
+a `Signed-off-by:` line naming its author exactly as git records them,
+`Name <email>` (case does not matter). A commit made with a different
+name or email than the sign-off fails it. To fix the last commit, run
+`git commit --amend -s --no-edit` and force-push the branch; for several
+commits, `git rebase --signoff origin/develop` and force-push. The
+`gate (dco)` job applies the same rule, so `scripts/gates/dco.sh` shows
+the result before you push.
 
 ## Ground rules
 
