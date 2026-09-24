@@ -13,6 +13,7 @@ use lakelands_api::id::LakeId;
 use lakelands_api::location::{EngineConfig, Location};
 use lakelands_api::principal::{Grants, Principal, PrincipalKind};
 use lakelands_api::seam::{Credential, PrincipalResolver};
+use lakelands_server::HttpConfig;
 use lakelands_server::resolver::{Entry, StaticResolver};
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +34,10 @@ pub struct Config {
     /// Other principals, for `--as <name>` and for the server's callers.
     #[serde(default)]
     pub principals: Vec<Entry>,
+    /// The HTTP door: where it listens and which browser origins may
+    /// call it. Absent until the operator configures a server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<HttpConfig>,
 }
 
 /// An opened root.
@@ -63,6 +68,7 @@ pub fn init(dir: &Path, owner: &str) -> Result<(), Failure> {
         lakelands: 1,
         owner: owner.to_owned(),
         principals: Vec::new(),
+        server: None,
     };
     fs::create_dir_all(dir.join("lakes")).map_err(|e| io(dir, e))?;
     write_new(&file, &config)
@@ -213,10 +219,10 @@ impl Root {
                 "correct the file, or remove it and run `lakelands lake new` again",
             )
         })?;
-        if let EngineConfig::Sqlite { dir } = &mut location.engine {
-            if dir.is_relative() {
-                *dir = self.dir.join(&*dir);
-            }
+        if let EngineConfig::Sqlite { dir } = &mut location.engine
+            && dir.is_relative()
+        {
+            *dir = self.dir.join(&*dir);
         }
         Ok(location)
     }

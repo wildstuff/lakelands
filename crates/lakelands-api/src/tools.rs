@@ -12,7 +12,8 @@
 //! `<type>_retire`, each only if the principal may use it. Per verb: the
 //! verb's name. Generic: `describe`, `query`, `search`, `propose`,
 //! `proposals`, `accept`, `reject`, `declare_type`, `add_field`,
-//! `migrate`, each only if the principal may use it. A 20-type lake
+//! `migrate`, each only if the principal may use it, and `pin`, the MCP
+//! session's door for pinning `as_of` across a turn. A 20-type lake
 //! offers about 80 tools.
 //!
 //! Three doors of [`Catalog`](crate::Catalog) have no tool of their own:
@@ -64,6 +65,9 @@ pub enum Door {
     },
     /// `describe`.
     Describe,
+    /// `pin`: a door of the MCP session, not of the catalog. It pins
+    /// `as_of` for the session's later reads until cleared.
+    Pin,
     /// `query`.
     Query,
     /// `search`.
@@ -101,6 +105,7 @@ pub struct ToolSpec {
 }
 
 const DESCRIBE: &str = "describe";
+const PIN: &str = "pin";
 const QUERY: &str = "query";
 const SEARCH: &str = "search";
 const PROPOSE: &str = "propose";
@@ -113,8 +118,9 @@ const MIGRATE: &str = "migrate";
 
 /// The names of the generic tools, which no type or verb may produce.
 /// The generator emits these constants and no other generic name.
-pub const GENERIC_TOOLS: [&str; 10] = [
+pub const GENERIC_TOOLS: [&str; 11] = [
     DESCRIBE,
+    PIN,
     QUERY,
     SEARCH,
     PROPOSE,
@@ -610,6 +616,34 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
         door: Door::Describe,
     });
 
+    out.push(ToolSpec {
+        name: PIN.into(),
+        description: "Pin this session's reads to one position until cleared, so every read in a turn sees the same state: `as_of` pins that position, no argument pins the current head, `clear` removes the pin. A read's own `as_of` still wins; writes are never pinned.".into(),
+        input_schema: obj(
+            props([
+                (
+                    "as_of",
+                    json!({"type": "integer", "minimum": 0,
+                           "description": "The position to pin; the current head when left out."}),
+                ),
+                (
+                    "clear",
+                    json!({"type": "boolean", "description": "Remove the pin."}),
+                ),
+            ]),
+            &[],
+        ),
+        output_schema: json!({
+            "type": "object",
+            "properties": {
+                "position": {"type": "integer"},
+                "pinned": {"type": ["integer", "null"]},
+            },
+            "required": ["position", "pinned"],
+        }),
+        door: Door::Pin,
+    });
+
     if findable {
         let mut p = props([
             (
@@ -931,6 +965,7 @@ mod tests {
                 "invoice_retire",
                 "invoice_upsert",
                 "migrate",
+                "pin",
                 "proposals",
                 "propose",
                 "query",
@@ -955,7 +990,14 @@ mod tests {
         let t = tools_ok(&lake(vec![reader], vec![], LakeRights::default()));
         assert_eq!(
             names(&t),
-            ["describe", "invoice_find", "invoice_get", "query", "search"]
+            [
+                "describe",
+                "invoice_find",
+                "invoice_get",
+                "pin",
+                "query",
+                "search"
+            ]
         );
     }
 
@@ -1015,7 +1057,7 @@ mod tests {
     fn twenty_types_offer_about_eighty_tools() {
         let types = (0..20).map(|i| ty(&format!("t{i}"), ALL, vec![])).collect();
         let t = tools_ok(&lake(types, vec![], LakeRights::default()));
-        assert_eq!(t.len(), 80 + 4); // describe, query, search, propose
+        assert_eq!(t.len(), 80 + 5); // describe, pin, query, search, propose
     }
 
     #[test]

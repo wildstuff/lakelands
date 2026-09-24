@@ -456,7 +456,30 @@ fn a_principal_from_the_configuration_acts_under_its_grants() {
     );
     fails(
         &sh.run(&["ingest", &file, "--source", "bank", "--as", "reader"]),
-        "error: refused: you hold no grant for this\n  what to do: act as a principal whose grants allow it (--as), or ask the lake's owner for a grant\n",
+        "error: refused: you hold no grant for this\n  what to do: act as a principal whose grants allow it, or ask the lake's owner for a grant\n",
+    );
+}
+
+#[test]
+fn the_root_configuration_carries_the_http_door() {
+    let config: lakelands_cli::Config = serde_json::from_str(
+        r#"{"lakelands": 1, "owner": "owner", "principals": [],
+            "server": {"bind": "127.0.0.1:7700", "allowed_origins": ["http://localhost:3000"]}}"#,
+    )
+    .unwrap();
+    let server = config.server.expect("the server section reads");
+    assert_eq!(server.bind.port(), 7700);
+    assert_eq!(server.allowed_origins, ["http://localhost:3000"]);
+    assert_eq!(
+        server.session_idle_secs, 1800,
+        "sessions end after half an hour idle"
+    );
+    let unknown = serde_json::from_str::<lakelands_cli::Config>(
+        r#"{"lakelands": 1, "owner": "owner", "server": {"bind": "127.0.0.1:7700", "port": 1}}"#,
+    );
+    assert!(
+        unknown.is_err(),
+        "an unknown key in the server section is refused"
     );
 }
 

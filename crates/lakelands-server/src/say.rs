@@ -1,5 +1,7 @@
-//! What the CLI says when something goes wrong: a sentence on what
-//! happened, and one on what to do.
+//! What a door says when something goes wrong: a sentence on what
+//! happened, and one on what to do. The CLI prints it; the MCP server
+//! returns it as a tool error's text. One mapping, so the two doors
+//! never say different things about the same error.
 
 use std::fmt;
 
@@ -42,7 +44,7 @@ impl From<Error> for Failure {
         let todo = match &e {
             Error::Refused { reason, .. } => match reason {
                 Refusal::NotGranted => {
-                    "act as a principal whose grants allow it (--as), or ask the lake's owner for a grant"
+                    "act as a principal whose grants allow it, or ask the lake's owner for a grant"
                         .to_owned()
                 }
                 Refusal::WrongDoor => {

@@ -11,8 +11,9 @@
 #     would be assembled;
 #   - a format string that assembles one, `"{t}_find"`, `"{}_upsert"`;
 #   - a generic tool name (GENERIC below) on a line that names a tool
-#     (the line mentions `name` or `tool`), since the bare words are
-#     ordinary strings elsewhere.
+#     (the line mentions `name` or `tool` anywhere, inside an identifier
+#     such as `describe_tool` too), since the bare words are ordinary
+#     strings elsewhere.
 # Untracked files are checked too, so a local run sees new work.
 # Tests may compare against literal names; they read the generator's
 # output, they do not serve it.
@@ -20,7 +21,7 @@
 
 GENERATOR='crates/lakelands-api/src/tools'   # tools.rs or tools/
 DOORS='find|get|upsert|retire'
-GENERIC='describe|query|search|propose|proposals|accept|reject|declare_type|add_field|migrate'
+GENERIC='describe|pin|query|search|propose|proposals|accept|reject|declare_type|add_field|migrate'
 
 files=0
 while IFS= read -r -d '' file; do
@@ -37,7 +38,7 @@ while IFS= read -r -d '' file; do
         while (/"([^"\n]*\{[^}"\n]*\}_(?:$doors)\b[^"\n]*)"/g) {
             print "$file:$.: tool name assembled by \"$1\" outside the generator\n";
         }
-        if (/\b(?:name|tool)/i) {
+        if (/(?:name|tool)/i) {
             while (/"($generic)"/g) {
                 print "$file:$.: tool name \"$1\" outside the generator\n";
             }

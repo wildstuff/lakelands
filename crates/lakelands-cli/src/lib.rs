@@ -32,7 +32,7 @@ use lakelands_api::{LakeStore, WriteContext};
 
 mod commands;
 mod root;
-mod say;
+use lakelands_server::say;
 
 pub use root::{CONFIG, Config};
 pub use say::Failure;

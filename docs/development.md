@@ -20,6 +20,10 @@ separating today. When a test starts a server on a fixed port (the MCP
 HTTP door, a PostgreSQL service), give each slot its own port range,
 derived from its letter.
 
+The MCP HTTP door speaks plain HTTP in 0.1.0, with no TLS, and API keys
+travel in every request, so bind it to loopback or terminate TLS in
+front of it.
+
 ## The layout
 
 ```

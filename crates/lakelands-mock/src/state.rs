@@ -91,10 +91,10 @@ impl State {
                         }
                     }
                     for f in &migration.to.fields {
-                        if let Some(v) = rec.fields.get_mut(&f.name) {
-                            if let Some(c) = crate::value::convert(v, &f.ty) {
-                                *v = c;
-                            }
+                        if let Some(v) = rec.fields.get_mut(&f.name)
+                            && let Some(c) = crate::value::convert(v, &f.ty)
+                        {
+                            *v = c;
                         }
                     }
                 }

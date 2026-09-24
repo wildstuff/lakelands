@@ -386,10 +386,10 @@ fn check_patch<'a>(
         if !access(who, ty, f).writes() {
             return Err(on(name, Refusal::NotGranted));
         }
-        if !v.is_null() {
-            if let Some(message) = value::misfit(&f.ty, v, &st.value_types) {
-                return Err(on(name, Refusal::Constraint { message }));
-            }
+        if !v.is_null()
+            && let Some(message) = value::misfit(&f.ty, v, &st.value_types)
+        {
+            return Err(on(name, Refusal::Constraint { message }));
         }
     }
     Ok(t)
@@ -527,10 +527,10 @@ fn check_call<'a>(
                 },
             )
         })?;
-        if !val.is_null() {
-            if let Some(message) = value::misfit(&f.ty, val, &st.value_types) {
-                return Err(on(name, Refusal::Constraint { message }));
-            }
+        if !val.is_null()
+            && let Some(message) = value::misfit(&f.ty, val, &st.value_types)
+        {
+            return Err(on(name, Refusal::Constraint { message }));
         }
     }
     for f in v.payload.iter().filter(|f| f.required) {
@@ -1046,13 +1046,13 @@ impl Catalog for MockCatalog {
                 ));
             };
             let next = st.visible(who, &target).ok_or_else(|| no_type(&target))?;
-            if let Some(ty) = &step.ty {
-                if ty != &target {
-                    return Err(invalid(format!(
-                        "`{}` reaches `{target}`, not `{ty}`",
-                        step.relation
-                    )));
-                }
+            if let Some(ty) = &step.ty
+                && ty != &target
+            {
+                return Err(invalid(format!(
+                    "`{}` reaches `{target}`, not `{ty}`",
+                    step.relation
+                )));
             }
             let se = filter(&st, who, next, step.filter.as_ref())?;
             let reached = candidates(&st, who, next, pattern.at, se.as_ref())?;

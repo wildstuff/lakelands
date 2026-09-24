@@ -20,7 +20,7 @@ lakelands-core.workspace = true
 lakelands-server = { path = "../lakelands-server" }
 serde.workspace = true
 serde_json.workspace = true
-tokio = { version = "1", default-features = false, features = ["rt"] }
+tokio = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
 lakelands-mock.workspace = true

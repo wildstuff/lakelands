@@ -25,3 +25,4 @@ CLAUDE.local.md
 
 # Per-slot agent environment (see docs/development.md)
 .claude/settings.local.json
+*.actual
