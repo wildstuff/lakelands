@@ -55,9 +55,10 @@ fn label(d: &Declaration) -> String {
     }
 }
 
-/// `apply`: load an ontology bundle and declare what it holds, in the
-/// order the loader gives. A bundle with any problem is refused whole,
-/// every problem named against its file, and nothing is declared.
+/// `apply`: load an ontology bundle and apply what it holds as one set
+/// (`Catalog::apply`). A bundle the loader refuses, or a set the lake
+/// refuses, is refused whole, every problem named, and nothing is
+/// declared.
 pub async fn apply(
     out: Out<'_>,
     catalog: &dyn Catalog,
@@ -78,25 +79,27 @@ pub async fn apply(
             "correct the bundle and apply it again; nothing was applied",
         )
     })?;
-    let total = bundle.declarations.len();
-    for (i, d) in bundle.declarations.into_iter().enumerate() {
-        let what = label(&d);
-        match catalog.declare(who, d).await {
-            Ok(outcome) => put(
+    // The bundle is applied as one set: validated together, appended in
+    // one append at one position, or refused whole.
+    let what: Vec<String> = bundle.declarations.iter().map(label).collect();
+    match catalog.apply(who, bundle.declarations).await {
+        Ok(outcome) => {
+            put(
                 out,
-                format!("declared {what} at position {}", outcome.position()),
-            )?,
-            Err(e) => {
-                let mut f =
-                    Failure::from(e).about(format!("declaration {} of {total} ({what})", i + 1));
-                if i > 0 {
-                    f.todo = format!(
-                        "{}; the {i} declaration(s) before it stay applied",
-                        f.todo.trim_end_matches("; nothing was written")
-                    );
-                }
-                return Err(f);
+                format!(
+                    "applied {} declaration(s), in force from position {}:",
+                    what.len(),
+                    outcome.position()
+                ),
+            )?;
+            for w in what {
+                put(out, format!("  {w}"))?;
             }
+        }
+        Err(e) => {
+            let mut f = Failure::from(e);
+            f.todo = "correct the bundle and apply it again; nothing was applied".to_owned();
+            return Err(f);
         }
     }
     Ok(())

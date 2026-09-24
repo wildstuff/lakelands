@@ -18,8 +18,14 @@
 //!   the same event that changes one of its inputs;
 //! - grants fail closed: one field the principal may not write refuses
 //!   the whole write, a field of another authority is refused as the
-//!   wrong door, `sys.` types are reserved, and what the principal may
+//!   wrong door, declaring a `sys.` type is reserved (its records are
+//!   written under grants like any other), and what the principal may
 //!   not see is absent from `describe`, the tools and every read;
+//! - `declare` refuses a reference to a type the lake does not hold;
+//!   `apply` checks a set as one (a reference may point forward within
+//!   it, tool names are checked over all of it), appends it in one append
+//!   answered at its last position, or refuses it whole naming every
+//!   problem;
 //! - `expected_version` answers `Conflict` and writes nothing; an
 //!   idempotency key answers the first outcome and appends nothing;
 //! - every reply carries a position, and every write advances it;

@@ -65,7 +65,7 @@ macro_rules! door_checks {
             a_riskier_verb_is_proposed_and_accept_applies_it,
             a_rejected_proposal_writes_nothing_and_stays_decided,
             only_a_reviewer_decides_proposals,
-            sys_types_are_reserved,
+            sys_types_cannot_be_declared,
             a_retired_record_leaves_reads_but_not_its_past,
             a_narrow_writer_cannot_retire,
             a_proposer_sees_only_its_own_proposals,
@@ -76,7 +76,10 @@ macro_rules! door_checks {
             a_step_over_an_undeclared_relation_is_refused,
             a_dependent_field_declared_clear_is_cleared_with_its_input,
             two_writers_keep_each_others_fields,
-            per_field_meta_names_the_writer_and_the_position);
+            per_field_meta_names_the_writer_and_the_position,
+            apply_declares_a_set_in_one_append_with_forward_references,
+            apply_refuses_the_whole_set_naming_every_problem,
+            declare_refuses_a_reference_to_an_undeclared_type);
     };
     (@each $new:expr, $block_on:path; $($name:ident),* $(,)?) => {
         $(
@@ -1028,8 +1031,9 @@ pub async fn a_proposer_sees_only_its_own_proposals(store: Arc<dyn LakeStore>) {
     assert_eq!(list(f.cast.reviewer.clone()).await, [owners, clerks]);
 }
 
-/// An ordinary principal cannot declare or write a `sys.` type.
-pub async fn sys_types_are_reserved(store: Arc<dyn LakeStore>) {
+/// An ordinary principal cannot declare a `sys.` type; records of one are
+/// written under grants like any other.
+pub async fn sys_types_cannot_be_declared(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let decl = TypeDecl {
         name: "sys.setting".into(),
@@ -1047,18 +1051,6 @@ pub async fn sys_types_are_reserved(store: Arc<dyn LakeStore>) {
     let e = f
         .catalog
         .declare(&f.cast.owner, Declaration::Type(decl))
-        .await
-        .unwrap_err();
-    assert_eq!(refusal(&e).1, &Refusal::Reserved);
-    let e = f
-        .catalog
-        .upsert(
-            &f.cast.owner,
-            &ty("sys.setting"),
-            &key("k"),
-            patch(&[("value", json!("v"))]),
-            WriteOpts::default(),
-        )
         .await
         .unwrap_err();
     assert_eq!(refusal(&e).1, &Refusal::Reserved);
@@ -1400,4 +1392,115 @@ pub async fn per_field_meta_names_the_writer_and_the_position(store: Arc<dyn Lak
     );
     let plain = f.read(&f.cast.owner, "INV-1").await;
     assert!(plain.meta.is_empty(), "meta only when asked");
+}
+
+/// `apply` checks a set as one, so a reference may point forward within
+/// it, and appends it in one go: the answer names the last position,
+/// every declaration is in force from there.
+pub async fn apply_declares_a_set_in_one_append_with_forward_references(store: Arc<dyn LakeStore>) {
+    let catalog = store.catalog(WriteContext::default());
+    let cast = Cast::of(store.lake());
+    let before = store.head().await.unwrap();
+    // Verbs first, then `invoice`, which refers to `partner`, declared last.
+    let mut set = fixture();
+    set.reverse();
+    let n = set.len() as u64;
+    let o = catalog.apply(&cast.owner, set).await.unwrap();
+    assert_eq!(
+        o.position(),
+        Position(before.0 + n),
+        "one append, answered at its last position"
+    );
+    assert_eq!(store.head().await.unwrap(), o.position());
+    let d = catalog
+        .describe(&cast.owner, ReadAt::default())
+        .await
+        .unwrap()
+        .data;
+    // A lake may hold system types of its own from the start.
+    let mut names: Vec<&str> = d
+        .types
+        .iter()
+        .map(|t| t.name.as_str())
+        .filter(|n| !n.starts_with("sys."))
+        .collect();
+    names.sort();
+    assert_eq!(names, [INVOICE, PARTNER]);
+    assert_eq!(d.verbs.len(), 2);
+}
+
+/// A set with any problem is refused whole, one refusal naming every
+/// problem, and nothing of it is appended.
+pub async fn apply_refuses_the_whole_set_naming_every_problem(store: Arc<dyn LakeStore>) {
+    let catalog = store.catalog(WriteContext::default());
+    let cast = Cast::of(store.lake());
+    let before = store.head().await.unwrap();
+    let mut set = fixture();
+    let ghost: Declaration = serde_json::from_value(json!({
+        "declare": "verb", "name": "haunt", "on": "ghost", "risk": "low",
+        "effect": "write", "set": []
+    }))
+    .unwrap();
+    set.push(ghost);
+    set.push(set[0].clone());
+    let e = catalog.apply(&cast.owner, set).await.unwrap_err();
+    assert_eq!(
+        store.head().await.unwrap(),
+        before,
+        "nothing of a refused set is appended"
+    );
+    let message = match &e {
+        Error::Refused {
+            reason: Refusal::Invalid { message },
+            ..
+        } => message.clone(),
+        other => {
+            panic!("a set with two problems is refused as invalid, naming both; got {other:?}")
+        }
+    };
+    assert!(message.contains("verb haunt"), "{message}");
+    assert!(message.contains("type partner"), "{message}");
+    let d = catalog
+        .describe(&cast.owner, ReadAt::default())
+        .await
+        .unwrap()
+        .data;
+    assert!(
+        d.types.iter().all(|t| t.name.as_str().starts_with("sys.")),
+        "no type of the refused set is declared"
+    );
+}
+
+/// `declare` takes one declaration at a time, so a reference must point
+/// to a type the lake already holds.
+pub async fn declare_refuses_a_reference_to_an_undeclared_type(store: Arc<dyn LakeStore>) {
+    let catalog = store.catalog(WriteContext::default());
+    let cast = Cast::of(store.lake());
+    let before = store.head().await.unwrap();
+    // `invoice` refers to `partner`, which is not declared yet.
+    let invoice = fixture()
+        .into_iter()
+        .find(|d| matches!(d, Declaration::Type(t) if t.name.as_str() == INVOICE))
+        .unwrap();
+    let e = catalog
+        .declare(&cast.owner, invoice.clone())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            e,
+            Error::Refused {
+                reason: Refusal::Invalid { .. },
+                ..
+            }
+        ),
+        "a dangling reference is refused as invalid; got {e:?}"
+    );
+    assert_eq!(store.head().await.unwrap(), before);
+    let partner = fixture()
+        .into_iter()
+        .find(|d| matches!(d, Declaration::Type(t) if t.name.as_str() == PARTNER))
+        .unwrap();
+    catalog.declare(&cast.owner, partner).await.unwrap();
+    catalog.declare(&cast.owner, invoice).await.unwrap();
 }
