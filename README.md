@@ -69,7 +69,8 @@ each relation carried by link records, plus one tool per declared verb,
 `describe`, `query` and `search`. Rights can remove a door as well
 as narrow it: a type whose fields all come from a source has no
 `upsert`. Beside them an agent sees the lake's other doors: `pin` for
-the position its turn reads at, `propose`, `proposals`, `accept` and
+the position its turn reads at, `subscribe` and `unsubscribe` to be told
+of changes without polling, `propose`, `proposals`, `accept` and
 `reject` for writes that wait for a review, and `declare_type`,
 `add_field` and `migrate` for the schema. Served over MCP (stdio and
 HTTP) and REST from one catalog. Agents never write a query language.
@@ -81,9 +82,10 @@ HTTP) and REST from one catalog. Agents never write a query language.
 > (`docs/rest.md`), the PostgreSQL engine, the OpenAI-compatible
 > embedding client, the `http` and `exec` function backings, the webhook
 > deliverer, relations with fields of their own, carried by link
-> records, aging by date (`lakelands age`), and retracting a source as
-> one act (`lakelands purge`). The ticker that runs aging daily, MCP
-> notifications, and the mirror between lakes come after.
+> records, aging by date (`lakelands age`), retracting a source as one
+> act (`lakelands purge`), and MCP notifications of the changes a
+> session may see. The ticker that runs aging daily and the mirror
+> between lakes come after.
 
 ## Try it
 
@@ -164,7 +166,7 @@ format, per-field provenance, positions on every answer, the engine
 contract and the seams. What came right after arrived through those
 seams without changing them: the PostgreSQL engine, the REST door, the
 OpenAI-compatible embedding client and webhook delivery of fired
-triggers and set changes, all in `0.2.0`; MCP notifications follow. The repository goes public once The Wild runs on a
+triggers and set changes, and MCP notifications, all in `0.2.0`. The repository goes public once The Wild runs on a
 tagged Lakelands.
 
 ## Licence

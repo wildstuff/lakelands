@@ -22,7 +22,7 @@
 
 GENERATOR='crates/lakelands-api/src/tools'   # tools.rs or tools/
 DOORS='find|get|upsert|retire|link|unlink'
-GENERIC='describe|pin|query|search|propose|proposals|accept|reject|declare_type|add_field|migrate'
+GENERIC='describe|pin|subscribe|unsubscribe|query|search|propose|proposals|accept|reject|declare_type|add_field|migrate'
 
 files=0
 while IFS= read -r -d '' file; do

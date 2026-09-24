@@ -100,7 +100,25 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   endpoints, and the process that writes a lake posts its fired triggers
   and object-set changes to them, in order, signed and retried, keeping
   its position and journal under `deliveries/` in the root (`docs/seams.md`
-  §`ChangeFeed`). See `docs/decisions/004-the-change-feed-is-the-log.md`.
+  §`ChangeFeed`). An agent on MCP is told of changes without polling:
+  every session receives `notifications/tools/list_changed` when the
+  lake's declarations change. After the `subscribe` tool, it also
+  receives `notifications/lakelands/changed` for each change of a record
+  its principal may read. Without a list of types, the types are the ones
+  it may read when each change happens, so a type declared later is
+  included; a list given to `subscribe` is fixed. A notification names
+  the position, kind, type, key and the changed fields it is shown, never
+  a value. A trigger's firing or an object set's change is told only to
+  a principal who reads every field of the type in full, since its
+  condition may read any of them. That rule sends less than one that
+  asks only for the fields the condition reads, never more; a
+  condition-exact rule may follow. On stdio these
+  come on the same stream. On streamable HTTP they come on the session's
+  event stream, a `GET` under its own key, which resumes after
+  `Last-Event-ID`. A client that does not read makes its session lag;
+  nothing is dropped. Delivery is at least once: when a session
+  subscribes again, at most one change already on its way may be told
+  twice, and each carries its position to deduplicate by. See `docs/decisions/004-the-change-feed-is-the-log.md`.
 - **`SystemVocabulary`.** The host registers its own `sys.*` types and
   says which lakes may hold them; each time a writer opens a lake, the
   store declares the allowed types it does not hold yet.

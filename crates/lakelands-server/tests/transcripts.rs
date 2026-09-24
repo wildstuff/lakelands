@@ -4,6 +4,10 @@
 //! expected (`<`). The server's wire format is pinned here, independently
 //! of any client library, so a change in a client can never move it.
 //!
+//! Notifications are not in these transcripts: they come when a session's
+//! pump reads the feed, not in step with the requests, and
+//! `tests/notify.rs` checks them.
+//!
 //! A transcript with requests but no answers is recorded: the test
 //! writes the answers into the file and fails, asking for the file to be
 //! read and committed.
@@ -66,6 +70,12 @@ async fn stdio_answers_byte_for_byte_on(backend: Backend) {
                 .unwrap();
             if out.contains("\"id\":\"fence\"") {
                 break;
+            }
+            // Notifications come when the session's pump reads the feed, not
+            // in step with the requests: `tests/notify.rs` holds them.
+            if serde_json::from_str::<serde_json::Value>(&out).is_ok_and(|m| m.get("id").is_none())
+            {
+                continue;
             }
             write!(recorded, "< {out}").unwrap();
         }

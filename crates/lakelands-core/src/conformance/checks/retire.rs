@@ -1,5 +1,6 @@
 //! Who may retire a record (`docs/decisions/006-grants-not-roles.md`,
-//! `lakelands_api::describe::TypeRights`).
+//! `lakelands_api::describe::TypeRights`), and what a read before the
+//! retirement still sees.
 
 use std::sync::Arc;
 
@@ -9,7 +10,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, declare, doors, field, field_writer, head_unmoved, owner, type_decl, upsert,
+    Must, declare, doors, field, field_writer, get_at, head_unmoved, owner, type_decl, upsert,
 };
 
 check!(
@@ -83,6 +84,12 @@ async fn a_type_whose_fields_all_come_from_a_source_has_no_upsert(
     );
     Ok(())
 }
+
+check!(
+    /// A retired record is readable just before its retirement.
+    READABLE_BEFORE_RETIREMENT = a_record_retired_at_a_position_is_readable_just_before_it,
+    "009 and 001: a read at the position before a retirement sees the record as it was, to a principal who could read it then; a session told of the retirement reads it there"
+);
 
 async fn a_principal_who_may_write_only_some_fields_cannot_retire(
     store: Arc<dyn LakeStore>,
@@ -159,5 +166,56 @@ async fn a_principal_who_may_write_only_some_fields_cannot_retire(
     cat.retire(&all, &invoice, &"i".into(), WriteOpts::default())
         .await
         .must("retiring `i` as a principal who may write every field")?;
+    Ok(())
+}
+
+async fn a_record_retired_at_a_position_is_readable_just_before_it(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    declare(
+        cat.as_ref(),
+        &own,
+        type_decl("invoice", vec![field("status", StorageKind::Text)]),
+    )
+    .await?;
+    upsert(
+        cat.as_ref(),
+        &own,
+        "invoice",
+        "i1",
+        json!({"status": "open"}),
+    )
+    .await?;
+    let reader = field_writer(store.as_ref(), "reader", "invoice", &[]);
+    let invoice = TypeName::from("invoice");
+    let retired = cat
+        .retire(&own, &invoice, &"i1".into(), WriteOpts::default())
+        .await
+        .must("retiring `i1`")?
+        .position();
+    let before = lakelands_api::Position(retired.0 - 1);
+    let then = cat
+        .get(&reader, &invoice, get_at("i1", Some(before)))
+        .await
+        .must(&format!(
+            "reading `i1` at {before}, just before its retirement"
+        ))?
+        .data;
+    ensure!(
+        then.fields.get("status") == Some(&json!("open")),
+        "`i1` was retired at {retired}; a reader reading it at {before} must see it as it was, \
+         `status` \"open\"; it read {:?}",
+        then.fields
+    );
+    let now = cat
+        .get(&reader, &invoice, get_at("i1", Some(retired)))
+        .await;
+    ensure!(
+        matches!(now, Err(Error::NotFound { .. })),
+        "at {retired}, the position of its retirement, `i1` is gone; the read answered {:?}",
+        now.map(|r| r.data.key)
+    );
     Ok(())
 }

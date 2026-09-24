@@ -140,6 +140,7 @@ pub const ALL: &[Check] = &[
     feed::OBJECT_SET_CHANGES,
     feed::PAGED_FROM_NEXT,
     retire::RETIRE_NEEDS_EVERY_FIELD,
+    retire::READABLE_BEFORE_RETIREMENT,
     ingest::REVERT_IS_A_CHANGE,
     views::VIEW_KEY_IS_ITS_GROUP,
     keys::KEY_AND_KEY_FIELDS_AGREE,

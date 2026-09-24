@@ -9,9 +9,15 @@
 //!   a session and answers its id in `Mcp-Session-Id`. Every later
 //!   request names that session and presents the same key.
 //! - A request is answered with one JSON response; a notification or a
-//!   client response with `202 Accepted`. The server offers no SSE
-//!   stream yet, so `GET` is `405`; the session already hands back every
-//!   message it would stream.
+//!   client response with `202 Accepted`.
+//! - `GET` with the session's id opens the session's event stream: its
+//!   notifications ([`crate::watch`]) as server-sent events, a change's
+//!   `id` its position. The `GET` is let in like every request, and only
+//!   the session's own key opens its stream. A session has one stream: a
+//!   second `GET` replaces the first. `Last-Event-ID` resumes the
+//!   session's changes after that position. Until a stream is open, the
+//!   notifications wait in the session's queue, and a full queue stops
+//!   its pump from reading further: the session lags, nothing is lost.
 //! - `DELETE` with the session's id ends it, and a session unused for
 //!   `session_idle_secs` ends by itself. A session is its lake's and its
 //!   key's: named by anyone else, it is answered as unknown.
@@ -38,12 +44,16 @@ use hyper::{HeaderMap, Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use lakelands_api::error::Result;
 use lakelands_api::id::LakeId;
+use lakelands_api::id::Position;
 use lakelands_api::read::POSITION_HEADER;
 use lakelands_api::seam::{Credential, PrincipalResolver};
 use lakelands_api::{LakeStore, Principal};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::net::TcpListener;
+use tokio::sync::{Notify, mpsc};
+
+use crate::watch::{QUEUE, Queued};
 
 use crate::resolver::same_key;
 use crate::rest::Answer;
@@ -99,6 +109,34 @@ struct Slot {
     key: String,
     last_used: Mutex<Instant>,
     session: tokio::sync::Mutex<Session>,
+    /// What the session's pump has queued for its stream.
+    outbox: Arc<tokio::sync::Mutex<mpsc::Receiver<Queued>>>,
+    /// Ends the stream that is open, when another opens.
+    stream: Mutex<Arc<Notify>>,
+    watch: Arc<crate::watch::Watch>,
+    pump: tokio::task::JoinHandle<()>,
+    /// A tools change the stream could not deliver: it closed as the
+    /// change was sent. Such a change has no position to resume from, so
+    /// the next stream opens with it.
+    tools_owed: std::sync::atomic::AtomicBool,
+}
+
+impl Slot {
+    /// End the session's open stream and its pump: the session ended, by
+    /// `DELETE`, by a new `initialize` in its place, or idle.
+    fn end(&self) {
+        self.stream
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .notify_one();
+        self.pump.abort();
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.end();
+    }
 }
 
 impl Slot {
@@ -333,7 +371,11 @@ impl State {
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         sessions.retain(|_, s| {
             let used = *s.last_used.lock().unwrap_or_else(|e| e.into_inner());
-            used.elapsed() < self.idle
+            let live = used.elapsed() < self.idle;
+            if !live {
+                s.end();
+            }
+            live
         });
         sessions
     }
@@ -375,14 +417,14 @@ async fn handle(state: &State, req: Request<Incoming>) -> Answer {
         {
             crate::rest::handle(state, req, rest).await
         }
-        _ => mcp(state, req).await.map(BodyExt::boxed),
+        _ => mcp(state, req).await,
     }
 }
 
-async fn mcp(state: &State, req: Request<Incoming>) -> Response<Full<Bytes>> {
+async fn mcp(state: &State, req: Request<Incoming>) -> Answer {
     let key = match admit(state, req.headers()) {
         Ok(k) => k,
-        Err(t) => return t.to_mcp(),
+        Err(t) => return t.to_mcp().map(BodyExt::boxed),
     };
     let lake = match req
         .uri()
@@ -396,10 +438,12 @@ async fn mcp(state: &State, req: Request<Incoming>) -> Response<Full<Bytes>> {
                 StatusCode::NOT_FOUND,
                 code::INVALID_REQUEST,
                 "MCP is served at /lakes/<id>/mcp",
-            );
+            )
+            .map(BodyExt::boxed);
         }
     };
-    match *req.method() {
+    let answer = match *req.method() {
+        Method::GET => return stream(state, &lake, &key, &req),
         Method::POST => post(state, lake, key, req).await,
         Method::DELETE => {
             let Some(id) = header(req.headers(), SESSION_HEADER).map(str::to_owned) else {
@@ -407,11 +451,14 @@ async fn mcp(state: &State, req: Request<Incoming>) -> Response<Full<Bytes>> {
                     StatusCode::BAD_REQUEST,
                     code::INVALID_REQUEST,
                     "name the session to end in Mcp-Session-Id",
-                );
+                )
+                .map(BodyExt::boxed);
             };
             match state.session(&id, &lake, &key) {
                 Some(_) => {
-                    state.sessions().remove(&id);
+                    if let Some(slot) = state.sessions().remove(&id) {
+                        slot.end();
+                    }
                     respond(StatusCode::NO_CONTENT, None)
                 }
                 None => unknown_session(),
@@ -421,12 +468,135 @@ async fn mcp(state: &State, req: Request<Incoming>) -> Response<Full<Bytes>> {
             let mut r = refuse(
                 StatusCode::METHOD_NOT_ALLOWED,
                 code::INVALID_REQUEST,
-                "this server takes POST and DELETE; it offers no event stream yet",
+                "this server takes GET, POST and DELETE",
             );
             r.headers_mut()
-                .insert("allow", HeaderValue::from_static("POST, DELETE"));
+                .insert("allow", HeaderValue::from_static("GET, POST, DELETE"));
             r
         }
+    };
+    answer.map(BodyExt::boxed)
+}
+
+/// `GET`: the session's event stream.
+fn stream(state: &State, lake: &LakeId, key: &str, req: &Request<Incoming>) -> Answer {
+    let h = req.headers();
+    if let Some(accept) = header(h, ACCEPT)
+        && !(accept.contains("text/event-stream") || accept.contains("*/*"))
+    {
+        return refuse(
+            StatusCode::NOT_ACCEPTABLE,
+            code::INVALID_REQUEST,
+            "the event stream is text/event-stream",
+        )
+        .map(BodyExt::boxed);
+    }
+    let Some(id) = header(h, SESSION_HEADER) else {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            code::INVALID_REQUEST,
+            "name the session whose stream to open in Mcp-Session-Id",
+        )
+        .map(BodyExt::boxed);
+    };
+    // Only the session's own key opens its stream; another key's session is
+    // answered as unknown, as for every request.
+    let Some(slot) = state.session(id, lake, key) else {
+        return unknown_session().map(BodyExt::boxed);
+    };
+    let resume = match header(h, "last-event-id").map(str::trim) {
+        None => None,
+        Some(id) => match id.parse::<u64>().ok().and_then(|p| p.checked_add(1)) {
+            Some(p) => Some(Position(p)),
+            None => {
+                return refuse(
+                    StatusCode::BAD_REQUEST,
+                    code::INVALID_REQUEST,
+                    "`Last-Event-ID` names no position after which to resume",
+                )
+                .map(BodyExt::boxed);
+            }
+        },
+    };
+    // A second stream replaces the first.
+    let ends = Arc::new(Notify::new());
+    let before = std::mem::replace(
+        &mut *slot.stream.lock().unwrap_or_else(|e| e.into_inner()),
+        ends.clone(),
+    );
+    before.notify_one();
+    let (tx, rx) = mpsc::channel::<Bytes>(16);
+    // The first bytes at once: the stream is open before anything changes.
+    let _ = tx.try_send(Bytes::from_static(b": open\n\n"));
+    tokio::spawn(forward(slot, ends, resume, tx));
+    let mut r = crate::rest::streamed("text/event-stream", rx);
+    r.headers_mut()
+        .insert("cache-control", HeaderValue::from_static("no-store"));
+    r
+}
+
+/// Carry a session's queued notifications onto its open stream, until the
+/// stream closes or another replaces it.
+async fn forward(
+    slot: Arc<Slot>,
+    ends: Arc<Notify>,
+    resume: Option<Position>,
+    tx: mpsc::Sender<Bytes>,
+) {
+    // The queue is held by one stream at a time: the one this replaced
+    // has let go of it when this gets it.
+    let mut outbox = tokio::select! {
+        o = slot.outbox.lock() => o,
+        _ = ends.notified() => return,
+    };
+    // Only now does the pump start again from after the resumed
+    // position, so nothing it makes for the new subscription can reach
+    // the stream this replaced. Changes queued before are dropped as
+    // stale by their tag.
+    if let Some(from) = resume {
+        slot.watch.resume(from);
+    }
+    use std::sync::atomic::Ordering;
+    // A tools change a closing stream could not take comes first.
+    if slot.tools_owed.swap(false, Ordering::SeqCst) {
+        let owed = json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"});
+        if tx.send(event(&owed)).await.is_err() {
+            slot.tools_owed.store(true, Ordering::SeqCst);
+            return;
+        }
+    }
+    loop {
+        let (bytes, tools) = tokio::select! {
+            _ = ends.notified() => return,
+            _ = tx.closed() => return,
+            m = outbox.recv() => match m {
+                None => return,
+                // Made for a subscription since replaced or ended.
+                Some(q) if !slot.watch.current(&q) => continue,
+                Some(q) => (event(&q.message), q.generation.is_none()),
+            },
+            _ = tokio::time::sleep(crate::rest::KEEP_ALIVE) => (Bytes::from_static(b": keep-alive\n\n"), false),
+        };
+        if tx.send(bytes).await.is_err() {
+            // A change comes back after `Last-Event-ID`; a tools change
+            // has no position, so the next stream is owed it.
+            if tools {
+                slot.tools_owed.store(true, Ordering::SeqCst);
+            }
+            return;
+        }
+        // An open stream keeps its session in use.
+        *slot.last_used.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+    }
+}
+
+/// One notification as a server-sent event; a change's `id` is its
+/// position.
+fn event(m: &Value) -> Bytes {
+    let data = serde_json::to_string(m).expect("JSON prints");
+    match m["params"]["position"].as_u64() {
+        Some(p) => format!("id: {p}\ndata: {data}\n\n").into(),
+        None => format!("data: {data}\n\n").into(),
     }
 }
 
@@ -491,7 +661,7 @@ async fn post(
                 );
             }
         };
-        let mut session = Session::new(store, who, false);
+        let mut session = Session::new(store, who, true);
         let answers = session.handle(msg).await;
         let answer = answers.first();
         let mut r = respond(StatusCode::OK, answer);
@@ -502,9 +672,13 @@ async fn post(
             // Initializing again under a session of one's own replaces it.
             if let Some(old) = &session_id
                 && sessions.get(old).is_some_and(|s| s.owned_by(&lake, &key))
+                && let Some(slot) = sessions.remove(old)
             {
-                sessions.remove(old);
+                slot.end();
             }
+            let (tx, outbox) = mpsc::channel(QUEUE);
+            let pump = tokio::spawn(session.pump(tx, state.feed_poll));
+            let watch = session.watch();
             sessions.insert(
                 sid.clone(),
                 Arc::new(Slot {
@@ -512,6 +686,11 @@ async fn post(
                     key,
                     last_used: Mutex::new(Instant::now()),
                     session: tokio::sync::Mutex::new(session),
+                    outbox: Arc::new(tokio::sync::Mutex::new(outbox)),
+                    stream: Mutex::new(Arc::new(Notify::new())),
+                    watch,
+                    pump,
+                    tools_owed: std::sync::atomic::AtomicBool::new(false),
                 }),
             );
             r.headers_mut().insert(
