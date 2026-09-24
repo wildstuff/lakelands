@@ -9,9 +9,12 @@ contract is right and this page is wrong.
 
 ## What a host implements
 
-Lakelands has seven seams. A host implements the ones it needs; every
-seam has a default, so a host that implements none still has a working
-store.
+Lakelands has seven seams. A host implements the ones it needs and
+passes them in `Seams`; every one but the engine has a default, and for
+the engine a host passes Lakelands' own openers. A host that passes
+those and nothing else has a working store. Two seams point the other
+way: the doors hold the `PrincipalResolver`, and the store provides the
+`ChangeFeed` for the host to read.
 
 - **Engine** (`LakeEngine`, `ProjectionStore`, `ProjectionView`, with
   `VectorIndex` beside it as the engine's index trait). Usually nothing
@@ -23,29 +26,40 @@ store.
   Grants are per field and per principal, and the store enforces them
   on every read and write, so the host never gates reads or writes
   itself. See `docs/decisions/006-grants-not-roles.md`.
-- **`FunctionBacking`.** A backing is an open token; `0.1.0` ships
-  `expr`, the built-in evaluator, and `http` and `exec` follow. A host
-  may add its own backing kind. Its output is recorded as a
-  provenance-stamped record and read back on replay, never recomputed.
-  See `docs/decisions/002-determinism-is-the-boundary.md`.
+- **`FunctionBacking`.** A backing is an open token. `0.1.0` ships
+  `expr`, the built-in evaluator, and it is the only backing that
+  computes fields in `0.1.0`: a field computed by another backing is
+  refused as `Unbound` when it is declared. `http` and `exec` follow,
+  and a host may add its own kind then; each output of such a backing is
+  recorded in the log (`output_recorded`) and read back on replay, never
+  recomputed. See `docs/decisions/002-determinism-is-the-boundary.md`.
 - **`EmbedBackend`.** A host may pass vectors in with its writes or
-  plug in an embedding client. `0.1.0` searches lexically and over
-  caller-supplied vectors; an OpenAI-compatible client follows right
-  after.
-- **`VerbExecutor`.** A verb declared `low` risk that writes authored
-  fields runs in the store; any other verb lands as `WriteProposed`.
-  The host decides what happens next, and the store records `accept`
-  and `reject` as events. Without a bound executor, a verb that
-  reaches outside the lake is refused, not faked. See
+  plug in an embedding client. In `0.1.0` a bound backend embeds the
+  query text of a hybrid search that brings no vector of its own, which
+  is a read and records nothing; without one, search is lexical and over
+  caller-supplied vectors. Embedding fields as they are written, and an
+  OpenAI-compatible client, follow right after.
+- **`VerbExecutor`.** A verb declared `low` runs at once; any other
+  lands as `WriteProposed`, and the store records `accept` and `reject`
+  as events. A verb that writes authored fields runs in the store; a
+  verb that reaches outside the lake runs through the executor the host
+  bound for it, with the lake and the position that made it due as the
+  dedup key. The executor gets the record unmasked; a host that wants it
+  to see only what the caller may see applies the caller's grants there. The executor's answer is recorded in the log; a failure is
+  recorded as `{"error": …}`, the write that made the verb due stands,
+  and the caller gets the recorded answer either way. Without a bound
+  executor such a verb is refused as `Unbound`, not faked. See
   `docs/decisions/013-verbs-run-by-declared-risk.md`.
-- **`ChangeFeed`.** The host reads the log, filtered by kind, from a
-  position, and acknowledges on its own side. The host keeps the
+- **`ChangeFeed`.** The host reads the store's feed: the log, filtered
+  by kind and type, from a position; each poll answers at once with the
+  position to poll from next. It acknowledges on its own side. The host keeps the
   position it has read up to; the store keeps no consumer state. A relay onto a message bus is the
   host's code, never Lakelands'; the dedup key of a change is
   `{lake}:{position}`. See `docs/decisions/004-the-change-feed-is-the-log.md`.
 - **`SystemVocabulary`.** The host registers its own `sys.*` types and
-  says which lakes may hold them. Lakelands reserves only the four types
-  its own fold reads. See `docs/decisions/003-reservation-by-namespace.md`.
+  says which lakes may hold them; each time a writer opens a lake, the
+  store declares the allowed types it does not hold yet.
+  Lakelands reserves only the four types its own fold reads. See `docs/decisions/003-reservation-by-namespace.md`.
 
 **Configuration is not a seam.** Engine configuration, tuning, limits
 and an optional key handle reach a lake through `Location`, and a
