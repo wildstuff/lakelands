@@ -33,14 +33,14 @@
 //!   stored values, so changing them is not a declaration either.
 
 use lakelands_api::expr::{Condition, Expr};
-use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl, VerbEffect};
+use lakelands_api::ontology::{Authority, FieldDecl, StorageKind, TypeDecl, VerbEffect};
 use lakelands_api::tools::name_problems;
 use lakelands_api::write::Declaration;
-use lakelands_api::{Error, FieldName, Refusal, Result, TypeName, VerbName};
+use lakelands_api::{Error, FieldName, Refusal, RelationName, Result, TypeName, VerbName};
 use lakelands_core::expr::{Place, check, parse};
 use lakelands_core::rights::is_system;
 use lakelands_core::shape::{self, Change};
-use lakelands_core::{derive, names, value};
+use lakelands_core::{derive, links, names, value};
 
 use crate::ontology::Ontology;
 
@@ -221,10 +221,57 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
     }
     for r in &t.relations {
         name("relation", r.name.as_str())?;
-        if r.via.is_none() || !r.fields.is_empty() {
+        // A relation is carried by its `via` field or by link records,
+        // never both (`docs/decisions/035-a-link-is-a-record.md`).
+        if r.via.is_some() && !r.fields.is_empty() {
             return Err(invalid(format!(
-                "{owner}, relation `{}`: in this release a relation is carried by a reference field \
-                 named in `via`, and has no link fields of its own",
+                "{owner}, relation `{}`: a relation carried by `via` has no fields of its own; \
+                 fields belong to a relation carried by link records, declared without `via`",
+                r.name
+            )));
+        }
+        if !matches!(r.authority, Authority::Authored | Authority::Source) {
+            return Err(invalid(format!(
+                "{owner}, relation `{}`: its links are written by `authored` or `source`, not \
+                 `{:?}`",
+                r.name, r.authority
+            )));
+        }
+        if r.authority == Authority::Source
+            && let Some(f) = r
+                .fields
+                .iter()
+                .find(|f| !matches!(f.authority, Authority::Source | Authority::Derived))
+        {
+            return Err(invalid_field(
+                &f.name,
+                format!(
+                    "{owner}, relation `{}`: its links arrive from a source, so its field `{}` is \
+                     `source` (or derived); an `{:?}` field of a link no door could write",
+                    r.name, f.name, f.authority
+                ),
+            ));
+        }
+        if let Some(f) = r
+            .fields
+            .iter()
+            .find(|f| f.name.as_str() == links::FROM || f.name.as_str() == links::TO)
+        {
+            return Err(invalid(format!(
+                "{owner}, relation `{}`: a link's `{}` is its end; the relation cannot name a field \
+                 of its own so",
+                r.name, f.name
+            )));
+        }
+        if let Some(before) = o
+            .types
+            .get(&t.name)
+            .and_then(|e| e.decl.relations.iter().find(|b| b.name == r.name))
+            && before.via.is_some() != r.via.is_some()
+        {
+            return Err(invalid(format!(
+                "{owner}, relation `{}`: a relation keeps its carrier; moving it between a `via` \
+                 field and link records would move its links",
                 r.name
             )));
         }
@@ -243,7 +290,12 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             )));
         }
         for f in &r.fields {
-            field_type(o, &format!("{owner}, relation `{}`", r.name), f, &t.name)?;
+            field_type(
+                o,
+                &format!("{owner}, relation `{}`", r.name),
+                f,
+                &links::link_type_name(&t.name, &r.name),
+            )?;
         }
     }
     if let Some(v) = &t.view {
@@ -296,6 +348,16 @@ fn computed_without_cycle(o: &Ontology, t: &TypeDecl) -> std::result::Result<(),
     crate::backed::computed_order(o, t).map(|_| ())
 }
 
+/// A type's relations carried by link records, as the tool generator
+/// names their doors.
+fn link_relations(t: &TypeDecl) -> Vec<(TypeName, RelationName)> {
+    t.relations
+        .iter()
+        .filter(|r| links::carried_by_links(r))
+        .map(|r| (t.name.clone(), r.name.clone()))
+        .collect()
+}
+
 /// Check one declaration against the ontology it would join. `who_is_system`
 /// is true only for the store's own declarations.
 pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> Result<()> {
@@ -317,6 +379,40 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     t.name,
                     why.join("; ")
                 )));
+            }
+            // A relation's link type is a type like any: its fields are
+            // checked as a type's, with `t` in force (its `from` points
+            // there). And it is classified too: a relation dropped by a
+            // migration and declared again with another target, or with a
+            // field retyped, would reshape the links it kept.
+            let mut probe = o.clone();
+            probe.put(d.clone(), 0, None);
+            for lt in links::link_types_of(t) {
+                type_decl(&probe, &lt).map_err(|e| match e {
+                    Error::Refused {
+                        reason: Refusal::Invalid { message },
+                        field,
+                    } => Error::Refused {
+                        field,
+                        reason: Refusal::Invalid {
+                            message: format!("the links of `{}`: {message}", t.name),
+                        },
+                    },
+                    other => other,
+                })?;
+                if let Some(current) = o.types.get(&lt.name)
+                    && let Change::Migrate { reasons } = shape::classify(&current.decl, &lt)
+                {
+                    let why: Vec<String> = reasons.iter().map(ToString::to_string).collect();
+                    return Err(invalid(format!(
+                        "`{}` would reshape the links `{}` holds ({}); that is a migration of \
+                         `{}`",
+                        t.name,
+                        lt.name,
+                        why.join("; "),
+                        t.name
+                    )));
+                }
             }
         }
         Declaration::ValueType(v) => {
@@ -490,7 +586,16 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
         Declaration::Verb(v) if !verbs.contains(&v.name) => verbs.push(v.name.clone()),
         _ => {}
     }
-    let problems = name_problems(&types, &verbs);
+    let mut relations: Vec<(TypeName, RelationName)> = o
+        .types
+        .values()
+        .filter(|e| !matches!(d, Declaration::Type(t) if t.name == e.decl.name))
+        .flat_map(|e| link_relations(&e.decl))
+        .collect();
+    if let Declaration::Type(t) = d {
+        relations.extend(link_relations(t));
+    }
+    let problems = name_problems(&types, &verbs, &relations);
     if !problems.is_empty() {
         let all: Vec<String> = problems.iter().map(ToString::to_string).collect();
         return Err(invalid(all.join("; ")));

@@ -99,6 +99,26 @@ impl ProjectionView for MemView {
                 });
                 edges.extend(into.unwrap_or_else(|never| match never {}));
             }
+            // Relations carried by link records: the links at the view's
+            // position whose end is this record.
+            let linked = lakelands_core::links::link_edges(
+                ty,
+                key,
+                relation,
+                walk,
+                p.types_at(at),
+                |lt, field, k| {
+                    Ok::<_, std::convert::Infallible>(
+                        p.records_at(lt, at)
+                            .filter(|r| {
+                                r.fields.get(field).and_then(|v| v.as_str()) == Some(k.as_str())
+                            })
+                            .cloned()
+                            .collect(),
+                    )
+                },
+            );
+            edges.extend(linked.unwrap_or_else(|never| match never {}));
             engines::order_edges(&mut edges);
             edges
         }))

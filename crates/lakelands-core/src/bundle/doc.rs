@@ -137,6 +137,9 @@ pub(super) struct RelationDoc {
     pub via: Option<String>,
     #[serde(default)]
     pub fields: Named<FieldDoc>,
+    /// Who writes the relation's links, when it has no `via`.
+    #[serde(default)]
+    pub authority: Authority,
     #[serde(default)]
     pub description: Option<String>,
 }

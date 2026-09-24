@@ -18,6 +18,7 @@ mod fields;
 mod filters;
 mod ingest;
 mod keys;
+mod links;
 mod masking;
 mod migrate;
 mod paging;
@@ -100,6 +101,22 @@ pub const ALL: &[Check] = &[
     migrate::APPLY_NEEDS_ITS_REPORT,
     migrate::LOSSY_REFUSED,
     migrate::CONVERSIONS_AND_RENAMES,
+    links::WRITTEN_AND_WALKED,
+    links::ONE_PER_PAIR,
+    links::UNLINK_KEEPS_HISTORY,
+    links::CARDINALITY,
+    links::LIVE_ENDS,
+    links::OWN_DOORS,
+    links::CARRIER_KEPT,
+    links::LINK_GRANTS,
+    links::LINK_SHAPE,
+    links::RETIRED_END,
+    links::ONE_PER_TO,
+    links::AUTHORITY_FLIP,
+    links::INGEST_CARDINALITY,
+    links::REDECLARED_TARGET,
+    links::RESTRICTED_LINK,
+    links::NARROWING,
     walks::UNDECLARED_RELATION,
     walks::TOO_DEEP,
     walks::WALK_ORDER,

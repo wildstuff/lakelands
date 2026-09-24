@@ -6,7 +6,8 @@
 # the transports can never disagree on a name. Red when a string literal
 # in any `src/` outside the generator makes a tool name:
 #   - a per-type door, `<type>_find`, `<type>_get`, `<type>_upsert` or
-#     `<type>_retire`;
+#     `<type>_retire`, or a link door, `<type>_<relation>_link` or
+#     `<type>_<relation>_unlink`;
 #   - a door suffix on its own, `"_find"` and the like, from which a name
 #     would be assembled;
 #   - a format string that assembles one, `"{t}_find"`, `"{}_upsert"`;
@@ -20,7 +21,7 @@
 . "$(dirname "$0")/lib.sh"
 
 GENERATOR='crates/lakelands-api/src/tools'   # tools.rs or tools/
-DOORS='find|get|upsert|retire'
+DOORS='find|get|upsert|retire|link|unlink'
 GENERIC='describe|pin|query|search|propose|proposals|accept|reject|declare_type|add_field|migrate'
 
 files=0

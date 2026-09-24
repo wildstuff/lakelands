@@ -12,8 +12,8 @@ use lakelands_api::error::{Error, Missing, Refusal, Result};
 use lakelands_api::event::{EventBody, EventId};
 use lakelands_api::expr::Expr;
 use lakelands_api::id::{
-    Cursor, FieldName, LakeId, Position, ProposalId, RecordKey, SourceId, TypeName, VerbName,
-    Version,
+    Cursor, FieldName, LakeId, Position, ProposalId, RecordKey, RelationName, SourceId, TypeName,
+    VerbName, Version,
 };
 use lakelands_api::ontology::{Authority, FieldDecl, Risk, VerbDecl, VerbEffect};
 use lakelands_api::principal::{Access, Principal, PrincipalKind, WriteContext, WriteOrigin};
@@ -27,6 +27,7 @@ use lakelands_api::write::{
 use lakelands_api::{Catalog, CommitStream, SourceStream};
 
 use crate::expr::{self, Scope};
+use crate::links;
 use crate::state::{DeclaredType, State, access, door_writes, field};
 use crate::{Batch, Draft, Log, Shared, refused, stream, value};
 
@@ -194,6 +195,7 @@ impl MockCatalog {
         let (_, st) = self.state_at(log, None)?;
         check_declaration(&st, who, &declaration)?;
         let (schema_hash, version) = identity_version(&st, &declaration);
+        let links = link_drafts(&st, who, &declaration);
         let mut batch = Batch::at(log);
         let position = batch.push(Draft::new(
             who,
@@ -204,9 +206,105 @@ impl MockCatalog {
                 version,
             },
         ));
+        for d in links {
+            batch.push(d);
+        }
         self.commit(log, batch);
         Ok(position)
     }
+}
+
+/// The link types a type's declaration calls for that differ from those
+/// the lake holds, declared in the same append.
+fn link_drafts(st: &State, who: &Principal, d: &Declaration) -> Vec<Draft> {
+    let Declaration::Type(t) = d else {
+        return Vec::new();
+    };
+    links::of(t)
+        .into_iter()
+        .filter(|lt| st.types.get(&lt.name).map(|e| &e.decl) != Some(lt))
+        .map(|lt| {
+            let declaration = Declaration::Type(lt);
+            let (schema_hash, version) = identity_version(st, &declaration);
+            Draft::new(
+                who,
+                Origin::System,
+                EventBody::Declared {
+                    declaration,
+                    schema_hash,
+                    version,
+                },
+            )
+        })
+        .collect()
+}
+
+/// The relation of `ty` carried by link records named `relation`.
+fn link_relation(
+    st: &State,
+    who: &Principal,
+    ty: &TypeName,
+    relation: &RelationName,
+) -> Result<lakelands_api::ontology::RelationDecl> {
+    // As the store: an undeclared type is not found; a declared one the
+    // principal may not write the links of is not granted.
+    let t = st.types.get(ty).ok_or_else(|| no_type(ty))?;
+    if st.visible(who, &links::name(ty, relation)).is_none() {
+        return Err(refused(Refusal::NotGranted));
+    }
+    t.decl
+        .relations
+        .iter()
+        .find(|r| &r.name == relation && r.via.is_none())
+        .cloned()
+        .ok_or_else(|| {
+            invalid(format!(
+                "`{ty}` has no relation `{relation}` carried by link records"
+            ))
+        })
+}
+
+/// The relation's cardinality over live links, the link from `from` to
+/// `to` among them.
+fn link_cardinality(
+    st: &State,
+    lt: &TypeName,
+    r: &lakelands_api::ontology::RelationDecl,
+    from: &RecordKey,
+    to: &RecordKey,
+) -> Result<()> {
+    use lakelands_api::ontology::Cardinality;
+    let (per_from, per_to) = match r.cardinality {
+        Cardinality::ManyToOne => (true, false),
+        Cardinality::OneToMany => (false, true),
+        Cardinality::OneToOne => (true, true),
+        Cardinality::ManyToMany => (false, false),
+    };
+    let end =
+        |l: &StoredRecord, f: &str| l.fields.get(f).and_then(Value::as_str).map(str::to_owned);
+    for ((t, _), l) in &st.records {
+        if t != lt || l.retired {
+            continue;
+        }
+        let (f, o) = (end(l, links::FROM), end(l, links::TO));
+        if f.as_deref() == Some(from.as_str()) && o.as_deref() == Some(to.as_str()) {
+            continue;
+        }
+        if (per_from && f.as_deref() == Some(from.as_str()))
+            || (per_to && o.as_deref() == Some(to.as_str()))
+        {
+            return Err(on(
+                &FieldName::from(links::TO),
+                Refusal::Constraint {
+                    message: format!(
+                        "`{}` allows one link ({:?}), and one is live; unlink it first",
+                        r.name, r.cardinality
+                    ),
+                },
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// A declaration's identity in a set: its kind and its name.
@@ -317,6 +415,35 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
                         t.name, r.name, r.target
                     )));
                 }
+                if r.via.is_some() && !r.fields.is_empty() {
+                    return Err(invalid(format!(
+                        "type `{}`, relation `{}`: a relation carried by `via` has no fields of \
+                         its own",
+                        t.name, r.name
+                    )));
+                }
+                if !matches!(r.authority, Authority::Authored | Authority::Source)
+                    || r.fields
+                        .iter()
+                        .any(|f| f.name.as_str() == links::FROM || f.name.as_str() == links::TO)
+                {
+                    return Err(invalid(format!(
+                        "type `{}`, relation `{}`: its links are written by `authored` or \
+                         `source`, and its fields do not name `from` or `to`",
+                        t.name, r.name
+                    )));
+                }
+                if let Some(before) = st
+                    .types
+                    .get(&t.name)
+                    .and_then(|o| o.decl.relations.iter().find(|b| b.name == r.name))
+                    && before.via.is_some() != r.via.is_some()
+                {
+                    return Err(invalid(format!(
+                        "type `{}`, relation `{}`: a relation keeps its carrier",
+                        t.name, r.name
+                    )));
+                }
             }
         }
         other => {
@@ -342,7 +469,28 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
             }
         }
     }
-    let problems = lakelands_api::tools::name_problems(&types, &verbs);
+    let mut link_relations: Vec<(TypeName, RelationName)> = st
+        .types
+        .values()
+        .filter(|o| !matches!(d, Declaration::Type(t) if t.name == o.decl.name))
+        .flat_map(|o| {
+            o.decl
+                .relations
+                .iter()
+                .filter(|r| r.via.is_none())
+                .map(|r| (o.decl.name.clone(), r.name.clone()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    if let Declaration::Type(t) = d {
+        link_relations.extend(
+            t.relations
+                .iter()
+                .filter(|r| r.via.is_none())
+                .map(|r| (t.name.clone(), r.name.clone())),
+        );
+    }
+    let problems = lakelands_api::tools::name_problems(&types, &verbs, &link_relations);
     if !problems.is_empty() {
         return Err(invalid(format!(
             "these names cannot all become tools: {}",
@@ -420,8 +568,24 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
         may: TypeRights {
             find: true,
             get: true,
-            upsert: authored_writable(who, t),
-            retire: may_retire(who, t),
+            upsert: !links::is_link_type(&d.name) && authored_writable(who, t),
+            retire: !links::is_link_type(&d.name) && may_retire(who, t),
+            link: d
+                .relations
+                .iter()
+                .filter(|r| {
+                    r.via.is_none()
+                        && r.authority == Authority::Authored
+                        && st.visible(who, &r.target).is_some()
+                })
+                .filter(|r| {
+                    let lt = links::link_type(&d.name, r);
+                    lt.fields[..2]
+                        .iter()
+                        .all(|f| access(who, &lt.name, f).writes())
+                })
+                .map(|r| r.name.clone())
+                .collect(),
         },
         verbs: st
             .verbs
@@ -1251,6 +1415,9 @@ impl Catalog for MockCatalog {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         self.admit_write(who)?;
+        if links::is_link_type(ty) {
+            return Err(refused(Refusal::WrongDoor));
+        }
         let mut log = self.log();
         let (_, st) = self.state_at(&log, None)?;
         if let Some(o) = remembered(&st, who, &opts) {
@@ -1280,6 +1447,9 @@ impl Catalog for MockCatalog {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         self.admit_write(who)?;
+        if links::is_link_type(ty) {
+            return Err(refused(Refusal::WrongDoor));
+        }
         let mut log = self.log();
         let (_, st) = self.state_at(&log, None)?;
         if let Some(o) = remembered(&st, who, &opts) {
@@ -1292,6 +1462,91 @@ impl Catalog for MockCatalog {
             cause: None,
         };
         let version = plan_retire(&by, &mut batch, ty, key, &opts)?;
+        let position = Position(batch.peek().0 - 1);
+        self.commit(&mut log, batch);
+        Ok(Outcome::Applied {
+            position,
+            version: Some(version),
+            output: None,
+        })
+    }
+
+    async fn link(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+        key: &RecordKey,
+        relation: &RelationName,
+        to: &RecordKey,
+        fields: Patch,
+        opts: WriteOpts,
+    ) -> Result<Outcome> {
+        self.admit_write(who)?;
+        let mut log = self.log();
+        let (_, st) = self.state_at(&log, None)?;
+        if let Some(o) = remembered(&st, who, &opts) {
+            return Ok(o);
+        }
+        let r = link_relation(&st, who, ty, relation)?;
+        if r.authority != Authority::Authored {
+            return Err(refused(Refusal::WrongDoor));
+        }
+        if let Some(f) = [links::FROM, links::TO]
+            .into_iter()
+            .find(|f| fields.contains_key(*f))
+        {
+            return Err(on(
+                &FieldName::from(f),
+                Refusal::Invalid {
+                    message: format!("a link's `{f}` is given as `key` and `to`"),
+                },
+            ));
+        }
+        let lt = links::name(ty, relation);
+        link_cardinality(&st, &lt, &r, key, to)?;
+        let mut patch = fields;
+        patch.insert(links::FROM.into(), Value::from(key.as_str()));
+        patch.insert(links::TO.into(), Value::from(to.as_str()));
+        let mut batch = Batch::at(&log);
+        let by = By {
+            st: &st,
+            who,
+            cause: None,
+        };
+        let version = plan_upsert(&by, &mut batch, &lt, &links::key(key, to), patch, &opts)?;
+        let position = batch.peek().0 - 1;
+        self.commit(&mut log, batch);
+        Ok(Outcome::Applied {
+            position: Position(position),
+            version: Some(version),
+            output: None,
+        })
+    }
+
+    async fn unlink(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+        key: &RecordKey,
+        relation: &RelationName,
+        to: &RecordKey,
+        opts: WriteOpts,
+    ) -> Result<Outcome> {
+        self.admit_write(who)?;
+        let mut log = self.log();
+        let (_, st) = self.state_at(&log, None)?;
+        if let Some(o) = remembered(&st, who, &opts) {
+            return Ok(o);
+        }
+        link_relation(&st, who, ty, relation)?;
+        let lt = links::name(ty, relation);
+        let mut batch = Batch::at(&log);
+        let by = By {
+            st: &st,
+            who,
+            cause: None,
+        };
+        let version = plan_retire(&by, &mut batch, &lt, &links::key(key, to), &opts)?;
         let position = Position(batch.peek().0 - 1);
         self.commit(&mut log, batch);
         Ok(Outcome::Applied {
@@ -1396,7 +1651,7 @@ impl Catalog for MockCatalog {
         for step in &pattern.steps {
             // A step over a relation the type does not declare is
             // refused, not answered empty.
-            let (target, via, forward) = match step.walk {
+            let (target, via, forward, link_type) = match step.walk {
                 Walk::Out => {
                     let rel = scope_ty
                         .decl
@@ -1404,7 +1659,12 @@ impl Catalog for MockCatalog {
                         .iter()
                         .find(|r| r.name == step.relation);
                     match rel {
-                        Some(r) => (r.target.clone(), r.via.clone(), true),
+                        Some(r) => (
+                            r.target.clone(),
+                            r.via.clone(),
+                            true,
+                            links::name(&scope_ty.decl.name, &r.name),
+                        ),
                         None => {
                             return Err(invalid(format!(
                                 "`{}` declares no relation `{}`",
@@ -1423,10 +1683,16 @@ impl Catalog for MockCatalog {
                                     && (r.inverse.as_ref() == Some(&step.relation)
                                         || r.name == step.relation)
                             })
-                            .map(|r| (o.decl.name.clone(), r.via.clone()))
+                            .map(|r| {
+                                (
+                                    o.decl.name.clone(),
+                                    r.via.clone(),
+                                    links::name(&o.decl.name, &r.name),
+                                )
+                            })
                     });
                     match back {
-                        Some((ty, via)) => (ty, via, false),
+                        Some((ty, via, lt)) => (ty, via, false, lt),
                         None => {
                             return Err(invalid(format!(
                                 "no relation `{}` reaches `{}`",
@@ -1441,10 +1707,9 @@ impl Catalog for MockCatalog {
                     "the in-memory mock walks one hop, in one direction, per step",
                 ));
             }
-            let Some(via) = via else {
-                return Err(invalid(
-                    "the in-memory mock walks only relations carried by a reference field",
-                ));
+            // A relation without `via` is walked over its live link records.
+            let linked_by = |from: &RecordKey, to: &RecordKey| {
+                st.live(&link_type, &links::key(from, to)).is_some()
             };
             let next = st.visible(who, &target).ok_or_else(|| no_type(&target))?;
             if let Some(ty) = &step.ty
@@ -1461,10 +1726,15 @@ impl Catalog for MockCatalog {
             for p in paths {
                 let last = p[p.len() - 1];
                 for r in &reached {
-                    let linked = if forward {
-                        last.fields.get(&via).and_then(Value::as_str) == Some(r.key.as_str())
-                    } else {
-                        r.fields.get(&via).and_then(Value::as_str) == Some(last.key.as_str())
+                    let linked = match (&via, forward) {
+                        (Some(via), true) => {
+                            last.fields.get(via).and_then(Value::as_str) == Some(r.key.as_str())
+                        }
+                        (Some(via), false) => {
+                            r.fields.get(via).and_then(Value::as_str) == Some(last.key.as_str())
+                        }
+                        (None, true) => linked_by(&last.key, &r.key),
+                        (None, false) => linked_by(&r.key, &last.key),
                     };
                     if linked {
                         let mut q = p.clone();
@@ -1583,6 +1853,11 @@ impl Catalog for MockCatalog {
 
     async fn propose(&self, who: &Principal, write: ProposedWrite, why: String) -> Result<Outcome> {
         self.admit_write(who)?;
+        if let ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } = &write
+            && links::is_link_type(ty)
+        {
+            return Err(refused(Refusal::WrongDoor));
+        }
         let mut log = self.log();
         let (_, st) = self.state_at(&log, None)?;
         let mut batch = Batch::at(&log);
@@ -1797,6 +2072,7 @@ impl Catalog for MockCatalog {
         let mut position = batch.peek();
         for declaration in declarations {
             let (schema_hash, version) = identity_version(&st, &declaration);
+            let links = link_drafts(&st, who, &declaration);
             position = batch.push(Draft::new(
                 who,
                 Origin::System,
@@ -1806,6 +2082,9 @@ impl Catalog for MockCatalog {
                     version,
                 },
             ));
+            for d in links {
+                batch.push(d);
+            }
         }
         self.commit(&mut log, batch);
         Ok(Outcome::Applied {
@@ -2024,6 +2303,47 @@ fn plan_window(
             &mut fields,
             Origin::Source,
         )?;
+        // A link holds its relation's cardinality, over the lake's live
+        // links and those earlier in this window.
+        if links::is_link_type(&r.ty)
+            && let Some(rel) = st.types.values().find_map(|o| {
+                o.decl
+                    .relations
+                    .iter()
+                    .find(|x| x.via.is_none() && links::name(&o.decl.name, &x.name) == r.ty)
+                    .cloned()
+            })
+        {
+            let end = |f: &str| fields.get(f).and_then(Value::as_str).map(RecordKey::from);
+            if let (Some(from), Some(to)) = (end(links::FROM), end(links::TO)) {
+                link_cardinality(st, &r.ty, &rel, &from, &to)?;
+                for ((lt, k), planned) in &w.planned {
+                    if lt != &r.ty || k == &r.key {
+                        continue;
+                    }
+                    let pe = |f: &str| planned.get(f).and_then(Value::as_str).map(str::to_owned);
+                    let (per_from, per_to) = match rel.cardinality {
+                        lakelands_api::ontology::Cardinality::ManyToOne => (true, false),
+                        lakelands_api::ontology::Cardinality::OneToMany => (false, true),
+                        lakelands_api::ontology::Cardinality::OneToOne => (true, true),
+                        lakelands_api::ontology::Cardinality::ManyToMany => (false, false),
+                    };
+                    if (per_from && pe(links::FROM).as_deref() == Some(from.as_str()))
+                        || (per_to && pe(links::TO).as_deref() == Some(to.as_str()))
+                    {
+                        return Err(on(
+                            &FieldName::from(links::TO),
+                            Refusal::Constraint {
+                                message: format!(
+                                    "the window links over `{}` already, and it allows one",
+                                    rel.name
+                                ),
+                            },
+                        ));
+                    }
+                }
+            }
+        }
         // A record earlier in this window counts as there.
         check_references(st, t, &fields, &w.versions)?;
         check_required(t, st.live(&r.ty, &r.key), &fields, Origin::Source)?;

@@ -88,7 +88,8 @@ macro_rules! door_checks {
             a_relation_removed_retargeted_or_narrowed_or_a_type_turned_view_is_a_migration,
             a_reference_key_field_filled_from_the_key_must_name_a_live_record,
             key_components_and_source_ids_use_each_values_one_form,
-            schema_hashes_and_proposal_ids_have_the_stores_form);
+            schema_hashes_and_proposal_ids_have_the_stores_form,
+            links_are_written_walked_and_held_to_their_relation);
     };
     (@each $new:expr, $block_on:path; $($name:ident),* $(,)?) => {
         $(
@@ -165,6 +166,7 @@ pub fn fixture() -> Vec<Declaration> {
             inverse: Some("bills".into()),
             via: Some("partner".into()),
             fields: Vec::new(),
+            authority: Default::default(),
             description: None,
         }],
         view: None,
@@ -1867,4 +1869,228 @@ pub async fn schema_hashes_and_proposal_ids_have_the_stores_form(store: Arc<dyn 
         by_key,
         "a retry under the same key names the same proposal"
     );
+}
+
+/// A relation carried by link records (`docs/decisions/035-a-link-is-a-record.md`):
+/// a link is written and walked, one per pair; the relation's cardinality
+/// holds at the door and in an ingest window; its records refuse the
+/// ordinary doors and `propose`; a principal who may not write the link
+/// type is not granted; and unlink removes it.
+pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn LakeStore>) {
+    let c = store.catalog(WriteContext::default());
+    let cast = Cast::of(store.lake());
+    let own = &cast.owner;
+    let decl = |v: Value| serde_json::from_value::<Declaration>(v).unwrap();
+    c.declare(
+        own,
+        decl(json!({"declare": "type", "name": "person", "fields": [
+            {"name": "name", "type": {"kind": "text"}}]})),
+    )
+    .await
+    .unwrap();
+    c.declare(
+        own,
+        decl(json!({"declare": "type", "name": "doc", "fields": [
+            {"name": "title", "type": {"kind": "text"}}],
+            "relations": [
+                {"name": "signed_by", "target": "person", "cardinality": "many_to_one",
+                 "fields": [{"name": "at", "type": {"kind": "text"}}]},
+                {"name": "witnessed_by", "target": "person", "cardinality": "many_to_one",
+                 "authority": "source"}]})),
+    )
+    .await
+    .unwrap();
+    for (t, k, f) in [
+        ("person", "p1", "name"),
+        ("person", "p2", "name"),
+        ("doc", "d1", "title"),
+    ] {
+        c.upsert(
+            own,
+            &ty(t),
+            &key(k),
+            patch(&[(f, json!(k))]),
+            WriteOpts::default(),
+        )
+        .await
+        .unwrap();
+    }
+    let link = |to: &str, at: &str| {
+        let (c, own, to, at) = (c.clone(), own.clone(), key(to), at.to_owned());
+        async move {
+            c.link(
+                &own,
+                &ty("doc"),
+                &key("d1"),
+                &"signed_by".into(),
+                &to,
+                patch(&[("at", json!(at))]),
+                WriteOpts::default(),
+            )
+            .await
+        }
+    };
+    link("p1", "monday").await.unwrap();
+    let again = link("p1", "tuesday").await.unwrap();
+    assert!(
+        matches!(again, Outcome::Applied { version: Some(v), .. } if v == Version(2)),
+        "writing a link again changes it: {again:?}"
+    );
+    let walked = c
+        .query(
+            own,
+            Pattern::traverse(
+                ty("doc"),
+                key("d1"),
+                vec![Step {
+                    relation: "signed_by".into(),
+                    walk: Walk::Out,
+                    ty: None,
+                    filter: None,
+                    depth: Default::default(),
+                }],
+            ),
+        )
+        .await
+        .unwrap();
+    let json = serde_json::to_value(&walked.data).unwrap();
+    assert_eq!(json["rows"].as_array().map(Vec::len), Some(1), "{json}");
+    assert_eq!(json["rows"][0]["person.name"], json!("p1"), "{json}");
+    // many_to_one: d1 links to one signer.
+    let second = link("p2", "later").await;
+    assert!(
+        matches!(
+            &second,
+            Err(Error::Refused {
+                reason: Refusal::Constraint { .. },
+                ..
+            })
+        ),
+        "{second:?}"
+    );
+    // The link type's records refuse the ordinary doors and propose.
+    let lt = ty("sys.link.doc.signed_by");
+    let upserted = c
+        .upsert(
+            own,
+            &lt,
+            &key("d1:p1"),
+            patch(&[("at", json!("x"))]),
+            WriteOpts::default(),
+        )
+        .await;
+    assert!(
+        matches!(
+            &upserted,
+            Err(Error::Refused {
+                reason: Refusal::WrongDoor,
+                ..
+            })
+        ),
+        "{upserted:?}"
+    );
+    let proposed = c
+        .propose(
+            own,
+            lakelands_api::write::ProposedWrite::Retire {
+                ty: lt.clone(),
+                key: key("d1:p1"),
+                opts: WriteOpts::default(),
+            },
+            "tidy".into(),
+        )
+        .await;
+    assert!(
+        matches!(
+            &proposed,
+            Err(Error::Refused {
+                reason: Refusal::WrongDoor,
+                ..
+            })
+        ),
+        "{proposed:?}"
+    );
+    // Who may not write the link type is not granted.
+    let stranger = c
+        .link(
+            &cast.stranger,
+            &ty("doc"),
+            &key("d1"),
+            &"signed_by".into(),
+            &key("p1"),
+            Patch::new(),
+            WriteOpts::default(),
+        )
+        .await;
+    assert!(
+        matches!(
+            &stranger,
+            Err(Error::Refused {
+                reason: Refusal::NotGranted,
+                ..
+            })
+        ),
+        "{stranger:?}"
+    );
+    // A source relation's links arrive by ingest, its cardinality held in
+    // one window as at the door.
+    let window = vec![
+        SourceRecord {
+            ty: ty("sys.link.doc.witnessed_by"),
+            key: key("d1:p1"),
+            fields: patch(&[("from", json!("d1")), ("to", json!("p1"))]),
+            seen_at: None,
+        },
+        SourceRecord {
+            ty: ty("sys.link.doc.witnessed_by"),
+            key: key("d1:p2"),
+            fields: patch(&[("from", json!("d1")), ("to", json!("p2"))]),
+            seen_at: None,
+        },
+    ];
+    let mut commits = c
+        .ingest(own, &"registry".into(), stream::of(window))
+        .await
+        .unwrap();
+    let first = crate::stream::next(&mut commits).await;
+    assert!(
+        matches!(
+            &first,
+            Some(Err(Error::Refused {
+                reason: Refusal::Constraint { .. },
+                ..
+            }))
+        ),
+        "two witnesses for d1 in one window break many_to_one: {first:?}"
+    );
+    // Unlink removes the link; the walk reaches no one.
+    c.unlink(
+        own,
+        &ty("doc"),
+        &key("d1"),
+        &"signed_by".into(),
+        &key("p1"),
+        WriteOpts::default(),
+    )
+    .await
+    .unwrap();
+    let after = c
+        .query(
+            own,
+            Pattern::traverse(
+                ty("doc"),
+                key("d1"),
+                vec![Step {
+                    relation: "signed_by".into(),
+                    walk: Walk::Out,
+                    ty: None,
+                    filter: None,
+                    depth: Default::default(),
+                }],
+            ),
+        )
+        .await
+        .unwrap();
+    let json = serde_json::to_value(&after.data).unwrap();
+    assert_eq!(json["rows"].as_array().map(Vec::len), Some(0), "{json}");
 }

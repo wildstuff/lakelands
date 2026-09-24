@@ -226,6 +226,7 @@ async fn after_a_rebuild_every_index_answers_as_before(
         inverse: None,
         via: Some("parent".into()),
         fields: Vec::new(),
+        authority: Default::default(),
         description: None,
     }];
     declare(cat.as_ref(), &own, ty).await?;

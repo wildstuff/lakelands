@@ -230,6 +230,7 @@ async fn a_migration_removing_the_field_a_relation_walks_is_refused(
         inverse: None,
         via: Some("partner".into()),
         fields: Vec::new(),
+        authority: Default::default(),
         description: None,
     }];
     declare(cat.as_ref(), &own, invoice.clone()).await?;

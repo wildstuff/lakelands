@@ -82,6 +82,12 @@ A parameter or a body member the door does not take is refused before
 anything runs, so a misspelling never turns a compare-and-set into an
 unconditional write.
 
+The link doors (`link`, `unlink`,
+`docs/decisions/035-a-link-is-a-record.md`) are served over MCP, as the
+`<type>_<relation>_link` and `_unlink` tools. Their REST routes follow
+in a later step. Until then, links are read over REST with `find` on the
+link type, `GET …/types/sys.link.<type>.<relation>/records`.
+
 ### Query parameters
 
 A query parameter carries the value the door's argument of that name

@@ -265,6 +265,34 @@ impl ProjectionView for SqliteView<'_> {
                     })?);
                 }
             }
+            // Relations carried by link records: the link records whose end
+            // is this record. At the head the exact-text index finds them;
+            // at an earlier position the link type's records there are
+            // read. The rulebook decides which count.
+            let types = r.types()?;
+            edges.extend(lakelands_core::links::link_edges(
+                ty,
+                key,
+                relation,
+                walk,
+                &types,
+                |lt, field, k| {
+                    if r.head {
+                        let keys = r.keys(
+                            "SELECT key FROM text_index WHERE ty = ?1 AND field = ?2 AND value = ?3",
+                            &[&lt.as_str(), &field, &k.as_str()],
+                        )?;
+                        r.records_by_key(lt, keys)
+                    } else {
+                        Ok(r.records(lt)?
+                            .into_iter()
+                            .filter(|l| {
+                                l.fields.get(field).and_then(|v| v.as_str()) == Some(k.as_str())
+                            })
+                            .collect())
+                    }
+                },
+            )?);
             engines::order_edges(&mut edges);
             Ok(edges)
         })

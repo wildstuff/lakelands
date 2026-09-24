@@ -135,6 +135,13 @@ pub enum Authority {
     Derived,
 }
 
+impl Authority {
+    /// Whether this is the default, `authored`.
+    pub fn is_authored(&self) -> bool {
+        *self == Authority::Authored
+    }
+}
+
 /// What the fold does to a field when one of its inputs changes
 /// (`docs/decisions/012-writes-touch-only-their-fields.md`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -316,9 +323,16 @@ pub struct RelationDecl {
     /// relation is carried by a reference field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via: Option<FieldName>,
-    /// Fields of the link itself.
+    /// Fields of the link itself, for a relation carried by link records
+    /// (no `via`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<FieldDecl>,
+    /// Who writes the links of a relation carried by link records:
+    /// `authored` (the default) through the link doors, `source` by
+    /// ingest (`docs/decisions/035-a-link-is-a-record.md`). Not part of the
+    /// schema hash.
+    #[serde(default, skip_serializing_if = "Authority::is_authored")]
+    pub authority: Authority,
     /// What the relation means. Not part of the schema hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,

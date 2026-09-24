@@ -83,6 +83,12 @@ engine_check!(
 );
 
 engine_check!(
+    /// Edges over a relation carried by link records.
+    LINK_EDGES = edges_over_a_link_relation_come_from_the_live_link_records_at_the_views_position,
+    "035 and seams §edges: an engine answers a relation without via from its live link records at the view's position, out and in, each edge carrying the link's own fields"
+);
+
+engine_check!(
     /// Kept states read at an earlier position.
     EARLIER_STATES = declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position,
     "seams §ProjectionView: declarations, membership, recorded outputs and applied ids are kept states too, read at a view's own position"
@@ -861,6 +867,88 @@ fn a_later_output_for_the_same_call_replaces_the_earlier_from_its_position(
         "a failure recorded at 2 and an answer for the same call at 4: at 1 the view must \
          answer nothing ({before:?}), at 3 the failure ({between:?}), at the head the answer \
          ({after:?})"
+    );
+    Ok(())
+}
+
+fn edges_over_a_link_relation_come_from_the_live_link_records_at_the_views_position(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    use lakelands_api::query::Walk;
+    let partner = declare(json!({"declare": "type", "name": "partner", "fields": []}));
+    let invoice = declare(json!({
+        "declare": "type", "name": "invoice", "fields": [],
+        "relations": [{"name": "approved_by", "target": "partner",
+                       "fields": [{"name": "since", "type": {"kind": "date_time"}}]}]
+    }));
+    let Declaration::Type(t) = &invoice else {
+        unreachable!("declared as a type")
+    };
+    let lt = crate::links::link_types_of(t).remove(0);
+    let link = |from: &str, to: &str, since: &str, at: u64| {
+        let key = crate::links::link_key(&from.into(), &to.into());
+        record(
+            lt.name.as_str(),
+            key.as_str(),
+            json!({"from": from, "to": to, "since": since}),
+            at,
+        )
+    };
+    fold(engine, 1, |p| {
+        p.put_declaration(&partner, 1, None, Position(0))?;
+        p.put_declaration(&invoice, 1, None, Position(1))?;
+        p.put_declaration(&Declaration::Type(lt.clone()), 1, None, Position(1))
+    })?;
+    fold(engine, 2, |p| {
+        p.put_record(&link("i1", "p1", "2026-09-01T00:00:00.000000Z", 2))
+    })?;
+    fold(engine, 3, |p| {
+        p.put_record(&link("i2", "p1", "2026-09-02T00:00:00.000000Z", 3))
+    })?;
+    fold(engine, 4, |p| {
+        let mut gone = link("i1", "p1", "2026-09-01T00:00:00.000000Z", 4);
+        gone.retired = true;
+        gone.version = lakelands_api::Version(2);
+        p.put_record(&gone)
+    })?;
+    let edges = |at: Option<Position>, ty: &str, key: &str, walk: Walk| {
+        view(engine, at)?
+            .edges(&TypeName::from(ty), &RecordKey::from(key), None, walk)
+            .must("reading edges")
+            .map(|e| {
+                e.into_iter()
+                    .map(|e| {
+                        format!(
+                            "{}>{}@{}",
+                            e.from.1,
+                            e.to.1,
+                            e.fields.get("since").and_then(Value::as_str).unwrap_or("")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+    };
+    let then = edges(Some(Position(3)), "invoice", "i1", Walk::Out)?;
+    ensure!(
+        then == ["i1>p1@2026-09-01T00:00:00.000000Z"],
+        "at 3 the link i1 → p1 is live: out of i1 the engine answers it with its `since`; \
+         it answered {then:?}"
+    );
+    let now = edges(None, "invoice", "i1", Walk::Out)?;
+    ensure!(
+        now.is_empty(),
+        "at the head the link i1 → p1 is retired: out of i1 the engine answers nothing; it \
+         answered {now:?}"
+    );
+    let into = edges(None, "partner", "p1", Walk::In)?;
+    ensure!(
+        into == ["i2>p1@2026-09-02T00:00:00.000000Z"],
+        "at the head only i2's link points into p1; the engine answered {into:?}"
+    );
+    let both = edges(Some(Position(3)), "partner", "p1", Walk::In)?;
+    ensure!(
+        both.len() == 2,
+        "at 3 both links point into p1; the engine answered {both:?}"
     );
     Ok(())
 }

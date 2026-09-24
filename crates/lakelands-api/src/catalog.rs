@@ -14,7 +14,9 @@ use futures_core::Stream;
 use crate::describe::{LakeDescription, TypeDescription};
 use crate::error::Result;
 use crate::event::Digest;
-use crate::id::{LakeId, Position, ProposalId, RecordKey, SourceId, TypeName, VerbName};
+use crate::id::{
+    LakeId, Position, ProposalId, RecordKey, RelationName, SourceId, TypeName, VerbName,
+};
 use crate::ontology::FieldDecl;
 use crate::principal::{Principal, WriteContext};
 use crate::query::{Hits, Pattern, QueryResult, Search};
@@ -84,6 +86,38 @@ pub trait Catalog: Send + Sync {
         who: &Principal,
         ty: &TypeName,
         key: &RecordKey,
+        opts: WriteOpts,
+    ) -> Result<Outcome>;
+
+    /// Write the link over `relation` from the record `key` of `ty` to the
+    /// record `to` of the relation's target, for a relation carried by link
+    /// records: the link's own fields as a sparse patch, absent unchanged,
+    /// `null` cleared. Writing it again changes its fields; there is one
+    /// link per pair. Both records must be live, the relation's
+    /// cardinality holds over live links, and a field the principal may
+    /// not write refuses the whole write
+    /// (`docs/decisions/035-a-link-is-a-record.md`).
+    #[allow(clippy::too_many_arguments)]
+    async fn link(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+        key: &RecordKey,
+        relation: &RelationName,
+        to: &RecordKey,
+        fields: Patch,
+        opts: WriteOpts,
+    ) -> Result<Outcome>;
+
+    /// Remove the link over `relation` from the record `key` of `ty` to the
+    /// record `to`; its history stays.
+    async fn unlink(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+        key: &RecordKey,
+        relation: &RelationName,
+        to: &RecordKey,
         opts: WriteOpts,
     ) -> Result<Outcome>;
 

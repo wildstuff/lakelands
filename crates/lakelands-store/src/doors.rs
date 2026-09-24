@@ -23,7 +23,8 @@ use lakelands_api::write::{
 };
 use lakelands_api::{
     Catalog, Error, Find, Found, Get, LakeId, LakeStore, Patch, Position, Principal, ProposalId,
-    ReadAt, Record, RecordKey, Refusal, Reply, Result, SourceId, TypeName, VerbName, Verification,
+    ReadAt, Record, RecordKey, Refusal, RelationName, Reply, Result, SourceId, TypeName, VerbName,
+    Verification,
 };
 
 use crate::exec;
@@ -253,6 +254,43 @@ impl Catalog for Doors {
         let (ty, key) = (ty.clone(), key.clone());
         let seen = self.seen();
         let outcome = self.write(who, move |c| c.retire(&ty, &key, opts)).await?;
+        self.settled(outcome, seen).await
+    }
+
+    async fn link(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+        key: &RecordKey,
+        relation: &RelationName,
+        to: &RecordKey,
+        fields: Patch,
+        opts: WriteOpts,
+    ) -> Result<Outcome> {
+        let (ty, key, relation, to) = (ty.clone(), key.clone(), relation.clone(), to.clone());
+        let seen = self.seen();
+        let outcome = self
+            .write(who, move |c| {
+                c.link(&ty, &key, &relation, &to, fields, opts)
+            })
+            .await?;
+        self.settled(outcome, seen).await
+    }
+
+    async fn unlink(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+        key: &RecordKey,
+        relation: &RelationName,
+        to: &RecordKey,
+        opts: WriteOpts,
+    ) -> Result<Outcome> {
+        let (ty, key, relation, to) = (ty.clone(), key.clone(), relation.clone(), to.clone());
+        let seen = self.seen();
+        let outcome = self
+            .write(who, move |c| c.unlink(&ty, &key, &relation, &to, opts))
+            .await?;
         self.settled(outcome, seen).await
     }
 

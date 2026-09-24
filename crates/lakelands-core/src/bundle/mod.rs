@@ -702,7 +702,9 @@ fn problems_of(owners: &[&Owner]) -> Vec<NameProblem> {
             Owner::Verb(v) => verbs.push(v.clone()),
         }
     }
-    name_problems(&types, &verbs)
+    // The link doors' names are checked by the store when the bundle's
+    // types are declared, with their relations.
+    name_problems(&types, &verbs, &[])
 }
 
 /// Refuse type and verb names whose tool names would be empty, too long,

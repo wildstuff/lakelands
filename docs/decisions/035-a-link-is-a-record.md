@@ -65,3 +65,59 @@ through the doors that check the relation's authority and cardinality.
   (`docs/decisions/003-reservation-by-namespace.md`): link types are
   recognised by their name, `sys.link.` and the relation, as every
   system type is.
+
+## Extended: what the code settles
+
+- **Reading links.** Every engine answers a link relation's edges by one
+  rule, `lakelands_core::links::link_edges`, over the live link records
+  at the view's position. At the head, SQLite and PostgreSQL find the
+  candidates through the exact-text index they already keep on `from`
+  and `to`. At an earlier position they read the link type's records
+  there. The engine seam and the projections' schemas are unchanged.
+- **A relation's fields follow 027.**
+  - An added optional link field is a declared change: the owner type
+    is declared again, and its link type with it, in the same append.
+  - A change that reshapes link records (a retyped field, a relation
+    retargeted, or removed and declared again with another target) is
+    refused at `declare` and goes through `migrate` on the owner type.
+    Its preflight reports the link records beside the type's, each field
+    named with its relation, and `migrate_apply` migrates each changed
+    link type in the same append.
+  - A link field is never renamed: a rename is a drop plus an add.
+  - The link type is classified at every declaration, against the one in
+    force. A relation dropped by `migrate` and declared again with
+    another target, or with a field retyped, would reshape the links it
+    kept, so it is refused, naming the link type, and goes through
+    `migrate`.
+  - Narrowing a relation's cardinality is a migration. Its preflight
+    counts the live links that would break the narrower rule, and
+    refuses while any would.
+  - The link type is checked as any type is, when its owner is declared:
+    its fields' kinds, functions and embeddings. A field that cannot work
+    fails at `declare`, not at the first write.
+  - A relation removed from its type keeps its link type and its records
+    as history, and its link doors refuse it.
+- **A relation's authority** may change by an ordinary declaration: it
+  swaps the door the links arrive by and keeps the links already
+  written. A `source` relation's own fields are `source` (or derived):
+  an `authored` field on a link no door writes is refused at
+  `declare`.
+- **`unlink`** removes a link whatever the relation's authority, as
+  `retire` removes a record whatever its fields' authority. It is
+  governed by the principal's grants on the link type. Ingest writes a
+  source relation's links, but cannot retire one.
+- **Retiring an end** keeps its links, as retiring a referenced record
+  keeps the references (032). The walk does not reach the retired record.
+- **A restricted link** is walked only by a principal holding the
+  `restricted` grant. An edge's fields are those of the link type the
+  principal may read: a link's edge comes from its own record, not from
+  the records it joins.
+- **Tools and rights.** `describe` names, per type, the relations whose
+  links the principal may write: those whose links are `authored` and
+  whose link type's `from` and `to` the principal may write. The tool
+  generator makes `<type>_<relation>_link` and `_unlink` for them, and
+  checks their names for collisions with every other tool. A link type's
+  own description offers `find` and `get`, never `upsert` or `retire`.
+- **The WIT package** gains the two doors, `relation-decl.authority` and
+  `type-rights.link`, and stays at `lakelands:data@0.2.0`, which is not
+  released yet.

@@ -431,14 +431,17 @@ async fn the_door_refuses_what_this_release_does_not_hold() {
             ..
         })
     ));
-    let mut linked = ty("a", vec![]);
+    // A relation carried by `via` holds no fields of its own: those belong
+    // to a relation carried by link records.
+    let mut linked = ty("a", vec![field("b", StorageKind::Reference)]);
     linked.relations.push(RelationDecl {
         name: "to_a".into(),
         target: "a".into(),
         cardinality: Default::default(),
         inverse: None,
-        via: None,
-        fields: vec![],
+        via: Some("b".into()),
+        fields: vec![field("since", StorageKind::DateTime)],
+        authority: Default::default(),
         description: None,
     });
     assert!(matches!(

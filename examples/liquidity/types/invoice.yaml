@@ -27,3 +27,12 @@ relations:
     cardinality: many_to_one
     via: partner
     inverse: invoices
+  approved_by:
+    target: partner
+    cardinality: many_to_one
+    inverse: approved
+    description: >-
+      Who at the partner approved the invoice, and since when: carried by
+      link records, written with the invoice_approved_by_link tool.
+    fields:
+      since: date_time

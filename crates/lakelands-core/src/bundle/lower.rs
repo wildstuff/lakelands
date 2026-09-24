@@ -392,6 +392,7 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
                 inverse: r.inverse.map(RelationName::new),
                 via: r.via.map(FieldName::new),
                 fields,
+                authority: r.authority,
                 description: r.description,
             }
         })
