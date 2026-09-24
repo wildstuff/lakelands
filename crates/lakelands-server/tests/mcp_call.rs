@@ -57,6 +57,46 @@ fn mcp_call_lists_the_tools_and_calls_one_in_one_session() {
 }
 
 #[test]
+fn tools_list_with_schemas_prints_each_doors_schemas() {
+    let server = example("mock_stdio");
+    let run = |list: &[&str]| {
+        let out = Command::new(example("mcp_call"))
+            .args(["--server", &server.display().to_string()])
+            .args(list)
+            .output()
+            .expect("mcp_call runs");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        // One JSON document per request.
+        serde_json::Deserializer::from_slice(&out.stdout)
+            .into_iter::<serde_json::Value>()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+    };
+    let plain = &run(&["tools/list"])[0];
+    assert!(plain[0].get("inputSchema").is_none(), "{plain}");
+    let listed = &run(&["tools/list", "--schemas"])[0];
+    let upsert = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "invoice_upsert")
+        .expect("the owner may upsert invoices");
+    // The schema is the type's, filtered by the caller's rights: the
+    // fields an upsert may write, and an answer with its position.
+    let fields = &upsert["inputSchema"]["properties"]["fields"]["properties"];
+    assert!(fields.get("status").is_some(), "{upsert}");
+    assert!(upsert["outputSchema"].is_object(), "{upsert}");
+    // A request after it is still read as a request.
+    let two = run(&["tools/list", "--schemas", "tools/list"]);
+    assert_eq!(two.len(), 2);
+    assert!(two[1][0].get("inputSchema").is_none());
+}
+
+#[test]
 fn a_tool_error_is_its_two_sentences_and_exit_1() {
     let server = example("mock_stdio");
     let out = Command::new(example("mcp_call"))
