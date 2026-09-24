@@ -55,6 +55,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - run: cargo nextest run --workspace --locked
+      # The door tests also run as `cargo test` runs them, many tests in
+      # one process, in parallel and in series: a test that leans on
+      # state another test left behind fails here, where nextest's
+      # process per test would hide it.
+      - run: cargo test --locked -p lakelands-cli -p lakelands-server
+      - run: cargo test --locked -p lakelands-cli -p lakelands-server -- --test-threads=1
 
   # The engines come from conformance/roster, never from this file.
   roster:

@@ -4,6 +4,8 @@
 
 mod common;
 
+use common::{BACKENDS, Backend};
+
 use std::sync::Arc;
 
 use lakelands_api::LakeStore;
@@ -45,11 +47,11 @@ async fn exercise(client: &RunningService<RoleClient, ()>) {
         .unwrap();
     assert_eq!(got.is_error, Some(false));
     let s = structured(&got);
-    assert_eq!(s["position"], 5);
+    assert_eq!(s["position"], 7);
     assert_eq!(s["data"]["fields"]["status"], "open");
 
     let pinned = client.call_tool(params("pin", json!({}))).await.unwrap();
-    assert_eq!(structured(&pinned)["pinned"], 5);
+    assert_eq!(structured(&pinned)["pinned"], 7);
     let wrote = client
         .call_tool(params(
             "invoice_upsert",
@@ -57,7 +59,7 @@ async fn exercise(client: &RunningService<RoleClient, ()>) {
         ))
         .await
         .unwrap();
-    assert_eq!(structured(&wrote)["position"], 6);
+    assert_eq!(structured(&wrote)["position"], 8);
     let seen = client
         .call_tool(params("invoice_get", json!({"key": "INV-1"})))
         .await
@@ -92,10 +94,16 @@ async fn exercise(client: &RunningService<RoleClient, ()>) {
 
 #[tokio::test]
 async fn the_sdk_client_works_over_stdio() {
+    for backend in BACKENDS {
+        the_sdk_client_works_over_stdio_on(backend).await;
+    }
+}
+
+async fn the_sdk_client_works_over_stdio_on(backend: Backend) {
     let (client_io, server_io) = tokio::io::duplex(1 << 20);
     let (server_read, server_write) = tokio::io::split(server_io);
     let server = tokio::spawn(serve_io(
-        common::lake().await,
+        common::lake_on(backend).await,
         common::owner(),
         BufReader::new(server_read),
         server_write,
@@ -108,7 +116,13 @@ async fn the_sdk_client_works_over_stdio() {
 
 #[tokio::test]
 async fn the_sdk_client_works_over_streamable_http() {
-    let store = common::lake().await;
+    for backend in BACKENDS {
+        the_sdk_client_works_over_streamable_http_on(backend).await;
+    }
+}
+
+async fn the_sdk_client_works_over_streamable_http_on(backend: Backend) {
+    let store = common::lake_on(backend).await;
     let open = Arc::new(
         move |_: &lakelands_api::LakeId| -> lakelands_api::Result<Arc<dyn LakeStore>> {
             Ok(store.clone())

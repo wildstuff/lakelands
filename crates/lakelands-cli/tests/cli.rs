@@ -1,34 +1,56 @@
-//! Transcripts of the CLI against the in-memory lake: every byte of
-//! what a command prints is pinned, with the root's path shown as
-//! `<root>`.
+//! Transcripts of the CLI: every byte of what a command prints is pinned,
+//! with the root's path shown as `<root>`. Each test runs unchanged on
+//! the mock and on the real store over both engines: that is how the mock
+//! is proven honest.
+//!
+//! A refusal's sentence is not part of the contract; its kind and field
+//! are. So a refusal is checked by the CLI's framing lines and the names
+//! it must mention, never by the sentence the implementation words.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::future::Future;
 use std::path::PathBuf;
-use std::pin::pin;
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
+use std::sync::{Arc, Mutex, OnceLock};
 
-use lakelands_api::location::Location;
-use lakelands_api::{LakeStore, Result};
+use lakelands_api::LakeStore;
+use lakelands_api::engine::OpenMode;
+use lakelands_api::location::{EngineConfig, Location};
+use lakelands_api::seam::Seams;
+use lakelands_cli::Opening;
 use lakelands_mock::MockLake;
 
 fn block_on<F: Future>(f: F) -> F::Output {
-    let mut f = pin!(f);
-    let mut cx = Context::from_waker(Waker::noop());
-    loop {
-        if let Poll::Ready(out) = f.as_mut().poll(&mut cx) {
-            return out;
-        }
-    }
+    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("a runtime")
+        })
+        .block_on(f)
 }
 
-/// A root in a fresh directory, with in-memory lakes that live as long
-/// as the test.
+/// Where the shell's lakes are kept.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Backend {
+    /// The mock, whatever engine a location names.
+    Mock,
+    /// The real store, over the engine each location names.
+    Store,
+    /// The real store, with every lake kept in memory.
+    StoreInMemory,
+}
+
+const BACKENDS: [Backend; 3] = [Backend::Mock, Backend::Store, Backend::StoreInMemory];
+
+/// A root in a fresh directory, with lakes that live as long as the test,
+/// kept on one backend.
 struct Shell {
     root: PathBuf,
-    lakes: Mutex<BTreeMap<String, MockLake>>,
+    backend: Backend,
+    lakes: Arc<Mutex<BTreeMap<String, Arc<dyn LakeStore>>>>,
 }
 
 struct Said {
@@ -38,23 +60,52 @@ struct Said {
 }
 
 impl Shell {
-    fn new(name: &str) -> Shell {
+    fn on(name: &str, backend: Backend) -> Shell {
         let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
             .join("cli")
+            .join(format!("{backend:?}").to_lowercase())
             .join(name);
         let _ = fs::remove_dir_all(&root);
         Shell {
             root,
-            lakes: Mutex::new(BTreeMap::new()),
+            backend,
+            lakes: Arc::default(),
         }
     }
 
-    fn open(&self, l: &Location) -> Result<Arc<dyn LakeStore>> {
-        let mut lakes = self.lakes.lock().unwrap();
-        let lake = lakes
-            .entry(l.lake.to_string())
-            .or_insert_with(|| MockLake::open(l));
-        Ok(Arc::new(lake.clone()))
+    /// Open a lake once per shell, as the binary opens it once per process.
+    fn open(&self, l: Location, mode: OpenMode) -> Opening {
+        let (lakes, backend) = (self.lakes.clone(), self.backend);
+        Box::pin(async move {
+            let name = l.lake.to_string();
+            if let Some(store) = lakes.lock().unwrap().get(&name) {
+                return Ok(store.clone());
+            }
+            let store: Arc<dyn LakeStore> = match backend {
+                Backend::Mock => Arc::new(MockLake::open(&l)),
+                Backend::Store | Backend::StoreInMemory => {
+                    let mut l = l;
+                    if backend == Backend::StoreInMemory {
+                        l.engine = EngineConfig::Memory;
+                    }
+                    let seams = Seams {
+                        engines: vec![
+                            Arc::new(lakelands_engine_mem::MemoryOpener::new()),
+                            Arc::new(lakelands_engine_sqlite::SqliteOpener),
+                        ],
+                        ..Seams::default()
+                    };
+                    let mode = if mode == OpenMode::Read {
+                        OpenMode::Read
+                    } else {
+                        OpenMode::Create
+                    };
+                    lakelands_store::open(l, seams, mode).await?
+                }
+            };
+            lakes.lock().unwrap().insert(name, store.clone());
+            Ok(store)
+        })
     }
 
     fn file(&self, name: &str, text: &str) -> String {
@@ -74,7 +125,7 @@ impl Shell {
 
     fn raw(&self, argv: &[&str]) -> Said {
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        let open = |l: &Location| self.open(l);
+        let open = |l: Location, m: OpenMode| self.open(l, m);
         let code = block_on(lakelands_cli::run(
             argv.iter().copied(),
             &mut out,
@@ -152,10 +203,51 @@ set:
     ),
 ];
 
+/// An event line with the values the lake's clock, its hash chain and its
+/// lease holder make shown as placeholders.
+fn clocked(line: &str) -> String {
+    let mut v: serde_json::Value = serde_json::from_str(line).expect("a JSON line");
+    for (member, shown) in [
+        ("known_at", "{known_at}"),
+        ("id", "{id}"),
+        ("hash", "{hash}"),
+        ("prev", "{prev}"),
+    ] {
+        v[member] = serde_json::Value::String(shown.into());
+    }
+    if v["body"]["kind"] == "lease_taken" {
+        v["body"]["holder"] = serde_json::Value::String("{holder}".into());
+    }
+    serde_json::to_string(&v).unwrap()
+}
+
 #[track_caller]
 fn ok(s: &Said, out: &str) {
     assert_eq!((s.code, s.err.as_str()), (0, ""), "stdout: {}", s.out);
     assert_eq!(s.out, out);
+}
+
+/// A refusal of `apply`: the CLI's own framing lines, and every name the
+/// refusal must mention. A refusal's sentence is not part of the contract;
+/// its kind and field are, so it is never pinned here.
+#[track_caller]
+fn refused(s: &Said, names: &[&str]) {
+    assert_eq!((s.code, s.out.as_str()), (1, ""));
+    assert!(s.err.starts_with("error: refused: "), "{}", s.err);
+    assert!(
+        s.err.ends_with(
+            "  what to do: correct the bundle and apply it again; nothing was applied\n"
+        ),
+        "{}",
+        s.err
+    );
+    for name in names {
+        assert!(
+            s.err.contains(&format!("`{name}`")) || s.err.contains(&format!(" {name}")),
+            "{name}: {}",
+            s.err
+        );
+    }
 }
 
 #[track_caller]
@@ -166,44 +258,49 @@ fn fails(s: &Said, err: &str) {
 
 #[test]
 fn init_creates_a_root_and_refuses_to_overwrite_it() {
-    let sh = Shell::new("init");
-    let root = sh.root.display().to_string();
-    ok(
-        &sh.raw(&["lakelands", "init", &root]),
-        "created a Lakelands root in <root>\n  next: lakelands --root <root> lake new <id>\n",
-    );
-    let config = fs::read_to_string(sh.root.join("lakelands.json")).unwrap();
-    assert_eq!(
-        config,
-        "{\n  \"lakelands\": 1,\n  \"owner\": \"owner\",\n  \"principals\": []\n}\n"
-    );
-    fails(
-        &sh.raw(&["lakelands", "init", &root]),
-        "error: <root> already holds a Lakelands root; nothing was changed\n  what to do: to start another root, name a directory without a lakelands.json\n",
-    );
+    for backend in BACKENDS {
+        let sh = Shell::on("init", backend);
+        let root = sh.root.display().to_string();
+        ok(
+            &sh.raw(&["lakelands", "init", &root]),
+            "created a Lakelands root in <root>\n  next: lakelands --root <root> lake new <id>\n",
+        );
+        let config = fs::read_to_string(sh.root.join("lakelands.json")).unwrap();
+        assert_eq!(
+            config,
+            "{\n  \"lakelands\": 1,\n  \"owner\": \"owner\",\n  \"principals\": []\n}\n"
+        );
+        fails(
+            &sh.raw(&["lakelands", "init", &root]),
+            "error: <root> already holds a Lakelands root; nothing was changed\n  what to do: to start another root, name a directory without a lakelands.json\n",
+        );
+    }
 }
 
 #[test]
 fn init_takes_the_root_from_its_argument_or_from_root_and_the_argument_wins() {
-    let sh = Shell::new("init-root");
-    ok(
-        &sh.run(&["init"]),
-        "created a Lakelands root in <root>\n  next: lakelands --root <root> lake new <id>\n",
-    );
-    let other = sh.root.join("other").display().to_string();
-    ok(
-        &sh.run(&["init", &other]),
-        "created a Lakelands root in <root>/other\n  next: lakelands --root <root>/other lake new <id>\n",
-    );
-    assert!(sh.root.join("other/lakelands.json").is_file());
+    for backend in BACKENDS {
+        let sh = Shell::on("init-root", backend);
+        ok(
+            &sh.run(&["init"]),
+            "created a Lakelands root in <root>\n  next: lakelands --root <root> lake new <id>\n",
+        );
+        let other = sh.root.join("other").display().to_string();
+        ok(
+            &sh.run(&["init", &other]),
+            "created a Lakelands root in <root>/other\n  next: lakelands --root <root>/other lake new <id>\n",
+        );
+        assert!(sh.root.join("other/lakelands.json").is_file());
+    }
 }
 
 #[test]
 fn init_help_says_where_the_root_comes_from() {
-    let sh = Shell::new("init-help");
-    ok(
-        &sh.raw(&["lakelands", "init", "-h"]),
-        "Create a Lakelands root in a directory
+    for backend in BACKENDS {
+        let sh = Shell::on("init-help", backend);
+        ok(
+            &sh.raw(&["lakelands", "init", "-h"]),
+            "Create a Lakelands root in a directory
 
 Usage: lakelands init [DIR] [--owner <ID>]
        lakelands init --root <DIR> [--owner <ID>]
@@ -218,262 +315,300 @@ Options:
       --lake <ID>   The lake to work on; may be left out when the root holds only one
   -h, --help        Print help (see more with '--help')
 ",
-    );
+        );
+    }
 }
 
 #[test]
 fn lake_new_writes_a_location_and_refuses_to_overwrite_it() {
-    let sh = Shell::new("lake-new");
-    fails(
-        &sh.run(&["lake", "new", "finance"]),
-        "error: <root> is not a Lakelands root (it has no lakelands.json)\n  what to do: run `lakelands init <root>` first, or name the root with --root\n",
-    );
-    sh.lake();
-    let location = fs::read_to_string(sh.root.join("lakes/finance.json")).unwrap();
-    let location: Location = serde_json::from_str(&location).unwrap();
-    assert_eq!(location, Location::sqlite("finance", "lakes/finance"));
-    fails(
-        &sh.run(&["lake", "new", "finance"]),
-        "error: lake `finance` exists already in <root>; nothing was changed\n  what to do: choose another name, or keep working with the lake that is there\n",
-    );
-    fails(
-        &sh.run(&["lake", "new", "Fin ance"]),
-        "error: `Fin ance` cannot name a lake\n  what to do: use up to 63 lower-case letters, digits, `-` and `_`, starting with a letter or a digit\n",
-    );
-    ok(
-        &sh.run(&["lake", "new", "scratch", "--engine", "memory"]),
-        "created lake `scratch` (engine memory) in lakes/scratch.json\n",
-    );
-    fails(
-        &sh.run(&["rebuild"]),
-        "error: <root> holds several lakes\n  what to do: name one with --lake: finance, scratch\n",
-    );
+    for backend in BACKENDS {
+        let sh = Shell::on("lake-new", backend);
+        fails(
+            &sh.run(&["lake", "new", "finance"]),
+            "error: <root> is not a Lakelands root (it has no lakelands.json)\n  what to do: run `lakelands init <root>` first, or name the root with --root\n",
+        );
+        sh.lake();
+        let location = fs::read_to_string(sh.root.join("lakes/finance.json")).unwrap();
+        let location: Location = serde_json::from_str(&location).unwrap();
+        assert_eq!(location, Location::sqlite("finance", "lakes/finance"));
+        fails(
+            &sh.run(&["lake", "new", "finance"]),
+            "error: lake `finance` exists already in <root>; nothing was changed\n  what to do: choose another name, or keep working with the lake that is there\n",
+        );
+        fails(
+            &sh.run(&["lake", "new", "Fin ance"]),
+            "error: `Fin ance` cannot name a lake\n  what to do: use up to 63 lower-case letters, digits, `-` and `_`, starting with a letter or a digit\n",
+        );
+        ok(
+            &sh.run(&["lake", "new", "scratch", "--engine", "memory"]),
+            "created lake `scratch` (engine memory) in lakes/scratch.json\n",
+        );
+        fails(
+            &sh.run(&["rebuild"]),
+            "error: <root> holds several lakes\n  what to do: name one with --lake: finance, scratch\n",
+        );
+    }
 }
 
 #[test]
 fn apply_applies_a_bundle_as_one_set_at_one_position() {
-    let sh = Shell::new("apply");
-    sh.lake();
-    let fixture = sh.fixture();
-    // `invoice` refers to `partner`, which the loader orders after it:
-    // the set is checked as one, so the forward reference holds.
-    ok(
-        &sh.run(&["apply", &fixture]),
-        "applied 4 declaration(s), in force from position 4:\n  type `invoice`\n  type `partner`\n  verb `approve`\n  verb `pay`\n",
-    );
+    for backend in BACKENDS {
+        let sh = Shell::on("apply", backend);
+        sh.lake();
+        let fixture = sh.fixture();
+        // `invoice` refers to `partner`, which the loader orders after it:
+        // the set is checked as one, so the forward reference holds.
+        ok(
+            &sh.run(&["apply", &fixture]),
+            "applied 4 declaration(s), in force from position 6:\n  type `invoice`\n  type `partner`\n  verb `approve`\n  verb `pay`\n",
+        );
+    }
 }
 
 #[test]
 fn apply_refuses_a_broken_bundle_whole_naming_every_problem() {
-    let sh = Shell::new("apply-broken");
-    sh.lake();
-    let broken = sh.bundle(
-        "broken",
-        &[
-            (
-                "types/partner.yaml",
-                "name: partner\nfields:\n  name: txt\n",
-            ),
-            (
-                "verbs/pay.yaml",
-                "name: pay\non: invoice\nrisk: high\nset: {}\n",
-            ),
-        ],
-    );
-    let s = sh.run(&["apply", &broken]);
-    assert_eq!((s.code, s.out.as_str()), (1, ""));
-    let lines: Vec<&str> = s.err.lines().collect();
-    assert_eq!(lines.len(), 3, "{}", s.err);
-    assert!(
-        lines[0].starts_with("error: types/partner.yaml: "),
-        "{}",
-        s.err
-    );
-    assert!(lines[1].starts_with("error: verbs/pay.yaml: "), "{}", s.err);
-    assert_eq!(
-        lines[2],
-        "  what to do: correct the bundle and apply it again; nothing was applied"
-    );
-    ok(&sh.run(&["feed", "--from", "1"]), "");
-    let file = sh.file("decls.json", "[]");
-    fails(
-        &sh.run(&["apply", &file]),
-        "error: <root>/decls.json is not a bundle directory\n  what to do: name the directory that holds the bundle's types/, verbs/ and other lanes\n",
-    );
+    for backend in BACKENDS {
+        let sh = Shell::on("apply-broken", backend);
+        sh.lake();
+        let broken = sh.bundle(
+            "broken",
+            &[
+                (
+                    "types/partner.yaml",
+                    "name: partner\nfields:\n  name: txt\n",
+                ),
+                (
+                    "verbs/pay.yaml",
+                    "name: pay\non: invoice\nrisk: high\nset: {}\n",
+                ),
+            ],
+        );
+        let s = sh.run(&["apply", &broken]);
+        assert_eq!((s.code, s.out.as_str()), (1, ""));
+        let lines: Vec<&str> = s.err.lines().collect();
+        assert_eq!(lines.len(), 3, "{}", s.err);
+        assert!(
+            lines[0].starts_with("error: types/partner.yaml: "),
+            "{}",
+            s.err
+        );
+        assert!(lines[1].starts_with("error: verbs/pay.yaml: "), "{}", s.err);
+        assert_eq!(
+            lines[2],
+            "  what to do: correct the bundle and apply it again; nothing was applied"
+        );
+        ok(&sh.run(&["feed", "--from", "3"]), "");
+        let file = sh.file("decls.json", "[]");
+        fails(
+            &sh.run(&["apply", &file]),
+            "error: <root>/decls.json is not a bundle directory\n  what to do: name the directory that holds the bundle's types/, verbs/ and other lanes\n",
+        );
+    }
 }
 
 #[test]
 fn apply_refuses_a_set_the_lake_refuses_whole_naming_every_problem() {
-    let sh = Shell::new("apply-refused");
-    sh.lake();
-    sh.run(&["apply", &sh.fixture()]);
-    // One reshaped type: its own refusal, and nothing of the set lands.
-    let mut reshaped = FIXTURE;
-    reshaped[0].1 = "name: partner\nfields:\n  name: text\n  city: text\n";
-    let again = sh.bundle("reshaped", &reshaped);
-    fails(
-        &sh.run(&["apply", &again]),
-        "error: refused: this declaration reshapes the records of `partner`; change it with `migrate`\n  what to do: correct the bundle and apply it again; nothing was applied\n",
-    );
-    ok(&sh.run(&["feed", "--from", "5"]), "");
-    // Two reshaped types: one refusal names both.
-    reshaped[1].1 = "name: invoice\nfields:\n  amount: { type: decimal, authority: source }\n";
-    let twice = sh.bundle("reshaped-twice", &reshaped);
-    let s = sh.run(&["apply", &twice]);
-    assert_eq!((s.code, s.out.as_str()), (1, ""));
-    assert!(
-        s.err.starts_with(
-            "error: refused: the set is refused whole, with 2 problems: type invoice: "
-        ) && s.err.contains("; type partner: "),
-        "{}",
-        s.err
-    );
-    assert!(
-        s.err.ends_with(
-            "  what to do: correct the bundle and apply it again; nothing was applied\n"
-        )
-    );
+    for backend in BACKENDS {
+        let sh = Shell::on("apply-refused", backend);
+        sh.lake();
+        sh.run(&["apply", &sh.fixture()]);
+        // An added optional field is a declaration, not a reshape (027).
+        let mut grown = FIXTURE;
+        grown[0].1 =
+            "name: partner\nfields:\n  name: { type: text, searchable: true }\n  city: text\n";
+        let grown = sh.bundle("grown", &grown);
+        let s = sh.run(&["apply", &grown]);
+        assert_eq!((s.code, s.err.as_str()), (0, ""), "{}", s.out);
+        // One reshaped type: its own refusal, and nothing of the set lands.
+        let mut reshaped = FIXTURE;
+        reshaped[0].1 = "name: partner\nfields:\n  name: number\n";
+        let again = sh.bundle("reshaped", &reshaped);
+        let before = sh.run(&["feed"]).out;
+        refused(&sh.run(&["apply", &again]), &["partner"]);
+        ok(&sh.run(&["feed"]), &before);
+        // Two reshaped types: one refusal names both.
+        reshaped[1].1 = "name: invoice\nfields:\n  amount: { type: decimal, authority: source }\n";
+        let twice = sh.bundle("reshaped-twice", &reshaped);
+        refused(&sh.run(&["apply", &twice]), &["invoice", "partner"]);
+    }
 }
 
 #[test]
 fn ingest_prints_one_line_per_commit_window_and_skips_what_it_has() {
-    let sh = Shell::new("ingest");
-    sh.lake();
-    sh.run(&["apply", &sh.fixture()]);
-    let rows: String = (1..=40)
+    for backend in BACKENDS {
+        let sh = Shell::on("ingest", backend);
+        sh.lake();
+        sh.run(&["apply", &sh.fixture()]);
+        let rows: String = (1..=40)
         .map(|i| format!("{{\"type\": \"invoice\", \"key\": \"INV-{i}\", \"fields\": {{\"amount\": \"{i}.00\"}}}}\n"))
         .collect();
-    let file = sh.file("bank.ndjson", &rows);
-    ok(
-        &sh.run(&["ingest", &file, "--source", "bank"]),
-        "committed 32 record(s), 0 already in the lake, through position 36\n\
-         committed 8 record(s), 0 already in the lake, through position 44\n",
-    );
-    ok(
-        &sh.run(&["ingest", &file, "--source", "bank"]),
-        "committed 0 record(s), 32 already in the lake, through position 44\n\
-         committed 0 record(s), 8 already in the lake, through position 44\n",
-    );
-    let broken = sh.file(
-        "broken.ndjson",
-        "{\"type\": \"invoice\", \"key\": \"A\", \"fields\": {}}\nnot json\n",
-    );
-    let s = sh.run(&["ingest", &broken, "--source", "bank"]);
-    assert_eq!(s.code, 1);
-    assert!(
-        s.err
-            .starts_with("error: line 2 of <root>/broken.ndjson is not a source record: "),
-        "{}",
-        s.err
-    );
-    fails(
-        &sh.run(&["ingest", &file, "--source", "bank", "--as", "clerk"]),
-        "error: no principal named `clerk` may address lake `finance`\n  what to do: add an entry for it to lakelands.json, or leave out --as to act as the owner\n",
-    );
+        let file = sh.file("bank.ndjson", &rows);
+        ok(
+            &sh.run(&["ingest", &file, "--source", "bank"]),
+            "committed 32 record(s), 0 already in the lake, through position 38\n\
+         committed 8 record(s), 0 already in the lake, through position 46\n",
+        );
+        ok(
+            &sh.run(&["ingest", &file, "--source", "bank"]),
+            "committed 0 record(s), 32 already in the lake, through position 46\n\
+         committed 0 record(s), 8 already in the lake, through position 46\n",
+        );
+        let broken = sh.file(
+            "broken.ndjson",
+            "{\"type\": \"invoice\", \"key\": \"A\", \"fields\": {}}\nnot json\n",
+        );
+        let s = sh.run(&["ingest", &broken, "--source", "bank"]);
+        assert_eq!(s.code, 1);
+        assert!(
+            s.err
+                .starts_with("error: line 2 of <root>/broken.ndjson is not a source record: "),
+            "{}",
+            s.err
+        );
+        fails(
+            &sh.run(&["ingest", &file, "--source", "bank", "--as", "clerk"]),
+            "error: no principal named `clerk` may address lake `finance`\n  what to do: add an entry for it to lakelands.json, or leave out --as to act as the owner\n",
+        );
+    }
 }
 
 #[test]
 fn ingest_reads_csv_through_a_column_map() {
-    let sh = Shell::new("ingest-csv");
-    sh.lake();
-    sh.run(&["apply", &sh.fixture()]);
-    let csv = sh.file(
+    for backend in BACKENDS {
+        let sh = Shell::on("ingest-csv", backend);
+        sh.lake();
+        sh.run(&["apply", &sh.fixture()]);
+        let csv = sh.file(
         "bank.csv",
-        "Invoice,Amount,Seen\r\nINV-1,120.50,2026-09-24\r\n\"INV-2\",\"99.00\",\nINV-3,,2026-09-25T10:00:00Z\n",
+        "Invoice,Amount,Seen\r\nINV-1,120.50,2026-09-24\r\n\"INV-2\",\"99.00\",\nINV-3,1.00,2026-09-25T10:00:00Z\n",
     );
-    let map = sh.file(
+        let map = sh.file(
         "bank.map.json",
         r#"{"type": "invoice", "key": "Invoice", "fields": {"Amount": "amount"}, "seen_at": "Seen"}"#,
     );
-    ok(
-        &sh.run(&["ingest", &csv, "--source", "bank", "--map", &map]),
-        "committed 3 record(s), 0 already in the lake, through position 7\n",
-    );
-    let feed = sh.run(&["feed", "--from", "5", "--kind", "record_ingested"]);
-    let events: Vec<serde_json::Value> = feed
-        .out
-        .lines()
-        .map(|l| serde_json::from_str(l).unwrap())
-        .collect();
-    assert_eq!(events.len(), 3);
-    assert_eq!(events[0]["body"]["patch"]["amount"], "120.50");
-    assert_eq!(events[0]["seen_at"], "2026-09-24T00:00:00.000000Z");
-    assert_eq!(events[1]["seen_at"], serde_json::Value::Null);
-    assert_eq!(events[2]["body"]["patch"], serde_json::json!({}));
-    let wrong = sh.file(
-        "wrong.map.json",
-        r#"{"type": "invoice", "key": "Number", "fields": {}}"#,
-    );
-    fails(
-        &sh.run(&["ingest", &csv, "--source", "bank", "--map", &wrong]),
-        "error: <root>/bank.csv has no column `Number`, which the map names\n  what to do: correct the file and run the command again; nothing was ingested\n",
-    );
+        ok(
+            &sh.run(&["ingest", &csv, "--source", "bank", "--map", &map]),
+            "committed 3 record(s), 0 already in the lake, through position 9\n",
+        );
+        let feed = sh.run(&["feed", "--from", "7", "--kind", "record_ingested"]);
+        let events: Vec<serde_json::Value> = feed
+            .out
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0]["body"]["patch"]["amount"], "120.50");
+        assert_eq!(events[0]["seen_at"], "2026-09-24T00:00:00.000000Z");
+        assert_eq!(events[1]["seen_at"], serde_json::Value::Null);
+        assert_eq!(events[2]["body"]["patch"]["amount"], "1.00");
+        // An empty cell is absent, so a row of empty cells writes nothing, and
+        // an empty patch is refused.
+        let empty = sh.file("empty.csv", "Invoice,Amount,Seen\nINV-4,,\n");
+        // Refused as invalid: the CLI's framing, never the sentence.
+        let s = sh.run(&["ingest", &empty, "--source", "bank", "--map", &map]);
+        assert_eq!((s.code, s.out.as_str()), (1, ""));
+        assert!(
+            s.err.starts_with("error: refused: ")
+                && s.err.ends_with(
+                    "  what to do: correct the input and run the command again; nothing was written\n"
+                ),
+            "{}",
+            s.err
+        );
+        let wrong = sh.file(
+            "wrong.map.json",
+            r#"{"type": "invoice", "key": "Number", "fields": {}}"#,
+        );
+        fails(
+            &sh.run(&["ingest", &csv, "--source", "bank", "--map", &wrong]),
+            "error: <root>/bank.csv has no column `Number`, which the map names\n  what to do: correct the file and run the command again; nothing was ingested\n",
+        );
+    }
 }
 
 #[test]
 fn feed_prints_the_log_in_canonical_form_from_a_position() {
-    let sh = Shell::new("feed");
-    sh.lake();
-    ok(
-        &sh.run(&["feed"]),
-        "{\"body\":{\"format\":1,\"kind\":\"lake_created\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"0123234c0bc2bbb6102e9d9cfc2f3f57c478a40bf5c3337ce80b7e9414d9bf8d\",\"id\":\"00000000000000000000000000000000\",\"known_at\":\"2026-01-01T00:00:00.000000Z\",\"lake\":\"finance\",\"origin\":\"system\",\"position\":0,\"prev\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"v\":1,\"writer\":\"system:lakelands\"}\n",
-    );
-    sh.run(&["apply", &sh.fixture()]);
-    let s = sh.run(&["feed", "--from", "3"]);
-    assert_eq!(s.code, 0);
-    let positions: Vec<u64> = s
-        .out
-        .lines()
-        .map(|l| {
-            let v: serde_json::Value = serde_json::from_str(l).unwrap();
-            v["position"].as_u64().unwrap()
-        })
-        .collect();
-    assert_eq!(positions, [3, 4]);
-    ok(&sh.run(&["feed", "--from", "9"]), "");
+    for backend in BACKENDS {
+        let sh = Shell::on("feed", backend);
+        sh.lake();
+        // A lake begins with its creation, the creator's lease and the settings
+        // type. Every line is an event's canonical bytes; what the lake's clock
+        // and the hash chain make (`known_at`, `id`, `hash`, `prev`) is shown
+        // as a placeholder, since the mock keeps a clock of its own.
+        let s = sh.run(&["feed"]);
+        assert_eq!((s.code, s.err.as_str()), (0, ""));
+        let lines: Vec<String> = s.out.lines().map(clocked).collect();
+        assert_eq!(
+            lines[..2],
+            [
+                "{\"body\":{\"format\":1,\"kind\":\"lake_created\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":0,\"hash\":\"{hash}\",\"id\":\"{id}\",\"known_at\":\"{known_at}\",\"lake\":\"finance\",\"origin\":\"system\",\"position\":0,\"prev\":\"{prev}\",\"v\":1,\"writer\":\"system:lakelands\"}",
+                "{\"body\":{\"fence\":1,\"holder\":\"{holder}\",\"kind\":\"lease_taken\"},\"context\":{\"depth\":0,\"origin\":\"direct\"},\"fence\":1,\"hash\":\"{hash}\",\"id\":\"{id}\",\"known_at\":\"{known_at}\",\"lake\":\"finance\",\"origin\":\"system\",\"position\":1,\"prev\":\"{prev}\",\"v\":1,\"writer\":\"system:lakelands\"}",
+            ],
+            "{}",
+            s.out
+        );
+        assert!(
+            lines[2].contains("\"name\":\"sys.setting\"") && lines[2].contains("\"position\":2")
+        );
+        sh.run(&["apply", &sh.fixture()]);
+        let s = sh.run(&["feed", "--from", "3"]);
+        assert_eq!(s.code, 0);
+        let positions: Vec<u64> = s
+            .out
+            .lines()
+            .map(|l| {
+                let v: serde_json::Value = serde_json::from_str(l).unwrap();
+                v["position"].as_u64().unwrap()
+            })
+            .collect();
+        assert_eq!(positions, [3, 4, 5, 6]);
+        ok(&sh.run(&["feed", "--from", "11"]), "");
+    }
 }
 
 #[test]
 fn rebuild_prints_the_position_it_rebuilt_through() {
-    let sh = Shell::new("rebuild");
-    sh.lake();
-    sh.run(&["apply", &sh.fixture()]);
-    ok(
-        &sh.run(&["rebuild"]),
-        "rebuilt the projection from the log through position 4\n",
-    );
+    for backend in BACKENDS {
+        let sh = Shell::on("rebuild", backend);
+        sh.lake();
+        sh.run(&["apply", &sh.fixture()]);
+        ok(
+            &sh.run(&["rebuild"]),
+            "rebuilt the projection from the log through position 6\n",
+        );
+    }
 }
 
 #[test]
-fn serve_says_there_is_no_server_yet() {
-    let sh = Shell::new("serve");
-    sh.lake();
-    fails(
-        &sh.run(&["serve", "--mcp"]),
-        "error: this build of lakelands has no MCP server yet; nothing was started\n  what to do: use the library in-process until the server door is built\n",
-    );
-    fails(
-        &sh.run(&["serve"]),
-        "error: nothing to serve was named\n  what to do: pass --mcp to serve the lake over the Model Context Protocol\n",
-    );
+fn serve_needs_a_protocol_named() {
+    for backend in BACKENDS {
+        let sh = Shell::on("serve", backend);
+        sh.lake();
+        fails(
+            &sh.run(&["serve"]),
+            "error: nothing to serve was named\n  what to do: pass --mcp to serve the lake over the Model Context Protocol\n",
+        );
+    }
 }
 
 #[test]
 fn a_principal_from_the_configuration_acts_under_its_grants() {
-    let sh = Shell::new("as");
-    sh.lake();
-    sh.run(&["apply", &sh.fixture()]);
-    let config = r#"{"lakelands": 1, "owner": "owner", "principals": [
+    for backend in BACKENDS {
+        let sh = Shell::on("as", backend);
+        sh.lake();
+        sh.run(&["apply", &sh.fixture()]);
+        let config = r#"{"lakelands": 1, "owner": "owner", "principals": [
         {"name": "reader", "kind": "agent", "id": "reader", "grants": {"default": "read"}}]}"#;
-    fs::write(sh.root.join("lakelands.json"), config).unwrap();
-    let file = sh.file(
-        "one.ndjson",
-        "{\"type\": \"invoice\", \"key\": \"A\", \"fields\": {\"amount\": \"1.00\"}}\n",
-    );
-    fails(
-        &sh.run(&["ingest", &file, "--source", "bank", "--as", "reader"]),
-        "error: refused: you hold no grant for this\n  what to do: act as a principal whose grants allow it, or ask the lake's owner for a grant\n",
-    );
+        fs::write(sh.root.join("lakelands.json"), config).unwrap();
+        let file = sh.file(
+            "one.ndjson",
+            "{\"type\": \"invoice\", \"key\": \"A\", \"fields\": {\"amount\": \"1.00\"}}\n",
+        );
+        fails(
+            &sh.run(&["ingest", &file, "--source", "bank", "--as", "reader"]),
+            "error: refused: you hold no grant for this\n  what to do: act as a principal whose grants allow it, or ask the lake's owner for a grant\n",
+        );
+    }
 }
 
 #[test]
@@ -499,36 +634,82 @@ fn the_root_configuration_carries_the_http_door() {
     );
 }
 
+/// The built binary, end to end: a root, a lake on disk, a bundle
+/// applied, and `serve --mcp` answering an MCP client on its standard
+/// input and output with the lake's tools, until the client hangs up.
 #[test]
-fn the_built_binary_opens_no_lake_until_the_store_exists() {
-    let sh = Shell::new("no-store");
-    sh.lake();
+fn the_built_binary_serves_a_lake_over_mcp_on_stdio() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+
+    let sh = Shell::on("binary", Backend::Store);
     let root = sh.root.display().to_string();
-    let (mut out, mut err) = (Vec::new(), Vec::new());
-    let code = block_on(lakelands_cli::run(
-        ["lakelands", "--root", root.as_str(), "rebuild"],
-        &mut out,
-        &mut err,
-        &lakelands_cli::open_store,
-    ));
-    assert_eq!(code, 1);
-    assert_eq!(
-        String::from_utf8(err).unwrap(),
-        "error: the lake is unavailable: this build of lakelands has no storage engine yet, so lake `finance` cannot be opened\n  what to do: wait and retry, or check that no other process holds the lake\n"
+    let lakelands = env!("CARGO_BIN_EXE_lakelands");
+    let run = |args: &[&str]| {
+        let out = Command::new(lakelands)
+            .args(["--root", root.as_str()])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    run(&["init"]);
+    run(&["lake", "new", "finance"]);
+    run(&["apply", &sh.fixture()]);
+
+    let mut server = Command::new(lakelands)
+        .args(["--root", root.as_str(), "serve", "--mcp"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut to = server.stdin.take().unwrap();
+    for line in [
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#,
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+    ] {
+        writeln!(to, "{line}").unwrap();
+    }
+    drop(to);
+    let answers: Vec<serde_json::Value> = BufReader::new(server.stdout.take().unwrap())
+        .lines()
+        .map(|l| serde_json::from_str(&l.unwrap()).unwrap())
+        .collect();
+    let status = server.wait().unwrap();
+    assert!(status.success(), "serve --mcp exited with {status}");
+    assert_eq!(answers.len(), 2, "{answers:?}");
+    assert_eq!(answers[0]["result"]["serverInfo"]["name"], "lakelands");
+    let tools: Vec<&str> = answers[1]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert!(
+        tools.contains(&"invoice_find") && tools.contains(&"approve"),
+        "{tools:?}"
     );
 }
 
 #[test]
 fn help_is_plain_and_a_wrong_command_line_exits_2() {
-    let sh = Shell::new("help");
-    let s = sh.raw(&["lakelands", "--help"]);
-    assert_eq!(s.code, 0);
-    for line in [
-        "init ", "lake ", "apply ", "ingest ", "feed ", "rebuild ", "serve ",
-    ] {
-        assert!(s.out.contains(line), "{line} missing from:\n{}", s.out);
+    for backend in BACKENDS {
+        let sh = Shell::on("help", backend);
+        let s = sh.raw(&["lakelands", "--help"]);
+        assert_eq!(s.code, 0);
+        for line in [
+            "init ", "lake ", "apply ", "ingest ", "feed ", "rebuild ", "serve ",
+        ] {
+            assert!(s.out.contains(line), "{line} missing from:\n{}", s.out);
+        }
+        let s = sh.raw(&["lakelands", "ingest"]);
+        assert_eq!(s.code, 2);
+        assert!(s.err.contains("--source"), "{}", s.err);
     }
-    let s = sh.raw(&["lakelands", "ingest"]);
-    assert_eq!(s.code, 2);
-    assert!(s.err.contains("--source"), "{}", s.err);
 }

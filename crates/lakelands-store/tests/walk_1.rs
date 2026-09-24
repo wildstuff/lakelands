@@ -182,7 +182,7 @@ async fn lake(name: &str) -> (Arc<dyn Catalog>, Principal) {
     let store = lakelands_store::open(
         Location::memory(name),
         Seams {
-            engines: vec![Arc::new(MemoryOpener)],
+            engines: vec![Arc::new(MemoryOpener::new())],
             ..Seams::default()
         },
         OpenMode::Create,

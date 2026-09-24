@@ -174,6 +174,49 @@ pub trait SystemVocabulary: Send + Sync {
     fn may_hold(&self, lake: &LakeId, ty: &TypeName) -> bool;
 }
 
+/// The type holding a lake's named settings: `setting('key')` reads the
+/// `value` of the live record keyed `key`.
+pub const SETTING_TYPE: &str = "sys.setting";
+
+/// The declaration of [`SETTING_TYPE`], which every lake holds from its
+/// creation (`docs/seams.md` §`SystemVocabulary`). One definition, so every
+/// implementation of the contract creates a lake the same way.
+pub fn setting_type() -> TypeDecl {
+    use crate::ontology::{Authority, FieldDecl, FieldType, StorageKind};
+    let field = |name: &str, kind| FieldDecl {
+        name: name.into(),
+        ty: FieldType::kind(kind),
+        required: true,
+        authority: Authority::Authored,
+        derived: None,
+        function: None,
+        depends_on: vec![],
+        on_input_change: Default::default(),
+        sensitive: false,
+        searchable: false,
+        description: None,
+        label: None,
+    };
+    TypeDecl {
+        name: SETTING_TYPE.into(),
+        key: vec!["key".into()],
+        fields: vec![
+            field("key", StorageKind::Text),
+            field("value", StorageKind::Json),
+        ],
+        relations: vec![],
+        view: None,
+        valid_from: None,
+        valid_to: None,
+        field_meta: true,
+        language: None,
+        description: Some(
+            "One named setting of the lake: `setting('key')` reads its value.".into(),
+        ),
+        label: None,
+    }
+}
+
 /// The system types Lakelands itself reserves, because its own fold reads
 /// them.
 pub const RESERVED_SYSTEM_TYPES: [&str; 4] = [

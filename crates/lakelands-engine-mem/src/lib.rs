@@ -10,13 +10,14 @@
 //!
 //! # One lake, many handles
 //!
-//! A lake held in memory is found by its [`LakeId`] in a registry that
-//! lives as long as the process. Every [`MemoryOpener::open`] of the same
-//! lake returns a handle onto the same log, lease and projection, so a
-//! writer and any number of readers in one process see one lake, and a
-//! second writer is refused the lease exactly as it would be on an engine
-//! that keeps its lake in files. A lake is gone when the process ends;
-//! nothing ever removes it earlier.
+//! A lake held in memory is found by its [`LakeId`] in the registry of the
+//! [`MemoryOpener`] that made it, and of its clones. Every open of the
+//! same lake through that opener returns a handle onto the same log, lease
+//! and projection, so a writer and any number of readers see one lake, and
+//! a second writer is refused the lease exactly as it would be on an engine
+//! that keeps its lake in files. A lake lives as long as its opener; there
+//! is no state beyond the openers, so two openers never share a lake, and
+//! every test with an opener of its own is isolated from every other.
 //!
 //! # Kept history
 //!
@@ -43,7 +44,7 @@ mod vectors;
 mod view;
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
 use lakelands_api::error::{Error, Refusal, Result};
@@ -65,13 +66,8 @@ pub(crate) struct Lake {
     pub(crate) vectors: vectors::Vectors,
 }
 
-/// The process-wide registry of lakes held in memory.
+/// The lakes an opener holds in memory, by name.
 type Registry = Mutex<BTreeMap<LakeId, Arc<Mutex<Lake>>>>;
-
-fn registry() -> &'static Registry {
-    static LAKES: OnceLock<Registry> = OnceLock::new();
-    LAKES.get_or_init(Registry::default)
-}
 
 /// Locks a mutex, carrying on past a panic in another holder: every
 /// change to a lake is made whole or not at all under one lock, so a
@@ -97,9 +93,28 @@ pub(crate) fn invalid(message: impl Into<String>) -> Error {
     }
 }
 
-/// Finds the in-memory engine by name and opens lakes held in memory.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct MemoryOpener;
+/// Finds the in-memory engine by name and opens lakes held in memory. The
+/// lakes are this opener's: its clones share them, another opener holds
+/// its own.
+#[derive(Clone, Default)]
+pub struct MemoryOpener {
+    lakes: Arc<Registry>,
+}
+
+impl MemoryOpener {
+    /// An opener holding no lake yet.
+    pub fn new() -> MemoryOpener {
+        MemoryOpener::default()
+    }
+}
+
+impl std::fmt::Debug for MemoryOpener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemoryOpener")
+            .field("lakes", &lock(&self.lakes).len())
+            .finish()
+    }
+}
 
 impl EngineOpener for MemoryOpener {
     fn name(&self) -> &str {
@@ -117,7 +132,7 @@ impl EngineOpener for MemoryOpener {
                 location.lake
             )));
         }
-        let mut lakes = lock(registry());
+        let mut lakes = lock(&self.lakes);
         let shared = match (lakes.get(&location.lake), mode) {
             (Some(lake), _) => Arc::clone(lake),
             (None, OpenMode::Create) => Arc::clone(
@@ -127,7 +142,7 @@ impl EngineOpener for MemoryOpener {
             ),
             (None, OpenMode::Read | OpenMode::Write) => {
                 return Err(unavailable(format!(
-                    "there is no lake `{}` in this process's memory; open it with `create` \
+                    "there is no lake `{}` in this opener's memory; open it with `create` \
                      to make it",
                     location.lake
                 )));

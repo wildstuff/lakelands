@@ -359,6 +359,13 @@ backing is refused as `Unbound` naming that backing, whatever the host
 passed in `Seams::backings`. `http` and `exec` follow after `0.1.0`,
 and a host may add its own kind then.
 
+`lakelands_store::ExprBacking` is that backing as the seam presents it,
+for a host or a door that calls a function directly: the call's `config`
+carries the expression as `{ "expr": … }` (typed or text form), its
+`inputs` the values by input name, and the answer is the computed value,
+a number as an exact decimal string. The fold computes function fields
+with the same evaluator in process, so the two can never disagree.
+
 ## `EmbedBackend`
 
 `model()`, `dimensions()`, `embed(texts) -> vectors`, one vector per

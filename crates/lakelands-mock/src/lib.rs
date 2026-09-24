@@ -7,7 +7,9 @@
 //! never a cargo feature: features are one per engine.
 //!
 //! [`MockLake`] implements [`LakeStore`], and the catalog it hands out
-//! implements [`Catalog`]. The mock keeps one thing, the log: a list of
+//! implements [`Catalog`]. A lake begins as every lake does: `lake_created`
+//! at position 0 (fence 0), the creator's `lease_taken` at 1, and
+//! `sys.setting` declared at 2. The mock keeps one thing, the log: a list of
 //! events by position. Every read folds the log up to the position it is
 //! read at, so `as_of` sees exactly the superseded state and a rebuild
 //! changes nothing. What the doors can observe follows the contract
@@ -26,13 +28,20 @@
 //!   it, tool names are checked over all of it), appends it in one append
 //!   answered at its last position, or refuses it whole naming every
 //!   problem;
+//! - a write refuses an empty patch; on a create, the key fields a patch
+//!   leaves out are read from the key, and a key must agree with its key
+//!   fields; a revision is a declaration unless it reshapes stored records
+//!   (027);
 //! - `expected_version` answers `Conflict` and writes nothing; an
 //!   idempotency key answers the first outcome and appends nothing;
 //! - every reply carries a position, and every write advances it;
 //! - verbs run by declared risk: `low` with a write effect runs, anything
 //!   else is proposed; `propose`, `accept`, `reject` and `proposals` keep
 //!   proposals in the log;
-//! - `ingest` is content-addressed, and the change feed is the log.
+//! - `ingest` is content-addressed (source, type, key, the version before
+//!   and the values, never when a record was seen), a record that would
+//!   change nothing is a duplicate, within a window too; and the change
+//!   feed is the log.
 //!
 //! What it does not do, because no door test needs it: it persists
 //! nothing, hashes no canonical bytes (the `prev` and `hash` members are
@@ -46,7 +55,11 @@
 //!
 //! The door-facing behaviours are written once, in [`checks`], against
 //! `Arc<dyn LakeStore>`, so that the same checks run on this mock and on
-//! the real store.
+//! the real store, over both engines (`tests/checks_on_the_store.rs`).
+//!
+//! A refusal's sentence is not part of the contract; its kind and field
+//! are. The mock words its refusals its own way, and no door test pins a
+//! refusal's sentence.
 
 #![forbid(unsafe_code)]
 
@@ -95,8 +108,9 @@ struct Log {
 }
 
 impl MockLake {
-    /// A new, empty lake with default limits. Its log holds one event,
-    /// `LakeCreated`, at position 0.
+    /// A new, empty lake with default limits. Its log begins as every
+    /// lake's does: `LakeCreated` at position 0, the creator's
+    /// `LeaseTaken` at 1, and `sys.setting` declared at 2.
     pub fn new(lake: impl Into<LakeId>) -> MockLake {
         MockLake::with_limits(lake.into(), Limits::default())
     }
@@ -118,6 +132,16 @@ impl MockLake {
         let mut batch = Batch::new(0);
         batch.push(Draft::system(EventBody::LakeCreated {
             format: LOG_FORMAT_VERSION,
+        }));
+        batch.push(Draft::system(EventBody::LeaseTaken {
+            fence: 1,
+            holder: "lakelands mock".into(),
+        }));
+        let setting = lakelands_api::seam::setting_type();
+        batch.push(Draft::system(EventBody::Declared {
+            schema_hash: Some(value::schema_hash(&setting)),
+            declaration: lakelands_api::write::Declaration::Type(setting),
+            version: 1,
         }));
         mock.shared
             .append(&mut mock.shared.log(), WriteContext::default(), batch);
@@ -163,7 +187,7 @@ impl Shared {
                 procedure: d.procedure,
                 context,
                 cause: d.cause,
-                fence: 1,
+                fence: u64::from(position.0 != 0),
                 idempotency_key: d.key,
                 body: d.body,
                 hash: Digest::zero(),

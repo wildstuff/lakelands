@@ -17,13 +17,17 @@ clap = { version = "4", default-features = false, features = ["std", "help", "us
 futures-core.workspace = true
 lakelands-api.workspace = true
 lakelands-core.workspace = true
+lakelands-engine-mem.workspace = true
+lakelands-engine-sqlite.workspace = true
 lakelands-server = { path = "../lakelands-server" }
+lakelands-store.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["rt"] }
+tokio = { workspace = true, features = ["rt", "sync", "macros", "time", "net", "io-std"] }
 
 [dev-dependencies]
 lakelands-mock.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [lints]
 workspace = true

@@ -28,7 +28,7 @@ impl Harness for Memory {
         let lake = format!("conformance-{}", NEXT.fetch_add(1, Ordering::Relaxed));
         Box::pin(async move {
             let seams = Seams {
-                engines: vec![Arc::new(MemoryOpener)],
+                engines: vec![Arc::new(MemoryOpener::new())],
                 ..Seams::default()
             };
             let store: Arc<dyn LakeStore> =
