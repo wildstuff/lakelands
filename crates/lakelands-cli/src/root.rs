@@ -219,7 +219,7 @@ impl Root {
                 "correct the file, or remove it and run `lakelands lake new` again",
             )
         })?;
-        if let EngineConfig::Sqlite { dir } = &mut location.engine
+        if let EngineConfig::Sqlite { dir, .. } = &mut location.engine
             && dir.is_relative()
         {
             *dir = self.dir.join(&*dir);

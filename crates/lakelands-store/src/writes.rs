@@ -1304,6 +1304,87 @@ impl Call<'_> {
         })
     }
 
+    /// `apply`: a set of declarations validated together and appended in
+    /// one append, or refused whole. Each declaration is checked against
+    /// the lake's ontology with every other declaration of the set already
+    /// in it, so a reference may point forward within the set and tool
+    /// names are checked over all of it; every problem is collected, and
+    /// one refusal names them all.
+    pub fn apply(&self, declarations: Vec<Declaration>) -> Result<Outcome> {
+        if !self.who.grants.schema {
+            return Err(not_granted());
+        }
+        if declarations.is_empty() {
+            return Err(invalid("nothing to apply: the set holds no declaration"));
+        }
+        let mut w = self.lake.writer();
+        let identities: Vec<String> = declarations
+            .iter()
+            .map(lakelands_core::engines::declaration_key)
+            .collect();
+        let mut problems: Vec<(String, Error)> = Vec::new();
+        for (i, id) in identities.iter().enumerate() {
+            if identities[..i].contains(id) {
+                problems.push((
+                    id.clone(),
+                    invalid(format!("the set declares {id} more than once")),
+                ));
+            }
+        }
+        for (i, d) in declarations.iter().enumerate() {
+            let mut probe = w.ontology.clone();
+            for (j, other) in declarations.iter().enumerate() {
+                if identities[j] != identities[i] {
+                    probe.put(other.clone(), 0, None);
+                }
+            }
+            if let Err(e) = declare::check_declaration(&probe, d, false) {
+                problems.push((identities[i].clone(), e));
+            }
+        }
+        match problems.len() {
+            0 => {}
+            1 => return Err(problems.remove(0).1),
+            _ => {
+                let all: Vec<String> = problems
+                    .iter()
+                    .map(|(id, e)| format!("{id}: {e}"))
+                    .collect();
+                return Err(invalid(format!(
+                    "the set is refused whole, with {} problems: {}",
+                    all.len(),
+                    all.join("; ")
+                )));
+            }
+        }
+        let now = self.lake.clock(&mut w);
+        let mut drafts = Vec::with_capacity(declarations.len());
+        for declaration in declarations {
+            let schema_hash = match &declaration {
+                Declaration::Type(t) => {
+                    Some(shape::schema_hash(t).map_err(|e| invalid(e.to_string()))?)
+                }
+                _ => None,
+            };
+            let version = w.ontology.next_version(&declaration);
+            drafts.push(self.draft(
+                now,
+                Origin::Authored,
+                EventBody::Declared {
+                    declaration,
+                    schema_hash,
+                    version,
+                },
+            ));
+        }
+        let events = self.lake.append(&mut w, drafts)?;
+        Ok(Outcome::Applied {
+            position: events.last().expect("the set is not empty").position,
+            version: None,
+            output: None,
+        })
+    }
+
     /// `add_field`.
     pub fn add_field(
         &self,

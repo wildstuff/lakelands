@@ -128,6 +128,87 @@ impl MockCatalog {
     fn commit(&self, log: &mut Log, batch: Batch) {
         self.shared.append(log, self.context, batch);
     }
+
+    /// One declaration checked and appended to `log`, which the caller
+    /// holds locked; answers its position.
+    fn declare_in(
+        &self,
+        log: &mut Log,
+        who: &Principal,
+        declaration: Declaration,
+    ) -> Result<Position> {
+        let (_, st) = self.state_at(log, None)?;
+        let mut types: Vec<TypeName> = st.types.keys().cloned().collect();
+        let mut verbs: Vec<VerbName> = st.verbs.keys().cloned().collect();
+        let (schema_hash, version) = match &declaration {
+            Declaration::Type(t) => {
+                if reserved(t.name.as_str(), who) {
+                    return Err(refused(Refusal::Reserved));
+                }
+                let hash = value::schema_hash(t);
+                let version = match st.types.get(&t.name) {
+                    Some(old) if old.schema_hash != hash => {
+                        return Err(invalid(format!(
+                            "this declaration reshapes the records of `{}`; change it with `migrate`",
+                            t.name
+                        )));
+                    }
+                    Some(old) => old.version + 1,
+                    None => {
+                        types.push(t.name.clone());
+                        1
+                    }
+                };
+                (Some(hash), version)
+            }
+            other => {
+                let target = match other {
+                    Declaration::Verb(v) => {
+                        verbs.push(v.name.clone());
+                        Some(&v.on)
+                    }
+                    Declaration::Trigger(t) => Some(&t.on),
+                    Declaration::ObjectSet(s) => Some(&s.of),
+                    _ => None,
+                };
+                if let Some(ty) = target {
+                    if !st.types.contains_key(ty) {
+                        return Err(no_type(ty));
+                    }
+                    if reserved(ty.as_str(), who) {
+                        return Err(refused(Refusal::Reserved));
+                    }
+                }
+                let key = serde_json::to_value(other).unwrap_or_default();
+                let key = format!(
+                    "{}:{}",
+                    key["declare"].as_str().unwrap_or_default(),
+                    key["name"].as_str().unwrap_or_default()
+                );
+                (None, st.decl_versions.get(&key).map_or(1, |v| v + 1))
+            }
+        };
+        verbs.dedup();
+        let problems = lakelands_api::tools::name_problems(&types, &verbs);
+        if !problems.is_empty() {
+            return Err(invalid(format!(
+                "these names cannot all become tools: {}",
+                serde_json::to_string(&problems).unwrap_or_default()
+            )));
+        }
+        let mut batch = Batch::at(log);
+        let position = batch.push(Draft::new(
+            who,
+            Origin::System,
+            EventBody::Declared {
+                declaration,
+                schema_hash,
+                version,
+            },
+        ));
+        self.commit(log, batch);
+        Ok(position)
+    }
 }
 
 // ---- describing ----
@@ -1332,78 +1413,41 @@ impl Catalog for MockCatalog {
             return Err(refused(Refusal::NotGranted));
         }
         let mut log = self.log();
-        let (_, st) = self.state_at(&log, None)?;
-        let mut types: Vec<TypeName> = st.types.keys().cloned().collect();
-        let mut verbs: Vec<VerbName> = st.verbs.keys().cloned().collect();
-        let (schema_hash, version) = match &declaration {
-            Declaration::Type(t) => {
-                if reserved(t.name.as_str(), who) {
-                    return Err(refused(Refusal::Reserved));
-                }
-                let hash = value::schema_hash(t);
-                let version = match st.types.get(&t.name) {
-                    Some(old) if old.schema_hash != hash => {
-                        return Err(invalid(format!(
-                            "this declaration reshapes the records of `{}`; change it with `migrate`",
-                            t.name
-                        )));
-                    }
-                    Some(old) => old.version + 1,
-                    None => {
-                        types.push(t.name.clone());
-                        1
-                    }
-                };
-                (Some(hash), version)
-            }
-            other => {
-                let target = match other {
-                    Declaration::Verb(v) => {
-                        verbs.push(v.name.clone());
-                        Some(&v.on)
-                    }
-                    Declaration::Trigger(t) => Some(&t.on),
-                    Declaration::ObjectSet(s) => Some(&s.of),
-                    _ => None,
-                };
-                if let Some(ty) = target {
-                    if !st.types.contains_key(ty) {
-                        return Err(no_type(ty));
-                    }
-                    if reserved(ty.as_str(), who) {
-                        return Err(refused(Refusal::Reserved));
-                    }
-                }
-                let key = serde_json::to_value(other).unwrap_or_default();
-                let key = format!(
-                    "{}:{}",
-                    key["declare"].as_str().unwrap_or_default(),
-                    key["name"].as_str().unwrap_or_default()
-                );
-                (None, st.decl_versions.get(&key).map_or(1, |v| v + 1))
-            }
-        };
-        verbs.dedup();
-        let problems = lakelands_api::tools::name_problems(&types, &verbs);
-        if !problems.is_empty() {
-            return Err(invalid(format!(
-                "these names cannot all become tools: {}",
-                serde_json::to_string(&problems).unwrap_or_default()
-            )));
-        }
-        let mut batch = Batch::at(&log);
-        let position = batch.push(Draft::new(
-            who,
-            Origin::System,
-            EventBody::Declared {
-                declaration,
-                schema_hash,
-                version,
-            },
-        ));
-        self.commit(&mut log, batch);
+        let position = self.declare_in(&mut log, who, declaration)?;
         Ok(Outcome::Applied {
             position,
+            version: None,
+            output: None,
+        })
+    }
+
+    /// `apply`, minimally: the declarations in order under one lock, as
+    /// `declare` takes them, and none of them when one is refused. It does
+    /// not yet resolve a reference to a declaration later in the set.
+    async fn apply(&self, who: &Principal, declarations: Vec<Declaration>) -> Result<Outcome> {
+        self.admit_write(who)?;
+        if !who.grants.schema {
+            return Err(refused(Refusal::NotGranted));
+        }
+        if declarations.is_empty() {
+            return Err(invalid(
+                "nothing to apply: the set holds no declaration".to_owned(),
+            ));
+        }
+        let mut log = self.log();
+        let before = log.events.len();
+        let mut position = None;
+        for d in declarations {
+            match self.declare_in(&mut log, who, d) {
+                Ok(p) => position = Some(p),
+                Err(e) => {
+                    log.events.truncate(before);
+                    return Err(e);
+                }
+            }
+        }
+        Ok(Outcome::Applied {
+            position: position.expect("the set is not empty"),
             version: None,
             output: None,
         })

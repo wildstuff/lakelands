@@ -119,19 +119,6 @@ impl Put {
     }
 }
 
-/// A declaration's identity: its kind and its name. A later declaration
-/// with the same identity supersedes an earlier one.
-pub(crate) fn declaration_key(d: &Declaration) -> String {
-    match d {
-        Declaration::Type(t) => format!("type {}", t.name),
-        Declaration::ValueType(v) => format!("value_type {}", v.name),
-        Declaration::Verb(v) => format!("verb {}", v.name),
-        Declaration::Trigger(t) => format!("trigger {}", t.name),
-        Declaration::ObjectSet(o) => format!("object_set {}", o.name),
-        Declaration::Function(f) => format!("function {}", f.name),
-    }
-}
-
 /// One lake's projection: every kept state, and how far it reflects the
 /// log.
 #[derive(Debug, Default)]
@@ -175,7 +162,7 @@ impl Projection {
             Put::Declaration(d) => {
                 let since = d.since;
                 self.declarations
-                    .entry(declaration_key(&d.declaration))
+                    .entry(lakelands_core::engines::declaration_key(&d.declaration))
                     .or_default()
                     .put(since, d);
             }

@@ -104,6 +104,7 @@ impl Catalog for DownCatalog {
         who: &'life1 Principal, filter: ProposalFilter
     ) -> Reply<Vec<Proposal>>);
     refuse!(declare<'life1>(who: &'life1 Principal, declaration: Declaration) -> Outcome);
+    refuse!(apply<'life1>(who: &'life1 Principal, declarations: Vec<Declaration>) -> Outcome);
     refuse!(add_field<'life1, 'life2>(
         who: &'life1 Principal, ty: &'life2 TypeName, field: FieldDecl
     ) -> Outcome);
@@ -135,6 +136,9 @@ impl LakeStore for DownStore {
     }
     fn is_writer(&self) -> bool {
         false
+    }
+    fn limits(&self) -> lakelands_api::location::Limits {
+        lakelands_api::location::Limits::default()
     }
     fn catalog(&self, _: WriteContext) -> Arc<dyn Catalog> {
         Arc::new(DownCatalog(self.0.clone()))

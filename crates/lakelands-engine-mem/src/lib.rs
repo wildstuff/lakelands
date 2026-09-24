@@ -38,7 +38,6 @@
 
 mod handle;
 mod log;
-mod order;
 mod projection;
 mod vectors;
 mod view;

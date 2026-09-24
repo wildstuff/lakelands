@@ -45,7 +45,9 @@ use lakelands_api::{
 };
 use lakelands_core::expr::{self, Place, RecordScope, aggregate};
 use lakelands_core::graph::{self, EdgeSource};
-use lakelands_core::{canonical, derive as core_derive, describe, rights, valid_time};
+use lakelands_core::{
+    canonical, derive as core_derive, describe, engines as core_engines, rights, valid_time,
+};
 
 use crate::declare::condition;
 use crate::lake::{Lake, settings_in};
@@ -493,9 +495,12 @@ impl<'a> Reader<'a> {
             ..filter.clone()
         })?;
         let me = self.who.writer();
-        Ok(all
+        let mine: Vec<Proposal> = all
             .into_iter()
             .filter(|p| self.who.grants.review || p.proposer == me)
+            .collect();
+        Ok(ordered_proposals(mine, &filter.order_by)?
+            .into_iter()
             .skip(offset)
             .take(limit)
             .collect())
@@ -943,6 +948,63 @@ impl<'a> Reader<'a> {
             truncated,
         })
     }
+}
+
+/// The members of a proposal an `order_by` may name.
+const PROPOSAL_MEMBERS: [&str; 9] = [
+    "id",
+    "position",
+    "proposer",
+    "proposed_at",
+    "write",
+    "why",
+    "state",
+    "decided_by",
+    "reason",
+];
+
+/// Proposals in the caller's `order_by`, applied by the store to the
+/// engine's newest-first answer: each key a member of the proposal,
+/// values in the one sort order, a proposal without a value after every
+/// proposal with one; the engine's order breaks ties. A key that names no
+/// member of a proposal, or orders by provenance, is refused.
+fn ordered_proposals(proposals: Vec<Proposal>, order_by: &[Order]) -> Result<Vec<Proposal>> {
+    if order_by.is_empty() {
+        return Ok(proposals);
+    }
+    for o in order_by {
+        if o.by != OrderBy::Value || !PROPOSAL_MEMBERS.contains(&o.field.as_str()) {
+            return Err(invalid(format!(
+                "proposals are ordered by their members ({}), and `{}` is not one",
+                PROPOSAL_MEMBERS.join(", "),
+                o.field
+            )));
+        }
+    }
+    let mut keyed: Vec<(Vec<Option<Value>>, Proposal)> = proposals
+        .into_iter()
+        .map(|p| {
+            let as_json = serde_json::to_value(&p).expect("a proposal serialises");
+            let values = order_by
+                .iter()
+                .map(|o| {
+                    as_json
+                        .get(o.field.as_str())
+                        .filter(|v| !v.is_null())
+                        .cloned()
+                })
+                .collect();
+            (values, p)
+        })
+        .collect();
+    keyed.sort_by(|a, b| {
+        let place = |values: &Vec<Option<Value>>| core_engines::Place {
+            values: values.clone(),
+            key: "",
+        };
+        core_engines::cmp_places(&place(&a.0), &place(&b.0), order_by)
+    });
+    Ok(keyed.into_iter().map(|(_, p)| p).collect())
 }
 
 fn out_any(o: &Ontology, relation: &RelationName) -> bool {

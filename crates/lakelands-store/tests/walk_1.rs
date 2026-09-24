@@ -222,19 +222,14 @@ async fn declaring_the_bundle_one_by_one_in_the_loaders_order_is_refused() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "rift found before walk 1: needs `Catalog::apply` to declare the bundle whole (O4)"]
 async fn the_walks_question_has_the_answers_the_script_expects() {
     let (cat, who) = lake("walk-1-liquidity").await;
 
-    // The bundle is declared as `lakelands apply` declares it today: in
-    // the loader's order, one declaration at a time. That is refused on
-    // the real store (see the test below), which is why this test is
-    // ignored until `Catalog::apply` declares a bundle whole; it then
-    // calls that door instead of this loop.
+    // The bundle is declared whole, as `Catalog::apply` declares it: in
+    // one append, with `invoice`'s reference to `partner` resolved within
+    // the set.
     let bundle = lakelands_core::bundle::load_dir(&example()).expect("the bundle loads");
-    for d in bundle.declarations {
-        cat.declare(&who, d).await.unwrap();
-    }
+    cat.apply(&who, bundle.declarations).await.unwrap();
 
     let (r, d, _) = ingest(
         &cat,

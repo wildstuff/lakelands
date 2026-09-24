@@ -100,7 +100,7 @@ impl Doors {
 
     /// Hand an external verb to its executor and record the answer; the
     /// recorded output is returned, `{"error": …}` when the executor failed.
-    async fn execute(&self, who: &Principal, ext: External) -> Result<serde_json::Value> {
+    async fn execute(&self, ext: External) -> Result<serde_json::Value> {
         let executor = self
             .lake
             .seams
@@ -116,9 +116,18 @@ impl Doors {
             with_meta: false,
             at: ReadAt::default(),
         };
+        // The executor is the host's own code: it receives the record whole,
+        // unmasked by the grants of whoever made the verb due. The caller
+        // sees only the outcome and the recorded output.
+        let host = Principal {
+            kind: lakelands_api::PrincipalKind::System,
+            id: "host".into(),
+            lake: self.lake.id.clone(),
+            grants: lakelands_api::Grants::owner(),
+        };
         let ty = ext.ty.clone();
         let record = self
-            .read(who, ReadAt::default(), move |r| r.get(&ty, &get))
+            .read(&host, ReadAt::default(), move |r| r.get(&ty, &get))
             .await?
             .data;
         let invocation = VerbInvocation {
@@ -228,7 +237,7 @@ impl Catalog for Doors {
             .write(who, move |c| c.call(&verb, &key, payload, opts))
             .await?;
         match external {
-            Some(ext) => Ok(with_output(outcome, self.execute(who, ext).await?)),
+            Some(ext) => Ok(with_output(outcome, self.execute(ext).await?)),
             None => Ok(outcome),
         }
     }
@@ -281,7 +290,7 @@ impl Catalog for Doors {
         let p = proposal.clone();
         let (outcome, external) = self.write(who, move |c| c.accept(&p)).await?;
         match external {
-            Some(ext) => Ok(with_output(outcome, self.execute(who, ext).await?)),
+            Some(ext) => Ok(with_output(outcome, self.execute(ext).await?)),
             None => Ok(outcome),
         }
     }
@@ -307,6 +316,10 @@ impl Catalog for Doors {
 
     async fn declare(&self, who: &Principal, declaration: Declaration) -> Result<Outcome> {
         self.write(who, move |c| c.declare(declaration)).await
+    }
+
+    async fn apply(&self, who: &Principal, declarations: Vec<Declaration>) -> Result<Outcome> {
+        self.write(who, move |c| c.apply(declarations)).await
     }
 
     async fn add_field(&self, who: &Principal, ty: &TypeName, field: FieldDecl) -> Result<Outcome> {
@@ -395,6 +408,10 @@ impl LakeStore for Store {
 
     fn is_writer(&self) -> bool {
         self.lake.is_writer()
+    }
+
+    fn limits(&self) -> lakelands_api::location::Limits {
+        self.lake.limits
     }
 
     async fn head(&self) -> Result<Position> {

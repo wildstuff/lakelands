@@ -53,8 +53,38 @@ engine_check!(
     "026: an engine returns a link to a retired or missing record as it is; hiding that end is the store's"
 );
 
+engine_check!(
+    /// A commit backwards, or with a put past `through`, is invalid.
+    COMMIT_INVALID = a_commit_backwards_or_with_a_put_past_through_is_invalid,
+    "seams §ProjectionStore: a commit never moves the projection backwards, and never commits a state valid from after the position it says it folded through"
+);
+
+engine_check!(
+    /// A view does not see an open transaction.
+    OPEN_TRANSACTION = a_view_does_not_see_an_open_transaction,
+    "seams §ProjectionStore: nothing put in a transaction is visible to any view until it commits, and then all of it at once"
+);
+
+engine_check!(
+    /// A view keeps its position after later commits.
+    VIEW_KEEPS_POSITION = a_view_keeps_its_position_after_later_commits,
+    "seams §LakeEngine: a view keeps answering its own position while the fold moves on"
+);
+
+engine_check!(
+    /// A put at the same position replaces the state there.
+    SAME_POSITION = a_put_at_the_same_position_replaces_the_state_there,
+    "seams §ProjectionStore: a put of the same thing at the same position replaces the state there; the fold writing a state again never adds a second one"
+);
+
+engine_check!(
+    /// `clear` empties the projection and the vector index.
+    CLEAR = clear_empties_the_projection_and_the_vector_index,
+    "seams §ProjectionStore: clear deletes every state, kept history and the vector index included, and leaves nothing folded, for a rebuild from the log"
+);
+
 /// A record state of `ty` at `position`, with version 1 and no flags.
-fn record(ty: &str, key: &str, fields: Value, position: u64) -> StoredRecord {
+pub(super) fn record(ty: &str, key: &str, fields: Value, position: u64) -> StoredRecord {
     StoredRecord {
         ty: TypeName::from(ty),
         key: RecordKey::from(key),
@@ -68,7 +98,7 @@ fn record(ty: &str, key: &str, fields: Value, position: u64) -> StoredRecord {
 }
 
 /// A view at `as_of`, or a failure saying which view could not open.
-fn view(
+pub(super) fn view(
     engine: &dyn LakeEngine,
     as_of: Option<Position>,
 ) -> Result<Box<dyn ProjectionView + '_>, Failure> {
@@ -78,7 +108,7 @@ fn view(
 }
 
 /// One fold transaction through `through`.
-fn fold(
+pub(super) fn fold(
     engine: &dyn LakeEngine,
     through: u64,
     puts: impl FnOnce(&dyn ProjectionStore) -> lakelands_api::Result<()>,
@@ -326,6 +356,185 @@ fn edges_to_a_retired_record_are_returned(engine: &dyn LakeEngine) -> Result<(),
         into == ["i1>billed_to>c1", "i2>billed_to>c1"],
         "the retired customer c1 has in edges {into:?}; the links pointing at it must be \
          returned as they are"
+    );
+    Ok(())
+}
+
+fn a_commit_backwards_or_with_a_put_past_through_is_invalid(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    fold(engine, 4, |p| p.put_record(&record("t", "a", json!({}), 4)))?;
+    let p = engine.projection();
+    let invalid = |r: &lakelands_api::Result<()>| {
+        matches!(
+            r,
+            Err(Error::Refused {
+                reason: Refusal::Invalid { .. },
+                ..
+            })
+        )
+    };
+    p.begin().must("beginning a transaction")?;
+    let backwards = p.commit(Position(3));
+    ensure!(
+        invalid(&backwards),
+        "committing through 3 a projection folded through 4 answered {backwards:?}; it must be \
+         refused as invalid"
+    );
+    p.begin().must("beginning a transaction")?;
+    p.put_record(&record("t", "b", json!({}), 9))
+        .must("putting a record")?;
+    let late = p.commit(Position(5));
+    ensure!(
+        invalid(&late),
+        "committing through 5 a state valid from 9 answered {late:?}; it must be refused as \
+         invalid"
+    );
+    let folded = p.folded_through().must("reading the folded position")?;
+    let b = view(engine, None)?
+        .get(&TypeName::from("t"), &RecordKey::from("b"))
+        .must("reading the refused state")?;
+    ensure!(
+        folded == Some(Position(4)) && b.is_none(),
+        "after two refused commits the projection is folded through {folded:?} and shows \
+         {b:?}; it must be as before, through 4, without `b`"
+    );
+    Ok(())
+}
+
+fn a_view_does_not_see_an_open_transaction(engine: &dyn LakeEngine) -> Result<(), Failure> {
+    fold(engine, 1, |p| {
+        p.put_record(&record("t", "a", json!({"n": 1}), 1))
+    })?;
+    let p = engine.projection();
+    p.begin().must("beginning a transaction")?;
+    p.put_record(&record("t", "a", json!({"n": 2}), 2))
+        .must("putting a record")?;
+    p.put_record(&record("t", "b", json!({}), 2))
+        .must("putting a record")?;
+    let during = view(engine, None)?;
+    let (a, b, at) = (
+        during
+            .get(&TypeName::from("t"), &RecordKey::from("a"))
+            .must("reading during the transaction")?
+            .and_then(|r| r.fields.get("n").cloned()),
+        during
+            .get(&TypeName::from("t"), &RecordKey::from("b"))
+            .must("reading during the transaction")?,
+        during.position(),
+    );
+    drop(during);
+    p.commit(Position(2)).must("committing through 2")?;
+    ensure!(
+        a == Some(json!(1)) && b.is_none() && at == Some(Position(1)),
+        "a view opened during an open transaction read n = {a:?}, `b` = {b:?} at {at:?}; it \
+         must see only what was committed: n = 1, no `b`, at position 1"
+    );
+    let after = view(engine, None)?;
+    let n = after
+        .get(&TypeName::from("t"), &RecordKey::from("a"))
+        .must("reading after the commit")?
+        .and_then(|r| r.fields.get("n").cloned());
+    ensure!(
+        n == Some(json!(2)),
+        "after the commit `a` reads n = {n:?}; it must be 2"
+    );
+    Ok(())
+}
+
+fn a_view_keeps_its_position_after_later_commits(engine: &dyn LakeEngine) -> Result<(), Failure> {
+    fold(engine, 1, |p| {
+        p.put_record(&record("t", "a", json!({"n": 1}), 1))
+    })?;
+    let early = view(engine, None)?;
+    fold(engine, 2, |p| {
+        p.put_record(&record("t", "a", json!({"n": 2}), 2))?;
+        p.put_record(&record("t", "b", json!({}), 2))
+    })?;
+    let ty = TypeName::from("t");
+    let n = early
+        .get(&ty, &RecordKey::from("a"))
+        .must("reading through the earlier view")?
+        .and_then(|r| r.fields.get("n").cloned());
+    let rows = early
+        .scan(
+            &ty,
+            &lakelands_api::engine::Scan {
+                limit: u32::MAX,
+                ..Default::default()
+            },
+        )
+        .must("scanning through the earlier view")?
+        .len();
+    ensure!(
+        early.position() == Some(Position(1)) && n == Some(json!(1)) && rows == 1,
+        "a view opened at 1 answered position {:?}, n = {n:?} and {rows} record(s) after a \
+         later commit; it must keep answering position 1: n = 1, one record",
+        early.position()
+    );
+    Ok(())
+}
+
+fn a_put_at_the_same_position_replaces_the_state_there(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    fold(engine, 1, |p| {
+        p.put_record(&record("t", "a", json!({"n": 1}), 1))
+    })?;
+    fold(engine, 2, |p| {
+        p.put_record(&record("t", "a", json!({"n": 2}), 2))?;
+        p.put_record(&record("t", "a", json!({"n": 3}), 2))
+    })?;
+    let ty = TypeName::from("t");
+    let read = |as_of: Option<u64>| -> Result<Option<Value>, Failure> {
+        Ok(view(engine, as_of.map(Position))?
+            .get(&ty, &RecordKey::from("a"))
+            .must("reading the record")?
+            .and_then(|r| r.fields.get("n").cloned()))
+    };
+    let (one, two) = (read(Some(1))?, read(Some(2))?);
+    ensure!(
+        one == Some(json!(1)) && two == Some(json!(3)),
+        "`a` was put with n = 1 at 1, then twice at 2 (n = 2, then n = 3); it read {one:?} at 1 \
+         and {two:?} at 2, where the second put replaced the first"
+    );
+    Ok(())
+}
+
+fn clear_empties_the_projection_and_the_vector_index(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    let ty = TypeName::from("t");
+    fold(engine, 1, |p| p.put_record(&record("t", "a", json!({}), 1)))?;
+    if let Some(index) = engine.vectors() {
+        index
+            .put(&ty, &RecordKey::from("a"), "emb", &[1.0, 0.0])
+            .must("putting a vector")?;
+    }
+    engine.projection().clear().must("clearing")?;
+    let folded = engine
+        .projection()
+        .folded_through()
+        .must("reading the folded position")?;
+    ensure!(
+        folded.is_none(),
+        "after clear the projection is folded through {folded:?}"
+    );
+    let vectors = match engine.vectors() {
+        Some(index) => index.count(&ty, "emb").must("counting vectors")?,
+        None => 0,
+    };
+    ensure!(
+        vectors == 0,
+        "after clear the vector index holds {vectors} vector(s)"
+    );
+    fold(engine, 1, |_| Ok(()))?;
+    let a = view(engine, None)?
+        .get(&ty, &RecordKey::from("a"))
+        .must("reading after clear")?;
+    ensure!(
+        a.is_none(),
+        "after clear the record put before it reads {a:?}"
     );
     Ok(())
 }

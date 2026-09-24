@@ -472,8 +472,10 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
         Declaration::Verb(v) if !verbs.contains(&v.name) => verbs.push(v.name.clone()),
         _ => {}
     }
-    if let Some(p) = name_problems(&types, &verbs).first() {
-        return Err(invalid(p.to_string()));
+    let problems = name_problems(&types, &verbs);
+    if !problems.is_empty() {
+        let all: Vec<String> = problems.iter().map(ToString::to_string).collect();
+        return Err(invalid(all.join("; ")));
     }
     Ok(())
 }

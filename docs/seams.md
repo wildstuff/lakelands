@@ -103,7 +103,7 @@ no check yet.
 | `name` | The engine's name, as `EngineConfig` selects it. |
 | `lake` | The lake this handle keeps. |
 | `take_lease(holder)` | Take the writer lease with a fencing token greater than every token this lake ever handed out. **Fails at once** while the lease is held — by another process, another handle, or this one — with `Unavailable` whose message names the holder; never waits. `Unavailable` on a handle opened read-only. |
-| `release_lease(lease)` | Give the lease up; the next taker gets a greater token. Always succeeds. Releasing a lease that is no longer the current one does nothing, so a writer that lost the lease cannot release its successor's. A handle that is dropped releases the lease it took and still holds, so a writer that ends without closing does not keep the lake from every later writer. |
+| `release_lease(lease)` | Give the lease up; the next taker gets a greater token. The lease is always released; an engine that also records the holder in storage reports a failure to clear that record as `Unavailable`, after releasing. Releasing a lease that is no longer the current one does nothing, so a writer that lost the lease cannot release its successor's. A handle that is dropped releases the lease it took and still holds, so a writer that ends without closing does not keep the lake from every later writer. |
 | `tip` | The last event's position and hash, or none for an empty lake. |
 | `append(lease, events)` | Append a group of `CanonicalEvent`s, all or none, **durably before returning**: once it returns, the events survive a crash of the process and of the machine. `Unavailable` when `lease` is not the current lease or the handle is read-only. `Invalid` when an event's fence differs from the lease's — except the event at position 0, which carries fence 0 — when the positions do not continue the tip without a gap, or when a `prev` is not the hash before it; nothing of a refused append is kept. An empty group appends nothing. Stores each event's bytes unchanged and never parses them. |
 | `read(from, limit)` | At most `limit` `CanonicalEvent`s from `from` on, in position order, exactly as appended: the same members, the same bytes. Empty when `from` is past the tip or `limit` is 0. |
@@ -113,12 +113,24 @@ no check yet.
 | `view(as_of)` | A read view at `folded_through` (`None`), or as the projection was right after folding `as_of`, served from kept states. `OutOfRange`, with `folded_through` (0 when nothing is folded) as the head, for a position past it. A view keeps answering its own position while the fold moves on. |
 | `vectors` | The vector index, if the engine keeps one; a search that needs vectors is refused as `Unbound` on an engine that keeps none. |
 
+**The lease across processes.** An engine that keeps a lake in files
+holds the lease with a lock the operating system keeps, on a file that
+records the last fencing token handed out and who holds it. The lock
+guarantees two things: a take while it is held fails at once, never
+waits; and it is released by the operating system when its process ends,
+however it ends, so a crashed writer never keeps the lake from the next
+one. The lock alone does not refuse a stale writer: the fencing token
+does. Every `append` and `seal_segment` is checked against the lease the
+handle holds and against the token the file records now, so a writer
+that released its lease, or lost its lock without knowing, is refused. The SQLite engine keeps `lease` in the lake's
+directory this way (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`).
+
 An engine is found by name and opened through `EngineOpener`:
 
 | Method | Contract |
 |---|---|
 | `name` | The name the engine answers to in `EngineConfig`. |
-| `open(location, mode)` | Open the lake `Read`, `Write` or `Create` (write, creating it if absent, opening it if present). `Read` or `Write` of a lake that does not exist is `Unavailable`; a location configured for another engine is `Invalid`. Opening never takes the lease; a writer takes it afterwards with `take_lease`. A handle opened `Read` refuses `take_lease`, `append` and `seal_segment` as `Unavailable`, so any number of readers can hold the lake while one process writes (`docs/decisions/008-one-writer-per-lake.md`). |
+| `open(location, mode)` | Open the lake `Read`, `Write` or `Create` (write, creating it if absent, opening it if present). `Read` or `Write` of a lake that does not exist is `Unavailable`; a location configured for another engine is `Invalid`. Opening never takes the lease; a writer takes it afterwards with `take_lease`. A handle opened `Read` refuses `take_lease`, `append` and `seal_segment` as `Unavailable`, and writes nothing to the projection (`begin`, the puts and `clear` are `Unavailable`), so any number of readers can hold the lake while one process writes (`docs/decisions/008-one-writer-per-lake.md`). A read-only open of a lake that does not exist creates nothing. The store folds only on the writer's handle; a reader reads what the writer folded. |
 
 ### `ProjectionStore`: what the fold writes
 
@@ -256,6 +268,16 @@ Vectors are indexed at the head only. As for `lexical`, a read at an
 earlier position ranks by the index at the head and keeps only the
 candidates visible at that position.
 
+**The ceiling.** Both engines of `0.1.0` search by brute force with the
+one cosine (`lakelands_core::engines::cosine`): `nearest` reads every
+vector of the field, so its cost grows linearly with the vectors a field
+holds, and with their length. At 1,536 dimensions that is about 6 KiB
+read and one dot product per vector per query; a field of a hundred
+thousand vectors is a scan of some 600 MiB. An index that answers faster
+than a scan, sqlite-vec among them, is an implementation of this seam
+after `0.1.0`: it picks candidates, and the one cosine ranks them, so an
+answer never depends on its arithmetic.
+
 **Exactness.** Every index in `0.1.0` is exact: `nearest` answers the true
 top `k` by cosine, and the checks require it. An approximate index (HNSW
 in PostgreSQL, after `0.1.0`) will say so through an additive method
@@ -282,6 +304,7 @@ holds it to; each is proposed on lakelands#15 as an engine check for O4.
 | a sealed segment's digest is over its lines; sealing an empty segment answers none | engine: `a_sealed_segment_is_digested_as_its_lines` |
 | a dropped writer releases its lease | engine: `a_dropped_writer_releases_its_lease` |
 | a read-only handle refuses the lease, appends and sealing, and reads | engine: `a_read_only_handle_refuses_the_lease_and_appends` |
+| a read-only open creates nothing and writes no projection | engine: `a_read_only_open_creates_and_changes_nothing` |
 | a view at a position reads the states valid there | engine: `a_view_at_a_position_sees_the_states_then`; suite: `a_read_as_of_a_write_sees_that_write_and_nothing_later`, `a_read_as_of_the_position_before_a_write_does_not_see_it`, `retiring_a_record_does_not_erase_its_history` |
 | a view past the fold is `OutOfRange` naming the head | engine: `a_view_past_the_folded_position_is_refused`; suite: `a_read_as_of_a_position_past_the_head_is_refused_as_out_of_range` |
 | a rolled-back transaction leaves nothing | engine: `a_rolled_back_transaction_leaves_nothing` |
@@ -290,20 +313,20 @@ holds it to; each is proposed on lakelands#15 as an engine check for O4.
 | `scan` filters, the retired and restricted flags, `valid_at` | suite, through `find` and `get` (paging, restriction, views, decimals) |
 | `mark_applied` / `applied` recognise a redelivery | suite: `the_same_content_ingested_twice_appends_nothing_the_second_time`, `a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_appends_nothing` |
 | `append` is durable before it returns | none yet (needs a harness that kills the process) |
-| the stale-lease refusal is `Unavailable` (the check accepts `Refused` too) | none yet |
-| releasing a stale lease leaves the current holder's lease | none yet |
-| `read` past the tip or with `limit` 0 is empty; `tip` of an empty lake is none | none yet |
-| an event at position 0 with a fence other than 0 is refused | none yet |
-| sealing under a stale lease is refused; two seals list contiguous ranges | none yet |
-| `open` of a missing lake is `Unavailable`; `Create` of an existing one opens it | none yet |
-| a commit backwards, or with a put past `through`, is `Invalid`; a view does not see an open transaction; a view keeps its position after later commits | none yet |
-| a put of the same thing at the same position replaces it | none yet |
-| `scan`'s order, `after` and `limit`, including a limit of 0 and values of mixed kinds | none yet (the store does not use them in `0.1.0`) |
-| `scan`'s filter matches the evaluator exactly, including comparisons across kinds and filters that error | none yet |
-| `lexical`'s hit set, its language, searchable fields only, live and unrestricted only, ties by key, `k`; at an earlier position, visibility from the position and text from the head | none yet |
-| `nearest`'s exact top `k` by cosine, ties, a zero vector, a wrong length; `put` replaces; `clear` empties the index | none yet |
-| `declarations`, `is_member`, `output` and `applied` at an earlier position; `mark_applied` keeps the first position | none yet |
-| `proposals`' filters, a `call`'s type, and its order | none yet |
+| the stale-lease refusal is `Unavailable`; another fence is `Invalid` | engine: `a_stale_lease_cannot_append` |
+| releasing a stale lease leaves the current holder's lease | engine: `releasing_a_stale_lease_leaves_the_current_holders_lease` |
+| `read` past the tip or with `limit` 0 is empty; `tip` of an empty lake is none | engine: `reading_past_the_tip_or_with_limit_zero_answers_nothing` |
+| an event at position 0 with a fence other than 0 is refused | engine: `an_event_at_position_zero_with_a_fence_is_refused` |
+| sealing under a stale lease is refused; two seals list contiguous ranges | engine: `sealing_under_a_stale_lease_is_refused_and_two_seals_list_contiguous_ranges` |
+| `open` of a missing lake is `Unavailable`; `Create` of an existing one opens it | engine: `opening_a_missing_lake_to_read_or_write_is_unavailable_and_create_opens_an_existing_one` |
+| a commit backwards, or with a put past `through`, is `Invalid`; a view does not see an open transaction; a view keeps its position after later commits | engine: `a_commit_backwards_or_with_a_put_past_through_is_invalid`, `a_view_does_not_see_an_open_transaction`, `a_view_keeps_its_position_after_later_commits` |
+| a put of the same thing at the same position replaces it | engine: `a_put_at_the_same_position_replaces_the_state_there` |
+| `scan`'s order, `after` and `limit`, including a limit of 0 and values of mixed kinds | engine: `mixed_kinds_sort_the_same_on_every_engine`, `a_scan_continues_strictly_after_its_keyset_position` |
+| `scan`'s filter matches the evaluator exactly, including comparisons across kinds and filters that error; the flags and `valid_at` | engine: `scan_filters_exactly_as_the_evaluator_including_mixed_kinds_and_errors`, `scan_honours_retired_restricted_and_valid_at` |
+| `lexical`'s hit set, its language, searchable fields only, live and unrestricted only, ties by key, `k`; at an earlier position, visibility from the position and text from the head | engine: `lexical_hits_are_the_pipelines_over_searchable_live_unrestricted_records`, `lexical_finds_every_token_the_pipeline_makes_beyond_ascii`, `lexical_at_an_earlier_position_ranks_by_the_head_and_keeps_what_was_visible_then` |
+| `nearest`'s exact top `k` by cosine, ties, a zero vector, a wrong length; `put` replaces; `clear` empties the index | engine: `nearest_ranks_by_cosine_with_ties_by_key`, `a_zero_vector_scores_zero_and_a_wrong_length_is_invalid`, `put_replaces_a_vector_and_remove_forgets_it`, `clear_empties_the_projection_and_the_vector_index` |
+| `declarations`, `is_member`, `output` and `applied` at an earlier position; `mark_applied` keeps the first position | engine: `declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position`, `the_first_applied_position_is_kept` |
+| `proposals`' filters, a `call`'s type, and its order | engine: `proposals_filter_by_state_and_type_newest_first` |
 
 ## `PrincipalResolver`
 
@@ -440,8 +463,15 @@ hold, not what hosts implement:
   principal. Tool names for LLM-facing transports come only from
   `lakelands_api::tools::tools`.
 - `LakeStore`: one open lake, as its host holds it; it hands out a
-  `Catalog` bound to a `WriteContext`, the change feed, and lake
-  maintenance (`verify`, `rebuild`, `checkpoint`).
+  `Catalog` bound to a `WriteContext`, the change feed, the limits it was
+  opened with (`limits`), and lake maintenance (`verify`, `rebuild`,
+  `checkpoint`).
+
+`Catalog::apply` declares a set of declarations as one: validated
+together, so a reference may point forward within the set, and appended
+in one append or refused whole, one refusal naming every problem
+(`docs/decisions/028-authoring-is-strict-and-whole.md`). It is how a
+bundle reaches a lake; it has no tool in `0.1.0`.
 
 The `seam-width` gate counts the methods of `LakeStore` and the three
 engine traits together, and holds them at 110 or fewer. `Catalog` is not

@@ -57,10 +57,9 @@ impl Vectors {
                     v.len()
                 )));
             }
-            hits.push((key.clone(), cosine(query, v)));
+            hits.push((key.clone(), lakelands_core::engines::cosine(query, v)));
         }
-        hits.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        hits.truncate(k as usize);
+        lakelands_core::engines::rank(&mut hits, k);
         Ok(hits)
     }
 
@@ -74,23 +73,6 @@ impl Vectors {
     /// Forgets every vector.
     pub(crate) fn clear(&mut self) {
         self.0.clear();
-    }
-}
-
-/// The cosine similarity of two vectors of one length, in `f64`; 0 when
-/// either is all zeros.
-fn cosine(a: &[f32], b: &[f32]) -> f64 {
-    let (mut dot, mut na, mut nb) = (0.0f64, 0.0f64, 0.0f64);
-    for (x, y) in a.iter().zip(b) {
-        let (x, y) = (f64::from(*x), f64::from(*y));
-        dot += x * y;
-        na += x * x;
-        nb += y * y;
-    }
-    if na == 0.0 || nb == 0.0 {
-        0.0
-    } else {
-        dot / (na.sqrt() * nb.sqrt())
     }
 }
 

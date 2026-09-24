@@ -724,8 +724,15 @@ pub fn to_json(
     scale: Option<u32>,
 ) -> Option<Value> {
     use lakelands_api::ontology::StorageKind as K;
+    // A value at a declared scale is rounded half away from zero and then
+    // written with exactly that many fractional digits, as a written value
+    // of the type is.
     let rounded = |d: Decimal| match scale {
-        Some(s) => d.round_dp_with_strategy(s, RoundingStrategy::MidpointAwayFromZero),
+        Some(s) => {
+            let mut r = d.round_dp_with_strategy(s, RoundingStrategy::MidpointAwayFromZero);
+            r.rescale(s);
+            r
+        }
         None => d,
     };
     match (v, kind) {

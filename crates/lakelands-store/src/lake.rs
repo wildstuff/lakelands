@@ -7,7 +7,7 @@
 //! projection in one transaction that commits with the position folded
 //! through. One process holds a lake's lease at a time
 //! (`docs/decisions/008-one-writer-per-lake.md`); a reader opens without
-//! it and never appends.
+//! it, never appends and never folds: it reads what the writer folded.
 //!
 //! **Folding.** The fold is a pure function of the log: each event, in
 //! order, changes the projection exactly as [`Lake::fold`] says, and
@@ -207,28 +207,30 @@ impl Lake {
                     holder: lease.holder.clone(),
                 },
             ));
-            if w.tip.is_none() {
-                let mut types = vec![setting_type()];
-                if let Some(v) = &lake.seams.vocabulary {
-                    types.extend(
-                        v.types()
-                            .into_iter()
-                            .filter(|t| v.may_hold(&lake.id, &t.name)),
-                    );
-                }
-                for t in types {
-                    let hash = shape::schema_hash(&t).map_err(|e| Error::Unavailable {
-                        message: format!("the system type `{}` has no schema hash: {e}", t.name),
-                    })?;
-                    drafts.push(Draft::system(
-                        now,
-                        EventBody::Declared {
-                            declaration: Declaration::Type(t),
-                            schema_hash: Some(hash),
-                            version: 1,
-                        },
-                    ));
-                }
+            // The system types this lake may hold and does not hold yet are
+            // declared on every open for writing, so a host type added after
+            // the lake was created reaches it too.
+            let mut types = vec![setting_type()];
+            if let Some(v) = &lake.seams.vocabulary {
+                types.extend(
+                    v.types()
+                        .into_iter()
+                        .filter(|t| v.may_hold(&lake.id, &t.name)),
+                );
+            }
+            types.retain(|t| !w.ontology.types.contains_key(&t.name));
+            for t in types {
+                let hash = shape::schema_hash(&t).map_err(|e| Error::Unavailable {
+                    message: format!("the system type `{}` has no schema hash: {e}", t.name),
+                })?;
+                drafts.push(Draft::system(
+                    now,
+                    EventBody::Declared {
+                        declaration: Declaration::Type(t),
+                        schema_hash: Some(hash),
+                        version: 1,
+                    },
+                ));
             }
             lake.append(&mut w, drafts)?;
         }
@@ -272,7 +274,11 @@ impl Lake {
         let events = self.read_events(from, None)?;
         if let Some(last) = events.last() {
             w.last_known_at = last.known_at;
-            self.fold_all(&mut w, &events)?;
+            // Only the writer folds; a handle opened read-only reads what
+            // the writer folded, and writes nothing.
+            if w.lease.is_some() {
+                self.fold_all(&mut w, &events)?;
+            }
         } else if let Some((pos, _)) = &w.tip {
             if let Some(e) = self.read_events(*pos, Some(1))?.first() {
                 w.last_known_at = e.known_at;

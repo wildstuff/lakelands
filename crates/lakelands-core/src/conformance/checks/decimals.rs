@@ -31,6 +31,12 @@ check!(
     "the engine seam: sum is exact for decimals, so 0.10 + 0.20 + 0.30 is 0.60 and not a float's approximation"
 );
 
+check!(
+    /// A scaled decimal keeps its scale when derived and summed.
+    SCALE_KEPT = a_scaled_decimal_keeps_its_scale_when_derived_and_summed,
+    "011: a value is kept at its value type's scale, so a derived decimal is rounded to it before it is stored, and a sum over a scaled field answers at that scale"
+);
+
 const AMOUNTS: [&str; 6] = [
     "8500.125",
     "10.00",
@@ -128,6 +134,82 @@ async fn a_sum_over_decimals_is_exact(store: Arc<dyn LakeStore>) -> Result<(), F
         decimal(total) == Some(dec("0.60")),
         "the sum of the decimals 0.10, 0.20 and 0.30 must be exactly 0.60, as a decimal \
          string; it is {total:?}"
+    );
+    Ok(())
+}
+
+async fn a_scaled_decimal_keeps_its_scale_when_derived_and_summed(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let money: lakelands_api::write::Declaration = serde_json::from_value(json!({
+        "declare": "value_type", "name": "money", "kind": "decimal", "scale": 2
+    }))
+    .map_err(|e| Failure::new(format!("the check's value type does not read: {e}")))?;
+    cat.declare(&own, money)
+        .await
+        .must("declaring the value type `money`")?;
+    let money_field = |name: &str| {
+        let mut f = field(name, StorageKind::Decimal);
+        f.ty.value_type = Some("money".into());
+        f
+    };
+    let mut gross = money_field("gross");
+    gross.derived = Some(lakelands_api::expr::Condition::from("net * 1.19"));
+    gross.authority = lakelands_api::ontology::Authority::Derived;
+    declare(
+        cat.as_ref(),
+        &own,
+        type_decl("invoice", vec![money_field("net"), gross]),
+    )
+    .await?;
+    for (key, net) in [("a", "4000.00"), ("b", "5000"), ("c", "0.05")] {
+        upsert(cat.as_ref(), &own, "invoice", key, json!({"net": net})).await?;
+    }
+    let rows = all(cat.as_ref(), &own, "invoice").await?;
+    let grosses: Vec<Option<&serde_json::Value>> = ["a", "b", "c"]
+        .iter()
+        .map(|k| {
+            rows.iter()
+                .find(|r| r.key.as_str() == *k)
+                .and_then(|r| value(r, "gross"))
+        })
+        .collect();
+    ensure!(
+        grosses
+            == [
+                Some(&json!("4760.00")),
+                Some(&json!("5950.00")),
+                Some(&json!("0.06"))
+            ],
+        "`gross = net * 1.19` of 4000.00, 5000 and 0.05 in `money` (scale 2) stored {grosses:?}; \
+         a derived value is rounded half away from zero to its scale before it is stored: \
+         4760.00, 5950.00, 0.06"
+    );
+    let find = Find {
+        aggregate: Some(Aggregate {
+            measures: vec![AggMeasure {
+                name: FieldName::from("total"),
+                func: AggFunc::Sum,
+                field: Some(FieldName::from("gross")),
+            }],
+            group_by: Vec::new(),
+        }),
+        ..Find::default()
+    };
+    let reply = cat
+        .find(&own, &TypeName::from("invoice"), find)
+        .await
+        .must("summing `gross`")?;
+    let Found::Groups { rows } = reply.data else {
+        return Err(Failure::new("`find` with an aggregate must answer groups"));
+    };
+    let total = rows.first().and_then(|g| g.values.get("total"));
+    ensure!(
+        total == Some(&json!("10710.06")),
+        "the sum of `gross` in `money` (scale 2) is {total:?}; it must be \"10710.06\", at the \
+         field's scale"
     );
     Ok(())
 }
