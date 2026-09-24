@@ -1,0 +1,126 @@
+//! A `reference` names a record that exists
+//! (`docs/decisions/011-storage-kind-and-value-type.md`, the log format
+//! §5: a reference is the target record's key).
+
+use std::sync::Arc;
+
+use lakelands_api::ontology::{Authority, FieldDecl, FieldType, StorageKind};
+use lakelands_api::{Error, LakeStore, TypeName, WriteOpts};
+use serde_json::json;
+
+use crate::conformance::Failure;
+use crate::conformance::fixture::{
+    Must, committed, declare, doors, field, head_unmoved, ingest, owner, patch, read,
+    source_record, type_decl, upsert, value, windows_reach_head,
+};
+
+check!(
+    /// A reference must name a record the lake holds.
+    REFERENCE_MUST_RESOLVE = a_write_referencing_a_record_that_does_not_exist_is_refused,
+    "011 and the log format §5: a reference is the key of a record of its target type; a write naming no such record is refused whole, one naming an existing record is accepted"
+);
+
+check!(
+    /// Within one ingest, an earlier record is already there.
+    REFERENCE_WITHIN_A_WINDOW = a_reference_to_a_record_earlier_in_the_same_ingest_resolves,
+    "016 and the log format §5: an ingest's records are written in order, so a record may refer to one delivered before it in the same window"
+);
+
+fn reference(name: &str, target: &str) -> FieldDecl {
+    FieldDecl {
+        ty: FieldType {
+            target: Some(target.into()),
+            ..FieldType::kind(StorageKind::Reference)
+        },
+        ..field(name, StorageKind::Text)
+    }
+}
+
+async fn partners_and_invoices(store: &dyn LakeStore, authority: Authority) -> Result<(), Failure> {
+    let cat = doors(store);
+    let own = owner(store);
+    let mut name = field("name", StorageKind::Text);
+    name.authority = authority;
+    declare(cat.as_ref(), &own, type_decl("partner", vec![name])).await?;
+    let mut partner = reference("partner", "partner");
+    partner.authority = authority;
+    declare(cat.as_ref(), &own, type_decl("invoice", vec![partner])).await?;
+    Ok(())
+}
+
+async fn a_write_referencing_a_record_that_does_not_exist_is_refused(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    partners_and_invoices(store.as_ref(), Authority::Authored).await?;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let before = store.head().await.must("reading the head")?;
+    let err = cat
+        .upsert(
+            &own,
+            &TypeName::from("invoice"),
+            &"i".into(),
+            patch(json!({"partner": "nobody"})),
+            WriteOpts::default(),
+        )
+        .await
+        .must_fail("writing an invoice whose `partner` names no partner")?;
+    head_unmoved(store.as_ref(), before, "writing a dangling reference").await?;
+    ensure!(
+        matches!(&err, Error::Refused { field: Some(f), .. } if f.as_str() == "partner")
+            || matches!(err, Error::NotFound { .. }),
+        "a reference to a partner that does not exist must be refused on `partner`; \
+         it failed with {err:?}"
+    );
+    upsert(
+        cat.as_ref(),
+        &own,
+        "partner",
+        "acme",
+        json!({"name": "Acme"}),
+    )
+    .await?;
+    upsert(
+        cat.as_ref(),
+        &own,
+        "invoice",
+        "i",
+        json!({"partner": "acme"}),
+    )
+    .await?;
+    let r = read(cat.as_ref(), &own, "invoice", "i").await?;
+    ensure!(
+        value(&r, "partner") == Some(&json!("acme")),
+        "a reference to the existing `acme` must be written; `partner` reads {:?}",
+        value(&r, "partner")
+    );
+    Ok(())
+}
+
+async fn a_reference_to_a_record_earlier_in_the_same_ingest_resolves(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    partners_and_invoices(store.as_ref(), Authority::Source).await?;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let records = vec![
+        source_record("partner", "acme", json!({"name": "Acme"})),
+        source_record("invoice", "i", json!({"partner": "acme"})),
+    ];
+    let windows = ingest(cat.as_ref(), &own, "erp", records)
+        .await
+        .must("ingesting a partner and then an invoice referring to it")?;
+    windows_reach_head(store.as_ref(), &windows, "ingesting partner then invoice").await?;
+    ensure!(
+        committed(&windows) == (2, 0),
+        "both records must be committed; the windows committed {:?}",
+        committed(&windows)
+    );
+    let r = read(cat.as_ref(), &own, "invoice", "i").await?;
+    ensure!(
+        value(&r, "partner") == Some(&json!("acme")),
+        "the invoice must refer to `acme`; `partner` reads {:?}",
+        value(&r, "partner")
+    );
+    Ok(())
+}

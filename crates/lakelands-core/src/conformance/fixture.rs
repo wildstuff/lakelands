@@ -51,12 +51,26 @@ impl<T: Debug> Must<T> for lakelands_api::Result<T> {
 }
 
 /// The limits every lake of the suite is opened with: the defaults, as
-/// [`Harness`](super::Harness) requires. The contract offers no way to
-/// read a lake's limits back, so a check that meets one reads it here,
-/// and a harness that opens lakes otherwise fails the check that meets
-/// the limit, with that limit named.
+/// [`Harness`](super::Harness) requires. A check that meets one reads it
+/// here; [`default_limits`] holds every lake to it before any check runs.
 pub fn limits() -> lakelands_api::location::Limits {
     lakelands_api::location::Limits::default()
+}
+
+/// Fail unless `store` was opened with the default limits, so a harness
+/// that opens lakes otherwise fails here, naming the limits, and never
+/// in a check that happens to meet one.
+pub fn default_limits(store: &dyn LakeStore) -> Result<(), Failure> {
+    let got = store.limits();
+    if got == limits() {
+        Ok(())
+    } else {
+        Err(Failure::new(format!(
+            "the harness opened the lake with limits {got:?}; the suite runs on the \
+             defaults, {:?}",
+            limits()
+        )))
+    }
 }
 
 /// The doors of `store` for a direct caller.

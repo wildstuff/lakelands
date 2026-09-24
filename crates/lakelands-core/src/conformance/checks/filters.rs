@@ -319,3 +319,35 @@ async fn a_filter_and_an_order_can_read_when_a_source_saw_a_value(
     );
     Ok(())
 }
+
+check!(
+    /// A cleared value matches nothing; its record is still there.
+    CLEARED_FIELD = a_cleared_field_matches_nothing_but_its_record_is_found_by_another,
+    "012 and 023: a field set to null is absent, so no comparison on it holds, and the record is found by its other fields as before"
+);
+
+async fn a_cleared_field_matches_nothing_but_its_record_is_found_by_another(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    lines(store.as_ref()).await?;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    upsert(
+        cat.as_ref(),
+        &own,
+        "line",
+        "a",
+        json!({"label": "keep", "note": "gone"}),
+    )
+    .await?;
+    upsert(cat.as_ref(), &own, "line", "a", json!({"note": null})).await?;
+    let by_note = keys_where(store.as_ref(), "note = 'gone'").await?;
+    let by_label = keys_where(store.as_ref(), "label = 'keep' and note is null").await?;
+    ensure!(
+        by_note.is_empty() && by_label == ["a"],
+        "after `note` was cleared, `where note = 'gone'` must admit nothing and \
+         `where label = 'keep' and note is null` must admit `a`; they admitted \
+         {by_note:?} and {by_label:?}"
+    );
+    Ok(())
+}
