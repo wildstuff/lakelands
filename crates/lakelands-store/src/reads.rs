@@ -656,14 +656,14 @@ impl<'a> Reader<'a> {
                 step.walk,
                 p.project == Projection::Graph,
             )?;
-            if let (Some(t), Some(r)) = (&step.ty, &reached) {
-                if t != r {
-                    return Err(invalid(format!(
-                        "step {} over `{}` reaches `{r}`, not `{t}`",
-                        i + 1,
-                        step.relation
-                    )));
-                }
+            if let (Some(t), Some(r)) = (&step.ty, &reached)
+                && t != r
+            {
+                return Err(invalid(format!(
+                    "step {} over `{}` reaches `{r}`, not `{t}`",
+                    i + 1,
+                    step.relation
+                )));
             }
             let reached = reached.or_else(|| step.ty.clone()).unwrap_or(here);
             let decl = self.visible_type(&reached)?.clone();
@@ -810,11 +810,11 @@ impl<'a> Reader<'a> {
             }
         }
         let _ = truncated_any;
-        if let Projection::Rows { fields } = &p.project {
-            if !fields.is_empty() {
-                for row in &mut rows {
-                    row.retain(|k, _| fields.iter().any(|f| f == k));
-                }
+        if let Projection::Rows { fields } = &p.project
+            && !fields.is_empty()
+        {
+            for row in &mut rows {
+                row.retain(|k, _| fields.iter().any(|f| f == k));
             }
         }
         if let Projection::Aggregate(a) = &p.project {
@@ -916,12 +916,12 @@ impl<'a> Reader<'a> {
         node: &lakelands_core::graph::Node,
     ) -> Result<()> {
         let decl = self.ontology.ty(&node.0)?;
-        if let Some(r) = self.view.get(&node.0, &node.1)? {
-            if let Some(rec) = rights::visible(self.who, decl, &r, false) {
-                row.insert(format!("{}.key", node.0), Value::String(node.1.to_string()));
-                for (f, v) in rec.fields {
-                    row.insert(format!("{}.{f}", node.0), v);
-                }
+        if let Some(r) = self.view.get(&node.0, &node.1)?
+            && let Some(rec) = rights::visible(self.who, decl, &r, false)
+        {
+            row.insert(format!("{}.key", node.0), Value::String(node.1.to_string()));
+            for (f, v) in rec.fields {
+                row.insert(format!("{}.{f}", node.0), v);
             }
         }
         Ok(())
@@ -936,10 +936,10 @@ impl<'a> Reader<'a> {
         let mut records = Vec::new();
         for (ty, key) in &nodes {
             let decl = self.ontology.ty(ty)?;
-            if let Some(r) = self.view.get(ty, key)? {
-                if let Some(rec) = rights::visible(self.who, decl, &r, false) {
-                    records.push(rec);
-                }
+            if let Some(r) = self.view.get(ty, key)?
+                && let Some(rec) = rights::visible(self.who, decl, &r, false)
+            {
+                records.push(rec);
             }
         }
         Ok(QueryResult::Graph {

@@ -96,10 +96,8 @@ pub fn visible(
         match field_access(who, &decl.name, f) {
             a if a.reads() => {
                 fields.insert(f.name.clone(), value.clone());
-                if with_meta {
-                    if let Some(m) = stored.meta.get(&f.name) {
-                        meta.insert(f.name.clone(), m.clone());
-                    }
+                if with_meta && let Some(m) = stored.meta.get(&f.name) {
+                    meta.insert(f.name.clone(), m.clone());
                 }
             }
             Access::Masked => masked.push(f.name.clone()),

@@ -279,10 +279,10 @@ impl Lake {
             if w.lease.is_some() {
                 self.fold_all(&mut w, &events)?;
             }
-        } else if let Some((pos, _)) = &w.tip {
-            if let Some(e) = self.read_events(*pos, Some(1))?.first() {
-                w.last_known_at = e.known_at;
-            }
+        } else if let Some((pos, _)) = &w.tip
+            && let Some(e) = self.read_events(*pos, Some(1))?.first()
+        {
+            w.last_known_at = e.known_at;
         }
         self.publish(&w);
         Ok(())

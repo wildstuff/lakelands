@@ -46,10 +46,3 @@ missing_docs = "warn"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
-# With rust-version 1.88, clippy asks for nested `if let`s to become
-# let-chains and for `x % n == 0` to become `is_multiple_of`. The core
-# crates are rewritten in one sweep once the core ladder has no open step
-# on them, so no open branch meets a mechanical conflict; until then both
-# suggestions are off for the whole workspace.
-collapsible_if = "allow"
-manual_is_multiple_of = "allow"

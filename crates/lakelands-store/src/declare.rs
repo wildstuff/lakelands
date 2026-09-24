@@ -242,13 +242,13 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
                 r.name, r.target
             )));
         }
-        if let Some(via) = &r.via {
-            if !has(via) {
-                return Err(invalid(format!(
-                    "{owner}, relation `{}`: `via` names `{via}`, which is not a field",
-                    r.name
-                )));
-            }
+        if let Some(via) = &r.via
+            && !has(via)
+        {
+            return Err(invalid(format!(
+                "{owner}, relation `{}`: `via` names `{via}`, which is not a field",
+                r.name
+            )));
         }
         for f in &r.fields {
             field_type(o, &format!("{owner}, relation `{}`", r.name), f, &t.name)?;
@@ -307,26 +307,26 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 });
             }
             type_decl(o, t)?;
-            if let Some(current) = o.types.get(&t.name) {
-                if let Change::Migrate { reasons } = shape::classify(&current.decl, t) {
-                    let why: Vec<String> = reasons.iter().map(ToString::to_string).collect();
-                    return Err(invalid(format!(
-                        "`{}` would reshape stored records ({}); that is a migration",
-                        t.name,
-                        why.join("; ")
-                    )));
-                }
+            if let Some(current) = o.types.get(&t.name)
+                && let Change::Migrate { reasons } = shape::classify(&current.decl, t)
+            {
+                let why: Vec<String> = reasons.iter().map(ToString::to_string).collect();
+                return Err(invalid(format!(
+                    "`{}` would reshape stored records ({}); that is a migration",
+                    t.name,
+                    why.join("; ")
+                )));
             }
         }
         Declaration::ValueType(v) => {
             name("value type", v.name.as_str())?;
-            if let Some(f) = &v.format {
-                if value::ValueFormat::parse(f).is_none() {
-                    return Err(invalid(format!(
-                        "value type `{}` names the unknown format `{f}`",
-                        v.name
-                    )));
-                }
+            if let Some(f) = &v.format
+                && value::ValueFormat::parse(f).is_none()
+            {
+                return Err(invalid(format!(
+                    "value type `{}` names the unknown format `{f}`",
+                    v.name
+                )));
             }
             if v.scale.is_some() && v.kind != StorageKind::Decimal {
                 return Err(invalid(format!(
