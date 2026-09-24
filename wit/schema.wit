@@ -1,0 +1,23 @@
+package lakelands:data@0.1.0;
+
+/// The lake's map: describing it and changing it. A bundle is declared
+/// whole with `apply`; a shape change goes through `migrate` and its
+/// preflight report (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
+interface schema {
+    use types.{
+        principal, read-at, type-name, lake-description-reply, type-description-reply,
+        declaration, field-decl, migration, migration-report-reply, outcome, error,
+    };
+    use store.{catalog};
+
+    describe: func(catalog: borrow<catalog>, who: principal, at: read-at) -> result<lake-description-reply, error>;
+    describe-type: func(catalog: borrow<catalog>, who: principal, %type: type-name, at: read-at) -> result<type-description-reply, error>;
+    declare: func(catalog: borrow<catalog>, who: principal, declaration: declaration) -> result<outcome, error>;
+    apply: func(catalog: borrow<catalog>, who: principal, declarations: list<declaration>) -> result<outcome, error>;
+    add-field: func(catalog: borrow<catalog>, who: principal, %type: type-name, field: field-decl) -> result<outcome, error>;
+    /// The fail-closed preflight: what the migration would convert, and
+    /// whether it is lossless. Nothing is written.
+    migrate: func(catalog: borrow<catalog>, who: principal, migration: migration) -> result<migration-report-reply, error>;
+    /// Apply a migration against the report `migrate` answered.
+    migrate-apply: func(catalog: borrow<catalog>, who: principal, migration: migration, report-id: string) -> result<outcome, error>;
+}
