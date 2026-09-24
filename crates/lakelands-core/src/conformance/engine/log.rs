@@ -60,6 +60,42 @@ engine_check!(
 );
 
 engine_check!(
+    /// Releasing a stale lease leaves the current holder's lease.
+    RELEASE_STALE = releasing_a_stale_lease_leaves_the_current_holders_lease,
+    "008: a writer that lost the lease cannot release its successor's, so the successor goes on appending"
+);
+
+engine_check!(
+    /// Reading past the tip or with limit 0 answers nothing.
+    READ_BOUNDS = reading_past_the_tip_or_with_limit_zero_answers_nothing,
+    "seams §LakeEngine: read answers at most `limit` events from `from` on, nothing past the tip or for a limit of 0, and an empty lake has no tip"
+);
+
+engine_check!(
+    /// An event at position 0 with a fence is refused.
+    FENCE_AT_ZERO = an_event_at_position_zero_with_a_fence_is_refused,
+    "log format §4.1: the event at position 0 is written before any lease exists, under fence 0, and an engine refuses it under any other"
+);
+
+engine_check!(
+    /// Sealing needs the current lease; seals list contiguous ranges.
+    SEALS = sealing_under_a_stale_lease_is_refused_and_two_seals_list_contiguous_ranges,
+    "log format §4.2: only the writer seals, and the sealed segments' ranges start at 0 and follow each other with no gap"
+);
+
+engine_check!(
+    /// Opening a missing lake is unavailable; create opens an existing one.
+    OPENING = reopening opening_a_missing_lake_to_read_or_write_is_unavailable_and_create_opens_an_existing_one,
+    "seams §EngineOpener: reading or writing a lake that does not exist is unavailable, and create opens a lake that exists, as it is"
+);
+
+engine_check!(
+    /// A read-only open creates and changes nothing.
+    READ_ONLY_OPEN = reopening a_read_only_open_creates_and_changes_nothing,
+    "008 and seams §EngineOpener: a reader opens a lake as it is; opening a missing lake read-only makes none, and a read-only handle writes neither the log nor the projection"
+);
+
+engine_check!(
     /// A writer's handle that is dropped gives its lease up.
     DROPPED_WRITER = reopening a_dropped_writer_releases_its_lease,
     "008: a lake is closed when its last handle goes, so a writer that ends without closing does not keep every later writer out"
@@ -207,12 +243,22 @@ fn a_stale_lease_cannot_append(engine: &dyn LakeEngine) -> Result<(), Failure> {
         .append(&old, &stale)
         .must_fail("appending under a released lease")?;
     ensure!(
-        matches!(refused, Error::Unavailable { .. } | Error::Refused { .. }),
-        "an append under a stale lease was refused as {refused:?}; it must be unavailable or refused"
+        matches!(refused, Error::Unavailable { .. }),
+        "an append under a stale lease was refused as {refused:?}; it must be unavailable"
     );
-    engine
+    let wrong_fence = engine
         .append(&new, &stale)
         .must_fail("appending events that carry the old fence under the new lease")?;
+    ensure!(
+        matches!(
+            wrong_fence,
+            Error::Refused {
+                reason: lakelands_api::Refusal::Invalid { .. },
+                ..
+            }
+        ),
+        "an event carrying another fence was refused as {wrong_fence:?}; it must be invalid"
+    );
     let tip = engine.tip().must("reading the tip")?;
     ensure!(
         tip.as_ref().map(|t| t.0) == Some(Position(0)),
@@ -333,6 +379,203 @@ fn a_sealed_segment_is_digested_as_its_lines(engine: &dyn LakeEngine) -> Result<
     ensure!(
         segments == vec![sealed.clone()],
         "the segments listed are {segments:?}; they must be the one just sealed"
+    );
+    Ok(())
+}
+
+fn releasing_a_stale_lease_leaves_the_current_holders_lease(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    let old = engine.take_lease("first writer").must("taking the lease")?;
+    engine.release_lease(&old).must("releasing the lease")?;
+    let new = engine
+        .take_lease("second writer")
+        .must("taking the lease again")?;
+    engine
+        .release_lease(&old)
+        .must("releasing the stale lease again")?;
+    engine
+        .append(&new, &chain(0, 2, &Digest::zero(), &new))
+        .must("appending under the current lease after a stale release")?;
+    let held = engine.take_lease("a third writer");
+    ensure!(
+        held.is_err(),
+        "after the stale lease was released a third writer took the lease: {held:?}; the \
+         current holder must keep it"
+    );
+    Ok(())
+}
+
+fn reading_past_the_tip_or_with_limit_zero_answers_nothing(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    let empty = engine.tip().must("reading the tip of an empty lake")?;
+    ensure!(
+        empty.is_none(),
+        "an empty lake has the tip {empty:?}; it has none"
+    );
+    let lease = engine.take_lease("conformance").must("taking the lease")?;
+    let events = chain(0, 3, &Digest::zero(), &lease);
+    engine
+        .append(&lease, &events)
+        .must("appending three events")?;
+    for (from, limit, expected) in [
+        (0, 0, 0),
+        (3, 10, 0),
+        (u64::MAX, 10, 0),
+        (1, 1, 1),
+        (1, 10, 2),
+    ] {
+        let got = engine
+            .read(Position(from), limit)
+            .must(&format!("reading from {from}, at most {limit}"))?;
+        ensure!(
+            got.len() == expected && got.first().is_none_or(|e| e.position == Position(from)),
+            "reading from {from}, at most {limit}, of a log holding 0 to 2 answered {} event(s) \
+             starting at {:?}; it must answer {expected} starting at {from}",
+            got.len(),
+            got.first().map(|e| e.position)
+        );
+    }
+    Ok(())
+}
+
+fn an_event_at_position_zero_with_a_fence_is_refused(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    let lease = engine.take_lease("conformance").must("taking the lease")?;
+    let fenced = event(0, &Digest::zero(), lease.fence, json!({"kind": "note"}));
+    let refused = engine
+        .append(&lease, &[fenced])
+        .must_fail("appending position 0 under the lease's fence")?;
+    ensure!(
+        matches!(
+            refused,
+            Error::Refused {
+                reason: lakelands_api::Refusal::Invalid { .. },
+                ..
+            }
+        ),
+        "the event at position 0 carrying fence {} was refused as {refused:?}; it must be invalid",
+        lease.fence
+    );
+    let tip = engine.tip().must("reading the tip")?;
+    ensure!(tip.is_none(), "the refused event left the tip {tip:?}");
+    Ok(())
+}
+
+fn sealing_under_a_stale_lease_is_refused_and_two_seals_list_contiguous_ranges(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    let old = engine.take_lease("first writer").must("taking the lease")?;
+    engine.release_lease(&old).must("releasing the lease")?;
+    let lease = engine
+        .take_lease("second writer")
+        .must("taking the lease again")?;
+    let first = chain(0, 2, &Digest::zero(), &lease);
+    engine.append(&lease, &first).must("appending two events")?;
+    let stale = engine.seal_segment(&old);
+    ensure!(
+        matches!(stale, Err(Error::Unavailable { .. })),
+        "sealing under a released lease answered {stale:?}; it must be unavailable"
+    );
+    engine
+        .seal_segment(&lease)
+        .must("sealing the first segment")?;
+    let more = chain(2, 3, &first[1].hash, &lease);
+    engine.append(&lease, &more).must("appending three more")?;
+    engine
+        .seal_segment(&lease)
+        .must("sealing the second segment")?;
+    let ranges: Vec<(u64, u64)> = engine
+        .segments()
+        .must("listing the segments")?
+        .iter()
+        .map(|s| (s.first.0, s.last.0))
+        .collect();
+    ensure!(
+        ranges == [(0, 1), (2, 4)],
+        "two seals listed the ranges {ranges:?}; they must start at 0 and follow each other: \
+         [(0, 1), (2, 4)]"
+    );
+    Ok(())
+}
+
+fn opening_a_missing_lake_to_read_or_write_is_unavailable_and_create_opens_an_existing_one(
+    engine: &dyn LakeEngine,
+    harness: &dyn EngineHarness,
+) -> Result<(), Failure> {
+    let missing = lakelands_api::id::LakeId::from(format!("{}-never-created", engine.lake()));
+    for mode in [OpenMode::Read, OpenMode::Write] {
+        let opened = harness.reopen(&missing, mode).map(|e| e.lake().clone());
+        ensure!(
+            matches!(opened, Err(Error::Unavailable { .. })),
+            "opening a lake that does not exist {mode:?} answered {opened:?}; it must be \
+             unavailable"
+        );
+    }
+    let lease = engine.take_lease("conformance").must("taking the lease")?;
+    let events = chain(0, 2, &Digest::zero(), &lease);
+    engine
+        .append(&lease, &events)
+        .must("appending two events")?;
+    let again = harness
+        .reopen(engine.lake(), OpenMode::Create)
+        .map_err(|e| Failure::new(format!("creating a lake that exists failed: {e}")))?;
+    let tip = again.tip().must("reading the tip through the new handle")?;
+    ensure!(
+        tip.as_ref().map(|t| t.0) == Some(Position(1)),
+        "create on an existing lake opened it with the tip {tip:?}; it must open it as it is, \
+         ending at 1"
+    );
+    Ok(())
+}
+
+fn a_read_only_open_creates_and_changes_nothing(
+    engine: &dyn LakeEngine,
+    harness: &dyn EngineHarness,
+) -> Result<(), Failure> {
+    let missing = lakelands_api::id::LakeId::from(format!("{}-read-only", engine.lake()));
+    for attempt in ["first", "second"] {
+        let opened = harness
+            .reopen(&missing, OpenMode::Read)
+            .map(|e| e.lake().clone());
+        ensure!(
+            matches!(opened, Err(Error::Unavailable { .. })),
+            "the {attempt} read-only open of a lake that does not exist answered {opened:?}; it \
+             must be unavailable, and create nothing a later open would find"
+        );
+    }
+    let lease = engine.take_lease("conformance").must("taking the lease")?;
+    let events = chain(0, 2, &Digest::zero(), &lease);
+    engine
+        .append(&lease, &events)
+        .must("appending two events")?;
+    let p = engine.projection();
+    p.begin().must("beginning a transaction")?;
+    p.commit(Position(1)).must("committing through 1")?;
+    let reader = harness
+        .reopen(engine.lake(), OpenMode::Read)
+        .map_err(|e| Failure::new(format!("opening a read-only handle: {e}")))?;
+    let begun = reader.projection().begin();
+    ensure!(
+        matches!(begun, Err(Error::Unavailable { .. })),
+        "a read-only handle began a projection transaction: {begun:?}; it must be unavailable"
+    );
+    let cleared = reader.projection().clear();
+    ensure!(
+        matches!(cleared, Err(Error::Unavailable { .. })),
+        "a read-only handle cleared the projection: {cleared:?}; it must be unavailable"
+    );
+    let tip = engine.tip().must("reading the tip")?;
+    let folded = engine
+        .projection()
+        .folded_through()
+        .must("reading the folded position")?;
+    ensure!(
+        tip.as_ref().map(|t| t.0) == Some(Position(1)) && folded == Some(Position(1)),
+        "after a read-only handle opened, the log ends at {tip:?} and the projection is folded \
+         through {folded:?}; both must be as the writer left them, at 1"
     );
     Ok(())
 }

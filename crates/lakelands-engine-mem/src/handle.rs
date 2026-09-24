@@ -3,8 +3,8 @@
 //!
 //! Handles to one lake share its state; each handle keeps only its open
 //! mode, its own open transaction and the lease it took, which it gives
-//! up when it is dropped. A handle opened read-only refuses
-//! the lease and every append.
+//! up when it is dropped. A handle opened read-only refuses the lease,
+//! every append and every write to the projection.
 
 use std::sync::{Arc, Mutex};
 
@@ -58,6 +58,7 @@ impl MemoryLake {
 
     /// Holds a put for the open transaction.
     fn stage(&self, put: Put) -> Result<()> {
+        self.writable()?;
         match lock(&self.pending).as_mut() {
             Some(puts) => {
                 puts.push(put);
@@ -161,6 +162,7 @@ impl ProjectionStore for MemoryLake {
     /// Opens a transaction. Beginning while one is open abandons the open
     /// one, as a rollback would.
     fn begin(&self) -> Result<()> {
+        self.writable()?;
         *lock(&self.pending) = Some(Vec::new());
         Ok(())
     }
@@ -239,6 +241,7 @@ impl ProjectionStore for MemoryLake {
     /// Drops the projection, its kept history and the vector index; the
     /// log and the lease stay. An open transaction is abandoned.
     fn clear(&self) -> Result<()> {
+        self.writable()?;
         *lock(&self.pending) = None;
         let mut lake = lock(&self.shared);
         lake.projection = Default::default();

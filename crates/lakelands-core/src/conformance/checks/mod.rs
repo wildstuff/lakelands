@@ -6,6 +6,7 @@
 
 use super::Check;
 
+mod bundles;
 mod cursors;
 mod decimals;
 mod derived_fields;
@@ -51,6 +52,7 @@ pub const ALL: &[Check] = &[
     paging::MISSING_SORT_VALUES_LAST,
     decimals::AS_WRITTEN,
     decimals::EXACT_SUM,
+    decimals::SCALE_KEPT,
     derived_fields::COMPUTED_BY_THE_FOLD,
     derived_fields::NO_DOOR_WRITES_IT,
     derived_fields::ADDED_LATER,
@@ -109,4 +111,5 @@ pub const ALL: &[Check] = &[
     keys::KEY_FIELDS_FROM_THE_KEY,
     restriction::HOLD_WITHHOLDS_AND_KEEPS,
     reactions::VERB_WRITE_REACTS,
+    bundles::BUNDLE_WHOLE,
 ];

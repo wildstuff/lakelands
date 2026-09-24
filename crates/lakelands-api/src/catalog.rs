@@ -142,6 +142,14 @@ pub trait Catalog: Send + Sync {
     /// Add or revise a declaration that does not reshape stored records.
     async fn declare(&self, who: &Principal, declaration: Declaration) -> Result<Outcome>;
 
+    /// Declare a set of declarations together, as a bundle is: validated as
+    /// one — a reference resolves within the set or the lake, tool names
+    /// are checked over the whole set, and one refusal names every problem —
+    /// and appended in one append, or refused whole with nothing appended.
+    /// The outcome names the position of the set's last declaration, from
+    /// which all of it is in force.
+    async fn apply(&self, who: &Principal, declarations: Vec<Declaration>) -> Result<Outcome>;
+
     /// Add one field to a type.
     async fn add_field(&self, who: &Principal, ty: &TypeName, field: FieldDecl) -> Result<Outcome>;
 
@@ -201,6 +209,9 @@ pub trait LakeStore: Send + Sync {
 
     /// Whether this process holds the lake's writer lease.
     fn is_writer(&self) -> bool;
+
+    /// The limits the lake was opened with: its location's.
+    fn limits(&self) -> crate::location::Limits;
 
     /// The position of the last event in the log.
     async fn head(&self) -> Result<Position>;

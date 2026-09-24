@@ -1081,3 +1081,247 @@ async fn an_external_verb_answers_its_executors_output_or_its_failure() {
         "only an external verb carries an output"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn apply_takes_a_set_whole_and_refuses_duplicates_and_readers() {
+    let lake = name();
+    let store = open(&lake, OpenMode::Create).await.unwrap();
+    let cat = store.catalog(WriteContext::default());
+    let o = owner(&lake);
+    let mut to = field("to", StorageKind::Reference);
+    to.ty.target = Some("b".into());
+    let forward = vec![
+        Declaration::Type(ty("a", vec![to])),
+        Declaration::Type(ty("b", vec![field("n", StorageKind::Number)])),
+    ];
+    let reader = Principal {
+        grants: Grants::default(),
+        ..owner(&lake)
+    };
+    let refused = cat.apply(&reader, forward.clone()).await;
+    assert!(
+        matches!(
+            refused,
+            Err(Error::Refused {
+                reason: Refusal::NotGranted,
+                ..
+            })
+        ),
+        "{refused:?}"
+    );
+    let twice = cat
+        .apply(&o, vec![forward[1].clone(), forward[1].clone()])
+        .await;
+    assert!(
+        matches!(&twice, Err(Error::Refused { reason: Refusal::Invalid { message }, .. }) if message.contains("more than once")),
+        "{twice:?}"
+    );
+    let head = store.head().await.unwrap();
+    cat.apply(&o, forward).await.unwrap();
+    assert_eq!(store.head().await.unwrap().0, head.0 + 2);
+    assert_eq!(store.limits(), lakelands_api::location::Limits::default());
+}
+
+struct Later;
+
+impl lakelands_api::seam::SystemVocabulary for Later {
+    fn types(&self) -> Vec<TypeDecl> {
+        vec![ty("sys.host_note", vec![field("text", StorageKind::Text)])]
+    }
+    fn may_hold(&self, _: &lakelands_api::LakeId, _: &lakelands_api::TypeName) -> bool {
+        true
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_type_added_later_reaches_the_lake_on_its_next_open_for_writing() {
+    let lake = name();
+    let store = open(&lake, OpenMode::Create).await.unwrap();
+    store.close().await.unwrap();
+    drop(store);
+    let with = Seams {
+        vocabulary: Some(Arc::new(Later)),
+        ..seams()
+    };
+    let store = lakelands_store::open(
+        Location::memory(lake.as_str()),
+        with.clone(),
+        OpenMode::Write,
+    )
+    .await
+    .unwrap();
+    let o = owner(&lake);
+    let cat = store.catalog(WriteContext::default());
+    let d = cat.describe(&o, ReadAt::default()).await.unwrap().data;
+    assert!(
+        d.types.iter().any(|t| t.name.as_str() == "sys.host_note"),
+        "the host type was declared on open"
+    );
+    let head = store.head().await.unwrap();
+    store.close().await.unwrap();
+    drop((cat, store));
+    let again = lakelands_store::open(Location::memory(lake.as_str()), with, OpenMode::Write)
+        .await
+        .unwrap();
+    assert_eq!(
+        again.head().await.unwrap().0,
+        head.0 + 1,
+        "a type already held is not declared again; only the lease is taken"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn proposals_come_in_the_callers_order_and_an_unknown_member_is_refused() {
+    let lake = name();
+    let store = open(&lake, OpenMode::Create).await.unwrap();
+    let cat = store.catalog(WriteContext::default());
+    let o = owner(&lake);
+    cat.declare(
+        &o,
+        Declaration::Type(ty("t", vec![field("n", StorageKind::Number)])),
+    )
+    .await
+    .unwrap();
+    for why in ["b", "c", "a"] {
+        cat.propose(
+            &o,
+            ProposedWrite::Upsert {
+                ty: "t".into(),
+                key: why.into(),
+                patch: patch(json!({"n": 1})),
+                opts: Default::default(),
+            },
+            why.into(),
+        )
+        .await
+        .unwrap();
+    }
+    let list = |order: serde_json::Value| {
+        let cat = cat.clone();
+        let o = o.clone();
+        async move {
+            let filter: ProposalFilter =
+                serde_json::from_value(json!({ "order_by": order })).unwrap();
+            cat.proposals(&o, filter)
+                .await
+                .map(|r| r.data.into_iter().map(|p| p.why).collect::<Vec<_>>())
+        }
+    };
+    assert_eq!(
+        list(json!([])).await.unwrap(),
+        ["a", "c", "b"],
+        "newest first"
+    );
+    assert_eq!(
+        list(json!([{"field": "why"}])).await.unwrap(),
+        ["a", "b", "c"]
+    );
+    assert_eq!(
+        list(json!([{"field": "why", "dir": "desc"}]))
+            .await
+            .unwrap(),
+        ["c", "b", "a"]
+    );
+    assert!(matches!(
+        list(json!([{"field": "colour"}])).await,
+        Err(Error::Refused {
+            reason: Refusal::Invalid { .. },
+            ..
+        })
+    ));
+}
+
+struct Echo;
+
+#[async_trait::async_trait]
+impl lakelands_api::seam::VerbExecutor for Echo {
+    fn name(&self) -> &str {
+        "bank"
+    }
+    async fn execute(
+        &self,
+        invocation: &lakelands_api::seam::VerbInvocation,
+    ) -> lakelands_api::Result<serde_json::Value> {
+        Ok(json!({
+            "fields": invocation.record.fields,
+            "masked": invocation.record.masked,
+        }))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_executor_receives_the_record_unmasked() {
+    let lake = name();
+    let store = lakelands_store::open(
+        Location::memory(lake.as_str()),
+        Seams {
+            executors: vec![Arc::new(Echo)],
+            ..seams()
+        },
+        OpenMode::Create,
+    )
+    .await
+    .unwrap();
+    let cat = store.catalog(WriteContext::default());
+    let o = owner(&lake);
+    for d in invoice_with_verbs() {
+        cat.declare(&o, d).await.unwrap();
+    }
+    cat.upsert(
+        &o,
+        &"invoice".into(),
+        &"i1".into(),
+        patch(json!({"status": "open"})),
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    let caller = Principal {
+        kind: PrincipalKind::Agent,
+        id: "agent".into(),
+        lake: lake.as_str().into(),
+        grants: serde_json::from_value(json!({
+            "default": "none",
+            "types": {"invoice": {"default": "write", "fields": {"status": "none"}}}
+        }))
+        .unwrap(),
+    };
+    let Outcome::Applied { output, .. } = cat
+        .call(
+            &caller,
+            &"pay".into(),
+            &"i1".into(),
+            patch(json!({})),
+            Default::default(),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("a low verb runs")
+    };
+    let output = output.expect("the executor's output");
+    assert_eq!(output["fields"]["status"], json!("open"), "{output}");
+    assert_eq!(output["masked"], json!([]), "{output}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_declaration_names_every_tool_name_problem_at_once() {
+    let lake = name();
+    let store = open(&lake, OpenMode::Create).await.unwrap();
+    let cat = store.catalog(WriteContext::default());
+    let long = "a".repeat(60);
+    let r = cat
+        .declare(&owner(&lake), Declaration::Type(ty(&long, vec![])))
+        .await;
+    let Err(Error::Refused {
+        reason: Refusal::Invalid { message },
+        ..
+    }) = r
+    else {
+        panic!("{r:?}")
+    };
+    assert!(
+        message.matches("is longer than").count() > 1,
+        "every too-long tool name is named: {message}"
+    );
+}

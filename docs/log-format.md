@@ -362,7 +362,8 @@ file-based engine keeps each segment as one file of lines (§1.2) named
 by its first position in 20 decimal digits:
 `log/00000000000000000000.jsonl`, `log/00000000000000183211.jsonl`, and
 so on. The last segment is **active** and takes appends; the others are
-**sealed** and never change. An engine that keeps events elsewhere (a
+**sealed** and never change. An engine may keep files of its own beside
+`log/`, such as an index or its lease; a verifier reads only `log/`. An engine that keeps events elsewhere (a
 table, an object store) keeps each event's canonical bytes unchanged and
 can export its segments as exactly these files.
 

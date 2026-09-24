@@ -16,10 +16,12 @@
 //! session's door for pinning `as_of` across a turn. A 20-type lake
 //! offers about 80 tools.
 //!
-//! Three doors of [`Catalog`](crate::Catalog) have no tool of their own:
+//! Four doors of [`Catalog`](crate::Catalog) have no tool of their own:
 //! `describe_type` is `describe` with a `type`, `migrate_apply` is
-//! `migrate` with a `report_id`, and `ingest` is deliberately not a tool —
-//! a source feeds a lake through a stream, not through a model.
+//! `migrate` with a `report_id`, `ingest` is deliberately not a tool — a
+//! source feeds a lake through a stream, not through a model — and neither
+//! is `apply` in `0.1.0`: a bundle is applied by its author's tooling, and
+//! a model declares one declaration at a time.
 
 use std::collections::BTreeMap;
 

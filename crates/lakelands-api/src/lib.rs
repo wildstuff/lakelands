@@ -41,7 +41,7 @@ pub use id::{
     Cursor, FieldName, IdempotencyKey, LakeId, Position, ProposalId, RecordKey, RelationName,
     SourceId, TriggerName, TypeName, ValueTypeName, VerbName, Version,
 };
-pub use location::{EngineConfig, Location};
+pub use location::{EngineConfig, Location, SqliteTuning};
 pub use principal::{Access, Grants, Principal, PrincipalKind, WriteContext, WriteOrigin};
 pub use read::{Find, Found, Get, ReadAt, Reply};
 pub use record::{FieldMeta, Origin, Patch, Record, SourceRecord, Value};

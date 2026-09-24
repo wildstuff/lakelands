@@ -267,6 +267,10 @@ impl LakeStore for MockLake {
         true
     }
 
+    fn limits(&self) -> Limits {
+        self.shared.limits
+    }
+
     async fn head(&self) -> Result<Position> {
         Ok(Shared::head(&self.shared.log()))
     }

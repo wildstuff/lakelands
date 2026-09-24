@@ -328,6 +328,26 @@ mod tests {
     }
 
     #[test]
+    fn a_derived_decimal_is_written_at_its_scale_even_when_computed_at_a_smaller_one() {
+        let money: ValueTypeDecl =
+            serde_json::from_value(json!({"name": "money", "kind": "decimal", "scale": 2}))
+                .unwrap();
+        let mut total = decimal("total", Some("quantity * 3"));
+        total["type"]["value_type"] = json!("money");
+        let t = ty(json!({"name": "line", "fields": [decimal("quantity", None), total]}));
+        let mut f = fields(json!({"quantity": "2"}));
+        let written: BTreeSet<FieldName> = ["quantity".into()].into();
+        let w = Write {
+            before: None,
+            written: &written,
+            settings: None,
+            now: Timestamp(0),
+        };
+        apply(&t, &[money], &mut f, &w).unwrap();
+        assert_eq!(f[&FieldName::from("total")], json!("6.00"));
+    }
+
+    #[test]
     fn a_dependent_is_cleared_when_its_input_changes_unless_the_write_sets_it() {
         let t = ty(json!({"name": "decl", "fields": [
             text("body"),

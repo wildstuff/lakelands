@@ -65,6 +65,7 @@ macro_rules! engine_check {
 
 pub mod log;
 pub mod projection;
+pub mod reads;
 
 /// Opens lakes for the engine checks: one engine, as its test configures
 /// it.
@@ -108,6 +109,12 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     log::GREATER_FENCE,
     log::WHOLE_OR_NOTHING,
     log::SEGMENT_DIGEST,
+    log::RELEASE_STALE,
+    log::READ_BOUNDS,
+    log::FENCE_AT_ZERO,
+    log::SEALS,
+    log::OPENING,
+    log::READ_ONLY_OPEN,
     log::DROPPED_WRITER,
     log::READ_ONLY_HANDLE,
     projection::VIEW_AT_A_POSITION,
@@ -115,6 +122,24 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     projection::ROLLBACK,
     projection::EDGES_IN_OUT_BOTH,
     projection::EDGES_TO_RETIRED,
+    projection::COMMIT_INVALID,
+    projection::OPEN_TRANSACTION,
+    projection::VIEW_KEEPS_POSITION,
+    projection::SAME_POSITION,
+    projection::CLEAR,
+    reads::MIXED_KINDS,
+    reads::AFTER_AND_LIMIT,
+    reads::FILTER_AS_EVALUATOR,
+    reads::FLAGS_AND_VALID_AT,
+    reads::LEXICAL_HITS,
+    reads::LEXICAL_BEYOND_ASCII,
+    reads::LEXICAL_EARLIER,
+    reads::NEAREST_BY_COSINE,
+    reads::ZERO_AND_WRONG_LENGTH,
+    reads::PUT_AND_REMOVE,
+    reads::EARLIER_STATES,
+    reads::FIRST_APPLIED,
+    reads::PROPOSALS,
 ];
 
 /// Runs every engine check against fresh lakes from `harness`, in

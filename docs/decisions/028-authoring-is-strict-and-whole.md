@@ -14,6 +14,13 @@ field the type (or the view's source) does not have is refused, and so
 is every name that is not an ASCII identifier (a type name: identifiers
 joined by `.`).
 
+## Extended: a bundle reaches a lake whole
+
+A bundle's declarations are declared together through `Catalog::apply`:
+validated as one set, so a declaration may name one the set declares
+later, and appended in one append, so a lake holds all of the bundle or
+none of it.
+
 ## Why
 
 A misspelt or retired key that is silently ignored leaves a setting at

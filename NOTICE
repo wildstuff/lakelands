@@ -8,10 +8,14 @@ Third-party code bundled in this product
 ----------------------------------------
 
 Third-party source code that is compiled into a Lakelands binary or
-shipped in a Lakelands source release (sqlite-vec, once it ships) is
-listed here with its copyright notice and licence.
+shipped in a Lakelands source release is listed here with its copyright
+notice and licence.
 
-Nothing is bundled today.
+SQLite
+  Compiled into every binary that includes the SQLite engine, through the
+  `bundled` feature of the libsqlite3-sys crate.
+  The author disclaims copyright to this source code; SQLite is in the
+  public domain. See https://www.sqlite.org/copyright.html
 
 Dependencies taken from crates.io are listed, with their licences, in
 the third-party licence file attached to each release. It is generated
