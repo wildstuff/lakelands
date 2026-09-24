@@ -1,9 +1,12 @@
 //! Values against their declared types, and the mock's stable hashes.
 
+use lakelands_api::id::{IdempotencyKey, Position};
 use lakelands_api::ontology::{FieldType, StorageKind, TypeDecl, ValueTypeDecl};
+use lakelands_api::principal::Principal;
 use lakelands_api::record::Value;
 use lakelands_api::time::Timestamp;
 use serde_json::json;
+use sha2::{Digest as _, Sha256};
 
 /// Why a value does not fit its field, for a person; `None` when it fits.
 pub(crate) fn misfit(ty: &FieldType, v: &Value, value_types: &[ValueTypeDecl]) -> Option<String> {
@@ -84,23 +87,123 @@ pub(crate) fn hex(bytes: &[u8], groups: u64) -> String {
         .collect()
 }
 
-/// A type's schema hash in the mock: over its shape (key, fields with
-/// their types and whether required, relations, view), never over its
-/// meaning. It is not the store's hash, only as sensitive to shape.
+/// A type's schema hash, as the store computes it: SHA-256 over the
+/// canonical bytes of the type's shape object (`docs/log-format.md`
+/// §2.2) — its key, its fields and its relations sorted by name, each
+/// field by name, type and whether required — as 64 lower-case hex
+/// digits. It is the store's hash for every type without a view. A view
+/// is hashed with its conditions in the store's typed form, which the
+/// mock does not build; the mock hashes a view's conditions as written,
+/// so a view type's hash has the store's form but not its value.
 pub(crate) fn schema_hash(t: &TypeDecl) -> String {
     let fields = |fs: &[lakelands_api::ontology::FieldDecl]| -> Vec<Value> {
-        fs.iter()
-            .map(|f| json!([f.name, f.ty, f.required, f.derived]))
+        let mut sorted: Vec<_> = fs.iter().collect();
+        sorted.sort_by(|a, b| a.name.cmp(&b.name));
+        sorted
+            .into_iter()
+            .map(|f| json!({"name": f.name, "type": f.ty, "required": f.required}))
             .collect()
     };
+    let mut relations: Vec<_> = t.relations.iter().collect();
+    relations.sort_by(|a, b| a.name.cmp(&b.name));
     let shape = json!({
         "key": t.key,
         "fields": fields(&t.fields),
-        "relations": t.relations.iter().map(|r| json!([r.name, r.target, r.cardinality, r.via, fields(&r.fields)])).collect::<Vec<_>>(),
+        "relations": relations
+            .into_iter()
+            .map(|r| json!({
+                "name": r.name,
+                "target": r.target,
+                "cardinality": r.cardinality,
+                "fields": fields(&r.fields),
+            }))
+            .collect::<Vec<_>>(),
         "view": t.view,
-        "valid": [t.valid_from, t.valid_to],
     });
-    hex(shape.to_string().as_bytes(), 1)
+    sha256_hex(&canonical_bytes(&shape))
+}
+
+/// The canonical bytes of a JSON value (`docs/log-format.md` §1.2): no
+/// whitespace, members sorted by their UTF-16 code units, numbers in
+/// their one form. Strings are escaped as serde_json escapes them, which
+/// is the canonical escaping.
+pub(crate) fn canonical_bytes(v: &Value) -> Vec<u8> {
+    fn write(v: &Value, out: &mut Vec<u8>) {
+        match v {
+            Value::Array(items) => {
+                out.push(b'[');
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        out.push(b',');
+                    }
+                    write(item, out);
+                }
+                out.push(b']');
+            }
+            Value::Object(members) => {
+                let mut sorted: Vec<_> = members.iter().collect();
+                sorted.sort_by(|(a, _), (b, _)| a.encode_utf16().cmp(b.encode_utf16()));
+                out.push(b'{');
+                for (i, (name, member)) in sorted.into_iter().enumerate() {
+                    if i > 0 {
+                        out.push(b',');
+                    }
+                    out.extend(serde_json::to_vec(name).expect("a string prints"));
+                    out.push(b':');
+                    write(member, out);
+                }
+                out.push(b'}');
+            }
+            Value::Number(_) => {
+                out.extend(serde_json::to_vec(&canonical_number(v)).expect("a number prints"))
+            }
+            scalar => out.extend(serde_json::to_vec(scalar).expect("a scalar prints")),
+        }
+    }
+    let mut out = Vec::new();
+    write(v, &mut out);
+    out
+}
+
+/// SHA-256 over some bytes, as lower-case hex.
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// A proposal's id, as the store gives it: the id of its `write_proposed`
+/// event — the first 16 bytes of SHA-256 over its parts joined by a zero
+/// byte, as 32 lower-case hex digits. An authored write with an
+/// idempotency key is named by its writer and key; any other by its lake
+/// and position.
+pub(crate) fn proposal_id(who: &Principal, key: Option<&IdempotencyKey>, at: Position) -> String {
+    let position = at.0.to_string();
+    let writer = who.writer();
+    let parts: [&[u8]; 3] = match key {
+        Some(k) => [
+            b"lakelands:authored:v1",
+            writer.as_bytes(),
+            k.as_str().as_bytes(),
+        ],
+        None => [
+            b"lakelands:event:v1",
+            who.lake.as_str().as_bytes(),
+            position.as_bytes(),
+        ],
+    };
+    let mut h = Sha256::new();
+    for (i, p) in parts.iter().enumerate() {
+        if i > 0 {
+            h.update([0u8]);
+        }
+        h.update(p);
+    }
+    h.finalize()[..16]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// A number in its one JSON form (`docs/log-format.md` §1.2): an integral
@@ -137,5 +240,33 @@ pub(crate) fn canonical(ty: &FieldType, v: &Value) -> Value {
             numbers(v)
         }
         _ => v.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_schema_hash_is_the_log_formats() {
+        // The type and the digest `lakelands-core` pins for §2.2: the
+        // mock computes the same hash from the same specification.
+        let invoice: TypeDecl = serde_json::from_value(json!({
+            "name": "invoice",
+            "key": ["number"],
+            "fields": [
+                { "name": "number", "type": { "kind": "text" }, "required": true },
+                { "name": "amount", "type": { "kind": "decimal", "value_type": "money" } },
+                { "name": "customer", "type": { "kind": "reference", "target": "customer" } },
+            ],
+            "relations": [
+                { "name": "billed_to", "target": "customer", "via": "customer" },
+            ],
+        }))
+        .unwrap();
+        assert_eq!(
+            schema_hash(&invoice),
+            "ce7fc1daa67c9853e3054fae92e9e188aa08039cc0ab8e460e3d73d9edd038d5"
+        );
     }
 }

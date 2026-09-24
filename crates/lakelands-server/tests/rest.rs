@@ -5,10 +5,12 @@
 //! `tests/transcripts/rest.txt` holds requests (`>`: the request line,
 //! then headers, then body lines) and the answers expected (`<`: the
 //! status, the pinned headers, then the body, one line per NDJSON line).
-//! Values the contract keeps opaque differ between the mock and the
-//! store: the last proposal, migration report and page cursor answered
-//! are shown as `{proposal}`, `{report_id}` and `{cursor}`, and a request
-//! may name them so; a schema hash as `{schema_hash}`.
+//! Proposal ids and schema hashes are the log format's own values on the
+//! mock and the store alike, and are compared as they are. A migration
+//! report's id and a page cursor are opaque and minted differently, so
+//! the last ones answered are shown as `{report_id}` and `{cursor}`, and
+//! a request may name them so; the last proposal answered may be named
+//! as `{proposal}` in a request.
 //!
 //! The lake here commits ingests in windows of two records, so a window
 //! boundary is in the transcript, and declares one verb whose executor no
@@ -180,22 +182,6 @@ fn member<'a>(text: &'a str, name: &str) -> Option<&'a str> {
     Some(&text[start..start + len])
 }
 
-/// Every `"member":"…"` value shown as `{member}`.
-fn mask(text: &str, name: &str) -> String {
-    let open = format!("\"{name}\":\"");
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(i) = rest.find(&open) {
-        let (head, tail) = rest.split_at(i + open.len());
-        out.push_str(head);
-        let end = tail.find('"').unwrap_or(tail.len());
-        out.push_str(&format!("{{{name}}}"));
-        rest = &tail[end..];
-    }
-    out.push_str(rest);
-    out
-}
-
 async fn rest_answers_byte_for_byte_on(backend: Backend) {
     let file = std::fs::read_to_string(path("rest.txt")).unwrap();
     let requests_only = !file.lines().any(|l| l.starts_with("< "));
@@ -204,15 +190,15 @@ async fn rest_answers_byte_for_byte_on(backend: Backend) {
     let mut block: Vec<String> = Vec::new();
     // Opaque values answered so far, newest last: (member, shown as,
     // values). A request names the newest; an answer shows every one.
+    let mut proposal = String::new();
     let mut opaque: Vec<(&str, &str, Vec<String>)> = vec![
-        ("proposal", "{proposal}", Vec::new()),
         ("report_id", "{report_id}", Vec::new()),
         ("next_cursor", "{cursor}", Vec::new()),
     ];
     let mut lines = file.lines().peekable();
     while let Some(line) = lines.next() {
         if let Some(req) = line.strip_prefix("> ") {
-            let mut req = req.to_owned();
+            let mut req = req.replace("{proposal}", &proposal);
             for (_, shown, values) in &opaque {
                 if let Some(v) = values.last() {
                     req = req.replace(shown, v);
@@ -226,6 +212,9 @@ async fn rest_answers_byte_for_byte_on(backend: Backend) {
             let block_: Vec<&str> = block.iter().map(String::as_str).collect();
             let (status, headers, body) = exchange(addr, &block_).await;
             block.clear();
+            if let Some(p) = member(&body, "proposal") {
+                proposal = p.to_owned();
+            }
             for (name, _, values) in &mut opaque {
                 if let Some(v) = member(&body, name) {
                     values.push(v.to_owned());
@@ -236,9 +225,6 @@ async fn rest_answers_byte_for_byte_on(backend: Backend) {
                 writeln!(recorded, "< {h}").unwrap();
             }
             let mut body = body;
-            for hash in ["schema_hash", "from_schema_hash", "to_schema_hash"] {
-                body = mask(&body, hash);
-            }
             for (_, shown, values) in &opaque {
                 for v in values {
                     body = body.replace(v.as_str(), shown);
