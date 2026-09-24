@@ -521,7 +521,9 @@ record (`docs/decisions/022-functions-are-declarations.md`, extended):
   answers the field's `dimensions`; otherwise the declaration is refused
   as `Unbound`, naming what it needs. A due embedding whose backend is
   gone, or names another model or other dimensions, when the call would
-  be made is not made; the field waits. A retried embedding waits the
+  be made is not made; the field waits. It is made when its record is
+  written again, or its type declared again, with the backend bound;
+  opening the lake calls nothing. A retried embedding waits the
   same way: it reads as waiting (no value, no metadata) though the
   log's latest output for its text is still the failure.
 - The text is the `from` fields' values, in declared order, joined with

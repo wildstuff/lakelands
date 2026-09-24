@@ -94,7 +94,8 @@ pub mod fixture;
 ///
 /// The runner hands the harness the seams each lake binds besides the
 /// engine: always [`backing::backings`], which the checks of functions
-/// computed outside the store call, and [`backing::embedder`] for the
+/// computed outside the store call, and [`backing::executors`], which the
+/// checks of verbs reaching outside run, and [`backing::embedder`] for the
 /// checks that need an embedding backend. The harness adds its engine's
 /// opener and binds nothing else.
 ///
@@ -242,6 +243,7 @@ async fn run_check(harness: &dyn Harness, check: &Check) -> Result<(), Failure> 
     let seams = Seams {
         backings: backing::backings(),
         embed: check.embedding.then(backing::embedder),
+        executors: backing::executors(),
         ..Seams::default()
     };
     let store = match caught(harness.fresh(seams)).await {
