@@ -121,7 +121,9 @@ September.
 
 ## The commands
 
-From a fresh clone, in the repository's root. The walk runs on the
+From a fresh clone, in the repository's root. The `walk` directory may
+be created anywhere; the page creates it inside the clone, so the paths
+to the example are short. The walk runs on the
 SQLite engine, the default of `lake new`: a lake kept in memory lives
 only as long as its process, so a sequence of CLI commands cannot walk
 one.
@@ -139,7 +141,7 @@ lakelands ingest ../examples/liquidity/data/invoices-august.csv \
 lakelands ingest ../examples/liquidity/data/invoices-september.csv \
   --source erp --map ../examples/liquidity/data/invoices.map.json
 lakelands feed --kind trigger_fired
-lakelands serve --mcp
+lakelands serve --mcp   # an MCP client starts this itself; see below
 ```
 
 What each must print:
@@ -148,9 +150,9 @@ What each must print:
 |---|---|
 | `init`, `lake new` | the root and the lake's location, exit 0 |
 | `apply` | `applied 8 declaration(s), in force from position 10`, then the eight: value types `invoice_status`, `money`, types `invoice`, `partner`, `transaction`, verb `pay_invoice`, trigger `invoice_overdue`, object set `overdue` |
-| partners ingest | `committed … record(s)` lines adding up to **4 records, 0 already in the lake**, through position **15** |
-| August ingest | **10 records, 0 already in the lake**, through position **40**: ten invoices, and for each of the seven that are open and overdue one `trigger_fired` and one `object_set_changed` |
-| September ingest | **3 records, 9 already in the lake**, through position **47**. The nine unchanged rows append nothing. INV-3002 is now paid and leaves `overdue`; INV-1004 is new and not overdue; INV-4003 is new, overdue, fires the trigger and joins `overdue`. |
+| partners ingest | one `committed` line: **4 records, 0 already in the lake**, through position **15** |
+| August ingest | one `committed` line: **10 records, 0 already in the lake**, through position **40**: ten invoices, and for each of the seven that are open and overdue one `trigger_fired` and one `object_set_changed` |
+| September ingest | one `committed` line: **3 records, 9 already in the lake**, through position **47**. The nine unchanged rows append nothing. INV-3002 is now paid and leaves `overdue`; INV-1004 is new and not overdue; INV-4003 is new, overdue, fires the trigger and joins `overdue`. |
 | `feed --kind trigger_fired` | eight `trigger_fired` events: INV-1001, 1002, 2001, 2002, 3001, 3002, 4001 in August, INV-4003 in September |
 
 The positions are the store's as of `0.1.0`: the lake's first append
@@ -169,7 +171,11 @@ the agent makes these `tools/call`s, in order. Every answer carries the
 Without a chat product in the loop, the calls are made with the
 `mcp_call` example client from the `walk` directory. It starts the
 server, makes its requests in one session, and prints each answer's
-position line and structured content. A pin holds within one session
+position line and structured content. The structured content is the
+reply's whole envelope, `{ "data": …, "position": N }`; where this page
+shows an expected answer, it shows `data`. The client starts
+`lakelands serve --mcp` itself, from the `--server` command it is given,
+so the server need not be run by hand. A pin holds within one session
 only, so each run below makes a pinned turn's calls together.
 
 Every `serve --mcp` process becomes the lake's writer and appends one

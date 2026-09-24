@@ -65,8 +65,13 @@ belongs to whoever stands on it; the life on top is Wildstuff's product.
 **For agents.** Pin a type and the lake exposes four doors — `find`,
 `get`, `upsert`, `retire` — each with a JSON schema derived from the
 type and filtered by the caller's rights, plus one tool per declared
-verb, `describe`, `query` and `search`. Served over MCP (stdio and HTTP)
-from one catalog. Agents never write a query language.
+verb, `describe`, `query` and `search`. Rights can remove a door as well
+as narrow it: a type whose fields all come from a source has no
+`upsert`. Beside them an agent sees the lake's other doors: `pin` for
+the position its turn reads at, `propose`, `proposals`, `accept` and
+`reject` for writes that wait for a review, and `declare_type`,
+`add_field` and `migrate` for the schema. Served over MCP (stdio and
+HTTP) from one catalog. Agents never write a query language.
 
 > **Status: `0.1.0`.** Lakelands `0.1.0` is the `lakelands` CLI and its
 > MCP server (stdio and streamable HTTP) over the SQLite and in-memory
