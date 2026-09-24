@@ -46,3 +46,10 @@ a different workaround per type.
   the principal itself.
 - Its version moves with the contract's shape, not with Lakelands'
   releases: a change a WIT caller would see is a new package version.
+
+## Extended: the package at `0.2.0`
+
+A field's provenance gained `error`, the reason a field computed by a
+function holds no value when its backing failed (010, extended). A WIT
+caller sees it in `field-meta`, so the package is now
+`lakelands:data@0.2.0`.

@@ -28,7 +28,7 @@ contract and to this page.
 |---|---|---|---|
 | Engine | `LakeEngine`, `ProjectionStore`, `ProjectionView`; `VectorIndex` beside them | SQLite and in-memory (`0.1.0`); PostgreSQL after | Rarely anything: a new engine, proven by the conformance suite |
 | Principal resolution | `PrincipalResolver` | API key or static entry → one principal | Its identities, roles and policies, compiled to grants |
-| Function backings | `FunctionBacking` | `expr`, evaluated in the store | Its own backing kinds; `http` and `exec` ship after `0.1.0` |
+| Function backings | `FunctionBacking` | `expr`, evaluated in the store | Its own backing kinds; `http` and `exec` ship in `lakelands-backings` |
 | Embeddings | `EmbedBackend` | None: lexical search and caller vectors | An embedding client; an OpenAI-compatible one ships after `0.1.0` |
 | Verb execution | `VerbExecutor` | None: external verbs are refused as `Unbound` | What its external verbs do |
 | Change feed | `ChangeFeed` | The log, read by kind from a position | A relay of the feed onto its own bus, as its own code |
@@ -346,26 +346,102 @@ resolver belongs to the doors (the CLI, the server), not to the store.
 
 `kind()` names the backing kind, an open token; `call(function call) ->
 value` computes one output from `{ lake, function, inputs, config }`.
-Once a backing other than `expr` computes fields, the store records
-every output as `output_recorded`, keyed by the function and the digest
-of `{ "function", "inputs", "config" }` (`docs/log-format.md` §2.5), and
-never calls a backing twice for one input: a replay reads the recorded
-output.
 
 The default is `expr`, evaluated inside the store in the one expression
-grammar; because it is deterministic, its results are recomputed on
-replay rather than recorded. In `0.1.0` it is the only backing that
-computes fields: declaring a field computed by a function of another
-backing is refused as `Unbound` naming that backing, whatever the host
-passed in `Seams::backings`. `http` and `exec` follow after `0.1.0`,
-and a host may add its own kind then.
+grammar. Because it is deterministic, its results are recomputed on
+replay rather than recorded. `lakelands_store::ExprBacking` is that
+backing as the seam presents it, for a host or a door that calls a
+function directly. The call's `config` carries the expression as
+`{ "expr": … }` (typed or text form), its `inputs` the values by input
+name, and the answer is the computed value, a number as an exact decimal
+string. The fold computes function fields with the same evaluator in
+process, so the two can never disagree.
 
-`lakelands_store::ExprBacking` is that backing as the seam presents it,
-for a host or a door that calls a function directly: the call's `config`
-carries the expression as `{ "expr": … }` (typed or text form), its
-`inputs` the values by input name, and the answer is the computed value,
-a number as an exact decimal string. The fold computes function fields
-with the same evaluator in process, so the two can never disagree.
+**Any other kind computes fields through the seam.** A function of
+another kind is declared only where the host bound a backing of that
+kind in `Seams::backings`; otherwise the declaration is refused as
+`Unbound`, naming the kind. What the store guarantees for such a
+function (`docs/decisions/022-functions-are-declarations.md`, extended):
+
+- The store calls the backing after the append that made a field due,
+  never from the fold, a read, opening a lake or `rebuild`. It calls one
+  backing at a time per lake.
+- It records every answer as `output_recorded`. The answer is keyed by
+  the seam `function:<kind>:<function>` and the digest of
+  `{ "function", "inputs", "config" }` (`docs/log-format.md` §2.5).
+- It never sends one input to a backing twice: a recorded output is
+  read back for every later call with the same input, failures
+  included.
+- A failure (an error, a timeout, or an output that is not a value of
+  the field's type) clears the field, and the field's metadata carries
+  the reason as `error`. A cleared field without `error` is one whose
+  output is not recorded yet.
+- A fill is a change of the field like any write's. Derived fields
+  that read it are recomputed, triggers fire and object sets change,
+  caused by the output.
+- A type's computed fields read one another without a cycle; a
+  declaration that closes one is refused.
+- A write whose calls a drain made answers with the lake's head once
+  the calls are made: the position from which its filled fields are
+  visible. A write with nothing due answers at once, with its own last
+  event's position.
+
+A host adds a kind by implementing the trait and passing it in
+`Seams::backings`, with no change to the store.
+
+**`http` and `exec`** ship in `lakelands-backings`. The CLI and the
+server bind them from the `backings` section of the root's
+`lakelands.json`. Each is configured only if its section is present, and
+reaches only what that section allows; nothing is read from the
+environment.
+
+```json
+"backings": {
+  "http": { "hosts": ["geo.example", "localhost:8080"],
+            "timeout_secs": 10, "max_reply_bytes": 1048576,
+            "ca_file": "/etc/ssl/certs/ca-certificates.crt" },
+  "exec": { "commands": { "geocode": { "program": "/usr/local/bin/geocode",
+                                       "args": ["--json"] } },
+            "timeout_secs": 10, "max_output_bytes": 1048576 }
+}
+```
+
+- `http`:
+  - A function names `config.url`, an `http` or `https` URL whose host
+    the operator lists, either as `host` (any port) or as `host:port`.
+    Any other host is refused before a connection is made.
+  - The backing `POST`s the call `{ "function", "inputs", "config" }`
+    as JSON. A `2xx` reply's JSON body is the output. Any other status
+    fails, redirects included: a redirect is never followed, since it
+    could lead off the list.
+  - No proxy is used. `https` trusts the authorities in `ca_file`, or,
+    without one, the first system bundle found at a well-known path.
+- `exec`:
+  - A function names `config.command`, the name of a command the
+    operator configured, never a program path, so a declaration cannot
+    run anything the operator did not name.
+  - The program is started directly, with no shell and an empty
+    environment. It receives the call as JSON on standard input and
+    answers one JSON value on standard output.
+  - A failure status, output beyond the limit, or a run past the
+    timeout fails the call. The last two also kill the program. A
+    failure is recorded as the exit status in a fixed sentence. What the
+    program writes on standard error goes to the server's own standard
+    error, never into the log.
+  - `program` must be an absolute path; a configuration naming a
+    relative one is refused when it loads.
+
+**The trust boundary.** Allowing a host trusts all of it:
+- Every port, unless the entry names one, and every path on it.
+- A principal who may declare functions (the `schema` grant) can have
+  records' fields sent to any endpoint on an allowed host, and can have
+  any allowed command run on them.
+- List hosts and commands for what they will receive, not only for
+  where they are. An IPv6 literal is listed in brackets, as the URL
+  writes it (`[::1]:8080`).
+- A reply that is well-formed JSON but not a value of the field's type
+  fails the field. It is still kept in the log as the output, up to
+  `max_reply_bytes` (`max_output_bytes` for `exec`).
 
 ## `EmbedBackend`
 

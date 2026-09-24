@@ -7,6 +7,7 @@
 use super::Check;
 
 mod aggregates;
+mod backings;
 mod bundles;
 mod cursors;
 mod decimals;
@@ -58,6 +59,15 @@ pub const ALL: &[Check] = &[
     derived_fields::COMPUTED_BY_THE_FOLD,
     derived_fields::NO_DOOR_WRITES_IT,
     derived_fields::ADDED_LATER,
+    backings::UNBOUND_KIND_REFUSED,
+    backings::FILLED_AND_RECORDED,
+    backings::ONE_CALL_PER_INPUT,
+    backings::FAILURE_CLEARS,
+    backings::REBUILD_READS_OUTPUTS,
+    backings::FILL_REACTS,
+    backings::COMPUTED_CYCLE_REFUSED,
+    backings::RECORDED_FILL_REACTS,
+    backings::CHAIN_WAITS,
     views::GROUPS_AND_SUMS,
     views::SAME_EITHER_WAY,
     views::EMPTIED_GROUP_GOES,

@@ -1,0 +1,93 @@
+//! The function backing the suite's checks call: every harness binds
+//! [`backings`] in the seams of every lake it opens, so the checks can
+//! declare functions computed outside the store and see what the store
+//! does with their outputs.
+//!
+//! Its kind is [`KIND`]. A function's `config` scripts it:
+//!
+//! - `{"token": t, "echo": "<input>"}` answers that input's value;
+//! - `{"token": t, "echo": "<input>", "fail_on": v}` fails when that input
+//!   is `v`;
+//! - after [`unplug`] of `t`, every call fails.
+//!
+//! It counts the calls made with each token, so a check can tell a value
+//! read back from a recorded output from one computed by calling again.
+//! The token is the check's own, so checks never count each other's
+//! calls.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use async_trait::async_trait;
+use lakelands_api::seam::{FunctionBacking, FunctionCall};
+use lakelands_api::{Error, Result, Value};
+
+/// The backing kind the suite's functions name.
+pub const KIND: &str = "conformance";
+
+#[derive(Default)]
+struct Calls {
+    made: BTreeMap<String, usize>,
+    unplugged: BTreeSet<String>,
+}
+
+fn calls() -> &'static Mutex<Calls> {
+    static CALLS: OnceLock<Mutex<Calls>> = OnceLock::new();
+    CALLS.get_or_init(Mutex::default)
+}
+
+/// The scripted backing.
+struct Scripted;
+
+fn fail(message: String) -> Error {
+    Error::Unavailable { message }
+}
+
+#[async_trait]
+impl FunctionBacking for Scripted {
+    fn kind(&self) -> &str {
+        KIND
+    }
+
+    async fn call(&self, call: &FunctionCall) -> Result<Value> {
+        let token = call.config["token"].as_str().unwrap_or_default().to_owned();
+        {
+            let mut c = calls().lock().unwrap_or_else(|p| p.into_inner());
+            *c.made.entry(token.clone()).or_default() += 1;
+            if c.unplugged.contains(&token) {
+                return Err(fail(format!("the backing for `{token}` is unplugged")));
+            }
+        }
+        let input = call.config["echo"].as_str().unwrap_or_default();
+        let value = call.inputs[input].clone();
+        if call.config.get("fail_on") == Some(&value) {
+            return Err(fail(format!("`{}` cannot take {value}", call.function)));
+        }
+        Ok(value)
+    }
+}
+
+/// The backings every harness binds.
+pub fn backings() -> Vec<Arc<dyn FunctionBacking>> {
+    vec![Arc::new(Scripted)]
+}
+
+/// How many calls were made with a token.
+pub fn made(token: &str) -> usize {
+    calls()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .made
+        .get(token)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// Make every later call with a token fail.
+pub fn unplug(token: &str) {
+    calls()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .unplugged
+        .insert(token.to_owned());
+}

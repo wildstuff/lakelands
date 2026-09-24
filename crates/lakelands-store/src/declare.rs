@@ -112,21 +112,10 @@ fn field_type(o: &Ontology, owner: &str, f: &FieldDecl, pending: &TypeName) -> R
                 "a field is derived from an expression or computed by a function, not both",
             ));
         }
-        match o.functions.get(func.as_str()) {
-            None => {
-                return Err(wrong(&format!(
-                    "it names the function `{func}`, which is not declared"
-                )));
-            }
-            Some(e) if e.decl.backing != "expr" => {
-                return Err(Error::Unbound {
-                    seam: format!(
-                        "the `{}` function backing (only `expr` computes fields in this release)",
-                        e.decl.backing
-                    ),
-                });
-            }
-            Some(_) => {}
+        if !o.functions.contains_key(func.as_str()) {
+            return Err(wrong(&format!(
+                "it names the function `{func}`, which is not declared"
+            )));
         }
         if f.authority != lakelands_api::ontology::Authority::Derived {
             return Err(wrong(
@@ -292,7 +281,16 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
     // ordered, and checked for cycles, with the function resolved.
     derive::order(&crate::record::resolve_functions(t, o))
         .map_err(|e| invalid(format!("{owner}: {e}")))?;
+    computed_without_cycle(o, t).map_err(|e| invalid(format!("{owner}: {e}")))?;
     Ok(())
+}
+
+/// A type's computed fields, derived expressions and function-computed
+/// fields alike, read one another without a cycle, so a chain of fills
+/// within one record ends (`docs/decisions/022-functions-are-declarations.md`,
+/// extended).
+fn computed_without_cycle(o: &Ontology, t: &TypeDecl) -> std::result::Result<(), String> {
+    crate::backed::computed_order(o, t).map(|_| ())
 }
 
 /// Check one declaration against the ontology it would join. `who_is_system`
@@ -427,6 +425,23 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
         Declaration::Function(f) => {
             name("function", &f.name)?;
             name("backing", &f.backing)?;
+            // Declared again with other inputs, it must not close a cycle
+            // in a type whose field it computes.
+            let mut probe = o.clone();
+            probe.put(d.clone(), 0, None);
+            for t in o.types.values().filter(|t| {
+                t.decl
+                    .fields
+                    .iter()
+                    .any(|x| x.function.as_deref() == Some(f.name.as_str()))
+            }) {
+                computed_without_cycle(&probe, &t.decl).map_err(|e| {
+                    invalid(format!(
+                        "function `{}`, type `{}`: {e}",
+                        f.name, t.decl.name
+                    ))
+                })?;
+            }
             for input in &f.inputs {
                 field_type(
                     o,

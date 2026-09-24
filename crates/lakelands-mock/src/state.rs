@@ -373,6 +373,7 @@ fn meta_of(e: &Event) -> FieldMeta {
         writer: e.writer.clone(),
         source: e.source.clone(),
         procedure_version: e.procedure.as_ref().map(|p| p.version.clone()),
+        error: None,
     }
 }
 

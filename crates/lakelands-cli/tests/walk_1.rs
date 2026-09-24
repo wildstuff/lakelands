@@ -74,9 +74,14 @@ struct Shell {
 }
 
 impl Shell {
-    fn open(&self, l: Location, mode: lakelands_api::engine::OpenMode) -> Opening {
+    fn open(
+        &self,
+        l: Location,
+        mode: lakelands_api::engine::OpenMode,
+        host: lakelands_api::seam::Seams,
+    ) -> Opening {
         if !self.mock {
-            return lakelands_cli::open_store(l, mode);
+            return lakelands_cli::open_store(l, mode, host);
         }
         let mut lakes = self.lakes.lock().unwrap();
         let lake = lakes
@@ -89,7 +94,7 @@ impl Shell {
     /// `lakelands <args>`, answering the exit status and what it printed.
     fn run(&self, args: &[&str]) -> (u8, String, String) {
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        let open = |l: Location, m: lakelands_api::engine::OpenMode| self.open(l, m);
+        let open = |l: Location, m: lakelands_api::engine::OpenMode, s| self.open(l, m, s);
         let code = block_on(lakelands_cli::run(
             std::iter::once("lakelands").chain(args.iter().copied()),
             &mut out,

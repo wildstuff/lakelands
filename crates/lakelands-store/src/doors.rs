@@ -98,6 +98,33 @@ impl Doors {
         .await
     }
 
+    /// How often the lake's due calls were drained, read before a write.
+    fn seen(&self) -> u64 {
+        self.lake.drains.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Make the calls of backed functions the write made due, and answer
+    /// its outcome at the position of the last output recorded, from which
+    /// the filled fields are visible.
+    async fn settled(&self, outcome: Outcome, seen: u64) -> Result<Outcome> {
+        let last = crate::backed::settle(&self.lake, seen).await?;
+        Ok(match (outcome, last) {
+            (
+                Outcome::Applied {
+                    position,
+                    version,
+                    output,
+                },
+                Some(last),
+            ) => Outcome::Applied {
+                position: position.max(last),
+                version,
+                output,
+            },
+            (outcome, _) => outcome,
+        })
+    }
+
     /// Hand an external verb to its executor and record the answer; the
     /// recorded output is returned, `{"error": …}` when the executor failed.
     async fn execute(&self, ext: External) -> Result<serde_json::Value> {
@@ -209,8 +236,11 @@ impl Catalog for Doors {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         let (ty, key) = (ty.clone(), key.clone());
-        self.write(who, move |c| c.upsert(&ty, &key, patch, opts))
-            .await
+        let seen = self.seen();
+        let outcome = self
+            .write(who, move |c| c.upsert(&ty, &key, patch, opts))
+            .await?;
+        self.settled(outcome, seen).await
     }
 
     async fn retire(
@@ -221,7 +251,9 @@ impl Catalog for Doors {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         let (ty, key) = (ty.clone(), key.clone());
-        self.write(who, move |c| c.retire(&ty, &key, opts)).await
+        let seen = self.seen();
+        let outcome = self.write(who, move |c| c.retire(&ty, &key, opts)).await?;
+        self.settled(outcome, seen).await
     }
 
     async fn call(
@@ -233,9 +265,11 @@ impl Catalog for Doors {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         let (verb, key) = (verb.clone(), key.clone());
+        let seen = self.seen();
         let (outcome, external) = self
             .write(who, move |c| c.call(&verb, &key, payload, opts))
             .await?;
+        let outcome = self.settled(outcome, seen).await?;
         match external {
             Some(ext) => Ok(with_output(outcome, self.execute(ext).await?)),
             None => Ok(outcome),
@@ -288,7 +322,9 @@ impl Catalog for Doors {
 
     async fn accept(&self, who: &Principal, proposal: &ProposalId) -> Result<Outcome> {
         let p = proposal.clone();
+        let seen = self.seen();
         let (outcome, external) = self.write(who, move |c| c.accept(&p)).await?;
+        let outcome = self.settled(outcome, seen).await?;
         match external {
             Some(ext) => Ok(with_output(outcome, self.execute(ext).await?)),
             None => Ok(outcome),
@@ -315,16 +351,22 @@ impl Catalog for Doors {
     }
 
     async fn declare(&self, who: &Principal, declaration: Declaration) -> Result<Outcome> {
-        self.write(who, move |c| c.declare(declaration)).await
+        let seen = self.seen();
+        let outcome = self.write(who, move |c| c.declare(declaration)).await?;
+        self.settled(outcome, seen).await
     }
 
     async fn apply(&self, who: &Principal, declarations: Vec<Declaration>) -> Result<Outcome> {
-        self.write(who, move |c| c.apply(declarations)).await
+        let seen = self.seen();
+        let outcome = self.write(who, move |c| c.apply(declarations)).await?;
+        self.settled(outcome, seen).await
     }
 
     async fn add_field(&self, who: &Principal, ty: &TypeName, field: FieldDecl) -> Result<Outcome> {
         let ty = ty.clone();
-        self.write(who, move |c| c.add_field(&ty, field)).await
+        let seen = self.seen();
+        let outcome = self.write(who, move |c| c.add_field(&ty, field)).await?;
+        self.settled(outcome, seen).await
     }
 
     async fn migrate(
@@ -350,8 +392,11 @@ impl Catalog for Doors {
         report_id: &str,
     ) -> Result<Outcome> {
         let id = report_id.to_owned();
-        self.write(who, move |c| c.migrate_apply(migration, &id))
-            .await
+        let seen = self.seen();
+        let outcome = self
+            .write(who, move |c| c.migrate_apply(migration, &id))
+            .await?;
+        self.settled(outcome, seen).await
     }
 
     async fn ingest(

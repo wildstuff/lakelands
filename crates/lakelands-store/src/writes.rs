@@ -53,6 +53,7 @@ use lakelands_core::expr::{self, Place, RecordScope, Scope, WriteScope};
 use lakelands_core::rights::{self, Door};
 use lakelands_core::{shape, value};
 
+use crate::backed::Outputs;
 use crate::declare;
 use crate::lake::{Lake, Writer, find_proposal};
 use crate::log::{self, Draft};
@@ -425,7 +426,7 @@ fn cas(expected: Option<Version>, before: Option<&StoredRecord>) -> Result<()> {
 }
 
 /// A provisional event at `position`, to compute the record a draft makes.
-fn provisional(lake: &Lake, position: Position, d: &Draft) -> Event {
+pub(crate) fn provisional(lake: &Lake, position: Position, d: &Draft) -> Event {
     log::seal(&lake.id, position, &Digest::zero(), 0, d.clone()).0
 }
 
@@ -524,8 +525,18 @@ impl Call<'_> {
         };
         let draft = self.draft(now, origin, body);
         let event = provisional(self.lake, position_after(w, n), &draft);
-        let after = record::apply(&w.ontology, before.as_ref(), &event, &w.settings)?
-            .expect("a record event makes a record");
+        let after = record::apply(
+            &w.ontology,
+            before.as_ref(),
+            &event,
+            &w.settings,
+            &mut Outputs {
+                view,
+                staged: None,
+                due: None,
+            },
+        )?
+        .expect("a record event makes a record");
         record::check_required(decl, &after.fields)?;
         Ok(RecordPlan {
             draft,
@@ -547,8 +558,11 @@ impl Call<'_> {
         now: Timestamp,
     ) -> Result<Vec<Draft>> {
         let mut out = Vec::new();
+        // A reaction carries the context of the write that caused it, so
+        // a host acting on it writes one level deeper (021).
         let system = |body| Draft {
             cause: Some(cause),
+            context: self.context,
             ..Draft::system(now, body)
         };
         for t in w
@@ -704,8 +718,18 @@ impl Call<'_> {
             d.idempotency_key = Some(k.clone());
         }
         let event = provisional(self.lake, position_after(&w, 0), &d);
-        let after = record::apply(&w.ontology, Some(&before), &event, &w.settings)?
-            .expect("a retire makes a record");
+        let after = record::apply(
+            &w.ontology,
+            Some(&before),
+            &event,
+            &w.settings,
+            &mut Outputs {
+                view: view.as_ref(),
+                staged: None,
+                due: None,
+            },
+        )?
+        .expect("a retire makes a record");
         let mut pending = Pending::default();
         let cause = event.position;
         let mut drafts = vec![d];
@@ -1214,8 +1238,18 @@ impl Call<'_> {
                     },
                 ));
                 let event = provisional(self.lake, Position(accepted_at.0 + 1), &d);
-                let after = record::apply(&w.ontology, Some(&before), &event, &w.settings)?
-                    .expect("a retire makes a record");
+                let after = record::apply(
+                    &w.ontology,
+                    Some(&before),
+                    &event,
+                    &w.settings,
+                    &mut Outputs {
+                        view: view.as_ref(),
+                        staged: None,
+                        due: None,
+                    },
+                )?
+                .expect("a retire makes a record");
                 drafts.push(d);
                 drafts.extend(self.reactions(
                     &w,
@@ -1315,6 +1349,28 @@ impl Call<'_> {
         })
     }
 
+    /// A function computed outside the store is declared only where a
+    /// backing of its kind is bound; replay never asks.
+    fn check_bound(&self, d: &Declaration) -> Result<()> {
+        if let Declaration::Function(f) = d
+            && crate::backed::is_backed(f)
+            && !self
+                .lake
+                .seams
+                .backings
+                .iter()
+                .any(|b| b.kind() == f.backing)
+        {
+            return Err(Error::Unbound {
+                seam: format!(
+                    "the `{}` function backing (the host bound none of that kind)",
+                    f.backing
+                ),
+            });
+        }
+        Ok(())
+    }
+
     /// `declare`.
     pub fn declare(&self, declaration: Declaration) -> Result<Outcome> {
         if !self.who.grants.schema {
@@ -1322,6 +1378,7 @@ impl Call<'_> {
         }
         let mut w = self.lake.writer();
         declare::check_declaration(&w.ontology, &declaration, false)?;
+        self.check_bound(&declaration)?;
         let schema_hash = match &declaration {
             Declaration::Type(t) => {
                 Some(shape::schema_hash(t).map_err(|e| invalid(e.to_string()))?)
@@ -1381,7 +1438,9 @@ impl Call<'_> {
                     probe.put(other.clone(), 0, None);
                 }
             }
-            if let Err(e) = declare::check_declaration(&probe, d, false) {
+            if let Err(e) =
+                declare::check_declaration(&probe, d, false).and_then(|()| self.check_bound(d))
+            {
                 problems.push((identities[i].clone(), e));
             }
         }

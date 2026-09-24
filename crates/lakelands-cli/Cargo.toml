@@ -16,6 +16,7 @@ path = "src/main.rs"
 clap = { version = "4", default-features = false, features = ["std", "help", "usage", "error-context"] }
 futures-core.workspace = true
 lakelands-api.workspace = true
+lakelands-backings.workspace = true
 lakelands-core.workspace = true
 lakelands-engine-mem.workspace = true
 lakelands-engine-sqlite.workspace = true

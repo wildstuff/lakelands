@@ -74,7 +74,7 @@ impl Shell {
     }
 
     /// Open a lake once per shell, as the binary opens it once per process.
-    fn open(&self, l: Location, mode: OpenMode) -> Opening {
+    fn open(&self, l: Location, mode: OpenMode, host: Seams) -> Opening {
         let (lakes, backend) = (self.lakes.clone(), self.backend);
         Box::pin(async move {
             let name = l.lake.to_string();
@@ -93,7 +93,7 @@ impl Shell {
                             Arc::new(lakelands_engine_mem::MemoryOpener::new()),
                             Arc::new(lakelands_engine_sqlite::SqliteOpener),
                         ],
-                        ..Seams::default()
+                        ..host
                     };
                     let mode = if mode == OpenMode::Read {
                         OpenMode::Read
@@ -125,7 +125,7 @@ impl Shell {
 
     fn raw(&self, argv: &[&str]) -> Said {
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        let open = |l: Location, m: OpenMode| self.open(l, m);
+        let open = |l: Location, m: OpenMode, s: Seams| self.open(l, m, s);
         let code = block_on(lakelands_cli::run(
             argv.iter().copied(),
             &mut out,
@@ -632,6 +632,67 @@ fn the_root_configuration_carries_the_http_door() {
         unknown.is_err(),
         "an unknown key in the server section is refused"
     );
+}
+
+/// A root that allows an `exec` command computes a field with it: the
+/// lake declares a function naming the command, a record is ingested,
+/// and the store calls the command and records its answer. The mock
+/// computes no function fields, so this runs on the real store only.
+#[cfg(unix)]
+#[test]
+fn a_command_the_root_allows_computes_a_field_through_the_exec_backing() {
+    for backend in [Backend::Store, Backend::StoreInMemory] {
+        let sh = Shell::on("exec-backing", backend);
+        sh.lake();
+        let config = r#"{"lakelands": 1, "owner": "owner",
+            "backings": {"exec": {"commands": {"echo": {"program": "/bin/cat"}}}}}"#;
+        fs::write(sh.root.join("lakelands.json"), config).unwrap();
+        let bundle = sh.bundle(
+            "places",
+            &[
+                (
+                    "functions/lookup.yaml",
+                    "name: lookup\nbacking: exec\ninputs:\n  code: text\nconfig:\n  command: echo\n",
+                ),
+                (
+                    "types/place.yaml",
+                    "name: place\nfields:\n  code: { type: text, authority: source }\n  answer:\n    type: json\n    authority: derived\n    function: lookup\n    depends_on: code\n",
+                ),
+            ],
+        );
+        let applied = sh.run(&["apply", &bundle]);
+        assert_eq!(applied.code, 0, "{}", applied.err);
+        let file = sh.file(
+            "places.ndjson",
+            "{\"type\": \"place\", \"key\": \"p1\", \"fields\": {\"code\": \"AT\"}}\n",
+        );
+        let ingested = sh.run(&["ingest", &file, "--source", "registry"]);
+        assert_eq!(ingested.code, 0, "{}", ingested.err);
+        let s = sh.run(&["feed", "--kind", "output_recorded"]);
+        assert_eq!(s.code, 0, "{}", s.err);
+        let events: Vec<serde_json::Value> = s
+            .out
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(events.len(), 1, "{}", s.out);
+        let body = &events[0]["body"];
+        assert_eq!(body["seam"], "function:exec:lookup");
+        assert_eq!(body["field"], serde_json::json!(["place", "p1", "answer"]));
+        // `/bin/cat` answers the call it was sent.
+        assert_eq!(
+            body["output"],
+            serde_json::json!({"function": "lookup", "inputs": {"code": "AT"},
+                               "config": {"command": "echo"}})
+        );
+        assert!(
+            ingested
+                .out
+                .contains(&format!("through position {}", events[0]["position"])),
+            "the ingest answers the position the filled field is visible from: {}",
+            ingested.out
+        );
+    }
 }
 
 /// The built binary, end to end: a root, a lake on disk, a bundle

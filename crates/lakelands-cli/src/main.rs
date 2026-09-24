@@ -22,7 +22,7 @@ fn main() -> ExitCode {
         std::env::args_os(),
         &mut out,
         &mut err,
-        &|l, m| lakelands_cli::open_store(l, m),
+        &|l, m, s| lakelands_cli::open_store(l, m, s),
     ));
     ExitCode::from(code)
 }

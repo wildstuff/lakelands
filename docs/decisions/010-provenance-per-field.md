@@ -51,3 +51,12 @@ the fold is pure, so the metadata is as reproducible as the value.
 On every door the switch that returns each field's provenance with its
 value is spelled `with_meta` (a boolean on `find`, `get` and `search`).
 "`with: meta`" above names the same switch.
+
+## Extended: why a computed field holds no value
+
+A field computed by a function whose backing failed holds no value.
+Its provenance still says why: the metadata of the event that cleared
+it, with `error` set to the reason. A read with `with_meta` returns
+that metadata for the field even though the field has no value, so a
+caller can tell "not computed yet" (no metadata) from "computed and
+failed" (`error`). A field that holds a value never carries `error`.

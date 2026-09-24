@@ -43,3 +43,14 @@ narrow contract that a host implements.
   caller could bypass.
 - Nothing in the store calls a model, starts a sandbox or opens a
   network connection on its own.
+
+## Extended: a seam's failure is its output
+
+What a seam answered is recorded, whether it answered a value or
+failed. A failure is recorded as `{"error": "<why>"}` and read back on
+replay like any other output, so a replay reproduces the failure
+exactly, and the store never calls the seam again for the same input to
+see whether it would answer differently now. The store calls a seam
+only after the append that made the call due, outside the fold: the
+fold reads the log and the outputs recorded in it, and nothing else
+(`docs/decisions/022-functions-are-declarations.md`, extended).

@@ -26,13 +26,18 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   Grants are per field and per principal, and the store enforces them
   on every read and write, so the host never gates reads or writes
   itself. See `docs/decisions/006-grants-not-roles.md`.
-- **`FunctionBacking`.** A backing is an open token. `0.1.0` ships
-  `expr`, the built-in evaluator, and it is the only backing that
-  computes fields in `0.1.0`: a field computed by another backing is
-  refused as `Unbound` when it is declared. `http` and `exec` follow,
-  and a host may add its own kind then; each output of such a backing is
-  recorded in the log (`output_recorded`) and read back on replay, never
-  recomputed. See `docs/decisions/002-determinism-is-the-boundary.md`.
+- **`FunctionBacking`.** A backing kind is an open token. `expr`, the
+  built-in evaluator, is always there. A host binds any other kind in
+  `Seams::backings`: its own, or `http` and `exec` from
+  `lakelands-backings`. The CLI and the server bind those two from the
+  `backings` section of the root's `lakelands.json`, which names the
+  hosts `http` may call and the commands `exec` may run. A function of a
+  kind the host did not bind is refused as `Unbound`, naming the kind,
+  when it is declared. The store calls a backing after the write that
+  made a field due, and records each output in the log
+  (`output_recorded`). A replay reads it back and never calls again. See
+  `docs/decisions/022-functions-are-declarations.md` and
+  `docs/seams.md` §`FunctionBacking`.
 - **`EmbedBackend`.** A host may pass vectors in with its writes or
   plug in an embedding client. In `0.1.0` a bound backend embeds the
   query text of a hybrid search that brings no vector of its own, which

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use lakelands_api::id::LakeId;
 use lakelands_api::location::{EngineConfig, Location};
 use lakelands_api::principal::{Grants, Principal, PrincipalKind};
-use lakelands_api::seam::{Credential, PrincipalResolver};
+use lakelands_api::seam::{Credential, PrincipalResolver, Seams};
 use lakelands_server::HttpConfig;
 use lakelands_server::resolver::{Entry, StaticResolver};
 use serde::{Deserialize, Serialize};
@@ -38,6 +38,11 @@ pub struct Config {
     /// call it. Absent until the operator configures a server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server: Option<HttpConfig>,
+    /// The function backings that reach outside the lake, and what each
+    /// may reach: the hosts `http` may call, the commands `exec` may run.
+    /// Absent, a lake computes its fields with `expr` only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backings: Option<lakelands_backings::Config>,
 }
 
 /// An opened root.
@@ -69,6 +74,7 @@ pub fn init(dir: &Path, owner: &str) -> Result<(), Failure> {
         owner: owner.to_owned(),
         principals: Vec::new(),
         server: None,
+        backings: None,
     };
     fs::create_dir_all(dir.join("lakes")).map_err(|e| io(dir, e))?;
     write_new(&file, &config)
@@ -100,6 +106,20 @@ fn io(p: &Path, e: std::io::Error) -> Failure {
 }
 
 impl Root {
+    /// What the root plugs into every lake it opens: the function
+    /// backings its configuration allows. The opener adds the engines.
+    pub fn seams(&self) -> Seams {
+        Seams {
+            backings: self
+                .config
+                .backings
+                .as_ref()
+                .map(lakelands_backings::backings)
+                .unwrap_or_default(),
+            ..Seams::default()
+        }
+    }
+
     /// Open the root in `dir`.
     pub fn open(dir: &Path) -> Result<Root, Failure> {
         let file = dir.join(CONFIG);
@@ -116,12 +136,20 @@ impl Root {
             }
             Err(e) => return Err(io(&file, e)),
         };
-        let config = serde_json::from_str(&text).map_err(|e| {
+        let config: Config = serde_json::from_str(&text).map_err(|e| {
             Failure::new(
                 format!("{} is not a valid configuration: {e}", show(&file)),
                 "correct the file; `lakelands init` writes a valid one to start from",
             )
         })?;
+        if let Some(backings) = &config.backings {
+            backings.check().map_err(|why| {
+                Failure::new(
+                    format!("{}: {why}", show(&file)),
+                    "fix the backings section of the configuration",
+                )
+            })?;
+        }
         Ok(Root {
             dir: dir.to_owned(),
             config,
