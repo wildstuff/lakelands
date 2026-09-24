@@ -12,7 +12,7 @@
 . "$(dirname "$0")/lib.sh"
 
 CEILING=70000
-CRATES=(lakelands-core lakelands-store lakelands-engine-sqlite)
+CRATES=(lakelands-core lakelands-store lakelands-engine-sqlite lakelands-engine-pg)
 BASE_FILE=scripts/gates/core-size.base
 
 [ -f "$BASE_FILE" ] || die "$BASE_FILE is missing"
