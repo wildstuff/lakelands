@@ -448,12 +448,10 @@ async fn a_verbs_write_carries_the_verbs_procedure_version(
 }
 
 check!(
-    /// An external verb's output is recorded and the verb runs once. A
-    /// retry is held to running nothing again; that it answers the first
-    /// call's position and output (lakelands#98) is claimed here once
-    /// lakelands#101 lands.
+    /// An external verb's output is recorded and the verb runs once; a
+    /// retry answers the first call's outcome, its position and output.
     EXECUTOR_RECORDED = an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_position,
-    "seams, VerbExecutor, and 013: the executor's answer is recorded as output_recorded caused by the event that made the verb due and returned in the outcome's output; a failure is recorded as {\"error\": …} at a real position; a retry of the same call and a rebuild run nothing again"
+    "seams, VerbExecutor, and 013: the executor's answer is recorded as output_recorded caused by the event that made the verb due and returned in the outcome's output; a failure is recorded as {\"error\": …} at a real position; a retry of the same call answers the first outcome, its position and output, and like a rebuild runs nothing again"
 );
 
 async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_position(
@@ -530,15 +528,15 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
          {position}; the log holds {recorded:?}"
     );
 
-    // A retry runs nothing again. (What it answers is lakelands#98: today
-    // it names a later position and carries no output.)
+    // A retry answers the first call's outcome, position and output
+    // alike, and runs nothing again.
     let again = dispatch(json!({}), once)
         .await
         .must("retrying `dispatch`")?;
     ensure!(
-        matches!(&again, Outcome::Applied { .. }) && executed(key) == 1,
-        "a retry with the same idempotency key runs nothing again: it answered {again:?}, \
-         and the executor ran {} times",
+        again == first && executed(key) == 1,
+        "a retry with the same idempotency key answers the first outcome, {first:?}, and \
+         runs nothing again: it answered {again:?}, and the executor ran {} times",
         executed(key)
     );
 

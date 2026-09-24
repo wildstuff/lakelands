@@ -305,7 +305,7 @@ belongs in the suite, not beside one engine:
 - `a_rejected_proposal_writes_nothing_and_a_decided_one_stays_decided` — 013: rejecting appends `write_rejected` and nothing else; a decided proposal is refused as decided
 - `only_a_reviewer_decides_and_a_proposer_sees_its_own_proposals` — 006, 013 and Catalog::proposals: accept and reject need the review grant; without it, `proposals` lists only the principal's own
 - `a_verbs_write_carries_the_verbs_procedure_version` — 010 and the log format §1.1: a value a verb produced carries, as its procedure_version, the version of the verb's declaration
-- `an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_position` — seams, VerbExecutor, and 013: the executor's answer is recorded as output_recorded caused by the event that made the verb due and returned in the outcome's output; a failure is recorded as {"error": …} at a real position; a retry of the same call and a rebuild run nothing again
+- `an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_position` — seams, VerbExecutor, and 013: the executor's answer is recorded as output_recorded caused by the event that made the verb due and returned in the outcome's output; a failure is recorded as {"error": …} at a real position; a retry of the same call answers the first outcome, its position and output, and like a rebuild runs nothing again
 
 **cursors**
 
