@@ -36,7 +36,7 @@ ryu = "1"
 rust-stemmers = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
-serde_yaml = "0.9"
+serde-saphyr = "1.1"
 sha2 = "0.10"
 unicode-normalization = "0.1"
 lakelands-api = { path = "crates/lakelands-api" }
