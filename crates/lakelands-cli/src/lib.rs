@@ -40,6 +40,7 @@ use lakelands_api::{LakeStore, WriteContext};
 
 mod commands;
 mod root;
+pub mod ticker;
 use lakelands_server::say;
 
 pub use root::{CONFIG, Config};
@@ -392,6 +393,7 @@ async fn serve(
     };
     let Some(config) = root.config.server.clone() else {
         root.deliver(std::slice::from_ref(&store))?;
+        ticker::start(root.config.aging.as_ref(), std::slice::from_ref(&store));
         return lakelands_server::serve_stdio(store, who)
             .await
             .map_err(failed);
@@ -406,6 +408,7 @@ async fn serve(
     }
     let held: Vec<Arc<dyn LakeStore>> = lakes.values().cloned().collect();
     root.deliver(&held)?;
+    ticker::start(root.config.aging.as_ref(), &held);
     let lookup = move |lake: &LakeId| -> Result<Arc<dyn LakeStore>> {
         lakes.get(lake).cloned().ok_or_else(|| Error::Unavailable {
             message: format!("this server serves no lake `{lake}`"),

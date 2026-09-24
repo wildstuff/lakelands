@@ -127,7 +127,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   ahead of their readers. See `docs/decisions/003-reservation-by-namespace.md`.
   The aging rules run when the host calls `LakeStore::age(today)`, once
   a day, with the date (`docs/decisions/036-aging-runs-by-date-once.md`);
-  `lakelands age --today <YYYY-MM-DD>` is the same call from the CLI.
+  `lakelands age --today <YYYY-MM-DD>` is the same call from the CLI, and
+  `lakelands serve` makes it daily when the root's `lakelands.json` has an
+  `aging` section: the date at its `utc_offset`, once at start and at each
+  rollover (`docs/seams.md` §aging).
   A source that should be taken back is purged with
   `LakeStore::purge_source(source)` (`lakelands purge --source <id>`):
   every record it brought in is retired in one append, and a record

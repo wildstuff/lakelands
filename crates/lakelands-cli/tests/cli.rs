@@ -827,6 +827,40 @@ fn the_root_configuration_carries_the_deliverer_and_refuses_an_endpoint_it_shoul
     assert_eq!(s.code, 0, "{}", s.err);
 }
 
+#[test]
+fn the_root_configuration_carries_the_ticker_and_refuses_an_offset_that_is_none() {
+    let config: lakelands_cli::Config = serde_json::from_str(
+        r#"{"lakelands": 1, "owner": "owner", "aging": {"utc_offset": "+01:00"}}"#,
+    )
+    .unwrap();
+    let aging = config.aging.expect("the aging section reads");
+    assert_eq!(
+        (aging.utc_offset.as_str(), aging.check_secs),
+        ("+01:00", 60)
+    );
+    let unknown = serde_json::from_str::<lakelands_cli::Config>(
+        r#"{"lakelands": 1, "owner": "owner", "aging": {"zone": "Europe/Vienna"}}"#,
+    );
+    assert!(
+        unknown.is_err(),
+        "an unknown key in the aging section is refused"
+    );
+
+    let sh = Shell::on("aging-config", Backend::Store);
+    sh.lake();
+    let config = r#"{"lakelands": 1, "owner": "owner", "aging": {"utc_offset": "CET"}}"#;
+    fs::write(sh.root.join("lakelands.json"), config).unwrap();
+    let s = sh.run(&["feed"]);
+    assert_eq!(s.code, 1, "{}", s.out);
+    assert!(
+        s.err.starts_with("error: <root>/lakelands.json: ")
+            && s.err
+                .contains("\n  what to do: fix the aging section of the configuration"),
+        "{}",
+        s.err
+    );
+}
+
 /// A root that allows an `exec` command computes a field with it: the
 /// lake declares a function naming the command, a record is ingested,
 /// and the store calls the command and records its answer. The mock

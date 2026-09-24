@@ -877,8 +877,32 @@ and never evaluates `when` again.
 The suite's `aging` checks hold each of these sentences on every
 engine.
 
-The ticker (lakelands#12) calls `age` once a day. Without it, a host, or
-`lakelands age --today <YYYY-MM-DD>`, calls it; the command prints one
+**The ticker** is `lakelands serve`'s caller of `age`, configured by
+the `aging` section of the root's `lakelands.json`:
+
+```json
+"aging": { "utc_offset": "+01:00", "check_secs": 60 }
+```
+
+- **The date** is the host's clock at `utc_offset` (`Z`, or `+HH:MM` /
+  `-HH:MM` within fourteen hours; a fixed offset, not a zone), handed to
+  `age` at UTC midnight. The lake never reads a clock (002).
+- **When:** once when `serve` starts, and again whenever that date rolls
+  over, looked at every `check_secs` (60 by default). A second run on
+  one date writes nothing new.
+- **No catch-up:** a date the process was down for is not aged
+  afterwards. A rule is a condition on today, so the next date's run
+  moves every record that should have moved.
+- **A clock set back** a day makes the ticker age the earlier date
+  again; by 036 a date aged twice is written once, so that run moves
+  nothing new.
+- **Failure:** a run that fails is said in one line on standard error
+  and tried again at the next check, never sooner.
+- **Where:** only in a process that holds the lake as its writer, one
+  ticker per lake.
+
+Without an `aging` section `serve` ages nothing: a host, or
+`lakelands age --today <YYYY-MM-DD>`, calls `age`; the command prints one
 line per rule (`<rule>: moved N, M guard(s) failed`, or the reason it was
 skipped) and `aged <date> through position P`. No MCP tool calls `age`:
 like `rebuild` and `checkpoint`, it is the host's.

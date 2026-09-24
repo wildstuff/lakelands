@@ -943,6 +943,7 @@ dependencies = [
 name = "lakelands-cli"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "clap",
  "futures-core",
  "lakelands-api",
