@@ -147,3 +147,23 @@ rm -rf ~/.cache/cargo-target-lakelands-agent-<x>
 
 `worktree remove` refuses when the slot still has uncommitted work, so
 look before you add `--force`.
+
+## Releasing
+
+Consumers pin Lakelands by tag, never by bare revision.
+
+A release is an annotated tag `vX.Y.Z` on `develop` or `main`, where
+`X.Y.Z` is the workspace version, signed off like a commit:
+
+```bash
+git tag -a v0.1.0 -m "Lakelands v0.1.0" -m "Signed-off-by: Your Name <you@example.com>"
+git push origin v0.1.0
+```
+
+`.github/workflows/release.yml` checks the tag
+(`scripts/release/check-tag.sh`), runs the checks of `ci.yml`, builds the
+`lakelands` binary and publishes a GitHub release with the binary,
+`LICENSE`, `NOTICE`, the third-party licence list and notes made from
+the titles of the pull requests merged since the previous tag. A
+pre-release `vX.Y.Z-<suffix>` may be tagged on any branch to rehearse
+one. Nothing is published to crates.io yet.

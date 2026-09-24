@@ -1,0 +1,103 @@
+name: release
+
+# A signed-off annotated tag `vX.Y.Z` on develop or main becomes a GitHub
+# release; `vX.Y.Z-<suffix>` becomes a pre-release and may be tagged on
+# any branch. Consumers pin Lakelands by tag, never by bare revision.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ github.ref_name }}
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    outputs:
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # checkout may leave an annotated tag lightweight; fetch the object.
+      - run: git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+      - id: check
+        run: scripts/release/check-tag.sh "$TAG" >> "$GITHUB_OUTPUT"
+
+  # The same checks as every pull request, from ci.yml itself. They also
+  # upload the third-party licence list this release attaches.
+  ci:
+    needs: tag
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: tag
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-gnu]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked -p lakelands-cli --bin lakelands --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lakelands-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/lakelands
+          retention-days: 7
+
+  release:
+    needs: [tag, ci, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read # the notes read merged pull request titles
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp LICENSE NOTICE dist/
+          cp artifacts/third-party-licences/third-party-licences.txt dist/THIRD-PARTY-LICENCES.txt
+          for dir in artifacts/lakelands-*; do
+            target="${dir#artifacts/lakelands-}"
+            name="lakelands-$TAG-$target"
+            mkdir -p "stage/$name"
+            install -m 0755 "$dir/lakelands" "stage/$name/lakelands"
+            cp LICENSE NOTICE dist/THIRD-PARTY-LICENCES.txt "stage/$name/"
+            tar -C stage -czf "dist/$name.tar.gz" "$name"
+          done
+          (cd dist && sha256sum -- * > SHA256SUMS)
+          ls -l dist
+      - name: Release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/release/notes.sh "$TAG" > notes.md && cat notes.md
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=(--verify-tag --title "$TAG" --notes-file notes.md)
+          [ "${{ needs.tag.outputs.prerelease }}" = true ] && flags+=(--prerelease)
+          gh release create "$TAG" "${flags[@]}" dist/*
+      # crates.io: every crate is `publish = false` until the API is
+      # stable. When that changes, `cargo publish` for each crate, in
+      # dependency order, goes here, after the GitHub release.
