@@ -511,3 +511,87 @@ async fn a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_els
         ))),
     }
 }
+
+check!(
+    /// A hit is the record `get` answers, in the type's declared shape.
+    HIT_IS_THE_RECORD = every_hit_is_the_record_get_answers_in_its_declared_shape,
+    "README, Search: a search never returns a shape the ontology did not declare; every hit, lexical, vector or hybrid, is the record `get` answers the same principal, with only the type's declared fields and only those it may read"
+);
+
+async fn every_hit_is_the_record_get_answers_in_its_declared_shape(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use lakelands_api::{Get, RecordKey};
+    two_docs(store.as_ref()).await?;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    // A field no search reads, written on one record only.
+    let note = field("note", StorageKind::Text);
+    cat.add_field(&own, &TypeName::from("doc"), note)
+        .await
+        .must("adding `note` to `doc`")?;
+    upsert(cat.as_ref(), &own, "doc", "a", json!({"note": "berth 4"})).await?;
+    // A reader of `body` and `v` only: `note` is not in its shape.
+    let mut reader = field_writer(store.as_ref(), "reader", "doc", &[]);
+    let doc_grants = reader
+        .grants
+        .types
+        .get_mut(&TypeName::from("doc"))
+        .expect("field_writer grants the type");
+    doc_grants.fields.insert("note".into(), Access::None);
+
+    for who in [&own, &reader] {
+        for (what, mode) in [
+            (
+                "lexical",
+                SearchMode::Lexical {
+                    text: "quayside harbour".into(),
+                },
+            ),
+            (
+                "vector",
+                SearchMode::Vector {
+                    field: "v".into(),
+                    vector: vec![1.0, 1.0],
+                },
+            ),
+            ("hybrid", hybrid("quayside harbour", Some(vec![1.0, 1.0]))),
+        ] {
+            let hits = cat
+                .search(who, doc_search(mode))
+                .await
+                .must(&format!("a {what} search as `{}`", who.id))?
+                .data;
+            ensure!(
+                !hits.hits.is_empty(),
+                "a {what} search as `{}` over two docs answered no hit",
+                who.id
+            );
+            for hit in &hits.hits {
+                let got = cat
+                    .get(
+                        who,
+                        &TypeName::from("doc"),
+                        Get {
+                            key: RecordKey::from(hit.record.key.as_str()),
+                            with_meta: false,
+                            at: ReadAt::default(),
+                        },
+                    )
+                    .await
+                    .must(&format!("getting `{}` as `{}`", hit.record.key, who.id))?
+                    .data;
+                ensure!(
+                    hit.record == got,
+                    "a {what} search as `{}` answered {:?} for `{}`, where `get` answers \
+                     {got:?}: a hit is the record in the type's declared shape, as its \
+                     reader may see it",
+                    who.id,
+                    hit.record,
+                    hit.record.key
+                );
+            }
+        }
+    }
+    Ok(())
+}

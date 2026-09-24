@@ -13,7 +13,7 @@ use lakelands_api::LakeStore;
 use lakelands_api::engine::OpenMode;
 use lakelands_api::seam::Seams;
 use lakelands_core::conformance::checks::ALL;
-use lakelands_core::conformance::{FreshLake, Harness, run_all};
+use lakelands_core::conformance::{FreshLake, Harness, Reopen, run_all};
 use lakelands_engine_pg::PgOpener;
 
 struct Pg {
@@ -26,8 +26,9 @@ impl Harness for Pg {
     }
 
     fn fresh(&self, host: Seams) -> FreshLake<'_> {
+        // The lake is named after its schema, so it can be found again.
         let schema = common::fresh_schema();
-        let location = common::location(&self.url, "conformance", &schema);
+        let location = common::location(&self.url, &schema, &schema);
         Box::pin(async move {
             let seams = Seams {
                 engines: vec![Arc::new(PgOpener)],
@@ -36,6 +37,25 @@ impl Harness for Pg {
             let store: Arc<dyn LakeStore> =
                 lakelands_store::open(location, seams, OpenMode::Create).await?;
             Ok(store)
+        })
+    }
+
+    fn reopener(&self) -> Reopen {
+        let url = self.url.clone();
+        Arc::new(move |store, host| {
+            let url = url.clone();
+            Box::pin(async move {
+                let schema = store.lake().to_string();
+                store.close().await?;
+                let seams = Seams {
+                    engines: vec![Arc::new(PgOpener)],
+                    ..host
+                };
+                let location = common::location(&url, &schema, &schema);
+                let store: Arc<dyn LakeStore> =
+                    lakelands_store::open(location, seams, OpenMode::Write).await?;
+                Ok(store)
+            })
         })
     }
 }

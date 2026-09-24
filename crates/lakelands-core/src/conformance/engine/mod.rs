@@ -142,6 +142,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     reads::FIRST_APPLIED,
     reads::PROPOSALS,
     reads::LINK_EDGES,
+    log::APPENDED_OUTLIVES_ITS_HANDLE,
 ];
 
 /// Runs every engine check against fresh lakes from `harness`, in
