@@ -131,6 +131,9 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
     let owner = format!("type `{}`", t.name);
     let has = |f: &FieldName| t.fields.iter().any(|d| &d.name == f);
     let mut seen = std::collections::BTreeSet::new();
+    if let Some((field, why)) = t.embedding_problem() {
+        return Err(invalid_field(&field, why));
+    }
     for f in &t.fields {
         if !seen.insert(&f.name) {
             return Err(invalid_field(

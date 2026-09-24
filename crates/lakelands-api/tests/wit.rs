@@ -28,8 +28,9 @@ use lakelands_api::describe::{
 use lakelands_api::expr::Condition;
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::{
-    Assignment, Authority, Cardinality, FieldDecl, FieldType, Measure, OnInputChange, RelationDecl,
-    Risk, StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, ViewDecl,
+    Assignment, Authority, Cardinality, EmbedDecl, FieldDecl, FieldType, Measure, OnInputChange,
+    RelationDecl, Risk, StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
+    ViewDecl,
 };
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{
@@ -243,6 +244,14 @@ fn field_decl() -> FieldDecl {
         searchable: true,
         description: Some("d".into()),
         label: Some("l".into()),
+        embed: Some(embed_decl()),
+    }
+}
+
+fn embed_decl() -> EmbedDecl {
+    EmbedDecl {
+        from: vec!["t".into()],
+        model: "m".into(),
     }
 }
 
@@ -383,6 +392,7 @@ fn field_description() -> FieldDescription {
         on_input_change: OnInputChange::Keep,
         filterable: true,
         description: Some("d".into()),
+        embed: Some(embed_decl()),
     }
 }
 
@@ -495,6 +505,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
         ),
         ("field_type", members(&field_type())),
         ("field_decl", members(&field_decl())),
+        ("embed_decl", members(&embed_decl())),
         ("relation_decl", members(&relation_decl())),
         ("measure", members(&measure())),
         ("view_decl", members(&view_decl())),

@@ -95,6 +95,16 @@ pub(super) struct FieldBody {
     pub description: Option<String>,
     #[serde(default)]
     pub label: Option<String>,
+    #[serde(default)]
+    pub embed: Option<EmbedDoc>,
+}
+
+/// What a vector field is the embedding of.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct EmbedDoc {
+    pub from: OneOrMany,
+    pub model: String,
 }
 
 /// A field's type: the short string (`decimal`, `reference(partner)`,

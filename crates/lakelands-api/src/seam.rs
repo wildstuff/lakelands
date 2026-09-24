@@ -199,6 +199,7 @@ pub fn setting_type() -> TypeDecl {
         searchable: false,
         description: None,
         label: None,
+        embed: None,
     };
     TypeDecl {
         name: SETTING_TYPE.into(),

@@ -209,6 +209,7 @@ mod tests {
             searchable: name == "note",
             description: None,
             label: None,
+            embed: None,
         }
     }
 

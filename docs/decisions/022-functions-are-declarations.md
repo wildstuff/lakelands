@@ -96,7 +96,10 @@ with the lake beside it.
   from before, a record written for the first time included;
 - the function is declared again: every live record whose type names it;
 - a type is declared again with other functions on its fields: that
-  type's live records.
+  type's live records;
+- a type whose fields are computed outside the lake is declared again,
+  changed or not: that type's live records (see "a redeclaration
+  retries a recorded failure" below).
 
 A due field whose call already has an output recorded in the lake is
 filled from it in the same event, and nothing is called. Otherwise the
@@ -177,7 +180,9 @@ carries the reason as `error`, with the event's provenance. A read with
 `with_meta` shows that metadata though the field holds no value. A
 failure is an output like any other. The same call is not made again;
 the field is computed again when an input changes, or when the function
-is declared with a different configuration.
+is declared with a different configuration. A declaration is the one
+deliberate exception (see "a redeclaration retries a recorded failure"
+below).
 
 **Why.** A field whose inputs moved on no longer holds the value those
 inputs compute. Clearing it until the output arrives is the only state
@@ -192,3 +197,57 @@ by opening a lake or by `rebuild`; only by the store, after an append,
 for the calls that append made due. It is not a way to retry: a host
 that wants a failed call made again changes the function's
 configuration or the inputs, and the log shows it did.
+
+## Extended: a redeclaration retries a recorded failure
+
+This qualifies "The same call is not made again" and "It is not a way to
+retry" above. A settle forced by a declaration calls again for an input
+whose recorded output is a failure. The declaration is a function
+declared again, or a type whose fields are computed outside the lake,
+declared again whether or not it changed. A recorded value is still
+never asked for twice: the forced settle reads it back, as any settle
+does. So an operator who wants a failed call made again declares the
+function or the type again, and the log shows it did.
+
+The log may then hold two outputs for one `seam` + `input`, the failure
+and the later answer. The later one holds: the fold, and an engine's
+`ProjectionView::output`, answer the latest output recorded for a call,
+and an engine's `put_output` replaces the one before it from its
+position on. This is a rule of the one rulebook (031), the same on every
+engine, and a replay reads the outputs in log order and ends where the
+lake did.
+
+**Why.** A failure is often weather: a timeout, a refused connection, a
+limit reached during a backfill. When the digest carries nothing the
+operator can change, as with an embedding, whose input is the text
+alone, a failure recorded for good would stay for good. A redeclaration
+is a deliberate, visible act in the log, so a retry made through it
+keeps the promise the rule protects: nothing is called twice behind
+anyone's back, and the log says why a second call was made.
+
+## Extended: an embedding is a computed field's declaration
+
+A vector field may declare that it is the embedding of text fields of
+its record: `embed: { from: [fields…], model }`. It is computed like a
+field computed by a backed function, and follows every rule above:
+- It is declared only where an embedding backend naming its model and
+  its dimensions is bound, and refused as `unbound` otherwise.
+- It stands in the one reads-graph, reading its `from` fields.
+- The fold makes it due when its text changes, when it is waiting, or
+  when what computes it is declared again.
+- The store calls the backend after the append and records each vector
+  as `output_recorded` under the seam `embed:<model>`, keyed by the
+  digest of `{"texts": [text]}`. So one text is embedded once per model
+  in a lake, whichever record or field asks.
+- A failure is recorded and clears the field with its reason; a
+  redeclaration retries it.
+
+`embed` is not shape (007). Which fields feed a vector, and which model
+makes it, say how the value is computed, not what the field is. So a
+change to `from` or `model` is a redeclaration of the type, which makes
+the field due on every live record. Only a change of `dimensions` is a
+migration, and it already is one.
+
+When one request to the backend carries several texts and fails, a
+failure is recorded for each text it carried. The store sends at most a
+fixed number of texts in one request (`docs/seams.md` §EmbedBackend).

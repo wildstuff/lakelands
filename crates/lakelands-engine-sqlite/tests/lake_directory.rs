@@ -56,6 +56,7 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
         searchable: true,
         description: None,
         label: None,
+        embed: None,
     };
     cat.declare(
         &owner,

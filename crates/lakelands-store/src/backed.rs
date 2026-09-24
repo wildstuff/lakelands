@@ -17,10 +17,20 @@
 //! Its digest is the SHA-256 of its canonical bytes; with the seam
 //! `function:<kind>:<function>` it keys the recorded output.
 //!
+//! **An embedding** (`FieldDecl::embed`) is computed the same way, by the
+//! bound [`EmbedBackend`](lakelands_api::seam::EmbedBackend): its call is
+//! `{"texts": [text]}`, the text its `from` fields join to, under the seam
+//! `embed:<model>`. With no text, the field is cleared and keeps its
+//! metadata without an `error`, and nothing is due. The drain sends the
+//! due texts of one model in batches of at most [`EMBED_BATCH`], and
+//! records each vector on its own.
+//!
 //! **Failure.** A backing that fails is recorded as `{"error": "<why>"}`.
 //! That output, or one that is not a value of the field's type, clears the
 //! field and puts the reason in its metadata's `error`. A cleared field
-//! without `error` is one whose output is not recorded yet.
+//! without `error` and without metadata is one whose output is not
+//! recorded yet. A settle forced by a declaration calls again for an input
+//! whose recorded output is a failure; the later output holds.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -28,7 +38,7 @@ use std::sync::atomic::Ordering;
 
 use lakelands_api::engine::ProjectionView;
 use lakelands_api::event::{Digest, Event, EventBody, Procedure};
-use lakelands_api::ontology::{FieldDecl, TypeDecl};
+use lakelands_api::ontology::{EmbedDecl, FieldDecl, TypeDecl};
 use lakelands_api::record::{FieldMeta, Origin, Patch};
 use lakelands_api::seam::FunctionCall;
 use lakelands_api::write::FunctionDecl;
@@ -41,6 +51,34 @@ use crate::lake::Lake;
 use crate::log::Draft;
 use crate::ontology::{Entry, Ontology};
 
+/// At most this many texts go to the embedding backend in one request.
+/// The drain holds one batch of vectors at a time, however many records a
+/// backfill makes due, so its memory stays bounded; the backend may split
+/// a batch further.
+pub const EMBED_BATCH: usize = 64;
+
+/// What a due call asks of which seam.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Call {
+    /// A function backing of this kind, with the call it receives.
+    Function {
+        /// The backing kind.
+        kind: String,
+        /// The call, as the backing receives it.
+        call: FunctionCall,
+    },
+    /// The embedding backend, which must name this model and make vectors
+    /// of these dimensions.
+    Embed {
+        /// The model.
+        model: String,
+        /// The field's dimensions.
+        dimensions: u32,
+        /// The text to embed.
+        text: String,
+    },
+}
+
 /// One call the fold made due: a field it cleared because no output is
 /// recorded for the call its record makes now.
 #[derive(Clone, Debug, PartialEq)]
@@ -51,16 +89,17 @@ pub struct Due {
     pub key: RecordKey,
     /// The field the output fills.
     pub field: FieldName,
-    /// The backing kind.
-    pub kind: String,
-    /// The function, as the log names its procedure.
+    /// What computes it, as the log names its procedure.
     pub procedure: Procedure,
     /// The seam the output is recorded under.
     pub seam: String,
     /// The call's digest.
     pub input: Digest,
-    /// The call, as the backing receives it.
-    pub call: FunctionCall,
+    /// The call.
+    pub call: Call,
+    /// Whether a recorded failure for the call is called again: the
+    /// settle was forced by a declaration.
+    pub retry: bool,
     /// The event that made it due.
     pub cause: Position,
     /// That event's context, which the output and what it causes carry.
@@ -154,20 +193,107 @@ pub fn read_output(
     }
 }
 
-/// The backed fields of a type: each field a backed function computes,
-/// with that function.
+/// Whether a recorded output is a failure: `{"error": "<why>"}`.
+fn is_failure(output: &Value) -> bool {
+    matches!(output, Value::Object(m) if m.len() == 1 && matches!(m.get("error"), Some(Value::String(_))))
+}
+
+/// The seam an embedding's vectors are recorded under.
+pub fn embed_seam(model: &str) -> String {
+    format!("embed:{model}")
+}
+
+/// The text an embedding's `from` fields join to: their values in the
+/// declared order, one blank line between them, empty ones left out.
+/// `None` when no field holds any.
+pub fn embed_text(e: &EmbedDecl, fields: &BTreeMap<FieldName, Value>) -> Option<String> {
+    let parts: Vec<&str> = e
+        .from
+        .iter()
+        .filter_map(|f| fields.get(f)?.as_str())
+        .filter(|t| !t.is_empty())
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("\n\n"))
+}
+
+/// The call an embedding makes of the backend for one text.
+pub fn embed_call(text: &str) -> Value {
+    json!({ "texts": [text] })
+}
+
+/// What computes a field outside the fold: a backed function, or an
+/// embedding declared by the type at a version.
+#[derive(Clone, Copy)]
+enum Computer<'o> {
+    Function(&'o Entry<FunctionDecl>),
+    Embed(&'o EmbedDecl, u32),
+}
+
+impl Computer<'_> {
+    /// Its name as a message and the log's procedure give it: the
+    /// function's, or the model's.
+    fn name(&self) -> &str {
+        match self {
+            Computer::Function(f) => &f.decl.name,
+            Computer::Embed(e, _) => &e.model,
+        }
+    }
+
+    /// The version of the declaration that computes it.
+    fn version(&self) -> String {
+        match self {
+            Computer::Function(f) => f.version.to_string(),
+            Computer::Embed(_, v) => v.to_string(),
+        }
+    }
+
+    /// Whether a field's metadata comes from this declaration. A
+    /// function's version is its own; an embedding's is the type's, which
+    /// moves with every declaration of the type, so an embedding's value
+    /// under the same seam and call is the same whatever the version, and
+    /// its metadata keeps the version that produced it.
+    fn same_version(&self, m: &FieldMeta) -> bool {
+        match self {
+            Computer::Function(_) => m.procedure_version.as_deref() == Some(&*self.version()),
+            Computer::Embed(..) => m.procedure_version.is_some(),
+        }
+    }
+
+    fn seam(&self) -> String {
+        match self {
+            Computer::Function(f) => seam(&f.decl),
+            Computer::Embed(e, _) => embed_seam(&e.model),
+        }
+    }
+
+    /// The call a record's fields make; `None` for an embedding with no
+    /// text, which calls nothing.
+    fn call(&self, fields: &BTreeMap<FieldName, Value>) -> Option<Value> {
+        match self {
+            Computer::Function(f) => Some(call_of(&f.decl, fields)),
+            Computer::Embed(e, _) => embed_text(e, fields).map(|t| embed_call(&t)),
+        }
+    }
+}
+
+/// The fields of a type computed outside the fold, each with what
+/// computes it.
 fn backed_fields<'o>(
     ontology: &'o Ontology,
     decl: &'o TypeDecl,
-) -> impl Iterator<Item = (&'o FieldDecl, &'o Entry<FunctionDecl>)> + 'o {
-    decl.fields.iter().filter_map(|f| {
+) -> impl Iterator<Item = (&'o FieldDecl, Computer<'o>)> + 'o {
+    let version = ontology.types.get(&decl.name).map_or(0, |t| t.version);
+    decl.fields.iter().filter_map(move |f| {
+        if let Some(e) = &f.embed {
+            return Some((f, Computer::Embed(e, version)));
+        }
         let func = ontology.functions.get(f.function.as_deref()?)?;
-        is_backed(&func.decl).then_some((f, func))
+        is_backed(&func.decl).then_some((f, Computer::Function(func)))
     })
 }
 
 /// The metadata of a value an output filled, or of a field it cleared.
-fn meta(event: &Event, func: &Entry<FunctionDecl>, error: Option<String>) -> FieldMeta {
+fn meta(event: &Event, version: String, error: Option<String>) -> FieldMeta {
     FieldMeta {
         origin: Origin::Derived,
         known_at: event.known_at,
@@ -175,7 +301,7 @@ fn meta(event: &Event, func: &Entry<FunctionDecl>, error: Option<String>) -> Fie
         position: event.position,
         writer: event.writer.clone(),
         source: event.source.clone(),
-        procedure_version: Some(func.version.to_string()),
+        procedure_version: Some(version),
         error,
     }
 }
@@ -187,24 +313,23 @@ fn put(
     ontology: &Ontology,
     decl: &TypeDecl,
     field: &FieldDecl,
-    func: &Entry<FunctionDecl>,
+    computer: Computer<'_>,
     output: &Value,
     event: &Event,
     fields: &mut BTreeMap<FieldName, Value>,
     metas: &mut BTreeMap<FieldName, FieldMeta>,
 ) -> bool {
-    let answer = read_output(ontology, decl, field, &func.decl.name, output);
-    let version = Some(func.version.to_string());
+    let answer = read_output(ontology, decl, field, computer.name(), output);
     let old = metas.get(&field.name);
     let same = match &answer {
         Ok(v) => {
             fields.get(&field.name) == Some(v)
-                && old.is_some_and(|m| m.error.is_none() && m.procedure_version == version)
+                && old.is_some_and(|m| m.error.is_none() && computer.same_version(m))
         }
         Err(why) => {
             !fields.contains_key(&field.name)
                 && old.is_some_and(|m| {
-                    m.error.as_deref() == Some(why.as_str()) && m.procedure_version == version
+                    m.error.as_deref() == Some(why.as_str()) && computer.same_version(m)
                 })
         }
     };
@@ -214,20 +339,26 @@ fn put(
     match answer {
         Ok(v) => {
             fields.insert(field.name.clone(), v);
-            metas.insert(field.name.clone(), meta(event, func, None));
+            metas.insert(field.name.clone(), meta(event, computer.version(), None));
         }
         Err(why) => {
             fields.remove(&field.name);
-            metas.insert(field.name.clone(), meta(event, func, Some(why)));
+            metas.insert(
+                field.name.clone(),
+                meta(event, computer.version(), Some(why)),
+            );
         }
     }
     true
 }
 
-/// The fields a computed field reads: a derived expression's reads, or
-/// the inputs of the function that computes it. `None` for a field the
-/// fold does not compute.
+/// The fields a computed field reads: a derived expression's reads, the
+/// inputs of the function that computes it, or the fields an embedding
+/// is made from. `None` for a field the fold does not compute.
 fn computed_reads(o: &Ontology, f: &FieldDecl) -> Option<BTreeSet<FieldName>> {
+    if let Some(e) = &f.embed {
+        return Some(e.from.iter().cloned().collect());
+    }
     if let Some(func) = f.function.as_deref().and_then(|n| o.functions.get(n)) {
         return Some(func.decl.inputs.iter().map(|i| i.name.clone()).collect());
     }
@@ -275,11 +406,12 @@ pub fn computed_order(
 }
 
 /// One pass of the fold over a record's backed fields, in the order of
-/// [`computed_order`]. A backed field is settled when its function's
-/// inputs changed since `before` (`None`: a record written for the first
-/// time), with `force` (what computes it was declared again), or when it
-/// holds neither a value nor an error (it was waiting). Settling fills it
-/// from a recorded output, or clears it and makes the call due.
+/// [`computed_order`]. A backed field is settled when its call changed
+/// since `before` (`None`: a record written for the first time), with
+/// `force` (what computes it was declared again), or when it holds
+/// neither a value nor an error (it was waiting). Settling fills it from a
+/// recorded output, or clears it and makes the call due. With `force`, a
+/// recorded failure does not fill it: the call is made due again.
 ///
 /// A backed field that reads, directly or through derived fields, one
 /// that is waiting for its output waits too: it is cleared and not
@@ -300,10 +432,9 @@ pub fn settle_fields(
     force: bool,
     outputs: &mut Outputs<'_>,
 ) -> Result<Vec<FieldName>> {
-    let backed: BTreeMap<FieldName, (&FieldDecl, &Entry<FunctionDecl>)> =
-        backed_fields(ontology, decl)
-            .map(|(f, func)| (f.name.clone(), (f, func)))
-            .collect();
+    let backed: BTreeMap<FieldName, (&FieldDecl, Computer<'_>)> = backed_fields(ontology, decl)
+        .map(|(f, c)| (f.name.clone(), (f, c)))
+        .collect();
     let mut changed = Vec::new();
     if backed.is_empty() {
         return Ok(changed);
@@ -318,7 +449,7 @@ pub fn settle_fields(
     let mut waiting: BTreeSet<FieldName> = BTreeSet::new();
     for (name, reads) in order {
         let reads_waiting = reads.iter().any(|r| waiting.contains(r));
-        let Some((field, func)) = backed.get(&name).copied() else {
+        let Some((field, computer)) = backed.get(&name).copied() else {
             if reads_waiting {
                 waiting.insert(name);
             }
@@ -333,26 +464,44 @@ pub fn settle_fields(
             waiting.insert(name);
             continue;
         }
-        let call = call_of(&func.decl, fields);
+        let call = computer.call(fields);
         let moved = match before {
             None => true,
-            Some(b) => call_of(&func.decl, b) != call,
+            Some(b) => computer.call(b) != call,
         };
         let unsettled =
             !fields.contains_key(&name) && metas.get(&name).is_none_or(|m| m.error.is_none());
         if !force && !moved && !unsettled {
             continue;
         }
-        let seam = seam(&func.decl);
+        let Some(call) = call else {
+            // An embedding with no text: no value, and metadata without an
+            // error, which says there is nothing to embed.
+            let already = !fields.contains_key(&name)
+                && metas
+                    .get(&name)
+                    .is_some_and(|m| m.error.is_none() && computer.same_version(m));
+            if !already {
+                fields.remove(&name);
+                metas.insert(name.clone(), meta(event, computer.version(), None));
+                changed.push(name.clone());
+            }
+            continue;
+        };
+        let seam = computer.seam();
         let input = digest(&call);
-        if let Some(output) = outputs.recorded(&seam, &input)? {
-            if put(ontology, decl, field, func, &output, event, fields, metas) {
+        let recorded = outputs.recorded(&seam, &input)?;
+        let retry = force && recorded.as_ref().is_some_and(is_failure);
+        if let (Some(output), false) = (recorded, retry) {
+            if put(
+                ontology, decl, field, computer, &output, event, fields, metas,
+            ) {
                 changed.push(name.clone());
             }
             continue;
         }
-        // No output yet: the field is cleared, without an error, until
-        // one is recorded.
+        // No output yet (or a failure a declaration retries): the field is
+        // cleared, without an error, until one is recorded.
         let had = fields.remove(&name).is_some();
         let had_meta = metas.remove(&name).is_some();
         if had || had_meta {
@@ -360,23 +509,34 @@ pub fn settle_fields(
         }
         waiting.insert(name.clone());
         if let Some(due) = outputs.due.as_deref_mut() {
+            let call = match computer {
+                Computer::Function(f) => Call::Function {
+                    kind: f.decl.backing.clone(),
+                    call: FunctionCall {
+                        lake: lake.clone(),
+                        function: f.decl.name.clone(),
+                        inputs: call["inputs"].clone(),
+                        config: f.decl.config.clone(),
+                    },
+                },
+                Computer::Embed(e, _) => Call::Embed {
+                    model: e.model.clone(),
+                    dimensions: field.ty.dimensions.unwrap_or(0),
+                    text: call["texts"][0].as_str().unwrap_or_default().to_owned(),
+                },
+            };
             due.push(Due {
                 ty: decl.name.clone(),
                 key: key.clone(),
                 field: name,
-                kind: func.decl.backing.clone(),
                 procedure: Procedure {
-                    name: func.decl.name.clone(),
-                    version: func.version.to_string(),
+                    name: computer.name().to_owned(),
+                    version: computer.version(),
                 },
                 seam,
                 input,
-                call: FunctionCall {
-                    lake: lake.clone(),
-                    function: func.decl.name.clone(),
-                    inputs: call["inputs"].clone(),
-                    config: func.decl.config.clone(),
-                },
+                call,
+                retry,
                 cause: event.position,
                 context: event.context,
             });
@@ -386,8 +546,8 @@ pub fn settle_fields(
 }
 
 /// Put a recorded output into the field it names, when the field is
-/// still computed by the function the seam names and the record's call
-/// has the recorded digest now. Answers whether the field changed.
+/// still computed by what the seam names and the record's call has the
+/// recorded digest now. Answers whether the field changed.
 #[allow(clippy::too_many_arguments)]
 pub fn put_output(
     ontology: &Ontology,
@@ -400,13 +560,60 @@ pub fn put_output(
     fields: &mut BTreeMap<FieldName, Value>,
     metas: &mut BTreeMap<FieldName, FieldMeta>,
 ) -> bool {
-    let Some((f, func)) = backed_fields(ontology, decl).find(|(f, _)| &f.name == field) else {
+    let Some((f, computer)) = backed_fields(ontology, decl).find(|(f, _)| &f.name == field) else {
         return false;
     };
-    if seam(&func.decl) != seam_name || &digest(&call_of(&func.decl, fields)) != input {
+    if computer.seam() != seam_name
+        || computer.call(fields).map(|c| digest(&c)).as_ref() != Some(input)
+    {
         return false;
     }
-    put(ontology, decl, f, func, output, event, fields, metas)
+    put(ontology, decl, f, computer, output, event, fields, metas)
+}
+
+/// Whether a record still makes the call a due names: it is live, and
+/// the field is computed by the same seam with the same digest.
+fn still_wanted(
+    w: &crate::lake::Writer,
+    record: Option<&lakelands_api::record::StoredRecord>,
+    d: &Due,
+) -> bool {
+    record.is_some_and(|r| {
+        !r.retired
+            && w.ontology.ty(&r.ty).ok().is_some_and(|decl| {
+                backed_fields(&w.ontology, decl)
+                    .find(|(f, _)| f.name == d.field)
+                    .is_some_and(|(_, c)| {
+                        c.seam() == d.seam
+                            && c.call(&r.fields).map(|c| digest(&c)) == Some(d.input.clone())
+                    })
+            })
+    })
+}
+
+/// What one drain has done: the dues it took, and the calls it retried.
+#[derive(Default)]
+struct Drain {
+    taken: BTreeSet<(TypeName, RecordKey, FieldName, Digest)>,
+    retried: BTreeSet<(String, Digest)>,
+}
+
+impl Drain {
+    /// Whether a due is new in this drain.
+    fn take(&mut self, d: &Due) -> bool {
+        self.taken.insert((
+            d.ty.clone(),
+            d.key.clone(),
+            d.field.clone(),
+            d.input.clone(),
+        ))
+    }
+
+    /// Whether a recorded output answers a due: a value always, a failure
+    /// unless the due retries it and this drain has not retried it yet.
+    fn answers(&mut self, d: &Due, recorded: &Value) -> bool {
+        !(d.retry && is_failure(recorded) && self.retried.insert((d.seam.clone(), d.input.clone())))
+    }
 }
 
 /// Call the backings for the calls the lake's appends made due, and
@@ -447,13 +654,45 @@ pub async fn settle(lake: &Arc<Lake>, seen: u64) -> Result<Option<Position>> {
         };
         drained = true;
         let mut due: std::collections::VecDeque<Due> = due.into();
-        let mut taken: BTreeSet<(TypeName, RecordKey, FieldName, Digest)> = BTreeSet::new();
+        let mut drain = Drain::default();
         while let Some(d) = due.pop_front() {
-            if let Err(e) = settle_one(lake, &mut taken, &d).await {
+            // An embedding goes with the other due texts of its model and
+            // dimensions, up to one batch.
+            let batch = match &d.call {
+                Call::Embed {
+                    model, dimensions, ..
+                } => {
+                    let (model, dimensions) = (model.clone(), *dimensions);
+                    let mut batch = vec![d];
+                    let mut texts: BTreeSet<Digest> = [batch[0].input.clone()].into();
+                    let mut rest = std::collections::VecDeque::new();
+                    for x in due.drain(..) {
+                        let same = matches!(
+                            &x.call,
+                            Call::Embed { model: m, dimensions: n, .. }
+                                if *m == model && *n == dimensions
+                        );
+                        if same && (texts.contains(&x.input) || texts.len() < EMBED_BATCH) {
+                            texts.insert(x.input.clone());
+                            batch.push(x);
+                        } else {
+                            rest.push_back(x);
+                        }
+                    }
+                    due = rest;
+                    batch
+                }
+                Call::Function { .. } => vec![d],
+            };
+            let settled = match batch[0].call {
+                Call::Embed { .. } => settle_embeddings(lake, &mut drain, &batch).await,
+                Call::Function { .. } => settle_one(lake, &mut drain, &batch[0]).await,
+            };
+            if let Err(e) = settled {
                 // The lake failed under the drain: what was not recorded
                 // stays due, for the next drain.
                 let mut w = lake.writer();
-                let rest: Vec<Due> = std::iter::once(d).chain(due).collect();
+                let rest: Vec<Due> = batch.into_iter().chain(due).collect();
                 w.due.splice(0..0, rest);
                 return Err(e);
             }
@@ -463,62 +702,140 @@ pub async fn settle(lake: &Arc<Lake>, seen: u64) -> Result<Option<Position>> {
     Ok(answered.then(|| lake.head()))
 }
 
-/// Make one due call, unless it is a repeat in this drain, its kind is not
-/// bound, or its record moved on; and record the answer.
-async fn settle_one(
+/// The record a due names and the output recorded for its call, as the
+/// lake holds them now.
+async fn current(
     lake: &Arc<Lake>,
-    taken: &mut BTreeSet<(TypeName, RecordKey, FieldName, Digest)>,
     d: &Due,
-) -> Result<()> {
-    if !taken.insert((
-        d.ty.clone(),
-        d.key.clone(),
-        d.field.clone(),
-        d.input.clone(),
-    )) {
+) -> Result<(Option<lakelands_api::record::StoredRecord>, Option<Value>)> {
+    let l = lake.clone();
+    let (seam, input, ty, key) = (d.seam.clone(), d.input.clone(), d.ty.clone(), d.key.clone());
+    exec::run(move || {
+        let view = l.engine.view(None)?;
+        Ok((view.get(&ty, &key)?, view.output(&seam, &input)?))
+    })
+    .await
+}
+
+async fn record_async(lake: &Arc<Lake>, d: &Due, output: Value, known: bool) -> Result<()> {
+    let (l, d) = (lake.clone(), d.clone());
+    exec::run(move || record(&l, d, output, known)).await?;
+    Ok(())
+}
+
+/// Make one due function call, unless it is a repeat in this drain, its
+/// kind is not bound, or its record moved on; and record the answer.
+async fn settle_one(lake: &Arc<Lake>, drain: &mut Drain, d: &Due) -> Result<()> {
+    let Call::Function { kind, call } = &d.call else {
+        return Ok(());
+    };
+    if !drain.take(d) {
         return Ok(());
     }
     let Some(backing) = lake
         .seams
         .backings
         .iter()
-        .find(|b| b.kind() == d.kind)
+        .find(|b| b.kind() == kind)
         .cloned()
     else {
         return Ok(());
     };
-    let l = lake.clone();
-    let (seam, input, ty, key) = (d.seam.clone(), d.input.clone(), d.ty.clone(), d.key.clone());
-    let (current, recorded) = exec::run(move || {
-        let view = l.engine.view(None)?;
-        Ok((view.get(&ty, &key)?, view.output(&seam, &input)?))
-    })
-    .await?;
+    let (record, recorded) = current(lake, d).await?;
     // The record moved on (or went) while the call waited: its fields are
     // due under other inputs, or not at all.
-    let wants = current.is_some_and(|r| {
-        let w = lake.writer();
-        !r.retired
-            && w.ontology.ty(&r.ty).ok().is_some_and(|decl| {
-                decl.fields
-                    .iter()
-                    .find(|f| f.name == d.field)
-                    .and_then(|f| w.ontology.functions.get(f.function.as_deref()?))
-                    .is_some_and(|func| digest(&call_of(&func.decl, &r.fields)) == d.input)
-            })
-    });
-    if !wants {
+    if !still_wanted(&lake.writer(), record.as_ref(), d) {
         return Ok(());
     }
     let (output, known) = match recorded {
-        Some(o) => (o, true),
-        None => match backing.call(&d.call).await {
+        Some(o) if drain.answers(d, &o) => (o, true),
+        _ => match backing.call(call).await {
             Ok(v) => (v, false),
             Err(e) => (json!({ "error": why(&e) }), false),
         },
     };
-    let (l, d) = (lake.clone(), d.clone());
-    exec::run(move || record(&l, d, output, known)).await?;
+    record_async(lake, d, output, known).await
+}
+
+/// Make the due embeddings of one model, at most [`EMBED_BATCH`] texts, in
+/// one request, and record each vector for the field it fills. A due whose
+/// output is recorded meanwhile is filled from it; one whose record moved
+/// on is dropped. Nothing is called when the bound backend is gone or names
+/// another model or other dimensions: the fields wait. A request that
+/// fails records the failure for each text it carried.
+async fn settle_embeddings(lake: &Arc<Lake>, drain: &mut Drain, batch: &[Due]) -> Result<()> {
+    let mut asked: Vec<&Due> = Vec::new();
+    // The calls this batch makes: every due of one of them waits for its
+    // answer, never for the output recorded before it, which for a retry
+    // is the failure being retried.
+    let mut asking: BTreeSet<Digest> = BTreeSet::new();
+    for d in batch {
+        if !drain.take(d) {
+            continue;
+        }
+        let (record, recorded) = current(lake, d).await?;
+        if !still_wanted(&lake.writer(), record.as_ref(), d) {
+            continue;
+        }
+        match recorded {
+            Some(o) if !asking.contains(&d.input) && drain.answers(d, &o) => {
+                record_async(lake, d, o, true).await?
+            }
+            _ => {
+                asking.insert(d.input.clone());
+                asked.push(d);
+            }
+        }
+    }
+    let Some(Call::Embed {
+        model, dimensions, ..
+    }) = asked.first().map(|d| &d.call)
+    else {
+        return Ok(());
+    };
+    let Some(backend) = lake
+        .seams
+        .embed
+        .as_ref()
+        .filter(|b| b.model() == model && b.dimensions() == *dimensions)
+        .cloned()
+    else {
+        return Ok(());
+    };
+    // One text per digest, in the order they fell due.
+    let mut texts: Vec<String> = Vec::new();
+    let mut at: BTreeMap<Digest, usize> = BTreeMap::new();
+    for d in &asked {
+        if let Call::Embed { text, .. } = &d.call
+            && !at.contains_key(&d.input)
+        {
+            at.insert(d.input.clone(), texts.len());
+            texts.push(text.clone());
+        }
+    }
+    let outputs: Vec<Value> = match backend.embed(&texts).await {
+        Ok(vectors) if vectors.len() == texts.len() => vectors
+            .iter()
+            .map(|v| serde_json::to_value(v).expect("a vector serialises"))
+            .collect(),
+        Ok(vectors) => {
+            let why = format!(
+                "the embedding backend `{model}` answered {} vectors for {} texts",
+                vectors.len(),
+                texts.len()
+            );
+            vec![json!({ "error": why }); texts.len()]
+        }
+        Err(e) => vec![json!({ "error": why(&e) }); texts.len()],
+    };
+    // The first due of a text records its output; a later due of the same
+    // text in the batch records it again only if it fills something.
+    let mut recorded: BTreeSet<Digest> = BTreeSet::new();
+    for d in asked {
+        let output = outputs[at[&d.input]].clone();
+        let known = !recorded.insert(d.input.clone());
+        record_async(lake, d, output, known).await?;
+    }
     Ok(())
 }
 
@@ -651,5 +968,34 @@ mod tests {
             "a4702edebf8e4f34b65be7b55b963f930ac4e6f13d0b9a8773ca942814bc77aa"
         );
         assert_eq!(seam(&geocode), "function:http:geocode");
+    }
+
+    /// The embedding vector `docs/log-format.md` §2.5 pins: the text the
+    /// `from` fields join to, empty ones left out, and its call's digest.
+    #[test]
+    fn an_embeddings_text_and_digest_are_the_ones_the_log_format_pins() {
+        let e = EmbedDecl {
+            from: vec!["title".into(), "subtitle".into(), "summary".into()],
+            model: "text-embedding-3-small".into(),
+        };
+        let fields: BTreeMap<FieldName, Value> = [
+            ("title".into(), json!("Harbour crane")),
+            ("subtitle".into(), json!("")),
+            ("summary".into(), json!("A crane on the quay.")),
+        ]
+        .into();
+        let text = embed_text(&e, &fields).unwrap();
+        assert_eq!(text, "Harbour crane\n\nA crane on the quay.");
+        let call = embed_call(&text);
+        assert_eq!(
+            String::from_utf8(lakelands_core::canonical::to_vec(&call)).unwrap(),
+            r#"{"texts":["Harbour crane\n\nA crane on the quay."]}"#
+        );
+        assert_eq!(
+            digest(&call).0,
+            "6ff3bba9eed9f7899ca52fb42794fb32c315850b3bc9470dab44481773826ed0"
+        );
+        assert_eq!(embed_seam(&e.model), "embed:text-embedding-3-small");
+        assert_eq!(embed_text(&e, &BTreeMap::new()), None);
     }
 }

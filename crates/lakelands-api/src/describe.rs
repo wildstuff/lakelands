@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::expr::Condition;
 use crate::id::{FieldName, LakeId, TriggerName, TypeName, VerbName};
 use crate::ontology::{
-    Authority, FieldDecl, FieldType, OnInputChange, RelationDecl, Risk, ValueTypeDecl,
+    Authority, EmbedDecl, FieldDecl, FieldType, OnInputChange, RelationDecl, Risk, ValueTypeDecl,
 };
 use crate::principal::Access;
 
@@ -99,6 +99,9 @@ pub struct FieldDescription {
     /// What it means.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// For an embedding: the text fields it is made from, and the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed: Option<EmbedDecl>,
 }
 
 impl FieldDescription {
@@ -116,6 +119,7 @@ impl FieldDescription {
             on_input_change: decl.on_input_change,
             filterable: access.reads() && !matches!(decl.ty.kind, Bytes | Json | Vector),
             description: decl.description.clone(),
+            embed: decl.embed.clone(),
         }
     }
 

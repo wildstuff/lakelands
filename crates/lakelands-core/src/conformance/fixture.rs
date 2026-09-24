@@ -133,6 +133,7 @@ pub fn field(name: &str, kind: StorageKind) -> FieldDecl {
         searchable: false,
         description: None,
         label: None,
+        embed: None,
     }
 }
 

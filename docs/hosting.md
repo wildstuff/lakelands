@@ -70,8 +70,15 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   search that brings no vector of its own, which is a read and records
   nothing. Without one, search is lexical and over caller-supplied
   vectors, and says so. A bound backend that fails makes the search
-  `Unavailable`; it never falls back to lexical. Embedding fields as
-  they are written follows. See `docs/seams.md` §`EmbedBackend`.
+  `Unavailable`; it never falls back to lexical. A vector field declared
+  with `embed` is the embedding of text fields of its record: the store
+  embeds the text after the write, records each vector in the log
+  (`output_recorded`) and reads it back on replay, one call per text and
+  model. Such a field is declared only where the bound backend names its
+  model and dimensions. Change the model or the fields it is made from by
+  declaring the type again. Every live record is then embedded again, and
+  a declaration also retries recorded failures. See `docs/seams.md`
+  §`EmbedBackend`.
 - **`VerbExecutor`.** A verb declared `low` runs at once; any other
   lands as `WriteProposed`, and the store records `accept` and `reject`
   as events. A verb that writes authored fields runs in the store; a

@@ -12,6 +12,7 @@ mod bundles;
 mod cursors;
 mod decimals;
 mod derived_fields;
+mod embeddings;
 mod feed;
 mod fields;
 mod filters;
@@ -141,6 +142,15 @@ pub const ALL: &[Check] = &[
     search::VECTOR_LEAVES_THE_NEIGHBOURS,
     search::HYBRID_WITHOUT_BACKEND,
     search::HYBRID_THROUGH_BACKEND,
+    embeddings::EMBED_WRITE,
+    embeddings::EMBED_ONCE,
+    embeddings::EMBED_REBUILD,
+    embeddings::EMBED_OTHER_MODEL,
+    embeddings::EMBED_NO_BACKEND,
+    embeddings::EMBED_REDECLARED,
+    embeddings::EMBED_NO_TEXT,
+    embeddings::EMBED_FAILURE_RETRIED,
+    embeddings::EMBED_FILL_REACTS,
     rebuild::INDEXES_AFTER_REBUILD,
     rebuild::ONE_JSON_FORM,
     ingest::DUPLICATE_ACROSS_WINDOWS,
