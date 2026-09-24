@@ -1,0 +1,14 @@
+name: transaction
+label: Transaction
+description: A payment booked against an invoice.
+key: id
+fields:
+  id: { type: text, required: true, authority: source }
+  invoice: { type: reference(invoice), required: true, authority: source }
+  booked_on: { type: date_time, authority: source }
+  amount: { type: money, required: true, authority: source }
+relations:
+  settles:
+    target: invoice
+    cardinality: many_to_one
+    via: invoice

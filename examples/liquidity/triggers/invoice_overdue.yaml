@@ -1,0 +1,4 @@
+name: invoice_overdue
+on: invoice
+when: "status = 'open' and due_on < today() - 30d"
+description: An open invoice is more than thirty days past its due date.
