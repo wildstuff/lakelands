@@ -8,7 +8,7 @@
 //! - `{"token": t, "echo": "<input>"}` answers that input's value;
 //! - `{"token": t, "echo": "<input>", "fail_on": v}` fails when that input
 //!   is `v`;
-//! - after [`unplug`] of `t`, every call fails.
+//! - after [`unplug`] of `t`, every call fails, until [`plug`].
 //!
 //! It counts the calls made with each token, so a check can tell a value
 //! read back from a recorded output from one computed by calling again.
@@ -102,6 +102,15 @@ pub fn unplug(token: &str) {
         .insert(token.to_owned());
 }
 
+/// Undo [`unplug`]: later calls with the token are answered again.
+pub fn plug(token: &str) {
+    calls()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .unplugged
+        .remove(token);
+}
+
 /// The model the suite's embedding backend names.
 pub const EMBED_MODEL: &str = "conformance-embed";
 
@@ -113,6 +122,8 @@ struct Embeds {
     calls: usize,
     texts: BTreeMap<String, usize>,
     unplugged: BTreeSet<String>,
+    /// How many texts each call carried, per model.
+    sizes: BTreeMap<String, Vec<usize>>,
 }
 
 fn embeds() -> &'static Mutex<Embeds> {
@@ -120,22 +131,29 @@ fn embeds() -> &'static Mutex<Embeds> {
     EMBEDS.get_or_init(Mutex::default)
 }
 
-/// The scripted embedding backend.
-struct Embedder;
+/// The scripted embedding backend, under a model and a vector length.
+struct Embedder {
+    model: String,
+    dimensions: u32,
+}
 
 #[async_trait]
 impl EmbedBackend for Embedder {
     fn model(&self) -> &str {
-        EMBED_MODEL
+        &self.model
     }
 
     fn dimensions(&self) -> u32 {
-        2
+        self.dimensions
     }
 
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         let mut e = embeds().lock().unwrap_or_else(|p| p.into_inner());
         e.calls += 1;
+        e.sizes
+            .entry(self.model.clone())
+            .or_default()
+            .push(texts.len());
         for t in texts {
             *e.texts.entry(t.clone()).or_default() += 1;
         }
@@ -146,17 +164,50 @@ impl EmbedBackend for Embedder {
             return Err(Error::Refused {
                 field: None,
                 reason: lakelands_api::Refusal::Invalid {
-                    message: format!("`{EMBED_MODEL}` cannot be reached"),
+                    message: format!("`{}` cannot be reached", self.model),
                 },
             });
         }
-        Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect())
+        let dimensions = self.dimensions as usize;
+        Ok(texts
+            .iter()
+            .map(|_| {
+                let mut v = vec![0.0; dimensions];
+                if let Some(first) = v.first_mut() {
+                    *first = 1.0;
+                }
+                v
+            })
+            .collect())
     }
 }
 
-/// The embedding backend the checks that ask for one bind.
+/// The embedding backend the checks that ask for one bind: the model
+/// [`EMBED_MODEL`], vectors of two dimensions.
 pub fn embedder() -> Arc<dyn EmbedBackend> {
-    Arc::new(Embedder)
+    embedder_as(EMBED_MODEL, 2)
+}
+
+/// The same scripted backend under another model or vector length, for a
+/// check that opens its lake again with a backend that does not make what
+/// a field was declared with. It counts with [`embedder`] and answers the
+/// same way: every vector is one in its first dimension and zero after.
+pub fn embedder_as(model: &str, dimensions: u32) -> Arc<dyn EmbedBackend> {
+    Arc::new(Embedder {
+        model: model.to_owned(),
+        dimensions,
+    })
+}
+
+/// How many texts each call to a model carried, in order.
+pub fn embed_call_sizes(model: &str) -> Vec<usize> {
+    embeds()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .sizes
+        .get(model)
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// How many calls the suite's embedding backend has received, in this
@@ -221,4 +272,53 @@ impl lakelands_api::seam::SystemVocabulary for Vocabulary {
     fn may_hold(&self, _: &lakelands_api::LakeId, ty: &lakelands_api::TypeName) -> bool {
         !self.withheld.contains(ty.as_str())
     }
+}
+
+/// The name of the suite's verb executor, bound in every lake the runner
+/// opens. A verb declared with another executor stays unbound.
+pub const EXECUTOR: &str = "conformance_executor";
+
+fn executions() -> &'static Mutex<BTreeMap<String, usize>> {
+    static EXECUTIONS: OnceLock<Mutex<BTreeMap<String, usize>>> = OnceLock::new();
+    EXECUTIONS.get_or_init(Mutex::default)
+}
+
+/// The scripted executor: it answers `{"done": <verb>, "record": <key>}`,
+/// or fails when the payload's `fail` is `true`. It counts its runs per
+/// record key, so a check uses keys of its own.
+struct Executor;
+
+#[async_trait]
+impl lakelands_api::seam::VerbExecutor for Executor {
+    fn name(&self) -> &str {
+        EXECUTOR
+    }
+
+    async fn execute(&self, invocation: &lakelands_api::seam::VerbInvocation) -> Result<Value> {
+        let key = invocation.record.key.as_str().to_owned();
+        *executions()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(key.clone())
+            .or_default() += 1;
+        if invocation.payload.get("fail") == Some(&Value::Bool(true)) {
+            return Err(fail(format!("`{}` was asked to fail", invocation.verb)));
+        }
+        Ok(serde_json::json!({"done": invocation.verb.as_str(), "record": key}))
+    }
+}
+
+/// The executors every harness binds.
+pub fn executors() -> Vec<Arc<dyn lakelands_api::seam::VerbExecutor>> {
+    vec![Arc::new(Executor)]
+}
+
+/// How many times the executor ran for a record key.
+pub fn executed(key: &str) -> usize {
+    executions()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(key)
+        .copied()
+        .unwrap_or(0)
 }

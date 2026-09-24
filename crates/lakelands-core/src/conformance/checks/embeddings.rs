@@ -14,16 +14,17 @@ use std::sync::Arc;
 
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::ontology::{Authority, EmbedDecl, FieldDecl, FieldType, StorageKind};
-use lakelands_api::seam::FeedFilter;
+use lakelands_api::query::{Search, SearchMode};
+use lakelands_api::seam::{FeedFilter, Seams};
 use lakelands_api::write::Declaration;
 use lakelands_api::{Error, LakeStore, Position};
 use serde_json::{Value, json};
 
-use crate::conformance::Failure;
 use crate::conformance::backing::{EMBED_MODEL, embedded, plug_text, unplug_text};
 use crate::conformance::fixture::{
-    Must, declare, doors, field, owner, read, type_decl, upsert, value,
+    Must, declare, doors, field, ingest, owner, read, source_record, type_decl, upsert, value,
 };
+use crate::conformance::{Failure, Reopen, backing};
 
 check!(
     /// A write embeds its text and records the vector.
@@ -494,6 +495,368 @@ async fn an_embedded_vector_recomputes_the_derived_fields_that_read_it(
         "`embedded` is `vec is not null`; the vector's fill is a change of `vec`, so it \
          must read true, but reads {:?}",
         value(&r, "embedded")
+    );
+    Ok(())
+}
+
+fn with_embedder(embed: Option<Arc<dyn lakelands_api::seam::EmbedBackend>>) -> Seams {
+    Seams {
+        backings: backing::backings(),
+        embed,
+        ..Seams::default()
+    }
+}
+
+fn reopen_failed(what: &str, e: Error) -> Failure {
+    Failure::new(format!("opening the lake again {what} failed: {e} ({e:?})"))
+}
+
+check!(
+    /// A hybrid search through a backend of another model is unbound.
+    EMBED_SEARCH_OTHER_BACKEND = a_hybrid_search_over_an_embedding_the_bound_backend_does_not_make_is_unbound,
+    "seams, EmbedBackend: a hybrid search over an embed field whose model or dimensions are not the bound backend's is refused as unbound when it is made, not ranked with vectors of another space",
+    reopens
+);
+
+async fn a_hybrid_search_over_an_embedding_the_bound_backend_does_not_make_is_unbound(
+    store: Arc<dyn LakeStore>,
+    reopen: Reopen,
+) -> Result<(), Failure> {
+    let mut store = reopen(store, with_embedder(Some(backing::embedder())))
+        .await
+        .map_err(|e| reopen_failed("with the suite's embedding backend", e))?;
+    notes(store.as_ref()).await?;
+    upsert(
+        doors(store.as_ref()).as_ref(),
+        &owner(store.as_ref()),
+        "note",
+        "n1",
+        json!({"title": "Quayside crane"}),
+    )
+    .await?;
+    for (model, dimensions) in [("another-model", 2), (EMBED_MODEL, 3)] {
+        store = reopen(
+            store,
+            with_embedder(Some(backing::embedder_as(model, dimensions))),
+        )
+        .await
+        .map_err(|e| reopen_failed(&format!("with a backend of `{model}`/{dimensions}"), e))?;
+        let got = doors(store.as_ref())
+            .search(
+                &owner(store.as_ref()),
+                Search {
+                    ty: "note".into(),
+                    mode: SearchMode::Hybrid {
+                        text: "quayside".into(),
+                        field: "vec".into(),
+                        vector: None,
+                    },
+                    k: 10,
+                    cursor: None,
+                    filter: None,
+                    with_meta: false,
+                    at: lakelands_api::ReadAt::default(),
+                },
+            )
+            .await;
+        // The refusal names both: what the field was declared with, and
+        // what is bound.
+        let names_both = |seam: &str| {
+            seam.contains(&format!("`{EMBED_MODEL}` with 2"))
+                && seam.contains(&format!("`{model}` with {dimensions}"))
+        };
+        ensure!(
+            matches!(&got, Err(Error::Unbound { seam }) if names_both(seam)),
+            "`vec` holds `{EMBED_MODEL}` vectors of 2 dimensions; with a backend of \
+             `{model}` and {dimensions} dimensions bound, a hybrid search over it must be \
+             refused as unbound, naming both; it answered {}",
+            answered(&got)
+        );
+    }
+    Ok(())
+}
+
+check!(
+    /// A due embedding waits while no backend makes it.
+    EMBED_WAITS = a_due_embedding_waits_while_no_backend_makes_it,
+    "seams, EmbedBackend: a due embedding whose backend is gone or makes another model or other dimensions is not made; the field waits, with neither a value nor metadata, until its record is written again or its type is declared again with the backend bound",
+    reopens
+);
+
+async fn a_due_embedding_waits_while_no_backend_makes_it(
+    store: Arc<dyn LakeStore>,
+    reopen: Reopen,
+) -> Result<(), Failure> {
+    let mut store = reopen(store, with_embedder(Some(backing::embedder())))
+        .await
+        .map_err(|e| reopen_failed("with the suite's embedding backend", e))?;
+    notes(store.as_ref()).await?;
+    for (key, embed, what) in [
+        ("gone", None, "with no embedding backend"),
+        (
+            "other",
+            Some(backing::embedder_as("another-model", 2)),
+            "with a backend of another model",
+        ),
+        (
+            "wider",
+            Some(backing::embedder_as(EMBED_MODEL, 3)),
+            "with a backend of other dimensions",
+        ),
+    ] {
+        store = reopen(store, with_embedder(embed))
+            .await
+            .map_err(|e| reopen_failed(what, e))?;
+        let text = format!("Waiting {key} bollard");
+        upsert(
+            doors(store.as_ref()).as_ref(),
+            &owner(store.as_ref()),
+            "note",
+            key,
+            json!({"title": text}),
+        )
+        .await?;
+        let r = read(
+            doors(store.as_ref()).as_ref(),
+            &owner(store.as_ref()),
+            "note",
+            key,
+        )
+        .await?;
+        ensure!(
+            value(&r, "vec").is_none() && !r.meta.contains_key("vec") && embedded(&text) == 0,
+            "`{key}` was written {what} bound: its `vec` must wait, with neither a value \
+             nor metadata, and its text sent nowhere; it reads {:?} with metadata {:?}, \
+             and the text was sent {} times",
+            value(&r, "vec"),
+            r.meta.get("vec"),
+            embedded(&text)
+        );
+    }
+    // The backend is back. Opening the lake calls nothing, and neither
+    // does a write to another record: a waiting field is made when its
+    // record is written again or its type is declared again.
+    store = reopen(store, with_embedder(Some(backing::embedder())))
+        .await
+        .map_err(|e| reopen_failed("with the suite's embedding backend again", e))?;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    upsert(
+        cat.as_ref(),
+        &own,
+        "note",
+        "later",
+        json!({"title": "Later quay"}),
+    )
+    .await?;
+    let still = vec_of(store.as_ref(), "gone").await?;
+    ensure!(
+        still.is_none(),
+        "opening the lake and writing another record call nothing for `gone`, whose \
+         `vec` waits; it reads {still:?}"
+    );
+    upsert(
+        cat.as_ref(),
+        &own,
+        "note",
+        "gone",
+        json!({"body": "touched"}),
+    )
+    .await?;
+    let touched = vec_of(store.as_ref(), "gone").await?;
+    ensure!(
+        is_east(&touched),
+        "`gone` was written again with its backend bound, so its waiting `vec` is made; \
+         it reads {touched:?}"
+    );
+    notes(store.as_ref()).await?;
+    let (other, wider) = (
+        vec_of(store.as_ref(), "other").await?,
+        vec_of(store.as_ref(), "wider").await?,
+    );
+    ensure!(
+        is_east(&other) && is_east(&wider),
+        "declaring `note` again with its backend bound makes every waiting `vec`; `other` \
+         and `wider` read {other:?} and {wider:?}"
+    );
+    Ok(())
+}
+
+check!(
+    /// An embedding is refused unless it is the one shape it can be.
+    EMBED_RULES = an_embedding_that_is_not_a_derived_vector_of_its_own_text_fields_is_refused,
+    "seams, EmbedBackend, and TypeDecl::embedding_problem: an embed field is a derived vector with dimensions, made from distinct text fields of its type other than itself, sensitive where a source is; anything else is refused as invalid, whatever backend is bound",
+    embedding
+);
+
+async fn an_embedding_that_is_not_a_derived_vector_of_its_own_text_fields_is_refused(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let good = || vec_field(&["title"], EMBED_MODEL, 2);
+    let number = field("pages", StorageKind::Number);
+    let cases: Vec<(&str, FieldDecl, Vec<FieldDecl>)> = vec![
+        (
+            "a text field",
+            FieldDecl {
+                ty: FieldType::kind(StorageKind::Text),
+                ..good()
+            },
+            vec![],
+        ),
+        (
+            "a vector without dimensions",
+            FieldDecl {
+                ty: FieldType::kind(StorageKind::Vector),
+                ..good()
+            },
+            vec![],
+        ),
+        (
+            "an authored field",
+            FieldDecl {
+                authority: Authority::Authored,
+                ..good()
+            },
+            vec![],
+        ),
+        (
+            "an embedding with a derivation too",
+            FieldDecl {
+                derived: Some("title".into()),
+                ..good()
+            },
+            vec![],
+        ),
+        (
+            "an embedding with its own depends_on",
+            FieldDecl {
+                depends_on: vec!["title".into()],
+                ..good()
+            },
+            vec![],
+        ),
+        ("made from nothing", vec_field(&[], EMBED_MODEL, 2), vec![]),
+        (
+            "made from itself",
+            vec_field(&["title", "vec"], EMBED_MODEL, 2),
+            vec![],
+        ),
+        (
+            "made from a field twice",
+            vec_field(&["title", "title"], EMBED_MODEL, 2),
+            vec![],
+        ),
+        (
+            "made from a field it lacks",
+            vec_field(&["summary"], EMBED_MODEL, 2),
+            vec![],
+        ),
+        (
+            "made from a number",
+            vec_field(&["pages"], EMBED_MODEL, 2),
+            vec![number.clone()],
+        ),
+        (
+            "made from a sensitive field and not sensitive itself",
+            vec_field(&["secret"], EMBED_MODEL, 2),
+            vec![FieldDecl {
+                sensitive: true,
+                ..field("secret", StorageKind::Text)
+            }],
+        ),
+    ];
+    let before = store.head().await.must("reading the head")?;
+    for (what, vec, extra) in cases {
+        let got = cat
+            .declare(&own, Declaration::Type(notes_with(vec, extra)))
+            .await;
+        ensure!(
+            matches!(
+                &got,
+                Err(Error::Refused {
+                    field: Some(f),
+                    reason: lakelands_api::Refusal::Invalid { .. },
+                }) if f.as_str() == "vec"
+            ),
+            "declaring `vec` as {what} must be refused as invalid, naming `vec`; it answered {}",
+            answered(&got)
+        );
+    }
+    let after = store.head().await.must("reading the head")?;
+    ensure!(
+        after == before,
+        "every refused declaration appends nothing; the head moved from {before} to {after}"
+    );
+    // The same field, sensitive like its source, is an embedding.
+    declare(
+        cat.as_ref(),
+        &own,
+        notes_with(
+            FieldDecl {
+                sensitive: true,
+                ..vec_field(&["secret"], EMBED_MODEL, 2)
+            },
+            vec![FieldDecl {
+                sensitive: true,
+                ..field("secret", StorageKind::Text)
+            }],
+        ),
+    )
+    .await?;
+    Ok(())
+}
+
+check!(
+    /// At most 64 texts go in one request.
+    EMBED_BATCH = no_request_carries_more_than_sixty_four_texts,
+    "seams, EmbedBackend: the store sends the due texts of one model in batches of at most 64, however many records one declaration makes due, so its memory per drain stays bounded",
+    reopens
+);
+
+async fn no_request_carries_more_than_sixty_four_texts(
+    store: Arc<dyn LakeStore>,
+    reopen: Reopen,
+) -> Result<(), Failure> {
+    // A model of its own, so the sizes counted are this check's alone.
+    let model = "conformance-batch";
+    let store = reopen(store, with_embedder(Some(backing::embedder_as(model, 2))))
+        .await
+        .map_err(|e| reopen_failed(&format!("with a backend of `{model}`"), e))?;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    // Ingest writes source fields: the text comes from a source here. The
+    // records come first and the embedding after, so that one declaration
+    // makes all 150 due at once; an ingest commits in smaller windows.
+    let title = || FieldDecl {
+        authority: Authority::Source,
+        ..field("title", StorageKind::Text)
+    };
+    declare(cat.as_ref(), &own, type_decl("batch", vec![title()])).await?;
+    let records: Vec<_> = (0..150)
+        .map(|n| {
+            source_record(
+                "batch",
+                &format!("b{n}"),
+                json!({"title": format!("Batch {n}")}),
+            )
+        })
+        .collect();
+    ingest(cat.as_ref(), &own, "batches", records)
+        .await
+        .must("ingesting 150 batches")?;
+    declare(
+        cat.as_ref(),
+        &own,
+        type_decl("batch", vec![title(), vec_field(&["title"], model, 2)]),
+    )
+    .await?;
+    let sizes = backing::embed_call_sizes(model);
+    ensure!(
+        sizes.iter().all(|n| *n <= 64) && sizes.iter().sum::<usize>() == 150,
+        "declaring the embedding made 150 distinct texts due at once; every request carries at most 64 of them and \
+         all 150 are sent once; the requests carried {sizes:?}"
     );
     Ok(())
 }

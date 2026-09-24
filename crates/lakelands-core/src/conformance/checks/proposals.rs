@@ -446,3 +446,142 @@ async fn a_verbs_write_carries_the_verbs_procedure_version(
     );
     Ok(())
 }
+
+check!(
+    /// An external verb's output is recorded and the verb runs once. A
+    /// retry is held to running nothing again; that it answers the first
+    /// call's position and output (lakelands#98) is claimed here once
+    /// lakelands#101 lands.
+    EXECUTOR_RECORDED = an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_position,
+    "seams, VerbExecutor, and 013: the executor's answer is recorded as output_recorded caused by the event that made the verb due and returned in the outcome's output; a failure is recorded as {\"error\": …} at a real position; a retry of the same call and a rebuild run nothing again"
+);
+
+async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_position(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use crate::conformance::backing::{EXECUTOR, executed};
+    use lakelands_api::IdempotencyKey;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    declare(
+        cat.as_ref(),
+        &own,
+        type_decl("job", vec![field("status", StorageKind::Text)]),
+    )
+    .await?;
+    let verb: Declaration = serde_json::from_value(json!({
+        "declare": "verb", "name": "dispatch", "on": "job", "risk": "low",
+        "payload": [{"name": "fail", "type": {"kind": "boolean"}}],
+        "effect": "external", "executor": EXECUTOR}))
+    .map_err(|e| Failure::new(format!("the check's verb does not read: {e}")))?;
+    cat.declare(&own, verb).await.must("declaring `dispatch`")?;
+    let key = "executor-job";
+    upsert(cat.as_ref(), &own, "job", key, json!({"status": "open"})).await?;
+    let dispatch = |payload: serde_json::Value, opts: WriteOpts| {
+        let cat = cat.clone();
+        let own = own.clone();
+        async move {
+            cat.call(&own, &"dispatch".into(), &key.into(), patch(payload), opts)
+                .await
+        }
+    };
+
+    let once = WriteOpts {
+        idempotency_key: Some(IdempotencyKey::from("dispatch-once")),
+        ..WriteOpts::default()
+    };
+    let first = dispatch(json!({}), once.clone())
+        .await
+        .must("calling `dispatch`")?;
+    let Outcome::Applied {
+        position,
+        output: Some(output),
+        ..
+    } = &first
+    else {
+        return Err(Failure::new(format!(
+            "an external verb answers `applied` with its executor's output; `dispatch` \
+             answered {first:?}"
+        )));
+    };
+    ensure!(
+        *output == json!({"done": "dispatch", "record": key}) && executed(key) == 1,
+        "the executor answered {{\"done\": \"dispatch\", \"record\": \"{key}\"}} once; the \
+         outcome carries {output} after {} runs",
+        executed(key)
+    );
+    let recorded = store
+        .feed()
+        .poll(
+            *position,
+            &lakelands_api::seam::FeedFilter {
+                kinds: vec!["output_recorded".into()],
+                types: vec![],
+            },
+            u32::MAX,
+        )
+        .await
+        .must("reading the recorded outputs")?
+        .events;
+    ensure!(
+        recorded.iter().any(|e| e.cause == Some(*position)
+            && matches!(&e.body, lakelands_api::event::EventBody::OutputRecorded { output: o, .. } if o == output)),
+        "the executor's answer is recorded as `output_recorded` caused by the event at \
+         {position}; the log holds {recorded:?}"
+    );
+
+    // A retry runs nothing again. (What it answers is lakelands#98: today
+    // it names a later position and carries no output.)
+    let again = dispatch(json!({}), once)
+        .await
+        .must("retrying `dispatch`")?;
+    ensure!(
+        matches!(&again, Outcome::Applied { .. }) && executed(key) == 1,
+        "a retry with the same idempotency key runs nothing again: it answered {again:?}, \
+         and the executor ran {} times",
+        executed(key)
+    );
+
+    let failed = dispatch(json!({"fail": true}), WriteOpts::default())
+        .await
+        .must("calling `dispatch` so that its executor fails")?;
+    let head = store.head().await.must("reading the head")?;
+    ensure!(
+        matches!(&failed, Outcome::Applied { position, output: Some(o), .. }
+            if *position <= head
+                && o.as_object().is_some_and(|m| m.len() == 1 && m["error"].is_string())),
+        "an executor that fails does not undo the verb: the outcome is `applied` at a real \
+         position with {{\"error\": …}} as its output; it answered {failed:?}"
+    );
+    let failed_at = failed.position();
+    let recorded = store
+        .feed()
+        .poll(
+            failed_at,
+            &lakelands_api::seam::FeedFilter {
+                kinds: vec!["output_recorded".into()],
+                types: vec![],
+            },
+            u32::MAX,
+        )
+        .await
+        .must("reading the recorded outputs after the failed call")?
+        .events;
+    ensure!(
+        recorded.iter().any(|e| e.cause == Some(failed_at)
+            && matches!(&e.body, lakelands_api::event::EventBody::OutputRecorded { output: o, .. }
+                if o.as_object().is_some_and(|m| m.len() == 1 && m["error"].is_string()))),
+        "the executor's failure is recorded as `output_recorded` {{\"error\": …}}, caused by \
+         the event at {failed_at}; the log holds {recorded:?}"
+    );
+
+    let runs = executed(key);
+    store.rebuild().await.must("rebuilding the projection")?;
+    ensure!(
+        executed(key) == runs,
+        "a rebuild reads the recorded outputs and runs no verb again; the executor ran {} \
+         times, {runs} before the rebuild",
+        executed(key)
+    );
+    Ok(())
+}

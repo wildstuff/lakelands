@@ -22,7 +22,7 @@ use lakelands_api::{Error, LakeStore, Origin, Position, Refusal, Version};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
-use crate::conformance::backing::{KIND, made, unplug};
+use crate::conformance::backing::{KIND, made, plug, unplug};
 use crate::conformance::fixture::{
     Must, declare, doors, field, head_unmoved, owner, read, type_decl, upsert, value,
 };
@@ -611,6 +611,60 @@ async fn a_backed_field_reading_another_waits_for_its_output(
          backing was called {} times for `a` and {} for `b`",
         made(first),
         made(second)
+    );
+    Ok(())
+}
+
+check!(
+    /// A redeclaration calls again for an input whose output was a failure.
+    FAILURE_RETRIED = a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds,
+    "022, extended: a settle forced by a declaration calls again, once, for an input whose recorded output is a failure, for a function backing as for an embedding; the later output holds for every record with that input"
+);
+
+async fn a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let token = "failure_retried";
+    places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    unplug(token);
+    upsert(cat.as_ref(), &own, "place", "p1", json!({"code": "AT"})).await?;
+    upsert(cat.as_ref(), &own, "place", "p2", json!({"code": "AT"})).await?;
+    let failed = made(token);
+    let r = read(cat.as_ref(), &own, "place", "p1").await?;
+    ensure!(
+        failed == 1 && value(&r, "name").is_none(),
+        "the backing refused every call, so `p1` and `p2`, both with code AT, hold no \
+         `name` after one call; the backing was called {failed} times and `p1` reads {r:?}"
+    );
+
+    plug(token);
+    let name = FieldDecl {
+        authority: Authority::Derived,
+        function: Some("lookup".into()),
+        depends_on: vec!["code".into()],
+        ..field("name", StorageKind::Text)
+    };
+    declare(
+        cat.as_ref(),
+        &own,
+        type_decl("place", vec![field("code", StorageKind::Text), name]),
+    )
+    .await?;
+    let calls = made(token) - failed;
+    let (p1, p2) = (
+        read(cat.as_ref(), &own, "place", "p1").await?,
+        read(cat.as_ref(), &own, "place", "p2").await?,
+    );
+    ensure!(
+        calls == 1
+            && value(&p1, "name") == Some(&json!("AT"))
+            && value(&p2, "name") == Some(&json!("AT")),
+        "declaring `place` again retries the failed call for code AT: one more call, not \
+         {calls}, and its output fills `name` on both records; they read {:?} and {:?}",
+        value(&p1, "name"),
+        value(&p2, "name")
     );
     Ok(())
 }
