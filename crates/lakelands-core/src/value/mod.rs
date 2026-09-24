@@ -189,6 +189,16 @@ pub fn check(
             canonical = Value::String(to_scale(digits, scale));
         }
     }
+    // Every number in a value takes its one JSON form (`docs/log-format.md`
+    // §1.2): `2.0` is `2`, as the log writes it, so a value reads the same
+    // live and after a rebuild from the log.
+    if matches!(
+        ty.kind,
+        StorageKind::Number | StorageKind::Json | StorageKind::Vector | StorageKind::Geo
+    ) {
+        canonical = serde_json::from_slice(&crate::canonical::to_vec(&canonical))
+            .expect("canonical JSON reads back");
+    }
     Ok(canonical)
 }
 
@@ -675,6 +685,24 @@ mod tests {
             check(&json!(42), &ty, Some(&vt)),
             Err(ValueError::Format { .. })
         ));
+    }
+
+    #[test]
+    fn numbers_take_their_one_json_form() {
+        assert_eq!(
+            check(&json!(2.0), &kind(StorageKind::Number), None).unwrap(),
+            json!(2)
+        );
+        let mut v = kind(StorageKind::Vector);
+        v.dimensions = Some(2);
+        assert_eq!(
+            check(&json!([0.0, 1.5]), &v, None).unwrap(),
+            json!([0, 1.5])
+        );
+        assert_eq!(
+            check(&json!({"a": 1e0}), &kind(StorageKind::Json), None).unwrap(),
+            json!({"a": 1})
+        );
     }
 
     #[test]

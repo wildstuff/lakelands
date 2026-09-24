@@ -273,7 +273,7 @@ impl ProjectionView for SqliteView<'_> {
     fn lexical(&self, ty: &TypeName, text: &str, k: u32) -> Result<Vec<(RecordKey, f64)>> {
         self.read(Vec::new(), |r| {
             // The full-text index describes the head; a view keeps the hits
-            // live and unrestricted at its own position (`docs/seams.md`).
+            // live at its own position (`docs/seams.md`).
             let Some(decl) = projection::type_at(r.conn, ty, None)? else {
                 return Ok(Vec::new());
             };

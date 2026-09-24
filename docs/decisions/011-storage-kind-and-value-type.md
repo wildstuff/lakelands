@@ -46,3 +46,13 @@ number) or, where exactness matters, a `decimal`; a value type such as
 `quantity` may constrain it to whole values. A separate integer kind
 would be a kind no engine must treat differently, which is exactly what
 this record says a kind is not.
+
+## Extended: one JSON form, and the scale carried through
+
+A value takes its one JSON form at the door: every number in a `number`,
+`json`, `vector` or `geo` value is written as the log writes it
+(`docs/log-format.md` §1.2), so `2.0` is `2` and a value reads the same
+live and after a rebuild from the log. A sum, minimum or maximum over a
+decimal field whose value type declares a scale answers at that scale, a
+sum over no values included (`0.00`, not `0`); without a declared scale
+it keeps the largest scale of its inputs.

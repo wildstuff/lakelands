@@ -1325,3 +1325,340 @@ async fn a_declaration_names_every_tool_name_problem_at_once() {
         "every too-long tool name is named: {message}"
     );
 }
+
+fn reference(name: &str, target: &str) -> FieldDecl {
+    let mut f = field(name, StorageKind::Reference);
+    f.ty.target = Some(target.into());
+    f
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reference_must_name_a_live_record_or_one_earlier_in_the_window() {
+    let lake = name();
+    let store = open(&lake, OpenMode::Create).await.unwrap();
+    let cat = store.catalog(WriteContext::default());
+    let o = owner(&lake);
+    let mut partner = field("name", StorageKind::Text);
+    partner.authority = Authority::Shared;
+    let mut to = reference("partner", "partner");
+    to.authority = Authority::Shared;
+    cat.apply(
+        &o,
+        vec![
+            Declaration::Type(ty("invoice", vec![to])),
+            Declaration::Type(ty("partner", vec![partner])),
+        ],
+    )
+    .await
+    .unwrap();
+    let head = store.head().await.unwrap();
+    let r = cat
+        .upsert(
+            &o,
+            &"invoice".into(),
+            &"i".into(),
+            patch(json!({"partner": "nobody"})),
+            Default::default(),
+        )
+        .await;
+    assert!(
+        matches!(&r, Err(Error::Refused { field: Some(f), .. }) if f.as_str() == "partner"),
+        "{r:?}"
+    );
+    assert_eq!(store.head().await.unwrap(), head);
+    let records = vec![
+        SourceRecord {
+            ty: "partner".into(),
+            key: "acme".into(),
+            fields: patch(json!({"name": "Acme"})),
+            seen_at: None,
+        },
+        SourceRecord {
+            ty: "invoice".into(),
+            key: "i".into(),
+            fields: patch(json!({"partner": "acme"})),
+            seen_at: None,
+        },
+    ];
+    let s: lakelands_api::SourceStream = Box::pin(Stream(records.into_iter()));
+    let mut out = cat.ingest(&o, &"crm".into(), s).await.unwrap();
+    let first = std::future::poll_fn(|cx| out.as_mut().poll_next(cx))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        first.records, 2,
+        "a reference to a record earlier in the window resolves"
+    );
+    cat.retire(&o, &"partner".into(), &"acme".into(), Default::default())
+        .await
+        .expect("retiring a referenced record stays allowed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_redeclared_function_recomputes_its_fields_naming_its_version() {
+    let lake = name();
+    let store = open(&lake, OpenMode::Create).await.unwrap();
+    let cat = store.catalog(WriteContext::default());
+    let o = owner(&lake);
+    let function = |expr: &str| {
+        Declaration::Function(FunctionDecl {
+            name: "scaled".into(),
+            backing: "expr".into(),
+            inputs: vec![field("net", StorageKind::Decimal)],
+            expr: Some(Condition::from(expr)),
+            config: serde_json::Value::Null,
+            description: None,
+        })
+    };
+    cat.declare(&o, function("net * 2")).await.unwrap();
+    let mut scaled = field("scaled", StorageKind::Decimal);
+    scaled.function = Some("scaled".into());
+    scaled.authority = Authority::Derived;
+    cat.declare(
+        &o,
+        Declaration::Type(ty("bill", vec![field("net", StorageKind::Decimal), scaled])),
+    )
+    .await
+    .unwrap();
+    cat.upsert(
+        &o,
+        &"bill".into(),
+        &"b".into(),
+        patch(json!({"net": "3"})),
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    let read = || async {
+        let r = cat
+            .get(
+                &o,
+                &"bill".into(),
+                Get {
+                    key: "b".into(),
+                    with_meta: true,
+                    at: ReadAt::default(),
+                },
+            )
+            .await
+            .unwrap()
+            .data;
+        (
+            r.fields["scaled"].clone(),
+            r.meta["scaled"].procedure_version.clone(),
+            r.version,
+        )
+    };
+    assert_eq!(
+        read().await,
+        (json!("6"), Some("1".into()), lakelands_api::Version(1))
+    );
+    let redeclared = cat.declare(&o, function("net * 3")).await.unwrap();
+    let (value, procedure, version) = read().await;
+    assert_eq!((value, procedure), (json!("9"), Some("2".into())));
+    assert_eq!(
+        version,
+        lakelands_api::Version(1),
+        "no write touched the record"
+    );
+    store.rebuild().await.unwrap();
+    assert_eq!(
+        read().await.0,
+        json!("9"),
+        "a replay recomputes it the same way"
+    );
+    let _ = redeclared;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_version_from_before_a_retirement_never_applies_after_it() {
+    let lake = name();
+    let store = open(&lake, OpenMode::Create).await.unwrap();
+    let cat = store.catalog(WriteContext::default());
+    let o = owner(&lake);
+    cat.declare(
+        &o,
+        Declaration::Type(ty("c", vec![field("n", StorageKind::Number)])),
+    )
+    .await
+    .unwrap();
+    let expecting = |v: u64| lakelands_api::write::WriteOpts {
+        expected_version: Some(lakelands_api::Version(v)),
+        idempotency_key: None,
+    };
+    cat.upsert(
+        &o,
+        &"c".into(),
+        &"k".into(),
+        patch(json!({"n": 1})),
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    cat.retire(&o, &"c".into(), &"k".into(), Default::default())
+        .await
+        .unwrap();
+    let r = cat
+        .upsert(
+            &o,
+            &"c".into(),
+            &"k".into(),
+            patch(json!({"n": 5})),
+            expecting(1),
+        )
+        .await;
+    assert_eq!(
+        r,
+        Err(Error::Conflict {
+            expected: lakelands_api::Version(1),
+            actual: lakelands_api::Version(2)
+        })
+    );
+    let again = cat
+        .upsert(
+            &o,
+            &"c".into(),
+            &"k".into(),
+            patch(json!({"n": 3})),
+            expecting(2),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        again,
+        Outcome::Applied {
+            version: Some(lakelands_api::Version(3)),
+            ..
+        }
+    ));
+    let fresh = cat
+        .upsert(
+            &o,
+            &"c".into(),
+            &"new".into(),
+            patch(json!({"n": 1})),
+            expecting(0),
+        )
+        .await;
+    assert!(
+        fresh.is_ok(),
+        "a key never written is at version 0: {fresh:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sum_over_nothing_carries_the_fields_scale() {
+    let lake = name();
+    let store = open(&lake, OpenMode::Create).await.unwrap();
+    let cat = store.catalog(WriteContext::default());
+    let o = owner(&lake);
+    let money: Declaration = serde_json::from_value(json!({
+        "declare": "value_type", "name": "money", "kind": "decimal", "scale": 2
+    }))
+    .unwrap();
+    cat.declare(&o, money).await.unwrap();
+    let mut amount = field("amount", StorageKind::Decimal);
+    amount.ty.value_type = Some("money".into());
+    cat.declare(&o, Declaration::Type(ty("payment", vec![amount])))
+        .await
+        .unwrap();
+    let find: lakelands_api::Find = serde_json::from_value(json!({
+        "aggregate": {"measures": [{"name": "total", "func": "sum", "field": "amount"}]}
+    }))
+    .unwrap();
+    let found = cat.find(&o, &"payment".into(), find).await.unwrap().data;
+    let lakelands_api::Found::Groups { rows } = found else {
+        panic!("groups")
+    };
+    assert_eq!(rows[0].values["total"], json!("0.00"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn search_finds_a_restricted_record_only_with_the_grant() {
+    let lake = name();
+    let store = open(&lake, OpenMode::Create).await.unwrap();
+    let cat = store.catalog(WriteContext::default());
+    let o = owner(&lake);
+    let mut body = field("body", StorageKind::Text);
+    body.searchable = true;
+    cat.declare(&o, Declaration::Type(ty("doc", vec![body])))
+        .await
+        .unwrap();
+    cat.upsert(
+        &o,
+        &"doc".into(),
+        &"d".into(),
+        patch(json!({"body": "apple"})),
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    store
+        .restrict(&"doc".into(), &"d".into(), "hold".into())
+        .await
+        .unwrap();
+    let search = || Search {
+        ty: "doc".into(),
+        mode: SearchMode::Lexical {
+            text: "apple".into(),
+        },
+        k: 5,
+        cursor: None,
+        filter: None,
+        with_meta: false,
+        at: ReadAt::default(),
+    };
+    let with = cat.search(&o, search()).await.unwrap().data;
+    assert_eq!(with.hits.len(), 1, "the restricted grant finds it");
+    let reader = Principal {
+        grants: serde_json::from_value(json!({"default": "read"})).unwrap(),
+        ..owner(&lake)
+    };
+    let without = cat.search(&reader, search()).await.unwrap().data;
+    assert!(without.hits.is_empty(), "without the grant it is withheld");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn numbers_and_vectors_read_in_their_one_json_form_live_and_after_a_rebuild() {
+    let lake = name();
+    let store = open(&lake, OpenMode::Create).await.unwrap();
+    let cat = store.catalog(WriteContext::default());
+    let o = owner(&lake);
+    let mut v = field("v", StorageKind::Vector);
+    v.ty.dimensions = Some(2);
+    cat.declare(
+        &o,
+        Declaration::Type(ty("p", vec![field("n", StorageKind::Number), v])),
+    )
+    .await
+    .unwrap();
+    cat.upsert(
+        &o,
+        &"p".into(),
+        &"a".into(),
+        patch(json!({"n": 2.0, "v": [0.0, 1.0]})),
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    let read = || async {
+        cat.get(
+            &o,
+            &"p".into(),
+            Get {
+                key: "a".into(),
+                with_meta: false,
+                at: ReadAt::default(),
+            },
+        )
+        .await
+        .unwrap()
+        .data
+        .fields
+    };
+    let live = read().await;
+    assert_eq!((&live["n"], &live["v"]), (&json!(2), &json!([0, 1])));
+    store.rebuild().await.unwrap();
+    assert_eq!(read().await, live);
+}

@@ -703,7 +703,13 @@ fn lexical_search_scores_matched_tokens_over_searchable_text() {
     let hits = v.lexical(&"doc".into(), "invoice runs", 10).unwrap();
     assert_eq!(
         hits,
-        vec![("a".into(), 2.0), ("b".into(), 1.0), ("d".into(), 1.0)]
+        vec![
+            ("a".into(), 2.0),
+            ("h".into(), 2.0),
+            ("b".into(), 1.0),
+            ("d".into(), 1.0)
+        ],
+        "a restricted record is a candidate; a retired one is not"
     );
     assert_eq!(
         v.lexical(&"doc".into(), "invoice runs", 1).unwrap().len(),

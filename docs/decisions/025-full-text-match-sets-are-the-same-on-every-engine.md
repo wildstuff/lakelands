@@ -50,3 +50,11 @@ ranked by the newer one. Keeping full-text and vector indexes for every
 earlier state would make each engine carry a second history of its
 largest structures, for a ranking no caller has asked for; if one ever
 does, it is a later, additive change.
+
+## Extended: a restricted record is a candidate
+
+An engine's full-text and vector candidates include restricted records
+(retired ones are excluded), and the store applies the principal's grants
+to the hits, as it does for `find` and `get`. A principal holding the
+`restricted` grant finds a restricted record by search; one without it
+never sees it.

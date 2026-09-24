@@ -450,8 +450,40 @@ impl<'a> Reader<'a> {
 
     fn aggregated(&self, decl: &TypeDecl, rows: &[StoredRecord], a: &Aggregate) -> Result<Found> {
         let fields: Vec<&BTreeMap<FieldName, Value>> = rows.iter().map(|r| &r.fields).collect();
-        let groups = aggregate::aggregate(&fields, a, self.now)
+        let mut groups = aggregate::aggregate(&fields, a, self.now)
             .map_err(|e| invalid(format!("aggregate over `{}`: {e}", decl.name)))?;
+        // A sum, minimum or maximum of a decimal field whose value type
+        // declares a scale answers at that scale, so a sum over nothing is
+        // `0.00` and not `0`.
+        for m in &a.measures {
+            if !matches!(
+                m.func,
+                lakelands_api::read::AggFunc::Sum
+                    | lakelands_api::read::AggFunc::Min
+                    | lakelands_api::read::AggFunc::Max
+            ) {
+                continue;
+            }
+            let Some(scale) = m
+                .field
+                .as_ref()
+                .and_then(|f| decl.fields.iter().find(|d| &d.name == f))
+                .and_then(|f| f.ty.value_type.as_ref())
+                .and_then(|vt| self.ontology.value_types.get(vt.as_str()))
+                .and_then(|vt| vt.decl.scale)
+            else {
+                continue;
+            };
+            for g in &mut groups {
+                if let Some(Value::String(s)) = g.values.get_mut(&m.name)
+                    && let Ok(mut d) = s.parse::<rust_decimal::Decimal>()
+                    && d.scale() <= scale
+                {
+                    d.rescale(scale);
+                    *s = d.to_string();
+                }
+            }
+        }
         Ok(Found::Groups { rows: groups })
     }
 

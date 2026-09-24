@@ -24,8 +24,15 @@
 //!
 //! **Versions.** A record's version counts every event that changed it,
 //! across retirement: writing a retired key again continues its count.
-//! Compare-and-set compares with the live version; a retired or absent
-//! record is at version 0.
+//! Compare-and-set compares with the record's version, a retired record's
+//! included, so a version from before a retirement never applies to the
+//! record written after it; only a key never written is at version 0.
+//!
+//! **References.** A `reference` value a write carries names a live record
+//! of its target type — at the head, or written earlier in the same append
+//! or ingest window, or the record being written itself — or the write is
+//! refused whole on that field. Retiring a record that others refer to
+//! stays allowed.
 
 use std::collections::BTreeMap;
 
@@ -339,6 +346,44 @@ fn fill_key_fields(
     Ok(())
 }
 
+/// Refuse a write whose `reference` values name no live record of their
+/// target type.
+fn check_references(
+    view: &dyn ProjectionView,
+    pending: &Pending,
+    decl: &TypeDecl,
+    ty: &TypeName,
+    key: &RecordKey,
+    patch: &Patch,
+) -> Result<()> {
+    for (name, v) in patch {
+        let Some(f) = decl.fields.iter().find(|f| &f.name == name) else {
+            continue;
+        };
+        let (Some(target), Some(to)) = (&f.ty.target, v.as_str()) else {
+            continue;
+        };
+        let to = RecordKey::from(to);
+        if target == ty && to == *key {
+            continue;
+        }
+        let exists = pending
+            .record(view, target, &to)?
+            .is_some_and(|r| !r.retired);
+        if !exists {
+            return Err(Error::Refused {
+                field: Some(name.clone()),
+                reason: Refusal::Constraint {
+                    message: format!(
+                        "`{name}` names `{target}` `{to}`, which is not a live record"
+                    ),
+                },
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Refuse a write whose key disagrees with its key fields.
 fn check_key_agrees(
     decl: &TypeDecl,
@@ -369,9 +414,7 @@ fn check_key(key: &RecordKey) -> Result<()> {
 }
 
 fn cas(expected: Option<Version>, before: Option<&StoredRecord>) -> Result<()> {
-    let actual = before
-        .filter(|b| !b.retired)
-        .map_or(Version(0), |b| b.version);
+    let actual = before.map_or(Version(0), |b| b.version);
     match expected {
         Some(e) if e != actual => Err(Error::Conflict {
             expected: e,
@@ -456,6 +499,7 @@ impl Call<'_> {
             fill_key_fields(w, decl, key, &mut patch, door, who)?;
         }
         check_key_agrees(decl, key, live, &patch)?;
+        check_references(view, pending, decl, ty, key, &patch)?;
         cas(expected, before.as_ref())?;
         let version = Version(before.as_ref().map_or(0, |b| b.version.0) + 1);
         let (origin, body) = match door {

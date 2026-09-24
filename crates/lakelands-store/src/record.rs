@@ -123,6 +123,7 @@ pub fn apply(
         meta.insert(name.clone(), meta_of(event, event.origin));
     }
 
+    let raw = ontology.ty(ty)?;
     let value_types = ontology.value_type_list();
     let touched = derive::apply(
         decl,
@@ -139,7 +140,8 @@ pub fn apply(
         message: format!("the fold cannot compute the derived fields of `{ty}`: {e}"),
     })?;
     for name in touched {
-        meta.insert(name, meta_of(event, Origin::Derived));
+        let m = derived_meta(event, raw, ontology, &name);
+        meta.insert(name, m);
     }
     fields.retain(|_, v| !v.is_null());
     if !decl.field_meta {
@@ -154,6 +156,82 @@ pub fn apply(
         position: event.position,
         retired: false,
         restricted: before.is_some_and(|b| b.restricted),
+    }))
+}
+
+/// The provenance of a value the fold computed: the event's, with
+/// `origin: derived`, and for a field a function computes, that
+/// function's version as the procedure's.
+fn derived_meta(
+    event: &Event,
+    raw: &TypeDecl,
+    ontology: &Ontology,
+    field: &FieldName,
+) -> FieldMeta {
+    let mut m = meta_of(event, Origin::Derived);
+    if let Some(func) = raw
+        .fields
+        .iter()
+        .find(|f| &f.name == field)
+        .and_then(|f| f.function.as_ref())
+        .and_then(|name| ontology.functions.get(name))
+    {
+        m.procedure_version = Some(func.version.to_string());
+    }
+    m
+}
+
+/// A live record's derived fields computed again, when what computes them
+/// changed: a function it names was redeclared, or its type's derived
+/// expressions were. `None` when nothing changes. The values take the
+/// event's provenance; the record's version stays, since no write touched
+/// it.
+pub fn rederive(
+    ontology: &Ontology,
+    before: &StoredRecord,
+    event: &Event,
+    settings: &BTreeMap<String, Value>,
+) -> Result<Option<StoredRecord>> {
+    if before.retired {
+        return Ok(None);
+    }
+    let raw = ontology.ty(&before.ty)?;
+    let decl = resolve_functions(raw, ontology);
+    let mut fields = before.fields.clone();
+    let written = BTreeSet::new();
+    let touched = derive::apply(
+        &decl,
+        &ontology.value_type_list(),
+        &mut fields,
+        &derive::Write {
+            before: Some(&before.fields),
+            written: &written,
+            settings: Some(settings),
+            now: event.known_at,
+        },
+    )
+    .map_err(|e| Error::Unavailable {
+        message: format!(
+            "the fold cannot compute the derived fields of `{}`: {e}",
+            before.ty
+        ),
+    })?;
+    if touched.is_empty() {
+        return Ok(None);
+    }
+    let mut meta = before.meta.clone();
+    for name in &touched {
+        meta.insert(name.clone(), derived_meta(event, raw, ontology, name));
+    }
+    fields.retain(|_, v| !v.is_null());
+    if !decl.field_meta {
+        meta.clear();
+    }
+    Ok(Some(StoredRecord {
+        fields,
+        meta,
+        position: event.position,
+        ..before.clone()
     }))
 }
 
