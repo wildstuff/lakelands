@@ -978,7 +978,7 @@ fn plan_propose(
             check_call(st, who, verb, key, payload)?;
         }
     }
-    let id = ProposalId(format!("p{}", batch.peek().0));
+    let id = ProposalId(value::proposal_id(who, key.as_ref(), batch.peek()));
     let mut d = Draft::new(
         who,
         Origin::Authored,

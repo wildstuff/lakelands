@@ -86,7 +86,8 @@ macro_rules! door_checks {
             declare_refuses_a_reference_to_an_undeclared_type,
             a_relation_removed_retargeted_or_narrowed_or_a_type_turned_view_is_a_migration,
             a_reference_key_field_filled_from_the_key_must_name_a_live_record,
-            key_components_and_source_ids_use_each_values_one_form);
+            key_components_and_source_ids_use_each_values_one_form,
+            schema_hashes_and_proposal_ids_have_the_stores_form);
     };
     (@each $new:expr, $block_on:path; $($name:ident),* $(,)?) => {
         $(
@@ -1725,4 +1726,98 @@ pub async fn key_components_and_source_ids_use_each_values_one_form(store: Arc<d
         "5.0 is 5 in its one form, so the redelivery changes nothing"
     );
     assert_eq!(f.store.head().await.unwrap(), head);
+}
+
+/// A schema hash is 64 lower-case hex digits and a proposal id 32, and
+/// both are the values the log format derives (`docs/log-format.md`):
+/// the fixture's invoice type hashes to one digest, and a proposal is
+/// named by its lake and position, or by its writer and idempotency key
+/// (the first 16 bytes of SHA-256 over the parts, joined by a zero byte).
+pub async fn schema_hashes_and_proposal_ids_have_the_stores_form(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let hex = |s: &str, n: usize| {
+        s.len() == n
+            && s.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    };
+    let described = f
+        .catalog
+        .describe_type(&f.cast.owner, &ty(INVOICE), ReadAt::default())
+        .await
+        .unwrap();
+    let hash = serde_json::to_value(&described.data).unwrap()["lifecycle"]["schema_hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(hex(&hash, 64), "a schema hash is 64 hex digits: {hash}");
+    assert_eq!(
+        hash, "b63567bce0ec4046d82237cc2fab92986b6a01b1a58afeb0a7b5beb29b0a4693",
+        "the fixture's invoice type hashes to the same digest everywhere"
+    );
+
+    f.write(&f.cast.owner, "INV-1", &[("status", json!("approved"))])
+        .await;
+    let propose = |k: Option<&str>| {
+        let (cat, clerk) = (f.catalog.clone(), f.cast.clerk.clone());
+        let opts = WriteOpts {
+            idempotency_key: k.map(Into::into),
+            ..WriteOpts::default()
+        };
+        async move {
+            match cat
+                .call(&clerk, &"pay".into(), &key("INV-1"), patch(&[]), opts)
+                .await
+                .expect("pay is proposed")
+            {
+                Outcome::Proposed {
+                    position, proposal, ..
+                } => (position, proposal.0),
+                other => panic!("expected a proposal, got {other:?}"),
+            }
+        }
+    };
+    // The first 16 bytes of SHA-256 over the parts, joined by a zero byte.
+    let id_of = |parts: &[&[u8]]| -> String {
+        use sha2::{Digest as _, Sha256};
+        let mut h = Sha256::new();
+        for (i, p) in parts.iter().enumerate() {
+            if i > 0 {
+                h.update([0u8]);
+            }
+            h.update(p);
+        }
+        h.finalize()[..16]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    };
+    let (at, by_position) = propose(None).await;
+    assert!(
+        hex(&by_position, 32),
+        "a proposal id is 32 hex digits: {by_position}"
+    );
+    assert_eq!(
+        by_position,
+        id_of(&[
+            b"lakelands:event:v1",
+            f.store.lake().as_str().as_bytes(),
+            at.0.to_string().as_bytes(),
+        ]),
+        "a proposal without a key is named by its lake and position"
+    );
+    let (_, by_key) = propose(Some("pay-once")).await;
+    assert_eq!(
+        by_key,
+        id_of(&[
+            b"lakelands:authored:v1",
+            f.cast.clerk.writer().as_bytes(),
+            b"pay-once",
+        ]),
+        "a proposal with a key is named by its writer and key"
+    );
+    assert_eq!(
+        propose(Some("pay-once")).await.1,
+        by_key,
+        "a retry under the same key names the same proposal"
+    );
 }

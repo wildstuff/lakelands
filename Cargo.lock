@@ -839,6 +839,7 @@ dependencies = [
  "lakelands-engine-sqlite",
  "lakelands-store",
  "serde_json",
+ "sha2",
  "tokio",
 ]
 

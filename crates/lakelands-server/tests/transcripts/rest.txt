@@ -52,14 +52,14 @@
 < 200
 < content-type: application/json
 < lakelands-position: 8
-< {"data":{"lake":"finance","may":{"ingest":false,"review":false,"schema":false},"types":[{"access":{"field_meta":true,"searchable":true},"description":"A bill received.","fields":[{"access":"read","authority":"source","filterable":true,"name":"amount","on_input_change":"keep","required":false,"type":{"kind":"decimal"}},{"access":"write","authority":"authored","filterable":true,"name":"status","on_input_change":"keep","required":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"verdict","on_input_change":"keep","required":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","depends_on":["verdict"],"filterable":true,"name":"reason","on_input_change":"clear","required":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"note","on_input_change":"keep","required":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"partner","on_input_change":"keep","required":false,"type":{"kind":"reference","target":"partner"}}],"lifecycle":{"schema_hash":"{schema_hash}","version":1},"lineage":{"sourced":true},"may":{"find":true,"get":true,"retire":false,"upsert":true},"name":"invoice","relations":[{"cardinality":"many_to_one","inverse":"bills","name":"billed_by","target":"partner","via":"partner"}],"verbs":["approve","pay"]},{"access":{"field_meta":true,"searchable":true},"fields":[{"access":"read","authority":"authored","filterable":true,"name":"name","on_input_change":"keep","required":false,"type":{"kind":"text"}}],"lifecycle":{"schema_hash":"{schema_hash}","version":1},"lineage":{"sourced":false},"may":{"find":true,"get":true,"retire":false,"upsert":false},"name":"partner"},{"access":{"field_meta":true,"key":["key"],"searchable":false},"description":"One named setting of the lake: `setting('key')` reads its value.","fields":[{"access":"read","authority":"authored","filterable":true,"name":"key","on_input_change":"keep","required":true,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":false,"name":"value","on_input_change":"keep","required":true,"type":{"kind":"json"}}],"lifecycle":{"schema_hash":"{schema_hash}","version":1},"lineage":{"sourced":false},"may":{"find":true,"get":true,"retire":false,"upsert":false},"name":"sys.setting"}],"verbs":[{"external":false,"name":"approve","on":"invoice","payload":[],"risk":"low"},{"external":false,"name":"pay","on":"invoice","payload":[{"access":"write","authority":"authored","filterable":true,"name":"reference","on_input_change":"keep","required":false,"type":{"kind":"text"}}],"risk":"high"}]},"position":8}
+< {"data":{"lake":"finance","may":{"ingest":false,"review":false,"schema":false},"types":[{"access":{"field_meta":true,"searchable":true},"description":"A bill received.","fields":[{"access":"read","authority":"source","filterable":true,"name":"amount","on_input_change":"keep","required":false,"type":{"kind":"decimal"}},{"access":"write","authority":"authored","filterable":true,"name":"status","on_input_change":"keep","required":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"verdict","on_input_change":"keep","required":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","depends_on":["verdict"],"filterable":true,"name":"reason","on_input_change":"clear","required":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"note","on_input_change":"keep","required":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"partner","on_input_change":"keep","required":false,"type":{"kind":"reference","target":"partner"}}],"lifecycle":{"schema_hash":"b63567bce0ec4046d82237cc2fab92986b6a01b1a58afeb0a7b5beb29b0a4693","version":1},"lineage":{"sourced":true},"may":{"find":true,"get":true,"retire":false,"upsert":true},"name":"invoice","relations":[{"cardinality":"many_to_one","inverse":"bills","name":"billed_by","target":"partner","via":"partner"}],"verbs":["approve","pay"]},{"access":{"field_meta":true,"searchable":true},"fields":[{"access":"read","authority":"authored","filterable":true,"name":"name","on_input_change":"keep","required":false,"type":{"kind":"text"}}],"lifecycle":{"schema_hash":"129139dc0eaefc67c9c8fd5e3f55f17cb799b058ec09841f90e6022f29f15be7","version":1},"lineage":{"sourced":false},"may":{"find":true,"get":true,"retire":false,"upsert":false},"name":"partner"},{"access":{"field_meta":true,"key":["key"],"searchable":false},"description":"One named setting of the lake: `setting('key')` reads its value.","fields":[{"access":"read","authority":"authored","filterable":true,"name":"key","on_input_change":"keep","required":true,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":false,"name":"value","on_input_change":"keep","required":true,"type":{"kind":"json"}}],"lifecycle":{"schema_hash":"9c9ea74b538e4165a4833ce0d88bc0d004a57969e2a04d157cf37c407c089609","version":1},"lineage":{"sourced":false},"may":{"find":true,"get":true,"retire":false,"upsert":false},"name":"sys.setting"}],"verbs":[{"external":false,"name":"approve","on":"invoice","payload":[],"risk":"low"},{"external":false,"name":"pay","on":"invoice","payload":[{"access":"write","authority":"authored","filterable":true,"name":"reference","on_input_change":"keep","required":false,"type":{"kind":"text"}}],"risk":"high"}]},"position":8}
 
 > GET /lakes/finance/describe/partner
 > authorization: Bearer k-clerk
 < 200
 < content-type: application/json
 < lakelands-position: 8
-< {"data":{"access":{"field_meta":true,"searchable":true},"fields":[{"access":"read","authority":"authored","filterable":true,"name":"name","on_input_change":"keep","required":false,"type":{"kind":"text"}}],"lifecycle":{"schema_hash":"{schema_hash}","version":1},"lineage":{"sourced":false},"may":{"find":true,"get":true,"retire":false,"upsert":false},"name":"partner"},"position":8}
+< {"data":{"access":{"field_meta":true,"searchable":true},"fields":[{"access":"read","authority":"authored","filterable":true,"name":"name","on_input_change":"keep","required":false,"type":{"kind":"text"}}],"lifecycle":{"schema_hash":"129139dc0eaefc67c9c8fd5e3f55f17cb799b058ec09841f90e6022f29f15be7","version":1},"lineage":{"sourced":false},"may":{"find":true,"get":true,"retire":false,"upsert":false},"name":"partner"},"position":8}
 
 # find: the query parameters are the find tool's arguments.
 > GET /lakes/finance/types/invoice/records?where=status%20%3D%20%27open%27&order_by=-status,known_at(status)&limit=10&with_meta=false
@@ -238,7 +238,7 @@
 < 202
 < content-type: application/json
 < lakelands-position: 13
-< {"outcome":"proposed","position":13,"proposal":"{proposal}","why":"`pay` is declared high risk; it runs when accepted"}
+< {"outcome":"proposed","position":13,"proposal":"5acb83b4daa53e135d8e398a52c74b9e","why":"`pay` is declared high risk; it runs when accepted"}
 
 # Proposals: the owner reviews.
 > GET /lakes/finance/proposals?state=pending
@@ -246,7 +246,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 13
-< {"data":[{"id":"{proposal}","position":13,"proposed_at":"{proposed_at}","proposer":"agent:clerk","state":"pending","why":"`pay` is declared high risk; it runs when accepted","write":{"key":"INV-2","opts":{},"payload":{"reference":"TX-7"},"verb":"pay","write":"call"}}],"position":13}
+< {"data":[{"id":"5acb83b4daa53e135d8e398a52c74b9e","position":13,"proposed_at":"{proposed_at}","proposer":"agent:clerk","state":"pending","why":"`pay` is declared high risk; it runs when accepted","write":{"key":"INV-2","opts":{},"payload":{"reference":"TX-7"},"verb":"pay","write":"call"}}],"position":13}
 
 > POST /lakes/finance/proposals/{proposal}/accept
 > authorization: Bearer k-owner
@@ -294,7 +294,7 @@
 < 202
 < content-type: application/json
 < lakelands-position: 17
-< {"outcome":"proposed","position":17,"proposal":"{proposal}","why":"check the amount first"}
+< {"outcome":"proposed","position":17,"proposal":"ac24d9f7f03baaec93a74995cce342cb","why":"check the amount first"}
 
 > POST /lakes/finance/proposals/{proposal}/reject
 > authorization: Bearer k-owner
@@ -405,7 +405,7 @@
 < 200
 < content-type: application/json
 < lakelands-position: 21
-< {"data":{"dropped":[["city",0]],"fields":[],"from_schema_hash":"{from_schema_hash}","lossless":true,"records_scanned":0,"report_id":"{report_id}","to_schema_hash":"{to_schema_hash}","type":"vendor"},"position":21}
+< {"data":{"dropped":[["city",0]],"fields":[],"from_schema_hash":"090f9f437d456f2b56a86f9eb2ebc1ac05fdb615bd5448a851763fa1c739cc92","lossless":true,"records_scanned":0,"report_id":"{report_id}","to_schema_hash":"129139dc0eaefc67c9c8fd5e3f55f17cb799b058ec09841f90e6022f29f15be7","type":"vendor"},"position":21}
 
 > POST /lakes/finance/schema/migrate/apply
 > authorization: Bearer k-owner
