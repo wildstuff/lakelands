@@ -11,6 +11,7 @@ members = [
     "crates/lakelands-cli",
     "crates/lakelands-server",
     "crates/lakelands-backings",
+    "crates/lakelands-client",
 ]
 
 [workspace.package]

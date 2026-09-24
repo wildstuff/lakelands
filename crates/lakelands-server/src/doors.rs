@@ -180,6 +180,28 @@ pub(crate) async fn run(
             let d: D = args(label, &a)?;
             to_json(&c.declare(who, Declaration::Type(d.ty)).await?)
         }
+        Door::Declare => {
+            // No tool's schema checks these routes' members, so the
+            // arguments refuse one they do not take.
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct D {
+                declaration: Declaration,
+            }
+            let d: D = args(label, &a)?;
+            to_json(&c.declare(who, d.declaration).await?)
+        }
+        Door::Apply => {
+            // No tool's schema checks these routes' members, so the
+            // arguments refuse one they do not take.
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct D {
+                declarations: Vec<Declaration>,
+            }
+            let d: D = args(label, &a)?;
+            to_json(&c.apply(who, d.declarations).await?)
+        }
         Door::AddField => {
             #[derive(Deserialize)]
             struct D {

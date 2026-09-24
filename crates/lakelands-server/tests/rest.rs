@@ -126,12 +126,12 @@ fn request(addr: SocketAddr, block: &[&str]) -> Vec<u8> {
     format!("{head}\r\n{body}").into_bytes()
 }
 
-/// A chunked body, joined.
+/// A chunked body, joined, as far as it has arrived.
 fn dechunk(mut raw: &str) -> String {
     let mut out = String::new();
     while let Some((size, rest)) = raw.split_once("\r\n") {
         let n = usize::from_str_radix(size.trim(), 16).unwrap();
-        if n == 0 {
+        if n == 0 || rest.len() < n + 2 {
             break;
         }
         out.push_str(&rest[..n]);
@@ -141,11 +141,35 @@ fn dechunk(mut raw: &str) -> String {
 }
 
 /// Send one request; answer the status, the pinned headers and the body.
+/// An event stream never ends by itself: it is read until the comment
+/// that says it caught up.
 async fn exchange(addr: SocketAddr, block: &[&str]) -> (String, Vec<String>, String) {
     let mut stream = TcpStream::connect(addr).await.unwrap();
     stream.write_all(&request(addr, block)).await.unwrap();
-    let mut raw = String::new();
-    stream.read_to_string(&mut raw).await.unwrap();
+    let mut bytes = Vec::new();
+    let mut buf = [0u8; 4096];
+    let raw = loop {
+        let n = tokio::time::timeout(std::time::Duration::from_secs(10), stream.read(&mut buf))
+            .await
+            .expect("an answer within ten seconds")
+            .unwrap();
+        let raw = String::from_utf8_lossy(&bytes).into_owned();
+        if n == 0 {
+            break raw;
+        }
+        bytes.extend_from_slice(&buf[..n]);
+        let raw = String::from_utf8_lossy(&bytes).into_owned();
+        if let Some((head, body)) = raw.split_once("\r\n\r\n")
+            && head
+                .to_ascii_lowercase()
+                .contains("content-type: text/event-stream")
+            && dechunk(body)
+                .split("\n\n")
+                .any(|e| e.starts_with(": next "))
+        {
+            break raw;
+        }
+    };
     let (head, body) = raw.split_once("\r\n\r\n").unwrap();
     let mut lines = head.lines();
     let status = lines.next().unwrap().split(' ').nth(1).unwrap().to_owned();
@@ -516,7 +540,8 @@ async fn a_lake_that_cannot_be_opened_is_503() {
     );
 }
 
-/// A caught-up feed sends a comment every fifteen seconds, so a proxy
+/// A caught-up feed says where it caught up once, then sends a comment
+/// every fifteen seconds, so a proxy
 /// keeps it open, and nothing before that. Slow by nature: it waits for
 /// one keep-alive.
 #[tokio::test]
@@ -552,6 +577,13 @@ async fn a_quiet_feed_sends_a_keep_alive_every_fifteen_seconds() {
     assert!(
         !seen.contains("id: "),
         "nothing was written, so the feed sent no event: {seen:?}"
+    );
+    // It said where it caught up once, at the start, and not again while
+    // the position stood still.
+    assert_eq!(
+        seen.matches(": next ").collect::<Vec<_>>(),
+        [": next "],
+        "{seen:?}"
     );
 }
 

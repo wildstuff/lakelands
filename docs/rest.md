@@ -20,7 +20,9 @@ this page says only how a request reaches it.
   once a key is presented, a lake segment holding a `/` answers `404`
   before that key is resolved. There is no session and no pin: a read that must see one state
   names `as_of` itself, and a page's `cursor` already carries the position
-  its first page was read at.
+  its first page was read at. Over REST the principal is what the server
+  resolves from the key: nothing a client says about who it is or what
+  it may do is taken.
 - **The position.** Every reply to a caller whose key resolved carries
   `Lakelands-Position`: the position the answer was read or written at,
   or, for a failure, the head of the log when it was answered. A JSON
@@ -77,6 +79,8 @@ key may hold any character.
 | `POST …/proposals/<id>/accept` | accept | — |
 | `POST …/proposals/<id>/reject` | reject | body: `reason` (optional) |
 | `POST …/schema/declare_type` | declare a type | body: `type` |
+| `POST …/schema/declare` | declare anything that does not reshape stored records | body: `declaration` |
+| `POST …/schema/apply` | declare a set together | body: `declarations` |
 | `POST …/schema/add_field` | add a field | body: `type`, `field` |
 | `POST …/schema/migrate` | a migration's preflight | body: `to` and `renames`, or `value_type` |
 | `POST …/schema/migrate/apply` | apply a migration | body: `to` and `renames`, or `value_type`; and `report_id` |
@@ -106,6 +110,12 @@ of the link type, so the version `If-Match` names is the link's.
   - unlinking a pair with no link is `not_found` (404).
 - **Reading links:** use `find` on the link type,
   `GET …/types/sys.link.<type>.<relation>/records`.
+
+`schema/declare` and `schema/apply` are REST's alone: MCP offers
+`declare_type`, since an agent authors types, while a program may
+declare verbs, triggers, object sets and the rest. Each body member is
+the declaration as the contract writes it, and a member the route does
+not take is refused.
 
 ### Query parameters
 
@@ -152,12 +162,49 @@ the whole body again appends nothing twice.
 `out_of_range`) that matches `kinds` and `types`, then each new
 one as it is appended, until the client goes away. Each event's `id` is
 its position, its `event` its kind, its `data` the event as JSON; a
-reconnecting client sends `Last-Event-ID` and resumes after it. A quiet
-stream sends a comment every fifteen seconds. How long a caught-up stream
-waits before it reads the log again is the configuration's
-`feed_poll_millis` (250 unless stated).
+reconnecting client sends `Last-Event-ID` and resumes after it. Each
+time the stream catches up at a position it has not named before, it
+sends the comment `: next <position>`: the first position not yet
+examined, the `next` a poll of the change feed would answer, so a client
+that reads what is there and stops knows where to stop. A quiet stream
+sends the comment `: keep-alive` every fifteen seconds. How long a
+caught-up stream waits before it reads the log again is the
+configuration's `feed_poll_millis` (250 unless stated).
 
 The feed is the log itself, unmasked, so only a principal that reads
 every field of every record, withheld records included
 (`Grants::reads_everything`), may open it
 (`docs/decisions/037-the-feed-over-a-network-door.md`).
+
+## A client in Rust
+
+`lakelands-client` is a lake over this door: `RemoteLake` is the
+contract's `LakeStore`, its catalog and its feed each door's route, so a
+program holds a remote lake as it holds one in its own process. It is
+given the base URL (`http` or `https`, without user-info), the lake, one
+API key per principal id it may act as, and the principal whose key
+reads the feed. It reads no file but the certificate bundle it is
+named, and nothing from the environment.
+
+- A call as a principal sends that principal's key; a principal the
+  client holds no key for is refused before anything is sent.
+- The feed is read as server-sent events until the limit, or until the
+  stream says `: next`; a stream silent for two keep-alives is
+  `unavailable`. A stream that keeps talking, in keep-alives or empty
+  lines, is not silent and holds a poll open until its limit; the
+  caller's own timeout is the bound for that. An ingest is held to the
+  same silence bound: while records are sent, when the server stops
+  taking them (time spent waiting on the source never counts), and once
+  they have all been sent, when its answer goes quiet.
+- No answer is held past `max_answer_bytes`: a whole answer, one event
+  of the feed or one line of an ingest's answer that grows past it is
+  `unavailable`, and the client stops reading.
+- What a request cannot carry is refused as `invalid` before anything
+  is sent: an empty key, type or other name, which as an empty path
+  segment would name another route, and an idempotency key holding a
+  line break.
+- The host's own operations (`verify`, `rebuild`, `restrict`,
+  `unrestrict`, `checkpoint`, `age`, `purge_source`) are no door's, and
+  are `unbound`.
+- Its `limits()` are the ones it was configured with, not the server's:
+  the server keeps its own, and its refusals win.

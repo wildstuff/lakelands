@@ -109,6 +109,12 @@ pub enum Door {
     Reject,
     /// `declare` of a type.
     DeclareType,
+    /// `declare`: any declaration. Served over REST only; the generator
+    /// makes no tool of it, so agents author types with `declare_type`.
+    Declare,
+    /// `apply`: a set of declarations as one. Served over REST only, as
+    /// `declare` is.
+    Apply,
     /// `add_field`.
     AddField,
     /// `migrate`: the preflight, or with a `report_id` argument the
