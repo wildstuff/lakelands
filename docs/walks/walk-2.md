@@ -203,14 +203,13 @@ touch it. INV-5006 is not due yet.
 `lakelands.json` names one endpoint, `collector`, for the lake's
 `trigger_fired` events, starting from the lake's first event
 (`start: genesis`). `serve` delivers for as long as it runs, so here it
-must stay up with no client. Without a `server` section, `serve --mcp`
-ends when its standard input does. A plain `serve` that runs only the
-deliverer is refused ("nothing to serve was named"), and that is what
-this step stands in for. `sleep 2 |` keeps standard input open for two
-seconds, a margin chosen to cover a poll of 200 milliseconds and three
-posts to loopback. lakelands#88 is the other face of the same gap: with
-a `server` section, `serve --mcp` does not end with its client. The
-step changes when that is settled:
+must stay up with no client. `serve --mcp` ends when its standard input
+does, with or without a `server` section (lakelands#88), and its
+deliverer and the lake's lease end with it. A plain `serve` that runs
+only the deliverer is refused ("nothing to serve was named"), and that
+is what this step stands in for. `sleep 2 |` keeps standard input open
+for two seconds, a margin chosen to cover a poll of 200 milliseconds and
+three posts to loopback:
 
 ```sh
 sleep 2 | lakelands serve --mcp

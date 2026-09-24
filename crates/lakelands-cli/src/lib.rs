@@ -362,7 +362,9 @@ async fn dispatch(
 /// `serve --mcp`: the lake on standard input and output, as the principal
 /// the command acts as; and, when the root configures the HTTP door, every
 /// lake of the root over HTTP, each caller resolved from the root's
-/// principals. Standard output carries the protocol only.
+/// principals. Standard output carries the protocol only. The command ends
+/// when its stdio client closes, HTTP door or not, and the process's
+/// deliverers and writer leases end with it.
 async fn serve(
     root: &root::Root,
     store: Arc<dyn LakeStore>,
@@ -402,6 +404,10 @@ async fn serve(
     let http = lakelands_server::serve_http(config, resolver, Arc::new(lookup))
         .await
         .map_err(failed)?;
-    let (stdio, http) = tokio::join!(lakelands_server::serve_stdio(store, who), http.run());
-    stdio.and(http).map_err(failed)
+    // The command ends with its stdio client: the HTTP door beside it, the
+    // deliverers and the lake's writer lease end with the process.
+    tokio::select! {
+        stdio = lakelands_server::serve_stdio(store, who) => stdio.map_err(failed),
+        http = http.run() => http.map_err(failed),
+    }
 }
