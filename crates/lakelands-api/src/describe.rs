@@ -153,7 +153,9 @@ pub struct TypeRights {
     pub get: bool,
     /// `upsert`: at least one authored field is writable.
     pub upsert: bool,
-    /// `retire`.
+    /// `retire`: every field of the type is writable, whatever its
+    /// authority, as the principal's grants resolve it. A principal who
+    /// may write only some fields of a record may not remove all of them.
     pub retire: bool,
 }
 
