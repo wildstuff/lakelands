@@ -89,7 +89,8 @@ macro_rules! door_checks {
             a_reference_key_field_filled_from_the_key_must_name_a_live_record,
             key_components_and_source_ids_use_each_values_one_form,
             schema_hashes_and_proposal_ids_have_the_stores_form,
-            links_are_written_walked_and_held_to_their_relation);
+            links_are_written_walked_and_held_to_their_relation,
+            a_relation_declared_again_with_another_target_reshapes_its_links);
     };
     (@each $new:expr, $block_on:path; $($name:ident),* $(,)?) => {
         $(
@@ -2093,4 +2094,75 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
         .unwrap();
     let json = serde_json::to_value(&after.data).unwrap();
     assert_eq!(json["rows"].as_array().map(Vec::len), Some(0), "{json}");
+}
+
+/// A relation carried by link records, dropped by a migration and
+/// declared again with another target, would reshape the links it kept:
+/// the declaration is refused, naming the link type, as a migration
+/// (`docs/decisions/035-a-link-is-a-record.md`, extended).
+pub async fn a_relation_declared_again_with_another_target_reshapes_its_links(
+    store: Arc<dyn LakeStore>,
+) {
+    let c = store.catalog(WriteContext::default());
+    let cast = Cast::of(store.lake());
+    let own = &cast.owner;
+    let decl = |v: Value| serde_json::from_value::<Declaration>(v).unwrap();
+    let doc = |relations: Value| {
+        decl(json!({"declare": "type", "name": "doc",
+                    "fields": [{"name": "title", "type": {"kind": "text"}}],
+                    "relations": relations}))
+    };
+    for d in [
+        decl(json!({"declare": "type", "name": "person",
+                    "fields": [{"name": "name", "type": {"kind": "text"}}]})),
+        decl(json!({"declare": "type", "name": "team",
+                    "fields": [{"name": "name", "type": {"kind": "text"}}]})),
+        doc(json!([{"name": "signed_by", "target": "person"}])),
+    ] {
+        c.declare(own, d).await.unwrap();
+    }
+    for (t, k) in [("person", "p1"), ("doc", "d1")] {
+        let f = if t == "doc" { "title" } else { "name" };
+        c.upsert(
+            own,
+            &ty(t),
+            &key(k),
+            patch(&[(f, json!(k))]),
+            WriteOpts::default(),
+        )
+        .await
+        .unwrap();
+    }
+    c.link(
+        own,
+        &ty("doc"),
+        &key("d1"),
+        &"signed_by".into(),
+        &key("p1"),
+        Patch::new(),
+        WriteOpts::default(),
+    )
+    .await
+    .unwrap();
+    // The relation dropped: a migration, which keeps the links.
+    let Declaration::Type(without) = doc(json!([])) else {
+        unreachable!()
+    };
+    let m = lakelands_api::write::Migration {
+        to: without,
+        renames: vec![],
+    };
+    let report = c.migrate(own, m.clone()).await.unwrap();
+    c.migrate_apply(own, m, &report.data.report_id)
+        .await
+        .unwrap();
+    // Declared again, pointing at teams: refused, naming the link type.
+    let refused = c
+        .declare(own, doc(json!([{"name": "signed_by", "target": "team"}])))
+        .await;
+    assert!(
+        matches!(&refused, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
+            if message.contains("sys.link.doc.signed_by")),
+        "{refused:?}"
+    );
 }
