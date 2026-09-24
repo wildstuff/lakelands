@@ -1,11 +1,27 @@
-//! The server door: serves one catalog of typed tools over MCP, on
-//! stdio and on HTTP.
+//! The server door: serves one lake's catalog as MCP tools, on stdio and
+//! on streamable HTTP.
 //!
-//! The MCP transport is not built yet. What is here already is the
-//! default [`PrincipalResolver`](lakelands_api::seam::PrincipalResolver),
-//! which the CLI uses too: both doors turn a caller into a principal the
-//! same way.
+//! One MCP session serves one lake as one principal. The principal comes
+//! from the [`resolver`] — the API key an HTTP caller presents, or the
+//! local user that starts a stdio server — and never from anything the
+//! client claims. The tools are exactly those
+//! [`lakelands_api::tools::tools`] generates from what `describe` shows
+//! that principal; every result carries its position; every error is one
+//! of the contract's closed set, said as the CLI says it ([`say`]).
+//!
+//! 0.1.0 speaks `initialize`, `notifications/initialized`, `ping`,
+//! `tools/list` and `tools/call`. The session's `as_of` pin is the
+//! generated `pin` tool. Notifications of the change feed follow after
+//! 0.1.0 over the same session.
 
 #![forbid(unsafe_code)]
 
+pub mod http;
 pub mod resolver;
+pub mod say;
+pub mod session;
+pub mod stdio;
+
+pub use http::{HttpConfig, HttpServer, LakeOpener, serve_http};
+pub use session::Session;
+pub use stdio::{serve_io, serve_stdio};

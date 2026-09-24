@@ -12,6 +12,10 @@ Business time is a separate axis. `valid_at` asks what was true in the
 world at a moment; `as_of` asks what the lake knew at a position. The
 two combine, and neither stands in for the other.
 
+Over MCP, the session pin is the generated `pin` tool: it pins `as_of`
+for the session's later reads until cleared, a read's own `as_of` still
+wins, and writes are never pinned.
+
 ## Why
 
 An agent's decision is only auditable if one can reconstruct what it

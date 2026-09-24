@@ -35,6 +35,17 @@ pub struct Entry {
     pub api_keys: Vec<String>,
 }
 
+/// Whether two keys are the same, in time that depends only on their
+/// lengths, so that comparing does not tell a caller how much of a key
+/// it guessed.
+pub(crate) fn same_key(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0u8, |diff, (x, y)| diff | (x ^ y))
+            == 0
+}
+
 /// Resolves credentials against a fixed list of entries.
 #[derive(Clone, Debug, Default)]
 pub struct StaticResolver {
@@ -53,7 +64,7 @@ impl PrincipalResolver for StaticResolver {
     async fn resolve(&self, lake: &LakeId, credential: &Credential) -> Result<Principal> {
         let entry = self.entries.iter().find(|e| match credential {
             Credential::LocalUser(name) => &e.name == name,
-            Credential::ApiKey(key) => e.api_keys.iter().any(|k| k == key),
+            Credential::ApiKey(key) => e.api_keys.iter().any(|k| same_key(k, key)),
             Credential::Bearer(_) => false,
         });
         match entry {

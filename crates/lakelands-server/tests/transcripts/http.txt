@@ -1,0 +1,168 @@
+# MCP over streamable HTTP. The clerk's key is k-clerk; the session id
+# the server issues is shown as {session}.
+
+# No key, no session.
+> POST /lakes/finance/mcp
+> {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"transcript","version":"1"}}}
+< 401
+< content-type: application/json
+< {"error":{"code":-32600,"message":"present an API key as `Authorization: Bearer <key>`"},"id":null,"jsonrpc":"2.0"}
+
+# An unknown key.
+> POST /lakes/finance/mcp
+> authorization: Bearer k-nobody
+> {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"transcript","version":"1"}}}
+< 401
+< content-type: application/json
+< {"error":{"code":-32600,"message":"the key is not known for this lake"},"id":null,"jsonrpc":"2.0"}
+
+# The clerk initializes; the answer names the session.
+> POST /lakes/finance/mcp
+> authorization: Bearer k-clerk
+> accept: application/json, text/event-stream
+> {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"transcript","version":"1"}}}
+< 200
+< content-type: application/json
+< mcp-session-id: {session}
+< {"id":1,"jsonrpc":"2.0","result":{"capabilities":{"tools":{"listChanged":false}},"instructions":"This session serves one lake, `finance`. Every answer carries the position it was read or written at. Call `describe` to see what the lake holds.","protocolVersion":"2025-06-18","serverInfo":{"name":"lakelands","version":"0.0.0"}}}
+
+> POST /lakes/finance/mcp
+> authorization: Bearer k-clerk
+> mcp-session-id: {session}
+> {"jsonrpc":"2.0","method":"notifications/initialized"}
+< 202
+
+# The clerk's tools: no amount or secret to write, no review, no schema.
+> POST /lakes/finance/mcp
+> authorization: Bearer k-clerk
+> mcp-session-id: {session}
+> mcp-protocol-version: 2025-06-18
+> {"jsonrpc":"2.0","id":2,"method":"tools/list"}
+< 200
+< content-type: application/json
+< {"id":2,"jsonrpc":"2.0","result":{"tools":[{"description":"Call `approve` on a `invoice` record. It runs at once.","inputSchema":{"additionalProperties":false,"properties":{"expected_version":{"description":"Refuse unless the record is at this version; 0 means it must not exist yet.","minimum":0,"type":"integer"},"idempotency_key":{"description":"A retry with the same key is a no-op answering the first outcome.","type":"string"},"key":{"description":"The key of the `invoice` record.","type":"string"},"payload":{"additionalProperties":false,"properties":{},"required":[],"type":"object"}},"required":["key","payload"],"type":"object"},"name":"approve","outputSchema":{"properties":{"outcome":{"enum":["applied","proposed"]},"position":{"type":"integer"},"proposal":{"type":"string"},"version":{"type":"integer"},"why":{"type":"string"}},"required":["outcome","position"],"type":"object"}},{"description":"Describe the lake, or one type on six axes: structure, access, rights, actions, lineage, lifecycle.","inputSchema":{"additionalProperties":false,"properties":{"as_of":{"description":"Read the lake as it was at this position.","minimum":0,"type":"integer"},"type":{"enum":["invoice","partner"],"type":"string"},"valid_at":{"description":"Read what was true in the world at this instant.","format":"date-time","type":"string"}},"required":[],"type":"object"},"name":"describe","outputSchema":{"properties":{"data":{"type":"object"},"position":{"type":"integer"}},"required":["position","data"],"type":"object"}},{"description":"Find `invoice` (A bill received.) records: filter with `where`, sort, page with `cursor`, or aggregate. Every answer carries the position it was read at.","inputSchema":{"additionalProperties":false,"properties":{"aggregate":{"additionalProperties":false,"properties":{"group_by":{"items":{"enum":["amount","status","verdict","reason","note","partner"],"type":"string"},"type":"array"},"measures":{"items":{"additionalProperties":false,"properties":{"field":{"enum":["amount","status","verdict","reason","note","partner"],"type":"string"},"func":{"enum":["count","sum","min","max","avg"]},"name":{"type":"string"}},"required":["name","func"],"type":"object"},"type":"array"}},"required":["measures"],"type":"object"},"as_of":{"description":"Read the lake as it was at this position.","minimum":0,"type":"integer"},"cursor":{"type":"string"},"limit":{"minimum":1,"type":"integer"},"order_by":{"items":{"additionalProperties":false,"properties":{"by":{"enum":["value","known_at","seen_at"]},"dir":{"enum":["asc","desc"]},"field":{"enum":["amount","status","verdict","reason","note","partner"],"type":"string"}},"required":["field"],"type":"object"},"type":"array"},"valid_at":{"description":"Read what was true in the world at this instant.","format":"date-time","type":"string"},"where":{"description":"A condition in the expression grammar, e.g. status = 'open' and amount > 100.","type":"string"},"with_meta":{"type":"boolean"}},"required":[],"type":"object"},"name":"invoice_find","outputSchema":{"properties":{"data":{"properties":{"next_cursor":{"type":"string"},"rows":{"type":"array"},"shape":{"enum":["records","groups"]}},"required":["shape","rows"],"type":"object"},"position":{"type":"integer"}},"required":["position","data"],"type":"object"}},{"description":"Get one `invoice` (A bill received.) record by key.","inputSchema":{"additionalProperties":false,"properties":{"as_of":{"description":"Read the lake as it was at this position.","minimum":0,"type":"integer"},"key":{"type":"string"},"valid_at":{"description":"Read what was true in the world at this instant.","format":"date-time","type":"string"},"with_meta":{"type":"boolean"}},"required":["key"],"type":"object"},"name":"invoice_get","outputSchema":{"properties":{"data":{"properties":{"fields":{"properties":{"amount":{"description":"An exact decimal, written as a string.","pattern":"^-?[0-9]+(\\.[0-9]+)?$","type":"string"},"note":{"type":"string"},"partner":{"description":"The key of a `partner` record.","type":"string"},"reason":{"type":"string"},"status":{"type":"string"},"verdict":{"type":"string"}},"type":"object"},"key":{"type":"string"},"masked":{"items":{"type":"string"},"type":"array"},"meta":{"description":"Per field: origin, known_at, seen_at, position, writer, source, procedure_version.","type":"object"},"type":{"const":"invoice"},"version":{"type":"integer"}},"required":["type","key","version","fields"],"type":"object"},"position":{"type":"integer"}},"required":["position","data"],"type":"object"}},{"description":"Create or change a `invoice` (A bill received.) record. Answers `applied` with the new position, or `proposed` if the write waits for review.","inputSchema":{"additionalProperties":false,"properties":{"expected_version":{"description":"Refuse unless the record is at this version; 0 means it must not exist yet.","minimum":0,"type":"integer"},"fields":{"additionalProperties":false,"description":"Only the fields to change: an absent field is unchanged, null clears it.","properties":{"status":{"anyOf":[{"type":"string"},{"type":"null"}]}},"type":"object"},"idempotency_key":{"description":"A retry with the same key is a no-op answering the first outcome.","type":"string"},"key":{"type":"string"}},"required":["key","fields"],"type":"object"},"name":"invoice_upsert","outputSchema":{"properties":{"outcome":{"enum":["applied","proposed"]},"position":{"type":"integer"},"proposal":{"type":"string"},"version":{"type":"integer"},"why":{"type":"string"}},"required":["outcome","position"],"type":"object"}},{"description":"Find `partner` records: filter with `where`, sort, page with `cursor`, or aggregate. Every answer carries the position it was read at.","inputSchema":{"additionalProperties":false,"properties":{"aggregate":{"additionalProperties":false,"properties":{"group_by":{"items":{"enum":["name"],"type":"string"},"type":"array"},"measures":{"items":{"additionalProperties":false,"properties":{"field":{"enum":["name"],"type":"string"},"func":{"enum":["count","sum","min","max","avg"]},"name":{"type":"string"}},"required":["name","func"],"type":"object"},"type":"array"}},"required":["measures"],"type":"object"},"as_of":{"description":"Read the lake as it was at this position.","minimum":0,"type":"integer"},"cursor":{"type":"string"},"limit":{"minimum":1,"type":"integer"},"order_by":{"items":{"additionalProperties":false,"properties":{"by":{"enum":["value","known_at","seen_at"]},"dir":{"enum":["asc","desc"]},"field":{"enum":["name"],"type":"string"}},"required":["field"],"type":"object"},"type":"array"},"valid_at":{"description":"Read what was true in the world at this instant.","format":"date-time","type":"string"},"where":{"description":"A condition in the expression grammar, e.g. status = 'open' and amount > 100.","type":"string"},"with_meta":{"type":"boolean"}},"required":[],"type":"object"},"name":"partner_find","outputSchema":{"properties":{"data":{"properties":{"next_cursor":{"type":"string"},"rows":{"type":"array"},"shape":{"enum":["records","groups"]}},"required":["shape","rows"],"type":"object"},"position":{"type":"integer"}},"required":["position","data"],"type":"object"}},{"description":"Get one `partner` record by key.","inputSchema":{"additionalProperties":false,"properties":{"as_of":{"description":"Read the lake as it was at this position.","minimum":0,"type":"integer"},"key":{"type":"string"},"valid_at":{"description":"Read what was true in the world at this instant.","format":"date-time","type":"string"},"with_meta":{"type":"boolean"}},"required":["key"],"type":"object"},"name":"partner_get","outputSchema":{"properties":{"data":{"properties":{"fields":{"properties":{"name":{"type":"string"}},"type":"object"},"key":{"type":"string"},"masked":{"items":{"type":"string"},"type":"array"},"meta":{"description":"Per field: origin, known_at, seen_at, position, writer, source, procedure_version.","type":"object"},"type":{"const":"partner"},"version":{"type":"integer"}},"required":["type","key","version","fields"],"type":"object"},"position":{"type":"integer"}},"required":["position","data"],"type":"object"}},{"description":"Call `pay` on a `invoice` record. It is recorded as a proposal and runs when accepted.","inputSchema":{"additionalProperties":false,"properties":{"expected_version":{"description":"Refuse unless the record is at this version; 0 means it must not exist yet.","minimum":0,"type":"integer"},"idempotency_key":{"description":"A retry with the same key is a no-op answering the first outcome.","type":"string"},"key":{"description":"The key of the `invoice` record.","type":"string"},"payload":{"additionalProperties":false,"properties":{"reference":{"type":"string"}},"required":[],"type":"object"}},"required":["key","payload"],"type":"object"},"name":"pay","outputSchema":{"properties":{"outcome":{"enum":["applied","proposed"]},"position":{"type":"integer"},"proposal":{"type":"string"},"version":{"type":"integer"},"why":{"type":"string"}},"required":["outcome","position"],"type":"object"}},{"description":"Pin this session's reads to one position until cleared, so every read in a turn sees the same state: `as_of` pins that position, no argument pins the current head, `clear` removes the pin. A read's own `as_of` still wins; writes are never pinned.","inputSchema":{"additionalProperties":false,"properties":{"as_of":{"description":"The position to pin; the current head when left out.","minimum":0,"type":"integer"},"clear":{"description":"Remove the pin.","type":"boolean"}},"required":[],"type":"object"},"name":"pin","outputSchema":{"properties":{"pinned":{"type":["integer","null"]},"position":{"type":"integer"}},"required":["position","pinned"],"type":"object"}},{"description":"Record a write as a proposal for review instead of applying it.","inputSchema":{"additionalProperties":false,"properties":{"why":{"type":"string"},"write":{"properties":{"write":{"enum":["upsert","retire","call"]}},"required":["write"],"type":"object"}},"required":["write","why"],"type":"object"},"name":"propose","outputSchema":{"properties":{"outcome":{"enum":["applied","proposed"]},"position":{"type":"integer"},"proposal":{"type":"string"},"version":{"type":"integer"},"why":{"type":"string"}},"required":["outcome","position"],"type":"object"}},{"description":"Walk declared relations from a start (a record, a filter or a search) and return rows or a graph. Covers neighbours, traversal, paths and subgraphs.","inputSchema":{"additionalProperties":false,"properties":{"as_of":{"description":"Read the lake as it was at this position.","minimum":0,"type":"integer"},"cursor":{"type":"string"},"limit":{"minimum":1,"type":"integer"},"order_by":{"items":{"additionalProperties":false,"properties":{"by":{"enum":["value","known_at","seen_at"]},"dir":{"enum":["asc","desc"]},"field":{"type":"string"}},"required":["field"],"type":"object"},"type":"array"},"project":{"properties":{"as":{"enum":["rows","graph","aggregate"]},"fields":{"items":{"type":"string"},"type":"array"}},"type":"object"},"start":{"properties":{"key":{"type":"string"},"search":{"type":"object"},"type":{"enum":["invoice","partner"],"type":"string"},"where":{"type":"string"}},"required":["type"],"type":"object"},"steps":{"items":{"properties":{"depth":{"properties":{"max":{"minimum":0,"type":"integer"},"min":{"minimum":0,"type":"integer"}},"type":"object"},"relation":{"type":"string"},"type":{"type":"string"},"walk":{"enum":["out","in","both"]},"where":{"type":"string"}},"required":["relation"],"type":"object"},"type":"array"},"to":{"description":"[type, key]: return only the shortest walk to this record.","maxItems":2,"minItems":2,"prefixItems":[{"type":"string"},{"type":"string"}],"type":"array"},"valid_at":{"description":"Read what was true in the world at this instant.","format":"date-time","type":"string"}},"required":["start"],"type":"object"},"name":"query","outputSchema":{"properties":{"data":{"type":"object"},"position":{"type":"integer"}},"required":["position","data"],"type":"object"}},{"description":"Ranked search over one type, lexical, by vector or both. Hits come best first, each with a score; page with `cursor`.","inputSchema":{"additionalProperties":false,"properties":{"as_of":{"description":"Read the lake as it was at this position.","minimum":0,"type":"integer"},"cursor":{"type":"string"},"field":{"type":"string"},"k":{"minimum":1,"type":"integer"},"mode":{"enum":["lexical","vector","hybrid"]},"text":{"type":"string"},"type":{"enum":["invoice","partner"],"type":"string"},"valid_at":{"description":"Read what was true in the world at this instant.","format":"date-time","type":"string"},"vector":{"items":{"type":"number"},"type":"array"},"where":{"type":"string"},"with_meta":{"type":"boolean"}},"required":["type","mode"],"type":"object"},"name":"search","outputSchema":{"properties":{"data":{"properties":{"hits":{"type":"array"},"next_cursor":{"type":"string"},"ranked_by":{"type":"string"}},"type":"object"},"position":{"type":"integer"}},"required":["position","data"],"type":"object"}}]}}
+
+# A result's position is also a header.
+> POST /lakes/finance/mcp
+> authorization: Bearer k-clerk
+> mcp-session-id: {session}
+> {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"invoice_get","arguments":{"key":"INV-1","with_meta":true}}}
+< 200
+< content-type: application/json
+< lakelands-position: 5
+< {"id":3,"jsonrpc":"2.0","result":{"content":[{"text":"position 5\n{\n  \"data\": {\n    \"fields\": {\n      \"status\": \"open\"\n    },\n    \"key\": \"INV-1\",\n    \"meta\": {\n      \"status\": {\n        \"known_at\": \"2026-01-01T00:00:05.000000Z\",\n        \"origin\": \"authored\",\n        \"position\": 5,\n        \"writer\": \"human:owner\"\n      }\n    },\n    \"type\": \"invoice\",\n    \"version\": 1\n  },\n  \"position\": 5\n}","type":"text"}],"isError":false,"structuredContent":{"data":{"fields":{"status":"open"},"key":"INV-1","meta":{"status":{"known_at":"2026-01-01T00:00:05.000000Z","origin":"authored","position":5,"writer":"human:owner"}},"type":"invoice","version":1},"position":5}}}
+
+# A write: the clerk may write the status; the new position is also a
+# header.
+> POST /lakes/finance/mcp
+> authorization: Bearer k-clerk
+> mcp-session-id: {session}
+> {"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"invoice_upsert","arguments":{"key":"INV-1","fields":{"status":"held"},"expected_version":1}}}
+< 200
+< content-type: application/json
+< lakelands-position: 6
+< {"id":31,"jsonrpc":"2.0","result":{"content":[{"text":"position 6\n{\n  \"outcome\": \"applied\",\n  \"position\": 6,\n  \"version\": 2\n}","type":"text"}],"isError":false,"structuredContent":{"outcome":"applied","position":6,"version":2}}}
+
+# A refused write: the verdict is not the clerk's, and nothing is written.
+> POST /lakes/finance/mcp
+> authorization: Bearer k-clerk
+> mcp-session-id: {session}
+> {"jsonrpc":"2.0","id":32,"method":"tools/call","params":{"name":"invoice_upsert","arguments":{"key":"INV-1","fields":{"verdict":"ok"}}}}
+< 200
+< content-type: application/json
+< {"id":32,"jsonrpc":"2.0","result":{"content":[{"text":"error: refused on `verdict`: you hold no grant for this\n  what to do: act as a principal whose grants allow it, or ask the lake's owner for a grant\n","type":"text"},{"text":"{\"error\":\"refused\",\"field\":\"verdict\",\"reason\":{\"refusal\":\"not_granted\"}}","type":"text"}],"isError":true}}
+
+# A misspelled argument is refused before anything runs, so a
+# compare-and-set never becomes an unconditional write.
+> POST /lakes/finance/mcp
+> authorization: Bearer k-clerk
+> mcp-session-id: {session}
+> {"jsonrpc":"2.0","id":33,"method":"tools/call","params":{"name":"invoice_upsert","arguments":{"key":"INV-1","fields":{"status":"open"},"expected_vesion":1}}}
+< 200
+< content-type: application/json
+< {"id":33,"jsonrpc":"2.0","result":{"content":[{"text":"error: `invoice_upsert` takes no argument `expected_vesion`; nothing was done\n  what to do: use only the arguments the tool's input schema lists, then call it again\n","type":"text"}],"isError":true}}
+
+# The session is the clerk's: to another key it does not exist.
+> POST /lakes/finance/mcp
+> authorization: Bearer k-owner
+> mcp-session-id: {session}
+> {"jsonrpc":"2.0","id":4,"method":"ping"}
+< 404
+< content-type: application/json
+< {"error":{"code":-32600,"message":"there is no such session; initialize a new one"},"id":null,"jsonrpc":"2.0"}
+
+# Without a session id, and from an origin not on the list.
+> POST /lakes/finance/mcp
+> authorization: Bearer k-clerk
+> {"jsonrpc":"2.0","id":5,"method":"ping"}
+< 400
+< content-type: application/json
+< {"error":{"code":-32600,"message":"name the session in Mcp-Session-Id, or initialize one"},"id":null,"jsonrpc":"2.0"}
+
+> POST /lakes/finance/mcp
+> authorization: Bearer k-clerk
+> mcp-session-id: {session}
+> origin: https://evil.example
+> {"jsonrpc":"2.0","id":6,"method":"ping"}
+< 403
+< content-type: application/json
+< {"error":{"code":-32600,"message":"this origin may not call the server"},"id":null,"jsonrpc":"2.0"}
+
+# An allowed origin, a batch, an unknown protocol version.
+> POST /lakes/finance/mcp
+> authorization: Bearer k-clerk
+> mcp-session-id: {session}
+> origin: http://localhost:3000
+> {"jsonrpc":"2.0","id":7,"method":"ping"}
+< 200
+< content-type: application/json
+< {"id":7,"jsonrpc":"2.0","result":{}}
+
+> POST /lakes/finance/mcp
+> authorization: Bearer k-clerk
+> mcp-session-id: {session}
+> [{"jsonrpc":"2.0","id":8,"method":"ping"}]
+< 400
+< content-type: application/json
+< {"error":{"code":-32600,"message":"send one message per request; batches are not taken"},"id":null,"jsonrpc":"2.0"}
+
+> POST /lakes/finance/mcp
+> authorization: Bearer k-clerk
+> mcp-session-id: {session}
+> mcp-protocol-version: 1999-01-01
+> {"jsonrpc":"2.0","id":9,"method":"ping"}
+< 400
+< content-type: application/json
+< {"error":{"code":-32600,"message":"this server does not speak that protocol version"},"id":null,"jsonrpc":"2.0"}
+
+# No event stream yet.
+> GET /lakes/finance/mcp
+> authorization: Bearer k-clerk
+> mcp-session-id: {session}
+< 405
+< allow: POST, DELETE
+< content-type: application/json
+< {"error":{"code":-32600,"message":"this server takes POST and DELETE; it offers no event stream yet"},"id":null,"jsonrpc":"2.0"}
+
+# The session belongs to its lake.
+> POST /lakes/hr/mcp
+> authorization: Bearer k-clerk
+> mcp-session-id: {session}
+> {"jsonrpc":"2.0","id":10,"method":"ping"}
+< 404
+< content-type: application/json
+< {"error":{"code":-32600,"message":"there is no such session; initialize a new one"},"id":null,"jsonrpc":"2.0"}
+
+# DELETE ends the session; it is gone afterwards.
+> DELETE /lakes/finance/mcp
+> authorization: Bearer k-clerk
+> mcp-session-id: {session}
+< 204
+
+> POST /lakes/finance/mcp
+> authorization: Bearer k-clerk
+> mcp-session-id: {session}
+> {"jsonrpc":"2.0","id":11,"method":"ping"}
+< 404
+< content-type: application/json
+< {"error":{"code":-32600,"message":"there is no such session; initialize a new one"},"id":null,"jsonrpc":"2.0"}

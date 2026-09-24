@@ -9,7 +9,9 @@ summing, ranges and grouping; a view type is found like any other type.
 Every declared verb is one door of its own, with a typed payload. The
 generic doors are `describe`, `query`, `search`, `propose`,
 `proposals`, `accept`, `reject`, and the schema doors `declare_type`,
-`add_field` and `migrate`. Three doors of the `Catalog` have no tool of
+`add_field` and `migrate`. One generic tool is a door of the MCP
+session rather than of the `Catalog`: `pin`, which pins `as_of` for the
+session's later reads (009). Three doors of the `Catalog` have no tool of
 their own: `describe_type` is `describe` with a `type`, `migrate_apply`
 is `migrate` with the `report_id` of the preflight it applies, and
 `ingest` is deliberately not a tool — a source feeds a lake through a
