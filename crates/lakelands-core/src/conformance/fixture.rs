@@ -7,6 +7,7 @@
 //! done; [`Must`] does the same for any call a check makes itself.
 
 use std::fmt::Debug;
+use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -374,4 +375,38 @@ pub fn committed(windows: &[Committed]) -> (u32, u32) {
 /// before the write.
 pub fn before(outcome: &Outcome) -> Position {
     Position(outcome.position().0.saturating_sub(1))
+}
+
+/// One future of a check's concurrent callers.
+pub type Caller<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// Drive every caller to its end together, in the check's one task, and
+/// answer their outputs in the callers' order. Each caller is polled
+/// whenever the task wakes, so while one waits on the lake (the store
+/// runs each write on its blocking pool, under its writer lock) the
+/// others go on: the calls overlap at the store as the calls of many
+/// clients do. No runtime is needed beyond the one the engine's test
+/// brings.
+pub async fn join_all<T>(callers: Vec<Caller<'_, T>>) -> Vec<T> {
+    let mut pending: Vec<Option<Caller<'_, T>>> = callers.into_iter().map(Some).collect();
+    let mut done: Vec<Option<T>> = pending.iter().map(|_| None).collect();
+    std::future::poll_fn(|cx| {
+        let mut all = true;
+        for (slot, out) in pending.iter_mut().zip(done.iter_mut()) {
+            if let Some(f) = slot {
+                match f.as_mut().poll(cx) {
+                    Poll::Ready(v) => {
+                        *out = Some(v);
+                        *slot = None;
+                    }
+                    Poll::Pending => all = false,
+                }
+            }
+        }
+        if all { Poll::Ready(()) } else { Poll::Pending }
+    })
+    .await;
+    done.into_iter()
+        .map(|v| v.expect("every caller ended"))
+        .collect()
 }

@@ -10,6 +10,7 @@ mod aggregates;
 mod aging;
 mod backings;
 mod bundles;
+mod concurrency;
 mod cursors;
 mod decimals;
 mod derived_fields;
@@ -209,4 +210,9 @@ pub const ALL: &[Check] = &[
     embeddings::EMBED_RULES,
     embeddings::EMBED_BATCH,
     proposals::EXECUTOR_RECORDED,
+    concurrency::WRITES_LAND_ONCE,
+    concurrency::DECLARATION_ORDERED,
+    concurrency::READS_AT_A_POSITION,
+    concurrency::FEED_READERS_AGREE,
+    concurrency::BACKED_UNDER_WRITES,
 ];

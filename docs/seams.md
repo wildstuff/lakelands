@@ -944,6 +944,28 @@ in one append or refused whole, one refusal naming every problem
 (`docs/decisions/028-authoring-is-strict-and-whole.md`). It is how a
 bundle reaches a lake; it has no tool in `0.1.0`.
 
+**Many callers, one writer.** A lake has one writing process
+(`docs/decisions/008-one-writer-per-lake.md`), and any number of callers
+may use its doors at once; the writer orders their writes. What a caller
+sees does not depend on who else is writing:
+
+- Every write lands once. The log's positions follow one another without
+  a gap, each write's answer names a position of its own from which the
+  write is visible, a record's versions count every write to it, and the
+  hash chain verifies.
+- A declaration made while others write takes its place in the same
+  order: a write after it sees its shape, a write before it does not.
+- A read at a position answers the same whenever it is made, during the
+  writes or after them, and `find` and `get` at one position agree.
+- Two feed consumers polling from one position while others write see the
+  same events, in the same order, each once.
+- A write whose field a backing fills answers a position its own filled
+  field is visible from, and one input is called once across all the
+  writers.
+
+The suite holds each of these on every engine (the `concurrency` checks),
+with its callers run together against one lake.
+
 The `seam-width` gate counts the methods of `LakeStore` and the three
 engine traits together, and holds them at 110 or fewer. `Catalog` is not
 in that count: its width is governed by the four-doors rule
