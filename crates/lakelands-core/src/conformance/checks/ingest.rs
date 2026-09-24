@@ -44,6 +44,12 @@ check!(
     "016 and 015: an author never overwrites a figure the source is the authority on; the patch is refused as the wrong door"
 );
 
+check!(
+    /// A revert is a change; a redelivery and an unchanged record are not.
+    REVERT_IS_A_CHANGE = ingest_skips_redeliveries_and_unchanged_records_but_writes_a_revert,
+    "016 and the log format: an ingest that changes nothing appends nothing, and a record set back to an earlier value is a new change, not a redelivery"
+);
+
 /// `feed`: a source's `body` and an author's `verdict`.
 fn feed() -> TypeDecl {
     let mut body = field("body", StorageKind::Text);
@@ -236,6 +242,47 @@ async fn an_upsert_carrying_a_field_only_a_source_writes_is_refused_as_the_wrong
     ensure!(
         matches!(missing, Err(Error::NotFound { .. })),
         "the refused upsert was applied in part: `k1` reads {missing:?}"
+    );
+    Ok(())
+}
+
+async fn ingest_skips_redeliveries_and_unchanged_records_but_writes_a_revert(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    declare(cat.as_ref(), &own, feed()).await?;
+    let body = |b: &str| vec![source_record("feed", "f", json!({ "body": b }))];
+
+    for (step, b, want) in [
+        ("the first delivery of `one`", "one", (1, 0)),
+        ("a redelivery of `one`", "one", (0, 1)),
+        ("a change to `two`", "two", (1, 0)),
+        ("a revert to `one`", "one", (1, 0)),
+        ("`one` again, unchanged", "one", (0, 1)),
+    ] {
+        let windows = ingest(cat.as_ref(), &own, "wire", body(b))
+            .await
+            .must(&format!("ingesting {step}"))?;
+        windows_reach_head(store.as_ref(), &windows, step).await?;
+        let got = committed(&windows);
+        ensure!(
+            got == want,
+            "{step} must commit {} record(s) and count {} as already in the lake; it \
+             committed {} and counted {}",
+            want.0,
+            want.1,
+            got.0,
+            got.1
+        );
+    }
+    let rec = read(cat.as_ref(), &own, "feed", "f").await?;
+    ensure!(
+        value(&rec, "body") == Some(&json!("one")) && rec.version == Version(3),
+        "after one, two and back to one, `f` must read `one` at version 3; it reads \
+         {:?} at version {}",
+        value(&rec, "body"),
+        rec.version
     );
     Ok(())
 }

@@ -73,3 +73,10 @@ read the log back for the answer. The verb is not run again for that
 position; a retry is a new call and a new position. So the log holds, for
 every external verb, either what the outside world answered or that it
 did not.
+
+## Extended: who sees which proposals
+
+A principal with the review grant lists every proposal and may accept
+or reject it. Any other principal lists only the proposals it made
+itself, so a proposer can follow what became of its write, and decides
+none.

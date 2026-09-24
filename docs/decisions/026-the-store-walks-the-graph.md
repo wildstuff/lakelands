@@ -23,3 +23,10 @@ answers identical.
   to the store's implementation, checked against the same answers.
 - It does not follow a link to a record that no longer exists or is
   retired; that end is not visible.
+
+## Extended: a graph includes its start
+
+A graph projection always includes the start node, the root a viewer
+draws from, whatever the `min` of its steps. A rows projection holds a
+start only when a step reaches it. Either way the answer keeps the one
+order: depth, then type, then key.

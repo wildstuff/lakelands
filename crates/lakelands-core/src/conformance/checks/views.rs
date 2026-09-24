@@ -19,9 +19,15 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, all, dec, decimal, declare, doors, field, ingest, owner, source_record, type_decl,
+    Must, all, dec, decimal, declare, doors, field, ingest, owner, read, source_record, type_decl,
     upsert, windows_reach_head,
 };
+
+check!(
+    /// A view record's key is its group.
+    VIEW_KEY_IS_ITS_GROUP = a_view_record_is_keyed_by_its_group_by_fields,
+    "018 and the log format §2.3: a view record's key is made from its `group_by` fields as any record key is, each value with `%` and `:` escaped, joined by `:` in declared order"
+);
 
 check!(
     /// A view groups its source and sums it exactly.
@@ -286,6 +292,68 @@ async fn a_view_over_an_ingested_source_is_current_once_the_ingest_is_committed(
         "after the ingest the view must hold p1 = 25.50 (2) and p2 = 3.00 (1); it holds \
          {got:?}. A door that writes the source and skips what derives from it leaves the \
          view stale"
+    );
+    Ok(())
+}
+
+async fn a_view_record_is_keyed_by_its_group_by_fields(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let mut source = invoices(Authority::Authored);
+    source.fields.push(field("region", StorageKind::Text));
+    declare(cat.as_ref(), &own, source).await?;
+    let mut view = type_decl(
+        "by_both",
+        vec![
+            field("partner", StorageKind::Text),
+            field("region", StorageKind::Text),
+            field("invoices", StorageKind::Number),
+        ],
+    );
+    view.key = vec![FieldName::from("partner"), FieldName::from("region")];
+    view.view = Some(ViewDecl {
+        source: TypeName::from("invoice"),
+        r#where: None,
+        group_by: vec![FieldName::from("partner"), FieldName::from("region")],
+        measures: vec![Measure {
+            name: FieldName::from("invoices"),
+            expr: "count()".into(),
+        }],
+    });
+    declare(cat.as_ref(), &own, view).await?;
+    for (k, partner, region) in [
+        ("1", "acme", "north"),
+        ("2", "acme", "south:east"),
+        ("3", "acme", "north"),
+    ] {
+        upsert(
+            cat.as_ref(),
+            &own,
+            "invoice",
+            k,
+            json!({"partner": partner, "region": region, "amount": "1"}),
+        )
+        .await?;
+    }
+    let mut keys: Vec<String> = all(cat.as_ref(), &own, "by_both")
+        .await?
+        .into_iter()
+        .map(|r| r.key.0)
+        .collect();
+    keys.sort();
+    ensure!(
+        keys == ["acme:north", "acme:south%3Aeast"],
+        "the view grouped by partner and region must key its records `acme:north` and \
+         `acme:south%3Aeast` (the `:` inside a value escaped); they are keyed {keys:?}"
+    );
+    let north = read(cat.as_ref(), &own, "by_both", "acme:north").await?;
+    ensure!(
+        north.fields.get("invoices").and_then(Value::as_f64) == Some(2.0),
+        "reading the view record `acme:north` by its key must answer 2 invoices; it \
+         answers {:?}",
+        north.fields
     );
     Ok(())
 }

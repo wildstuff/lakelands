@@ -74,6 +74,11 @@ pub mod engine;
 pub mod fixture;
 
 /// Opens lakes for the suite: one engine, as its test configures it.
+///
+/// Every lake a harness opens has the default
+/// [`Limits`](lakelands_api::location::Limits): the checks that meet a
+/// limit (a walk's depth, a page's size) read it from
+/// [`fixture::limits`], never from the engine.
 pub trait Harness: Send + Sync {
     /// The engine's name, as the report shows it.
     fn name(&self) -> &str;

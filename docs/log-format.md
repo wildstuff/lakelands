@@ -410,6 +410,11 @@ Every storage kind has one JSON form in a patch
 
 `null` in a patch clears the field.
 
+Base64 is canonical: the pad bits of the last character before padding
+are zero, so one byte string has one spelling. `aGk=` is the only form
+of the bytes `hi`; `aGl=` decodes to the same bytes in lenient decoders
+and is refused.
+
 A `vector` element is the double its JSON number denotes, written in the
 number form of §1.2. A backend that computes in 32-bit floats widens each
 element to the double of the same value, never rounding it through a

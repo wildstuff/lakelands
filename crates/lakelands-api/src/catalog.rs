@@ -129,7 +129,10 @@ pub trait Catalog: Send + Sync {
         reason: String,
     ) -> Result<Outcome>;
 
-    /// Proposals, newest first.
+    /// Proposals, newest first. A principal with the review grant lists
+    /// every proposal; any other lists only its own, so a proposer can
+    /// follow what became of what it proposed
+    /// (`docs/decisions/013-verbs-run-by-declared-risk.md`).
     async fn proposals(
         &self,
         who: &Principal,

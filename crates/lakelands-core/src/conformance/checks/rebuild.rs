@@ -25,6 +25,12 @@ check!(
     "001 and the engine seam: a projection rebuilt from the log is the one it replaces, byte for byte, at the head and as of every earlier position"
 );
 
+check!(
+    /// A rebuild leaves the chain as it was.
+    REBUILD_REPRODUCES_THE_CHAIN = a_rebuild_reproduces_the_chain,
+    "001 and 020: the log is the truth and a rebuild only re-derives the projection, so verifying the chain answers the same range and hash before and after"
+);
+
 /// Everything the check reads: every record of every type with
 /// provenance at the head, and `invoice` `i1` as of every write.
 async fn snapshot(
@@ -153,5 +159,31 @@ async fn a_rebuilt_projection_answers_every_read_as_the_live_one_did(
              replaces in every value, version and piece of provenance"
         );
     }
+    Ok(())
+}
+
+async fn a_rebuild_reproduces_the_chain(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    declare(
+        cat.as_ref(),
+        &own,
+        type_decl("memo", vec![field("text", StorageKind::Text)]),
+    )
+    .await?;
+    for (k, t) in [("a", "one"), ("b", "two"), ("a", "three")] {
+        upsert(cat.as_ref(), &own, "memo", k, json!({ "text": t })).await?;
+    }
+    let before = store.verify(None, None).await.must("verifying the chain")?;
+    store.rebuild().await.must("rebuilding the projection")?;
+    let after = store
+        .verify(None, None)
+        .await
+        .must("verifying the chain after the rebuild")?;
+    ensure!(
+        before == after,
+        "verifying the whole chain answered {before:?} before the rebuild and {after:?} \
+         after it; a rebuild must leave the log, and so its chain, as it was"
+    );
     Ok(())
 }
