@@ -18,6 +18,22 @@ number only when the number is exactly equal, a fraction never becomes a
 decimal, an offset is never dropped from an instant, and a value already
 in the target form is never rewritten.
 
+## Extended: history converts too, and the key stays
+
+A migration converts every stored record of the type, retired and
+restricted ones included: they are history, and a lake whose history no
+longer fits its declaration could not be folded again. So the preflight
+covers them, and a record among them that would not convert makes the
+migration not lossless, refused before anything is appended, never
+discovered by the fold after the migration is in the log.
+
+In this release a migration keeps the type's key. Records are converted
+where they are and never re-keyed, so a migration whose declaration names
+other key fields is refused as not supported, and one that would change
+the value of a key field — so that a record's key fields no longer make
+its key — reports that record not convertible. Re-keying records is a
+later door, not a side effect of a migration.
+
 ## Why
 
 The log is the truth (001), so a change of shape must never quietly

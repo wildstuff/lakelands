@@ -39,6 +39,12 @@ pub enum Outcome {
         /// The record's new version, for a record write.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         version: Option<Version>,
+        /// For a verb whose effect reaches outside the lake: its executor's
+        /// recorded output, `{"error": "<text>"}` when the executor failed.
+        /// The position is real either way; the verb is not run again for
+        /// it. `None` for every other write.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<serde_json::Value>,
     },
     /// The write was recorded as a proposal and waits for review.
     Proposed {

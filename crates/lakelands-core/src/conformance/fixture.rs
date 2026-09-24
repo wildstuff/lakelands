@@ -103,6 +103,7 @@ pub fn field(name: &str, kind: StorageKind) -> FieldDecl {
         required: false,
         authority: Default::default(),
         derived: None,
+        function: None,
         depends_on: Vec::new(),
         on_input_change: Default::default(),
         sensitive: false,

@@ -72,9 +72,9 @@ checked by the conformance suite against every engine on the roster.
 | `name` | The engine's name, as `EngineConfig` selects it. |
 | `lake` | The lake this handle keeps. |
 | `take_lease(holder)` | Take the writer lease with a fencing token greater than every earlier token. **Fails at once** when another process holds it, with an `unavailable` error whose message names the holder; never waits. Refused on a handle opened read-only. |
-| `release_lease(lease)` | Give the lease up; the next taker gets a greater token. |
+| `release_lease(lease)` | Give the lease up; the next taker gets a greater token. Releasing a lease that is no longer the current one does nothing, so a writer that lost the lease cannot release its successor's. A handle that is dropped releases the lease it took and still holds, so a writer that ends without closing does not keep the lake from every later writer. |
 | `tip` | The last event's position and hash, or none for an empty lake. |
-| `append(lease, events)` | Append a group of `CanonicalEvent`s, all or none, **durably before returning**. Refused when `lease` is stale or an event's fence differs from it, when the positions do not continue the tip without a gap, or when a `prev` is not the hash before it. Stores each event's bytes unchanged. |
+| `append(lease, events)` | Append a group of `CanonicalEvent`s, all or none, **durably before returning**. Refused when `lease` is stale (`unavailable`), when an event's fence differs from it — except the event at position 0, which carries fence 0 — when the positions do not continue the tip without a gap, or when a `prev` is not the hash before it (each `refused` as invalid). Stores each event's bytes unchanged. |
 | `read(from, limit)` | `CanonicalEvent`s from a position, exactly as appended: the same members, the same bytes. |
 | `seal_segment(lease)` | Close the active segment; none if it is empty. The store then appends the `checkpoint`. |
 | `segments` | Every sealed segment's range and digest. |
@@ -87,7 +87,7 @@ An engine is found by name and opened through `EngineOpener`:
 | Method | Contract |
 |---|---|
 | `name` | The name the engine answers to in `EngineConfig`. |
-| `open(location, mode)` | Open the lake `Read`, `Write` or `Create` (write, creating it if absent). Opening never takes the lease; a writer takes it afterwards with `take_lease`. A handle opened `Read` refuses `take_lease` and `append`, so any number of readers can hold the lake while one process writes (`docs/decisions/008-one-writer-per-lake.md`). |
+| `open(location, mode)` | Open the lake `Read`, `Write` or `Create` (write, creating it if absent). Opening never takes the lease; a writer takes it afterwards with `take_lease`. A handle opened `Read` refuses `take_lease`, `append` and `seal_segment`, so any number of readers can hold the lake while one process writes (`docs/decisions/008-one-writer-per-lake.md`). |
 
 ### `ProjectionStore`: what the fold writes
 
@@ -102,9 +102,9 @@ opening a lake folds the log from `folded_through` on.
 | `folded_through` | The last position the projection reflects. |
 | `put_declaration` | A declaration in force from a position. |
 | `put_record(record)` | A record's whole state as of `record.position`: values, per-field meta, flags. The state it supersedes is kept. The engine derives its own indexes, full-text entries and edges from it and the declarations in force. |
-| `put_proposal` | A proposal's state as of its latest event; earlier states kept. |
+| `put_proposal(proposal, at)` | A proposal's state from `at`, the position of its latest event; earlier states kept. A view at a position inside a multi-event append sees each state from its own event, not from the commit. |
 | `put_membership(…, at)` | Whether a record is in an object set from a position on; earlier membership kept. |
-| `put_output` | A seam's recorded output, by seam and input digest. |
+| `put_output(…, at)` | A seam's recorded output, by seam and input digest, valid from `at`, the position of the event that recorded it. |
 | `mark_applied(id, at)` | Remember an applied event id, so a redelivery is recognised. |
 | `clear` | Delete everything, kept history included, for a rebuild. |
 
@@ -123,11 +123,18 @@ grants and masking are the store's.
 | `position` | The position the view reflects. |
 | `declarations` | Every declaration in force. |
 | `get(type, key)` | One record, retired and restricted included. |
-| `scan(type, scan)` | Records filtered by a typed expression the engine applies **exactly**, ordered with missing values last and the key as tiebreak, continued after a keyset position. |
-| `aggregate` | `count`, `sum` (exact for decimals), `min`, `max`, `avg`, per group. |
-| `edges(type, key, relation, walk)` | One record's links over one relation or all: `Out` those it declares, `In` those that point at it, `Both` their union with each link once (a link from a record to itself included). Links to a retired or missing record are returned as they are; hiding that end is the store's (`docs/decisions/026-the-store-walks-the-graph.md`). No order is promised; the store's walks order their own answers. |
+| `scan(type, scan)` | Records filtered by a typed expression the engine applies **exactly**, ordered with missing values last and the key as tiebreak — values ranked and compared by `lakelands_core::expr::order::cmp_values`, the one sort order (`docs/decisions/029-every-answer-has-one-order.md`) — continued after a keyset position. `limit` is literal: 0 answers nothing. The store hands an engine only filters that need neither the clock, the lake's settings nor per-field provenance; it evaluates any other filter itself. |
+| `edges(type, key, relation, walk)` | One record's links over one relation or all: `Out` those it declares, `In` those that point at it, `Both` their union with each link once (a link from a record to itself included). Links to a retired or missing record are returned as they are; hiding that end is the store's (`docs/decisions/026-the-store-walks-the-graph.md`). No order is promised; the store's walks order their own answers. In this release a link is carried by the reference field its relation names in `via`: a relation without `via`, or with fields of its own, is refused when declared, and link records come later. |
 | `lexical(type, text, k)` | Full-text hits over searchable fields, best first. |
 | `proposals`, `is_member`, `applied`, `output` | The projections of proposals, object sets, applied ids and recorded outputs. |
+
+A view does not aggregate. Aggregates — over `find`, over a pattern's
+rows and in a view type's measures — are the store's: it computes them
+over the records it reads, decimal-exact and grouped in the one sort
+order, so every engine answers them identically
+(`docs/decisions/029-every-answer-has-one-order.md`). An engine may keep
+indexes that make the scans behind them faster; it never computes a
+group.
 
 ### `VectorIndex`
 
@@ -162,9 +169,11 @@ host may add its own kind.
 `model()`, `dimensions()`, `embed(texts) -> vectors`. The store records
 each vector it obtains, with the model as its procedure.
 
-There is no default backend: without one, `search` ranks lexically and
-over vectors callers supply, and says in its answer which ranking it
-used. An OpenAI-compatible client follows after `0.1.0`.
+A hybrid `search` without a caller's vector embeds its query text
+through the bound backend and ranks over the result; that is a read, and
+nothing is recorded. There is no default backend: without one, `search`
+ranks lexically and over vectors callers supply, and says in its answer
+which ranking it used. An OpenAI-compatible client follows after `0.1.0`.
 
 ## `VerbExecutor`
 
@@ -174,7 +183,17 @@ if declared `low`, on acceptance otherwise, as
 `docs/decisions/013-verbs-run-by-declared-risk.md` decides),
 the store hands the executor the record, the payload and the position of
 the event that made it due. The lake and that position are the
-executor's dedup key. Its answer is recorded.
+executor's dedup key. Its answer is recorded as an `output_recorded`
+event caused by that event.
+
+An executor that fails does not undo the verb: the event that made it
+due is in the log, and its position is real. The failure is the recorded
+output — `{"error": "<the executor's error text>"}`. The caller's outcome
+is `applied` at the position that made the verb due, and carries the
+recorded output in its `output` member, the error form included, so an
+agent that called an external verb has the answer in the reply. The verb
+is not run again for that position. A host that wants a retry calls the verb again, which is a new
+position.
 
 There is no default: a verb whose executor is not bound is refused as
 `Unbound`, never faked.

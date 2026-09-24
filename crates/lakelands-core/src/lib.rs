@@ -17,6 +17,7 @@ pub mod derive;
 pub mod describe;
 pub mod expr;
 pub mod graph;
+pub mod log;
 pub mod names;
 pub mod rights;
 pub mod shape;

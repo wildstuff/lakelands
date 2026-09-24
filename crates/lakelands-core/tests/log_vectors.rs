@@ -17,7 +17,7 @@ use lakelands_api::event::{Event, EventBody};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::time::Timestamp;
 use lakelands_api::write::Declaration;
-use lakelands_core::{canonical, shape};
+use lakelands_core::{canonical, log, shape};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
@@ -33,29 +33,10 @@ fn sha(bytes: &[u8]) -> String {
     canonical::hex(&Sha256::digest(bytes))
 }
 
-/// A content-derived event id (`docs/log-format.md` §3): the first 16
-/// bytes of SHA-256 over the parts joined by `0x00`.
-fn content_id(parts: &[&[u8]]) -> String {
-    sha(&parts.join(&0u8))[..32].to_owned()
-}
-
 fn str_of<'a>(v: &'a Value, member: &str) -> &'a str {
     v[member]
         .as_str()
         .unwrap_or_else(|| panic!("`{member}` is a string"))
-}
-
-/// A key field's value as one component of a record's key string
-/// (`docs/log-format.md` §2.3): its JSON string form, with `%` and `:`
-/// percent-encoded.
-fn key_component(value: &Value) -> String {
-    let text = match value {
-        Value::String(s) => s.clone(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(_) => String::from_utf8(canonical::to_vec(value)).unwrap(),
-        other => panic!("{other} cannot be a key field's value"),
-    };
-    text.replace('%', "%25").replace(':', "%3A")
 }
 
 /// The date-time a log holds is exactly the one form of §1.3.
@@ -132,24 +113,13 @@ fn every_hash_id_digest_and_schema_hash_recomputes() {
                     .source
                     .as_ref()
                     .expect("an ingest event names its source");
-                let id = content_id(&[
-                    b"lakelands:ingest:v1",
-                    source.0.as_bytes(),
-                    ty.0.as_bytes(),
-                    key.0.as_bytes(),
-                    (version.0 - 1).to_string().as_bytes(),
-                    &canonical::of(patch),
-                ]);
-                assert_eq!(id, event.id.0, "position {at}: ingest id");
+                let id = log::ingest_id(source, ty, key, version.0 - 1, patch);
+                assert_eq!(id, event.id, "position {at}: ingest id");
             }
             ("authored", _) => {
                 let key = event.idempotency_key.as_ref().expect("an idempotency key");
-                let id = content_id(&[
-                    b"lakelands:authored:v1",
-                    event.writer.as_bytes(),
-                    key.0.as_bytes(),
-                ]);
-                assert_eq!(id, event.id.0, "position {at}: authored id");
+                let id = log::authored_id(&event.writer, key);
+                assert_eq!(id, event.id, "position {at}: authored id");
             }
             ("random", _) => {}
             (from, body) => panic!("position {at}: `{from}` id on a {}", body.kind()),
@@ -162,7 +132,9 @@ fn every_hash_id_digest_and_schema_hash_recomputes() {
                 if !fields.is_empty() && fields.iter().all(|f| patch.contains_key(f.as_str())) {
                     let derived: Vec<String> = fields
                         .iter()
-                        .map(|f| key_component(&patch[f.as_str()]))
+                        .map(|f| {
+                            log::key_component(&patch[f.as_str()]).expect("a key field's value")
+                        })
                         .collect();
                     assert_eq!(
                         derived.join(":"),

@@ -1,0 +1,519 @@
+//! The store behind the contract's traits: [`Catalog`] for callers,
+//! [`LakeStore`] for the host, [`ChangeFeed`] for consumers, and [`open`].
+//!
+//! Every call names a principal of this lake; a principal of another lake
+//! holds no grant here. Engine work goes through [`crate::exec::run`], and
+//! nowhere else.
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use lakelands_api::catalog::{CommitStream, SourceStream};
+use lakelands_api::describe::{LakeDescription, TypeDescription};
+use lakelands_api::engine::OpenMode;
+use lakelands_api::event::EventBody;
+use lakelands_api::location::Location;
+use lakelands_api::ontology::FieldDecl;
+use lakelands_api::principal::WriteContext;
+use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
+use lakelands_api::seam::{ChangeFeed, FeedBatch, FeedFilter, Seams, VerbInvocation};
+use lakelands_api::write::{
+    Declaration, Migration, MigrationReport, Outcome, Proposal, ProposalFilter, ProposedWrite,
+    WriteOpts,
+};
+use lakelands_api::{
+    Catalog, Error, Find, Found, Get, LakeId, LakeStore, Patch, Position, Principal, ProposalId,
+    ReadAt, Record, RecordKey, Refusal, Reply, Result, SourceId, TypeName, VerbName, Verification,
+};
+
+use crate::exec;
+use crate::ingest;
+use crate::lake::Lake;
+use crate::reads::Reader;
+use crate::writes::{self, Call, External};
+
+/// Open a lake at a location. The host passes the engines it compiled in
+/// (and any seams it binds) in `seams`; the store depends on no engine.
+pub async fn open(location: Location, seams: Seams, mode: OpenMode) -> Result<Arc<dyn LakeStore>> {
+    let lake = exec::run(move || Lake::open(&location, seams, mode)).await?;
+    Ok(Arc::new(Store {
+        lake: Arc::new(lake),
+    }))
+}
+
+fn same_lake(lake: &Lake, who: &Principal) -> Result<()> {
+    if who.lake != lake.id {
+        return Err(Error::Refused {
+            field: None,
+            reason: Refusal::NotGranted,
+        });
+    }
+    Ok(())
+}
+
+/// The store facade of one lake.
+pub struct Store {
+    lake: Arc<Lake>,
+}
+
+/// The doors of one lake, bound to a host's write context.
+pub struct Doors {
+    lake: Arc<Lake>,
+    context: WriteContext,
+}
+
+impl Doors {
+    async fn read<T, F>(&self, who: &Principal, at: ReadAt, f: F) -> Result<Reply<T>>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Reader<'_>) -> Result<T> + Send + 'static,
+    {
+        same_lake(&self.lake, who)?;
+        let (lake, who) = (self.lake.clone(), who.clone());
+        exec::run(move || {
+            let r = Reader::open(&lake, &who, at)?;
+            let data = f(&r)?;
+            Ok(Reply {
+                position: r.position,
+                data,
+            })
+        })
+        .await
+    }
+
+    async fn write<T, F>(&self, who: &Principal, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Call<'_>) -> Result<T> + Send + 'static,
+    {
+        same_lake(&self.lake, who)?;
+        let (lake, who, context) = (self.lake.clone(), who.clone(), self.context);
+        exec::run(move || {
+            f(&Call {
+                lake: &lake,
+                who: &who,
+                context,
+            })
+        })
+        .await
+    }
+
+    /// Hand an external verb to its executor and record the answer; the
+    /// recorded output is returned, `{"error": …}` when the executor failed.
+    async fn execute(&self, who: &Principal, ext: External) -> Result<serde_json::Value> {
+        let executor = self
+            .lake
+            .seams
+            .executors
+            .iter()
+            .find(|e| e.name() == ext.executor)
+            .cloned()
+            .ok_or_else(|| Error::Unbound {
+                seam: format!("the verb executor `{}`", ext.executor),
+            })?;
+        let get = Get {
+            key: ext.key.clone(),
+            with_meta: false,
+            at: ReadAt::default(),
+        };
+        let ty = ext.ty.clone();
+        let record = self
+            .read(who, ReadAt::default(), move |r| r.get(&ty, &get))
+            .await?
+            .data;
+        let invocation = VerbInvocation {
+            lake: self.lake.id.clone(),
+            verb: ext.verb.clone(),
+            record,
+            payload: ext.payload.clone(),
+            position: ext.position,
+        };
+        let input = serde_json::json!({
+            "verb": invocation.verb, "record": invocation.record,
+            "payload": invocation.payload, "position": invocation.position,
+        });
+        let output = match executor.execute(&invocation).await {
+            Ok(v) => v,
+            Err(e) => serde_json::json!({ "error": e.to_string() }),
+        };
+        let lake = self.lake.clone();
+        let recorded = output.clone();
+        exec::run(move || writes::record_output(&lake, &ext, &input, output)).await?;
+        Ok(recorded)
+    }
+}
+
+/// An outcome with an external verb's recorded output in it.
+fn with_output(outcome: Outcome, recorded: serde_json::Value) -> Outcome {
+    match outcome {
+        Outcome::Applied {
+            position, version, ..
+        } => Outcome::Applied {
+            position,
+            version,
+            output: Some(recorded),
+        },
+        proposed => proposed,
+    }
+}
+
+#[async_trait]
+impl Catalog for Doors {
+    fn lake(&self) -> &LakeId {
+        &self.lake.id
+    }
+
+    async fn describe(&self, who: &Principal, at: ReadAt) -> Result<Reply<LakeDescription>> {
+        self.read(who, at, |r| Ok(r.describe())).await
+    }
+
+    async fn describe_type(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+        at: ReadAt,
+    ) -> Result<Reply<TypeDescription>> {
+        let ty = ty.clone();
+        self.read(who, at, move |r| r.describe_type(&ty)).await
+    }
+
+    async fn find(&self, who: &Principal, ty: &TypeName, find: Find) -> Result<Reply<Found>> {
+        let mut at = find.at;
+        if let Some(c) = &find.cursor {
+            at.as_of = Some(cursor_position(c)?);
+        }
+        let ty = ty.clone();
+        self.read(who, at, move |r| r.find(&ty, &find)).await
+    }
+
+    async fn get(&self, who: &Principal, ty: &TypeName, get: Get) -> Result<Reply<Record>> {
+        let ty = ty.clone();
+        self.read(who, get.at, move |r| r.get(&ty, &get)).await
+    }
+
+    async fn upsert(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+        key: &RecordKey,
+        patch: Patch,
+        opts: WriteOpts,
+    ) -> Result<Outcome> {
+        let (ty, key) = (ty.clone(), key.clone());
+        self.write(who, move |c| c.upsert(&ty, &key, patch, opts))
+            .await
+    }
+
+    async fn retire(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+        key: &RecordKey,
+        opts: WriteOpts,
+    ) -> Result<Outcome> {
+        let (ty, key) = (ty.clone(), key.clone());
+        self.write(who, move |c| c.retire(&ty, &key, opts)).await
+    }
+
+    async fn call(
+        &self,
+        who: &Principal,
+        verb: &VerbName,
+        key: &RecordKey,
+        payload: Patch,
+        opts: WriteOpts,
+    ) -> Result<Outcome> {
+        let (verb, key) = (verb.clone(), key.clone());
+        let (outcome, external) = self
+            .write(who, move |c| c.call(&verb, &key, payload, opts))
+            .await?;
+        match external {
+            Some(ext) => Ok(with_output(outcome, self.execute(who, ext).await?)),
+            None => Ok(outcome),
+        }
+    }
+
+    async fn query(&self, who: &Principal, pattern: Pattern) -> Result<Reply<QueryResult>> {
+        let mut at = pattern.at;
+        if let Some(c) = &pattern.cursor {
+            at.as_of = Some(cursor_position(c)?);
+        }
+        self.read(who, at, move |r| r.query(&pattern)).await
+    }
+
+    async fn search(&self, who: &Principal, mut search: Search) -> Result<Reply<Hits>> {
+        // A hybrid search without a caller's vector embeds its text through
+        // the bound embedding backend, if the host bound one. This is a
+        // read: nothing is recorded.
+        if let (
+            lakelands_api::query::SearchMode::Hybrid {
+                text,
+                vector: vector @ None,
+                ..
+            },
+            Some(embed),
+        ) = (&mut search.mode, &self.lake.seams.embed)
+        {
+            let mut vectors = embed.embed(std::slice::from_ref(text)).await?;
+            if vectors.len() != 1 {
+                return Err(Error::Unavailable {
+                    message: format!(
+                        "the embedding backend `{}` answered {} vectors for one text",
+                        embed.model(),
+                        vectors.len()
+                    ),
+                });
+            }
+            *vector = vectors.pop();
+        }
+        let mut at = search.at;
+        if let Some(c) = &search.cursor {
+            at.as_of = Some(cursor_position(c)?);
+        }
+        self.read(who, at, move |r| r.search(&search)).await
+    }
+
+    async fn propose(&self, who: &Principal, write: ProposedWrite, why: String) -> Result<Outcome> {
+        self.write(who, move |c| c.propose(write, why)).await
+    }
+
+    async fn accept(&self, who: &Principal, proposal: &ProposalId) -> Result<Outcome> {
+        let p = proposal.clone();
+        let (outcome, external) = self.write(who, move |c| c.accept(&p)).await?;
+        match external {
+            Some(ext) => Ok(with_output(outcome, self.execute(who, ext).await?)),
+            None => Ok(outcome),
+        }
+    }
+
+    async fn reject(
+        &self,
+        who: &Principal,
+        proposal: &ProposalId,
+        reason: String,
+    ) -> Result<Outcome> {
+        let p = proposal.clone();
+        self.write(who, move |c| c.reject(&p, reason)).await
+    }
+
+    async fn proposals(
+        &self,
+        who: &Principal,
+        filter: ProposalFilter,
+    ) -> Result<Reply<Vec<Proposal>>> {
+        self.read(who, filter.at, move |r| r.proposals(&filter))
+            .await
+    }
+
+    async fn declare(&self, who: &Principal, declaration: Declaration) -> Result<Outcome> {
+        self.write(who, move |c| c.declare(declaration)).await
+    }
+
+    async fn add_field(&self, who: &Principal, ty: &TypeName, field: FieldDecl) -> Result<Outcome> {
+        let ty = ty.clone();
+        self.write(who, move |c| c.add_field(&ty, field)).await
+    }
+
+    async fn migrate(
+        &self,
+        who: &Principal,
+        migration: Migration,
+    ) -> Result<Reply<MigrationReport>> {
+        self.write(who, move |c| {
+            let w = c.lake.writer();
+            let view = c.lake.engine.view(None)?;
+            Ok(Reply {
+                position: view.position().unwrap_or(Position::GENESIS),
+                data: c.preflight(&w, view.as_ref(), &migration)?,
+            })
+        })
+        .await
+    }
+
+    async fn migrate_apply(
+        &self,
+        who: &Principal,
+        migration: Migration,
+        report_id: &str,
+    ) -> Result<Outcome> {
+        let id = report_id.to_owned();
+        self.write(who, move |c| c.migrate_apply(migration, &id))
+            .await
+    }
+
+    async fn ingest(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        records: SourceStream,
+    ) -> Result<CommitStream> {
+        same_lake(&self.lake, who)?;
+        if !who.grants.ingest {
+            return Err(Error::Refused {
+                field: None,
+                reason: Refusal::NotGranted,
+            });
+        }
+        Ok(ingest::run(
+            self.lake.clone(),
+            who.clone(),
+            self.context,
+            source.clone(),
+            records,
+        ))
+    }
+}
+
+fn cursor_position(c: &lakelands_api::Cursor) -> Result<Position> {
+    #[derive(serde::Deserialize)]
+    struct At {
+        at: Position,
+    }
+    let bytes: Option<Vec<u8>> = (0..c.0.len())
+        .step_by(2)
+        .map(|i| {
+            c.0.get(i..i + 2)
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+        })
+        .collect();
+    bytes
+        .and_then(|b| serde_json::from_slice::<At>(&b).ok())
+        .map(|a| a.at)
+        .ok_or_else(|| Error::Refused {
+            field: None,
+            reason: Refusal::Invalid {
+                message: "the cursor is not one this lake handed out".into(),
+            },
+        })
+}
+
+#[async_trait]
+impl LakeStore for Store {
+    fn lake(&self) -> &LakeId {
+        &self.lake.id
+    }
+
+    fn is_writer(&self) -> bool {
+        self.lake.is_writer()
+    }
+
+    async fn head(&self) -> Result<Position> {
+        Ok(self.lake.head())
+    }
+
+    fn catalog(&self, context: WriteContext) -> Arc<dyn Catalog> {
+        Arc::new(Doors {
+            lake: self.lake.clone(),
+            context,
+        })
+    }
+
+    fn feed(&self) -> Arc<dyn ChangeFeed> {
+        Arc::new(Feed {
+            lake: self.lake.clone(),
+        })
+    }
+
+    async fn verify(
+        &self,
+        from: Option<Position>,
+        through: Option<Position>,
+    ) -> Result<Verification> {
+        let lake = self.lake.clone();
+        exec::run(move || lake.verify(from, through)).await
+    }
+
+    async fn rebuild(&self) -> Result<Position> {
+        let lake = self.lake.clone();
+        exec::run(move || lake.rebuild()).await
+    }
+
+    async fn restrict(&self, ty: &TypeName, key: &RecordKey, reason: String) -> Result<Position> {
+        let (lake, ty, key) = (self.lake.clone(), ty.clone(), key.clone());
+        exec::run(move || writes::restrict(&lake, &ty, &key, Some(reason))).await
+    }
+
+    async fn unrestrict(&self, ty: &TypeName, key: &RecordKey) -> Result<Position> {
+        let (lake, ty, key) = (self.lake.clone(), ty.clone(), key.clone());
+        exec::run(move || writes::restrict(&lake, &ty, &key, None)).await
+    }
+
+    async fn checkpoint(&self) -> Result<Position> {
+        let lake = self.lake.clone();
+        exec::run(move || lake.checkpoint()).await
+    }
+
+    async fn close(&self) -> Result<()> {
+        let lake = self.lake.clone();
+        exec::run(move || lake.close()).await
+    }
+}
+
+/// The change feed: the log, filtered by kind and type, read from a
+/// position (`docs/decisions/004-the-change-feed-is-the-log.md`).
+pub struct Feed {
+    lake: Arc<Lake>,
+}
+
+fn type_of(body: &EventBody) -> Option<&TypeName> {
+    match body {
+        EventBody::RecordUpserted { ty, .. }
+        | EventBody::RecordIngested { ty, .. }
+        | EventBody::RecordRetired { ty, .. }
+        | EventBody::RecordRestricted { ty, .. }
+        | EventBody::RecordUnrestricted { ty, .. }
+        | EventBody::TriggerFired { ty, .. }
+        | EventBody::ObjectSetChanged { ty, .. } => Some(ty),
+        EventBody::Declared {
+            declaration: Declaration::Type(t),
+            ..
+        } => Some(&t.name),
+        EventBody::Migrated { migration, .. } => Some(&migration.to.name),
+        _ => None,
+    }
+}
+
+#[async_trait]
+impl ChangeFeed for Feed {
+    async fn poll(&self, from: Position, filter: &FeedFilter, limit: u32) -> Result<FeedBatch> {
+        let (lake, filter) = (self.lake.clone(), filter.clone());
+        exec::run(move || {
+            let head = lake.head();
+            let want = limit.max(1) as usize;
+            let mut events = Vec::new();
+            let mut next = from;
+            // Read in batches, and stop at `limit` matches or the head:
+            // nothing past the last position examined is read or verified.
+            'read: while next <= head && events.len() < want {
+                let batch = lake.read_events(next, Some(want.clamp(64, 1024) as u32))?;
+                if batch.is_empty() {
+                    break;
+                }
+                for e in batch {
+                    if e.position > head {
+                        break 'read;
+                    }
+                    next = e.position.next();
+                    let kind_ok =
+                        filter.kinds.is_empty() || filter.kinds.iter().any(|k| k == e.body.kind());
+                    let type_ok = filter.types.is_empty()
+                        || type_of(&e.body).is_some_and(|t| filter.types.contains(t));
+                    if kind_ok && type_ok {
+                        events.push(e);
+                        if events.len() >= want {
+                            break 'read;
+                        }
+                    }
+                }
+            }
+            Ok(FeedBatch { events, next, head })
+        })
+        .await
+    }
+
+    async fn ack(&self, _consumer: &str, _through: Position) -> Result<()> {
+        // The store keeps no consumer state: the consumer keeps its own
+        // position.
+        Ok(())
+    }
+}

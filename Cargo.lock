@@ -668,6 +668,14 @@ dependencies = [
 [[package]]
 name = "lakelands-engine-mem"
 version = "0.0.0"
+dependencies = [
+ "lakelands-api",
+ "lakelands-core",
+ "lakelands-store",
+ "serde_json",
+ "sha2",
+ "tokio",
+]
 
 [[package]]
 name = "lakelands-engine-pg"
@@ -708,6 +716,18 @@ dependencies = [
 [[package]]
 name = "lakelands-store"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "futures-core",
+ "lakelands-api",
+ "lakelands-core",
+ "lakelands-engine-mem",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+]
 
 [[package]]
 name = "libc"

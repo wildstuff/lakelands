@@ -45,3 +45,17 @@ is just another caller later, not a change to the contract.
   delivery of the same content is a no-op.
 - A `shared` field may be written through either door; the later
   position wins.
+
+## Extended: windows, duplicates and refusals
+
+`ingest` takes its stream in group-commit windows: a window closes when it
+holds the lake's `commit_window_events` records or 2 ms after its first,
+and is decided whole. A record whose content id is already in the log, or
+earlier in its window, appends nothing; so does a record that would change
+no field — a re-import of unchanged data appends nothing — and both count
+as duplicates. The content id includes the record's version before the
+event, so a value that returns after a change is written again. A window
+with a refused record appends nothing; the refusal is the stream's next
+item and the stream ends there, and the caller's own offset says where to
+resume. An authored `upsert` is different on purpose: a write is a write,
+even with the same values.

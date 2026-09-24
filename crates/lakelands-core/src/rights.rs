@@ -47,6 +47,24 @@ pub fn field_access(who: &Principal, ty: &TypeName, field: &FieldDecl) -> Access
     }
 }
 
+/// Whether the principal may retire records of a type: every field of the
+/// type is writable as its grants resolve it, field by field, whatever the
+/// field's authority. Retiring removes every field of a record, so a
+/// principal who may write only some of them may not; one granted each
+/// field one by one may. A type with no field falls back to its type-level
+/// grant. A view's records are computed, and are never retired.
+pub fn may_retire(who: &Principal, decl: &TypeDecl) -> bool {
+    if decl.view.is_some() {
+        return false;
+    }
+    if decl.fields.is_empty() {
+        return type_access(who, &decl.name).writes();
+    }
+    decl.fields
+        .iter()
+        .all(|f| who.grants.access(&decl.name, &f.name).writes())
+}
+
 /// The principal's access to a type as a whole: its type-level grant, or
 /// the lake-wide default.
 pub fn type_access(who: &Principal, ty: &TypeName) -> Access {
@@ -221,6 +239,7 @@ mod tests {
             required: false,
             authority,
             derived: None,
+            function: None,
             depends_on: vec![],
             on_input_change: Default::default(),
             sensitive,

@@ -42,3 +42,10 @@ exists.
   The indirection is per call, not per record.
 - It does not let an engine block the caller's executor; that is the
   store's job to prevent.
+
+## Extended: one hand-off
+
+The store dispatches every call into an engine through one place, a
+single hand-off to the runtime's blocking pool. Nothing in the store
+starts a runtime of its own or parks a caller's executor, so a slow disk
+delays the call that needs it and nothing else.

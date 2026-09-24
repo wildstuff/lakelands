@@ -10,9 +10,12 @@ mod decimals;
 mod derived_fields;
 mod fields;
 mod ingest;
+mod keys;
 mod paging;
 mod positions;
+mod reactions;
 mod rebuild;
+mod restriction;
 mod versions;
 mod views;
 
@@ -48,4 +51,8 @@ pub const ALL: &[Check] = &[
     ingest::FOREIGN_FIELD_REFUSED,
     ingest::UPSERT_REFUSES_SOURCE_FIELD,
     rebuild::REBUILD_ANSWERS_AS_BEFORE,
+    keys::KEY_AND_KEY_FIELDS_AGREE,
+    keys::KEY_FIELDS_FROM_THE_KEY,
+    restriction::HOLD_WITHHOLDS_AND_KEEPS,
+    reactions::VERB_WRITE_REACTS,
 ];

@@ -37,7 +37,8 @@ impl Digest {
 
 /// An event's identifier: 32 lower-case hexadecimal digits (128 bits).
 /// Content-derived for ingest and for authored writes with an idempotency
-/// key, so a redelivery is recognised; random otherwise.
+/// key, so a redelivery is recognised; derived from the lake and the
+/// position otherwise (`docs/log-format.md` §3).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct EventId(pub String);
@@ -182,6 +183,8 @@ pub enum EventBody {
         key: RecordKey,
         /// The record's version after this event.
         version: Version,
+        /// Why, as the host gave it.
+        reason: String,
     },
     /// A hold was lifted.
     RecordUnrestricted {

@@ -322,6 +322,29 @@ impl LakeStore for MockLake {
         Ok(p)
     }
 
+    async fn restrict(
+        &self,
+        _ty: &lakelands_api::TypeName,
+        _key: &lakelands_api::RecordKey,
+        _reason: String,
+    ) -> Result<Position> {
+        // Retention holds are a host operation the doors never call; the
+        // mock keeps none and says so.
+        Err(lakelands_api::Error::Unbound {
+            seam: "retention holds (the mock keeps none)".into(),
+        })
+    }
+
+    async fn unrestrict(
+        &self,
+        _ty: &lakelands_api::TypeName,
+        _key: &lakelands_api::RecordKey,
+    ) -> Result<Position> {
+        Err(lakelands_api::Error::Unbound {
+            seam: "retention holds (the mock keeps none)".into(),
+        })
+    }
+
     async fn close(&self) -> Result<()> {
         Ok(())
     }

@@ -881,6 +881,7 @@ impl Catalog for MockCatalog {
         Ok(Outcome::Applied {
             position: Position(position),
             version: Some(version),
+            output: None,
         })
     }
 
@@ -909,6 +910,7 @@ impl Catalog for MockCatalog {
         Ok(Outcome::Applied {
             position,
             version: Some(version),
+            output: None,
         })
     }
 
@@ -940,6 +942,7 @@ impl Catalog for MockCatalog {
             Outcome::Applied {
                 position: Position(batch.peek().0 - 1),
                 version: Some(version),
+                output: None,
             }
         } else {
             let why = format!("`{verb}` is declared {} risk", risk_word(v.risk));
@@ -1246,6 +1249,7 @@ impl Catalog for MockCatalog {
         Ok(Outcome::Applied {
             position,
             version: Some(version),
+            output: None,
         })
     }
 
@@ -1272,6 +1276,7 @@ impl Catalog for MockCatalog {
         Ok(Outcome::Applied {
             position,
             version: None,
+            output: None,
         })
     }
 
@@ -1400,6 +1405,7 @@ impl Catalog for MockCatalog {
         Ok(Outcome::Applied {
             position,
             version: None,
+            output: None,
         })
     }
 
@@ -1449,6 +1455,7 @@ impl Catalog for MockCatalog {
         Ok(Outcome::Applied {
             position,
             version: None,
+            output: None,
         })
     }
 
@@ -1511,6 +1518,7 @@ impl Catalog for MockCatalog {
         Ok(Outcome::Applied {
             position,
             version: None,
+            output: None,
         })
     }
 

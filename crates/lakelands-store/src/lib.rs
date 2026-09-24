@@ -1,8 +1,23 @@
-//! The store facade over an engine.
+//! The store: one lake over an engine, the log as the truth, the
+//! projection folded from it, and the doors every caller uses.
 //!
-//! Opens a lake at a location, holds its single writer, appends to the
-//! log and keeps the projection in step with it, and answers reads with
-//! the position they were read at. Engine-agnostic: an engine plugs in
-//! through the engine seam declared in `lakelands-api`.
-//!
-//! Empty until the store is imported.
+//! `open` a lake at a [`Location`](lakelands_api::Location) with the
+//! host's [`Seams`](lakelands_api::seam::Seams); the answer is a
+//! [`LakeStore`](lakelands_api::LakeStore) whose `catalog` gives the doors.
+//! Engine work is synchronous (`docs/decisions/019-the-contract-is-object-safe.md`)
+//! and runs through exactly one blocking hand-off, in [`exec`].
+
+#![forbid(unsafe_code)]
+
+pub mod declare;
+pub mod doors;
+pub mod exec;
+pub mod ingest;
+pub mod lake;
+pub mod log;
+pub mod ontology;
+pub mod reads;
+pub mod record;
+pub mod writes;
+
+pub use doors::open;

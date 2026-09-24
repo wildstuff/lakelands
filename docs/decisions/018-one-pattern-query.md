@@ -47,3 +47,16 @@ shortened to the limit: an answer that walked less than it was asked to
 would look complete when it is not, and the caller could not tell. A
 `subgraph` pattern's steps are one walk over any of their relations,
 not a chain of steps.
+
+## Extended: views are computed on read
+
+A view type's records are computed when they are read: the source's
+records at the read's position, filtered by the view's `where`, grouped by
+its `group_by` fields — whose values, in declared order, form the view
+record's key by the same rule as any record's key (`docs/log-format.md`
+§2.3), so a `group_by` field is of a kind a key field may be — and
+measured, each measure landing in the kind the view
+declares for it. A group with no member has no record. Keeping a view's
+records materialised is an engine's optimisation, never a rule: it may
+make a read faster and may never change its answer, and the conformance
+checks on views bind it.
