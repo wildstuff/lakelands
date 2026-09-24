@@ -98,13 +98,13 @@ impl<'a> Lower<'a> {
     }
 
     fn cond(&mut self, at: &str, cond: Cond) -> Condition {
-        if let Condition::Text(text) = &cond.0 {
-            if let Err(e) = crate::expr::parse(text) {
-                self.fail(
-                    Problem::BadExpression,
-                    format!("{at}: `{text}` does not parse: {e}"),
-                );
-            }
+        if let Condition::Text(text) = &cond.0
+            && let Err(e) = crate::expr::parse(text)
+        {
+            self.fail(
+                Problem::BadExpression,
+                format!("{at}: `{text}` does not parse: {e}"),
+            );
         }
         cond.0
     }
@@ -338,21 +338,21 @@ pub(super) fn value_type(l: &mut Lower<'_>, doc: ValueTypeDoc) -> ValueTypeDecl 
             ),
         );
     }
-    if let Some(format) = &doc.format {
-        if crate::value::ValueFormat::parse(format).is_none() {
-            let known: Vec<&str> = crate::value::ValueFormat::ALL
-                .iter()
-                .map(|f| f.name())
-                .collect();
-            l.fail(
-                Problem::Contradiction,
-                format!(
-                    "value type `{}` names the format `{format}`, which is not one of: {}",
-                    doc.name,
-                    known.join(", ")
-                ),
-            );
-        }
+    if let Some(format) = &doc.format
+        && crate::value::ValueFormat::parse(format).is_none()
+    {
+        let known: Vec<&str> = crate::value::ValueFormat::ALL
+            .iter()
+            .map(|f| f.name())
+            .collect();
+        l.fail(
+            Problem::Contradiction,
+            format!(
+                "value type `{}` names the format `{format}`, which is not one of: {}",
+                doc.name,
+                known.join(", ")
+            ),
+        );
     }
     let constraint = l.opt_cond("`constraint`", doc.constraint);
     ValueTypeDecl {

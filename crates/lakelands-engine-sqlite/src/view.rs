@@ -255,10 +255,8 @@ impl ProjectionView for SqliteView<'_> {
                 }
                 edges.retain(|e| relation.is_none_or(|want| *want == e.relation));
             } else {
-                if out {
-                    if let (Some(decl), Some(record)) = (r.type_decl(ty)?, r.record(ty, key)?) {
-                        edges.extend(engines::links_of(&decl, &record, relation));
-                    }
+                if out && let (Some(decl), Some(record)) = (r.type_decl(ty)?, r.record(ty, key)?) {
+                    edges.extend(engines::links_of(&decl, &record, relation));
                 }
                 if inn {
                     let types = r.types()?;

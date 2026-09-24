@@ -247,31 +247,31 @@ pub fn check_values(
                 message: e.to_string(),
             },
         })?;
-        if let (Some(vt), false) = (vt, checked.is_null()) {
-            if let Some(c) = &vt.constraint {
-                let e = declare::condition(c, Place::Record, "constraint")?;
-                let scope_fields: BTreeMap<FieldName, Value> =
-                    [("value".into(), checked.clone())].into();
-                let ok = expr::holds(
-                    &e,
-                    &RecordScope {
-                        fields: &scope_fields,
-                        settings: None,
-                        now: Timestamp(0),
+        if let (Some(vt), false) = (vt, checked.is_null())
+            && let Some(c) = &vt.constraint
+        {
+            let e = declare::condition(c, Place::Record, "constraint")?;
+            let scope_fields: BTreeMap<FieldName, Value> =
+                [("value".into(), checked.clone())].into();
+            let ok = expr::holds(
+                &e,
+                &RecordScope {
+                    fields: &scope_fields,
+                    settings: None,
+                    now: Timestamp(0),
+                },
+            )
+            .unwrap_or(false);
+            if !ok {
+                return Err(Error::Refused {
+                    field: Some(name.clone()),
+                    reason: Refusal::Constraint {
+                        message: format!(
+                            "the value does not satisfy the constraint of `{}`",
+                            vt.name
+                        ),
                     },
-                )
-                .unwrap_or(false);
-                if !ok {
-                    return Err(Error::Refused {
-                        field: Some(name.clone()),
-                        reason: Refusal::Constraint {
-                            message: format!(
-                                "the value does not satisfy the constraint of `{}`",
-                                vt.name
-                            ),
-                        },
-                    });
-                }
+                });
             }
         }
         out.insert(name.clone(), checked);
@@ -865,18 +865,17 @@ impl Call<'_> {
         if !self.verb_callable(&decl) {
             return Err(not_granted());
         }
-        if let VerbEffect::External { executor } = &decl.effect {
-            if !self
+        if let VerbEffect::External { executor } = &decl.effect
+            && !self
                 .lake
                 .seams
                 .executors
                 .iter()
                 .any(|e| e.name() == executor)
-            {
-                return Err(Error::Unbound {
-                    seam: format!("the verb executor `{executor}`"),
-                });
-            }
+        {
+            return Err(Error::Unbound {
+                seam: format!("the verb executor `{executor}`"),
+            });
         }
         let payload = self.verb_payload(&w, &decl, &payload)?;
         let now = self.lake.clock(&mut w);

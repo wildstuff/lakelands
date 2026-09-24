@@ -356,7 +356,7 @@ fn is_decimal(s: &str) -> bool {
 /// Standard base64 with padding.
 fn is_base64(s: &str) -> bool {
     let b = s.as_bytes();
-    if b.len() % 4 != 0 {
+    if !b.len().is_multiple_of(4) {
         return false;
     }
     let pad = b.iter().rev().take_while(|&&c| c == b'=').count();

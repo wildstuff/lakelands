@@ -164,10 +164,10 @@ pub fn apply(
 pub fn resolve_functions(decl: &TypeDecl, ontology: &Ontology) -> TypeDecl {
     let mut out = decl.clone();
     for f in &mut out.fields {
-        if let Some(name) = &f.function {
-            if let Some(func) = ontology.functions.get(name) {
-                f.derived = func.decl.expr.clone();
-            }
+        if let Some(name) = &f.function
+            && let Some(func) = ontology.functions.get(name)
+        {
+            f.derived = func.decl.expr.clone();
         }
     }
     out

@@ -435,31 +435,31 @@ impl<'a> Reading<'a> {
                 }
             }
             Lane::Functions => {
-                if let Some(d) = self.doc::<FunctionDoc>(file, text, lane) {
-                    if self.declare(file, "function", &d.name) {
-                        self.docs.functions.push((file, d));
-                    }
+                if let Some(d) = self.doc::<FunctionDoc>(file, text, lane)
+                    && self.declare(file, "function", &d.name)
+                {
+                    self.docs.functions.push((file, d));
                 }
             }
             Lane::Verbs => {
-                if let Some(d) = self.doc::<VerbDoc>(file, text, lane) {
-                    if self.declare(file, "verb", &d.name) {
-                        self.docs.verbs.push((file, d));
-                    }
+                if let Some(d) = self.doc::<VerbDoc>(file, text, lane)
+                    && self.declare(file, "verb", &d.name)
+                {
+                    self.docs.verbs.push((file, d));
                 }
             }
             Lane::Triggers => {
-                if let Some(d) = self.doc::<TriggerDoc>(file, text, lane) {
-                    if self.declare(file, "trigger", &d.name) {
-                        self.docs.triggers.push((file, d));
-                    }
+                if let Some(d) = self.doc::<TriggerDoc>(file, text, lane)
+                    && self.declare(file, "trigger", &d.name)
+                {
+                    self.docs.triggers.push((file, d));
                 }
             }
             Lane::ObjectSets => {
-                if let Some(d) = self.doc::<ObjectSetDoc>(file, text, lane) {
-                    if self.declare(file, "object set", &d.name) {
-                        self.docs.object_sets.push((file, d));
-                    }
+                if let Some(d) = self.doc::<ObjectSetDoc>(file, text, lane)
+                    && self.declare(file, "object set", &d.name)
+                {
+                    self.docs.object_sets.push((file, d));
                 }
             }
         }
@@ -588,11 +588,11 @@ fn check_references(
                 want(format!("relation `{}`, `via`", r.name), via.as_str(), t);
             }
         }
-        if let Some(v) = &t.view {
-            if let Some(source) = by_name.get(v.source.as_str()) {
-                for g in &v.group_by {
-                    want("view, `group_by`".into(), g.as_str(), source);
-                }
+        if let Some(v) = &t.view
+            && let Some(source) = by_name.get(v.source.as_str())
+        {
+            for g in &v.group_by {
+                want("view, `group_by`".into(), g.as_str(), source);
             }
         }
         for r in &t.relations {
