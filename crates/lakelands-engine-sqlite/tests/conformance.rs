@@ -25,15 +25,14 @@ impl Harness for Sqlite {
         "sqlite"
     }
 
-    fn fresh(&self) -> FreshLake<'_> {
+    fn fresh(&self, host: Seams) -> FreshLake<'_> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let lake = format!("conformance-{}", NEXT.fetch_add(1, Ordering::Relaxed));
         let dir = self.root.join(&lake);
         Box::pin(async move {
             let seams = Seams {
                 engines: vec![Arc::new(SqliteOpener)],
-                backings: lakelands_core::conformance::backing::backings(),
-                ..Seams::default()
+                ..host
             };
             let store: Arc<dyn LakeStore> =
                 lakelands_store::open(Location::sqlite(lake, dir), seams, OpenMode::Create).await?;

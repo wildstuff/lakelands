@@ -14,12 +14,20 @@
 //! read back from a recorded output from one computed by calling again.
 //! The token is the check's own, so checks never count each other's
 //! calls.
+//!
+//! The suite's embedding backend, [`embedder`], is bound in the lakes of
+//! the checks that ask for it. Its model is [`EMBED_MODEL`], its vectors
+//! have two dimensions, and every text becomes `(1, 0)`, except that a
+//! text starting with [`UNREACHABLE`] fails the whole call. It fails with
+//! a refusal, not `Unavailable`: whatever a backend answers as a failure,
+//! the store makes the search unavailable. It counts its calls
+//! ([`embed_calls`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;
-use lakelands_api::seam::{FunctionBacking, FunctionCall};
+use lakelands_api::seam::{EmbedBackend, FunctionBacking, FunctionCall};
 use lakelands_api::{Error, Result, Value};
 
 /// The backing kind the suite's functions name.
@@ -90,4 +98,54 @@ pub fn unplug(token: &str) {
         .unwrap_or_else(|p| p.into_inner())
         .unplugged
         .insert(token.to_owned());
+}
+
+/// The model the suite's embedding backend names.
+pub const EMBED_MODEL: &str = "conformance-embed";
+
+/// A text the suite's embedding backend fails on.
+pub const UNREACHABLE: &str = "unreachable";
+
+fn embeds() -> &'static Mutex<usize> {
+    static EMBEDS: OnceLock<Mutex<usize>> = OnceLock::new();
+    EMBEDS.get_or_init(Mutex::default)
+}
+
+/// The scripted embedding backend.
+struct Embedder;
+
+#[async_trait]
+impl EmbedBackend for Embedder {
+    fn model(&self) -> &str {
+        EMBED_MODEL
+    }
+
+    fn dimensions(&self) -> u32 {
+        2
+    }
+
+    async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        *embeds().lock().unwrap_or_else(|p| p.into_inner()) += 1;
+        if texts.iter().any(|t| t.starts_with(UNREACHABLE)) {
+            return Err(Error::Refused {
+                field: None,
+                reason: lakelands_api::Refusal::Invalid {
+                    message: format!("`{EMBED_MODEL}` cannot be reached"),
+                },
+            });
+        }
+        Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect())
+    }
+}
+
+/// The embedding backend the checks that ask for one bind.
+pub fn embedder() -> Arc<dyn EmbedBackend> {
+    Arc::new(Embedder)
+}
+
+/// How many calls the suite's embedding backend has received, in this
+/// process. The suite runs its checks one at a time, so a check reads
+/// its own calls as the difference.
+pub fn embed_calls() -> usize {
+    *embeds().lock().unwrap_or_else(|p| p.into_inner())
 }

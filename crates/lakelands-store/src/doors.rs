@@ -297,7 +297,22 @@ impl Catalog for Doors {
             Some(embed),
         ) = (&mut search.mode, &self.lake.seams.embed)
         {
-            let mut vectors = embed.embed(std::slice::from_ref(text)).await?;
+            // Whatever the backend answers as a failure, the search is
+            // unavailable: never ranked lexically instead, and never
+            // another kind of error a caller would act on differently.
+            let mut vectors =
+                embed
+                    .embed(std::slice::from_ref(text))
+                    .await
+                    .map_err(|e| match e {
+                        Error::Unavailable { message } => Error::Unavailable { message },
+                        other => Error::Unavailable {
+                            message: format!(
+                                "the embedding backend `{}` failed: {other}",
+                                embed.model()
+                            ),
+                        },
+                    })?;
             if vectors.len() != 1 {
                 return Err(Error::Unavailable {
                     message: format!(

@@ -39,11 +39,15 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   `docs/decisions/022-functions-are-declarations.md` and
   `docs/seams.md` §`FunctionBacking`.
 - **`EmbedBackend`.** A host may pass vectors in with its writes or
-  plug in an embedding client. In `0.1.0` a bound backend embeds the
-  query text of a hybrid search that brings no vector of its own, which
-  is a read and records nothing; without one, search is lexical and over
-  caller-supplied vectors. Embedding fields as they are written, and an
-  OpenAI-compatible client, follow right after.
+  plug in an embedding client: its own, or the one in
+  `lakelands-backings` for any `/v1/embeddings` endpoint, which the CLI
+  and the server bind from the `embed` section of the root's
+  `lakelands.json`. A bound backend embeds the query text of a hybrid
+  search that brings no vector of its own, which is a read and records
+  nothing. Without one, search is lexical and over caller-supplied
+  vectors, and says so. A bound backend that fails makes the search
+  `Unavailable`; it never falls back to lexical. Embedding fields as
+  they are written follows. See `docs/seams.md` §`EmbedBackend`.
 - **`VerbExecutor`.** A verb declared `low` runs at once; any other
   lands as `WriteProposed`, and the store records `accept` and `reject`
   as events. A verb that writes authored fields runs in the store; a

@@ -29,7 +29,7 @@ contract and to this page.
 | Engine | `LakeEngine`, `ProjectionStore`, `ProjectionView`; `VectorIndex` beside them | SQLite and in-memory (`0.1.0`); PostgreSQL after | Rarely anything: a new engine, proven by the conformance suite |
 | Principal resolution | `PrincipalResolver` | API key or static entry → one principal | Its identities, roles and policies, compiled to grants |
 | Function backings | `FunctionBacking` | `expr`, evaluated in the store | Its own backing kinds; `http` and `exec` ship in `lakelands-backings` |
-| Embeddings | `EmbedBackend` | None: lexical search and caller vectors | An embedding client; an OpenAI-compatible one ships after `0.1.0` |
+| Embeddings | `EmbedBackend` | None: lexical search and caller vectors | An embedding client; `lakelands-backings` ships one for `/v1/embeddings` endpoints |
 | Verb execution | `VerbExecutor` | None: external verbs are refused as `Unbound` | What its external verbs do |
 | Change feed | `ChangeFeed` | The log, read by kind from a position | A relay of the feed onto its own bus, as its own code |
 | System vocabulary | `SystemVocabulary` | Lakelands' four `sys.` types, allowed in every lake | Its own `sys.` types and which lakes may hold them |
@@ -415,7 +415,9 @@ environment.
     fails, redirects included: a redirect is never followed, since it
     could lead off the list.
   - No proxy is used. `https` trusts the authorities in `ca_file`, or,
-    without one, the first system bundle found at a well-known path.
+    without one, the first system bundle found at a well-known path. A
+    relative `ca_file` is the root's, as the embedding client's is,
+    never the working directory's.
 - `exec`:
   - A function names `config.command`, the name of a command the
     operator configured, never a program path, so a declaration cannot
@@ -448,19 +450,78 @@ environment.
 `model()`, `dimensions()`, `embed(texts) -> vectors`, one vector per
 text, in order.
 
-In `0.1.0` the store calls the backend for one thing: a hybrid `search`
-without a caller's vector embeds its query text through the bound
-backend and ranks over the result. That is a read, and nothing is
-recorded; a backend that answers other than one vector for the one text
-makes the search `Unavailable`. Vectors stored in records come from
-callers. Embedding a field's value when it is written comes with the
-embedding client after `0.1.0`; each such vector is then recorded as
-`output_recorded`, with the model as its procedure, and read back on
-replay.
+The store calls the backend for one thing: a hybrid `search` without a
+caller's vector embeds its query text through the bound backend and
+ranks over the result. That is a read, and nothing is recorded. A
+backend that answers other than one vector for the one text makes the
+search `Unavailable`, and so does a backend that cannot be reached or
+fails, whatever error it answers: the lexical fallback is for an absent backend, never a failing
+one, so the same query never ranks differently by the network's weather.
+A vector search, and a hybrid search that brings its own vector, never
+call the backend. Vectors stored in records come from callers. Embedding
+a field's value when it is written is planned (lakelands#76); each such
+vector is then recorded as `output_recorded`, with the model as its
+procedure, and read back on replay.
 
 There is no default backend: without one, `search` ranks lexically and
 over vectors callers supply, and says in its answer which ranking it
-used. An OpenAI-compatible client follows after `0.1.0`.
+used (`ranked_by`).
+
+**The embedding client** ships in `lakelands-backings`. It speaks to
+any endpoint shaped like `POST /v1/embeddings`. The CLI and the server
+bind it from the `embed` section of the root's `lakelands.json`, one
+client for all of the root's lakes; without the section, no backend is
+bound.
+
+```json
+"embed": {
+  "endpoint": "https://api.example.com/v1/embeddings",
+  "model": "text-embedding-3-small",
+  "dimensions": 1536,
+  "api_key_file": "secrets/embed.key",
+  "send_dimensions": false,
+  "max_batch": 64,
+  "timeout_secs": 30,
+  "max_reply_bytes": 16777216,
+  "ca_file": null
+}
+```
+
+- `endpoint`, `model` and `dimensions` are required. The endpoint's
+  host is the only host the client reaches; no declaration can name
+  another. `http` is allowed, and meant for a server on loopback.
+- `api_key_file` names a file whose trimmed contents are sent as
+  `Authorization: Bearer <key>`. It is read when the root is opened, and
+  a file that cannot be read, or is empty, stops the command. The key
+  never comes from the environment
+  (`docs/decisions/005-no-environment-reads.md`). Without it, no header
+  is sent.
+- `api_key_file` and `ca_file` are relative to the root's directory,
+  never to the working directory.
+- The root refuses to open, naming the reason, when the endpoint is not
+  an `http` or `https` URL or carries user information (a key goes in
+  `api_key_file`), when `dimensions`, `max_batch`, `timeout_secs` or
+  `max_reply_bytes` is zero, or, for `https`, when the host is not a
+  name TLS can verify or a named `ca_file` holds no certificate. The
+  system bundle, when no `ca_file` is named, is looked up at the first
+  request.
+- The client sends `{"model", "input": [texts…]}`, at most `max_batch`
+  texts to a request, in order. With `send_dimensions`, it adds
+  `"dimensions"`, for endpoints that shorten vectors on request.
+- A `2xx` reply is read as `{"data": [{"index", "embedding"}, …]}`.
+  Items are placed by `index`, every index must appear exactly once,
+  and every vector must have `dimensions` finite values. Other members
+  are ignored. `encoding_format` is never sent, so the default float
+  form is expected; base64 is not read.
+- The transport is the `http` backing's: no proxy, no redirect
+  followed, `https` trusting `ca_file` or the system bundle, a reply
+  limit, and a timeout covering each whole request, connecting
+  included.
+- Every failure is `Unavailable`, naming the endpoint's host, port and
+  path and what went wrong. It never carries the key, the texts, the
+  request, the reply or a path on the server: the texts are a caller's
+  query, and an `Unavailable` reaches every caller.
+- Embedding no text makes no request.
 
 ## `VerbExecutor`
 

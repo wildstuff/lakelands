@@ -1,6 +1,6 @@
 [package]
 name = "lakelands-backings"
-description = "Function backings that reach outside the lake: http and exec, each held to the operator's allow-list."
+description = "What reaches outside the lake on the operator's say-so: the http and exec function backings and the embedding client."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -22,6 +22,9 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 
 [dev-dependencies]
+lakelands-core.workspace = true
+lakelands-engine-mem.workspace = true
+lakelands-store.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
