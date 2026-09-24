@@ -94,7 +94,10 @@ pub enum Projection {
         #[serde(default)]
         fields: Vec<String>,
     },
-    /// Nodes and edges. For viewers.
+    /// Nodes and edges. For viewers. A graph always includes the start
+    /// node, the root a viewer draws from, whatever the steps' `min`;
+    /// `Rows` holds a start only when a step reaches it
+    /// (`docs/decisions/026-the-store-walks-the-graph.md`).
     Graph,
     /// Aggregates over the matches.
     Aggregate(Aggregate),
