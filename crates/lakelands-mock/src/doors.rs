@@ -393,6 +393,19 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
             } else {
                 types.push(t.name.clone());
             }
+            // Its link types too, as the store: a relation dropped by a
+            // migration and declared again with another target would
+            // reshape the links it kept.
+            for lt in links::of(t) {
+                if let Some(old) = st.types.get(&lt.name)
+                    && reshapes(&old.decl, &lt)
+                {
+                    return Err(invalid(format!(
+                        "this declaration reshapes the links `{}` holds; that is a migration of `{}`",
+                        lt.name, t.name
+                    )));
+                }
+            }
             for f in &t.fields {
                 if let Some(target) = &f.ty.target
                     && !known(target, Some(&t.name))
