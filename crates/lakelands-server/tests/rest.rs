@@ -1,0 +1,457 @@
+//! REST over the same catalog, as recorded transcripts on the mock and
+//! on the store over both engines, and the change feed as server-sent
+//! events.
+//!
+//! `tests/transcripts/rest.txt` holds requests (`>`: the request line,
+//! then headers, then body lines) and the answers expected (`<`: the
+//! status, the pinned headers, then the body, one line per NDJSON line).
+//! Values the contract keeps opaque differ between the mock and the
+//! store: the last proposal, migration report and page cursor answered
+//! are shown as `{proposal}`, `{report_id}` and `{cursor}`, and a request
+//! may name them so; a schema hash as `{schema_hash}`.
+//!
+//! The lake here commits ingests in windows of two records, so a window
+//! boundary is in the transcript, and declares one verb whose executor no
+//! host binds.
+
+mod common;
+
+use common::{BACKENDS, Backend, check, path};
+
+use std::fmt::Write as _;
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use lakelands_api::id::Position;
+use lakelands_api::location::Limits;
+use lakelands_api::ontology::{Risk, VerbDecl, VerbEffect};
+use lakelands_api::seam::FeedFilter;
+use lakelands_api::write::{Declaration, WriteOpts};
+use lakelands_api::{LakeStore, WriteContext};
+use lakelands_server::{HttpConfig, serve_http};
+use serde_json::json;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
+
+/// The headers a transcript pins.
+const PINNED: [&str; 5] = [
+    "allow:",
+    "content-type:",
+    "etag:",
+    "lakelands-position:",
+    "cache-control:",
+];
+
+/// The fixture lake as REST serves it here: ingest windows of two
+/// records, and an external verb `notify` with no executor bound.
+async fn rest_lake(backend: Backend) -> Arc<dyn LakeStore> {
+    let limits = Limits {
+        commit_window_events: 2,
+        ..Limits::default()
+    };
+    let store = common::lake_with(backend, limits).await;
+    store
+        .catalog(WriteContext::default())
+        .declare(
+            &common::owner(),
+            Declaration::Verb(VerbDecl {
+                name: "notify".into(),
+                on: "invoice".into(),
+                payload: Vec::new(),
+                risk: Risk::Low,
+                requires: None,
+                effect: VerbEffect::External {
+                    executor: "mailer".into(),
+                },
+                description: None,
+            }),
+        )
+        .await
+        .expect("the owner declares the verb");
+    store
+}
+
+async fn serve(store: Arc<dyn LakeStore>) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let open = Arc::new(
+        move |_: &lakelands_api::LakeId| -> lakelands_api::Result<Arc<dyn LakeStore>> {
+            Ok(store.clone())
+        },
+    );
+    let config = HttpConfig {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        allowed_origins: vec!["http://localhost:3000".into()],
+        session_idle_secs: 1800,
+        feed_poll_millis: 20,
+    };
+    let server = serve_http(config, common::resolver(), open).await.unwrap();
+    let addr = server.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let _ = server.run().await;
+    });
+    (addr, task)
+}
+
+/// The request a transcript block states, as bytes.
+fn request(addr: SocketAddr, block: &[&str]) -> Vec<u8> {
+    let (start, rest) = block.split_first().unwrap();
+    let mut head = format!("{start} HTTP/1.1\r\nhost: {addr}\r\nconnection: close\r\n");
+    let mut body = Vec::new();
+    let mut typed = false;
+    for l in rest {
+        match l.split_once(": ") {
+            Some((name, _))
+                if body.is_empty()
+                    && !name.is_empty()
+                    && name.bytes().all(|b| b.is_ascii_lowercase() || b == b'-') =>
+            {
+                typed |= name == "content-type";
+                write!(head, "{l}\r\n").unwrap();
+            }
+            _ => body.push(*l),
+        }
+    }
+    let body = match body.len() {
+        0 => String::new(),
+        1 => body[0].to_owned(),
+        _ => body.join("\n") + "\n",
+    };
+    if !body.is_empty() && !typed {
+        head.push_str("content-type: application/json\r\n");
+    }
+    if !body.is_empty() {
+        write!(head, "content-length: {}\r\n", body.len()).unwrap();
+    }
+    format!("{head}\r\n{body}").into_bytes()
+}
+
+/// A chunked body, joined.
+fn dechunk(mut raw: &str) -> String {
+    let mut out = String::new();
+    while let Some((size, rest)) = raw.split_once("\r\n") {
+        let n = usize::from_str_radix(size.trim(), 16).unwrap();
+        if n == 0 {
+            break;
+        }
+        out.push_str(&rest[..n]);
+        raw = &rest[n + 2..];
+    }
+    out
+}
+
+/// Send one request; answer the status, the pinned headers and the body.
+async fn exchange(addr: SocketAddr, block: &[&str]) -> (String, Vec<String>, String) {
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    stream.write_all(&request(addr, block)).await.unwrap();
+    let mut raw = String::new();
+    stream.read_to_string(&mut raw).await.unwrap();
+    let (head, body) = raw.split_once("\r\n\r\n").unwrap();
+    let mut lines = head.lines();
+    let status = lines.next().unwrap().split(' ').nth(1).unwrap().to_owned();
+    let headers: Vec<String> = lines
+        .map(|h| match h.split_once(':') {
+            Some((name, value)) => format!("{}:{value}", name.to_ascii_lowercase()),
+            None => h.to_owned(),
+        })
+        .collect();
+    let body = if headers.iter().any(|h| h == "transfer-encoding: chunked") {
+        dechunk(body)
+    } else {
+        body.to_owned()
+    };
+    let mut pinned: Vec<String> = headers
+        .into_iter()
+        .filter(|h| PINNED.iter().any(|p| h.starts_with(p)))
+        .collect();
+    pinned.sort();
+    (status, pinned, body)
+}
+
+#[tokio::test]
+async fn rest_answers_byte_for_byte() {
+    for backend in BACKENDS {
+        rest_answers_byte_for_byte_on(backend).await;
+    }
+}
+
+/// The string value of the first `"member":"…"` in a text.
+fn member<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    let start = text.find(&format!("\"{name}\":\""))? + name.len() + 4;
+    let len = text[start..].find('"')?;
+    Some(&text[start..start + len])
+}
+
+/// Every `"member":"…"` value shown as `{member}`.
+fn mask(text: &str, name: &str) -> String {
+    let open = format!("\"{name}\":\"");
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find(&open) {
+        let (head, tail) = rest.split_at(i + open.len());
+        out.push_str(head);
+        let end = tail.find('"').unwrap_or(tail.len());
+        out.push_str(&format!("{{{name}}}"));
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+async fn rest_answers_byte_for_byte_on(backend: Backend) {
+    let file = std::fs::read_to_string(path("rest.txt")).unwrap();
+    let requests_only = !file.lines().any(|l| l.starts_with("< "));
+    let (addr, task) = serve(rest_lake(backend).await).await;
+    let mut recorded = String::new();
+    let mut block: Vec<String> = Vec::new();
+    // Opaque values answered so far, newest last: (member, shown as,
+    // values). A request names the newest; an answer shows every one.
+    let mut opaque: Vec<(&str, &str, Vec<String>)> = vec![
+        ("proposal", "{proposal}", Vec::new()),
+        ("report_id", "{report_id}", Vec::new()),
+        ("next_cursor", "{cursor}", Vec::new()),
+    ];
+    let mut lines = file.lines().peekable();
+    while let Some(line) = lines.next() {
+        if let Some(req) = line.strip_prefix("> ") {
+            let mut req = req.to_owned();
+            for (_, shown, values) in &opaque {
+                if let Some(v) = values.last() {
+                    req = req.replace(shown, v);
+                }
+            }
+            block.push(req);
+            writeln!(recorded, "{line}").unwrap();
+            if lines.peek().is_some_and(|n| n.starts_with("> ")) {
+                continue;
+            }
+            let block_: Vec<&str> = block.iter().map(String::as_str).collect();
+            let (status, headers, body) = exchange(addr, &block_).await;
+            block.clear();
+            for (name, _, values) in &mut opaque {
+                if let Some(v) = member(&body, name) {
+                    values.push(v.to_owned());
+                }
+            }
+            writeln!(recorded, "< {status}").unwrap();
+            for h in headers {
+                writeln!(recorded, "< {h}").unwrap();
+            }
+            let mut body = body;
+            for hash in ["schema_hash", "from_schema_hash", "to_schema_hash"] {
+                body = mask(&body, hash);
+            }
+            for (_, shown, values) in &opaque {
+                for v in values {
+                    body = body.replace(v.as_str(), shown);
+                }
+            }
+            for l in body.lines() {
+                writeln!(recorded, "< {l}").unwrap();
+            }
+        } else if !line.starts_with("< ") {
+            writeln!(recorded, "{line}").unwrap();
+        }
+    }
+    task.abort();
+    check(backend, "rest.txt", requests_only, recorded, file);
+}
+
+/// One server-sent event: its id, its kind, its data, and its bytes.
+type Sse = (u64, String, serde_json::Value, String);
+
+/// A reader of one open event stream.
+struct Events {
+    reader: BufReader<TcpStream>,
+    pending: String,
+}
+
+impl Events {
+    /// Open the feed; answer the status, the head of the reply, and the
+    /// stream when it opened.
+    async fn open(addr: SocketAddr, block: &[&str]) -> (String, String, Option<Events>) {
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        stream.write_all(&request(addr, block)).await.unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut head = String::new();
+        loop {
+            let mut l = String::new();
+            reader.read_line(&mut l).await.unwrap();
+            if l == "\r\n" {
+                break;
+            }
+            head.push_str(&l.to_ascii_lowercase());
+        }
+        let status = head.split(' ').nth(1).unwrap().to_owned();
+        let events = (status == "200").then(|| Events {
+            reader,
+            pending: String::new(),
+        });
+        (status, head, events)
+    }
+
+    /// The next event, skipping comments.
+    async fn next(&mut self) -> Sse {
+        loop {
+            if let Some(i) = self.pending.find("\n\n") {
+                let event: String = self.pending.drain(..i + 2).collect();
+                let (mut id, mut kind, mut data) = (None, String::new(), None);
+                for l in event.lines() {
+                    if let Some(v) = l.strip_prefix("id: ") {
+                        id = v.parse().ok();
+                    } else if let Some(v) = l.strip_prefix("event: ") {
+                        kind = v.to_owned();
+                    } else if let Some(v) = l.strip_prefix("data: ") {
+                        data = serde_json::from_str(v).ok();
+                    }
+                }
+                if let (Some(id), Some(data)) = (id, data) {
+                    return (id, kind, data, event);
+                }
+                continue;
+            }
+            // One chunk: its size, its bytes, its line end.
+            let mut size = String::new();
+            self.reader.read_line(&mut size).await.unwrap();
+            let n = usize::from_str_radix(size.trim(), 16).unwrap();
+            assert!(n > 0, "the feed ended");
+            let mut chunk = vec![0; n + 2];
+            self.reader.read_exact(&mut chunk).await.unwrap();
+            self.pending
+                .push_str(std::str::from_utf8(&chunk[..n]).unwrap());
+        }
+    }
+}
+
+/// The feed sends the log from a position, waits at the head for what is
+/// written next, and resumes after `Last-Event-ID`. Only a principal that
+/// reads everything opens it.
+#[tokio::test]
+async fn the_feed_streams_the_log_and_resumes() {
+    for backend in BACKENDS {
+        the_feed_streams_the_log_and_resumes_on(backend).await;
+    }
+}
+
+async fn the_feed_streams_the_log_and_resumes_on(backend: Backend) {
+    let store = common::lake_on(backend).await;
+    let head = store.head().await.unwrap().0;
+    let (addr, task) = serve(store.clone()).await;
+
+    let (status, _, _) = Events::open(
+        addr,
+        &["GET /lakes/finance/feed", "authorization: Bearer k-clerk"],
+    )
+    .await;
+    assert_eq!(status, "403", "{backend:?}: the clerk reads masked fields");
+
+    let (status, reply, events) = Events::open(
+        addr,
+        &[
+            "GET /lakes/finance/feed?from=0",
+            "authorization: Bearer k-owner",
+        ],
+    )
+    .await;
+    assert_eq!(status, "200", "{backend:?}");
+    assert!(reply.contains("content-type: text/event-stream"), "{reply}");
+    assert!(
+        reply.contains(&format!("lakelands-position: {head}")),
+        "{reply}"
+    );
+    let mut events = events.unwrap();
+    // Each event's bytes: its position, its kind, and the event as the
+    // lake's own feed holds it, as JSON.
+    let log = store
+        .feed()
+        .poll(Position(0), &FeedFilter::default(), 1000)
+        .await
+        .unwrap()
+        .events;
+    let mut seen = Vec::new();
+    while seen.last() != Some(&head) {
+        let (id, _, _, raw) = events.next().await;
+        let e = &log[id as usize];
+        let expected = format!(
+            "id: {id}\nevent: {}\ndata: {}\n\n",
+            e.body.kind(),
+            serde_json::to_value(e).unwrap()
+        );
+        assert_eq!(raw, expected, "{backend:?}: event {id}, byte for byte");
+        seen.push(id);
+    }
+    assert_eq!(
+        seen,
+        (0..=head).collect::<Vec<_>>(),
+        "{backend:?}: in order, none missed"
+    );
+
+    // At the head, the stream waits for the next write.
+    let c = store.catalog(WriteContext::default());
+    c.upsert(
+        &common::owner(),
+        &"invoice".into(),
+        &"INV-1".into(),
+        lakelands_mock::checks::patch(&[("status", json!("held"))]),
+        WriteOpts::default(),
+    )
+    .await
+    .unwrap();
+    let (id, kind, data, _) = events.next().await;
+    assert!(id > head, "{backend:?}");
+    assert_eq!(
+        data["body"]["kind"],
+        json!(kind),
+        "{backend:?}: the event is its kind"
+    );
+    assert_eq!(data["body"]["key"], json!("INV-1"), "{backend:?}: {data}");
+    drop(events);
+
+    // A reconnecting client names the last id it received.
+    let (status, _, events) = Events::open(
+        addr,
+        &[
+            "GET /lakes/finance/feed?from=0",
+            "authorization: Bearer k-owner",
+            &format!("last-event-id: {head}"),
+        ],
+    )
+    .await;
+    assert_eq!(status, "200");
+    let (next, _, _, _) = events.unwrap().next().await;
+    assert_eq!(
+        next,
+        head + 1,
+        "{backend:?}: resumed after the last id, not from `from`"
+    );
+
+    task.abort();
+}
+
+/// `aggregate` reaches find as the JSON its tool takes. The mock does not
+/// aggregate (it says so as `invalid`); the store does, on both engines.
+#[tokio::test]
+async fn find_aggregates_on_the_store() {
+    for backend in BACKENDS {
+        let (addr, task) = serve(rest_lake(backend).await).await;
+        let (status, _, body) = exchange(
+            addr,
+            &[
+                "GET /lakes/finance/types/invoice/records?aggregate=%7B%22measures%22%3A%5B%7B%22name%22%3A%22n%22%2C%22func%22%3A%22count%22%7D%5D%7D",
+                "authorization: Bearer k-clerk",
+            ],
+        )
+        .await;
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        match backend {
+            Backend::Mock => {
+                assert_eq!(status, "422", "{body}");
+                assert_eq!(v["reason"]["refusal"], "invalid", "{body}");
+            }
+            Backend::Memory | Backend::Sqlite => {
+                assert_eq!(status, "200", "{backend:?}: {body}");
+                assert_eq!(v["data"]["shape"], "groups", "{body}");
+                assert_eq!(v["data"]["rows"][0]["values"]["n"], json!("1"), "{body}");
+            }
+        }
+        task.abort();
+    }
+}

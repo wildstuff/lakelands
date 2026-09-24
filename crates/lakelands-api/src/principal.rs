@@ -138,6 +138,20 @@ impl Grants {
         }
     }
 
+    /// Whether these grants read every field of every record, withheld
+    /// records included: the lake default reads, every type's default and
+    /// every field grant reads, and `restricted` is held. Only such a
+    /// principal may read the change feed through a door, since the feed
+    /// is the log unmasked
+    /// (`docs/decisions/037-the-feed-over-a-network-door.md`).
+    pub fn reads_everything(&self) -> bool {
+        self.restricted
+            && self.default.reads()
+            && self.types.values().all(|t| {
+                t.default.is_none_or(Access::reads) && t.fields.values().all(|a| a.reads())
+            })
+    }
+
     /// The access this principal has to one field of one type.
     pub fn access(&self, ty: &TypeName, field: &FieldName) -> Access {
         match self.types.get(ty) {
@@ -198,6 +212,51 @@ mod tests {
         assert_eq!(g.access(&invoice, &"verdict".into()), Access::Write);
         assert_eq!(g.access(&invoice, &"amount".into()), Access::Masked);
         assert_eq!(g.access(&"partner".into(), &"name".into()), Access::Read);
+    }
+
+    #[test]
+    fn reading_everything_needs_every_grant_to_read_and_restricted() {
+        assert!(Grants::owner().reads_everything());
+        let reader = Grants {
+            default: Access::Read,
+            restricted: true,
+            ..Grants::default()
+        };
+        assert!(
+            reader.reads_everything(),
+            "read is enough; write is not needed"
+        );
+        let narrowed = |default: Option<Access>, field: Option<Access>| {
+            let mut g = reader.clone();
+            g.types.insert(
+                "invoice".into(),
+                TypeGrants {
+                    default,
+                    fields: field.map(|a| ("amount".into(), a)).into_iter().collect(),
+                },
+            );
+            g
+        };
+        assert!(narrowed(Some(Access::Write), Some(Access::Read)).reads_everything());
+        assert!(!narrowed(Some(Access::Masked), None).reads_everything());
+        assert!(!narrowed(None, Some(Access::Masked)).reads_everything());
+        assert!(!narrowed(None, Some(Access::None)).reads_everything());
+        assert!(
+            !Grants {
+                restricted: false,
+                ..reader.clone()
+            }
+            .reads_everything(),
+            "withheld records are part of the log"
+        );
+        assert!(
+            !Grants {
+                default: Access::Masked,
+                ..reader
+            }
+            .reads_everything()
+        );
+        assert!(!Grants::default().reads_everything());
     }
 
     #[test]

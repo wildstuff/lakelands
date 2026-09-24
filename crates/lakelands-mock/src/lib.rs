@@ -46,7 +46,8 @@
 //! What it does not do, because no door test needs it: it persists
 //! nothing, hashes no canonical bytes (the `prev` and `hash` members are
 //! filled with stable stand-ins, and `verify` checks nothing), computes no
-//! derived fields, views, triggers or object sets, does not aggregate,
+//! derived fields, views, triggers or object sets, binds no verb executor
+//! (an external verb is refused as `unbound` when called), does not aggregate,
 //! walks relations one hop over reference fields only, ranks search by
 //! word count or cosine, and evaluates the expression functions listed in
 //! its `expr` module and no others. Its clock is deterministic: an event's
