@@ -70,6 +70,39 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - run: scripts/conformance.sh "${{ matrix.engine }}"
 
+  # Licences and advisories (deny.toml): one job each, so a new advisory
+  # never hides a licence failure.
+  deny:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [licenses, advisories]
+    name: deny (${{ matrix.check }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny --locked check ${{ matrix.check }}
+
+  # The release's third-party licence list, generated on every PR so the
+  # script cannot rot; the file is an artefact, never tracked.
+  third-party-licences:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+      - run: scripts/third-party-licences.sh target/third-party-licences.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: third-party-licences
+          path: target/third-party-licences.txt
+          retention-days: 7
+
   # One job per gate, so a red gate never hides another.
   gate:
     runs-on: ubuntu-latest

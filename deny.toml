@@ -1,0 +1,44 @@
+# cargo-deny: the licence and advisory gate. CI runs
+# `cargo deny check licenses` and `cargo deny check advisories` on every
+# pull request; a dependency that fails either is a red PR.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+# Unmaintained advisories are checked for the crates the workspace
+# depends on directly, where replacing the crate is our decision.
+unmaintained = "workspace"
+ignore = []
+
+[licenses]
+version = 2
+# Anything not on this list is refused, the workspace's own crates
+# included. That explicitly covers copyleft in a library: GPL, LGPL,
+# AGPL, SSPL and BUSL are never added here, in any version. A crate
+# whose licence cannot be determined (no `license` field and no
+# recognisable licence file) is refused as unlicensed; cargo-deny has
+# no setting that lets it pass.
+#
+# MPL-2.0 is allowed for a dependency used unmodified. A modified or
+# vendored copy of MPL-2.0 code is not covered by this entry.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    # unicode-ident (via proc-macro2, under every serde derive) is
+    # "(MIT OR Apache-2.0) AND Unicode-3.0"; older releases say Unicode-DFS-2016.
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+]
+confidence-threshold = 0.93
+# The list states policy, not usage: an entry no dependency uses yet is
+# not an error.
+unused-allowed-license = "allow"
+exceptions = []
