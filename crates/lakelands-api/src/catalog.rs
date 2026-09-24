@@ -133,7 +133,10 @@ pub trait Catalog: Send + Sync {
     /// Add one field to a type.
     async fn add_field(&self, who: &Principal, ty: &TypeName, field: FieldDecl) -> Result<Outcome>;
 
-    /// The preflight of a migration: what it would do, changing nothing.
+    /// The preflight of a migration: what it would do, changing nothing —
+    /// every field whose values convert and how many would not, and in
+    /// `dropped` every field the migration removes with how many values
+    /// that discards.
     async fn migrate(
         &self,
         who: &Principal,

@@ -194,6 +194,33 @@ pub enum Declaration {
     Trigger(TriggerDecl),
     /// An object set.
     ObjectSet(ObjectSetDecl),
+    /// A function a backing computes.
+    Function(FunctionDecl),
+}
+
+/// A function: a named computation a [`FunctionBacking`](crate::seam::FunctionBacking)
+/// performs. The backing kind is an open token; `expr` is evaluated in the
+/// store from `expr`, any other kind is called through its seam and its
+/// output recorded (`docs/decisions/002-determinism-is-the-boundary.md`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FunctionDecl {
+    /// The function's name.
+    pub name: String,
+    /// The backing kind that computes it (`expr`, `http`, `exec`, or a
+    /// host's own).
+    pub backing: String,
+    /// Its inputs, typed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<crate::ontology::FieldDecl>,
+    /// For the `expr` backing: the expression, over the inputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expr: Option<Condition>,
+    /// The backing's own configuration.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub config: serde_json::Value,
+    /// What the function computes, for people and agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// A change of a type's shape that stored records must follow.
@@ -223,6 +250,12 @@ pub struct MigrationReport {
     pub records_scanned: u64,
     /// Per field whose type changes: how many values convert.
     pub fields: Vec<FieldConversion>,
+    /// Fields the migration removes, and how many records hold a value
+    /// that removing them discards. Removal is the migration's intent,
+    /// named here before anything is applied; it does not make the
+    /// report lossy.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dropped: Vec<(FieldName, u64)>,
     /// True when every stored value converts without loss.
     pub lossless: bool,
     /// Names this report; `migrate_apply` must repeat it.

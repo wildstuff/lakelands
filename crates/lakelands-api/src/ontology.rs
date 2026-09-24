@@ -69,16 +69,26 @@ pub struct ValueTypeDecl {
     /// For text: the closed set of allowed values.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub one_of: Vec<String>,
-    /// A display format.
+    /// A named format every value must satisfy (`email`, `iban`,
+    /// `domain`, `url`). A name the store does not know is refused when
+    /// the value type is declared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
+    /// For decimal: the number of fractional digits every value is kept
+    /// at. A written value with more digits is rounded half away from
+    /// zero (the rule money is kept by); a derived value is rounded before
+    /// the next derived field reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<u32>,
     /// What the value type means, for people and agents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
 
 /// A field's type: a storage kind, optionally refined by a value type
-/// declared over that kind.
+/// declared over that kind. A `reference` must name its `target`, a
+/// `vector` its `dimensions` (greater than zero); neither member may be
+/// given for another kind.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FieldType {
     /// How the value is stored.
@@ -267,6 +277,11 @@ pub struct TypeDecl {
     /// The field that holds a record's business end time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_to: Option<FieldName>,
+    /// The language of the type's searchable text, as a BCP-47 tag
+    /// (`de`, `en`, `de-CH`). Full-text search stems by it; without it,
+    /// text is only split and lower-cased (`docs/decisions/025-full-text-match-sets-are-the-same-on-every-engine.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
     /// Whether the fold materialises per-field provenance for this type.
     /// On by default; a high-volume type may opt out
     /// (`docs/decisions/010-provenance-per-field.md`).

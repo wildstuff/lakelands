@@ -108,3 +108,13 @@ fn a_patch_is_sparse_and_null_clears() {
     assert_eq!(patch.len(), 2);
     assert!(patch["note"].is_null());
 }
+
+#[test]
+fn a_typed_expression_refuses_members_it_does_not_know() {
+    let ok = json!({"op": "path", "path": ["amount"]});
+    assert!(serde_json::from_value::<Expr>(ok).is_ok());
+    let extra = json!({"op": "path", "path": ["amount"], "colour": "blue"});
+    assert!(serde_json::from_value::<Expr>(extra).is_err());
+    let lit = json!({"op": "lit", "value": {"type": "number", "value": "1", "unit": "eur"}});
+    assert!(serde_json::from_value::<Expr>(lit).is_err());
+}

@@ -16,7 +16,10 @@ engines=("$@")
 [ "${#engines[@]}" -gt 0 ] || mapfile -t engines < <(required)
 for engine in "${engines[@]}"; do
     echo "conformance: $engine"
-    # --no-tests=pass until the suite has its first case (the store step).
+    # The suite (lakelands-core::conformance) compiles and is registered
+    # from O2 on, but an engine's tests/conformance.rs calls its runner only
+    # once a store exists to run it against (O3). Until then the entry
+    # points are empty on purpose, and this passes on zero tests.
     cargo nextest run --locked --no-tests=pass \
         -p "lakelands-engine-$engine" --test conformance
 done

@@ -42,3 +42,17 @@ write, deterministically, and a replay reproduces it.
   refused if it moved.
 - `keep` does not hide staleness; it leaves the decision to the reader,
   with the evidence in the field's metadata.
+
+## Extended: clearing is transitive, and a derived value that cannot be computed is cleared
+
+When the fold clears a field because an input changed, the clearing is
+itself a change: a field that depends on the cleared field, with
+`on_input_change: clear`, is cleared in the same event, and so on until
+nothing more changes. A field the write sets itself is never cleared by
+this rule.
+
+A derived field is recomputed in the same event, in dependency order. If
+its expression cannot be evaluated for the record — an input is absent,
+a division by zero, a value that does not fit the field — the field is
+cleared rather than left holding a value computed from inputs that no
+longer hold (023).

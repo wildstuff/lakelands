@@ -38,3 +38,12 @@ used.
   matches is.
 - `search` as a start does not make the pattern query a search door;
   `search` stays its own ranked door (014).
+
+## Extended: too deep is refused, not shortened
+
+A step that asks for more hops than the lake's `max_depth`, or whose
+`min` is above its `max`, is refused as invalid. It is never quietly
+shortened to the limit: an answer that walked less than it was asked to
+would look complete when it is not, and the caller could not tell. A
+`subgraph` pattern's steps are one walk over any of their relations,
+not a chain of steps.

@@ -58,3 +58,7 @@ reason:
   filters on. Changing them rebuilds indexes at most, never a record.
 - Declared authority and `depends_on` / `on_input_change` stay excluded,
   as above: they govern the next write, not the stored shape.
+
+A type's `language` (the tag full-text search stems by) is excluded for
+the same reason as `searchable`: it decides how an index is built, never
+what a record holds.
