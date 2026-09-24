@@ -62,8 +62,8 @@ pub struct FunctionCall {
 }
 
 /// Computes a declared function. The backing kind is an open token:
-/// `expr` (built in, evaluated in the store), `http` and `exec` (after
-/// `0.1.0`), or one a host adds. `expr` is deterministic and recomputed on
+/// `expr` (built in, evaluated in the store), `http` and `exec` (shipped
+/// in `lakelands-backings`), or one a host adds. `expr` is deterministic and recomputed on
 /// replay; for every other backing the store records the output as an
 /// `OutputRecorded` event and reads it back on replay, never calling the
 /// backing twice for one input.
@@ -101,7 +101,10 @@ pub struct VerbInvocation {
     pub lake: LakeId,
     /// The verb.
     pub verb: VerbName,
-    /// The record it was called on, as the caller could read it.
+    /// The record it was called on, whole and unmasked: the executor is
+    /// the host's own code, not a caller, and receives the record as the
+    /// store holds it by design. What it may release is the host's to
+    /// decide.
     pub record: Record,
     /// The payload.
     pub payload: Patch,
@@ -235,7 +238,9 @@ pub const RESERVED_SYSTEM_TYPES: [&str; 4] = [
 /// not the store's: it sits in the server configuration.
 #[derive(Clone, Default)]
 pub struct Seams {
-    /// Engines beyond the ones compiled in.
+    /// The engines the store may open a lake with. None is built in: a
+    /// location whose engine no opener here serves is refused as
+    /// `Unbound`.
     pub engines: Vec<Arc<dyn EngineOpener>>,
     /// Function backings beyond `expr`.
     pub backings: Vec<Arc<dyn FunctionBacking>>,
