@@ -114,6 +114,14 @@ jobs:
           path: target/third-party-licences.txt
           retention-days: 7
 
+  # docs/conformance.md lists every registered check; this fails while the
+  # page differs from the registries.
+  conformance-page:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/conformance-page.py --check
+
   # One job per gate, so a red gate never hides another.
   gate:
     runs-on: ubuntu-latest
