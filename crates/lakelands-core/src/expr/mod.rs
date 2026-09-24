@@ -5,6 +5,7 @@
 pub mod aggregate;
 pub mod eval;
 pub mod iregexp;
+pub mod order;
 mod parse;
 
 pub use eval::{EvalError, Place, RecordScope, Scope, Val, WriteScope, check, eval, holds};

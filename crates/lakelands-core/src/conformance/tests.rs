@@ -145,6 +145,8 @@ impl LakeStore for DownStore {
     refuse!(head<>() -> Position);
     refuse!(verify<>(from: Option<Position>, through: Option<Position>) -> Verification);
     refuse!(rebuild<>() -> Position);
+    refuse!(restrict<'life1, 'life2>(ty: &'life1 TypeName, key: &'life2 RecordKey, reason: String) -> Position);
+    refuse!(unrestrict<'life1, 'life2>(ty: &'life1 TypeName, key: &'life2 RecordKey) -> Position);
     refuse!(checkpoint<>() -> Position);
     refuse!(close<>() -> ());
 }

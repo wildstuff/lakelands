@@ -33,7 +33,7 @@ use crate::expr::Expr;
 use crate::id::{LakeId, Position, RecordKey, RelationName, TypeName};
 use crate::location::Location;
 use crate::query::{Edge, Walk};
-use crate::read::{Aggregate, Group, Order};
+use crate::read::Order;
 use crate::record::{StoredRecord, Value};
 use crate::time::Timestamp;
 use crate::write::{Declaration, Proposal, ProposalFilter};
@@ -98,6 +98,8 @@ pub trait LakeEngine: Send + Sync {
     fn take_lease(&self, holder: &str) -> Result<Lease>;
 
     /// Give the lease up. A later `take_lease` gets a greater token.
+    /// Releasing a lease that is no longer current changes nothing. A
+    /// handle that is dropped releases the lease it took and still holds.
     fn release_lease(&self, lease: &Lease) -> Result<()>;
 
     /// The last event's position and hash; `None` for an empty lake.
@@ -166,9 +168,9 @@ pub trait ProjectionStore: Send + Sync {
     /// entries and edges from it and the declarations in force.
     fn put_record(&self, record: &StoredRecord) -> Result<()>;
 
-    /// Store a proposal's state as of its latest event; earlier states
-    /// are kept.
-    fn put_proposal(&self, proposal: &Proposal) -> Result<()>;
+    /// Store a proposal's state as of its latest event, at `at`; earlier
+    /// states are kept, so a view before `at` still sees the earlier one.
+    fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()>;
 
     /// Record whether a record is a member of an object set from `at` on;
     /// earlier membership is kept.
@@ -181,8 +183,9 @@ pub trait ProjectionStore: Send + Sync {
         at: Position,
     ) -> Result<()>;
 
-    /// Store a seam's recorded output, for replay.
-    fn put_output(&self, seam: &str, input: &Digest, output: &Value) -> Result<()>;
+    /// Store a seam's recorded output, for replay, valid from the event
+    /// that recorded it at `at`.
+    fn put_output(&self, seam: &str, input: &Digest, output: &Value, at: Position) -> Result<()>;
 
     /// Remember that the event with this id was applied at `at`, so that
     /// a redelivery is recognised.
@@ -250,15 +253,6 @@ pub trait ProjectionView {
 
     /// Records of one type.
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>>;
-
-    /// Aggregates over the live records of one type.
-    fn aggregate(
-        &self,
-        ty: &TypeName,
-        aggregate: &Aggregate,
-        filter: Option<&Expr>,
-        valid_at: Option<Timestamp>,
-    ) -> Result<Vec<Group>>;
 
     /// The links of one record, over one relation or all.
     fn edges(

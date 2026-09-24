@@ -42,3 +42,13 @@ fold. A derived field will declare the function that computes it, as a
 member of the field's declaration, when the fold that calls it arrives;
 until then a declared function is part of the ontology and computes
 nothing.
+
+## Extended: a field computed by a function
+
+A derived field may name the declared function that computes it (the
+field's `function`) instead of carrying an expression; the function's
+inputs are read from the record's fields of the same names, and the fold
+computes it like any derived field, recomputing it on replay. In this
+release only the `expr` backing computes fields; a field whose function
+needs any other backing is refused when declared, until the backings that
+reach outside the lake arrive with their recorded outputs.

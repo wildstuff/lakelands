@@ -47,3 +47,14 @@ Lakelands `cursor` means only the page token of a list-shaped read
 (`docs/glossary.md`), and a source's own place in its data is its
 **offset**. Where this record says "cursor" above, it means that
 position; nothing else about the decision changes.
+
+## Extended: when a trigger fires
+
+A trigger fires on every write of its type — `upsert`, `ingest`, a verb's
+write, an accepted proposal's write, `retire` — whose guard holds over the
+record after the write. The guard sees the record before the write through
+`changed` and `previous`, so a transition is the guard's to state; a guard
+that cannot be evaluated does not fire. The `trigger_fired` event is
+appended in the same append as the write, naming it as its cause, and an
+object set's `object_set_changed` is appended the same way, only when a
+record's membership actually changes.

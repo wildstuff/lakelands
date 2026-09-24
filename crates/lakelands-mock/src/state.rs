@@ -59,6 +59,7 @@ impl State {
         let outcome = |version: Option<Version>| Outcome::Applied {
             position: e.position,
             version,
+            output: None,
         };
         match &e.body {
             EventBody::Declared {

@@ -100,6 +100,7 @@ fn text(name: &str) -> FieldDecl {
         required: false,
         authority: Authority::Authored,
         derived: None,
+        function: None,
         depends_on: Vec::new(),
         on_input_change: OnInputChange::Keep,
         sensitive: false,
@@ -355,7 +356,9 @@ fn at(p: Position) -> ReadAt {
 
 fn applied(o: &Outcome) -> (Position, Option<Version>) {
     match o {
-        Outcome::Applied { position, version } => (*position, *version),
+        Outcome::Applied {
+            position, version, ..
+        } => (*position, *version),
         other => panic!("expected the write to apply, got {other:?}"),
     }
 }

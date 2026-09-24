@@ -82,6 +82,8 @@ pub(super) struct FieldBody {
     #[serde(default)]
     pub derived: Option<Cond>,
     #[serde(default)]
+    pub function: Option<String>,
+    #[serde(default)]
     pub depends_on: OneOrMany,
     #[serde(default)]
     pub on_input_change: OnInputChange,

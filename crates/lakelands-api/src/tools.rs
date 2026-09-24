@@ -845,6 +845,7 @@ mod tests {
             required: false,
             authority,
             derived: None,
+            function: None,
             depends_on: vec![],
             on_input_change: Default::default(),
             sensitive: false,

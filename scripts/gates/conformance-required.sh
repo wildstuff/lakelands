@@ -6,7 +6,10 @@
 #   - an engine crate is missing from ROSTER, or ROSTER names an engine
 #     with no crate, lists one twice, or uses a status other than
 #     `required` / `deferred`;
-#   - a required engine has no `tests/conformance.rs` entry point;
+#   - a required engine has no `tests/conformance.rs` entry point, or its
+#     crate holds source beyond its crate doc and the entry point does not
+#     call the suite's runner (`run_all(` outside a `//` comment) — an
+#     imported engine is checked, never passed on zero tests;
 #   - an engine that is required on the pull request's base commit is
 #     deferred or gone (the roster only grows);
 #   - the CI workflow does not run the suite from the roster.
@@ -43,6 +46,14 @@ for engine in "${!status[@]}"; do
     required=$((required + 1))
     [ -f "crates/lakelands-engine-$engine/tests/conformance.rs" ] \
         || fail "required engine \`$engine\` has no crates/lakelands-engine-$engine/tests/conformance.rs"
+    entry="crates/lakelands-engine-$engine/tests/conformance.rs"
+    code="$(git ls-files -z -- "crates/lakelands-engine-$engine/src" | xargs -0 -r cat \
+        | { grep -v -E '^[[:space:]]*(//|$)' || true; } | wc -l | tr -d ' ')"
+    # A call, not a mention: `run_all(` outside a `//` comment.
+    if [ "$code" -gt 0 ] && [ -f "$entry" ] \
+        && ! sed 's|//.*||' "$entry" | grep -q 'run_all[[:space:]]*('; then
+        fail "required engine \`$engine\` has $code line(s) of source, and $entry does not run the suite"
+    fi
 done
 [ "$required" -gt 0 ] || fail "$ROSTER has no required engine"
 

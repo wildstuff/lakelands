@@ -44,7 +44,7 @@ every kind, and `body`, which holds the kind and its payload.
 | `procedure` | object | when one did | `{ "name", "version" }`, both strings, of the procedure that produced the values: for a verb, its name and its declaration's `version` in decimal digits; for a function backing, the function's name and its declaration's `version`; for an embedding, the model as the backend names it and the version it reports. |
 | `context` | object | always | The host's context for the write: `{ "origin": "direct" \| "reactive" \| "scheduled", "depth": n }`, `depth` an integer ≥ 0. |
 | `cause` | integer | consequences | The position of the event this one follows from: a verb's write names its `verb_called`, an accepted proposal's write names its `write_accepted`, a fired trigger names the write that fired it. |
-| `fence` | integer | always | The fencing token of the writer lease the event was appended under (§4). `0` for the event at position 0. |
+| `fence` | integer | always | The fencing token of the writer lease the event was appended under (§4); `0` for the event at position 0, which is written before any lease exists in the lake. |
 | `idempotency_key` | string | when given | The caller's idempotency key of an authored write. |
 | `body` | object | always | The kind and its payload (§2). |
 | `hash` | string | always | SHA-256 of the event's canonical bytes without `hash`, as 64 lower-case hex digits (§1.2). |
@@ -198,7 +198,7 @@ this object:
 | `record_upserted` | `type`, `key`, `version`, `patch` | An authored write. `patch` is sparse: each member sets a field, `null` clears it, an absent field is unchanged (`docs/decisions/012-writes-touch-only-their-fields.md`). |
 | `record_ingested` | `type`, `key`, `version`, `patch` | A write from a source; `source` is set in the envelope. Only `source` and `shared` fields may appear in the patch. |
 | `record_retired` | `type`, `key`, `version` | The record is retired: invisible to reads at or after this position, its history kept. |
-| `record_restricted` | `type`, `key`, `version` | The record is withheld from principals without the `restricted` grant (a retention hold). |
+| `record_restricted` | `type`, `key`, `version`, `reason` | The record is withheld from principals without the `restricted` grant (a retention hold); `reason` is the host's. Written by the host through the store facade, never by a caller's door. |
 | `record_unrestricted` | `type`, `key`, `version` | The hold is lifted. |
 
 `version` is the record's version after the event: 1 for the first event
@@ -280,8 +280,9 @@ of §1.2.
 ## 3. Event identifiers
 
 An event's `id` is 32 lower-case hex digits: the first 16 bytes of a
-SHA-256 digest (the first 32 digits of its lower-case hex form), or 16
-random bytes.
+SHA-256 digest (the first 32 digits of its lower-case hex form), or,
+for an event of neither kind below, any 16 bytes the writer has not
+used in the lake before.
 
 Every string in a preimage below is its UTF-8 bytes, and `‖` joins
 bytes with nothing between them but the `0x00` shown. Declared names are
@@ -316,11 +317,15 @@ So the separators are unambiguous.
   `retire` (the `record_*` event takes the id), `call` (the
   `verb_called` event takes it) and `propose` (the `write_proposed`
   event takes it).
-- **Every other event**: 16 random bytes.
+- **Every other event**: any id not used before in the lake. Lakelands'
+  store derives it as `SHA-256("lakelands:event:v1" ‖ 0x00 ‖ lake ‖ 0x00
+  ‖ position)`, the position in decimal digits: a position is used once
+  in a lake, so the id is unique without a source of randomness. A
+  reader never recomputes these ids; it only requires them unique.
 
 The events a store appends as consequences of one write (a verb's
-writes, a fired trigger, a cleared dependent) take random ids; they are
-never delivered twice, because their cause is not.
+writes, a fired trigger, an accepted proposal's write) take positional
+ids; they are never delivered twice, because their cause is not.
 
 **An ingest that changes nothing appends nothing.** Before its id
 matters, the store compares an ingest patch with the record as the fold
@@ -337,9 +342,11 @@ A lake has one writer at a time (`docs/decisions/008-one-writer-per-lake.md`).
 A process becomes the writer by taking the lease: it appends
 `lease_taken` with a fencing token greater than every earlier token, and
 every event it appends afterwards carries that token in `fence`. An
-engine refuses an append whose fence is not the current lease's, whose
-first position is not the log's next, or whose `prev` is not the log's
-last hash.
+engine refuses an append that holds an event whose fence is not the
+current lease's — except the event at position 0, whose fence is 0 —
+whose first position is not the log's next, or whose `prev` is not the
+log's last hash. Creating a lake is one append: `lake_created` at
+position 0 under fence 0, then the creator's `lease_taken`.
 
 A process that opens a lake read-only never takes the lease and never
 appends; any number of them may read while one process writes.

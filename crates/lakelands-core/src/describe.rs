@@ -103,7 +103,7 @@ fn type_description(
         find: reads,
         get: reads,
         upsert: !is_view && fields.iter().any(FieldDescription::authored_writable),
-        retire: !is_view && whole.writes(),
+        retire: crate::rights::may_retire(who, t),
     };
     let verbs = declared
         .iter()
@@ -202,6 +202,7 @@ mod tests {
             required: false,
             authority,
             derived: None,
+            function: None,
             depends_on: vec![],
             on_input_change: Default::default(),
             sensitive: false,

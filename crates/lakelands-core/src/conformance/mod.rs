@@ -70,6 +70,7 @@ macro_rules! ensure {
 }
 
 pub mod checks;
+pub mod engine;
 pub mod fixture;
 
 /// Opens lakes for the suite: one engine, as its test configures it.

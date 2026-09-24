@@ -48,3 +48,28 @@ A verb that reaches outside the lake, of any risk, is refused as
 `unbound` at call time when no executor is bound for it: never faked,
 and never recorded as a proposal, because a proposal that could not run
 when accepted would be a promise the store cannot keep.
+
+## Extended: what acceptance checks
+
+Accepting a proposal applies it under the proposer's grants as they were
+when it was proposed: the write was checked whole then, and the reviewer
+applies exactly what was checked. At acceptance the store checks again
+only what can have moved since — the type's shape and the record's
+version — and records the write with the proposer as its writer, caused
+by the acceptance. A verb's write, run at once or on acceptance, fires
+triggers and changes object sets exactly as any other write does
+(`docs/decisions/004-the-change-feed-is-the-log.md`).
+
+## Extended: when an executor fails
+
+An external verb is due at the position of the event that made it due,
+and it stays due: an executor's failure does not take that event back.
+The failure is recorded as the executor's output — `{"error": "<its
+error text>"}` in the `output_recorded` event that position causes — and
+the caller's outcome is applied at that position with the recorded
+output in it, the error form included: an error reply would say nothing
+was written when the position is real, and a caller should not have to
+read the log back for the answer. The verb is not run again for that
+position; a retry is a new call and a new position. So the log holds, for
+every external verb, either what the outside world answered or that it
+did not.

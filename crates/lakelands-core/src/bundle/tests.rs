@@ -47,6 +47,7 @@ fn field(name: &str, ty: FieldType) -> FieldDecl {
         required: false,
         authority: Authority::Authored,
         derived: None,
+        function: None,
         depends_on: Vec::new(),
         on_input_change: OnInputChange::Keep,
         sensitive: false,

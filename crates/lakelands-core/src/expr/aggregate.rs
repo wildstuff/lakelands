@@ -163,7 +163,9 @@ fn to_value(v: &Val) -> Value {
     match v {
         Val::Null => Value::Null,
         Val::Bool(b) => Value::Bool(*b),
-        Val::Num(d) => Value::String(d.normalize().to_string()),
+        // Exact, and at the scale the inputs carried: a sum of amounts in
+        // cents reads in cents.
+        Val::Num(d) => Value::String(d.to_string()),
         Val::Text(s) => Value::String(s.clone()),
         Val::Time(t) => Value::String(t.to_string()),
         Val::Duration(d) => Value::from(*d),
@@ -299,10 +301,10 @@ mod tests {
         .unwrap();
         assert_eq!(out.len(), 1);
         let v = &out[0].values;
-        assert_eq!(v[&FieldName::from("total")], json!("15.3"));
+        assert_eq!(v[&FieldName::from("total")], json!("15.30"));
         assert_eq!(v[&FieldName::from("n")], json!("4"));
         assert_eq!(v[&FieldName::from("with_amount")], json!("3"));
-        assert_eq!(v[&FieldName::from("mean")], json!("5.1"));
+        assert_eq!(v[&FieldName::from("mean")], json!("5.10"));
         assert_eq!(v[&FieldName::from("first_due")], json!("2026-08-01"));
     }
 

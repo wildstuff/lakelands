@@ -164,6 +164,12 @@ pub struct FieldDecl {
     /// For `derived`: the expression the fold computes it from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derived: Option<Condition>,
+    /// For `derived`, instead of `derived`: the declared function that
+    /// computes it. The function's inputs are read from the record's fields
+    /// of the same names; an `expr` function is recomputed on replay like
+    /// any derived expression.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function: Option<String>,
     /// The fields this one depends on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<FieldName>,

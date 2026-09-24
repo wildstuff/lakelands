@@ -41,6 +41,9 @@ pub enum ValueError {
     },
     /// A decimal string is not `-?[0-9]+(\.[0-9]+)?`.
     Decimal(String),
+    /// An integer outside ±(2^53 − 1), which not every reader of the log
+    /// reads exactly (`docs/log-format.md` §1.2).
+    TooLarge(String),
     /// A date-time string is not a UTC instant.
     DateTime(String),
     /// A bytes string is not standard base64 with padding.
@@ -100,6 +103,10 @@ impl fmt::Display for ValueError {
                 write!(f, "a {} value must be {expected}", kind_name(*kind))
             }
             ValueError::Decimal(s) => write!(f, "not a decimal: {s:?}"),
+            ValueError::TooLarge(n) => write!(
+                f,
+                "{n} is beyond ±(2^53 − 1), the largest integer every reader reads exactly"
+            ),
             ValueError::DateTime(s) => write!(f, "not a UTC date-time: {s:?}"),
             ValueError::Base64 => f.write_str("not standard base64 with padding"),
             ValueError::NoDimensions => f.write_str("the vector field declares no dimensions"),
@@ -141,7 +148,8 @@ impl fmt::Display for ValueError {
 
 impl std::error::Error for ValueError {}
 
-fn kind_name(kind: StorageKind) -> &'static str {
+/// A storage kind's name, as declarations spell it.
+pub fn kind_name(kind: StorageKind) -> &'static str {
     match kind {
         StorageKind::Text => "text",
         StorageKind::Number => "number",
@@ -199,6 +207,24 @@ fn to_scale(digits: &str, scale: u32) -> String {
     }
 }
 
+/// Refuse an integer anywhere in a value that lies outside ±(2^53 − 1).
+fn check_integers(value: &Value) -> Result<(), ValueError> {
+    const MAX: u64 = (1 << 53) - 1;
+    match value {
+        Value::Number(n) => {
+            let big = n.as_u64().is_some_and(|u| u > MAX)
+                || n.as_i64().is_some_and(|i| i.unsigned_abs() > MAX);
+            if big {
+                return Err(ValueError::TooLarge(n.to_string()));
+            }
+            Ok(())
+        }
+        Value::Array(items) => items.iter().try_for_each(check_integers),
+        Value::Object(m) => m.values().try_for_each(check_integers),
+        _ => Ok(()),
+    }
+}
+
 /// The value type the field names, held to the declaration given.
 fn resolve<'a>(
     ty: &FieldType,
@@ -222,14 +248,20 @@ fn check_kind(value: &Value, ty: &FieldType) -> Result<Value, ValueError> {
             _ => Err(wrong("a string")),
         },
         StorageKind::Number => match value {
-            Value::Number(_) => Ok(value.clone()),
+            Value::Number(_) => {
+                check_integers(value)?;
+                Ok(value.clone())
+            }
             _ => Err(wrong("a number")),
         },
         StorageKind::Boolean => match value {
             Value::Bool(_) => Ok(value.clone()),
             _ => Err(wrong("true or false")),
         },
-        StorageKind::Json => Ok(value.clone()),
+        StorageKind::Json => {
+            check_integers(value)?;
+            Ok(value.clone())
+        }
         StorageKind::Decimal => {
             let s = value.as_str().ok_or_else(|| wrong("a string of digits"))?;
             if is_decimal(s) {
@@ -251,8 +283,15 @@ fn check_kind(value: &Value, ty: &FieldType) -> Result<Value, ValueError> {
                 Err(ValueError::Base64)
             }
         }
-        StorageKind::Vector => check_vector(value, ty),
-        StorageKind::Geo => check_geo(value).map(|()| value.clone()),
+        StorageKind::Vector => {
+            check_integers(value)?;
+            check_vector(value, ty)
+        }
+        StorageKind::Geo => {
+            check_geo(value)?;
+            check_integers(value)?;
+            Ok(value.clone())
+        }
     }
 }
 
@@ -436,6 +475,7 @@ mod tests {
             required: false,
             authority: Authority::Authored,
             derived: None,
+            function: None,
             depends_on: Vec::new(),
             on_input_change: OnInputChange::Keep,
             sensitive: false,
@@ -634,6 +674,35 @@ mod tests {
         assert!(matches!(
             check(&json!(42), &ty, Some(&vt)),
             Err(ValueError::Format { .. })
+        ));
+    }
+
+    #[test]
+    fn integers_beyond_two_to_the_fifty_three_are_refused() {
+        let n = kind(StorageKind::Number);
+        assert!(check(&json!(9_007_199_254_740_991_i64), &n, None).is_ok());
+        assert!(matches!(
+            check(&json!(9_007_199_254_740_992_i64), &n, None),
+            Err(ValueError::TooLarge(_))
+        ));
+        assert!(matches!(
+            check(&json!(-9_007_199_254_740_992_i64), &n, None),
+            Err(ValueError::TooLarge(_))
+        ));
+        let j = kind(StorageKind::Json);
+        assert!(matches!(
+            check(&json!({"a": [1, 18_446_744_073_709_551_615_u64]}), &j, None),
+            Err(ValueError::TooLarge(_))
+        ));
+        let g = kind(StorageKind::Geo);
+        assert!(check(&json!({"type": "Point", "coordinates": [1, 2]}), &g, None).is_ok());
+        assert!(matches!(
+            check(
+                &json!({"type": "Point", "coordinates": [9_007_199_254_740_992_i64, 2]}),
+                &g,
+                None
+            ),
+            Err(ValueError::TooLarge(_))
         ));
     }
 

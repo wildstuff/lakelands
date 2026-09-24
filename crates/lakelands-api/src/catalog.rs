@@ -88,7 +88,11 @@ pub trait Catalog: Send + Sync {
     ) -> Result<Outcome>;
 
     /// Call a declared verb on one record. It runs or is proposed by its
-    /// declared risk.
+    /// declared risk. A verb whose effect reaches outside the lake answers,
+    /// when it runs, `Applied` with its executor's recorded `output` —
+    /// `{"error": "<text>"}` when the executor failed, since the verb's
+    /// position is real either way. A retry answered from its idempotency
+    /// key carries no `output`; the recorded one is in the log.
     async fn call(
         &self,
         who: &Principal,
@@ -107,8 +111,13 @@ pub trait Catalog: Send + Sync {
     /// Record a write as a proposal instead of applying it.
     async fn propose(&self, who: &Principal, write: ProposedWrite, why: String) -> Result<Outcome>;
 
-    /// Accept a proposal: its write is applied, under the proposer's
-    /// grants, caused by the acceptance.
+    /// Accept a proposal: its write is applied, caused by the acceptance
+    /// and written as the proposer. It is applied under the proposer's
+    /// grants as they were when it was proposed: the write was checked
+    /// whole then, and a reviewer applies exactly what was checked. At
+    /// acceptance the store checks again only what can have moved since —
+    /// the type's shape and the record's version. An accepted external
+    /// verb answers its executor's recorded `output`, as `call` does.
     async fn accept(&self, who: &Principal, proposal: &ProposalId) -> Result<Outcome>;
 
     /// Reject a proposal. Nothing is written but the rejection, and the
@@ -212,6 +221,15 @@ pub trait LakeStore: Send + Sync {
     /// Delete the projection and rebuild it from the log. Answers the
     /// position it was rebuilt through.
     async fn rebuild(&self) -> Result<Position>;
+
+    /// Withhold a record from principals without the `restricted` grant —
+    /// a retention hold. The record and its history stay; reads by
+    /// principals without the grant no longer see it. The reason is
+    /// recorded in the log.
+    async fn restrict(&self, ty: &TypeName, key: &RecordKey, reason: String) -> Result<Position>;
+
+    /// Lift a hold `restrict` placed.
+    async fn unrestrict(&self, ty: &TypeName, key: &RecordKey) -> Result<Position>;
 
     /// Seal the current log segment and write a checkpoint.
     async fn checkpoint(&self) -> Result<Position>;

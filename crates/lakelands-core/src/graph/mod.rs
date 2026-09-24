@@ -211,9 +211,7 @@ mod tests {
     use lakelands_api::engine::{Declared, Scan};
     use lakelands_api::event::{Digest, EventId};
     use lakelands_api::id::{Position, Version};
-    use lakelands_api::read::{Aggregate, Group};
     use lakelands_api::record::{StoredRecord, Value};
-    use lakelands_api::time::Timestamp;
     use lakelands_api::write::{Proposal, ProposalFilter};
 
     use super::*;
@@ -257,15 +255,6 @@ mod tests {
                 .cloned())
         }
         fn scan(&self, _: &TypeName, _: &Scan) -> Result<Vec<StoredRecord>> {
-            unreachable!()
-        }
-        fn aggregate(
-            &self,
-            _: &TypeName,
-            _: &Aggregate,
-            _: Option<&lakelands_api::expr::Expr>,
-            _: Option<Timestamp>,
-        ) -> Result<Vec<Group>> {
             unreachable!()
         }
         fn edges(
