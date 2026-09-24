@@ -54,7 +54,8 @@
 //! nothing), hashes a view's conditions as written rather than typed, computes no
 //! derived fields, views, triggers or object sets, reads no system
 //! vocabulary (a host's `sys.` types never reach a mock lake; the store
-//! declares them at every writer's open), binds no verb executor
+//! declares them at every writer's open), re-keys no type (a migration
+//! that changes a type's key fields is refused as invalid), binds no verb executor
 //! (an external verb is refused as `unbound` when called), does not aggregate,
 //! walks relations one hop over reference fields only, ranks search by
 //! word count or cosine, and evaluates the expression functions listed in
@@ -78,7 +79,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use async_trait::async_trait;
 use lakelands_api::error::{Error, Refusal, Result};
-use lakelands_api::event::{Digest, Event, EventBody, EventId, LOG_FORMAT_VERSION, Procedure};
+use lakelands_api::event::{Digest, Event, EventBody, EventId, LOG_FORMAT_BASE, Procedure};
 use lakelands_api::id::{IdempotencyKey, LakeId, Position, ProposalId, SourceId};
 use lakelands_api::location::{Limits, Location};
 use lakelands_api::principal::{Principal, WriteContext};
@@ -146,7 +147,7 @@ impl MockLake {
         };
         let mut batch = Batch::new(0);
         batch.push(Draft::system(EventBody::LakeCreated {
-            format: LOG_FORMAT_VERSION,
+            format: LOG_FORMAT_BASE,
         }));
         batch.push(Draft::system(EventBody::LeaseTaken {
             fence: 1,
@@ -191,7 +192,7 @@ impl Shared {
                 .last()
                 .map_or_else(Digest::zero, |e| e.hash.clone());
             let mut e = Event {
-                v: LOG_FORMAT_VERSION,
+                v: LOG_FORMAT_BASE,
                 lake: self.lake.clone(),
                 position,
                 id: d

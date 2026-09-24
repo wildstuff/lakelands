@@ -1322,6 +1322,11 @@ fn risk_word(r: Risk) -> &'static str {
 fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationReport> {
     let ty = &m.to.name;
     let t = st.types.get(ty).ok_or_else(|| no_type(ty))?;
+    if t.decl.key != m.to.key {
+        return Err(invalid(format!(
+            "the in-memory mock does not re-key: `{ty}` keeps its key fields here"
+        )));
+    }
     let renamed = |old: &FieldName| -> FieldName {
         m.renames
             .iter()
@@ -1387,6 +1392,9 @@ fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationRepor
         lossless: fields.iter().all(|f| f.not_convertible == 0),
         fields,
         dropped,
+        rekeyed: Vec::new(),
+        references: Vec::new(),
+        sample_collisions: Vec::new(),
         report_id: String::new(),
     };
     let seed = serde_json::to_vec(&(&report, head.0, m)).unwrap_or_default();
@@ -2382,6 +2390,7 @@ impl Catalog for MockCatalog {
                 migration,
                 version,
                 report_id: report.report_id,
+                rekeyed: Vec::new(),
             },
         ));
         self.commit(&mut log, batch);

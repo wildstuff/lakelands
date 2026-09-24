@@ -102,6 +102,30 @@ pub struct StoredRecord {
     pub restricted: bool,
 }
 
+impl StoredRecord {
+    /// The state of a key a re-key moved away from: retired, at version 0,
+    /// with no field (`docs/log-format.md` §2.3). It ends the key's
+    /// history, so a later record at the key starts at version 1; it is
+    /// no record, and every scan of stored history skips it.
+    pub fn ended(ty: TypeName, key: RecordKey, position: Position) -> StoredRecord {
+        StoredRecord {
+            ty,
+            key,
+            version: Version(0),
+            fields: BTreeMap::new(),
+            meta: BTreeMap::new(),
+            position,
+            retired: true,
+            restricted: false,
+        }
+    }
+
+    /// Whether this is an ended key rather than a record.
+    pub fn is_ended(&self) -> bool {
+        self.version.0 == 0
+    }
+}
+
 /// A sparse patch: the fields a write carries. A field absent from the
 /// patch is unchanged; a field set to `null` is cleared
 /// (`docs/decisions/012-writes-touch-only-their-fields.md`).

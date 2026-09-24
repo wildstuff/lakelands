@@ -286,8 +286,26 @@ interface types {
         records-scanned: u64,
         fields: list<field-conversion>,
         dropped: list<tuple<field-name, u64>>,
+        rekeyed: list<rekeyed>,
+        references: list<reference-rewrite>,
+        sample-collisions: list<record-ref>,
         lossless: bool,
         report-id: string,
+    }
+
+    /// What a re-key does to one type's records.
+    record rekeyed {
+        %type: type-name,
+        records: u64,
+        collisions: u64,
+        missing: u64,
+    }
+
+    /// The values of one reference field a re-key rewrites.
+    record reference-rewrite {
+        %type: type-name,
+        field: field-name,
+        values: u64,
     }
 
     // ------------------------------------------------------------------

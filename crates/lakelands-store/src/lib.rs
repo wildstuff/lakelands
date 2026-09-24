@@ -22,6 +22,7 @@ pub mod ontology;
 pub mod purge;
 pub mod reads;
 pub mod record;
+pub mod rekey;
 pub mod writes;
 
 pub use backing::ExprBacking;

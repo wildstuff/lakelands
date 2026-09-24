@@ -44,8 +44,8 @@ use lakelands_api::ontology::{
 use lakelands_api::principal::{Grants, WriteContext};
 use lakelands_api::record::{Origin, StoredRecord};
 use lakelands_api::write::{
-    Declaration, FieldConversion, Migration, MigrationReport, Misfit, Outcome, ProposalState,
-    ProposedWrite, ValueTypeReport, ValueTypeUse, WriteOpts,
+    Declaration, Migration, MigrationReport, Misfit, Outcome, ProposalState, ProposedWrite,
+    ValueTypeReport, ValueTypeUse, WriteOpts,
 };
 use lakelands_api::{
     Error, FieldName, IdempotencyKey, Missing, Patch, Position, Principal, ProposalId, RecordKey,
@@ -1737,28 +1737,52 @@ impl Call<'_> {
     /// converts them with the rest, and a migration that cannot convert
     /// one is not lossless, so it is refused before anything is appended.
     ///
-    /// A migration keeps the type's key: the fold converts records where
-    /// they are and never re-keys one, so changing `key` is refused as not
-    /// supported in this release. What is checked instead is that every
-    /// converted record's key fields still make its key; a conversion that
-    /// changes a key field's value is reported not convertible for that
-    /// record.
+    /// A migration that makes a record's key differently (other key
+    /// fields, or a key field's value converted) re-keys it: the preflight
+    /// counts the moves, with the closure and the references they take
+    /// along (`crate::rekey`), and a collision or a missing key value makes
+    /// it not lossless. One that takes every key field away is refused.
     pub fn preflight(
         &self,
         w: &Writer,
         view: &dyn ProjectionView,
         m: &Migration,
     ) -> Result<MigrationReport> {
+        Ok(self.preflight_plan(w, view, m)?.0)
+    }
+
+    /// The preflight, and the record keys the migration moves.
+    fn preflight_plan(
+        &self,
+        w: &Writer,
+        view: &dyn ProjectionView,
+        m: &Migration,
+    ) -> Result<(MigrationReport, Vec<lakelands_api::write::Rekey>)> {
         if !self.who.grants.schema {
             return Err(not_granted());
         }
         let before = w.ontology.ty(&m.to.name)?.clone();
-        if m.to.key != before.key {
+        if !before.key.is_empty() && m.to.key.is_empty() {
             return Err(invalid(format!(
-                "the migration changes the key of `{}`; a migration keeps a type's key in this \
-                 release, since records are converted where they are and never re-keyed",
+                "the migration takes every key field of `{}` away, and leaves no rule to make \
+                 its records' keys",
                 before.name
             )));
+        }
+        if m.to.key != before.key {
+            for k in &m.to.key {
+                if !m.to.fields.iter().any(|f| &f.name == k && f.required) {
+                    return Err(Error::Refused {
+                        field: Some(k.clone()),
+                        reason: Refusal::Invalid {
+                            message: format!(
+                                "`{}`: the key field `{k}` is a required field of the type",
+                                m.to.name
+                            ),
+                        },
+                    });
+                }
+            }
         }
         let mut probe = w.ontology.clone();
         probe.types.remove(&m.to.name);
@@ -1772,32 +1796,41 @@ impl Call<'_> {
                 _ => Err(e),
             },
         )?;
-        let records = view.scan(
-            &before.name,
-            &Scan {
-                limit: u32::MAX,
-                retired: true,
-                restricted: true,
-                ..Default::default()
-            },
-        )?;
+        let records: Vec<StoredRecord> = view
+            .scan(
+                &before.name,
+                &Scan {
+                    limit: u32::MAX,
+                    retired: true,
+                    restricted: true,
+                    ..Default::default()
+                },
+            )?
+            .into_iter()
+            .filter(|r| !r.is_ended())
+            .collect();
         let mut report = shape::preflight(
             &before,
             m,
             records.iter().map(|r| (r.key.clone(), r.fields.clone())),
         )
         .map_err(|e| invalid(e.to_string()))?;
-        let mut rekeyed: Vec<RecordKey> = Vec::new();
+        // A key the new key fields make differently moves the record, and
+        // what names it moves with it (`crate::rekey`).
+        let mut converted = Vec::new();
         if !m.to.key.is_empty() {
             for r in &records {
-                let converted = shape::migrate_record(&before, m, &r.fields)
-                    .map_err(|e| invalid(e.to_string()))?;
-                let Some(fields) = converted else { continue };
-                if lakelands_core::log::record_key(&m.to, &fields).as_ref() != Some(&r.key) {
-                    rekeyed.push(r.key.clone());
-                }
+                // A record that does not convert is already not lossless;
+                // its stored fields still tell whether it has a new key.
+                let fields = shape::migrate_record(&before, m, &r.fields)
+                    .map_err(|e| invalid(e.to_string()))?
+                    .unwrap_or_else(|| r.fields.clone());
+                converted.push((r.key.clone(), fields));
             }
         }
+        let mut after = w.ontology.clone();
+        after.put(Declaration::Type(m.to.clone()), 0, None);
+        let plan = crate::rekey::plan(&after, view, &m.to.name, converted)?;
         // A relation carried by link records whose cardinality narrows
         // keeps its links only if none would break the narrower rule.
         for r in m.to.relations.iter().filter(|r| links::carried_by_links(r)) {
@@ -1866,15 +1899,19 @@ impl Call<'_> {
                 to: new,
                 renames: vec![],
             };
-            let links = view.scan(
-                &old.name,
-                &Scan {
-                    limit: u32::MAX,
-                    retired: true,
-                    restricted: true,
-                    ..Default::default()
-                },
-            )?;
+            let links: Vec<StoredRecord> = view
+                .scan(
+                    &old.name,
+                    &Scan {
+                        limit: u32::MAX,
+                        retired: true,
+                        restricted: true,
+                        ..Default::default()
+                    },
+                )?
+                .into_iter()
+                .filter(|r| !r.is_ended())
+                .collect();
             let lr = shape::preflight(
                 &old,
                 &lm,
@@ -1903,52 +1940,27 @@ impl Call<'_> {
                 &serde_json::to_value(&report).expect("a report serialises"),
             );
         }
-        if !rekeyed.is_empty() {
-            rekeyed.sort();
-            let k0 = &m.to.key[0];
-            let to =
-                m.to.fields
-                    .iter()
-                    .find(|f| &f.name == k0)
-                    .map(|f| f.ty.clone());
-            let from = before
-                .fields
-                .iter()
-                .find(|f| &f.name == k0)
-                .map(|f| f.ty.clone());
-            let bad = rekeyed.len() as u64;
-            match report.fields.iter_mut().find(|f| &f.field == k0) {
-                Some(f) => {
-                    f.convertible = f.convertible.saturating_sub(bad);
-                    f.not_convertible += bad;
-                    f.sample_keys.extend(rekeyed.iter().cloned());
-                    f.sample_keys.sort();
-                    f.sample_keys.dedup();
-                    f.sample_keys.truncate(5);
-                }
-                None => report.fields.push(FieldConversion {
-                    field: k0.clone(),
-                    from: from.clone().or(to.clone()).expect("a key names a field"),
-                    to: to.or(from).expect("a key names a field"),
-                    convertible: records.len() as u64 - bad,
-                    not_convertible: bad,
-                    sample_keys: rekeyed.into_iter().take(5).collect(),
-                }),
-            }
-            report.lossless = false;
-            report.report_id = String::new();
-            report.report_id = lakelands_core::canonical::sha256_hex(
-                &serde_json::to_value(&report).expect("a report serialises"),
-            );
-        }
-        Ok(report)
+        report.rekeyed = plan.rekeyed.clone();
+        report.references = plan.references.clone();
+        report.sample_collisions = plan.collisions.clone();
+        report.lossless &= plan.lossless;
+        // Named by what it says, the moves it would make and where the lake
+        // stood: an apply after the lake moved is refused.
+        let listed = plan.listed();
+        report.report_id = String::new();
+        report.report_id = lakelands_core::canonical::sha256_hex(&serde_json::json!({
+            "report": serde_json::to_value(&report).expect("a report serialises"),
+            "rekeyed": serde_json::to_value(&listed).expect("moves serialise"),
+            "head": view.position().map_or(0, |p| p.0),
+        }));
+        Ok((report, listed))
     }
 
     /// `migrate_apply`.
     pub fn migrate_apply(&self, m: Migration, report_id: &str) -> Result<Outcome> {
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
-        let report = self.preflight(&w, view.as_ref(), &m)?;
+        let (report, rekeyed) = self.preflight_plan(&w, view.as_ref(), &m)?;
         if report.report_id != report_id {
             return Err(invalid(
                 "the lake moved since that preflight report; run the preflight again",
@@ -1980,6 +1992,7 @@ impl Call<'_> {
                     schema_hash: hash,
                     version,
                     report_id: report_id.to_owned(),
+                    rekeyed: Vec::new(),
                 },
             ));
         }
@@ -1999,6 +2012,7 @@ impl Call<'_> {
                 schema_hash,
                 version,
                 report_id: report_id.to_owned(),
+                rekeyed,
             },
         );
         drafts.insert(0, d);
@@ -2083,7 +2097,11 @@ impl Call<'_> {
             if uses.is_empty() || decl.view.is_some() {
                 continue;
             }
-            let records = view.scan(name, &all)?;
+            let records: Vec<StoredRecord> = view
+                .scan(name, &all)?
+                .into_iter()
+                .filter(|r| !r.is_ended())
+                .collect();
             report.records_scanned += records.len() as u64;
             for f in uses {
                 let mut used = ValueTypeUse {

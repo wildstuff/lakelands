@@ -1,9 +1,11 @@
 # The log format
 
-**Format version 1.** Reviewed so that a verifier can be written from
+**Format version 2.** Reviewed so that a verifier can be written from
 this document alone (lakelands#14). Until `0.1.0` is tagged, a
 correction still lands here without a version bump; from then on every
-change bumps the version (§6).
+change bumps the version (§6). Version 2 adds one member,
+`migrated.rekeyed` (§2.2, §6); a lake that never re-keys a type writes
+version 1 and reads exactly as before.
 
 A lake's event log is its truth (`docs/decisions/001-the-log-is-the-truth.md`).
 This document specifies the log so that a lake can be read, verified and
@@ -31,7 +33,7 @@ every kind, and `body`, which holds the kind and its payload.
 
 | Member | Type | Presence | Meaning |
 |---|---|---|---|
-| `v` | integer | always | The format version the event was written under. `1`. |
+| `v` | integer | always | The format version the event was written under: `1`, or `2` from a lake's first re-keying `migrated` event on (§6). |
 | `lake` | string | always | The lake the event belongs to. |
 | `position` | integer | always | The event's coordinate: `0` for the lake's first event, then consecutive, with no gaps. |
 | `id` | string | always | The event's identifier: 32 lower-case hex digits (§3). |
@@ -143,7 +145,7 @@ the writer chose.
 | Kind | Payload | Fold |
 |---|---|---|
 | `declared` | `declaration`, `version` (integer), `schema_hash` (string, types only) | A declaration enters the ontology, or replaces its earlier version, from this position on. `declaration.declare` is `type`, `value_type`, `verb`, `trigger`, `object_set` or `function`, with the declaration's members beside it. `version` is 1 for the first declaration of that `declare` and `name`, one more for each later one. A new version here never reshapes stored records. |
-| `migrated` | `migration` (`to`, `renames`), `schema_hash`, `version`, `report_id` | A type's shape changes and every stored record of it is converted by the fold, by the lossless conversions the preflight report `report_id` checked. |
+| `migrated` | `migration` (`to`, `renames`), `schema_hash`, `version`, `report_id`, `rekeyed` (version 2; `[]`) | A type's shape changes and every stored record of it is converted by the fold, by the lossless conversions the preflight report `report_id` checked. When `rekeyed` lists keys, the fold also moves those records to their new keys (§2.3). |
 
 The schema hash covers shape only (`docs/decisions/007-schema-hash-covers-shape.md`).
 It is the SHA-256, as 64 lower-case hex digits, of the canonical bytes of
@@ -207,7 +209,8 @@ this object:
 that writes a key, one more for every later event that changes it. A
 retired key that is written again continues its count.
 
-**The key.** `key` is a string, the same for every event of one record.
+**The key.** `key` is a string, the same for every event of one record
+until a migration re-keys it.
 For a type that declares key fields, it is made from their values in
 declared order: each value in its §5 JSON form as a string (`text` and
 `reference` as they are, `decimal` as its digits, `number` in the number
@@ -220,6 +223,18 @@ The key of a `ledger_entry` keyed by `account` `DE:01` and `booked`
 the key fields, or both; when both are given they must agree, or the
 write is refused. A type with no key fields takes the writer's key as it
 is. No key holds `0x00` (§3).
+
+**Re-keying** (version 2). A `migrated` event whose `rekeyed` lists
+`{ "type", "from", "to" }` moves each listed record: from that event's
+position on, the record is at `to`, with its fields, its `version` and
+its per-field provenance unchanged, and `from` is **ended**: a read at or
+after the position does not find it, a read before it does, and a later
+record whose key is the same string is a new record whose first event is
+version 1. Every `reference` value, in any record, that names a listed
+`from` of its target type names the `to` from that position on. The list
+covers every type the migration re-keys: the migrated type, and every
+type whose key fields reference a re-keyed type, link types among them;
+it is explicit, so a reader applies it without making keys again.
 
 **Link records.** A relation without `via` is carried by **link
 records**: ordinary records of a **link type** the store derives from
@@ -526,6 +541,11 @@ kind, a new member or a changed encoding is a new version, specified
 here first. A lake's log may mix versions only upward: an event never
 carries a lower `v` than the event before it.
 
+| Version | Adds |
+|---|---|
+| 1 | Everything above except what later versions add. |
+| 2 | `migrated.rekeyed` (§2.2, §2.3). A lake writes version 1 until its first re-keying `migrated` event, which carries `v` 2, as does every event after it; a version-1 event that carries `rekeyed` is refused. A version-1 reader refuses the version-2 events rather than misreading a re-key. |
+
 ## Appendix A. Encodings
 
 Every enumerated value in the log is one of the lower-case strings
@@ -570,6 +590,8 @@ Appendix B.
 `migrated.migration` is `{ "to", "renames" }`: `to` is the type's new
 declaration, the members of a `type` declaration without `declare`;
 `renames` (default `[]`) is a list of `[from, to]` field-name pairs.
+`migrated.rekeyed` (version 2, default `[]`) is a list of
+`{ "type", "from", "to" }` record-key moves (§2.3).
 
 `write_proposed.write` is the proposed write with its arguments:
 `upsert` carries `type`, `key`, `patch`; `retire` carries `type`, `key`;

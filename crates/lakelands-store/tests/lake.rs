@@ -620,6 +620,64 @@ async fn a_tampered_checkpoint_is_reported_by_verify() {
     );
 }
 
+/// A log's format versions only go up (`docs/log-format.md` §6):
+/// `verify` refuses an event written in a lower version than the one
+/// before it, naming both.
+#[tokio::test(flavor = "multi_thread")]
+async fn verify_refuses_a_format_version_that_goes_down() {
+    let lake = name();
+    let store = open(&lake, OpenMode::Create).await.unwrap();
+    store.close().await.unwrap();
+    drop(store);
+    let engine = opener()
+        .open(&Location::memory(lake.as_str()), OpenMode::Write)
+        .unwrap();
+    let lease = engine.take_lease("tamperer").unwrap();
+    let (tip, hash) = engine.tip().unwrap().unwrap();
+    let now = lakelands_api::Timestamp(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_micros() as i64,
+    );
+    let taken = |fence| {
+        lakelands_store::log::Draft::system(
+            now,
+            EventBody::LeaseTaken {
+                fence,
+                holder: "tamperer".into(),
+            },
+        )
+    };
+    let (two, canon_two) = lakelands_store::log::seal_at(
+        2,
+        &lake.as_str().into(),
+        tip.next(),
+        &hash,
+        lease.fence,
+        taken(lease.fence),
+    );
+    let (_, canon_one) = lakelands_store::log::seal_at(
+        1,
+        &lake.as_str().into(),
+        two.position.next(),
+        &two.hash,
+        lease.fence,
+        taken(lease.fence),
+    );
+    engine.append(&lease, &[canon_two, canon_one]).unwrap();
+    engine.release_lease(&lease).unwrap();
+    drop(engine);
+
+    let reader = open(&lake, OpenMode::Read).await.unwrap();
+    let r = reader.verify(None, None).await;
+    assert!(
+        matches!(&r, Err(Error::Unavailable { message })
+            if message.contains("format 1") && message.contains("format 2")),
+        "{r:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_store_dropped_without_closing_gives_its_lease_up() {
     let lake = name();

@@ -8,7 +8,9 @@
 //! link, so an engine that altered a byte is caught at the first read.
 
 use lakelands_api::engine::CanonicalEvent;
-use lakelands_api::event::{Digest, Event, EventBody, EventId, LOG_FORMAT_VERSION, Procedure};
+use lakelands_api::event::{
+    Digest, Event, EventBody, EventId, LOG_FORMAT_BASE, LOG_FORMAT_VERSION, Procedure,
+};
 use lakelands_api::principal::WriteContext;
 use lakelands_api::record::Origin;
 use lakelands_api::{Error, IdempotencyKey, LakeId, Position, Result, SourceId, Timestamp};
@@ -73,8 +75,21 @@ fn hash_without_hash(event: &Event) -> Digest {
     Digest(canonical::sha256_hex(&value))
 }
 
-/// Seal a draft at a position, after `prev`, under a lease's fence.
+/// Seal a draft at a position, after `prev`, under a lease's fence, in
+/// the lake's first format version.
 pub fn seal(
+    lake: &LakeId,
+    position: Position,
+    prev: &Digest,
+    fence: u64,
+    d: Draft,
+) -> (Event, CanonicalEvent) {
+    seal_at(LOG_FORMAT_BASE, lake, position, prev, fence, d)
+}
+
+/// Seal a draft in format version `v`.
+pub fn seal_at(
+    v: u32,
     lake: &LakeId,
     position: Position,
     prev: &Digest,
@@ -83,7 +98,7 @@ pub fn seal(
 ) -> (Event, CanonicalEvent) {
     let id = d.id.unwrap_or_else(|| positional_id(lake, position));
     let mut event = Event {
-        v: LOG_FORMAT_VERSION,
+        v,
         lake: lake.clone(),
         position,
         id,
@@ -150,6 +165,19 @@ pub fn open(stored: &CanonicalEvent) -> Result<Event> {
         return Err(corrupt(
             stored.position,
             "a member is not in its one written form",
+        ));
+    }
+    // A member a version does not have is refused, never read.
+    if let EventBody::Migrated { rekeyed, .. } = &event.body
+        && !rekeyed.is_empty()
+        && event.v < 2
+    {
+        return Err(corrupt(
+            stored.position,
+            format!(
+                "a format {} event carries `rekeyed`, which format 2 added",
+                event.v
+            ),
         ));
     }
     if hash_without_hash(&event) != event.hash {
@@ -255,14 +283,49 @@ mod tests {
         assert!(open(&forged).is_err());
     }
 
+    /// Every read of the log (opening a lake, the feed, `verify`) opens
+    /// its events here, so each refuses a version it does not know, naming
+    /// it and the newest it knows.
     #[test]
     fn a_newer_format_is_refused_by_name() {
         let (_, mut stored) = created();
         let mut v: serde_json::Value = serde_json::from_slice(&stored.bytes).unwrap();
-        v["v"] = json!(2);
+        v["v"] = json!(3);
         stored.bytes = canonical::to_vec(&v);
         let e = open(&stored).unwrap_err().to_string();
-        assert!(e.contains("format 2"), "{e}");
+        assert!(e.contains("format 3") && e.contains("format 2"), "{e}");
+    }
+
+    #[test]
+    fn a_version_1_event_that_carries_rekeyed_is_refused() {
+        let d = Draft::system(
+            Timestamp(0),
+            EventBody::Migrated {
+                migration: lakelands_api::write::Migration {
+                    to: serde_json::from_value(json!({"name": "t"})).unwrap(),
+                    renames: vec![],
+                },
+                schema_hash: "h".into(),
+                version: 2,
+                report_id: "r".into(),
+                rekeyed: vec![lakelands_api::write::Rekey {
+                    ty: "t".into(),
+                    from: "a".into(),
+                    to: "b".into(),
+                }],
+            },
+        );
+        let (_, stored) = seal(
+            &"finance".into(),
+            Position(0),
+            &Digest::zero(),
+            0,
+            d.clone(),
+        );
+        let e = open(&stored).unwrap_err().to_string();
+        assert!(e.contains("format 2 added"), "{e}");
+        let (_, stored) = seal_at(2, &"finance".into(), Position(0), &Digest::zero(), 0, d);
+        assert!(open(&stored).is_ok());
     }
 
     #[test]

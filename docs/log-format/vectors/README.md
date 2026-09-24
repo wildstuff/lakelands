@@ -22,6 +22,9 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
+- `rekey.json`: one version-2 event after position 7, a `migrated`
+  event whose `rekeyed` moves key `7` of `account` to `DE%3A01`: its
+  line, which is canonical, and its hash.
 - `schema-hash.json`: a view type whose conditions are written as text,
   the shape object it hashes (conditions in typed form, Appendix B), the
   shape's canonical bytes, and the schema hash.
