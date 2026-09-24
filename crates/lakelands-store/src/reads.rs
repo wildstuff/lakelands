@@ -118,14 +118,20 @@ fn decode(c: &Cursor) -> Result<CursorState> {
     serde_json::from_slice(&bytes).map_err(|_| bad())
 }
 
-/// Whether an expression needs something only the store knows: the
-/// clock, the settings or per-field provenance.
+/// Whether an expression needs something only the store knows or does:
+/// the clock, the settings, per-field provenance, or a pattern match,
+/// which is never handed to an engine (`docs/seams.md`, `scan`).
 fn needs_store(e: &Expr) -> bool {
     match e {
         Expr::Call { func, args } => {
             matches!(
                 func,
-                Func::Now | Func::Today | Func::Setting | Func::KnownAt | Func::SeenAt
+                Func::Now
+                    | Func::Today
+                    | Func::Setting
+                    | Func::KnownAt
+                    | Func::SeenAt
+                    | Func::Matches
             ) || args.iter().any(needs_store)
         }
         Expr::Cmp { lhs, rhs, .. } | Expr::Arith { lhs, rhs, .. } => {
@@ -1030,5 +1036,20 @@ mod tests {
         assert_eq!(back.at, Position(7));
         assert!(decode(&Cursor("zz".into())).is_err());
         assert!(decode(&Cursor("7b7d".into())).is_err());
+    }
+
+    #[test]
+    fn only_filters_an_engine_can_apply_alone_are_handed_down() {
+        let parse = |t: &str| lakelands_core::expr::parse(t).unwrap();
+        assert!(!needs_store(&parse("amount > 10 and status != 'paid'")));
+        for kept in [
+            "due < now()",
+            "rate = setting('vat_rate')",
+            "known_at(amount) > due",
+            "matches(number, 'INV-[0-9]+')",
+            "not (matches(number, 'X') or amount > 1)",
+        ] {
+            assert!(needs_store(&parse(kept)), "`{kept}` was handed down");
+        }
     }
 }

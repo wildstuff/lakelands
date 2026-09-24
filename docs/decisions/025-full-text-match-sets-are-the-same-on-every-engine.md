@@ -25,3 +25,28 @@ another, and a lake moved between engines would silently lose recall.
   of matches is the same; ranking within it may differ.
 - It does not forbid an engine from using a native full-text index; the
   index holds the pipeline's output.
+
+## Extended: vector hits are the same on every engine too
+
+The same reasoning holds for the vector index. Which records are the
+`k` nearest depends on how nearness is measured, so the measure is part
+of the contract rather than an engine's choice: every engine scores by
+the cosine of the angle between the query and a stored vector, a vector
+of zeros scores 0, and equal scores are ordered by key
+(`docs/seams.md`, `VectorIndex`). The answer is best first by that
+score and then by key. Every index in `0.1.0` is exact. An approximate
+index, when one comes, says so; the store re-ranks its candidates by the
+same cosine and the answer says its ranking was approximate, so a caller
+always knows which kind of answer it holds.
+
+## Extended: a search at an earlier position ranks by the head
+
+Search is ranked retrieval, and `as_of` decides what may be seen, not how
+the current text or vectors rank. A search at an earlier position ranks
+by the full-text and vector indexes as they stand at the head, and keeps
+only the records visible at that position; a record that did not exist
+then is never a hit, and a record whose text or vector changed since is
+ranked by the newer one. Keeping full-text and vector indexes for every
+earlier state would make each engine carry a second history of its
+largest structures, for a ranking no caller has asked for; if one ever
+does, it is a later, additive change.
