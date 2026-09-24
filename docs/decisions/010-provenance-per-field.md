@@ -45,3 +45,9 @@ the fold is pure, so the metadata is as reproducible as the value.
 - It is not free for every shape. Its cost follows the fields a write
   changes, not the width of the record, and a high-volume type may opt
   out explicitly; the default is on.
+
+## Extended: the wire name
+
+On every door the switch that returns each field's provenance with its
+value is spelled `with_meta` (a boolean on `find`, `get` and `search`).
+"`with: meta`" above names the same switch.

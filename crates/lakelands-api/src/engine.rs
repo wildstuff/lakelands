@@ -1,0 +1,334 @@
+//! The engine seam: how a lake's log and projection are kept.
+//!
+//! An engine stores events and gives them back byte-identically, holds
+//! the writer lease, and keeps the projection the fold writes. It knows
+//! nothing of grants, provenance rules or the expression grammar's
+//! meaning beyond evaluating filters it is handed: the store's core
+//! decides, the engine keeps. Every behaviour an engine promises is
+//! checked by the conformance suite on every engine.
+//!
+//! The traits are synchronous and `dyn`-compatible: engines do blocking
+//! storage work, and the store runs them off its async callers. A new
+//! engine is a port, not a re-implementation; `docs/seams.md` states the
+//! contract of each method.
+//!
+//! Two rules shape the whole seam:
+//!
+//! - **The store canonicalises; the engine keeps bytes.** The store
+//!   produces every event's canonical bytes and hash (`docs/log-format.md`
+//!   §1.2) and hands them to the engine as a [`CanonicalEvent`]. The
+//!   engine stores the bytes and returns them unchanged; the store parses
+//!   and verifies what it reads. Byte identity is therefore checkable
+//!   through the seam, and the conformance suite checks it.
+//! - **The projection keeps its history.** Every `put_*` of the fold adds
+//!   a state valid from a position; it never destroys the state it
+//!   supersedes. A view at an earlier position is a filter over kept
+//!   states, not a replay, so "what did the agent see" is a cheap read.
+
+use serde::{Deserialize, Serialize};
+
+use crate::error::Result;
+use crate::event::{Digest, EventId, SegmentDigest};
+use crate::expr::Expr;
+use crate::id::{LakeId, Position, RecordKey, RelationName, TypeName};
+use crate::location::Location;
+use crate::query::{Edge, Walk};
+use crate::read::{Aggregate, Group, Order};
+use crate::record::{StoredRecord, Value};
+use crate::time::Timestamp;
+use crate::write::{Declaration, Proposal, ProposalFilter};
+
+/// The writer lease one process holds on a lake
+/// (`docs/decisions/008-one-writer-per-lake.md`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lease {
+    /// The fencing token; greater than every token before it.
+    pub fence: u64,
+    /// Who holds it, for the operator.
+    pub holder: String,
+}
+
+/// One event as it crosses the engine seam: its canonical bytes, and the
+/// envelope members an engine needs to check an append without parsing
+/// them. The store builds it; the engine stores `bytes` unchanged and
+/// gives the same value back from `read`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CanonicalEvent {
+    /// The event's position.
+    pub position: Position,
+    /// The event's identifier.
+    pub id: EventId,
+    /// The hash of the event before it.
+    pub prev: Digest,
+    /// The event's own hash.
+    pub hash: Digest,
+    /// The lease fence it was appended under.
+    pub fence: u64,
+    /// Its canonical bytes (`docs/log-format.md` §1.2), without the line
+    /// feed that ends it in a segment file.
+    pub bytes: Vec<u8>,
+}
+
+/// How a lake is opened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenMode {
+    /// Read only. The handle never takes the lease: `take_lease` and
+    /// `append` are refused. Any number of processes may open a lake so
+    /// (`docs/decisions/008-one-writer-per-lake.md`).
+    Read,
+    /// Read and, once the lease is taken, write. The lake must exist.
+    Write,
+    /// As `Write`, creating the lake if it does not exist.
+    Create,
+}
+
+/// One lake's storage, as an engine keeps it.
+pub trait LakeEngine: Send + Sync {
+    /// The engine's name (`sqlite`, `memory`).
+    fn name(&self) -> &str;
+
+    /// The lake it keeps.
+    fn lake(&self) -> &LakeId;
+
+    /// Take the writer lease with a fencing token greater than any
+    /// before. Fails at once, never waits, when another process holds
+    /// it, with an `Unavailable` error whose message names the holder.
+    /// Refused on a handle opened [`OpenMode::Read`].
+    fn take_lease(&self, holder: &str) -> Result<Lease>;
+
+    /// Give the lease up. A later `take_lease` gets a greater token.
+    fn release_lease(&self, lease: &Lease) -> Result<()>;
+
+    /// The last event's position and hash; `None` for an empty lake.
+    fn tip(&self) -> Result<Option<(Position, Digest)>>;
+
+    /// Append events, all or none, durably before returning. Refused if
+    /// `lease` is not the current lease or any event's `fence` differs
+    /// from it, if the positions do not continue the tip without a gap,
+    /// or if the `prev` of each event is not the hash before it. The
+    /// engine stores each event's bytes unchanged.
+    fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()>;
+
+    /// Events from `from` on, at most `limit`, exactly as appended: the
+    /// same members, the same bytes.
+    fn read(&self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>>;
+
+    /// Close the active segment and start a new one. `None` if the active
+    /// segment is empty.
+    fn seal_segment(&self, lease: &Lease) -> Result<Option<SegmentDigest>>;
+
+    /// Every sealed segment, oldest first.
+    fn segments(&self) -> Result<Vec<SegmentDigest>>;
+
+    /// The projection's write side, for the fold.
+    fn projection(&self) -> &dyn ProjectionStore;
+
+    /// A read view of the projection: at the head, or as it was right
+    /// after folding `as_of`. Served from the states the projection kept
+    /// (see the module documentation), never by replaying the log. Refused
+    /// as `OutOfRange` for a position the projection has not folded.
+    fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>>;
+
+    /// The engine's vector index, if it keeps one.
+    fn vectors(&self) -> Option<&dyn VectorIndex>;
+}
+
+/// The projection's write side. The fold calls it inside one transaction
+/// per append; the transaction commits with the position it folded
+/// through, so a crash leaves the projection at a whole append.
+pub trait ProjectionStore: Send + Sync {
+    /// Start a transaction.
+    fn begin(&self) -> Result<()>;
+
+    /// Commit, recording that the projection now reflects the log
+    /// through `through`.
+    fn commit(&self, through: Position) -> Result<()>;
+
+    /// Abandon the transaction.
+    fn rollback(&self);
+
+    /// The last position the projection reflects; `None` when empty.
+    fn folded_through(&self) -> Result<Option<Position>>;
+
+    /// Store a declaration in force from `at`.
+    fn put_declaration(
+        &self,
+        declaration: &Declaration,
+        version: u32,
+        schema_hash: Option<&str>,
+        at: Position,
+    ) -> Result<()>;
+
+    /// Store a record's whole state as of `record.position`. The state
+    /// it supersedes is kept, valid up to that position, so an earlier
+    /// view still sees it. The engine derives its own indexes, full-text
+    /// entries and edges from it and the declarations in force.
+    fn put_record(&self, record: &StoredRecord) -> Result<()>;
+
+    /// Store a proposal's state as of its latest event; earlier states
+    /// are kept.
+    fn put_proposal(&self, proposal: &Proposal) -> Result<()>;
+
+    /// Record whether a record is a member of an object set from `at` on;
+    /// earlier membership is kept.
+    fn put_membership(
+        &self,
+        set: &str,
+        ty: &TypeName,
+        key: &RecordKey,
+        member: bool,
+        at: Position,
+    ) -> Result<()>;
+
+    /// Store a seam's recorded output, for replay.
+    fn put_output(&self, seam: &str, input: &Digest, output: &Value) -> Result<()>;
+
+    /// Remember that the event with this id was applied at `at`, so that
+    /// a redelivery is recognised.
+    fn mark_applied(&self, id: &EventId, at: Position) -> Result<()>;
+
+    /// Delete everything, kept history included, for a rebuild from the
+    /// log.
+    fn clear(&self) -> Result<()>;
+}
+
+/// One declaration in force, as a view returns it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Declared {
+    /// The declaration.
+    pub declaration: Declaration,
+    /// Its version.
+    pub version: u32,
+    /// For a type, its schema hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_hash: Option<String>,
+    /// The position it has been in force since.
+    pub since: Position,
+}
+
+/// Where a scan continues: the sort values and key of the last row of the
+/// previous page.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct After {
+    /// The sort fields' values, in `order_by` order.
+    pub values: Vec<Value>,
+    /// The last row's key.
+    pub key: RecordKey,
+}
+
+/// A scan of one type's records.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Scan {
+    /// Only records for which this holds. The engine applies it exactly.
+    pub filter: Option<Expr>,
+    /// Sort keys; the record key breaks ties.
+    pub order_by: Vec<Order>,
+    /// Continue after this row.
+    pub after: Option<After>,
+    /// At most this many.
+    pub limit: u32,
+    /// Only records valid at this instant, for a valid-timed type.
+    pub valid_at: Option<Timestamp>,
+    /// Include retired records.
+    pub retired: bool,
+    /// Include restricted records.
+    pub restricted: bool,
+}
+
+/// A read view of the projection at one position. Records come back
+/// whole and unmasked; masking is the store's.
+pub trait ProjectionView {
+    /// The position the view reflects; `None` for an empty lake.
+    fn position(&self) -> Option<Position>;
+
+    /// Every declaration in force.
+    fn declarations(&self) -> Result<Vec<Declared>>;
+
+    /// One record, retired and restricted ones included.
+    fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>>;
+
+    /// Records of one type.
+    fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>>;
+
+    /// Aggregates over the live records of one type.
+    fn aggregate(
+        &self,
+        ty: &TypeName,
+        aggregate: &Aggregate,
+        filter: Option<&Expr>,
+        valid_at: Option<Timestamp>,
+    ) -> Result<Vec<Group>>;
+
+    /// The links of one record, over one relation or all.
+    fn edges(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        relation: Option<&RelationName>,
+        walk: Walk,
+    ) -> Result<Vec<Edge>>;
+
+    /// Full-text search over a type's searchable fields: keys and scores,
+    /// best first.
+    fn lexical(&self, ty: &TypeName, text: &str, k: u32) -> Result<Vec<(RecordKey, f64)>>;
+
+    /// Proposals.
+    fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>>;
+
+    /// Whether a record is a member of an object set.
+    fn is_member(&self, set: &str, ty: &TypeName, key: &RecordKey) -> Result<bool>;
+
+    /// The position an event id was applied at, if it was.
+    fn applied(&self, id: &EventId) -> Result<Option<Position>>;
+
+    /// A seam's recorded output for this input, if recorded.
+    fn output(&self, seam: &str, input: &Digest) -> Result<Option<Value>>;
+}
+
+/// The engine's vector index, beside the projection. Vectors are indexed
+/// at the head; a read at an earlier position filters the candidates by
+/// what was visible there.
+pub trait VectorIndex: Send + Sync {
+    /// Index a record's vector for one field.
+    fn put(&self, ty: &TypeName, key: &RecordKey, field: &str, vector: &[f32]) -> Result<()>;
+
+    /// Remove a record's vector for one field.
+    fn remove(&self, ty: &TypeName, key: &RecordKey, field: &str) -> Result<()>;
+
+    /// The nearest records to `query`, best first, with similarity scores
+    /// (higher is closer).
+    fn nearest(
+        &self,
+        ty: &TypeName,
+        field: &str,
+        query: &[f32],
+        k: u32,
+    ) -> Result<Vec<(RecordKey, f64)>>;
+
+    /// How many vectors one field holds.
+    fn count(&self, ty: &TypeName, field: &str) -> Result<u64>;
+}
+
+/// How an engine is found by name and opened at a location.
+pub trait EngineOpener: Send + Sync {
+    /// The name the engine answers to in [`crate::location::EngineConfig`].
+    fn name(&self) -> &str;
+
+    /// Open the lake at `location`. Opening never takes the lease: a
+    /// writer takes it afterwards with `take_lease`, and a reader opened
+    /// [`OpenMode::Read`] never can.
+    fn open(&self, location: &Location, mode: OpenMode) -> Result<Box<dyn LakeEngine>>;
+}
+
+/// Compile-time proof that the engine seam is `dyn`-compatible.
+#[allow(dead_code)]
+fn engine_seam_is_dyn_compatible(
+    engine: &dyn LakeEngine,
+    opener: &dyn EngineOpener,
+) -> Option<Position> {
+    let _: &dyn ProjectionStore = engine.projection();
+    let _: Option<&dyn VectorIndex> = engine.vectors();
+    let _ = opener.name();
+    engine.view(None).ok()?.position()
+}

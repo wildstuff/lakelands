@@ -37,3 +37,13 @@ own pace, and adding one changes nothing in the lake.
   seam.
 - A buffer that groups writes before they are committed is a write
   coalescer, not this feed, and nothing reads it as one.
+
+## Extended: the words for a reader's place
+
+The contract names a feed reader's place a **position**, never a cursor:
+the feed is polled `from` a position and answers the position to poll
+from next, and a consumer acknowledges `through` a position. In
+Lakelands `cursor` means only the page token of a list-shaped read
+(`docs/glossary.md`), and a source's own place in its data is its
+**offset**. Where this record says "cursor" above, it means that
+position; nothing else about the decision changes.

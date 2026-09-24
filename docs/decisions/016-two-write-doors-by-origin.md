@@ -1,0 +1,47 @@
+# 016 — Two write doors, by origin
+
+## What is decided
+
+A lake is written through two doors, and they stay two.
+
+`ingest` is how a source feeds the lake. It takes a stream of records for
+one source and chunks it into group-commit windows, answering one
+acknowledgement per window with the position it is durable at. It writes
+only fields whose authority is `source` or `shared`. It is content-addressed: an
+event's id is a hash of the source, the type, the key and the values, so
+a record delivered twice appends nothing the second time.
+
+`upsert` (and every verb) is how an author writes. It takes one record's
+sparse patch under a principal's grants, writes only authored fields,
+and accepts an optional idempotency key: a retry with the same key from
+the same principal answers the first outcome and appends nothing. The
+key is recorded in the log.
+
+The source's own offset belongs to the caller; the lake's position
+belongs to the store. The two are never mixed.
+
+## Why
+
+The two doors are where the field-authority line runs. A re-import must
+never overwrite a verdict a person wrote, and an author must never
+overwrite a figure the source is the authority on. Keeping the doors
+separate makes that line visible in every call: the name of the door
+says which side of it the write is on, and the store checks the fields
+against it.
+
+Idempotency follows from origin too. A source redelivers the same
+content, so content is the right key. An author may write the same
+content twice on purpose, so an author's retry needs a key of its own,
+chosen by the caller.
+
+Taking a stream from the first signature means a real streaming source
+is just another caller later, not a change to the contract.
+
+## What it is not
+
+- It is not two stores. Both doors append to the same log and are folded
+  by the same rules.
+- `ingest` offers no exactly-once promise and needs none: at-least-once
+  delivery of the same content is a no-op.
+- A `shared` field may be written through either door; the later
+  position wins.

@@ -34,3 +34,14 @@ change is visible.
   token for compare-and-set; the position is the lake-wide coordinate.
 - Pinning `as_of` does not reopen history for writing. Writes always
   append at the head of the log.
+
+## Extended: how an earlier position is served
+
+A read at an earlier position is served from history the projection
+keeps, not by replaying the log. Every state the fold writes is kept
+with the position it became valid at; a view at a position filters to
+the states valid there. This makes "what did the agent see" as cheap as
+a current read on every engine, which is what makes it usable for audit
+rather than a special operation. The engine seam states it
+(`docs/seams.md`), and the conformance suite compares every as-of read
+with a replay to that position.

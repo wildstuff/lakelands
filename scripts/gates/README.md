@@ -18,9 +18,9 @@ what it counts.
 |---|---|
 | `no-external-platform-deps` | nothing from the originating platform in any `Cargo.lock`; no manifest path leaves the repository |
 | `cfg-budget` | at most 20 `cfg(feature)` sites; features are engine names only |
-| `vocabulary` | the platform's words stay out of `src/`; one of them stays out of the repository and its commit messages |
+| `vocabulary` | the platform's words stay out of `src/` and every `.rs` under `crates/`; one of them stays out of the repository and its commit messages |
 | `single-catalog` | tool names come only from the generator in `lakelands-api` |
-| `seam-width` | the store facade and engine traits have at most 110 methods together |
+| `seam-width` | the store facade (`LakeStore`) and the engine traits have at most 110 methods together |
 | `core-size` | core + store + sqlite engine at most 70k lines, against a ratchet base (`core-size.base`) that only moves down |
 | `conformance-required` | every engine crate is on `conformance/roster`, and CI runs the suite for every required one |
 | `dco` | every commit is signed off |

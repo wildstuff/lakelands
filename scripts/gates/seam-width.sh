@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 # Gate 5 — seam-width.
 #
-# The engine contract stays narrow, so a new engine is a port and not a
-# re-implementation. Red when the methods of the traits in TRAITS, summed,
-# exceed BUDGET, or when one of them is defined more than once. A method
-# is an `fn` item directly in the trait body; default bodies count once.
-# A trait not yet defined counts zero.
+# The contract stays narrow, so a new engine is a port and not a
+# re-implementation, and a caller has few doors to learn. Red when the
+# methods of the traits in TRAITS, summed, exceed BUDGET, when one of
+# them is defined more than once, or when one of them is not defined at
+# all. A method is an `fn` item directly in the trait body; default
+# bodies count once.
 #
-# The store facade trait joins TRAITS in the step that names it
-# (lakelands#2).
+# TRAITS: the store facade (`LakeStore`) and the engine traits. `Catalog`
+# is not counted: it is the caller's surface, not a seam an engine ports,
+# and its width is governed by the four-doors rule
+# (docs/decisions/014-four-doors-per-type-one-name-generator.md).
 . "$(dirname "$0")/lib.sh"
 
 BUDGET=110
-TRAITS=(LakeEngine ProjectionStore ProjectionView)
+TRAITS=(LakeStore LakeEngine ProjectionStore ProjectionView)
 
 total=0
 report=""
@@ -44,6 +47,7 @@ for trait in "${TRAITS[@]}"; do
             print "$ARGV $n\n";
         }
     ' "$trait")
+    [ "$defs" -ge 1 ] || fail "$trait is not defined; the gate counts nothing for it"
     [ "$defs" -le 1 ] || fail "$trait is defined $defs times; the gate cannot tell which one is the seam"
     total=$((total + count))
 done
