@@ -193,6 +193,19 @@ Among the tools are `invoice_approved_by_link` and
 the `find` and `get` tools of its link type. This walk does not call
 them.
 
+With `--schemas`, the client also prints each tool's input and output
+JSON schemas, so the promise that a door's schema comes from its type
+and the caller's rights can be checked:
+
+```sh
+cargo run -q -p lakelands-server --example mcp_call -- --server "lakelands serve --mcp" tools/list --schemas
+```
+
+`invoice_upsert` takes `fields` with `paid_on` and `status` only. It
+does not take `gross`, which the lake derives. There is no
+`partner_upsert` at all: `partner`'s fields come from a source, so no
+agent writes them.
+
 **1. `describe`** — `{}`:
 
 ```sh

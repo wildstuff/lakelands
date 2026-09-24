@@ -5,7 +5,7 @@
 //! mcp_call --server "<command>" <request>...
 //! mcp_call --http <url> --key <api key> <request>...
 //!
-//! request := tools/list
+//! request := tools/list [--schemas]
 //!          | tools/call <tool> '<arguments as JSON>'
 //! ```
 //!
@@ -15,7 +15,10 @@
 //! initializes one session and makes the requests in order in that
 //! session, so a `pin` holds for the calls after it.
 //!
-//! For `tools/list` it prints each tool's name and description; for a
+//! For `tools/list` it prints each tool's name and description, and with
+//! `--schemas` its input and output JSON schemas too, so the doors'
+//! schemas can be read as the server derives them from the types and the
+//! caller's rights; for a
 //! `tools/call`, the position line and the result's structured content as
 //! pretty JSON, or the tool error's two sentences. It exits 0 when every
 //! request succeeded, 1 when one failed (and stops there), and 2 when the
@@ -24,6 +27,8 @@
 //! ```sh
 //! cargo run -p lakelands-server --example mcp_call -- \
 //!   --server "lakelands --root walk serve --mcp" tools/list
+//! cargo run -p lakelands-server --example mcp_call -- \
+//!   --server "lakelands --root walk serve --mcp" tools/list --schemas
 //! cargo run -p lakelands-server --example mcp_call -- \
 //!   --server "lakelands --root walk serve --mcp" \
 //!   tools/call pin '{}' tools/call invoice_find '{"where": "status = '"'"'open'"'"'"}'
@@ -39,12 +44,13 @@ use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig
 use serde_json::{Value, json};
 
 enum Request {
-    List,
+    /// `tools/list`, with the schemas when asked.
+    List(bool),
     Call(String, Value),
 }
 
 const USAGE: &str = "usage: mcp_call (--server \"<command>\" | --http <url> --key <api key>) \
-                     (tools/list | tools/call <tool> '<json arguments>')...";
+                     (tools/list [--schemas] | tools/call <tool> '<json arguments>')...";
 
 fn usage(why: &str) -> ExitCode {
     eprintln!("error: {why}\n{USAGE}");
@@ -70,7 +76,10 @@ async fn main() -> ExitCode {
     let mut requests = Vec::new();
     while let Some(method) = args.next() {
         match method.as_str() {
-            "tools/list" => requests.push(Request::List),
+            "tools/list" => {
+                let schemas = args.next_if(|a| a == "--schemas").is_some();
+                requests.push(Request::List(schemas));
+            }
             "tools/call" => {
                 let (Some(tool), Some(raw)) = (args.next(), args.next()) else {
                     return usage("tools/call needs a tool name and its arguments as JSON");
@@ -139,11 +148,18 @@ async fn main() -> ExitCode {
 async fn run(client: &RunningService<RoleClient, ()>, requests: Vec<Request>) -> ExitCode {
     for request in requests {
         match request {
-            Request::List => match client.list_all_tools().await {
+            Request::List(schemas) => match client.list_all_tools().await {
                 Ok(tools) => {
                     let listed: Vec<Value> = tools
                         .iter()
-                        .map(|t| json!({"name": t.name, "description": t.description}))
+                        .map(|t| {
+                            let mut v = json!({"name": t.name, "description": t.description});
+                            if schemas {
+                                v["inputSchema"] = json!(t.input_schema);
+                                v["outputSchema"] = json!(t.output_schema);
+                            }
+                            v
+                        })
                         .collect();
                     println!("{}", pretty(&Value::Array(listed)));
                 }
