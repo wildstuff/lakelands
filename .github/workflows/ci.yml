@@ -4,6 +4,8 @@ on:
   pull_request:
   push:
     branches: [develop, main]
+  # release.yml runs these same checks on a tag before it builds.
+  workflow_call:
 
 permissions:
   contents: read
