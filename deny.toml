@@ -11,13 +11,7 @@ yanked = "deny"
 # Unmaintained advisories are checked for the crates the workspace
 # depends on directly, where replacing the crate is our decision.
 unmaintained = "workspace"
-ignore = [
-    # serde_yaml is archived upstream. It reads the ontology bundle's YAML
-    # and is used in exactly one file (lakelands-core bundle/yaml.rs), so
-    # replacing it is a one-file change, tracked as its own issue; it
-    # stays for 0.1.0.
-    { id = "RUSTSEC-2024-0320", reason = "serde_yaml is archived; isolated in bundle/yaml.rs, replacement tracked" },
-]
+ignore = []
 
 [licenses]
 version = 2
