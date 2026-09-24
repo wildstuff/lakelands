@@ -456,6 +456,28 @@ fn matched(method: &Method, rest: &[String]) -> Option<Target> {
             BodyAs::Nothing,
             Writes::Cas,
         ),
+        (["types", ty, "records", key, "links", relation, to], Method::PUT) => r(
+            Door::Link {
+                ty: (*ty).into(),
+                relation: (*relation).into(),
+            },
+            "PUT …/types/<type>/records/<key>/links/<relation>/<to>",
+            Map::from_iter([("key".to_owned(), json!(key)), ("to".to_owned(), json!(to))]),
+            &[],
+            BodyAs::One("fields", false),
+            Writes::CasOrNew,
+        ),
+        (["types", ty, "records", key, "links", relation, to], Method::DELETE) => r(
+            Door::Unlink {
+                ty: (*ty).into(),
+                relation: (*relation).into(),
+            },
+            "DELETE …/types/<type>/records/<key>/links/<relation>/<to>",
+            Map::from_iter([("key".to_owned(), json!(key)), ("to".to_owned(), json!(to))]),
+            &[],
+            BodyAs::Nothing,
+            Writes::Cas,
+        ),
         (["verbs", verb, key], Method::POST) => r(
             Door::Call {
                 verb: (*verb).into(),

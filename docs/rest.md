@@ -62,6 +62,8 @@ key may hold any character.
 | `GET …/types/<type>/records/<key>` | get | query: `with_meta`, `as_of`, `valid_at` |
 | `PUT …/types/<type>/records/<key>` | upsert | body: the fields to change; `If-Match`, `If-None-Match`, `Idempotency-Key` |
 | `DELETE …/types/<type>/records/<key>` | retire | `If-Match`, `Idempotency-Key` |
+| `PUT …/types/<type>/records/<key>/links/<relation>/<to>` | link | body: the link's own fields (none is `{}` or no body); `If-Match`, `If-None-Match`, `Idempotency-Key` |
+| `DELETE …/types/<type>/records/<key>/links/<relation>/<to>` | unlink | `If-Match`, `Idempotency-Key` |
 | `POST …/verbs/<verb>/<key>` | a declared verb | body: its payload (none is `{}`); `If-Match`, `Idempotency-Key` |
 | `POST …/query` | the pattern query | body: the query tool's arguments |
 | `POST …/search` | search | body: the search tool's arguments |
@@ -83,10 +85,22 @@ anything runs, so a misspelling never turns a compare-and-set into an
 unconditional write.
 
 The link doors (`link`, `unlink`,
-`docs/decisions/035-a-link-is-a-record.md`) are served over MCP, as the
-`<type>_<relation>_link` and `_unlink` tools. Their REST routes follow
-in a later step. Until then, links are read over REST with `find` on the
-link type, `GET …/types/sys.link.<type>.<relation>/records`.
+`docs/decisions/035-a-link-is-a-record.md`) are served under the record
+a link starts from, `…/types/<type>/records/<key>/links/<relation>/<to>`,
+as over MCP they are the `<type>_<relation>_link` and `_unlink` tools.
+`PUT` writes the one link of the pair, and writing it again changes its
+fields; `DELETE` removes it, and its history stays. A link is a record
+of the link type, so the version `If-Match` names is the link's.
+- **Refusals:**
+  - a `<to>` that names no live record of the relation's target is a
+    `constraint` on `to` (422);
+  - a relation the type does not carry by link records, whether it is
+    carried by a field or not declared, is `invalid` (422);
+  - a relation whose links the caller may not write is `not_granted`
+    (403);
+  - unlinking a pair with no link is `not_found` (404).
+- **Reading links:** use `find` on the link type,
+  `GET …/types/sys.link.<type>.<relation>/records`.
 
 ### Query parameters
 

@@ -71,6 +71,7 @@ macro_rules! door_checks {
             only_a_reviewer_decides_proposals,
             sys_types_cannot_be_declared,
             an_embedding_is_unbound_where_no_backend_is_bound,
+            a_link_to_no_live_record_or_over_no_link_relation_is_refused,
             a_retired_record_leaves_reads_but_not_its_past,
             a_narrow_writer_cannot_retire,
             a_proposer_sees_only_its_own_proposals,
@@ -1111,6 +1112,68 @@ pub async fn an_embedding_is_unbound_where_no_backend_is_bound(store: Arc<dyn La
         matches!(refusal(&e), (Some(field), Refusal::Invalid { .. }) if field.as_str() == "vec"),
         "{e:?}"
     );
+}
+
+/// A link must reach a live record over a relation carried by link
+/// records: a missing target is a constraint on `to`, a relation carried
+/// by a field or not declared at all is invalid.
+pub async fn a_link_to_no_live_record_or_over_no_link_relation_is_refused(
+    store: Arc<dyn LakeStore>,
+) {
+    let f = setup(store).await;
+    let contract: TypeDecl = serde_json::from_value(json!({
+        "name": "contract",
+        "fields": [{"name": "title", "type": {"kind": "text"}}],
+        "relations": [{"name": "signed_by", "target": "partner", "cardinality": "many_to_many"}]
+    }))
+    .unwrap();
+    let owner = &f.cast.owner;
+    f.catalog
+        .declare(owner, Declaration::Type(contract))
+        .await
+        .unwrap();
+    f.catalog
+        .upsert(
+            owner,
+            &"contract".into(),
+            &"C-1".into(),
+            patch(&[("title", json!("Supply"))]),
+            WriteOpts::default(),
+        )
+        .await
+        .unwrap();
+    let link = |ty: &'static str, key: &'static str, relation: &'static str| {
+        let c = f.catalog.clone();
+        let who = owner.clone();
+        async move {
+            c.link(
+                &who,
+                &ty.into(),
+                &key.into(),
+                &relation.into(),
+                &"P-404".into(),
+                Patch::new(),
+                WriteOpts::default(),
+            )
+            .await
+            .unwrap_err()
+        }
+    };
+    let e = link("contract", "C-1", "signed_by").await;
+    assert!(
+        matches!(refusal(&e), (Some(field), Refusal::Constraint { .. }) if field.as_str() == "to"),
+        "{e:?}"
+    );
+    for (ty, key, relation) in [
+        ("invoice", "INV-1", "billed_by"),
+        ("contract", "C-1", "nowhere"),
+    ] {
+        let e = link(ty, key, relation).await;
+        assert!(
+            matches!(refusal(&e), (None, Refusal::Invalid { .. })),
+            "{ty}.{relation}: {e:?}"
+        );
+    }
 }
 
 /// A retired record is gone from later reads; its history is not.
