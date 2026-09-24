@@ -121,13 +121,10 @@ fn the_walks_commands_run_in_order_on_the_in_memory_lake() {
     sh.ok(&["init", &root]);
     sh.ok(&["--root", &root, "lake", "new", "liquidity"]);
     let applied = sh.ok(&["--root", &root, "apply", &example().display().to_string()]);
-    assert_eq!(
-        applied
-            .lines()
-            .filter(|l| l.starts_with("declared"))
-            .count(),
-        8,
-        "apply declares the bundle's eight declarations:\n{applied}"
+    assert!(
+        applied.starts_with("applied 8 declaration(s), in force from position ")
+            && applied.lines().filter(|l| l.starts_with("  ")).count() == 8,
+        "apply applies the bundle's eight declarations as one set:\n{applied}"
     );
 
     let ingest = |file: &str, source: &str, map: &str| {

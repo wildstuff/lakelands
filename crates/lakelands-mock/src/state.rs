@@ -225,7 +225,8 @@ impl State {
         }
     }
 
-    fn declare(&mut self, d: &Declaration, schema_hash: Option<String>, version: u32) {
+    /// Put a declaration into the ontology, as its `Declared` event does.
+    pub(crate) fn declare(&mut self, d: &Declaration, schema_hash: Option<String>, version: u32) {
         match d {
             Declaration::Type(t) => {
                 self.types.insert(

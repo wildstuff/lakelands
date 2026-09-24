@@ -138,64 +138,8 @@ impl MockCatalog {
         declaration: Declaration,
     ) -> Result<Position> {
         let (_, st) = self.state_at(log, None)?;
-        let mut types: Vec<TypeName> = st.types.keys().cloned().collect();
-        let mut verbs: Vec<VerbName> = st.verbs.keys().cloned().collect();
-        let (schema_hash, version) = match &declaration {
-            Declaration::Type(t) => {
-                if reserved(t.name.as_str(), who) {
-                    return Err(refused(Refusal::Reserved));
-                }
-                let hash = value::schema_hash(t);
-                let version = match st.types.get(&t.name) {
-                    Some(old) if old.schema_hash != hash => {
-                        return Err(invalid(format!(
-                            "this declaration reshapes the records of `{}`; change it with `migrate`",
-                            t.name
-                        )));
-                    }
-                    Some(old) => old.version + 1,
-                    None => {
-                        types.push(t.name.clone());
-                        1
-                    }
-                };
-                (Some(hash), version)
-            }
-            other => {
-                let target = match other {
-                    Declaration::Verb(v) => {
-                        verbs.push(v.name.clone());
-                        Some(&v.on)
-                    }
-                    Declaration::Trigger(t) => Some(&t.on),
-                    Declaration::ObjectSet(s) => Some(&s.of),
-                    _ => None,
-                };
-                if let Some(ty) = target {
-                    if !st.types.contains_key(ty) {
-                        return Err(no_type(ty));
-                    }
-                    if reserved(ty.as_str(), who) {
-                        return Err(refused(Refusal::Reserved));
-                    }
-                }
-                let key = serde_json::to_value(other).unwrap_or_default();
-                let key = format!(
-                    "{}:{}",
-                    key["declare"].as_str().unwrap_or_default(),
-                    key["name"].as_str().unwrap_or_default()
-                );
-                (None, st.decl_versions.get(&key).map_or(1, |v| v + 1))
-            }
-        };
-        verbs.dedup();
-        let problems = lakelands_api::tools::name_problems(&types, &verbs);
-        if !problems.is_empty() {
-            return Err(invalid(format!(
-                "these names cannot all become tools: {}",
-                serde_json::to_string(&problems).unwrap_or_default()
-            )));
-        }
+        check_declaration(&st, who, &declaration)?;
+        let (schema_hash, version) = identity_version(&st, &declaration);
         let mut batch = Batch::at(log);
         let position = batch.push(Draft::new(
             who,
@@ -209,6 +153,116 @@ impl MockCatalog {
         self.commit(log, batch);
         Ok(position)
     }
+}
+
+/// A declaration's identity in a set: its kind and its name.
+fn identity(d: &Declaration) -> String {
+    let v = serde_json::to_value(d).unwrap_or_default();
+    format!(
+        "{} {}",
+        v["declare"].as_str().unwrap_or_default(),
+        v["name"].as_str().unwrap_or_default()
+    )
+}
+
+/// The schema hash (for a type) and the version a declaration takes in
+/// the lake as `st` holds it.
+fn identity_version(st: &State, d: &Declaration) -> (Option<String>, u32) {
+    match d {
+        Declaration::Type(t) => (
+            Some(value::schema_hash(t)),
+            st.types.get(&t.name).map_or(1, |old| old.version + 1),
+        ),
+        other => {
+            let v = serde_json::to_value(other).unwrap_or_default();
+            let key = format!(
+                "{}:{}",
+                v["declare"].as_str().unwrap_or_default(),
+                v["name"].as_str().unwrap_or_default()
+            );
+            (None, st.decl_versions.get(&key).map_or(1, |v| v + 1))
+        }
+    }
+}
+
+/// Check one declaration against the lake as `st` holds it: reserved
+/// names, a revision that would reshape records, every type it refers to
+/// declared (or itself), and every name able to become a tool.
+fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()> {
+    let mut types: Vec<TypeName> = st.types.keys().cloned().collect();
+    let mut verbs: Vec<VerbName> = st.verbs.keys().cloned().collect();
+    let known =
+        |ty: &TypeName, own: Option<&TypeName>| own == Some(ty) || st.types.contains_key(ty);
+    match d {
+        Declaration::Type(t) => {
+            if reserved(t.name.as_str(), who) {
+                return Err(refused(Refusal::Reserved));
+            }
+            if let Some(old) = st.types.get(&t.name) {
+                if old.schema_hash != value::schema_hash(t) {
+                    return Err(invalid(format!(
+                        "this declaration reshapes the records of `{}`; change it with `migrate`",
+                        t.name
+                    )));
+                }
+            } else {
+                types.push(t.name.clone());
+            }
+            for f in &t.fields {
+                if let Some(target) = &f.ty.target
+                    && !known(target, Some(&t.name))
+                {
+                    return Err(on(
+                        &f.name,
+                        Refusal::Invalid {
+                            message: format!(
+                                "type `{}`, field `{}`: its target `{target}` is not a declared type",
+                                t.name, f.name
+                            ),
+                        },
+                    ));
+                }
+            }
+            for r in &t.relations {
+                if !known(&r.target, Some(&t.name)) {
+                    return Err(invalid(format!(
+                        "type `{}`, relation `{}`: `{}` is not a declared type",
+                        t.name, r.name, r.target
+                    )));
+                }
+            }
+        }
+        other => {
+            let target = match other {
+                Declaration::Verb(v) => {
+                    // A revision of a verb the lake holds is not a second name.
+                    if !verbs.contains(&v.name) {
+                        verbs.push(v.name.clone());
+                    }
+                    Some(&v.on)
+                }
+                Declaration::Trigger(t) => Some(&t.on),
+                Declaration::ObjectSet(s) => Some(&s.of),
+                _ => None,
+            };
+            if let Some(ty) = target {
+                if !st.types.contains_key(ty) {
+                    return Err(no_type(ty));
+                }
+                if reserved(ty.as_str(), who) {
+                    return Err(refused(Refusal::Reserved));
+                }
+            }
+        }
+    }
+    let problems = lakelands_api::tools::name_problems(&types, &verbs);
+    if !problems.is_empty() {
+        return Err(invalid(format!(
+            "these names cannot all become tools: {}",
+            serde_json::to_string(&problems).unwrap_or_default()
+        )));
+    }
+    Ok(())
 }
 
 // ---- describing ----
@@ -445,9 +499,8 @@ fn check_patch<'a>(
     patch: &Patch,
     door: Origin,
 ) -> Result<&'a DeclaredType> {
-    if reserved(ty.as_str(), who) {
-        return Err(refused(Refusal::Reserved));
-    }
+    // Records of a `sys.` type are written under grants like any other;
+    // only declaring such a type is reserved.
     let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
     if t.decl.view.is_some() {
         return Err(invalid(format!("`{ty}` is a view and is never written")));
@@ -557,9 +610,6 @@ fn plan_retire(
     opts: &WriteOpts,
 ) -> Result<Version> {
     let By { st, who, cause } = *by;
-    if reserved(ty.as_str(), who) {
-        return Err(refused(Refusal::Reserved));
-    }
     let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
     if !may_retire(who, t) {
         return Err(refused(Refusal::NotGranted));
@@ -705,7 +755,7 @@ fn plan_propose(
         }
         ProposedWrite::Retire { ty, key, .. } => {
             let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
-            if reserved(ty.as_str(), who) || !may_retire(who, t) {
+            if !may_retire(who, t) {
                 return Err(refused(Refusal::NotGranted));
             }
             st.live(ty, key).ok_or_else(|| no_record(ty, key))?;
@@ -1435,19 +1485,64 @@ impl Catalog for MockCatalog {
             ));
         }
         let mut log = self.log();
-        let before = log.events.len();
-        let mut position = None;
-        for d in declarations {
-            match self.declare_in(&mut log, who, d) {
-                Ok(p) => position = Some(p),
-                Err(e) => {
-                    log.events.truncate(before);
-                    return Err(e);
-                }
+        let (_, st) = self.state_at(&log, None)?;
+        // The set is checked as one: each declaration against the lake
+        // with every other declaration of the set already in it, so a
+        // reference may point forward, and every problem is collected.
+        let ids: Vec<String> = declarations.iter().map(identity).collect();
+        let mut problems: Vec<(String, Error)> = Vec::new();
+        for (i, id) in ids.iter().enumerate() {
+            if ids[..i].contains(id) {
+                problems.push((
+                    id.clone(),
+                    invalid(format!("the set declares {id} more than once")),
+                ));
             }
         }
+        for (i, d) in declarations.iter().enumerate() {
+            let mut probe = st.clone();
+            for (j, other) in declarations.iter().enumerate() {
+                if ids[j] != ids[i] {
+                    let (hash, version) = identity_version(&probe, other);
+                    probe.declare(other, hash, version);
+                }
+            }
+            if let Err(e) = check_declaration(&probe, who, d) {
+                problems.push((ids[i].clone(), e));
+            }
+        }
+        match problems.len() {
+            0 => {}
+            1 => return Err(problems.remove(0).1),
+            n => {
+                let all: Vec<String> = problems
+                    .iter()
+                    .map(|(id, e)| format!("{id}: {e}"))
+                    .collect();
+                return Err(invalid(format!(
+                    "the set is refused whole, with {n} problems: {}",
+                    all.join("; ")
+                )));
+            }
+        }
+        // One append at consecutive positions; the answer names the last.
+        let mut batch = Batch::at(&log);
+        let mut position = batch.peek();
+        for declaration in declarations {
+            let (schema_hash, version) = identity_version(&st, &declaration);
+            position = batch.push(Draft::new(
+                who,
+                Origin::System,
+                EventBody::Declared {
+                    declaration,
+                    schema_hash,
+                    version,
+                },
+            ));
+        }
+        self.commit(&mut log, batch);
         Ok(Outcome::Applied {
-            position: position.expect("the set is not empty"),
+            position,
             version: None,
             output: None,
         })

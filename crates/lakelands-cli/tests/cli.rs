@@ -251,16 +251,15 @@ fn lake_new_writes_a_location_and_refuses_to_overwrite_it() {
 }
 
 #[test]
-fn apply_declares_a_bundle_in_the_loader_s_order_at_each_position() {
+fn apply_applies_a_bundle_as_one_set_at_one_position() {
     let sh = Shell::new("apply");
     sh.lake();
     let fixture = sh.fixture();
+    // `invoice` refers to `partner`, which the loader orders after it:
+    // the set is checked as one, so the forward reference holds.
     ok(
         &sh.run(&["apply", &fixture]),
-        "declared type `invoice` at position 1\n\
-         declared type `partner` at position 2\n\
-         declared verb `approve` at position 3\n\
-         declared verb `pay` at position 4\n",
+        "applied 4 declaration(s), in force from position 4:\n  type `invoice`\n  type `partner`\n  verb `approve`\n  verb `pay`\n",
     );
 }
 
@@ -304,18 +303,35 @@ fn apply_refuses_a_broken_bundle_whole_naming_every_problem() {
 }
 
 #[test]
-fn apply_stops_at_the_first_refused_declaration_and_says_what_stays() {
+fn apply_refuses_a_set_the_lake_refuses_whole_naming_every_problem() {
     let sh = Shell::new("apply-refused");
     sh.lake();
     sh.run(&["apply", &sh.fixture()]);
+    // One reshaped type: its own refusal, and nothing of the set lands.
     let mut reshaped = FIXTURE;
     reshaped[0].1 = "name: partner\nfields:\n  name: text\n  city: text\n";
     let again = sh.bundle("reshaped", &reshaped);
-    let s = sh.run(&["apply", &again]);
-    assert_eq!(s.out, "declared type `invoice` at position 5\n");
-    assert_eq!(
-        s.err,
-        "error: declaration 2 of 4 (type `partner`): refused: this declaration reshapes the records of `partner`; change it with `migrate`\n  what to do: correct the input and run the command again; the 1 declaration(s) before it stay applied\n"
+    fails(
+        &sh.run(&["apply", &again]),
+        "error: refused: this declaration reshapes the records of `partner`; change it with `migrate`\n  what to do: correct the bundle and apply it again; nothing was applied\n",
+    );
+    ok(&sh.run(&["feed", "--from", "5"]), "");
+    // Two reshaped types: one refusal names both.
+    reshaped[1].1 = "name: invoice\nfields:\n  amount: { type: decimal, authority: source }\n";
+    let twice = sh.bundle("reshaped-twice", &reshaped);
+    let s = sh.run(&["apply", &twice]);
+    assert_eq!((s.code, s.out.as_str()), (1, ""));
+    assert!(
+        s.err.starts_with(
+            "error: refused: the set is refused whole, with 2 problems: type invoice: "
+        ) && s.err.contains("; type partner: "),
+        "{}",
+        s.err
+    );
+    assert!(
+        s.err.ends_with(
+            "  what to do: correct the bundle and apply it again; nothing was applied\n"
+        )
     );
 }
 
