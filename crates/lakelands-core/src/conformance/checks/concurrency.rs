@@ -25,7 +25,7 @@ use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::Declaration;
 use lakelands_api::{
     Catalog, Find, Get, IdempotencyKey, LakeStore, Position, Principal, ReadAt, RecordKey,
-    TypeName, WriteOpts,
+    Timestamp, TypeName, WriteOpts,
 };
 use serde_json::{Value, json};
 
@@ -631,5 +631,136 @@ async fn concurrent_writes_see_their_own_filled_field_and_one_input_is_called_on
         "{WRITERS} writers wrote the same input, code AT, at once; the backing must be \
          called once for it, not {calls} times"
     );
+    Ok(())
+}
+
+check!(
+    /// Writes made while `age` runs wait for its append.
+    AGE_UNDER_WRITES = writes_made_while_a_rule_runs_land_before_or_after_its_append,
+    "036 and seams, SystemVocabulary: `age` holds the writer's lock for a rule's whole run, so a write made meanwhile lands before or after the rule's append, never inside it, and every move is made from the record as it stood before that append"
+);
+
+async fn writes_made_while_a_rule_runs_land_before_or_after_its_append(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    declare(
+        cat.as_ref(),
+        &own,
+        type_decl(
+            "task",
+            vec![
+                field("state", StorageKind::Text),
+                field("note", StorageKind::Text),
+            ],
+        ),
+    )
+    .await?;
+    let keys: Vec<String> = (0..200).map(|n| format!("t{n}")).collect();
+    for k in &keys {
+        crate::conformance::fixture::upsert(
+            cat.as_ref(),
+            &own,
+            "task",
+            k,
+            json!({"state": "open"}),
+        )
+        .await?;
+    }
+    crate::conformance::fixture::upsert(
+        cat.as_ref(),
+        &own,
+        lakelands_api::seam::AGING_RULE_TYPE,
+        "go_stale",
+        json!({"on": "task", "field": "state", "from": "open", "to": "stale", "when": "true"}),
+    )
+    .await?;
+
+    // Four writers touch every task's `note` while one caller ages.
+    let mut callers: Vec<Caller<'static, Result<(), Failure>>> = (0..4)
+        .map(|w| {
+            let (cat, own, keys) = (cat.clone(), own.clone(), keys.clone());
+            let caller: Caller<'static, Result<(), Failure>> = Box::pin(async move {
+                for k in &keys {
+                    crate::conformance::fixture::upsert(
+                        cat.as_ref(),
+                        &own,
+                        "task",
+                        k,
+                        json!({"note": format!("w{w}")}),
+                    )
+                    .await?;
+                }
+                Ok(())
+            });
+            caller
+        })
+        .collect();
+    let ager = store.clone();
+    callers.insert(
+        0,
+        Box::pin(async move {
+            let today = Timestamp::from_date(2026, 3, 1).expect("a date");
+            ager.age(today).await.must("aging while others write")?;
+            Ok(())
+        }),
+    );
+    for r in join_all(callers).await {
+        r?;
+    }
+
+    let log = store
+        .feed()
+        .poll(Position::GENESIS, &FeedFilter::default(), u32::MAX)
+        .await
+        .must("reading the whole log")?
+        .events;
+    let moves: Vec<_> = log
+        .iter()
+        .filter(|e| {
+            e.procedure
+                .as_ref()
+                .is_some_and(|p| p.name == "aging:go_stale")
+        })
+        .collect();
+    ensure!(
+        moves.len() == keys.len(),
+        "the rule moves each of the {} tasks once; the log holds {} moves",
+        keys.len(),
+        moves.len()
+    );
+    let (first, last) = (moves[0].position, moves[moves.len() - 1].position);
+    ensure!(
+        last.0 - first.0 + 1 == moves.len() as u64,
+        "the rule's moves are one append: positions {first} to {last} hold {} moves, and \
+         a write landed among them",
+        moves.len()
+    );
+    for m in &moves {
+        let EventBody::RecordUpserted { key, version, .. } = &m.body else {
+            return Err(Failure::new(format!(
+                "a move is a record_upserted; the event at {} is {}",
+                m.position,
+                m.body.kind()
+            )));
+        };
+        let before = cat
+            .get(
+                &own,
+                &TypeName::from("task"),
+                get_at(key.as_str(), Position(m.position.0 - 1)),
+            )
+            .await
+            .must(&format!("reading `{key}` just before its move"))?
+            .data;
+        ensure!(
+            version.0 == before.version.0 + 1,
+            "`{key}` was at version {} just before the rule's append and the move made \
+             version {}: the move is made from the record as it stood before the append",
+            before.version.0,
+            version.0
+        );
+    }
     Ok(())
 }

@@ -643,3 +643,102 @@ async fn a_record_whose_values_from_the_source_were_all_cleared_stays(
     );
     Ok(())
 }
+
+check!(
+    /// A co-owned purge names how many, and the first ten.
+    CO_OWNED_COUNTED = a_co_owned_purge_names_the_count_and_the_first_ten,
+    "039 and seams: a purge refused because records are co-owned names how many there are, and the first ten, never more"
+);
+
+async fn a_co_owned_purge_names_the_count_and_the_first_ten(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    lake(store.as_ref()).await?;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let keys: Vec<String> = (0..12).map(|n| format!("b{n:02}")).collect();
+    feed(
+        cat.as_ref(),
+        &own,
+        "bulk",
+        keys.iter()
+            .map(|k| source_record("partner", k, json!({"name": k})))
+            .collect(),
+    )
+    .await?;
+    for k in &keys {
+        upsert(cat.as_ref(), &own, "partner", k, json!({"note": "kept"})).await?;
+    }
+    let e = store
+        .purge_source(&SourceId::from("bulk"))
+        .await
+        .must_fail("purging `bulk`, all twelve of whose records a person also wrote")?;
+    let Error::Refused {
+        reason: Refusal::Invalid { message },
+        ..
+    } = &e
+    else {
+        return Err(Failure::new(format!(
+            "the purge was refused as {e:?}; invalid was expected"
+        )));
+    };
+    // The store finds them in key order, so the first ten are b00 to b09.
+    let named: Vec<&String> = keys
+        .iter()
+        .filter(|k| message.contains(k.as_str()))
+        .collect();
+    let first_ten: Vec<&String> = keys.iter().take(10).collect();
+    ensure!(
+        message.contains("12 record(s)") && named == first_ten,
+        "twelve records are co-owned: the refusal names the count, 12, and the first ten \
+         in the store's order, b00 to b09; it names {named:?}: {message}"
+    );
+    Ok(())
+}
+
+check!(
+    /// A value a backing filled makes no owner.
+    BACKED_NO_OWNER = a_value_a_backing_filled_makes_no_owner,
+    "039: a backed output is the lake's own computation, like a derived value; it makes no owner, so the source's purge retires the record"
+);
+
+async fn a_value_a_backing_filled_makes_no_owner(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+    use crate::conformance::backing::KIND;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let function: lakelands_api::write::Declaration = serde_json::from_value(json!({
+        "declare": "function", "name": "lookup", "backing": KIND,
+        "inputs": [{"name": "code", "type": {"kind": "text"}}],
+        "config": {"token": "purge_backed", "echo": "code"}
+    }))
+    .map_err(|e| Failure::new(format!("the check's function does not read: {e}")))?;
+    cat.declare(&own, function)
+        .await
+        .must("declaring `lookup`")?;
+    let mut code = field("code", StorageKind::Text);
+    code.authority = Authority::Source;
+    let mut name = field("name", StorageKind::Text);
+    name.authority = Authority::Derived;
+    name.function = Some("lookup".into());
+    name.depends_on = vec!["code".into()];
+    declare(cat.as_ref(), &own, type_decl("place", vec![code, name])).await?;
+    feed(
+        cat.as_ref(),
+        &own,
+        "geo",
+        vec![source_record("place", "at", json!({"code": "AT"}))],
+    )
+    .await?;
+    let filled = crate::conformance::fixture::read(cat.as_ref(), &own, "place", "at").await?;
+    ensure!(
+        filled.fields.get("name") == Some(&json!("AT")),
+        "the backing fills `at`'s `name` before the purge; it reads {filled:?}"
+    );
+    let report = purge(store.as_ref(), "geo").await?;
+    ensure!(
+        report.retired == 1 && !live(cat.as_ref(), &own, "place", "at").await?,
+        "`at`'s `name` was filled by a backing, which makes no owner: the purge of `geo` \
+         retires it, and it answered {report:?}"
+    );
+    Ok(())
+}

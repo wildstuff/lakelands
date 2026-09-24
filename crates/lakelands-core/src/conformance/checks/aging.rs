@@ -889,3 +889,260 @@ async fn a_move_the_store_would_refuse_leaves_the_record(
     );
     Ok(())
 }
+
+check!(
+    /// A rule under a retention hold is live and runs.
+    HELD_RULE_RUNS = a_rule_under_a_retention_hold_is_live_and_runs,
+    "036 and seams, SystemVocabulary: a hold withholds a record from reads, it does not stop it; a restricted rule record runs"
+);
+
+async fn a_rule_under_a_retention_hold_is_live_and_runs(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    invoices(cat.as_ref(), &own).await?;
+    upsert(
+        cat.as_ref(),
+        &own,
+        "invoice",
+        "i1",
+        json!({"status": "open", "amount": 200}),
+    )
+    .await?;
+    rule(
+        cat.as_ref(),
+        &own,
+        "held_rule",
+        "invoice",
+        "status",
+        json!("open"),
+        json!("overdue"),
+        "amount > 100",
+    )
+    .await?;
+    store
+        .restrict(
+            &AGING_RULE_TYPE.into(),
+            &"held_rule".into(),
+            "a retention hold".into(),
+        )
+        .await
+        .must("restricting the rule record")?;
+    let report = age(store.as_ref(), date(2026, 3, 1)).await?;
+    ensure!(
+        status(cat.as_ref(), &own, "i1").await? == json!("overdue")
+            && report
+                .rules
+                .iter()
+                .any(|r| r.rule == "held_rule" && r.moved == 1),
+        "the rule record is under a retention hold, and a hold does not stop a record: \
+         the rule runs and moves `i1`; the report says {report:?}"
+    );
+    Ok(())
+}
+
+check!(
+    /// `setting()` in a rule reads the setting at the run, and a replay
+    /// reads the moves.
+    SETTING_IN_WHEN = a_rule_reads_the_setting_at_its_run_and_a_replay_reads_its_moves,
+    "seams, SystemVocabulary: setting() in `when` reads the lake's settings as a filter does, with no grant on sys.setting asked of the rule's author, as of the head at the run; the move is an event, so a replay never evaluates `when` again"
+);
+
+async fn a_rule_reads_the_setting_at_its_run_and_a_replay_reads_its_moves(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use lakelands_api::Access;
+    use lakelands_api::principal::TypeGrants;
+    use lakelands_api::seam::SETTING_TYPE;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    invoices(cat.as_ref(), &own).await?;
+    for (key, amount) in [("big", 200), ("small", 50)] {
+        upsert(
+            cat.as_ref(),
+            &own,
+            "invoice",
+            key,
+            json!({"status": "open", "amount": amount}),
+        )
+        .await?;
+    }
+    // When the rule is written, `limit` is 1000: nothing would move.
+    upsert(
+        cat.as_ref(),
+        &own,
+        SETTING_TYPE,
+        "limit",
+        json!({"key": "limit", "value": 1000}),
+    )
+    .await?;
+    // The rule's author may write `status` and read `amount`, and holds no
+    // grant on the lake's settings at all.
+    let mut author = clerk(
+        store.as_ref(),
+        "author",
+        &[("status", Access::Write), ("amount", Access::Read)],
+    );
+    author.grants.types.insert(
+        SETTING_TYPE.into(),
+        TypeGrants {
+            default: Some(Access::None),
+            fields: Default::default(),
+        },
+    );
+    rule(
+        cat.as_ref(),
+        &author,
+        "over_limit",
+        "invoice",
+        "status",
+        json!("open"),
+        json!("overdue"),
+        "amount > setting('limit')",
+    )
+    .await?;
+    // Between the rule and the run, `limit` falls to 100: the run takes the
+    // setting as it stands at the head when it runs.
+    upsert(
+        cat.as_ref(),
+        &own,
+        SETTING_TYPE,
+        "limit",
+        json!({"key": "limit", "value": 100}),
+    )
+    .await?;
+    age(store.as_ref(), date(2026, 3, 1)).await?;
+    let (big, small) = (
+        status(cat.as_ref(), &own, "big").await?,
+        status(cat.as_ref(), &own, "small").await?,
+    );
+    ensure!(
+        big == json!("overdue") && small == json!("open"),
+        "`limit` was 1000 when the rule was written and 100 when the lake aged: the run \
+         takes 100, so `big` (200) moves and `small` (50) does not; they hold {big} and \
+         {small}"
+    );
+    // The setting changes afterwards; the moves are events, so a rebuild
+    // reads them as they were and never evaluates `when` again.
+    upsert(
+        cat.as_ref(),
+        &own,
+        SETTING_TYPE,
+        "limit",
+        json!({"key": "limit", "value": 1000}),
+    )
+    .await?;
+    store.rebuild().await.must("rebuilding the projection")?;
+    let after = status(cat.as_ref(), &own, "big").await?;
+    ensure!(
+        after == json!("overdue"),
+        "`limit` rose to 1000 after the run; a rebuild replays the move and does not \
+         evaluate `when` again, so `big` stays overdue; it holds {after}"
+    );
+    Ok(())
+}
+
+check!(
+    /// A rule the shape left behind is skipped, for each way it can be.
+    SKIPPED_EVERY_WAY = a_rule_is_skipped_when_its_field_is_dropped_or_its_value_no_longer_admitted,
+    "seams, SystemVocabulary, and 027 extended: a rule whose field a migration dropped, or whose `from` or `to` a tightened value type no longer admits, is skipped and named, never run half"
+);
+
+async fn a_rule_is_skipped_when_its_field_is_dropped_or_its_value_no_longer_admitted(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use lakelands_api::ontology::ValueTypeDecl;
+    use lakelands_api::write::Migration;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let stage_type = |one_of: &[&str]| -> Result<ValueTypeDecl, Failure> {
+        serde_json::from_value(json!({"name": "stage", "kind": "text", "one_of": one_of}))
+            .map_err(|e| Failure::new(format!("the check's value type does not read: {e}")))
+    };
+    cat.declare(
+        &own,
+        Declaration::ValueType(stage_type(&["open", "late", "closed"])?),
+    )
+    .await
+    .must("declaring the value type `stage`")?;
+    let mut phase = field("phase", StorageKind::Text);
+    phase.ty = lakelands_api::ontology::FieldType {
+        value_type: Some("stage".into()),
+        ..lakelands_api::ontology::FieldType::kind(StorageKind::Text)
+    };
+    let with_note = type_decl(
+        "case",
+        vec![phase.clone(), field("note", StorageKind::Text)],
+    );
+    declare(cat.as_ref(), &own, with_note).await?;
+    upsert(cat.as_ref(), &own, "case", "c1", json!({"phase": "open"})).await?;
+    rule(
+        cat.as_ref(),
+        &own,
+        "a_note",
+        "case",
+        "note",
+        json!("draft"),
+        json!("final"),
+        "true",
+    )
+    .await?;
+    rule(
+        cat.as_ref(),
+        &own,
+        "b_late",
+        "case",
+        "phase",
+        json!("open"),
+        json!("late"),
+        "true",
+    )
+    .await?;
+
+    // `note` holds no value, so dropping it is lossless.
+    let m = Migration {
+        to: type_decl("case", vec![phase]),
+        renames: Vec::new(),
+    };
+    let report = cat
+        .migrate(&own, m.clone())
+        .await
+        .must("the preflight of dropping `note`")?
+        .data;
+    cat.migrate_apply(&own, m, &report.report_id)
+        .await
+        .must("dropping `note`")?;
+    // `late` leaves `stage`; every stored value (`open`) still fits.
+    let tighter = stage_type(&["open", "closed"])?;
+    let vt = cat
+        .migrate_value_type(&own, tighter.clone())
+        .await
+        .must("the preflight of tightening `stage`")?
+        .data;
+    cat.migrate_value_type_apply(&own, tighter, &vt.report_id)
+        .await
+        .must("tightening `stage`")?;
+
+    let report = age(store.as_ref(), date(2026, 3, 1)).await?;
+    let skipped = |name: &str| {
+        report
+            .rules
+            .iter()
+            .find(|r| r.rule == name)
+            .and_then(|r| r.skipped.clone())
+    };
+    ensure!(
+        skipped("a_note").is_some_and(|s| s.contains("note"))
+            && skipped("b_late").is_some_and(|s| s.contains("late") || s.contains("to")),
+        "`note` was dropped and `late` left `stage`: both rules are skipped and named, \
+         each with why; the report says {report:?}"
+    );
+    let c1 = read(cat.as_ref(), &own, "case", "c1").await?;
+    ensure!(
+        c1.fields.get("phase") == Some(&json!("open")),
+        "a skipped rule moves nothing: `c1` holds {:?}",
+        c1.fields.get("phase")
+    );
+    Ok(())
+}
