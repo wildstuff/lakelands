@@ -65,6 +65,28 @@ halves on every pull request, as its own CI job; a `deferred` engine has
 a crate but is not imported yet, and a required engine never becomes
 deferred again.
 
+**An engine that needs a server.** The PostgreSQL engine's suite runs
+against a live database. In CI the `conformance (pg)` job starts a
+throwaway PostgreSQL as a service container and hands its URL to the
+tests as `LAKELANDS_TEST_PG_URL`. Only the harness in
+`crates/lakelands-engine-pg/tests/` reads it; the engine itself reads no
+environment (`docs/decisions/005-no-environment-reads.md`), so the
+harness passes it on as the `url` of `EngineConfig::Postgres`, with TLS
+disabled because the container serves none. Each check creates its own
+schema and the harness drops it afterwards, so one database serves the
+whole suite. The container runs PostgreSQL 16, the oldest version the
+engine supports. The job
+exists once the roster names `pg` required. To run the same suite
+locally:
+
+```sh
+docker run --rm -d --name lakelands-pg -p 5432:5432 \
+  -e POSTGRES_USER=lakelands -e POSTGRES_PASSWORD=lakelands -e POSTGRES_DB=lakelands \
+  postgres:16
+LAKELANDS_TEST_PG_URL=postgres://lakelands:lakelands@localhost:5432/lakelands \
+  scripts/conformance.sh pg
+```
+
 ## What a red check means
 
 A red check is a defect, in the engine or in the claim, and it is fixed
