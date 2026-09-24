@@ -163,13 +163,39 @@ the records and the answers are right.
 the agent makes these `tools/call`s, in order. Every answer carries the
 `position` it was read at.
 
-**1. `describe`** — `{}`. The lake's types (`invoice`, `partner`,
+Without a chat product in the loop, the calls are made with the
+`mcp_call` example client from the `walk` directory. It starts the
+server, makes its requests in one session, and prints each answer's
+position line and structured content. A pin holds within one session
+only, so each run below makes a pinned turn's calls together:
+
+```sh
+cargo run -q -p lakelands-server --example mcp_call -- --server "lakelands serve --mcp" tools/list
+```
+
+**1. `describe`** — `{}`:
+
+```sh
+cargo run -q -p lakelands-server --example mcp_call -- --server "lakelands serve --mcp" tools/call describe '{}'
+```
+
+The lake's types (`invoice`, `partner`,
 `transaction`, `sys.setting`), the verb `pay_invoice`, and each field
 with its authority: `invoice.gross` derived, `invoice.status` shared,
 `partner.credit_limit` from a source.
 
 **2. `pin`** — `{}`. Pins the head for the turn: `{ "position": 44,
-"pinned": 44 }`.
+"pinned": 44 }`. Calls 2 to 4 are one turn, so one run:
+
+```sh
+cargo run -q -p lakelands-server --example mcp_call -- --server "lakelands serve --mcp" \
+  tools/call pin '{}' \
+  tools/call invoice_find "{\"where\": \"status = 'open' and due_on < now() - 30d\", \"aggregate\": {\"measures\": [{\"name\": \"overdue_gross\", \"func\": \"sum\", \"field\": \"gross\"}], \"group_by\": [\"partner\"]}}" \
+  tools/call partner_get '{"key": "P-100", "with_meta": true}' \
+  tools/call partner_get '{"key": "P-200", "with_meta": true}' \
+  tools/call partner_get '{"key": "P-300", "with_meta": true}' \
+  tools/call partner_get '{"key": "P-400", "with_meta": true}'
+```
 
 **3. `invoice_find`**:
 
@@ -215,7 +241,18 @@ it came from, for example P-300's:
 their credit limits taken from `crm`'s export of 31 August.
 
 **5. `pin`** — `{ "as_of": 38 }` (the August ingest's position):
-`{ "position": 38, "pinned": 38 }`.
+`{ "position": 38, "pinned": 38 }`. Calls 5 to 8 are one turn, so one run:
+
+```sh
+cargo run -q -p lakelands-server --example mcp_call -- --server "lakelands serve --mcp" \
+  tools/call pin '{"as_of": 38}' \
+  tools/call invoice_find "{\"where\": \"status = 'open' and due_on < now() - 30d\", \"aggregate\": {\"measures\": [{\"name\": \"overdue_gross\", \"func\": \"sum\", \"field\": \"gross\"}], \"group_by\": [\"partner\"]}}" \
+  tools/call partner_get '{"key": "P-100", "with_meta": true}' \
+  tools/call partner_get '{"key": "P-200", "with_meta": true}' \
+  tools/call partner_get '{"key": "P-300", "with_meta": true}' \
+  tools/call partner_get '{"key": "P-400", "with_meta": true}' \
+  tools/call pin '{"clear": true}'
+```
 
 **6. `invoice_find`**, the same arguments. Expected, at position 38:
 P-100 `10710.00`, P-200 `5950.00`, **P-300 `8330.00`**, P-400
