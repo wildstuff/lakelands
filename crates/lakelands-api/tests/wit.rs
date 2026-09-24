@@ -40,7 +40,8 @@ use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Direction, Group, Orde
 use lakelands_api::seam::{FeedBatch, FeedFilter};
 use lakelands_api::write::{
     AgeReport, Declaration, FieldConversion, FunctionDecl, Migration, MigrationReport,
-    ObjectSetDecl, Proposal, ProposalFilter, ProposalState, ProposedWrite, RuleRun,
+    ObjectSetDecl, Proposal, ProposalFilter, ProposalState, ProposedWrite, PurgeReport, RuleRun,
+    TypeRetired,
 };
 use lakelands_api::{
     Access, Committed, Cursor, Error, FieldMeta, Find, Found, Get, Grants, Missing, Origin,
@@ -848,6 +849,23 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 moved: 1,
                 failed_guards: 2,
                 skipped: Some("s".into()),
+            }),
+        ),
+        (
+            "purge_report",
+            members(&PurgeReport {
+                source: "erp".into(),
+                retired: 1,
+                types: vec![],
+                unsearched: vec![],
+                position: Position(3),
+            }),
+        ),
+        (
+            "type_retired",
+            members(&TypeRetired {
+                ty: "invoice".into(),
+                retired: 1,
             }),
         ),
         (

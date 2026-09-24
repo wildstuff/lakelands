@@ -26,6 +26,7 @@ mod paging;
 mod positions;
 mod proposals;
 mod provenance;
+mod purge;
 mod reactions;
 mod rebuild;
 mod references;
@@ -186,6 +187,16 @@ pub const ALL: &[Check] = &[
     aging::NO_LONGER_FITS,
     aging::RULE_AUTHORITY,
     aging::REFUSED_MOVE_LEAVES,
+    purge::RETIRES_WHAT_IT_BROUGHT,
+    purge::KEEPS_HISTORY,
+    purge::CO_OWNED_REFUSES,
+    purge::LAKES_OWN_VALUES,
+    purge::RESTRICTED_PURGED,
+    purge::UNSEARCHED,
+    purge::SECOND_PURGE,
+    purge::REACTS_AS_RETIRE,
+    purge::LINKS_STAY,
+    purge::CLEARED_STAYS,
     settings::SETTING_AS_OF,
     feed::LIMIT_ZERO_IS_ONE,
     retire::SOURCE_ONLY_HAS_NO_UPSERT,

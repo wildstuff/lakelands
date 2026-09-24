@@ -91,6 +91,7 @@ pub mod checks;
 mod doors;
 mod expr;
 mod links;
+mod purge;
 mod state;
 pub mod stream;
 mod value;
@@ -360,6 +361,10 @@ impl LakeStore for MockLake {
 
     async fn age(&self, today: Timestamp) -> Result<lakelands_api::write::AgeReport> {
         aging::run(&self.shared, &mut self.shared.log(), today)
+    }
+
+    async fn purge_source(&self, source: &SourceId) -> Result<lakelands_api::write::PurgeReport> {
+        purge::run(&self.shared, &mut self.shared.log(), source)
     }
 
     async fn checkpoint(&self) -> Result<Position> {

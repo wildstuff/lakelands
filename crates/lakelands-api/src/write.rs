@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::expr::Condition;
 use crate::id::{
-    Cursor, FieldName, IdempotencyKey, Position, ProposalId, RecordKey, TypeName, VerbName, Version,
+    Cursor, FieldName, IdempotencyKey, Position, ProposalId, RecordKey, SourceId, TypeName,
+    VerbName, Version,
 };
 use crate::ontology::{FieldType, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl};
 
@@ -333,4 +334,33 @@ pub struct RuleRun {
     /// longer valid). A skipped rule moves nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skipped: Option<String>,
+}
+
+/// What `LakeStore::purge_source` retired
+/// (`docs/decisions/039-a-source-is-retracted-as-one.md`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PurgeReport {
+    /// The source purged.
+    pub source: SourceId,
+    /// The records retired, over every type.
+    pub retired: u32,
+    /// Per type, in name order, the records retired in it; types with
+    /// none are left out.
+    pub types: Vec<TypeRetired>,
+    /// The types that keep no per-field provenance, which a purge cannot
+    /// read and does not search, in name order.
+    pub unsearched: Vec<TypeName>,
+    /// The head after the append, or the head as it stood when nothing
+    /// was appended.
+    pub position: Position,
+}
+
+/// The records a purge retired in one type.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeRetired {
+    /// The type.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// How many of its records were retired.
+    pub retired: u32,
 }

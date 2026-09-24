@@ -289,6 +289,14 @@ pub trait LakeStore: Send + Sync {
     /// (`docs/decisions/036-aging-runs-by-date-once.md`).
     async fn age(&self, today: crate::time::Timestamp) -> Result<crate::write::AgeReport>;
 
+    /// Retire, in one append, every live record the source brought in,
+    /// across every type it reached, restricted ones included. A record
+    /// another hand also wrote refuses the whole purge as invalid, naming
+    /// it, and nothing is appended; a type that keeps no per-field
+    /// provenance is not searched and is named in the report
+    /// (`docs/decisions/039-a-source-is-retracted-as-one.md`).
+    async fn purge_source(&self, source: &SourceId) -> Result<crate::write::PurgeReport>;
+
     /// Release the lease and flush. The lake is closed when the last
     /// handle is dropped; this makes it explicit.
     async fn close(&self) -> Result<()>;

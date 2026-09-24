@@ -92,7 +92,8 @@ macro_rules! door_checks {
             schema_hashes_and_proposal_ids_have_the_stores_form,
             links_are_written_walked_and_held_to_their_relation,
             a_relation_declared_again_with_another_target_reshapes_its_links,
-            an_aging_rule_moves_what_holds_from_once_a_date);
+            an_aging_rule_moves_what_holds_from_once_a_date,
+            a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_record);
     };
     (@each $new:expr, $block_on:path; $($name:ident),* $(,)?) => {
         $(
@@ -2437,4 +2438,130 @@ pub async fn an_aging_rule_moves_what_holds_from_once_a_date(store: Arc<dyn Lake
             None
         )
     );
+}
+
+/// A purge retires every live record one source brought in, in one
+/// append; a second purge appends nothing; a record a principal also
+/// wrote refuses the whole purge, naming it
+/// (`docs/decisions/039-a-source-is-retracted-as-one.md`).
+pub async fn a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_record(
+    store: Arc<dyn LakeStore>,
+) {
+    let c = store.catalog(WriteContext::default());
+    let cast = Cast::of(store.lake());
+    let own = &cast.owner;
+    let partner: Declaration = serde_json::from_value(json!({"declare": "type", "name": "partner",
+        "fields": [{"name": "name", "type": {"kind": "text"}, "authority": "source"},
+                   {"name": "city", "type": {"kind": "text"}, "authority": "source"},
+                   {"name": "note", "type": {"kind": "text"}}]}))
+    .unwrap();
+    c.declare(own, partner).await.unwrap();
+    let feed = |keys: &'static [&'static str]| {
+        let c = c.clone();
+        let own = own.clone();
+        async move {
+            let records = keys
+                .iter()
+                .map(|k| SourceRecord {
+                    ty: ty("partner"),
+                    key: key(k),
+                    fields: patch(&[("name", json!(k))]),
+                    seen_at: None,
+                })
+                .collect();
+            let mut acks = c
+                .ingest(&own, &"crm".into(), stream::of(records))
+                .await
+                .unwrap();
+            stream::collect(&mut acks).await;
+        }
+    };
+    feed(&["p1", "p2"]).await;
+    c.upsert(
+        own,
+        &ty("partner"),
+        &key("p3"),
+        patch(&[("note", json!("ours"))]),
+        WriteOpts::default(),
+    )
+    .await
+    .unwrap();
+    let report = store.purge_source(&"crm".into()).await.unwrap();
+    assert_eq!(report.retired, 2, "{report:?}");
+    assert_eq!(report.position, store.head().await.unwrap());
+    let live = |k: &'static str| {
+        let c = c.clone();
+        let own = own.clone();
+        async move { c.get(&own, &ty("partner"), get(k)).await.is_ok() }
+    };
+    assert!(!live("p1").await && !live("p2").await && live("p3").await);
+    let head = store.head().await.unwrap();
+    let again = store.purge_source(&"crm".into()).await.unwrap();
+    assert_eq!((again.retired, again.position), (0, head));
+    // A record a principal also wrote refuses the whole purge.
+    feed(&["p4", "p5"]).await;
+    c.upsert(
+        own,
+        &ty("partner"),
+        &key("p4"),
+        patch(&[("note", json!("called"))]),
+        WriteOpts::default(),
+    )
+    .await
+    .unwrap();
+    let head = store.head().await.unwrap();
+    let refused = store.purge_source(&"crm".into()).await;
+    assert!(
+        matches!(&refused, Err(Error::Refused { field: None, reason: Refusal::Invalid { message } })
+            if message.contains("p4") && !message.contains("p5")),
+        "{refused:?}"
+    );
+    assert_eq!(store.head().await.unwrap(), head);
+    assert!(live("p5").await);
+    // A record the source left no value in is not its any more.
+    let clear = SourceRecord {
+        ty: ty("partner"),
+        key: key("p5"),
+        fields: patch(&[("name", Value::Null)]),
+        seen_at: None,
+    };
+    let mut acks = c
+        .ingest(own, &"crm".into(), stream::of(vec![clear]))
+        .await
+        .unwrap();
+    stream::collect(&mut acks).await;
+    c.upsert(
+        own,
+        &ty("partner"),
+        &key("p4"),
+        patch(&[("note", Value::Null)]),
+        WriteOpts::default(),
+    )
+    .await
+    .unwrap();
+    // Another source's record `crm` set a value on and cleared again:
+    // nothing of `crm`'s is left in it, so it is neither retired nor refused.
+    let source = |src: &'static str, fields: Patch| {
+        let c = c.clone();
+        let own = own.clone();
+        async move {
+            let rec = SourceRecord {
+                ty: ty("partner"),
+                key: key("p7"),
+                fields,
+                seen_at: None,
+            };
+            let mut acks = c
+                .ingest(&own, &src.into(), stream::of(vec![rec]))
+                .await
+                .unwrap();
+            stream::collect(&mut acks).await;
+        }
+    };
+    source("erp", patch(&[("name", json!("p7"))])).await;
+    source("crm", patch(&[("city", json!("Oslo"))])).await;
+    source("crm", patch(&[("city", Value::Null)])).await;
+    let report = store.purge_source(&"crm".into()).await.unwrap();
+    assert_eq!(report.retired, 1, "{report:?}");
+    assert!(!live("p4").await && live("p5").await && live("p7").await);
 }

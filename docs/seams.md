@@ -888,8 +888,39 @@ hold, not what hosts implement:
 - `LakeStore`: one open lake, as its host holds it; it hands out a
   `Catalog` bound to a `WriteContext`, the change feed, the limits it was
   opened with (`limits`), lake maintenance (`verify`, `rebuild`,
-  `checkpoint`), restriction (`restrict`, `unrestrict`), and, with
-  lakelands#67, `age` (above, under `SystemVocabulary`).
+  `checkpoint`), restriction (`restrict`, `unrestrict`), `age` (above,
+  under `SystemVocabulary`), and `purge_source` (below).
+
+`LakeStore::purge_source(source)` retires every live record one source
+brought in, across every type it reached, restricted records and the
+source's link records included, in one append
+(`docs/decisions/039-a-source-is-retracted-as-one.md`). It answers the
+records retired per type, the types it did not search, and the head
+after its append (the head as it stood when nothing was appended):
+
+- A record belongs to the purge when a field holding a value came from
+  the source by its provenance; one whose values from the source were
+  all cleared stays. It is co-owned when a field holding a value came from
+  a principal's authored write or another source; a derived value, a
+  value the lake wrote itself and a cleared field make no owner. One
+  co-owned record refuses the whole purge as invalid, naming the count
+  and the first ten, and nothing is appended.
+- Each retirement is a `record_retired` written by `system:lakelands`
+  with `origin: system` and `context.origin` `direct`, and reacts as a
+  `retire` does, in the same append. Links another source brought in,
+  pointing at a purged record, stay; a walk skips the retired end.
+- A type declared without per-field provenance is not searched, and the
+  report names it.
+- A second purge of the same source retires nothing and appends nothing.
+- The append holds one `record_retired` per record and its reactions in
+  memory before it lands, under the writer's lock: a purge of a very
+  large source is a large append and a long hold of the writer. A host
+  that cannot afford it retires by type through the doors instead.
+
+`lakelands purge --source <id>` prints one line per type
+(`<type>: retired N`), one per type not searched, and
+`purged <id> through position P`. The suite's `purge` checks hold each
+of these sentences on every engine.
 
 `Catalog::apply` declares a set of declarations as one: validated
 together, so a reference may point forward within the set, and appended
