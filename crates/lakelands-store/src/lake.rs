@@ -86,6 +86,7 @@ fn engine_name(config: &EngineConfig) -> String {
     match config {
         EngineConfig::Sqlite { .. } => "sqlite".into(),
         EngineConfig::Memory => "memory".into(),
+        EngineConfig::Postgres { .. } => "pg".into(),
         EngineConfig::Other { name, .. } => name.clone(),
         _ => String::new(),
     }

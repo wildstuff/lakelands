@@ -7,7 +7,9 @@ ladder (O0 to O6). This page accounts for every source module of that
 core: each is either **imported** — carried into Lakelands, or read and
 cut, in the step that took it — or **never imported**, with the reason, or
 left for **after `0.1.0`**. It is complete for `0.1.0`: every file under
-the roots below, as it stood at the freeze, has a row.
+the roots below, as it stood at the freeze, has a row. In `0.2.0` the
+PostgreSQL engine took the `{pg}` root, which was left for after
+`0.1.0`; nothing is left there now.
 
 Lines are counted in the source at the freeze, one per text line. Lines
 out are counted per step, not per module: an organ was transformed on
@@ -36,11 +38,11 @@ The source is named here by role, never by its own paths:
 
 | | Files | Lines |
 |---|---|---|
-| imported, carried | 82 | 42,353 |
-| imported, read and cut | 66 | 27,861 |
-| never imported | 76 | 52,088 |
-| after 0.1.0 | 37 | 12,771 |
-| crate scaffolding | 9 | 570 |
+| imported, carried | 86 | 43,151 |
+| imported, read and cut | 81 | 35,105 |
+| never imported | 93 | 56,743 |
+| after 0.1.0 | 0 | 0 |
+| crate scaffolding | 10 | 644 |
 | **all** | **270** | **135,643** |
 
 ## By step
@@ -54,6 +56,7 @@ The source is named here by role, never by its own paths:
 | O4 — the SQLite engine | 794 | 11,566 | +4,428 net: `lakelands-engine-sqlite` 2,076 + 313 tests; `lakelands-core` +1,887 (the shared rulebook, checks); the rest across api, store and mem |
 | O5 — the doors meet the core | — | — | nothing imported; +1,381 / −435 across the doors, the mock and the store |
 | O6 — `0.1.0` | — | — | nothing imported; this ledger, the port log and the version |
+| pg — the PostgreSQL engine (lakelands#65, `0.2.0`) | 798 | 7,244 | `lakelands-engine-pg` 2,396 `src/` + 538 tests; `lakelands-api` +83 (`EngineConfig::Postgres`) |
 
 At the tag the core crates hold **30,999** lines (`lakelands-core`
 23,112, `lakelands-store` 5,780, `lakelands-engine-sqlite` 2,107, each
@@ -379,45 +382,50 @@ above; none of it was imported:
 
 ### `{pg}` — 37 files, 12,771 lines
 
+Taken in `0.2.0` (lakelands#65). As with `{engine}` in O4, the engine's
+design is Lakelands' own (`docs/decisions/038-a-lake-in-postgresql.md`):
+the connection discipline came across as code, and the rest was read and
+cut.
+
 | Module | Lines | Status | Step | Why |
 |---|---|---|---|---|
-| `{pg}/Cargo.toml` | 74 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/src/append.rs` | 208 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/src/batch_append.rs` | 425 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/src/batch_reads.rs` | 184 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/src/bucketed.rs` | 131 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/src/composites.rs` | 241 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/src/errors.rs` | 63 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/src/fold.rs` | 899 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/src/handle.rs` | 1,202 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/src/lib.rs` | 926 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/src/migration_guard.rs` | 72 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/src/paging.rs` | 420 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/src/schema.rs` | 513 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/src/search.rs` | 302 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/src/session_isolation.rs` | 179 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/src/tls.rs` | 478 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/src/type_cache.rs` | 88 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/src/vectors.rs` | 192 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/src/version.rs` | 78 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/src/view.rs` | 1,441 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/tests/batch_cursor.rs` | 256 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/tests/batch_write.rs` | 222 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/tests/bucketed_parity.rs` | 248 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/tests/conformance.rs` | 192 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/tests/connection_discipline.rs` | 473 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/tests/engine.rs` | 350 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/tests/fold_memo.rs` | 188 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/tests/grouped_parity.rs` | 293 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/tests/migration_refusal.rs` | 173 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/tests/mutual_tls.rs` | 101 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/tests/null_axis_parity.rs` | 254 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/tests/order_page_parity.rs` | 254 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/tests/pooler_refusal.rs` | 116 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/tests/rederive_clears.rs` | 252 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/tests/restriction_parity.rs` | 235 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/tests/search_parity.rs` | 673 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
-| `{pg}/tests/stichtag_parity.rs` | 375 | after 0.1.0 | after 0.1.0 | the PostgreSQL engine is imported right after `0.1.0` |
+| `{pg}/Cargo.toml` | 74 | crate scaffolding | — | the crate's manifest |
+| `{pg}/src/append.rs` | 208 | imported, read and cut | pg | appends by `MAX(position)+1` are replaced by the log as rows checked against the lease row in one transaction (`log`) |
+| `{pg}/src/batch_append.rs` | 425 | imported, read and cut | pg | group commit is the store's ingest window |
+| `{pg}/src/batch_reads.rs` | 184 | imported, read and cut | pg | SQL reads over one row per record; reads are the kept history and the rulebook (`view`) |
+| `{pg}/src/bucketed.rs` | 131 | imported, read and cut | pg | aggregation is the store's |
+| `{pg}/src/composites.rs` | 241 | imported, read and cut | pg | grouped views are the store's |
+| `{pg}/src/errors.rs` | 63 | imported, carried | pg | the error chain came across: every cause the driver gives, in one sentence (`connect`) |
+| `{pg}/src/fold.rs` | 899 | imported, read and cut | pg | the engine never folds; the store does |
+| `{pg}/src/handle.rs` | 1,202 | imported, read and cut | pg | replaced by `handle`: the seam's three traits over a reader, a lease and a projection connection |
+| `{pg}/src/lib.rs` | 926 | imported, read and cut | pg | the engine and its per-tenant slots are replaced by one handle per lake (`handle`); read and cut, its driver guard reimplemented (`connect::driver`) |
+| `{pg}/src/migration_guard.rs` | 72 | imported, read and cut | pg | migrations are the store's; the engine keeps states |
+| `{pg}/src/paging.rs` | 420 | imported, read and cut | pg | paging and order are the rulebook's |
+| `{pg}/src/schema.rs` | 513 | imported, read and cut | pg | replaced by `projection`: one schema per lake, every statement qualified, the kept history |
+| `{pg}/src/search.rs` | 302 | imported, read and cut | pg | `tsvector` ranking decides matches and orders the other engines decide differently; full-text candidates are token rows, the rulebook scores |
+| `{pg}/src/session_isolation.rs` | 179 | imported, carried | pg | the session probe came across: a setting must survive, a fresh connection must not inherit it; a transaction-mode pooler is refused (`connect::session_keeping_state`) |
+| `{pg}/src/tls.rs` | 478 | imported, carried | pg | the rustls connector came across: roots from a named CA file, a client certificate with its key, both or neither; the URL keys and the machine store were cut for the location's `tls` and well-known bundle paths (`connect::tls_config`) |
+| `{pg}/src/type_cache.rs` | 88 | imported, read and cut | pg | nothing is cached that a write invalidates; a view reads its declarations |
+| `{pg}/src/vectors.rs` | 192 | imported, read and cut | pg | `pgvector` is not used; vectors are compared by the one cosine, by brute force |
+| `{pg}/src/version.rs` | 78 | imported, carried | pg | the server floor came across as a check at open, at PostgreSQL 16, the release the conformance job runs (`connect`) |
+| `{pg}/src/view.rs` | 1,441 | imported, read and cut | pg | replaced by `view`: history reads in one repeatable-read transaction, the rulebook deciding |
+| `{pg}/tests/batch_cursor.rs` | 256 | never imported | — | engine-local tests: behaviour claims are in the suite |
+| `{pg}/tests/batch_write.rs` | 222 | never imported | — | engine-local tests: behaviour claims are in the suite |
+| `{pg}/tests/bucketed_parity.rs` | 248 | never imported | — | engine-local tests: behaviour claims are in the suite |
+| `{pg}/tests/conformance.rs` | 192 | never imported | — | engine-local tests: behaviour claims are in the suite |
+| `{pg}/tests/connection_discipline.rs` | 473 | never imported | — | engine-local tests: behaviour claims are in the suite |
+| `{pg}/tests/engine.rs` | 350 | never imported | — | engine-local tests: behaviour claims are in the suite |
+| `{pg}/tests/fold_memo.rs` | 188 | never imported | — | engine-local tests: behaviour claims are in the suite |
+| `{pg}/tests/grouped_parity.rs` | 293 | never imported | — | engine-local tests: behaviour claims are in the suite |
+| `{pg}/tests/migration_refusal.rs` | 173 | never imported | — | engine-local tests: behaviour claims are in the suite |
+| `{pg}/tests/mutual_tls.rs` | 101 | never imported | — | engine-local tests: behaviour claims are in the suite |
+| `{pg}/tests/null_axis_parity.rs` | 254 | never imported | — | engine-local tests: behaviour claims are in the suite |
+| `{pg}/tests/order_page_parity.rs` | 254 | never imported | — | engine-local tests: behaviour claims are in the suite |
+| `{pg}/tests/pooler_refusal.rs` | 116 | never imported | — | engine-local tests: behaviour claims are in the suite |
+| `{pg}/tests/rederive_clears.rs` | 252 | never imported | — | engine-local tests: behaviour claims are in the suite |
+| `{pg}/tests/restriction_parity.rs` | 235 | never imported | — | engine-local tests: behaviour claims are in the suite |
+| `{pg}/tests/search_parity.rs` | 673 | never imported | — | engine-local tests: behaviour claims are in the suite |
+| `{pg}/tests/stichtag_parity.rs` | 375 | never imported | — | engine-local tests: behaviour claims are in the suite |
 
 ## At the tag
 

@@ -31,6 +31,13 @@ for engine in "${engines[@]}"; do
     # with source, so the allowance ends by itself once an engine is
     # imported and cannot be given back silently.
     crate="crates/lakelands-engine-$engine"
+    # The pg engine's tests stand down without a server, so that a
+    # workspace run on a machine without PostgreSQL stays green; the
+    # conformance run for pg must never stand down.
+    if [ "$engine" = pg ] && [ -z "${LAKELANDS_TEST_PG_URL:-}" ]; then
+        echo "conformance: pg needs LAKELANDS_TEST_PG_URL, the PostgreSQL to run against" >&2
+        exit 1
+    fi
     flags=()
     runs_suite "$crate/tests/conformance.rs" || flags=(--no-tests=pass)
     # The second harness, over the engine traits, runs here too for an

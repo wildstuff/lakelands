@@ -19,8 +19,32 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
 - **Engine** (`LakeEngine`, `ProjectionStore`, `ProjectionView`, with
   `VectorIndex` beside it as the engine's index trait). Usually nothing
   to implement: SQLite and in-memory engines ship with `0.1.0`, and
-  PostgreSQL follows right after. A new engine is accepted when it
+  PostgreSQL with `0.2.0`, a lake per schema of a database the host
+  runs (`docs/decisions/038-a-lake-in-postgresql.md`). A new engine is
+  accepted when it
   passes the conformance suite.
+
+  A PostgreSQL lake's location file (`lakes/<id>.json` in a root; `lake
+  new` does not write one for PostgreSQL yet):
+
+  ```json
+  {
+    "lake": "finance",
+    "engine": {
+      "engine": "postgres",
+      "url": "postgres://lakelands:secret@db.example:5432/lakes",
+      "schema": "lakelands_finance",
+      "tls": { "mode": "require", "ca_file": "/etc/ssl/certs/ca-certificates.crt" },
+      "tuning": { "connect_timeout_secs": 10, "statement_timeout_secs": 0 }
+    }
+  }
+  ```
+
+  `schema`, `tls` and `tuning` may be left out: the schema is then
+  `lakelands_<lake>` and TLS is `require`. With `require` and no
+  `ca_file`, the engine looks for the system's certificate bundle at the
+  well-known Unix paths; on Windows there is none, so it refuses until
+  `ca_file` names one.
 - **`PrincipalResolver`.** Maps the host's identities, roles and
   policies onto one `Principal { kind, id, lake, grants }` per call.
   Grants are per field and per principal, and the store enforces them

@@ -26,7 +26,7 @@ contract and to this page.
 
 | Seam | Trait(s) | Default in Lakelands | A host plugs in |
 |---|---|---|---|
-| Engine | `LakeEngine`, `ProjectionStore`, `ProjectionView`; `VectorIndex` beside them | SQLite and in-memory (`0.1.0`); PostgreSQL after | Rarely anything: a new engine, proven by the conformance suite |
+| Engine | `LakeEngine`, `ProjectionStore`, `ProjectionView`; `VectorIndex` beside them | SQLite and in-memory (`0.1.0`); PostgreSQL (`0.2.0`) | Rarely anything: a new engine, proven by the conformance suite |
 | Principal resolution | `PrincipalResolver` | API key or static entry → one principal | Its identities, roles and policies, compiled to grants |
 | Function backings | `FunctionBacking` | `expr`, evaluated in the store | Its own backing kinds; `http` and `exec` ship in `lakelands-backings` |
 | Embeddings | `EmbedBackend` | None: lexical search and caller vectors | An embedding client; `lakelands-backings` ships one for `/v1/embeddings` endpoints |
@@ -124,6 +124,36 @@ does. Every `append` and `seal_segment` is checked against the lease the
 handle holds and against the token the file records now, so a writer
 that released its lease, or lost its lock without knowing, is refused. The SQLite engine keeps `lease` in the lake's
 directory this way (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`).
+
+**What only PostgreSQL decides.** The PostgreSQL engine
+(`docs/decisions/038-a-lake-in-postgresql.md`) keeps a lake in one schema
+and every statement names it; no connection's `search_path` is set.
+
+- **The lease.** It is a row holding the fencing token and a
+  session-level advisory lock, keyed by a 64-bit hash of the schema's
+  name and taken without waiting. The server releases the lock when the
+  holder's session ends, however it ends. The next writer then advances
+  the token, which fences the dead one.
+- **The pooler probe.** A handle opened for writing first checks that
+  its session keeps what it sets and inherits nothing from another, and
+  refuses to open when it detects a transaction-mode pooler. The probe
+  cannot see every pooler, so a host connects directly or through a
+  session-mode one.
+- **Isolation.** The fold writes in one `READ COMMITTED` transaction on
+  the only connection that writes the projection. A view reads in one
+  `REPEATABLE READ READ ONLY` transaction, so its statements see one
+  committed state.
+- **The log.** It is kept as rows holding each event's canonical bytes
+  unchanged, and an append is one transaction that checks the fence
+  against the lease row. `lakelands_engine_pg::export` writes the
+  segments as the §4.2 files, which verify without the engine.
+- **The connection.** It comes from `EngineConfig::Postgres`: the URL,
+  the schema, `tls` (`require` by default, rustls, verified against
+  `ca_file` or a system bundle; or `disable`) and the timeouts. A URL
+  carrying TLS keys, or naming no user, is refused. The driver reads no
+  libpq variables and
+  no `.pgpass`.
+- **The server** is PostgreSQL 16 or newer.
 
 An engine is found by name and opened through `EngineOpener`:
 
