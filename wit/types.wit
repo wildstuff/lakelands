@@ -1,4 +1,4 @@
-package lakelands:data@0.1.0;
+package lakelands:data@0.2.0;
 
 /// The types every interface of the package shares: the contract of
 /// `lakelands-api`, type for type.
@@ -295,6 +295,9 @@ interface types {
         writer: string,
         source: option<source-id>,
         procedure-version: option<string>,
+        /// For a field a function computes that holds no value because
+        /// its backing failed: why.
+        error: option<string>,
     }
 
     /// One field and its value.

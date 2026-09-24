@@ -300,6 +300,28 @@ for a verb, `{ "verb", "record", "payload", "position" }`. Two calls with
 the same `seam` and `input` are the same call, and a replay reads the
 recorded output for it.
 
+A function's `inputs` hold every input the function declares, by name,
+with the record's value of the field of that name, `null` where the
+record holds none; `config` is the function's declared configuration,
+`null` when it has none. For example, the call
+
+```json
+{"function":"geocode","inputs":{"address":"Hauptstraße 1","country":null},"config":{"url":"https://geo.example/lookup"}}
+```
+
+has the canonical bytes
+
+```text
+{"config":{"url":"https://geo.example/lookup"},"function":"geocode","inputs":{"address":"Hauptstraße 1","country":null}}
+```
+
+and `input` is
+`a4702edebf8e4f34b65be7b55b963f930ac4e6f13d0b9a8773ca942814bc77aa`.
+
+A seam that failed is recorded with the output `{"error": "<why>"}`,
+an object whose one member is `error`, a string. A replay reads it like
+any other output: the call is not made again.
+
 `output` is written in the JSON form of §5. When `field` names the field
 the output fills, it is that field's kind's form: an embedding is a
 `vector`, an array of numbers, like a vector a caller writes in a patch.

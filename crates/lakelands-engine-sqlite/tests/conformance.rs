@@ -32,6 +32,7 @@ impl Harness for Sqlite {
         Box::pin(async move {
             let seams = Seams {
                 engines: vec![Arc::new(SqliteOpener)],
+                backings: lakelands_core::conformance::backing::backings(),
                 ..Seams::default()
             };
             let store: Arc<dyn LakeStore> =

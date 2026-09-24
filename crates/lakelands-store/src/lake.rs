@@ -35,6 +35,7 @@ use lakelands_api::{
 };
 use lakelands_core::shape;
 
+use crate::backed::{Due, Outputs};
 use crate::log::{self, Draft};
 use crate::ontology::Ontology;
 use crate::record;
@@ -53,6 +54,9 @@ pub struct Writer {
     pub ontology: Ontology,
     /// The settings at the head.
     pub settings: BTreeMap<String, Value>,
+    /// The calls of backed functions the appends made due and
+    /// [`crate::backed::settle`] has not taken yet.
+    pub due: Vec<Due>,
 }
 
 /// One open lake.
@@ -65,6 +69,11 @@ pub struct Lake {
     pub seams: Seams,
     /// Bounds on one call's work.
     pub limits: Limits,
+    /// Held while the lake's due calls are made: one at a time per lake.
+    pub calls: tokio::sync::Mutex<()>,
+    /// How many times due calls were drained: a writer that reads it
+    /// before its write knows, after, whether a neighbour made its calls.
+    pub drains: AtomicU64,
     writer: Mutex<Writer>,
     /// The tip's position and whether the lease is held, as of the last
     /// change the writer made: read without the writer's lock, which an
@@ -138,12 +147,15 @@ impl Lake {
             engine,
             seams,
             limits: location.limits,
+            calls: tokio::sync::Mutex::new(()),
+            drains: AtomicU64::new(0),
             writer: Mutex::new(Writer {
                 lease: lease.clone(),
                 tip: None,
                 last_known_at: Timestamp(i64::MIN),
                 ontology: Ontology::default(),
                 settings: BTreeMap::new(),
+                due: Vec::new(),
             }),
             head: AtomicU64::new(0),
             holds_lease: AtomicBool::new(false),
@@ -239,6 +251,8 @@ impl Lake {
             // the writer folded, and writes nothing.
             if w.lease.is_some() {
                 self.fold_all(&mut w, &events)?;
+                // Opening a lake never calls a backing.
+                w.due.clear();
             }
         } else if let Some((pos, _)) = &w.tip
             && let Some(e) = self.read_events(*pos, Some(1))?.first()
@@ -410,7 +424,13 @@ impl Lake {
                         records.into_iter().map(|r| (r.key.clone(), r)).collect();
                     all.extend(staged.of_type(&ty).map(|r| (r.key.clone(), r.clone())));
                     for r in all.into_values() {
-                        if let Some(next) = record::rederive(&w.ontology, &r, e, &w.settings)? {
+                        let mut outputs = Outputs {
+                            view,
+                            staged: Some(&staged.outputs),
+                            due: Some(&mut w.due),
+                        };
+                        let next = record::rederive(&w.ontology, &r, e, &w.settings, &mut outputs)?;
+                        if let Some(next) = next {
                             projection.put_record(&next)?;
                             self.index_vectors(&w.ontology, &next)?;
                             staged.put(next);
@@ -483,7 +503,14 @@ impl Lake {
                     Some(r) => Some(r.clone()),
                     None => view.get(ty, key)?,
                 };
-                if let Some(after) = record::apply(&w.ontology, before.as_ref(), e, &w.settings)? {
+                let mut outputs = Outputs {
+                    view,
+                    staged: Some(&staged.outputs),
+                    due: Some(&mut w.due),
+                };
+                let after =
+                    record::apply(&w.ontology, before.as_ref(), e, &w.settings, &mut outputs)?;
+                if let Some(after) = after {
                     if ty.as_str() == SETTING_TYPE {
                         match (after.retired, after.fields.get("value")) {
                             (false, Some(v)) => {
@@ -546,9 +573,44 @@ impl Lake {
                 seam,
                 input,
                 output,
-                ..
+                field,
             } => {
                 projection.put_output(seam, input, output, e.position)?;
+                staged
+                    .outputs
+                    .insert((seam.clone(), input.clone()), output.clone());
+                if let Some((ty, key, name)) = field {
+                    let record = match staged.get(ty, key) {
+                        Some(r) => Some(r.clone()),
+                        None => view.get(ty, key)?,
+                    };
+                    let next = match record {
+                        Some(r) => {
+                            let mut outputs = Outputs {
+                                view,
+                                staged: Some(&staged.outputs),
+                                due: Some(&mut w.due),
+                            };
+                            record::fill(
+                                &w.ontology,
+                                &r,
+                                name,
+                                seam,
+                                input,
+                                output,
+                                e,
+                                &w.settings,
+                                &mut outputs,
+                            )?
+                        }
+                        None => None,
+                    };
+                    if let Some(next) = next {
+                        projection.put_record(&next)?;
+                        self.index_vectors(&w.ontology, &next)?;
+                        staged.put(next);
+                    }
+                }
             }
         }
         Ok(())
@@ -593,6 +655,8 @@ impl Lake {
         w.settings = BTreeMap::new();
         let events = self.read_events(Position::GENESIS, None)?;
         self.fold_all(&mut w, &events)?;
+        // A rebuild reads the recorded outputs; it never calls a backing.
+        w.due.clear();
         Ok(w.tip.as_ref().map_or(Position::GENESIS, |t| t.0))
     }
 
@@ -797,6 +861,8 @@ pub struct Staged {
     records: BTreeMap<(TypeName, RecordKey), StoredRecord>,
     /// Proposals changed in this append.
     pub proposals: BTreeMap<ProposalId, Proposal>,
+    /// Outputs recorded in this append, by seam and input.
+    pub outputs: BTreeMap<(String, Digest), Value>,
 }
 
 impl Staged {

@@ -69,11 +69,15 @@ macro_rules! ensure {
     };
 }
 
+pub mod backing;
 pub mod checks;
 pub mod engine;
 pub mod fixture;
 
 /// Opens lakes for the suite: one engine, as its test configures it.
+///
+/// Every lake a harness opens binds [`backing::backings`] in its seams:
+/// the checks of functions computed outside the store call them.
 ///
 /// Every lake a harness opens has the default
 /// [`Limits`](lakelands_api::location::Limits): the runner holds each

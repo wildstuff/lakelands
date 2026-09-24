@@ -29,6 +29,7 @@ impl Harness for Memory {
         Box::pin(async move {
             let seams = Seams {
                 engines: vec![Arc::new(MemoryOpener::new())],
+                backings: lakelands_core::conformance::backing::backings(),
                 ..Seams::default()
             };
             let store: Arc<dyn LakeStore> =

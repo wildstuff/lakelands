@@ -447,26 +447,25 @@ async fn the_door_refuses_what_this_release_does_not_hold() {
             ..
         })
     ));
-    cat.declare(
-        &o,
-        Declaration::Function(FunctionDecl {
-            name: "remote".into(),
-            backing: "http".into(),
-            inputs: vec![],
-            expr: None,
-            config: json!({"url": "x"}),
-            description: None,
-        }),
-    )
-    .await
-    .unwrap();
-    let mut computed = field("score", StorageKind::Number);
-    computed.function = Some("remote".into());
-    computed.authority = Authority::Derived;
-    let r = cat
-        .declare(&o, Declaration::Type(ty("b", vec![computed])))
+    // No `http` backing is bound here, so a function of that kind is
+    // refused, naming the kind.
+    let remote = cat
+        .declare(
+            &o,
+            Declaration::Function(FunctionDecl {
+                name: "remote".into(),
+                backing: "http".into(),
+                inputs: vec![],
+                expr: None,
+                config: json!({"url": "x"}),
+                description: None,
+            }),
+        )
         .await;
-    assert!(matches!(r, Err(Error::Unbound { .. })), "{r:?}");
+    assert!(
+        matches!(&remote, Err(Error::Unbound { seam }) if seam.contains("`http`")),
+        "{remote:?}"
+    );
     let empty = cat
         .upsert(
             &o,

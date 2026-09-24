@@ -248,6 +248,15 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
     let known =
         |ty: &TypeName, own: Option<&TypeName>| own == Some(ty) || st.types.contains_key(ty);
     match d {
+        // The mock binds no function backing; `expr` is computed inside.
+        Declaration::Function(f) if f.backing != "expr" => {
+            return Err(Error::Unbound {
+                seam: format!(
+                    "the `{}` function backing (the host bound none of that kind)",
+                    f.backing
+                ),
+            });
+        }
         Declaration::Type(t) => {
             if reserved(t.name.as_str(), who) {
                 return Err(refused(Refusal::Reserved));

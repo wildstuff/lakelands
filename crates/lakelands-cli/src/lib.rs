@@ -47,8 +47,9 @@ pub use say::Failure;
 /// A lake being opened.
 pub type Opening = Pin<Box<dyn Future<Output = Result<Arc<dyn LakeStore>>> + Send>>;
 
-/// Opens a lake at its location, to write or only to read.
-pub type Opener<'a> = dyn Fn(Location, OpenMode) -> Opening + Sync + 'a;
+/// Opens a lake at its location, to write or only to read, with what the
+/// root plugs in (its function backings); the opener adds the engines.
+pub type Opener<'a> = dyn Fn(Location, OpenMode, Seams) -> Opening + Sync + 'a;
 
 /// The lakes this process has opened, by where they are kept: the
 /// location's engine configuration and the lake's name.
@@ -74,8 +75,9 @@ fn memory() -> lakelands_engine_mem::MemoryOpener {
 /// `lease_taken`); to only read, it takes no lease and appends nothing. A
 /// lake is opened once per process, keyed by its location's engine and
 /// name, and its store kept for the process's life, so every command and
-/// server session shares one store.
-pub fn open_store(location: Location, mode: OpenMode) -> Opening {
+/// server session shares one store. `host` is what the root plugs in
+/// besides the engines.
+pub fn open_store(location: Location, mode: OpenMode, host: Seams) -> Opening {
     Box::pin(async move {
         let key = serde_json::to_string(&(&location.lake, &location.engine))
             .expect("a location serialises");
@@ -88,7 +90,7 @@ pub fn open_store(location: Location, mode: OpenMode) -> Opening {
                 Arc::new(lakelands_engine_sqlite::SqliteOpener),
                 Arc::new(memory()),
             ],
-            ..Seams::default()
+            ..host
         };
         let mode = match mode {
             OpenMode::Read => OpenMode::Read,
@@ -293,13 +295,15 @@ async fn dispatch(
     // `feed` only reads: it takes no lease and appends nothing, unless the
     // lake was never opened yet, which the first open creates.
     let store = if name == "feed" {
-        match open(location.clone(), OpenMode::Read).await {
+        match open(location.clone(), OpenMode::Read, root.seams()).await {
             Ok(store) => store,
-            Err(Error::Unavailable { .. }) => open(location, OpenMode::Create).await?,
+            Err(Error::Unavailable { .. }) => {
+                open(location, OpenMode::Create, root.seams()).await?
+            }
             Err(e) => return Err(e.into()),
         }
     } else {
-        open(location, OpenMode::Create).await?
+        open(location, OpenMode::Create, root.seams()).await?
     };
     let who = root
         .principal(store.lake(), text(sub, "as").as_deref())
@@ -367,7 +371,7 @@ async fn serve(
         let location = root.location(Some(&name))?;
         lakes.insert(
             location.lake.clone(),
-            open(location, OpenMode::Create).await?,
+            open(location, OpenMode::Create, root.seams()).await?,
         );
     }
     let lookup = move |lake: &LakeId| -> Result<Arc<dyn LakeStore>> {

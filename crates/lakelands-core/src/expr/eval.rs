@@ -1083,6 +1083,7 @@ mod tests {
                 writer: "service:importer".into(),
                 source: None,
                 procedure_version: None,
+                error: None,
             },
         )]
         .into();

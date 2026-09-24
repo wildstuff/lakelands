@@ -176,7 +176,17 @@ pub fn run(
                 continue;
             }
             let (l, w, s) = (lake.clone(), who.clone(), source.clone());
-            let answer = exec::run(move || window(&l, &w, context, &s, batch)).await;
+            let seen = lake.drains.load(std::sync::atomic::Ordering::Acquire);
+            let mut answer = exec::run(move || window(&l, &w, context, &s, batch)).await;
+            // The calls the window made due are made before it answers, so
+            // its position is one the filled fields are visible from.
+            if let Ok(c) = &mut answer {
+                match crate::backed::settle(&lake, seen).await {
+                    Ok(Some(last)) => c.position = c.position.max(last),
+                    Ok(None) => {}
+                    Err(e) => answer = Err(e),
+                }
+            }
             let failed = answer.is_err();
             if tx.send(answer).await.is_err() || failed {
                 return;

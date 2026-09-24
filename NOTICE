@@ -17,6 +17,15 @@ SQLite
   The author disclaims copyright to this source code; SQLite is in the
   public domain. See https://www.sqlite.org/copyright.html
 
+ring (cryptographic primitives, C and assembly sourced from BoringSSL)
+  Compiled into every binary that includes the `http` function backing
+  (lakelands-backings), through the ring crate, which TLS uses.
+  Licensed under the ISC licence and, for code sourced from BoringSSL,
+  the Apache License, Version 2.0, and its once_cell polyfill under the
+  MIT licence or the Apache License, Version 2.0; the licence of each
+  file is stated at its top.
+  See https://github.com/briansmith/ring/blob/main/LICENSE
+
 Dependencies taken from crates.io are listed, with their licences, in
 the third-party licence file attached to each release. It is generated
 by scripts/third-party-licences.sh and is not kept in this repository.

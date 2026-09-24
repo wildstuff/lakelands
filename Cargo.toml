@@ -10,6 +10,7 @@ members = [
     "crates/lakelands-mock",
     "crates/lakelands-cli",
     "crates/lakelands-server",
+    "crates/lakelands-backings",
 ]
 
 [workspace.package]
@@ -40,6 +41,7 @@ serde-saphyr = "1.1"
 sha2 = "0.10"
 unicode-normalization = "0.1"
 lakelands-api = { path = "crates/lakelands-api" }
+lakelands-backings = { path = "crates/lakelands-backings" }
 lakelands-mock = { path = "crates/lakelands-mock" }
 
 [workspace.lints.rust]

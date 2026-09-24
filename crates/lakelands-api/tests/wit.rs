@@ -1,5 +1,5 @@
 //! The drift check between this crate and the WIT package in `wit/`
-//! (`lakelands:data@0.1.0`). The crate is the source; the WIT mirrors it,
+//! (`lakelands:data@0.2.0`). The crate is the source; the WIT mirrors it,
 //! and this test fails as soon as the two disagree.
 //!
 //! Three things are compared:
@@ -340,6 +340,7 @@ fn field_meta() -> FieldMeta {
         writer: "human:a".into(),
         source: Some("erp".into()),
         procedure_version: Some("1".into()),
+        error: Some("the backing failed".into()),
     }
 }
 

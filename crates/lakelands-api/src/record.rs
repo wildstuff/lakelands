@@ -49,6 +49,10 @@ pub struct FieldMeta {
     /// For a value a procedure produced: which version of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub procedure_version: Option<String>,
+    /// For a field a function computes that holds no value because its
+    /// backing failed: why (`docs/decisions/010-provenance-per-field.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// One record, as one principal may see it.

@@ -91,6 +91,14 @@ pub fn visible(
     let mut meta = BTreeMap::new();
     for f in &decl.fields {
         let Some(value) = stored.fields.get(&f.name).filter(|v| !v.is_null()) else {
+            // A computed field whose function failed holds no value; its
+            // metadata says why, to whoever may read the field.
+            if with_meta
+                && let Some(m) = stored.meta.get(&f.name).filter(|m| m.error.is_some())
+                && field_access(who, &decl.name, f).reads()
+            {
+                meta.insert(f.name.clone(), m.clone());
+            }
             continue;
         };
         match field_access(who, &decl.name, f) {
@@ -301,6 +309,7 @@ mod tests {
             writer: "service:feed".into(),
             source: None,
             procedure_version: None,
+            error: None,
         };
         StoredRecord {
             ty: "invoice".into(),
