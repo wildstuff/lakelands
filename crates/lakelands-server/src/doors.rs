@@ -83,6 +83,15 @@ pub(crate) async fn run(
         #[serde(flatten)]
         opts: WriteOpts,
     }
+    #[derive(Deserialize)]
+    struct Link {
+        key: RecordKey,
+        to: RecordKey,
+        #[serde(default)]
+        fields: Patch,
+        #[serde(flatten)]
+        opts: WriteOpts,
+    }
     Ok(match door {
         Door::Find { ty } => to_json(&c.find(who, ty, args::<Find>(label, &a)?).await?),
         Door::Get { ty } => to_json(&c.get(who, ty, args::<Get>(label, &a)?).await?),
@@ -93,6 +102,17 @@ pub(crate) async fn run(
         Door::Retire { ty } => {
             let w: Write = args(label, &a)?;
             to_json(&c.retire(who, ty, &w.key, w.opts).await?)
+        }
+        Door::Link { ty, relation } => {
+            let l: Link = args(label, &a)?;
+            to_json(
+                &c.link(who, ty, &l.key, relation, &l.to, l.fields, l.opts)
+                    .await?,
+            )
+        }
+        Door::Unlink { ty, relation } => {
+            let l: Link = args(label, &a)?;
+            to_json(&c.unlink(who, ty, &l.key, relation, &l.to, l.opts).await?)
         }
         Door::Call { verb } => {
             let w: Write = args(label, &a)?;

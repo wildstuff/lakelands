@@ -9,7 +9,10 @@
 //! `single-catalog` gate refuses a tool name written anywhere else.
 //!
 //! Per type: `<type>_find`, `<type>_get`, `<type>_upsert`,
-//! `<type>_retire`, each only if the principal may use it. Per verb: the
+//! `<type>_retire`, each only if the principal may use it. Per relation
+//! carried by link records that the principal may link:
+//! `<type>_<relation>_link` and `<type>_<relation>_unlink`, named by the
+//! type and the relation, since relation names are unique per type only. Per verb: the
 //! verb's name. Generic: `describe`, `query`, `search`, `propose`,
 //! `proposals`, `accept`, `reject`, `declare_type`, `add_field`,
 //! `migrate`, each only if the principal may use it, and `pin`, the MCP
@@ -29,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::describe::{FieldDescription, LakeDescription, TypeDescription, VerbDescription};
-use crate::id::{TypeName, VerbName};
+use crate::id::{RelationName, TypeName, VerbName};
 use crate::ontology::{FieldType, StorageKind};
 
 /// The door a tool leads to.
@@ -59,6 +62,22 @@ pub enum Door {
         /// The type.
         #[serde(rename = "type")]
         ty: TypeName,
+    },
+    /// `link` over one relation of one type.
+    Link {
+        /// The type.
+        #[serde(rename = "type")]
+        ty: TypeName,
+        /// The relation.
+        relation: RelationName,
+    },
+    /// `unlink` over one relation of one type.
+    Unlink {
+        /// The type.
+        #[serde(rename = "type")]
+        ty: TypeName,
+        /// The relation.
+        relation: RelationName,
     },
     /// `call` of one verb.
     Call {
@@ -198,9 +217,27 @@ impl std::fmt::Display for NameProblem {
     }
 }
 
+/// The link doors' tool suffixes.
+const LINK_SUFFIXES: [&str; 2] = ["link", "unlink"];
+
+/// The tool name of a link door: the type's and the relation's names made
+/// tool names, joined, then the door.
+fn link_tool(ty: &TypeName, relation: &RelationName, door: &str) -> String {
+    format!(
+        "{}_{}_{door}",
+        tool_base(ty.as_str()),
+        tool_base(relation.as_str())
+    )
+}
+
 /// Every tool name the lake's declarations would produce, for any
-/// principal, with the declaration each comes from.
-fn all_names(types: &[TypeName], verbs: &[VerbName]) -> BTreeMap<String, Vec<String>> {
+/// principal, with the declaration each comes from. `links` are the
+/// relations carried by link records, by their type.
+fn all_names(
+    types: &[TypeName],
+    verbs: &[VerbName],
+    links: &[(TypeName, RelationName)],
+) -> BTreeMap<String, Vec<String>> {
     let mut names: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for g in GENERIC_TOOLS {
         names
@@ -229,15 +266,27 @@ fn all_names(types: &[TypeName], verbs: &[VerbName]) -> BTreeMap<String, Vec<Str
             .or_default()
             .push(format!("verb `{v}`"));
     }
+    for (ty, relation) in links {
+        for s in LINK_SUFFIXES {
+            names
+                .entry(link_tool(ty, relation, s))
+                .or_default()
+                .push(format!("relation `{relation}` of type `{ty}`"));
+        }
+    }
     names
 }
 
-/// The problems a set of type and verb names would cause, checked over
-/// every door any principal could be granted. Empty when every name can
-/// become a tool.
-pub fn name_problems(types: &[TypeName], verbs: &[VerbName]) -> Vec<NameProblem> {
+/// The problems a set of type, verb and link-relation names would cause,
+/// checked over every door any principal could be granted. Empty when
+/// every name can become a tool.
+pub fn name_problems(
+    types: &[TypeName],
+    verbs: &[VerbName],
+    links: &[(TypeName, RelationName)],
+) -> Vec<NameProblem> {
     let mut problems = Vec::new();
-    for (name, from) in all_names(types, verbs) {
+    for (name, from) in all_names(types, verbs, links) {
         if name.is_empty() {
             problems.extend(from.into_iter().map(|from| NameProblem::Empty { from }));
             continue;
@@ -261,13 +310,24 @@ pub fn name_problems(types: &[TypeName], verbs: &[VerbName]) -> Vec<NameProblem>
 pub fn tools(lake: &LakeDescription) -> Result<Vec<ToolSpec>, Vec<NameProblem>> {
     let types: Vec<TypeName> = lake.types.iter().map(|t| t.name.clone()).collect();
     let verbs: Vec<VerbName> = lake.verbs.iter().map(|v| v.name.clone()).collect();
-    let problems = name_problems(&types, &verbs);
+    let links: Vec<(TypeName, RelationName)> = lake
+        .types
+        .iter()
+        .flat_map(|t| {
+            t.relations
+                .iter()
+                .filter(|r| r.via.is_none())
+                .map(|r| (t.name.clone(), r.name.clone()))
+        })
+        .collect();
+    let problems = name_problems(&types, &verbs, &links);
     if !problems.is_empty() {
         return Err(problems);
     }
     let mut out = Vec::new();
     for ty in &lake.types {
         type_tools(ty, lake, &mut out);
+        link_tools(ty, lake, &mut out);
     }
     for verb in &lake.verbs {
         out.push(verb_tool(verb, lake));
@@ -550,6 +610,87 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
             output_schema: outcome_schema(),
             door: Door::Retire {
                 ty: ty.name.clone(),
+            },
+        });
+    }
+}
+
+/// The link and unlink tools of one relation of `ty` the principal may
+/// link.
+fn link_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
+    for relation in &ty.may.link {
+        let Some(r) = ty.relations.iter().find(|r| &r.name == relation) else {
+            continue;
+        };
+        // The link's own fields the principal may write, as the link type's
+        // description gives them: the same rule as `upsert`'s.
+        let link_type = format!("sys.link.{}.{relation}", ty.name);
+        let fields: Map<String, Value> = lake
+            .types
+            .iter()
+            .find(|t| t.name.as_str() == link_type)
+            .map(|lt| {
+                lt.fields
+                    .iter()
+                    .filter(|f| {
+                        f.authored_writable() && r.fields.iter().any(|own| own.name == f.name)
+                    })
+                    .map(|f| {
+                        let s = described(field_schema(&f.ty, lake), f);
+                        (f.name.to_string(), json!({"anyOf": [s, {"type": "null"}]}))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let target = json!({"type": "string",
+                            "description": format!("The key of the `{}` record to link to.", r.target)});
+        let mut p = props([
+            (
+                "key",
+                json!({"type": "string", "description": format!("The key of the `{}` record the link is from.", ty.name)}),
+            ),
+            ("to", target.clone()),
+            (
+                "fields",
+                json!({"type": "object", "properties": fields, "additionalProperties": false,
+                       "description": "The link's own fields to set: an absent field is unchanged, null clears it."}),
+            ),
+        ]);
+        write_opts(&mut p);
+        out.push(ToolSpec {
+            name: link_tool(&ty.name, relation, "link"),
+            description: format!(
+                "Link a {} record to a `{}` record over `{relation}`, or change the link's fields. One link per pair.",
+                label(ty),
+                r.target
+            ),
+            input_schema: obj(p, &["key", "to"]),
+            output_schema: outcome_schema(),
+            door: Door::Link {
+                ty: ty.name.clone(),
+                relation: relation.clone(),
+            },
+        });
+        let mut p = props([
+            (
+                "key",
+                json!({"type": "string", "description": format!("The key of the `{}` record the link is from.", ty.name)}),
+            ),
+            ("to", target),
+        ]);
+        write_opts(&mut p);
+        out.push(ToolSpec {
+            name: link_tool(&ty.name, relation, "unlink"),
+            description: format!(
+                "Remove the link over `{relation}` from a {} record to a `{}` record. Its history stays in the lake.",
+                label(ty),
+                r.target
+            ),
+            input_schema: obj(p, &["key", "to"]),
+            output_schema: outcome_schema(),
+            door: Door::Unlink {
+                ty: ty.name.clone(),
+                relation: relation.clone(),
             },
         });
     }
@@ -890,12 +1031,14 @@ mod tests {
         get: true,
         upsert: true,
         retire: true,
+        link: Vec::new(),
     };
     const READ: TypeRights = TypeRights {
         find: true,
         get: true,
         upsert: false,
         retire: false,
+        link: Vec::new(),
     };
 
     fn lake(
@@ -1094,6 +1237,7 @@ mod tests {
         let problems = name_problems(
             &["a.b".into(), "a_b".into(), "x".repeat(70).into()],
             &["search".into(), "a_b_find".into()],
+            &[],
         );
         let collided: Vec<&str> = problems
             .iter()
@@ -1110,7 +1254,171 @@ mod tests {
                 .iter()
                 .any(|p| matches!(p, NameProblem::TooLong { .. }))
         );
-        assert!(name_problems(&["invoice".into()], &["pay_invoice".into()]).is_empty());
+        assert!(name_problems(&["invoice".into()], &["pay_invoice".into()], &[]).is_empty());
+    }
+
+    /// `invoice` with `approved_by`, a relation carried by link records
+    /// with a writable `since` and a read-only `score`, and its link type as
+    /// the principal is described it.
+    fn linked_invoice() -> (TypeDescription, TypeDescription) {
+        let mut invoice = invoice();
+        invoice.relations = vec![crate::ontology::RelationDecl {
+            name: "approved_by".into(),
+            target: "partner".into(),
+            cardinality: Default::default(),
+            inverse: None,
+            via: None,
+            fields: vec![],
+            authority: Authority::Authored,
+            description: None,
+        }];
+        invoice.may.link = vec!["approved_by".into()];
+        let link_type = ty(
+            "sys.link.invoice.approved_by",
+            READ,
+            vec![
+                field(
+                    "from",
+                    StorageKind::Reference,
+                    Authority::Authored,
+                    Access::Write,
+                ),
+                field(
+                    "to",
+                    StorageKind::Reference,
+                    Authority::Authored,
+                    Access::Write,
+                ),
+                field(
+                    "since",
+                    StorageKind::DateTime,
+                    Authority::Authored,
+                    Access::Write,
+                ),
+                field(
+                    "score",
+                    StorageKind::Number,
+                    Authority::Authored,
+                    Access::Read,
+                ),
+            ],
+        );
+        for f in &link_type.fields {
+            if f.name.as_str() == "since" || f.name.as_str() == "score" {
+                invoice.relations[0].fields.push(FieldDecl {
+                    name: f.name.clone(),
+                    ty: f.ty.clone(),
+                    required: false,
+                    authority: Authority::Authored,
+                    derived: None,
+                    function: None,
+                    depends_on: vec![],
+                    on_input_change: Default::default(),
+                    sensitive: false,
+                    searchable: false,
+                    description: None,
+                    label: None,
+                    embed: None,
+                });
+            }
+        }
+        (invoice, link_type)
+    }
+
+    #[test]
+    fn a_link_tool_offers_only_the_link_fields_the_principal_may_write() {
+        let (invoice, link_type) = linked_invoice();
+        let t = tools_ok(&lake(
+            vec![invoice, link_type],
+            vec![],
+            LakeRights::default(),
+        ));
+        let link = t
+            .iter()
+            .find(|t| t.name == "invoice_approved_by_link")
+            .unwrap();
+        let fields = &link.input_schema["properties"]["fields"]["properties"];
+        assert!(fields["since"].is_object(), "{fields}");
+        assert!(
+            fields.get("score").is_none(),
+            "a read-only link field is not offered: {fields}"
+        );
+        assert!(fields.get("from").is_none() && fields.get("to").is_none());
+    }
+
+    #[test]
+    fn a_link_relation_gets_link_and_unlink_tools_named_by_type_and_relation() {
+        let mut invoice = invoice();
+        invoice.relations = vec![crate::ontology::RelationDecl {
+            name: "approved_by".into(),
+            target: "partner".into(),
+            cardinality: Default::default(),
+            inverse: None,
+            via: None,
+            fields: vec![FieldDecl {
+                name: "since".into(),
+                ty: FieldType::kind(StorageKind::DateTime),
+                required: false,
+                authority: Authority::Authored,
+                derived: None,
+                function: None,
+                depends_on: vec![],
+                on_input_change: Default::default(),
+                sensitive: false,
+                searchable: false,
+                description: None,
+                label: None,
+                embed: None,
+            }],
+            authority: Authority::Authored,
+            description: None,
+        }];
+        // Offered only for the relations the principal may link.
+        let without = tools_ok(&lake(vec![invoice.clone()], vec![], LakeRights::default()));
+        assert!(!names(&without).iter().any(|n| n.ends_with("link")));
+        invoice.may.link = vec!["approved_by".into()];
+        let (_, link_type) = linked_invoice();
+        let t = tools_ok(&lake(
+            vec![invoice, link_type],
+            vec![],
+            LakeRights::default(),
+        ));
+        let link = t
+            .iter()
+            .find(|t| t.name == "invoice_approved_by_link")
+            .expect("the link tool");
+        assert_eq!(
+            link.door,
+            Door::Link {
+                ty: "invoice".into(),
+                relation: "approved_by".into()
+            }
+        );
+        assert!(link.input_schema["properties"]["fields"]["properties"]["since"].is_object());
+        assert_eq!(link.input_schema["required"], json!(["key", "to"]));
+        let unlink = t
+            .iter()
+            .find(|t| t.name == "invoice_approved_by_unlink")
+            .expect("the unlink tool");
+        assert_eq!(
+            unlink.door,
+            Door::Unlink {
+                ty: "invoice".into(),
+                relation: "approved_by".into()
+            }
+        );
+        // Two types' relations whose names join to one tool name collide.
+        let problems = name_problems(
+            &["a".into(), "a_b".into()],
+            &[],
+            &[("a".into(), "b_c".into()), ("a_b".into(), "c".into())],
+        );
+        assert!(
+            problems
+                .iter()
+                .any(|p| matches!(p, NameProblem::Collision { name, .. } if name == "a_b_c_link")),
+            "{problems:?}"
+        );
     }
 
     #[test]
@@ -1241,7 +1549,12 @@ mod tests {
 
     #[test]
     fn the_generic_tools_emitted_are_exactly_the_generic_list() {
-        let t = tools_ok(&lake(vec![invoice()], vec![], OWNER));
+        let (invoice, link_type) = linked_invoice();
+        let t = tools_ok(&lake(vec![invoice, link_type], vec![], OWNER));
+        assert!(
+            names(&t).contains(&"invoice_approved_by_link"),
+            "the fixture's link relation has its tools"
+        );
         let mut emitted: Vec<&str> = t
             .iter()
             .filter(|t| {
@@ -1251,6 +1564,8 @@ mod tests {
                         | Door::Get { .. }
                         | Door::Upsert { .. }
                         | Door::Retire { .. }
+                        | Door::Link { .. }
+                        | Door::Unlink { .. }
                         | Door::Call { .. }
                 )
             })

@@ -263,6 +263,7 @@ fn relation_decl() -> RelationDecl {
         inverse: Some("i".into()),
         via: Some("f".into()),
         fields: vec![field_decl()],
+        authority: Authority::Source,
         description: Some("d".into()),
     }
 }
@@ -409,7 +410,10 @@ fn type_description() -> TypeDescription {
             searchable: true,
             field_meta: true,
         },
-        may: TypeRights::default(),
+        may: TypeRights {
+            link: vec!["r".into()],
+            ..TypeRights::default()
+        },
         verbs: vec!["pay".into()],
         lineage: TypeLineage {
             sourced: true,
@@ -769,7 +773,13 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 ingest: true,
             }),
         ),
-        ("type_rights", members(&TypeRights::default())),
+        (
+            "type_rights",
+            members(&TypeRights {
+                link: vec!["r".into()],
+                ..TypeRights::default()
+            }),
+        ),
         ("type_access", members(&type_description().access)),
         ("type_lineage", members(&type_description().lineage)),
         ("type_lifecycle", members(&type_description().lifecycle)),

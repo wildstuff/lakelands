@@ -226,6 +226,7 @@ fn complete_declarations() -> Vec<Declaration> {
             inverse: Some(RelationName::new("invoices")),
             via: Some(FieldName::new("partner")),
             fields: vec![field("since", kind(StorageKind::DateTime))],
+            authority: Default::default(),
             description: None,
         }],
         view: None,

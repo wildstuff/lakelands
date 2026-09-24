@@ -99,11 +99,33 @@ fn type_description(
     }
     let reads = fields.iter().any(|f| f.access.reads()) || whole.reads();
     let is_view = t.view.is_some();
+    // A link type's records are written through its relation's link
+    // doors, never through `upsert` or `retire`.
+    let is_link = crate::links::is_link_type(&t.name);
     let may = TypeRights {
         find: reads,
         get: reads,
-        upsert: !is_view && fields.iter().any(FieldDescription::authored_writable),
-        retire: crate::rights::may_retire(who, t),
+        upsert: !is_view && !is_link && fields.iter().any(FieldDescription::authored_writable),
+        retire: !is_link && crate::rights::may_retire(who, t),
+        link: t
+            .relations
+            .iter()
+            .filter(|r| {
+                crate::links::carried_by_links(r)
+                    && r.authority == Authority::Authored
+                    && find_type(declared, &r.target).is_some()
+            })
+            .filter(|r| {
+                let lt = crate::links::link_type(&t.name, r);
+                lt.fields
+                    .iter()
+                    .filter(|f| {
+                        f.name.as_str() == crate::links::FROM || f.name.as_str() == crate::links::TO
+                    })
+                    .all(|f| field_access(who, &lt.name, f).writes())
+            })
+            .map(|r| r.name.clone())
+            .collect(),
     };
     let verbs = declared
         .iter()

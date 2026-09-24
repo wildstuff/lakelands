@@ -89,6 +89,15 @@ impl Catalog for DownCatalog {
     refuse!(retire<'life1, 'life2, 'life3>(
         who: &'life1 Principal, ty: &'life2 TypeName, key: &'life3 RecordKey, opts: WriteOpts
     ) -> Outcome);
+    refuse!(link<'life1, 'life2, 'life3, 'life4, 'life5>(
+        who: &'life1 Principal, ty: &'life2 TypeName, key: &'life3 RecordKey,
+        relation: &'life4 lakelands_api::RelationName, to: &'life5 RecordKey,
+        fields: Patch, opts: WriteOpts
+    ) -> Outcome);
+    refuse!(unlink<'life1, 'life2, 'life3, 'life4, 'life5>(
+        who: &'life1 Principal, ty: &'life2 TypeName, key: &'life3 RecordKey,
+        relation: &'life4 lakelands_api::RelationName, to: &'life5 RecordKey, opts: WriteOpts
+    ) -> Outcome);
     refuse!(call<'life1, 'life2, 'life3>(
         who: &'life1 Principal, verb: &'life2 VerbName, key: &'life3 RecordKey,
         payload: Patch, opts: WriteOpts

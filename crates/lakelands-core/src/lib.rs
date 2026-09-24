@@ -18,6 +18,7 @@ pub mod describe;
 pub mod engines;
 pub mod expr;
 pub mod graph;
+pub mod links;
 pub mod log;
 pub mod names;
 pub mod rights;

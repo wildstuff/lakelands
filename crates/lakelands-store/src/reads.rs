@@ -1061,7 +1061,39 @@ impl EdgeSource for Visible<'_, '_> {
         relation: Option<&RelationName>,
         walk: Walk,
     ) -> Result<Vec<Edge>> {
-        ProjectionView::edges(self.reader.view.as_ref(), ty, key, relation, walk)
+        let r = self.reader;
+        let mut edges = ProjectionView::edges(r.view.as_ref(), ty, key, relation, walk)?;
+        // A link's edge comes from its own record: a restricted link is
+        // walked only with the `restricted` grant, and its fields only as
+        // far as the principal may read the link type's fields.
+        let mut kept = Vec::with_capacity(edges.len());
+        for mut e in edges.drain(..) {
+            let carried = r
+                .ontology
+                .ty(&e.from.0)
+                .ok()
+                .and_then(|d| d.relations.iter().find(|x| x.name == e.relation))
+                .is_some_and(lakelands_core::links::carried_by_links);
+            if carried {
+                let lt = lakelands_core::links::link_type_name(&e.from.0, &e.relation);
+                let lk = lakelands_core::links::link_key(&e.from.1, &e.to.1);
+                let Some(link) = r.view.get(&lt, &lk)? else {
+                    continue;
+                };
+                if link.restricted && !r.who.grants.restricted {
+                    continue;
+                }
+                if let Ok(decl) = r.ontology.ty(&lt) {
+                    e.fields.retain(|name, _| {
+                        decl.fields
+                            .iter()
+                            .any(|f| &f.name == name && rights::field_access(r.who, &lt, f).reads())
+                    });
+                }
+            }
+            kept.push(e);
+        }
+        Ok(kept)
     }
 
     fn is_visible(&self, ty: &TypeName, key: &RecordKey) -> Result<bool> {

@@ -55,6 +55,7 @@ async fn org(store: &dyn LakeStore) -> Result<(), Failure> {
         inverse: Some("manages".into()),
         via: Some("boss".into()),
         fields: Vec::new(),
+        authority: Default::default(),
         description: None,
     }];
     declare(cat.as_ref(), &own, ty).await?;

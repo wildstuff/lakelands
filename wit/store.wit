@@ -12,7 +12,7 @@ package lakelands:data@0.2.0;
 /// itself and does not take a guest's word for its grants.
 interface store {
     use types.{
-        lake-id, type-name, record-key, verb-name, proposal-id, source-id, position,
+        lake-id, type-name, record-key, relation-name, verb-name, proposal-id, source-id, position,
         principal, write-context, limits, verification, error,
         find, found-reply, get, record-reply, patch, write-opts, outcome,
         proposed-write, proposal-filter, proposals-reply, source-record, committed,
@@ -58,6 +58,11 @@ interface store {
         get: func(who: principal, %type: type-name, get: get) -> result<record-reply, error>;
         upsert: func(who: principal, %type: type-name, key: record-key, patch: patch, opts: write-opts) -> result<outcome, error>;
         retire: func(who: principal, %type: type-name, key: record-key, opts: write-opts) -> result<outcome, error>;
+        /// Write the link over a relation carried by link records, or
+        /// change its fields; remove it
+        /// (`docs/decisions/035-a-link-is-a-record.md`).
+        link: func(who: principal, %type: type-name, key: record-key, relation: relation-name, to: record-key, fields: patch, opts: write-opts) -> result<outcome, error>;
+        unlink: func(who: principal, %type: type-name, key: record-key, relation: relation-name, to: record-key, opts: write-opts) -> result<outcome, error>;
         /// Call a declared verb; it runs or is proposed by its declared
         /// risk (`docs/decisions/013-verbs-run-by-declared-risk.md`).
         call: func(who: principal, verb: verb-name, key: record-key, payload: patch, opts: write-opts) -> result<outcome, error>;

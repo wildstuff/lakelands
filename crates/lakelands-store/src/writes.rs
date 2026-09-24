@@ -38,7 +38,7 @@ use std::collections::BTreeMap;
 
 use lakelands_api::engine::{ProjectionView, Scan};
 use lakelands_api::event::{Digest, Event, EventBody, Procedure};
-use lakelands_api::ontology::{Risk, TypeDecl, VerbDecl, VerbEffect};
+use lakelands_api::ontology::{Authority, RelationDecl, Risk, TypeDecl, VerbDecl, VerbEffect};
 use lakelands_api::principal::{Grants, WriteContext};
 use lakelands_api::record::{Origin, StoredRecord};
 use lakelands_api::write::{
@@ -47,11 +47,11 @@ use lakelands_api::write::{
 };
 use lakelands_api::{
     Error, FieldName, IdempotencyKey, Missing, Patch, Position, Principal, ProposalId, RecordKey,
-    Refusal, Result, Timestamp, TypeName, Value, VerbName, Version,
+    Refusal, RelationName, Result, Timestamp, TypeName, Value, VerbName, Version,
 };
 use lakelands_core::expr::{self, Place, RecordScope, Scope, WriteScope};
 use lakelands_core::rights::{self, Door};
-use lakelands_core::{shape, value};
+use lakelands_core::{links, shape, value};
 
 use crate::backed::Outputs;
 use crate::declare;
@@ -640,12 +640,28 @@ impl Call<'_> {
         patch: Patch,
         opts: WriteOpts,
     ) -> Result<Outcome> {
+        ordinary_door(ty)?;
+        self.write_record(ty, key, patch, opts, |_, _| Ok(()))
+    }
+
+    /// An authored write of one record, as `upsert` and `link` make it;
+    /// `check` refuses it, under the writer's lock, before anything is
+    /// planned.
+    fn write_record(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        patch: Patch,
+        opts: WriteOpts,
+        check: impl FnOnce(&Writer, &dyn ProjectionView) -> Result<()>,
+    ) -> Result<Outcome> {
         self.check_depth()?;
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
         if let Some(o) = self.replay(&opts.idempotency_key, view.as_ref())? {
             return Ok(o);
         }
+        check(&w, view.as_ref())?;
         let now = self.lake.clock(&mut w);
         let mut pending = Pending::default();
         let mut plan = self.plan_record(
@@ -683,6 +699,71 @@ impl Call<'_> {
 
     /// `retire`.
     pub fn retire(&self, ty: &TypeName, key: &RecordKey, opts: WriteOpts) -> Result<Outcome> {
+        ordinary_door(ty)?;
+        self.retire_record(ty, key, opts)
+    }
+
+    /// `link`: the link over `relation` from `key` of `ty` to `to`, as a
+    /// write of its link record (`docs/decisions/035-a-link-is-a-record.md`).
+    pub fn link(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        relation: &RelationName,
+        to: &RecordKey,
+        fields: Patch,
+        opts: WriteOpts,
+    ) -> Result<Outcome> {
+        let (lt, r) = {
+            let w = self.lake.writer();
+            link_relation(&w, ty, relation)?
+        };
+        if r.authority != Authority::Authored {
+            return Err(Error::Refused {
+                field: None,
+                reason: Refusal::WrongDoor,
+            });
+        }
+        for name in [links::FROM, links::TO] {
+            if fields.contains_key(name) {
+                return Err(Error::Refused {
+                    field: Some(name.into()),
+                    reason: Refusal::Invalid {
+                        message: format!(
+                            "a link's `{name}` is given as `key` and `to`, not among its fields"
+                        ),
+                    },
+                });
+            }
+        }
+        let mut patch = fields;
+        patch.insert(links::FROM.into(), Value::String(key.to_string()));
+        patch.insert(links::TO.into(), Value::String(to.to_string()));
+        let link_key = links::link_key(key, to);
+        let (from, target) = (key.clone(), to.clone());
+        self.write_record(&lt, &link_key, patch, opts, move |_, view| {
+            cardinality(view, ty, &r, &from, &target)
+        })
+    }
+
+    /// `unlink`: the link's record retired, its history kept.
+    pub fn unlink(
+        &self,
+        ty: &TypeName,
+        key: &RecordKey,
+        relation: &RelationName,
+        to: &RecordKey,
+        opts: WriteOpts,
+    ) -> Result<Outcome> {
+        let (lt, _) = {
+            let w = self.lake.writer();
+            link_relation(&w, ty, relation)?
+        };
+        self.retire_record(&lt, &links::link_key(key, to), opts)
+    }
+
+    /// A retirement of one record, as `retire` and `unlink` make it.
+    fn retire_record(&self, ty: &TypeName, key: &RecordKey, opts: WriteOpts) -> Result<Outcome> {
         self.check_depth()?;
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
@@ -1038,6 +1119,9 @@ impl Call<'_> {
         if let Some(o) = self.replay(&key_opt, view.as_ref())? {
             return Ok(o);
         }
+        if let ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } = &write {
+            ordinary_door(ty)?;
+        }
         let write = match write {
             ProposedWrite::Upsert {
                 ty,
@@ -1370,6 +1454,10 @@ impl Call<'_> {
         }
         if let Declaration::Type(t) = d {
             self.check_embeddings(t)?;
+            // A relation's fields embed on its link type's records.
+            for lt in links::link_types_of(t) {
+                self.check_embeddings(&lt)?;
+            }
         }
         Ok(())
     }
@@ -1420,6 +1508,10 @@ impl Call<'_> {
         };
         let version = w.ontology.next_version(&declaration);
         let now = self.lake.clock(&mut w);
+        let links = match &declaration {
+            Declaration::Type(t) => link_type_drafts(&w.ontology, t, now)?,
+            _ => Vec::new(),
+        };
         let d = self.draft(
             now,
             Origin::Authored,
@@ -1429,7 +1521,9 @@ impl Call<'_> {
                 version,
             },
         );
-        let events = self.lake.append(&mut w, vec![d])?;
+        let mut drafts = vec![d];
+        drafts.extend(links);
+        let events = self.lake.append(&mut w, drafts)?;
         Ok(Outcome::Applied {
             position: events[0].position,
             version: None,
@@ -1502,6 +1596,10 @@ impl Call<'_> {
                 _ => None,
             };
             let version = w.ontology.next_version(&declaration);
+            let links = match &declaration {
+                Declaration::Type(t) => link_type_drafts(&w.ontology, t, now)?,
+                _ => Vec::new(),
+            };
             drafts.push(self.draft(
                 now,
                 Origin::Authored,
@@ -1511,6 +1609,7 @@ impl Call<'_> {
                     version,
                 },
             ));
+            drafts.extend(links);
         }
         let events = self.lake.append(&mut w, drafts)?;
         Ok(Outcome::Applied {
@@ -1605,6 +1704,111 @@ impl Call<'_> {
                 }
             }
         }
+        // A relation carried by link records whose cardinality narrows
+        // keeps its links only if none would break the narrower rule.
+        for r in m.to.relations.iter().filter(|r| links::carried_by_links(r)) {
+            let Some(old) = before
+                .relations
+                .iter()
+                .find(|o| o.name == r.name && links::carried_by_links(o))
+            else {
+                continue;
+            };
+            let sides = |c: lakelands_api::ontology::Cardinality| {
+                use lakelands_api::ontology::Cardinality::*;
+                (
+                    matches!(c, ManyToOne | OneToOne),
+                    matches!(c, OneToMany | OneToOne),
+                )
+            };
+            let ((was_from, was_to), (per_from, per_to)) =
+                (sides(old.cardinality), sides(r.cardinality));
+            if !(per_from && !was_from) && !(per_to && !was_to) {
+                continue;
+            }
+            let lt = links::link_type_name(&m.to.name, &r.name);
+            let live = view.scan(
+                &lt,
+                &Scan {
+                    limit: u32::MAX,
+                    restricted: true,
+                    ..Default::default()
+                },
+            )?;
+            let mut from_seen: BTreeMap<String, u32> = BTreeMap::new();
+            let mut to_seen: BTreeMap<String, u32> = BTreeMap::new();
+            for l in &live {
+                let end = |f: &str| {
+                    l.fields
+                        .get(f)
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned()
+                };
+                *from_seen.entry(end(links::FROM)).or_default() += 1;
+                *to_seen.entry(end(links::TO)).or_default() += 1;
+            }
+            let over = |seen: &BTreeMap<String, u32>| seen.values().filter(|n| **n > 1).count();
+            let broken = if per_from { over(&from_seen) } else { 0 }
+                + if per_to { over(&to_seen) } else { 0 };
+            if broken > 0 {
+                return Err(Error::Refused {
+                    field: None,
+                    reason: Refusal::Constraint {
+                        message: format!(
+                            "narrowing `{}` to {:?} would break the links of {broken} record(s) \
+                             that hold more than one; unlink them first",
+                            r.name, r.cardinality
+                        ),
+                    },
+                });
+            }
+        }
+        // The relations carried by link records whose fields change migrate
+        // their link types with the type: their records are checked here,
+        // each field named with its relation.
+        for (old, new) in changed_link_types(&w.ontology, &m.to) {
+            let lm = Migration {
+                to: new,
+                renames: vec![],
+            };
+            let links = view.scan(
+                &old.name,
+                &Scan {
+                    limit: u32::MAX,
+                    retired: true,
+                    restricted: true,
+                    ..Default::default()
+                },
+            )?;
+            let lr = shape::preflight(
+                &old,
+                &lm,
+                links.iter().map(|r| (r.key.clone(), r.fields.clone())),
+            )
+            .map_err(|e| invalid(e.to_string()))?;
+            let relation = old
+                .name
+                .as_str()
+                .rsplit('.')
+                .next()
+                .unwrap_or_default()
+                .to_owned();
+            let named = |f: &FieldName| FieldName::from(format!("{relation}.{f}"));
+            report.records_scanned += lr.records_scanned;
+            report.lossless &= lr.lossless;
+            report.fields.extend(lr.fields.into_iter().map(|mut c| {
+                c.field = named(&c.field);
+                c
+            }));
+            report
+                .dropped
+                .extend(lr.dropped.into_iter().map(|(f, n)| (named(&f), n)));
+            report.report_id = String::new();
+            report.report_id = lakelands_core::canonical::sha256_hex(
+                &serde_json::to_value(&report).expect("a report serialises"),
+            );
+        }
         if !rekeyed.is_empty() {
             rekeyed.sort();
             let k0 = &m.to.key[0];
@@ -1668,6 +1872,31 @@ impl Call<'_> {
         let schema_hash = shape::schema_hash(&m.to).map_err(|e| invalid(e.to_string()))?;
         let version = w.ontology.next_version(&Declaration::Type(m.to.clone()));
         let now = self.lake.clock(&mut w);
+        let mut drafts = Vec::new();
+        for (_, new) in changed_link_types(&w.ontology, &m.to) {
+            let hash = shape::schema_hash(&new).map_err(|e| invalid(e.to_string()))?;
+            let version = w.ontology.next_version(&Declaration::Type(new.clone()));
+            drafts.push(Draft::system(
+                now,
+                EventBody::Migrated {
+                    migration: Migration {
+                        to: new,
+                        renames: vec![],
+                    },
+                    schema_hash: hash,
+                    version,
+                    report_id: report_id.to_owned(),
+                },
+            ));
+        }
+        // A relation new with this migration gets its link type declared.
+        let declared = link_type_drafts(&w.ontology, &m.to, now)?
+            .into_iter()
+            .filter(|d| {
+                matches!(&d.body, EventBody::Declared { declaration: Declaration::Type(t), .. }
+                    if !w.ontology.types.contains_key(&t.name))
+            });
+        drafts.extend(declared);
         let d = self.draft(
             now,
             Origin::Authored,
@@ -1678,8 +1907,9 @@ impl Call<'_> {
                 report_id: report_id.to_owned(),
             },
         );
+        drafts.insert(0, d);
         drop(view);
-        let events = self.lake.append(&mut w, vec![d])?;
+        let events = self.lake.append(&mut w, drafts)?;
         Ok(Outcome::Applied {
             position: events[0].position,
             version: None,
@@ -1694,6 +1924,169 @@ fn risk_word(r: Risk) -> &'static str {
         Risk::Medium => "medium",
         Risk::High => "high",
     }
+}
+
+/// The system declarations of the link types `t`'s relations call for
+/// that differ from those in force: a new relation's, or one whose fields
+/// changed. Appended with `t`'s declaration, in the same append
+/// (`docs/log-format.md` §2.3).
+fn link_type_drafts(
+    o: &crate::ontology::Ontology,
+    t: &TypeDecl,
+    now: Timestamp,
+) -> Result<Vec<Draft>> {
+    let mut out = Vec::new();
+    for lt in links::link_types_of(t) {
+        if o.types.get(&lt.name).map(|e| &e.decl) == Some(&lt) {
+            continue;
+        }
+        let hash = shape::schema_hash(&lt).map_err(|e| invalid(e.to_string()))?;
+        let version = o.next_version(&Declaration::Type(lt.clone()));
+        out.push(Draft::system(
+            now,
+            EventBody::Declared {
+                declaration: Declaration::Type(lt),
+                schema_hash: Some(hash),
+                version,
+            },
+        ));
+    }
+    Ok(out)
+}
+
+/// The link types in force whose derivation from `to` differs: each with
+/// the declaration in force and the one `to` calls for.
+fn changed_link_types(o: &crate::ontology::Ontology, to: &TypeDecl) -> Vec<(TypeDecl, TypeDecl)> {
+    links::link_types_of(to)
+        .into_iter()
+        .filter_map(|new| {
+            let old = &o.types.get(&new.name)?.decl;
+            (old != &new).then(|| (old.clone(), new))
+        })
+        .collect()
+}
+
+/// Refuse a link type's records at a door other than the link doors.
+fn ordinary_door(ty: &TypeName) -> Result<()> {
+    if links::is_link_type(ty) {
+        return Err(Error::Refused {
+            field: None,
+            reason: Refusal::WrongDoor,
+        });
+    }
+    Ok(())
+}
+
+/// The relation carried by link records that `ty` declares as `relation`,
+/// with its link type.
+fn link_relation(
+    w: &Writer,
+    ty: &TypeName,
+    relation: &RelationName,
+) -> Result<(TypeName, RelationDecl)> {
+    let decl = w.ontology.ty(ty)?;
+    let r = decl
+        .relations
+        .iter()
+        .find(|r| &r.name == relation && links::carried_by_links(r))
+        .ok_or_else(|| {
+            invalid(format!(
+                "`{ty}` has no relation `{relation}` carried by link records"
+            ))
+        })?;
+    let lt = links::link_type_name(ty, relation);
+    w.ontology.ty(&lt)?;
+    Ok((lt, r.clone()))
+}
+
+/// The relation's cardinality over live links, with the link from `from`
+/// to `to` among them: `many_to_one` and `one_to_one` allow one live link
+/// per `from`, `one_to_many` and `one_to_one` one per `to`. Answered from
+/// the links the engine walks at the head, not by reading every link.
+pub fn cardinality(
+    view: &dyn ProjectionView,
+    ty: &TypeName,
+    r: &RelationDecl,
+    from: &RecordKey,
+    to: &RecordKey,
+) -> Result<()> {
+    use lakelands_api::ontology::Cardinality;
+    use lakelands_api::query::Walk;
+    let (per_from, per_to) = match r.cardinality {
+        Cardinality::ManyToOne => (true, false),
+        Cardinality::OneToMany => (false, true),
+        Cardinality::OneToOne => (true, true),
+        Cardinality::ManyToMany => (false, false),
+    };
+    let broken = |why: String| Error::Refused {
+        field: Some(links::TO.into()),
+        reason: Refusal::Constraint {
+            message: format!(
+                "{why}, and `{}` allows one ({:?}); unlink it first",
+                r.name, r.cardinality
+            ),
+        },
+    };
+    if per_from
+        && let Some(e) = view
+            .edges(ty, from, Some(&r.name), Walk::Out)?
+            .into_iter()
+            .find(|e| e.to.1 != *to)
+    {
+        return Err(broken(format!(
+            "`{from}` already links over `{}` to `{}`",
+            r.name, e.to.1
+        )));
+    }
+    if per_to
+        && let Some(e) = view
+            .edges(&r.target, to, Some(&r.name), Walk::In)?
+            .into_iter()
+            .find(|e| e.from.0 == *ty && e.from.1 != *from)
+    {
+        return Err(broken(format!(
+            "`{to}` is already linked over `{}` from `{}`",
+            r.name, e.from.1
+        )));
+    }
+    Ok(())
+}
+
+/// The relation's cardinality among the links of one ingest window that
+/// came before: `(link type, from, to)` each.
+pub fn cardinality_among(
+    earlier: &[(TypeName, RecordKey, RecordKey)],
+    lt: &TypeName,
+    r: &RelationDecl,
+    from: &RecordKey,
+    to: &RecordKey,
+) -> Result<()> {
+    use lakelands_api::ontology::Cardinality;
+    let (per_from, per_to) = match r.cardinality {
+        Cardinality::ManyToOne => (true, false),
+        Cardinality::OneToMany => (false, true),
+        Cardinality::OneToOne => (true, true),
+        Cardinality::ManyToMany => (false, false),
+    };
+    for (t, f, o) in earlier.iter().filter(|(t, _, _)| t == lt) {
+        let _ = t;
+        if f == from && o == to {
+            continue;
+        }
+        if (per_from && f == from) || (per_to && o == to) {
+            return Err(Error::Refused {
+                field: Some(links::TO.into()),
+                reason: Refusal::Constraint {
+                    message: format!(
+                        "the window links `{f}` to `{o}` over `{}` already, and `{}` allows one \
+                         ({:?})",
+                        r.name, r.name, r.cardinality
+                    ),
+                },
+            });
+        }
+    }
+    Ok(())
 }
 
 /// An external verb that ran, to be handed to its executor; the store

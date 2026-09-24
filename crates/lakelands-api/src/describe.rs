@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::expr::Condition;
-use crate::id::{FieldName, LakeId, TriggerName, TypeName, VerbName};
+use crate::id::{FieldName, LakeId, RelationName, TriggerName, TypeName, VerbName};
 use crate::ontology::{
     Authority, EmbedDecl, FieldDecl, FieldType, OnInputChange, RelationDecl, Risk, ValueTypeDecl,
 };
@@ -149,7 +149,7 @@ pub struct TypeAccess {
 }
 
 /// The doors one principal may use on one type.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeRights {
     /// `find` and `search`.
     pub find: bool,
@@ -161,6 +161,10 @@ pub struct TypeRights {
     /// authority, as the principal's grants resolve it. A principal who
     /// may write only some fields of a record may not remove all of them.
     pub retire: bool,
+    /// `link` and `unlink`: the relations carried by link records whose
+    /// links the principal may write through those doors.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub link: Vec<RelationName>,
 }
 
 /// Where a type's records come from.

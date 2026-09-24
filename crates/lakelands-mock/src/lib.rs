@@ -87,6 +87,7 @@ use lakelands_api::{Catalog, LakeStore, Verification};
 pub mod checks;
 mod doors;
 mod expr;
+mod links;
 mod state;
 pub mod stream;
 mod value;

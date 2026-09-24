@@ -39,6 +39,7 @@ use crate::exec;
 use crate::lake::Lake;
 use crate::log;
 use crate::writes::{Call, Pending};
+use lakelands_core::links;
 
 /// How long a window waits for more records after its first.
 const WINDOW: Duration = Duration::from_millis(2);
@@ -59,6 +60,11 @@ pub fn window(
     let mut seen: BTreeSet<EventId> = BTreeSet::new();
     let mut drafts = Vec::new();
     let mut committed = 0u32;
+    let mut window_links: Vec<(
+        lakelands_api::TypeName,
+        lakelands_api::RecordKey,
+        lakelands_api::RecordKey,
+    )> = Vec::new();
     let mut duplicates = 0u32;
     for r in records {
         let decl = w.ontology.ty(&r.ty)?;
@@ -67,6 +73,31 @@ pub fn window(
         // is the one already stored.
         lakelands_core::rights::check_write(who, decl, Door::Source, &r.fields)?;
         let patch = crate::writes::check_values(&w.ontology, decl, &r.fields, &decl.fields)?;
+        // A link of a relation whose links arrive by ingest holds the
+        // relation's cardinality, over the lake's live links and those
+        // earlier in this window.
+        if links::is_link_type(&r.ty) {
+            let types: Vec<&lakelands_api::ontology::TypeDecl> =
+                w.ontology.types.values().map(|e| &e.decl).collect();
+            if let Some((t, relation)) = links::relation_of(types, &r.ty) {
+                // The ends from the patch, or from the key's components
+                // when the patch leaves them out: the key rule fills them.
+                let parts = lakelands_core::log::key_components(&r.key);
+                let end = |f: &str, at: usize| {
+                    patch
+                        .get(f)
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned)
+                        .or_else(|| parts.get(at).cloned())
+                        .map(lakelands_api::RecordKey::from)
+                };
+                if let (Some(from), Some(to)) = (end(links::FROM, 0), end(links::TO, 1)) {
+                    crate::writes::cardinality(view.as_ref(), &t.name, relation, &from, &to)?;
+                    crate::writes::cardinality_among(&window_links, &r.ty, relation, &from, &to)?;
+                    window_links.push((r.ty.clone(), from, to));
+                }
+            }
+        }
         let before = pending.record(view.as_ref(), &r.ty, &r.key)?;
         let version_before = before.as_ref().map_or(0, |b| b.version.0);
         let id = log::ingest_id(source, &r.ty, &r.key, version_before, &patch);

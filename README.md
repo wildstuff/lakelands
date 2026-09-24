@@ -64,8 +64,9 @@ belongs to whoever stands on it; the life on top is Wildstuff's product.
 
 **For agents.** Pin a type and the lake exposes four doors — `find`,
 `get`, `upsert`, `retire` — each with a JSON schema derived from the
-type and filtered by the caller's rights, plus one tool per declared
-verb, `describe`, `query` and `search`. Rights can remove a door as well
+type and filtered by the caller's rights, a `link` and `unlink` pair for
+each relation carried by link records, plus one tool per declared verb,
+`describe`, `query` and `search`. Rights can remove a door as well
 as narrow it: a type whose fields all come from a source has no
 `upsert`. Beside them an agent sees the lake's other doors: `pin` for
 the position its turn reads at, `propose`, `proposals`, `accept` and
