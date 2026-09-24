@@ -1,4 +1,5 @@
-//! Function backings that reach outside the lake: [`http`] and [`exec`].
+//! What reaches outside the lake on the operator's say-so: the function
+//! backings [`http`] and [`exec`], and the embedding client [`embed`].
 //!
 //! A function a lake declares with the backing `http` or `exec` computes
 //! its fields through one of these, called by the store after the write
@@ -7,12 +8,14 @@
 //! What each may reach is the operator's decision, never a declaration's:
 //! an `http` function names a URL whose host is on the operator's list,
 //! and an `exec` function names a command the operator configured, never
-//! a program. Both are configured here, from the server configuration a
-//! host reads; nothing is read from the environment
-//! (`docs/decisions/005-no-environment-reads.md`).
+//! a program. The embedding client reaches the one endpoint the operator
+//! names, and no declaration can name another. All are configured here,
+//! from the server configuration a host reads; nothing is read from the
+//! environment (`docs/decisions/005-no-environment-reads.md`).
 //!
-//! A backing kind is not configured unless its section is present: with
-//! no `http` section, a lake cannot declare an `http` function.
+//! Nothing is configured unless its section is present: with no `http`
+//! section, a lake cannot declare an `http` function, and with no `embed`
+//! section, no embedding backend is bound and search ranks lexically.
 
 #![forbid(unsafe_code)]
 
@@ -25,8 +28,12 @@ use lakelands_api::{Error, Refusal};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+pub use embed::{Embed, EmbedConfig};
+
+pub mod embed;
 pub mod exec;
 pub mod http;
+mod transport;
 
 /// The backings section of a server configuration.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,8 +60,10 @@ pub struct HttpConfig {
     /// The largest reply body accepted, in bytes.
     #[serde(default = "default_max_bytes")]
     pub max_reply_bytes: u64,
-    /// The certificate authorities `https` trusts, as a PEM bundle. When
-    /// absent, the first system bundle found at a well-known path.
+    /// The certificate authorities `https` trusts, as a PEM bundle. A
+    /// host resolves a relative path against the configuration's
+    /// directory. When absent, the first system bundle found at a
+    /// well-known path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_file: Option<PathBuf>,
 }

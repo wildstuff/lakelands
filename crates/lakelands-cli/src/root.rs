@@ -8,11 +8,12 @@
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use lakelands_api::id::LakeId;
 use lakelands_api::location::{EngineConfig, Location};
 use lakelands_api::principal::{Grants, Principal, PrincipalKind};
-use lakelands_api::seam::{Credential, PrincipalResolver, Seams};
+use lakelands_api::seam::{Credential, EmbedBackend, PrincipalResolver, Seams};
 use lakelands_server::HttpConfig;
 use lakelands_server::resolver::{Entry, StaticResolver};
 use serde::{Deserialize, Serialize};
@@ -43,6 +44,11 @@ pub struct Config {
     /// Absent, a lake computes its fields with `expr` only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backings: Option<lakelands_backings::Config>,
+    /// The embedding client: the endpoint, model and vector length a
+    /// hybrid search embeds its text through. Absent, no backend is
+    /// bound and search ranks lexically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed: Option<lakelands_backings::EmbedConfig>,
 }
 
 /// An opened root.
@@ -51,6 +57,9 @@ pub struct Root {
     pub dir: PathBuf,
     /// Its configuration.
     pub config: Config,
+    /// The embedding client its configuration names, built when the root
+    /// was opened.
+    embed: Option<Arc<dyn EmbedBackend>>,
 }
 
 fn show(p: &Path) -> String {
@@ -75,6 +84,7 @@ pub fn init(dir: &Path, owner: &str) -> Result<(), Failure> {
         principals: Vec::new(),
         server: None,
         backings: None,
+        embed: None,
     };
     fs::create_dir_all(dir.join("lakes")).map_err(|e| io(dir, e))?;
     write_new(&file, &config)
@@ -107,15 +117,24 @@ fn io(p: &Path, e: std::io::Error) -> Failure {
 
 impl Root {
     /// What the root plugs into every lake it opens: the function
-    /// backings its configuration allows. The opener adds the engines.
+    /// backings its configuration allows and its embedding client. The
+    /// opener adds the engines.
     pub fn seams(&self) -> Seams {
         Seams {
             backings: self
                 .config
                 .backings
                 .as_ref()
-                .map(lakelands_backings::backings)
+                .map(|b| {
+                    // `ca_file` is the root's, as the embedding client's is.
+                    let mut b = b.clone();
+                    if let Some(http) = &mut b.http {
+                        http.ca_file = http.ca_file.take().map(|f| self.dir.join(f));
+                    }
+                    lakelands_backings::backings(&b)
+                })
                 .unwrap_or_default(),
+            embed: self.embed.clone(),
             ..Seams::default()
         }
     }
@@ -150,9 +169,26 @@ impl Root {
                 )
             })?;
         }
+        // The client is built now, reading its key file, so a key that
+        // cannot be read stops the command before it serves anything.
+        // Its paths are the root's, whatever the working directory.
+        let embed = match &config.embed {
+            None => None,
+            Some(c) => {
+                let client = lakelands_backings::Embed::new(c.clone(), dir).map_err(|why| {
+                    Failure::new(
+                        format!("{}: {why}", show(&file)),
+                        "fix the embed section of the configuration, or remove it to search \
+                         lexically",
+                    )
+                })?;
+                Some(Arc::new(client) as Arc<dyn EmbedBackend>)
+            }
+        };
         Ok(Root {
             dir: dir.to_owned(),
             config,
+            embed,
         })
     }
 

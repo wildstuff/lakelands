@@ -14,7 +14,8 @@
 //! # Running it
 //!
 //! An engine's test implements [`Harness`], which opens a brand-new,
-//! empty lake for every check, and calls [`run_all`]; the [`Report`]
+//! empty lake for every check with the seams the runner hands it, and
+//! calls [`run_all`]; the [`Report`]
 //! lists every pass and every failure, and the test fails unless
 //! [`Report::is_green`]. The suite never stops at the first failure, and
 //! a check that panics is reported as failed rather than taking the
@@ -46,16 +47,25 @@ use std::task::Poll;
 
 use futures_core::Stream;
 use lakelands_api::LakeStore;
+use lakelands_api::seam::Seams;
 
 /// Turns an `async fn` of the suite into a [`Check`] constant whose
-/// `name` is the function's own name.
+/// `name` is the function's own name. A trailing `, embedding` runs the
+/// check on a lake with the suite's embedding backend bound.
 macro_rules! check {
     ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr) => {
+        check!(@make $(#[$doc])* $konst = $run, $about, false);
+    };
+    ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, embedding) => {
+        check!(@make $(#[$doc])* $konst = $run, $about, true);
+    };
+    (@make $(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, $embedding:expr) => {
         $(#[$doc])*
         pub const $konst: $crate::conformance::Check = $crate::conformance::Check {
             name: stringify!($run),
             about: $about,
             run: |store| Box::pin($run(store)),
+            embedding: $embedding,
         };
     };
 }
@@ -76,8 +86,11 @@ pub mod fixture;
 
 /// Opens lakes for the suite: one engine, as its test configures it.
 ///
-/// Every lake a harness opens binds [`backing::backings`] in its seams:
-/// the checks of functions computed outside the store call them.
+/// The runner hands the harness the seams each lake binds besides the
+/// engine: always [`backing::backings`], which the checks of functions
+/// computed outside the store call, and [`backing::embedder`] for the
+/// checks that need an embedding backend. The harness adds its engine's
+/// opener and binds nothing else.
 ///
 /// Every lake a harness opens has the default
 /// [`Limits`](lakelands_api::location::Limits): the runner holds each
@@ -88,9 +101,10 @@ pub trait Harness: Send + Sync {
     /// The engine's name, as the report shows it.
     fn name(&self) -> &str;
 
-    /// A brand-new, empty lake. Every check gets its own, so no check
-    /// sees another's writes and positions are the check's alone.
-    fn fresh(&self) -> FreshLake<'_>;
+    /// A brand-new, empty lake with `seams` and the engine. Every check
+    /// gets its own, so no check sees another's writes and positions are
+    /// the check's alone.
+    fn fresh(&self, seams: Seams) -> FreshLake<'_>;
 }
 
 /// The future [`Harness::fresh`] answers: a new, empty lake, or why none
@@ -110,6 +124,9 @@ pub struct Check {
     pub about: &'static str,
     /// The check itself, run against a fresh lake.
     pub run: fn(Arc<dyn LakeStore>) -> CheckFuture,
+    /// Whether its lake binds the suite's embedding backend; without it,
+    /// the lake has none.
+    pub embedding: bool,
 }
 
 impl fmt::Debug for Check {
@@ -206,7 +223,12 @@ async fn run_checks(harness: &dyn Harness, checks: &[Check]) -> Report {
 /// Runs one check on a fresh lake. A harness that cannot open one, and a
 /// check that panics, are failures of that check.
 async fn run_check(harness: &dyn Harness, check: &Check) -> Result<(), Failure> {
-    let store = match caught(harness.fresh()).await {
+    let seams = Seams {
+        backings: backing::backings(),
+        embed: check.embedding.then(backing::embedder),
+        ..Seams::default()
+    };
+    let store = match caught(harness.fresh(seams)).await {
         Ok(Ok(store)) => store,
         Ok(Err(e)) => {
             return Err(Failure::new(format!(

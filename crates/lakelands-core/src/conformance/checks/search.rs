@@ -200,6 +200,19 @@ check!(
 );
 
 check!(
+    /// Without a backend, hybrid search is lexical and says so.
+    HYBRID_WITHOUT_BACKEND = a_hybrid_search_without_a_vector_or_a_backend_ranks_lexically_and_says_so,
+    "the embedding seam (docs/seams.md): with no embedding backend bound, a hybrid search that brings no vector ranks by its text alone, and its answer says it ranked lexically"
+);
+
+check!(
+    /// A bound backend embeds hybrid search, and only when needed.
+    HYBRID_THROUGH_BACKEND = a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_else,
+    "the embedding seam (docs/seams.md): a hybrid search without a vector ranks through the bound backend and says `hybrid`; a vector search or a hybrid one bringing its vector never calls it; a backend that fails, whatever error it answers, makes the search unavailable, never lexical",
+    embedding
+);
+
+check!(
     /// A vector that is gone is not a neighbour.
     VECTOR_LEAVES_THE_NEIGHBOURS = a_retired_record_or_a_cleared_vector_is_no_longer_a_nearest_neighbour,
     "the engine seam's vector index: it follows the projection, so a retired record or a cleared vector field is no longer among the nearest"
@@ -361,4 +374,140 @@ async fn a_retired_record_or_a_cleared_vector_is_no_longer_a_nearest_neighbour(
          neighbour; the nearest were {after:?}"
     );
     Ok(())
+}
+
+/// Two documents, each with a text and a vector: `a` matches the text
+/// `quayside` and points north, `b` matches nothing and points east.
+async fn two_docs(store: &dyn LakeStore) -> Result<(), Failure> {
+    use lakelands_api::ontology::FieldType;
+    let cat = doors(store);
+    let own = owner(store);
+    let body = FieldDecl {
+        searchable: true,
+        ..field("body", StorageKind::Text)
+    };
+    let v = FieldDecl {
+        ty: FieldType {
+            dimensions: Some(2),
+            ..FieldType::kind(StorageKind::Vector)
+        },
+        ..field("v", StorageKind::Text)
+    };
+    declare(cat.as_ref(), &own, type_decl("doc", vec![body, v])).await?;
+    upsert(
+        cat.as_ref(),
+        &own,
+        "doc",
+        "a",
+        json!({"body": "quayside", "v": [0.0, 1.0]}),
+    )
+    .await?;
+    upsert(
+        cat.as_ref(),
+        &own,
+        "doc",
+        "b",
+        json!({"body": "harbour", "v": [1.0, 0.0]}),
+    )
+    .await?;
+    Ok(())
+}
+
+fn doc_search(mode: SearchMode) -> Search {
+    Search {
+        ty: TypeName::from("doc"),
+        mode,
+        k: 10,
+        cursor: None,
+        filter: None,
+        with_meta: false,
+        at: ReadAt::default(),
+    }
+}
+
+fn hybrid(text: &str, vector: Option<Vec<f32>>) -> SearchMode {
+    SearchMode::Hybrid {
+        text: text.into(),
+        field: "v".into(),
+        vector,
+    }
+}
+
+async fn a_hybrid_search_without_a_vector_or_a_backend_ranks_lexically_and_says_so(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    two_docs(store.as_ref()).await?;
+    let got = doors(store.as_ref())
+        .search(&owner(store.as_ref()), doc_search(hybrid("quayside", None)))
+        .await
+        .must("a hybrid search for \"quayside\" without a vector, and no backend bound")?
+        .data;
+    ensure!(
+        keys(&got) == ["a"] && got.ranked_by.starts_with("lexical"),
+        "with no embedding backend bound, a hybrid search for \"quayside\" without a \
+         vector must rank by its text alone, finding only `a`, and say `lexical`; it \
+         found {:?}, ranked by {:?}",
+        keys(&got),
+        got.ranked_by
+    );
+    Ok(())
+}
+
+async fn a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_else(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use crate::conformance::backing::{UNREACHABLE, embed_calls};
+    two_docs(store.as_ref()).await?;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    // The backend makes every text (1, 0), which only `b` points along:
+    // `b` is a hit only if the search ranked over the backend's vector.
+    let before = embed_calls();
+    let got = cat
+        .search(&own, doc_search(hybrid("quayside", None)))
+        .await
+        .must("a hybrid search for \"quayside\" without a vector, a backend bound")?
+        .data;
+    let mut found = keys(&got);
+    found.sort();
+    ensure!(
+        found == ["a", "b"] && got.ranked_by == "hybrid" && embed_calls() == before + 1,
+        "with an embedding backend bound, a hybrid search without a vector must embed \
+         its text in one call and rank over text and vector, finding `a` by its text and \
+         `b` by its vector, and say `hybrid`; it found {found:?}, ranked by {:?}, with {} \
+         calls to the backend",
+        got.ranked_by,
+        embed_calls() - before
+    );
+    let before = embed_calls();
+    cat.search(
+        &own,
+        doc_search(SearchMode::Vector {
+            field: "v".into(),
+            vector: vec![1.0, 0.0],
+        }),
+    )
+    .await
+    .must("a vector search")?;
+    let brought = cat
+        .search(&own, doc_search(hybrid("quayside", Some(vec![0.0, 1.0]))))
+        .await
+        .must("a hybrid search bringing its vector")?
+        .data;
+    ensure!(
+        embed_calls() == before && brought.ranked_by == "hybrid",
+        "a vector search, and a hybrid search that brings its own vector, must never call \
+         the embedding backend; they made {} calls",
+        embed_calls() - before
+    );
+    let text = format!("{UNREACHABLE} quayside");
+    match cat.search(&own, doc_search(hybrid(&text, None))).await {
+        Err(Error::Unavailable { .. }) => Ok(()),
+        other => Err(Failure::new(format!(
+            "a hybrid search whose bound embedding backend fails must be unavailable, \
+             never ranked lexically instead: the same query must not rank differently \
+             by the backend's weather; it answered {:?}",
+            other.map(|r| (keys(&r.data).join(","), r.data.ranked_by))
+        ))),
+    }
 }

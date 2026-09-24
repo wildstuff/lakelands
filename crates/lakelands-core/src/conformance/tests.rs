@@ -13,7 +13,7 @@ use std::task::{Context, Poll, Waker};
 use lakelands_api::describe::{LakeDescription, TypeDescription};
 use lakelands_api::ontology::FieldDecl;
 use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
-use lakelands_api::seam::{ChangeFeed, FeedBatch, FeedFilter};
+use lakelands_api::seam::{ChangeFeed, FeedBatch, FeedFilter, Seams};
 use lakelands_api::write::{
     Declaration, Migration, MigrationReport, Proposal, ProposalFilter, ProposedWrite,
 };
@@ -162,7 +162,7 @@ impl Harness for DownHarness {
     fn name(&self) -> &str {
         "down"
     }
-    fn fresh(&self) -> FreshLake<'_> {
+    fn fresh(&self, _: Seams) -> FreshLake<'_> {
         Box::pin(async {
             let store: Arc<dyn LakeStore> = Arc::new(DownStore(LakeId::from("conformance")));
             Ok(store)
@@ -177,7 +177,7 @@ impl Harness for NoLakes {
     fn name(&self) -> &str {
         "no-lakes"
     }
-    fn fresh(&self) -> FreshLake<'_> {
+    fn fresh(&self, _: Seams) -> FreshLake<'_> {
         Box::pin(async { Err(down()) })
     }
 }

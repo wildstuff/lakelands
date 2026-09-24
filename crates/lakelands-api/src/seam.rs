@@ -87,7 +87,10 @@ pub trait EmbedBackend: Send + Sync {
     /// The length of the vectors it makes.
     fn dimensions(&self) -> u32;
 
-    /// One vector per text, in order.
+    /// One vector per text, in order. Any failure reaches the caller of
+    /// the search that asked as `Unavailable`, whatever error the
+    /// backend answered: the store never falls back to lexical ranking
+    /// for a backend that is bound.
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
 }
 
