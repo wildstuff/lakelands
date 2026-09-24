@@ -1,4 +1,11 @@
 //! The server door: serves one catalog of typed tools over MCP, on
 //! stdio and on HTTP.
 //!
-//! Empty until the door is built.
+//! The MCP transport is not built yet. What is here already is the
+//! default [`PrincipalResolver`](lakelands_api::seam::PrincipalResolver),
+//! which the CLI uses too: both doors turn a caller into a principal the
+//! same way.
+
+#![forbid(unsafe_code)]
+
+pub mod resolver;
