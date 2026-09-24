@@ -1,0 +1,48 @@
+name: invoice
+label: Invoice
+description: A bill sent to a partner, banded and embedded by the lake.
+key: number
+fields:
+  number: { type: text, required: true, authority: source }
+  partner: { type: reference(partner), required: true, authority: source }
+  issued_on: { type: date_time, authority: source }
+  due_on: { type: date_time, authority: source }
+  net: { type: money, required: true, authority: source }
+  gross:
+    type: money
+    authority: derived
+    derived: "net * 1.19"
+    depends_on: net
+    on_input_change: clear
+    description: The net amount with 19 percent tax, computed by the lake.
+  band:
+    type: text
+    authority: derived
+    function: band
+    depends_on: gross
+    description: How large the invoice is, from the band program the root's configuration names.
+  status:
+    type: invoice_status
+    authority: shared
+    description: Set by the source, and moved to overdue by the aging rule.
+  summary: { type: text, authority: source, searchable: true }
+  summary_vec:
+    type: vector(4)
+    authority: derived
+    embed: { from: summary, model: walk-fake }
+    description: The embedding of the summary, made through the root's embedding client.
+relations:
+  billed_to:
+    target: partner
+    cardinality: many_to_one
+    via: partner
+    inverse: invoices
+  approved_by:
+    target: partner
+    cardinality: many_to_one
+    inverse: approved
+    description: >-
+      Who at the partner approved the invoice, and since when: carried by
+      link records, written with the invoice_approved_by_link tool.
+    fields:
+      since: date_time
