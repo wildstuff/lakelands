@@ -251,7 +251,7 @@ it came from, for example P-300's:
 ```json
 "credit_limit": { "origin": "source", "source": "crm",
                   "seen_at": "2026-08-31T18:00:00.000000Z",
-                  "position": 14, "writer": "…", "known_at": "…" }
+                  "position": 15, "writer": "…", "known_at": "…" }
 ```
 
 `writer` is the principal the CLI ingested as (the root's owner), and
