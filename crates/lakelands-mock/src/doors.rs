@@ -1,0 +1,1608 @@
+//! The mock's [`Catalog`]: every door, over the log.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use lakelands_api::describe::{
+    FieldDescription, LakeDescription, LakeRights, TypeAccess, TypeDescription, TypeLifecycle,
+    TypeLineage, TypeRights, VerbDescription,
+};
+use lakelands_api::error::{Error, Missing, Refusal, Result};
+use lakelands_api::event::{EventBody, EventId};
+use lakelands_api::expr::Expr;
+use lakelands_api::id::{
+    Cursor, FieldName, LakeId, Position, ProposalId, RecordKey, SourceId, TypeName, VerbName,
+    Version,
+};
+use lakelands_api::ontology::{Authority, FieldDecl, Risk, VerbDecl, VerbEffect};
+use lakelands_api::principal::{Access, Principal, PrincipalKind, WriteContext, WriteOrigin};
+use lakelands_api::query::{Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Walk};
+use lakelands_api::read::{Direction, Find, Found, Get, OrderBy, ReadAt, Reply};
+use lakelands_api::record::{Origin, Patch, Record, SourceRecord, StoredRecord, Value};
+use lakelands_api::write::{
+    Committed, Declaration, FieldConversion, Migration, MigrationReport, Outcome, Proposal,
+    ProposalFilter, ProposalState, ProposedWrite, WriteOpts,
+};
+use lakelands_api::{Catalog, CommitStream, SourceStream};
+
+use crate::expr::{self, Scope};
+use crate::state::{DeclaredType, State, access, door_writes, field};
+use crate::{Batch, Draft, Log, Shared, refused, stream, value};
+
+pub(crate) struct MockCatalog {
+    pub shared: Arc<Shared>,
+    pub context: WriteContext,
+}
+
+fn on(field: &FieldName, reason: Refusal) -> Error {
+    Error::Refused {
+        field: Some(field.clone()),
+        reason,
+    }
+}
+
+fn invalid(message: impl Into<String>) -> Error {
+    refused(Refusal::Invalid {
+        message: message.into(),
+    })
+}
+
+fn no_type(name: &TypeName) -> Error {
+    Error::NotFound {
+        missing: Missing::Type { name: name.clone() },
+    }
+}
+
+fn no_record(ty: &TypeName, key: &RecordKey) -> Error {
+    Error::NotFound {
+        missing: Missing::Record {
+            ty: ty.clone(),
+            key: key.clone(),
+        },
+    }
+}
+
+fn reserved(name: &str, who: &Principal) -> bool {
+    name.starts_with("sys.") && who.kind != PrincipalKind::System
+}
+
+/// A page token: the position the first page was read at, and how many
+/// rows came before this page.
+fn cursor(p: Position, offset: usize) -> Cursor {
+    Cursor(format!("{}.{offset}", p.0))
+}
+
+fn uncursor(c: &Cursor) -> Result<(Position, usize)> {
+    c.0.split_once('.')
+        .and_then(|(p, o)| Some((Position(p.parse().ok()?), o.parse().ok()?)))
+        .ok_or_else(|| invalid("the cursor was not issued by this lake"))
+}
+
+/// A page of `rows` from `offset`, and the cursor after it.
+fn page<T>(rows: Vec<T>, at: Position, offset: usize, limit: usize) -> (Vec<T>, Option<Cursor>) {
+    let more = rows.len() > offset + limit;
+    let rows: Vec<T> = rows.into_iter().skip(offset).take(limit).collect();
+    (rows, more.then(|| cursor(at, offset + limit)))
+}
+
+impl MockCatalog {
+    fn log(&self) -> std::sync::MutexGuard<'_, Log> {
+        self.shared.log()
+    }
+
+    /// Refuse a principal of another lake.
+    fn admit(&self, who: &Principal) -> Result<()> {
+        if who.lake != self.shared.lake {
+            return Err(refused(Refusal::NotGranted));
+        }
+        Ok(())
+    }
+
+    /// Admit a write: also refuse a reaction chain deeper than the lake
+    /// allows.
+    fn admit_write(&self, who: &Principal) -> Result<()> {
+        self.admit(who)?;
+        let max = self.shared.limits.max_reactive_depth;
+        if self.context.origin == WriteOrigin::Reactive && self.context.depth > max {
+            return Err(refused(Refusal::TooDeep { max }));
+        }
+        Ok(())
+    }
+
+    /// The position a read is answered at, and the lake folded up to it.
+    fn state_at(&self, log: &Log, as_of: Option<Position>) -> Result<(Position, State)> {
+        let head = Shared::head(log);
+        let at = as_of.unwrap_or(head);
+        if at > head {
+            return Err(refused(Refusal::OutOfRange { head }));
+        }
+        Ok((at, State::fold(&log.events[..=at.0 as usize])))
+    }
+
+    fn limit(&self, asked: Option<u32>) -> usize {
+        let l = &self.shared.limits;
+        asked.unwrap_or(l.default_limit).clamp(1, l.max_limit) as usize
+    }
+
+    fn commit(&self, log: &mut Log, batch: Batch) {
+        self.shared.append(log, self.context, batch);
+    }
+}
+
+// ---- describing ----
+
+fn authored_writable(who: &Principal, t: &DeclaredType) -> bool {
+    t.decl.fields.iter().any(|f| {
+        matches!(f.authority, Authority::Authored | Authority::Shared)
+            && access(who, &t.decl.name, f).writes()
+    })
+}
+
+/// Whether a principal may retire records of a type: only if its grants
+/// let it write every field of the type, whatever the field's authority.
+fn may_retire(who: &Principal, t: &DeclaredType) -> bool {
+    t.decl
+        .fields
+        .iter()
+        .all(|f| who.grants.access(&t.decl.name, &f.name).writes())
+}
+
+fn callable(st: &State, who: &Principal, v: &VerbDecl) -> bool {
+    let Some(t) = st.visible(who, &v.on) else {
+        return false;
+    };
+    match &v.effect {
+        VerbEffect::Write { set } => set
+            .iter()
+            .all(|a| field(&t.decl, &a.field).is_some_and(|f| access(who, &v.on, f).writes())),
+        VerbEffect::External { .. } => true,
+    }
+}
+
+fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescription {
+    let d = &t.decl;
+    let fields: Vec<FieldDescription> = d
+        .fields
+        .iter()
+        .filter_map(|f| match access(who, &d.name, f) {
+            Access::None => None,
+            a => Some(FieldDescription::of(f, a)),
+        })
+        .collect();
+    TypeDescription {
+        name: d.name.clone(),
+        description: d.description.clone(),
+        fields,
+        relations: d
+            .relations
+            .iter()
+            .filter(|r| st.visible(who, &r.target).is_some())
+            .cloned()
+            .collect(),
+        access: TypeAccess {
+            key: d.key.clone(),
+            valid_from: d.valid_from.clone(),
+            valid_to: d.valid_to.clone(),
+            searchable: d.fields.iter().any(|f| f.searchable),
+            field_meta: d.field_meta,
+        },
+        may: TypeRights {
+            find: true,
+            get: true,
+            upsert: authored_writable(who, t),
+            retire: may_retire(who, t),
+        },
+        verbs: st
+            .verbs
+            .values()
+            .filter(|v| v.on == d.name && callable(st, who, v))
+            .map(|v| v.name.clone())
+            .collect(),
+        lineage: TypeLineage {
+            sourced: d
+                .fields
+                .iter()
+                .any(|f| matches!(f.authority, Authority::Source | Authority::Shared)),
+            view_of: d.view.as_ref().map(|v| v.source.clone()),
+        },
+        lifecycle: TypeLifecycle {
+            version: t.version,
+            schema_hash: t.schema_hash.clone(),
+        },
+    }
+}
+
+fn describe_lake(lake: &LakeId, st: &State, who: &Principal) -> LakeDescription {
+    LakeDescription {
+        lake: lake.clone(),
+        types: st
+            .types
+            .keys()
+            .filter_map(|n| st.visible(who, n))
+            .map(|t| describe_type(st, who, t))
+            .collect(),
+        verbs: st
+            .verbs
+            .values()
+            .filter(|v| callable(st, who, v))
+            .map(|v| VerbDescription {
+                name: v.name.clone(),
+                on: v.on.clone(),
+                payload: v
+                    .payload
+                    .iter()
+                    .map(|f| FieldDescription::of(f, Access::Write))
+                    .collect(),
+                risk: v.risk,
+                external: matches!(v.effect, VerbEffect::External { .. }),
+                description: v.description.clone(),
+            })
+            .collect(),
+        value_types: st.value_types.clone(),
+        triggers: st.triggers.iter().map(|t| t.name.clone()).collect(),
+        may: LakeRights {
+            review: who.grants.review,
+            schema: who.grants.schema,
+            ingest: who.grants.ingest,
+        },
+    }
+}
+
+// ---- reading ----
+
+/// The typed filter, with every path it reads checked against the type
+/// and the principal's grants.
+fn filter(
+    st: &State,
+    who: &Principal,
+    t: &DeclaredType,
+    c: Option<&lakelands_api::expr::Condition>,
+) -> Result<Option<Expr>> {
+    let Some(c) = c else { return Ok(None) };
+    let e = expr::typed(c)?;
+    let mut paths = Vec::new();
+    expr::paths(&e, &mut paths);
+    for p in paths {
+        let name = match p.as_slice() {
+            [f] => f,
+            [ty, f] if ty.as_str() == t.decl.name.as_str() => f,
+            _ => {
+                return Err(invalid(format!(
+                    "`{}` does not name a field of `{}`",
+                    p.iter()
+                        .map(FieldName::as_str)
+                        .collect::<Vec<_>>()
+                        .join("."),
+                    t.decl.name
+                )));
+            }
+        };
+        readable(st, who, t, name)?;
+    }
+    Ok(Some(e))
+}
+
+/// Refuse a field the type does not declare or the principal may not read.
+fn readable(_: &State, who: &Principal, t: &DeclaredType, name: &FieldName) -> Result<()> {
+    let f = field(&t.decl, name).ok_or_else(|| {
+        on(
+            name,
+            Refusal::Invalid {
+                message: format!("`{}` has no field `{name}`", t.decl.name),
+            },
+        )
+    })?;
+    if !access(who, &t.decl.name, f).reads() {
+        return Err(on(name, Refusal::NotGranted));
+    }
+    Ok(())
+}
+
+/// Whether a record is valid at a business instant.
+fn valid_at(t: &DeclaredType, r: &StoredRecord, at: Option<lakelands_api::Timestamp>) -> bool {
+    let (Some(at), Some(from)) = (at, &t.decl.valid_from) else {
+        return true;
+    };
+    let ts = |f: &FieldName| {
+        r.fields
+            .get(f)
+            .and_then(Value::as_str)
+            .and_then(|s| lakelands_api::Timestamp::parse(s).ok())
+    };
+    let starts = ts(from).is_some_and(|s| s <= at);
+    let ends = t
+        .decl
+        .valid_to
+        .as_ref()
+        .and_then(ts)
+        .is_some_and(|e| e <= at);
+    starts && !ends
+}
+
+/// The live records of a type a principal may read, valid at `at`,
+/// matching a filter.
+fn candidates<'a>(
+    st: &'a State,
+    who: &Principal,
+    t: &DeclaredType,
+    at: ReadAt,
+    filter: Option<&Expr>,
+) -> Result<Vec<&'a StoredRecord>> {
+    let mut out = Vec::new();
+    for r in st.records.values() {
+        if r.ty != t.decl.name || r.retired || (r.restricted && !who.grants.restricted) {
+            continue;
+        }
+        if !valid_at(t, r, at.valid_at) {
+            continue;
+        }
+        if let Some(e) = filter {
+            let scope = Scope {
+                ty: t.decl.name.as_str(),
+                fields: &r.fields,
+                payload: None,
+            };
+            if !expr::holds(e, &scope)? {
+                continue;
+            }
+        }
+        out.push(r);
+    }
+    Ok(out)
+}
+
+// ---- writing ----
+
+/// Check a patch for one door, failing closed: every field must be
+/// declared, of the door's authority, granted for writing and a valid
+/// value, or nothing is written.
+fn check_patch<'a>(
+    st: &'a State,
+    who: &Principal,
+    ty: &TypeName,
+    patch: &Patch,
+    door: Origin,
+) -> Result<&'a DeclaredType> {
+    if reserved(ty.as_str(), who) {
+        return Err(refused(Refusal::Reserved));
+    }
+    let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
+    if t.decl.view.is_some() {
+        return Err(invalid(format!("`{ty}` is a view and is never written")));
+    }
+    for (name, v) in patch {
+        let f = field(&t.decl, name).ok_or_else(|| {
+            on(
+                name,
+                Refusal::Invalid {
+                    message: format!("`{ty}` has no field `{name}`"),
+                },
+            )
+        })?;
+        if !door_writes(door, f.authority) {
+            return Err(on(name, Refusal::WrongDoor));
+        }
+        if !access(who, ty, f).writes() {
+            return Err(on(name, Refusal::NotGranted));
+        }
+        if !v.is_null() {
+            if let Some(message) = value::misfit(&f.ty, v, &st.value_types) {
+                return Err(on(name, Refusal::Constraint { message }));
+            }
+        }
+    }
+    Ok(t)
+}
+
+/// Refuse a record that would lack a required field its door writes.
+fn check_required(
+    t: &DeclaredType,
+    before: Option<&StoredRecord>,
+    patch: &Patch,
+    door: Origin,
+) -> Result<()> {
+    for f in &t.decl.fields {
+        if !f.required || !door_writes(door, f.authority) {
+            continue;
+        }
+        let has = match patch.get(&f.name) {
+            Some(v) => !v.is_null(),
+            None => before.is_some_and(|r| r.fields.contains_key(&f.name)),
+        };
+        if !has {
+            return Err(on(
+                &f.name,
+                Refusal::Constraint {
+                    message: format!("`{}` is required", f.name),
+                },
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn check_version(st: &State, ty: &TypeName, key: &RecordKey, opts: &WriteOpts) -> Result<Version> {
+    let actual = st.version(ty, key);
+    match opts.expected_version {
+        Some(expected) if expected != actual => Err(Error::Conflict { expected, actual }),
+        _ => Ok(actual),
+    }
+}
+
+/// Who a planned write is made as, over which state, and the event that
+/// caused it, if any.
+struct By<'a> {
+    st: &'a State,
+    who: &'a Principal,
+    cause: Option<Position>,
+}
+
+/// Plan an authored upsert; answer the record's new version.
+fn plan_upsert(
+    by: &By<'_>,
+    batch: &mut Batch,
+    ty: &TypeName,
+    key: &RecordKey,
+    patch: Patch,
+    opts: &WriteOpts,
+) -> Result<Version> {
+    let By { st, who, cause } = *by;
+    let t = check_patch(st, who, ty, &patch, Origin::Authored)?;
+    let actual = check_version(st, ty, key, opts)?;
+    check_required(t, st.live(ty, key), &patch, Origin::Authored)?;
+    let version = Version(actual.0 + 1);
+    let mut d = Draft::new(
+        who,
+        Origin::Authored,
+        EventBody::RecordUpserted {
+            ty: ty.clone(),
+            key: key.clone(),
+            version,
+            patch,
+        },
+    );
+    d.cause = cause;
+    d.key = opts.idempotency_key.clone();
+    batch.push(d);
+    Ok(version)
+}
+
+fn plan_retire(
+    by: &By<'_>,
+    batch: &mut Batch,
+    ty: &TypeName,
+    key: &RecordKey,
+    opts: &WriteOpts,
+) -> Result<Version> {
+    let By { st, who, cause } = *by;
+    if reserved(ty.as_str(), who) {
+        return Err(refused(Refusal::Reserved));
+    }
+    let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
+    if !may_retire(who, t) {
+        return Err(refused(Refusal::NotGranted));
+    }
+    st.live(ty, key).ok_or_else(|| no_record(ty, key))?;
+    let actual = check_version(st, ty, key, opts)?;
+    let version = Version(actual.0 + 1);
+    let mut d = Draft::new(
+        who,
+        Origin::Authored,
+        EventBody::RecordRetired {
+            ty: ty.clone(),
+            key: key.clone(),
+            version,
+        },
+    );
+    d.cause = cause;
+    d.key = opts.idempotency_key.clone();
+    batch.push(d);
+    Ok(version)
+}
+
+/// The verb a principal may call, and the live record it is called on,
+/// with the payload and the verb's precondition checked.
+fn check_call<'a>(
+    st: &'a State,
+    who: &Principal,
+    verb: &VerbName,
+    key: &RecordKey,
+    payload: &Patch,
+) -> Result<&'a VerbDecl> {
+    let v = st
+        .verbs
+        .get(verb)
+        .filter(|v| callable(st, who, v))
+        .ok_or_else(|| Error::NotFound {
+            missing: Missing::Verb { name: verb.clone() },
+        })?;
+    let rec = st.live(&v.on, key).ok_or_else(|| no_record(&v.on, key))?;
+    for (name, val) in payload {
+        let f = v.payload.iter().find(|f| &f.name == name).ok_or_else(|| {
+            on(
+                name,
+                Refusal::Invalid {
+                    message: format!("`{verb}` takes no `{name}`"),
+                },
+            )
+        })?;
+        if !val.is_null() {
+            if let Some(message) = value::misfit(&f.ty, val, &st.value_types) {
+                return Err(on(name, Refusal::Constraint { message }));
+            }
+        }
+    }
+    for f in v.payload.iter().filter(|f| f.required) {
+        if payload.get(&f.name).is_none_or(Value::is_null) {
+            return Err(on(
+                &f.name,
+                Refusal::Constraint {
+                    message: format!("`{verb}` needs `{}`", f.name),
+                },
+            ));
+        }
+    }
+    if let Some(req) = &v.requires {
+        let scope = Scope {
+            ty: v.on.as_str(),
+            fields: &rec.fields,
+            payload: Some(payload),
+        };
+        if !expr::holds(&expr::typed(req)?, &scope)? {
+            return Err(refused(Refusal::Precondition {
+                message: format!("`{verb}` does not apply to `{key}` as it stands"),
+            }));
+        }
+    }
+    Ok(v)
+}
+
+/// Plan a verb's effect as it runs: `VerbCalled`, then its write.
+fn plan_run(
+    by: &By<'_>,
+    batch: &mut Batch,
+    v: &VerbDecl,
+    key: &RecordKey,
+    payload: Patch,
+    opts: &WriteOpts,
+) -> Result<Version> {
+    let By { st, who, cause } = *by;
+    let set = match &v.effect {
+        VerbEffect::Write { set } => set,
+        VerbEffect::External { executor } => {
+            return Err(Error::Unbound {
+                seam: format!("the verb executor `{executor}`"),
+            });
+        }
+    };
+    let rec = st.live(&v.on, key).ok_or_else(|| no_record(&v.on, key))?;
+    let scope = Scope {
+        ty: v.on.as_str(),
+        fields: &rec.fields,
+        payload: Some(&payload),
+    };
+    let mut patch = Patch::new();
+    for a in set {
+        patch.insert(
+            a.field.clone(),
+            expr::eval(&expr::typed(&a.value)?, &scope)?,
+        );
+    }
+    let mut called = Draft::new(
+        who,
+        Origin::Authored,
+        EventBody::VerbCalled {
+            verb: v.name.clone(),
+            key: key.clone(),
+            payload,
+        },
+    );
+    called.cause = cause;
+    let called = batch.push(called);
+    let by = By {
+        st,
+        who,
+        cause: Some(called),
+    };
+    plan_upsert(&by, batch, &v.on, key, patch, opts)
+}
+
+fn plan_propose(
+    st: &State,
+    batch: &mut Batch,
+    who: &Principal,
+    write: ProposedWrite,
+    why: String,
+    key: Option<lakelands_api::IdempotencyKey>,
+) -> Result<(Position, ProposalId)> {
+    // A proposal is checked as its write would be, so that an accept
+    // cannot smuggle a field its proposer may not write.
+    match &write {
+        ProposedWrite::Upsert { ty, patch, .. } => {
+            check_patch(st, who, ty, patch, Origin::Authored)?;
+        }
+        ProposedWrite::Retire { ty, key, .. } => {
+            let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
+            if reserved(ty.as_str(), who) || !may_retire(who, t) {
+                return Err(refused(Refusal::NotGranted));
+            }
+            st.live(ty, key).ok_or_else(|| no_record(ty, key))?;
+        }
+        ProposedWrite::Call {
+            verb, key, payload, ..
+        } => {
+            check_call(st, who, verb, key, payload)?;
+        }
+    }
+    let id = ProposalId(format!("p{}", batch.peek().0));
+    let mut d = Draft::new(
+        who,
+        Origin::Authored,
+        EventBody::WriteProposed {
+            proposal: id.clone(),
+            write,
+            why,
+        },
+    );
+    d.key = key;
+    Ok((batch.push(d), id))
+}
+
+fn risk_word(r: Risk) -> &'static str {
+    match r {
+        Risk::Low => "low",
+        Risk::Medium => "medium",
+        Risk::High => "high",
+    }
+}
+
+/// The migration's preflight over the lake as it stands.
+fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationReport> {
+    let ty = &m.to.name;
+    let t = st.types.get(ty).ok_or_else(|| no_type(ty))?;
+    let renamed = |old: &FieldName| -> FieldName {
+        m.renames
+            .iter()
+            .find(|(from, _)| from == old)
+            .map_or(old, |(_, to)| to)
+            .clone()
+    };
+    let live: Vec<&StoredRecord> = st
+        .records
+        .values()
+        .filter(|r| &r.ty == ty && !r.retired)
+        .collect();
+    let mut fields = Vec::new();
+    for old in &t.decl.fields {
+        let Some(new) = field(&m.to, &renamed(&old.name)) else {
+            continue;
+        };
+        if new.ty == old.ty {
+            continue;
+        }
+        let mut conv = FieldConversion {
+            field: new.name.clone(),
+            from: old.ty.clone(),
+            to: new.ty.clone(),
+            convertible: 0,
+            not_convertible: 0,
+            sample_keys: Vec::new(),
+        };
+        for r in &live {
+            match r.fields.get(&old.name) {
+                None => {}
+                Some(v) if value::convert(v, &new.ty).is_some() => conv.convertible += 1,
+                Some(_) => {
+                    conv.not_convertible += 1;
+                    if conv.sample_keys.len() < 5 {
+                        conv.sample_keys.push(r.key.clone());
+                    }
+                }
+            }
+        }
+        fields.push(conv);
+    }
+    let mut report = MigrationReport {
+        ty: ty.clone(),
+        from_schema_hash: t.schema_hash.clone(),
+        to_schema_hash: value::schema_hash(&m.to),
+        records_scanned: live.len() as u64,
+        lossless: fields.iter().all(|f| f.not_convertible == 0),
+        fields,
+        report_id: String::new(),
+    };
+    let seed = serde_json::to_vec(&(&report, head.0, m)).unwrap_or_default();
+    report.report_id = value::hex(&seed, 1);
+    Ok(report)
+}
+
+/// The content address of one ingested record.
+fn content_id(source: &SourceId, r: &SourceRecord) -> EventId {
+    let bytes =
+        serde_json::to_vec(&(source, &r.ty, &r.key, &r.fields, r.seen_at)).unwrap_or_default();
+    EventId(value::hex(&bytes, 2))
+}
+
+/// The positions and versions an ingest window planned so far.
+struct Window {
+    batch: Batch,
+    versions: BTreeMap<(TypeName, RecordKey), Version>,
+    ids: BTreeSet<EventId>,
+    records: u32,
+    duplicates: u32,
+}
+
+#[async_trait]
+impl Catalog for MockCatalog {
+    fn lake(&self) -> &LakeId {
+        &self.shared.lake
+    }
+
+    async fn describe(&self, who: &Principal, at: ReadAt) -> Result<Reply<LakeDescription>> {
+        self.admit(who)?;
+        let (position, st) = self.state_at(&self.log(), at.as_of)?;
+        Ok(Reply {
+            position,
+            data: describe_lake(&self.shared.lake, &st, who),
+        })
+    }
+
+    async fn describe_type(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+        at: ReadAt,
+    ) -> Result<Reply<TypeDescription>> {
+        self.admit(who)?;
+        let (position, st) = self.state_at(&self.log(), at.as_of)?;
+        let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
+        Ok(Reply {
+            position,
+            data: describe_type(&st, who, t),
+        })
+    }
+
+    async fn find(&self, who: &Principal, ty: &TypeName, find: Find) -> Result<Reply<Found>> {
+        self.admit(who)?;
+        let (pinned, offset) = match &find.cursor {
+            Some(c) => {
+                let (p, o) = uncursor(c)?;
+                (Some(p), o)
+            }
+            None => (find.at.as_of, 0),
+        };
+        let (position, st) = self.state_at(&self.log(), pinned)?;
+        let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
+        if find.aggregate.is_some() {
+            return Err(invalid("the in-memory mock does not aggregate"));
+        }
+        let e = filter(&st, who, t, find.filter.as_ref())?;
+        for o in &find.order_by {
+            readable(&st, who, t, &o.field)?;
+        }
+        let mut rows = candidates(&st, who, t, find.at, e.as_ref())?;
+        rows.sort_by(|a, b| {
+            for o in &find.order_by {
+                let key = |r: &StoredRecord| match o.by {
+                    OrderBy::Value => r.fields.get(&o.field).cloned(),
+                    OrderBy::KnownAt => r.meta.get(&o.field).map(|m| m.known_at.to_string().into()),
+                    OrderBy::SeenAt => r
+                        .meta
+                        .get(&o.field)
+                        .and_then(|m| m.seen_at)
+                        .map(|s| s.to_string().into()),
+                };
+                // Records without a value sort last in either direction.
+                let ord = match (key(a), key(b)) {
+                    (None, None) => std::cmp::Ordering::Equal,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (Some(x), Some(y)) => {
+                        let o2 = expr::compare(&x, &y).unwrap_or(std::cmp::Ordering::Equal);
+                        if o.dir == Direction::Desc {
+                            o2.reverse()
+                        } else {
+                            o2
+                        }
+                    }
+                };
+                if ord.is_ne() {
+                    return ord;
+                }
+            }
+            a.key.cmp(&b.key)
+        });
+        let rows: Vec<Record> = rows
+            .into_iter()
+            .map(|r| st.read(who, r, find.with_meta))
+            .collect();
+        let (rows, next_cursor) = page(rows, position, offset, self.limit(find.limit));
+        Ok(Reply {
+            position,
+            data: Found::Records { rows, next_cursor },
+        })
+    }
+
+    async fn get(&self, who: &Principal, ty: &TypeName, get: Get) -> Result<Reply<Record>> {
+        self.admit(who)?;
+        let (position, st) = self.state_at(&self.log(), get.at.as_of)?;
+        let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
+        let r = st
+            .live(ty, &get.key)
+            .filter(|r| !r.restricted || who.grants.restricted)
+            .filter(|r| valid_at(t, r, get.at.valid_at))
+            .ok_or_else(|| no_record(ty, &get.key))?;
+        Ok(Reply {
+            position,
+            data: st.read(who, r, get.with_meta),
+        })
+    }
+
+    async fn upsert(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+        key: &RecordKey,
+        patch: Patch,
+        opts: WriteOpts,
+    ) -> Result<Outcome> {
+        self.admit_write(who)?;
+        let mut log = self.log();
+        let (_, st) = self.state_at(&log, None)?;
+        if let Some(o) = remembered(&st, who, &opts) {
+            return Ok(o);
+        }
+        let mut batch = Batch::at(&log);
+        let by = By {
+            st: &st,
+            who,
+            cause: None,
+        };
+        let version = plan_upsert(&by, &mut batch, ty, key, patch, &opts)?;
+        let position = batch.peek().0 - 1;
+        self.commit(&mut log, batch);
+        Ok(Outcome::Applied {
+            position: Position(position),
+            version: Some(version),
+        })
+    }
+
+    async fn retire(
+        &self,
+        who: &Principal,
+        ty: &TypeName,
+        key: &RecordKey,
+        opts: WriteOpts,
+    ) -> Result<Outcome> {
+        self.admit_write(who)?;
+        let mut log = self.log();
+        let (_, st) = self.state_at(&log, None)?;
+        if let Some(o) = remembered(&st, who, &opts) {
+            return Ok(o);
+        }
+        let mut batch = Batch::at(&log);
+        let by = By {
+            st: &st,
+            who,
+            cause: None,
+        };
+        let version = plan_retire(&by, &mut batch, ty, key, &opts)?;
+        let position = Position(batch.peek().0 - 1);
+        self.commit(&mut log, batch);
+        Ok(Outcome::Applied {
+            position,
+            version: Some(version),
+        })
+    }
+
+    async fn call(
+        &self,
+        who: &Principal,
+        verb: &VerbName,
+        key: &RecordKey,
+        payload: Patch,
+        opts: WriteOpts,
+    ) -> Result<Outcome> {
+        self.admit_write(who)?;
+        let mut log = self.log();
+        let (_, st) = self.state_at(&log, None)?;
+        if let Some(o) = remembered(&st, who, &opts) {
+            return Ok(o);
+        }
+        let v = check_call(&st, who, verb, key, &payload)?.clone();
+        check_version(&st, &v.on, key, &opts)?;
+        let mut batch = Batch::at(&log);
+        let runs = v.risk == Risk::Low && matches!(v.effect, VerbEffect::Write { .. });
+        let outcome = if runs {
+            let by = By {
+                st: &st,
+                who,
+                cause: None,
+            };
+            let version = plan_run(&by, &mut batch, &v, key, payload, &opts)?;
+            Outcome::Applied {
+                position: Position(batch.peek().0 - 1),
+                version: Some(version),
+            }
+        } else {
+            let why = format!("`{verb}` is declared {} risk", risk_word(v.risk));
+            let key_ = opts.idempotency_key.clone();
+            let write = ProposedWrite::Call {
+                verb: verb.clone(),
+                key: key.clone(),
+                payload,
+                opts,
+            };
+            let (position, proposal) =
+                plan_propose(&st, &mut batch, who, write, why.clone(), key_)?;
+            log.proposers.insert(proposal.clone(), who.clone());
+            Outcome::Proposed {
+                position,
+                proposal,
+                why,
+            }
+        };
+        self.commit(&mut log, batch);
+        Ok(outcome)
+    }
+
+    async fn query(&self, who: &Principal, pattern: Pattern) -> Result<Reply<QueryResult>> {
+        self.admit(who)?;
+        let (pinned, offset) = match &pattern.cursor {
+            Some(c) => {
+                let (p, o) = uncursor(c)?;
+                (Some(p), o)
+            }
+            None => (pattern.at.as_of, 0),
+        };
+        let (position, st) = self.state_at(&self.log(), pinned)?;
+        let start = &pattern.start;
+        let t = st
+            .visible(who, &start.ty)
+            .ok_or_else(|| no_type(&start.ty))?;
+        if start.search.is_some() || pattern.to.is_some() {
+            return Err(invalid(
+                "the in-memory mock starts a pattern from a key or a filter only",
+            ));
+        }
+        let Projection::Rows { fields } = &pattern.project else {
+            return Err(invalid("the in-memory mock projects patterns as rows only"));
+        };
+        let e = filter(&st, who, t, start.filter.as_ref())?;
+        let mut paths: Vec<Vec<&StoredRecord>> = candidates(&st, who, t, pattern.at, e.as_ref())?
+            .into_iter()
+            .filter(|r| start.key.as_ref().is_none_or(|k| &r.key == k))
+            .map(|r| vec![r])
+            .collect();
+        let mut scope_ty = t;
+        for step in &pattern.steps {
+            // A step over a relation the type does not declare is
+            // refused, not answered empty.
+            let (target, via, forward) = match step.walk {
+                Walk::Out => {
+                    let rel = scope_ty
+                        .decl
+                        .relations
+                        .iter()
+                        .find(|r| r.name == step.relation);
+                    match rel {
+                        Some(r) => (r.target.clone(), r.via.clone(), true),
+                        None => {
+                            return Err(invalid(format!(
+                                "`{}` declares no relation `{}`",
+                                scope_ty.decl.name, step.relation
+                            )));
+                        }
+                    }
+                }
+                _ => {
+                    let back = st.types.values().find_map(|o| {
+                        o.decl
+                            .relations
+                            .iter()
+                            .find(|r| {
+                                r.target == scope_ty.decl.name
+                                    && (r.inverse.as_ref() == Some(&step.relation)
+                                        || r.name == step.relation)
+                            })
+                            .map(|r| (o.decl.name.clone(), r.via.clone()))
+                    });
+                    match back {
+                        Some((ty, via)) => (ty, via, false),
+                        None => {
+                            return Err(invalid(format!(
+                                "no relation `{}` reaches `{}`",
+                                step.relation, scope_ty.decl.name
+                            )));
+                        }
+                    }
+                }
+            };
+            if step.depth.min != 1 || step.depth.max != 1 || step.walk == Walk::Both {
+                return Err(invalid(
+                    "the in-memory mock walks one hop, in one direction, per step",
+                ));
+            }
+            let Some(via) = via else {
+                return Err(invalid(
+                    "the in-memory mock walks only relations carried by a reference field",
+                ));
+            };
+            let next = st.visible(who, &target).ok_or_else(|| no_type(&target))?;
+            if let Some(ty) = &step.ty {
+                if ty != &target {
+                    return Err(invalid(format!(
+                        "`{}` reaches `{target}`, not `{ty}`",
+                        step.relation
+                    )));
+                }
+            }
+            let se = filter(&st, who, next, step.filter.as_ref())?;
+            let reached = candidates(&st, who, next, pattern.at, se.as_ref())?;
+            let mut out = Vec::new();
+            for p in paths {
+                let last = p[p.len() - 1];
+                for r in &reached {
+                    let linked = if forward {
+                        last.fields.get(&via).and_then(Value::as_str) == Some(r.key.as_str())
+                    } else {
+                        r.fields.get(&via).and_then(Value::as_str) == Some(last.key.as_str())
+                    };
+                    if linked {
+                        let mut q = p.clone();
+                        q.push(r);
+                        out.push(q);
+                    }
+                }
+            }
+            paths = out;
+            scope_ty = next;
+        }
+        let rows: Vec<BTreeMap<String, Value>> = paths
+            .iter()
+            .map(|p| {
+                let mut row = BTreeMap::new();
+                for r in p {
+                    let read = st.read(who, r, false);
+                    row.insert(format!("{}.key", r.ty), Value::from(r.key.as_str()));
+                    for (f, v) in read.fields {
+                        row.insert(format!("{}.{f}", r.ty), v);
+                    }
+                }
+                if !fields.is_empty() {
+                    row.retain(|k, _| fields.contains(k));
+                }
+                row
+            })
+            .collect();
+        let (rows, next_cursor) = page(rows, position, offset, self.limit(pattern.limit));
+        Ok(Reply {
+            position,
+            data: QueryResult::Rows { rows, next_cursor },
+        })
+    }
+
+    async fn search(&self, who: &Principal, search: Search) -> Result<Reply<Hits>> {
+        self.admit(who)?;
+        let (pinned, offset) = match &search.cursor {
+            Some(c) => {
+                let (p, o) = uncursor(c)?;
+                (Some(p), o)
+            }
+            None => (search.at.as_of, 0),
+        };
+        let (position, st) = self.state_at(&self.log(), pinned)?;
+        let t = st
+            .visible(who, &search.ty)
+            .ok_or_else(|| no_type(&search.ty))?;
+        let e = filter(&st, who, t, search.filter.as_ref())?;
+        let rows = candidates(&st, who, t, search.at, e.as_ref())?;
+        let (scored, ranked_by): (Vec<(f64, &StoredRecord)>, &str) = match &search.mode {
+            SearchMode::Vector { field: f, vector }
+            | SearchMode::Hybrid {
+                field: f,
+                vector: Some(vector),
+                ..
+            } => {
+                readable(&st, who, t, f)?;
+                let cos = |v: &Value| {
+                    let v: Vec<f64> = v.as_array()?.iter().filter_map(Value::as_f64).collect();
+                    let dot: f64 = v.iter().zip(vector).map(|(a, b)| a * f64::from(*b)).sum();
+                    let n = |x: f64| x.sqrt();
+                    let na = n(v.iter().map(|a| a * a).sum());
+                    let nb = n(vector.iter().map(|b| f64::from(*b).powi(2)).sum());
+                    (na > 0.0 && nb > 0.0).then(|| dot / (na * nb))
+                };
+                let s = rows
+                    .into_iter()
+                    .filter_map(|r| Some((cos(r.fields.get(f)?)?, r)))
+                    .collect();
+                (s, "vector")
+            }
+            SearchMode::Lexical { text } | SearchMode::Hybrid { text, .. } => {
+                let words: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
+                let searchable: Vec<&FieldDecl> = t
+                    .decl
+                    .fields
+                    .iter()
+                    .filter(|f| f.searchable && access(who, &t.decl.name, f).reads())
+                    .collect();
+                let s = rows
+                    .into_iter()
+                    .filter_map(|r| {
+                        let hay: String = searchable
+                            .iter()
+                            .filter_map(|f| r.fields.get(&f.name)?.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                            .to_lowercase();
+                        let score = words.iter().filter(|w| hay.contains(w.as_str())).count();
+                        (score > 0).then_some((score as f64, r))
+                    })
+                    .collect();
+                (s, "lexical")
+            }
+        };
+        let mut scored = scored;
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.key.cmp(&b.1.key)));
+        let hits: Vec<Hit> = scored
+            .into_iter()
+            .map(|(score, r)| Hit {
+                record: st.read(who, r, search.with_meta),
+                score,
+            })
+            .collect();
+        let (hits, next_cursor) = page(hits, position, offset, search.k.max(1) as usize);
+        Ok(Reply {
+            position,
+            data: Hits {
+                hits,
+                next_cursor,
+                ranked_by: ranked_by.to_owned(),
+            },
+        })
+    }
+
+    async fn propose(&self, who: &Principal, write: ProposedWrite, why: String) -> Result<Outcome> {
+        self.admit_write(who)?;
+        let mut log = self.log();
+        let (_, st) = self.state_at(&log, None)?;
+        let mut batch = Batch::at(&log);
+        let (position, proposal) = plan_propose(&st, &mut batch, who, write, why.clone(), None)?;
+        log.proposers.insert(proposal.clone(), who.clone());
+        self.commit(&mut log, batch);
+        Ok(Outcome::Proposed {
+            position,
+            proposal,
+            why,
+        })
+    }
+
+    async fn accept(&self, who: &Principal, proposal: &ProposalId) -> Result<Outcome> {
+        self.admit_write(who)?;
+        let mut log = self.log();
+        let (_, st) = self.state_at(&log, None)?;
+        let p = decidable(&st, who, proposal)?;
+        let proposer = log
+            .proposers
+            .get(proposal)
+            .cloned()
+            .ok_or_else(|| invalid("the mock does not know who made this proposal"))?;
+        let mut batch = Batch::at(&log);
+        let accepted = batch.push(Draft::new(
+            who,
+            Origin::Authored,
+            EventBody::WriteAccepted {
+                proposal: proposal.clone(),
+            },
+        ));
+        // The write is applied under the proposer's grants, caused by
+        // the acceptance.
+        let by = By {
+            st: &st,
+            who: &proposer,
+            cause: Some(accepted),
+        };
+        let version = match p.write.clone() {
+            ProposedWrite::Upsert {
+                ty,
+                key,
+                patch,
+                opts,
+            } => plan_upsert(&by, &mut batch, &ty, &key, patch, &opts)?,
+            ProposedWrite::Retire { ty, key, opts } => {
+                plan_retire(&by, &mut batch, &ty, &key, &opts)?
+            }
+            ProposedWrite::Call {
+                verb,
+                key,
+                payload,
+                opts,
+            } => {
+                let v = check_call(&st, &proposer, &verb, &key, &payload)?.clone();
+                check_version(&st, &v.on, &key, &opts)?;
+                plan_run(&by, &mut batch, &v, &key, payload, &opts)?
+            }
+        };
+        let position = Position(batch.peek().0 - 1);
+        self.commit(&mut log, batch);
+        Ok(Outcome::Applied {
+            position,
+            version: Some(version),
+        })
+    }
+
+    async fn reject(
+        &self,
+        who: &Principal,
+        proposal: &ProposalId,
+        reason: String,
+    ) -> Result<Outcome> {
+        self.admit_write(who)?;
+        let mut log = self.log();
+        let (_, st) = self.state_at(&log, None)?;
+        decidable(&st, who, proposal)?;
+        let mut batch = Batch::at(&log);
+        let position = batch.push(Draft::new(
+            who,
+            Origin::Authored,
+            EventBody::WriteRejected {
+                proposal: proposal.clone(),
+                reason,
+            },
+        ));
+        self.commit(&mut log, batch);
+        Ok(Outcome::Applied {
+            position,
+            version: None,
+        })
+    }
+
+    async fn proposals(
+        &self,
+        who: &Principal,
+        filter: ProposalFilter,
+    ) -> Result<Reply<Vec<Proposal>>> {
+        self.admit(who)?;
+        let (pinned, offset) = match &filter.cursor {
+            Some(c) => {
+                let (p, o) = uncursor(c)?;
+                (Some(p), o)
+            }
+            None => (filter.at.as_of, 0),
+        };
+        let (position, st) = self.state_at(&self.log(), pinned)?;
+        let type_of = |w: &ProposedWrite| match w {
+            ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => Some(ty.clone()),
+            ProposedWrite::Call { verb, .. } => st.verbs.get(verb).map(|v| v.on.clone()),
+        };
+        // A reviewer sees every proposal; anyone else sees their own, so
+        // that a proposer can follow what became of it.
+        let writer = who.writer();
+        let mut rows: Vec<Proposal> = st
+            .proposals
+            .values()
+            .filter(|p| who.grants.review || p.proposer == writer)
+            .filter(|p| filter.state.is_none_or(|s| p.state == s))
+            .filter(|p| filter.ty.is_none() || type_of(&p.write) == filter.ty)
+            .cloned()
+            .collect();
+        // Proposals are made in log order, so `proposed_at` and
+        // `position` order them alike; newest first unless stated.
+        let asc = filter
+            .order_by
+            .first()
+            .is_some_and(|o| o.dir == Direction::Asc);
+        rows.sort_by_key(|p| p.position);
+        if !asc {
+            rows.reverse();
+        }
+        let (rows, _) = page(rows, position, offset, self.limit(filter.limit));
+        Ok(Reply {
+            position,
+            data: rows,
+        })
+    }
+
+    async fn declare(&self, who: &Principal, declaration: Declaration) -> Result<Outcome> {
+        self.admit_write(who)?;
+        if !who.grants.schema {
+            return Err(refused(Refusal::NotGranted));
+        }
+        let mut log = self.log();
+        let (_, st) = self.state_at(&log, None)?;
+        let mut types: Vec<TypeName> = st.types.keys().cloned().collect();
+        let mut verbs: Vec<VerbName> = st.verbs.keys().cloned().collect();
+        let (schema_hash, version) = match &declaration {
+            Declaration::Type(t) => {
+                if reserved(t.name.as_str(), who) {
+                    return Err(refused(Refusal::Reserved));
+                }
+                let hash = value::schema_hash(t);
+                let version = match st.types.get(&t.name) {
+                    Some(old) if old.schema_hash != hash => {
+                        return Err(invalid(format!(
+                            "this declaration reshapes the records of `{}`; change it with `migrate`",
+                            t.name
+                        )));
+                    }
+                    Some(old) => old.version + 1,
+                    None => {
+                        types.push(t.name.clone());
+                        1
+                    }
+                };
+                (Some(hash), version)
+            }
+            other => {
+                let target = match other {
+                    Declaration::Verb(v) => {
+                        verbs.push(v.name.clone());
+                        Some(&v.on)
+                    }
+                    Declaration::Trigger(t) => Some(&t.on),
+                    Declaration::ObjectSet(s) => Some(&s.of),
+                    _ => None,
+                };
+                if let Some(ty) = target {
+                    if !st.types.contains_key(ty) {
+                        return Err(no_type(ty));
+                    }
+                    if reserved(ty.as_str(), who) {
+                        return Err(refused(Refusal::Reserved));
+                    }
+                }
+                let key = serde_json::to_value(other).unwrap_or_default();
+                let key = format!(
+                    "{}:{}",
+                    key["declare"].as_str().unwrap_or_default(),
+                    key["name"].as_str().unwrap_or_default()
+                );
+                (None, st.decl_versions.get(&key).map_or(1, |v| v + 1))
+            }
+        };
+        verbs.dedup();
+        let problems = lakelands_api::tools::name_problems(&types, &verbs);
+        if !problems.is_empty() {
+            return Err(invalid(format!(
+                "these names cannot all become tools: {}",
+                serde_json::to_string(&problems).unwrap_or_default()
+            )));
+        }
+        let mut batch = Batch::at(&log);
+        let position = batch.push(Draft::new(
+            who,
+            Origin::System,
+            EventBody::Declared {
+                declaration,
+                schema_hash,
+                version,
+            },
+        ));
+        self.commit(&mut log, batch);
+        Ok(Outcome::Applied {
+            position,
+            version: None,
+        })
+    }
+
+    async fn add_field(&self, who: &Principal, ty: &TypeName, f: FieldDecl) -> Result<Outcome> {
+        self.admit_write(who)?;
+        if !who.grants.schema {
+            return Err(refused(Refusal::NotGranted));
+        }
+        let mut log = self.log();
+        let (_, st) = self.state_at(&log, None)?;
+        if reserved(ty.as_str(), who) {
+            return Err(refused(Refusal::Reserved));
+        }
+        let t = st.types.get(ty).ok_or_else(|| no_type(ty))?;
+        if field(&t.decl, &f.name).is_some() {
+            return Err(on(
+                &f.name,
+                Refusal::Invalid {
+                    message: format!("`{ty}` already has a field `{}`", f.name),
+                },
+            ));
+        }
+        if f.required && st.records.values().any(|r| &r.ty == ty && !r.retired) {
+            return Err(on(
+                &f.name,
+                Refusal::Constraint {
+                    message: format!(
+                        "`{}` cannot be required: records of `{ty}` have no value for it",
+                        f.name
+                    ),
+                },
+            ));
+        }
+        let mut decl = t.decl.clone();
+        decl.fields.push(f);
+        let mut batch = Batch::at(&log);
+        let position = batch.push(Draft::new(
+            who,
+            Origin::System,
+            EventBody::Declared {
+                schema_hash: Some(value::schema_hash(&decl)),
+                version: t.version + 1,
+                declaration: Declaration::Type(decl),
+            },
+        ));
+        self.commit(&mut log, batch);
+        Ok(Outcome::Applied {
+            position,
+            version: None,
+        })
+    }
+
+    async fn migrate(
+        &self,
+        who: &Principal,
+        migration: Migration,
+    ) -> Result<Reply<MigrationReport>> {
+        self.admit(who)?;
+        if !who.grants.schema {
+            return Err(refused(Refusal::NotGranted));
+        }
+        let log = self.log();
+        let (position, st) = self.state_at(&log, None)?;
+        Ok(Reply {
+            position,
+            data: preflight(&st, position, &migration)?,
+        })
+    }
+
+    async fn migrate_apply(
+        &self,
+        who: &Principal,
+        migration: Migration,
+        report_id: &str,
+    ) -> Result<Outcome> {
+        self.admit_write(who)?;
+        if !who.grants.schema {
+            return Err(refused(Refusal::NotGranted));
+        }
+        let mut log = self.log();
+        let (head, st) = self.state_at(&log, None)?;
+        let report = preflight(&st, head, &migration)?;
+        if report.report_id != report_id {
+            return Err(invalid(
+                "the lake moved since this report was made; run the preflight again",
+            ));
+        }
+        if !report.lossless {
+            return Err(refused(Refusal::Migration {
+                report: Box::new(report),
+            }));
+        }
+        let version = st
+            .types
+            .get(&migration.to.name)
+            .map_or(1, |t| t.version + 1);
+        let mut batch = Batch::at(&log);
+        let position = batch.push(Draft::new(
+            who,
+            Origin::System,
+            EventBody::Migrated {
+                schema_hash: report.to_schema_hash.clone(),
+                migration,
+                version,
+                report_id: report.report_id,
+            },
+        ));
+        self.commit(&mut log, batch);
+        Ok(Outcome::Applied {
+            position,
+            version: None,
+        })
+    }
+
+    async fn ingest(
+        &self,
+        who: &Principal,
+        source: &SourceId,
+        mut records: SourceStream,
+    ) -> Result<CommitStream> {
+        self.admit_write(who)?;
+        if !who.grants.ingest {
+            return Err(refused(Refusal::NotGranted));
+        }
+        let records = stream::collect(&mut records).await;
+        let window = self.shared.limits.commit_window_events.max(1) as usize;
+        let mut acks = Vec::new();
+        for chunk in records.chunks(window) {
+            let mut log = self.log();
+            let (head, st) = self.state_at(&log, None)?;
+            match plan_window(&st, &log, who, source, chunk) {
+                Ok(w) => {
+                    let position = if w.batch.drafts.is_empty() {
+                        head
+                    } else {
+                        Position(w.batch.peek().0 - 1)
+                    };
+                    self.commit(&mut log, w.batch);
+                    acks.push(Ok(Committed {
+                        position,
+                        records: w.records,
+                        duplicates: w.duplicates,
+                    }));
+                }
+                Err(e) => {
+                    acks.push(Err(e));
+                    break;
+                }
+            }
+        }
+        Ok(stream::of(acks))
+    }
+}
+
+fn plan_window(
+    st: &State,
+    log: &Log,
+    who: &Principal,
+    source: &SourceId,
+    chunk: &[SourceRecord],
+) -> Result<Window> {
+    let mut w = Window {
+        batch: Batch::at(log),
+        versions: BTreeMap::new(),
+        ids: BTreeSet::new(),
+        records: 0,
+        duplicates: 0,
+    };
+    for r in chunk {
+        let t = check_patch(st, who, &r.ty, &r.fields, Origin::Source)?;
+        let id = content_id(source, r);
+        if st.ingested.contains(&id) || !w.ids.insert(id.clone()) {
+            w.duplicates += 1;
+            continue;
+        }
+        check_required(t, st.live(&r.ty, &r.key), &r.fields, Origin::Source)?;
+        let slot = (r.ty.clone(), r.key.clone());
+        let before = w
+            .versions
+            .get(&slot)
+            .copied()
+            .unwrap_or_else(|| st.version(&r.ty, &r.key));
+        let version = Version(before.0 + 1);
+        w.versions.insert(slot, version);
+        let mut d = Draft::new(
+            who,
+            Origin::Source,
+            EventBody::RecordIngested {
+                ty: r.ty.clone(),
+                key: r.key.clone(),
+                version,
+                patch: r.fields.clone(),
+            },
+        );
+        d.source = Some(source.clone());
+        d.seen_at = r.seen_at;
+        d.id = Some(id);
+        w.batch.push(d);
+        w.records += 1;
+    }
+    Ok(w)
+}
+
+/// The outcome an idempotency key already answered for this principal.
+fn remembered(st: &State, who: &Principal, opts: &WriteOpts) -> Option<Outcome> {
+    let key = opts.idempotency_key.as_ref()?;
+    st.idempotent.get(&(who.writer(), key.clone())).cloned()
+}
+
+/// A pending proposal a reviewer may decide.
+fn decidable<'a>(st: &'a State, who: &Principal, id: &ProposalId) -> Result<&'a Proposal> {
+    if !who.grants.review {
+        return Err(refused(Refusal::NotGranted));
+    }
+    let p = st.proposals.get(id).ok_or_else(|| Error::NotFound {
+        missing: Missing::Proposal { id: id.clone() },
+    })?;
+    if p.state != ProposalState::Pending {
+        return Err(refused(Refusal::Decided));
+    }
+    Ok(p)
+}

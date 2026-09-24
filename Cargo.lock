@@ -62,7 +62,10 @@ version = "0.0.0"
 name = "lakelands-mock"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
+ "futures-core",
  "lakelands-api",
+ "serde_json",
 ]
 
 [[package]]
