@@ -83,6 +83,25 @@ jobs:
       fail-fast: false
       matrix:
         engine: ${{ fromJSON(needs.roster.outputs.engines || '[]') }}
+    # A throwaway PostgreSQL for the `pg` engine only: an empty image
+    # starts no container for the other engines. Its password guards
+    # nothing but this job's own database, so it is not a secret.
+    services:
+      postgres:
+        image: ${{ matrix.engine == 'pg' && 'postgres:16' || '' }}
+        env:
+          POSTGRES_USER: lakelands
+          POSTGRES_PASSWORD: lakelands
+          POSTGRES_DB: lakelands
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lakelands -d lakelands"
+          --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      # Only the pg engine's test harness reads this and passes it as the
+      # `url` of `EngineConfig::Postgres`; the engine reads no environment.
+      LAKELANDS_TEST_PG_URL: ${{ matrix.engine == 'pg' && 'postgres://lakelands:lakelands@localhost:5432/lakelands' || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
