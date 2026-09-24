@@ -76,8 +76,9 @@ HTTP) from one catalog. Agents never write a query language.
 > **Status: `0.1.0`.** Lakelands `0.1.0` is the `lakelands` CLI and its
 > MCP server (stdio and streamable HTTP) over the SQLite and in-memory
 > engines, both passing the whole conformance suite, installable from
-> the release; the PostgreSQL engine, a REST door and the
-> OpenAI-compatible embedding client are not in it and come right after,
+> the release. `0.2.0` adds the REST door beside MCP (`docs/rest.md`);
+> the PostgreSQL engine and the OpenAI-compatible embedding client come
+> right after,
 > and so do the ticker for schedules, relations with fields of their
 > own, and the mirror between lakes.
 
@@ -155,8 +156,8 @@ walk's page lists every call and the answer it must give.
 `0.1.0` holds what is on disk, in every reply, or in a trait: the log
 format, per-field provenance, positions on every answer, the engine
 contract and the seams. What comes right after arrives through those
-seams without changing them: the PostgreSQL engine, a REST door, the
-OpenAI-compatible embedding client, webhook delivery of the change feed,
+seams without changing them: the PostgreSQL engine, the REST door (in
+`0.2.0`), the OpenAI-compatible embedding client, webhook delivery of the change feed,
 and MCP notifications. The repository goes public once The Wild runs on a
 tagged Lakelands.
 

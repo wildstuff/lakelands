@@ -345,7 +345,15 @@ fn callable(st: &State, who: &Principal, v: &VerbDecl) -> bool {
         VerbEffect::Write { set } => set
             .iter()
             .all(|a| field(&t.decl, &a.field).is_some_and(|f| access(who, &v.on, f).writes())),
-        VerbEffect::External { .. } => true,
+        // Carrying it out writes nothing of the record, so it asks for
+        // write access to the type, as the store does.
+        VerbEffect::External { .. } => who
+            .grants
+            .types
+            .get(&v.on)
+            .and_then(|t| t.default)
+            .unwrap_or(who.grants.default)
+            .writes(),
     }
 }
 
@@ -844,13 +852,14 @@ fn check_call<'a>(
     key: &RecordKey,
     payload: &Patch,
 ) -> Result<&'a VerbDecl> {
-    let v = st
-        .verbs
-        .get(verb)
-        .filter(|v| callable(st, who, v))
-        .ok_or_else(|| Error::NotFound {
-            missing: Missing::Verb { name: verb.clone() },
-        })?;
+    let v = st.verbs.get(verb).ok_or_else(|| Error::NotFound {
+        missing: Missing::Verb { name: verb.clone() },
+    })?;
+    // A declared verb the caller may not call is refused, as the store
+    // refuses it; only an undeclared one is not found.
+    if !callable(st, who, v) {
+        return Err(refused(Refusal::NotGranted));
+    }
     let rec = st.live(&v.on, key).ok_or_else(|| no_record(&v.on, key))?;
     for (name, val) in payload {
         let f = v.payload.iter().find(|f| &f.name == name).ok_or_else(|| {
@@ -1274,6 +1283,14 @@ impl Catalog for MockCatalog {
             return Ok(o);
         }
         let v = check_call(&st, who, verb, key, &payload)?.clone();
+        // The mock binds no executor, so a verb that reaches outside the
+        // lake is refused when called, as the store refuses one whose
+        // executor its host did not bind.
+        if let VerbEffect::External { executor } = &v.effect {
+            return Err(Error::Unbound {
+                seam: format!("the verb executor `{executor}`"),
+            });
+        }
         check_version(&st, &v.on, key, &opts)?;
         let mut batch = Batch::at(&log);
         let runs = v.risk == Risk::Low && matches!(v.effect, VerbEffect::Write { .. });
@@ -1290,7 +1307,10 @@ impl Catalog for MockCatalog {
                 output: None,
             }
         } else {
-            let why = format!("`{verb}` is declared {} risk", risk_word(v.risk));
+            let why = format!(
+                "`{verb}` is declared {} risk; it runs when accepted",
+                risk_word(v.risk)
+            );
             let key_ = opts.idempotency_key.clone();
             let write = ProposedWrite::Call {
                 verb: verb.clone(),

@@ -1,4 +1,8 @@
-//! MCP over streamable HTTP, at `POST /lakes/<id>/mcp`.
+//! The HTTP door: MCP over streamable HTTP at `POST /lakes/<id>/mcp`,
+//! and REST under every other path of `/lakes/<id>/` ([`crate::rest`]).
+//! Both take the same key, the same resolver and the same lakes.
+//!
+//! For MCP:
 //!
 //! - `initialize` resolves the caller's API key (`Authorization: Bearer
 //!   <key>`) to a principal through the resolver, opens the lake, starts
@@ -30,26 +34,28 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
 use hyper::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderValue, ORIGIN};
-use hyper::{Method, Request, Response, StatusCode};
+use hyper::{HeaderMap, Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use lakelands_api::LakeStore;
 use lakelands_api::error::Result;
 use lakelands_api::id::LakeId;
 use lakelands_api::read::POSITION_HEADER;
 use lakelands_api::seam::{Credential, PrincipalResolver};
+use lakelands_api::{LakeStore, Principal};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::net::TcpListener;
 
 use crate::resolver::same_key;
+use crate::rest::Answer;
 use crate::session::{PROTOCOL_VERSIONS, Session, code, error};
 
 /// The header a session's id travels in.
 pub const SESSION_HEADER: &str = "mcp-session-id";
 /// The header a client names its protocol version in after `initialize`.
 pub const VERSION_HEADER: &str = "mcp-protocol-version";
-/// The largest request body read.
-const MAX_BODY: usize = 4 << 20;
+/// The largest request body read whole, by either transport; a REST
+/// ingest body is streamed instead.
+pub(crate) const MAX_BODY: usize = 4 << 20;
 
 /// The HTTP door's configuration: the `server` section of the root's
 /// `lakelands.json`.
@@ -71,10 +77,18 @@ pub struct HttpConfig {
     /// naming it is answered as for an unknown session.
     #[serde(default = "default_idle")]
     pub session_idle_secs: u64,
+    /// How long a caught-up REST feed waits before it reads the log
+    /// again, in milliseconds.
+    #[serde(default = "default_feed_poll")]
+    pub feed_poll_millis: u64,
 }
 
 fn default_idle() -> u64 {
     30 * 60
+}
+
+fn default_feed_poll() -> u64 {
+    250
 }
 
 /// Opens a lake by its id, for a new session.
@@ -94,11 +108,12 @@ impl Slot {
     }
 }
 
-struct State {
+pub(crate) struct State {
     idle: Duration,
-    origins: Vec<String>,
-    resolver: Arc<dyn PrincipalResolver>,
-    open: Arc<LakeOpener>,
+    pub(crate) feed_poll: Duration,
+    pub(crate) origins: Vec<String>,
+    pub(crate) resolver: Arc<dyn PrincipalResolver>,
+    pub(crate) open: Arc<LakeOpener>,
     sessions: Mutex<HashMap<String, Arc<Slot>>>,
 }
 
@@ -119,6 +134,7 @@ pub async fn serve_http(
         listener,
         state: Arc::new(State {
             idle: Duration::from_secs(config.session_idle_secs),
+            feed_poll: Duration::from_millis(config.feed_poll_millis),
             origins: config.allowed_origins,
             resolver,
             open,
@@ -152,17 +168,26 @@ impl HttpServer {
     }
 }
 
-fn respond(status: StatusCode, body: Option<&Value>) -> Response<Full<Bytes>> {
-    let mut r = Response::new(Full::new(match body {
-        Some(v) => Bytes::from(serde_json::to_vec(v).expect("JSON prints")),
-        None => Bytes::new(),
-    }));
+/// A JSON reply, whole.
+pub(crate) fn json_response(status: StatusCode, v: &Value) -> Response<Full<Bytes>> {
+    let mut r = Response::new(Full::new(Bytes::from(
+        serde_json::to_vec(v).expect("JSON prints"),
+    )));
     *r.status_mut() = status;
-    if body.is_some() {
-        r.headers_mut()
-            .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    }
+    r.headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     r
+}
+
+fn respond(status: StatusCode, body: Option<&Value>) -> Response<Full<Bytes>> {
+    match body {
+        Some(v) => json_response(status, v),
+        None => {
+            let mut r = Response::new(Full::new(Bytes::new()));
+            *r.status_mut() = status;
+            r
+        }
+    }
 }
 
 /// An HTTP refusal, with a JSON-RPC error body saying why.
@@ -170,8 +195,136 @@ fn refuse(status: StatusCode, code: i64, message: &str) -> Response<Full<Bytes>>
     respond(status, Some(&error(Value::Null, code, message)))
 }
 
-fn header(req: &Request<Incoming>, name: impl hyper::header::AsHeaderName) -> Option<&str> {
-    req.headers().get(name).and_then(|v| v.to_str().ok())
+/// A header's value, when it is text.
+pub(crate) fn header(h: &HeaderMap, name: impl hyper::header::AsHeaderName) -> Option<&str> {
+    h.get(name).and_then(|v| v.to_str().ok())
+}
+
+/// Why the door turned a request away before a lake answered it. Each
+/// transport says it in its own envelope: MCP as a JSON-RPC error, REST
+/// as the contract's refusal with its two sentences.
+pub(crate) struct Turned {
+    pub(crate) status: StatusCode,
+    pub(crate) why: Turn,
+    pub(crate) what: String,
+    pub(crate) todo: String,
+}
+
+/// What kind of turning away.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Turn {
+    /// The caller is not let in: an origin, a key.
+    NotGranted,
+    /// The request cannot be read as it is.
+    Invalid,
+    /// The body is not JSON.
+    NotJson,
+}
+
+impl Turned {
+    fn new(status: StatusCode, why: Turn, what: impl Into<String>, todo: &str) -> Turned {
+        Turned {
+            status,
+            why,
+            what: what.into(),
+            todo: todo.to_owned(),
+        }
+    }
+
+    /// Said as MCP says it.
+    fn to_mcp(&self) -> Response<Full<Bytes>> {
+        let code = match self.why {
+            Turn::NotJson => code::PARSE,
+            Turn::NotGranted | Turn::Invalid => code::INVALID_REQUEST,
+        };
+        refuse(self.status, code, &self.what)
+    }
+}
+
+/// Let a request in: its `Origin`, if any, is allowed, and it presents an
+/// API key. Answers the key.
+pub(crate) fn admit(state: &State, h: &HeaderMap) -> std::result::Result<String, Turned> {
+    if let Some(origin) = header(h, ORIGIN)
+        && !state.origins.iter().any(|o| o == origin)
+    {
+        return Err(Turned::new(
+            StatusCode::FORBIDDEN,
+            Turn::NotGranted,
+            "this origin may not call the server",
+            "call from an origin the server's configuration allows",
+        ));
+    }
+    header(h, AUTHORIZATION)
+        .and_then(|a| a.strip_prefix("Bearer "))
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            Turned::new(
+                StatusCode::UNAUTHORIZED,
+                Turn::NotGranted,
+                "present an API key as `Authorization: Bearer <key>`",
+                "send the key the lake's owner gave you",
+            )
+        })
+}
+
+/// The principal a key stands for in a lake.
+pub(crate) async fn resolve(
+    state: &State,
+    lake: &LakeId,
+    key: String,
+) -> std::result::Result<Principal, Turned> {
+    state
+        .resolver
+        .resolve(lake, &Credential::ApiKey(key))
+        .await
+        .map_err(|_| {
+            Turned::new(
+                StatusCode::UNAUTHORIZED,
+                Turn::NotGranted,
+                "the key is not known for this lake",
+                "send the key the lake's owner gave you",
+            )
+        })
+}
+
+/// A JSON body, read whole: its media type, when named, is JSON, and it
+/// is no larger than [`MAX_BODY`]. `None` when it is empty.
+pub(crate) async fn read_json(
+    h: &HeaderMap,
+    body: Incoming,
+) -> std::result::Result<Option<Value>, Turned> {
+    if let Some(ct) = header(h, CONTENT_TYPE)
+        && !ct.starts_with("application/json")
+    {
+        return Err(Turned::new(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            Turn::Invalid,
+            "send the body as application/json",
+            "send the body as JSON",
+        ));
+    }
+    let bytes = match Limited::new(body, MAX_BODY).collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(_) => {
+            return Err(Turned::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Turn::Invalid,
+                "the body is too large or was cut off",
+                "send a smaller body; many records go through ingest",
+            ));
+        }
+    };
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Ok(None);
+    }
+    serde_json::from_slice(&bytes).map(Some).map_err(|e| {
+        Turned::new(
+            StatusCode::BAD_REQUEST,
+            Turn::NotJson,
+            format!("the body is not JSON: {e}"),
+            "send the body as JSON",
+        )
+    })
 }
 
 impl State {
@@ -213,16 +366,24 @@ fn new_session_id() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-async fn handle(state: &State, req: Request<Incoming>) -> Response<Full<Bytes>> {
-    if let Some(origin) = header(&req, ORIGIN)
-        && !state.origins.iter().any(|o| o == origin)
-    {
-        return refuse(
-            StatusCode::FORBIDDEN,
-            code::INVALID_REQUEST,
-            "this origin may not call the server",
-        );
+async fn handle(state: &State, req: Request<Incoming>) -> Answer {
+    let path = req.uri().path().to_owned();
+    // `/lakes/<id>/mcp` is MCP; every other path under a lake is REST.
+    match path.strip_prefix("/lakes/") {
+        Some(rest)
+            if rest.contains('/') && !rest.split_once('/').is_some_and(|(_, r)| r == "mcp") =>
+        {
+            crate::rest::handle(state, req, rest).await
+        }
+        _ => mcp(state, req).await.map(BodyExt::boxed),
     }
+}
+
+async fn mcp(state: &State, req: Request<Incoming>) -> Response<Full<Bytes>> {
+    let key = match admit(state, req.headers()) {
+        Ok(k) => k,
+        Err(t) => return t.to_mcp(),
+    };
     let lake = match req
         .uri()
         .path()
@@ -238,20 +399,10 @@ async fn handle(state: &State, req: Request<Incoming>) -> Response<Full<Bytes>> 
             );
         }
     };
-    let Some(key) = header(&req, AUTHORIZATION)
-        .and_then(|a| a.strip_prefix("Bearer "))
-        .map(str::to_owned)
-    else {
-        return refuse(
-            StatusCode::UNAUTHORIZED,
-            code::INVALID_REQUEST,
-            "present an API key as `Authorization: Bearer <key>`",
-        );
-    };
     match *req.method() {
         Method::POST => post(state, lake, key, req).await,
         Method::DELETE => {
-            let Some(id) = header(&req, SESSION_HEADER).map(str::to_owned) else {
+            let Some(id) = header(req.headers(), SESSION_HEADER).map(str::to_owned) else {
                 return refuse(
                     StatusCode::BAD_REQUEST,
                     code::INVALID_REQUEST,
@@ -285,7 +436,7 @@ async fn post(
     key: String,
     req: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    if let Some(accept) = header(&req, ACCEPT)
+    if let Some(accept) = header(req.headers(), ACCEPT)
         && !(accept.contains("application/json") || accept.contains("*/*"))
     {
         return refuse(
@@ -294,16 +445,7 @@ async fn post(
             "this server answers application/json",
         );
     }
-    if let Some(ct) = header(&req, CONTENT_TYPE)
-        && !ct.starts_with("application/json")
-    {
-        return refuse(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            code::INVALID_REQUEST,
-            "send the message as application/json",
-        );
-    }
-    if let Some(v) = header(&req, VERSION_HEADER)
+    if let Some(v) = header(req.headers(), VERSION_HEADER)
         && !PROTOCOL_VERSIONS.contains(&v)
     {
         return refuse(
@@ -312,26 +454,18 @@ async fn post(
             "this server does not speak that protocol version",
         );
     }
-    let session_id = header(&req, SESSION_HEADER).map(str::to_owned);
-    let body = match Limited::new(req.into_body(), MAX_BODY).collect().await {
-        Ok(b) => b.to_bytes(),
-        Err(_) => {
-            return refuse(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                code::INVALID_REQUEST,
-                "the message is too large or was cut off",
-            );
-        }
-    };
-    let msg: Value = match serde_json::from_slice(&body) {
-        Ok(v) => v,
-        Err(e) => {
+    let session_id = header(req.headers(), SESSION_HEADER).map(str::to_owned);
+    let (parts, body) = req.into_parts();
+    let msg = match read_json(&parts.headers, body).await {
+        Ok(Some(v)) => v,
+        Ok(None) => {
             return refuse(
                 StatusCode::BAD_REQUEST,
                 code::PARSE,
-                &format!("the message is not JSON: {e}"),
+                "the body is empty; send one JSON-RPC message",
             );
         }
+        Err(t) => return t.to_mcp(),
     };
     if msg.is_array() {
         return refuse(
@@ -343,19 +477,9 @@ async fn post(
     let id = msg.get("id").cloned();
 
     if msg.get("method").and_then(Value::as_str) == Some("initialize") {
-        let who = match state
-            .resolver
-            .resolve(&lake, &Credential::ApiKey(key.clone()))
-            .await
-        {
+        let who = match resolve(state, &lake, key.clone()).await {
             Ok(p) => p,
-            Err(_) => {
-                return refuse(
-                    StatusCode::UNAUTHORIZED,
-                    code::INVALID_REQUEST,
-                    "the key is not known for this lake",
-                );
-            }
+            Err(t) => return t.to_mcp(),
         };
         let store = match (state.open)(&lake) {
             Ok(s) => s,

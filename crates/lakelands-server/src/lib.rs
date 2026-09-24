@@ -1,5 +1,6 @@
 //! The server door: serves one lake's catalog as MCP tools, on stdio and
-//! on streamable HTTP.
+//! on streamable HTTP, and as REST routes beside MCP on the same HTTP
+//! door ([`rest`], `docs/rest.md`).
 //!
 //! One MCP session serves one lake as one principal. The principal comes
 //! from the [`resolver`] — the API key an HTTP caller presents, or the
@@ -16,8 +17,10 @@
 
 #![forbid(unsafe_code)]
 
+pub(crate) mod doors;
 pub mod http;
 pub mod resolver;
+pub mod rest;
 pub mod say;
 pub mod session;
 pub mod stdio;
