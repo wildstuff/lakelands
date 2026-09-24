@@ -1,0 +1,44 @@
+# 012 — A write touches only the fields it carries
+
+## What is decided
+
+An `upsert` is a sparse patch, merged per field. A field absent from the
+patch is unchanged; a field set to `null` is cleared. A writer that
+sends only its own fields cannot erase anyone else's.
+
+Together with per-field grants (006), this makes two writers on one
+record safe by construction: each principal writes only the fields it is
+granted, and a patch that carries a field its principal may not write is
+refused whole.
+
+A field may declare that it depends on other fields (`depends_on`) and
+what happens when one of those inputs changes (`on_input_change: keep |
+clear`). With `clear`, the fold clears the dependent field in the same
+event that changes the input. With `keep`, the value stays, and its
+`known_at` shows it is older than its inputs.
+
+## Why
+
+A store with more than one writer per record is the normal case, not an
+edge: an import writes the facts, a person or an agent writes a
+verdict, a computation writes a score. If a write replaces the whole
+record, the last writer silently erases the others, and the only
+defence is every caller reading and re-sending fields it does not own,
+which races.
+
+Invalidation belongs in the fold for the same reason. If the caller had
+to clear dependent fields, a caller that forgot would leave a verdict
+standing on inputs that no longer hold. In the fold it happens on every
+write, deterministically, and a replay reproduces it.
+
+## What it is not
+
+- It is not a merge by the door. No transport, CLI or tool carries a
+  list of "fields I do not own"; the rule is the fold's, so a caller
+  reaching the store directly gets it too.
+- It is not last-writer-wins at record level, and it is not a
+  conflict-free merge of concurrent edits to the same field. For that,
+  a writer passes the record's expected version and the write is
+  refused if it moved.
+- `keep` does not hide staleness; it leaves the decision to the reader,
+  with the evidence in the field's metadata.
