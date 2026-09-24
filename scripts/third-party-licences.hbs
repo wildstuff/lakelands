@@ -1,0 +1,23 @@
+Third-party licences
+====================
+
+Lakelands is licensed under the Apache License, Version 2.0. It links the
+crates listed below, each under the licence shown with it.
+{{#unless licenses}}
+None today.
+{{/unless}}
+{{#each overview}}
+- {{name}} ({{id}}): {{count}} crate(s)
+{{/each}}
+{{#each licenses}}
+
+------------------------------------------------------------------------
+{{name}} ({{id}})
+
+Used by:
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}
+{{/each}}
+
+{{text}}
+{{/each}}
