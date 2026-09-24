@@ -246,13 +246,12 @@ fn link_relation(
     ty: &TypeName,
     relation: &RelationName,
 ) -> Result<lakelands_api::ontology::RelationDecl> {
-    // As the store: an undeclared type is not found; a declared one the
-    // principal may not write the links of is not granted.
+    // As the store: an undeclared type is not found; a relation it does
+    // not carry by link records is invalid; one the principal may not
+    // write the links of is not granted.
     let t = st.types.get(ty).ok_or_else(|| no_type(ty))?;
-    if st.visible(who, &links::name(ty, relation)).is_none() {
-        return Err(refused(Refusal::NotGranted));
-    }
-    t.decl
+    let r = t
+        .decl
         .relations
         .iter()
         .find(|r| &r.name == relation && r.via.is_none())
@@ -261,7 +260,11 @@ fn link_relation(
             invalid(format!(
                 "`{ty}` has no relation `{relation}` carried by link records"
             ))
-        })
+        })?;
+    if st.visible(who, &links::name(ty, relation)).is_none() {
+        return Err(refused(Refusal::NotGranted));
+    }
+    Ok(r)
 }
 
 /// The relation's cardinality over live links, the link from `from` to
@@ -832,8 +835,10 @@ fn check_references(
         if st.live(&slot.0, &slot.1).is_none() && !earlier.contains_key(&slot) {
             return Err(on(
                 name,
-                Refusal::Invalid {
-                    message: format!("`{name}` names `{key}`, which is no live `{target}`"),
+                Refusal::Constraint {
+                    message: format!(
+                        "`{name}` names `{target}` `{key}`, which is not a live record"
+                    ),
                 },
             ));
         }

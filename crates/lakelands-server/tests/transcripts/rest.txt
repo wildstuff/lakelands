@@ -469,3 +469,142 @@
 < content-type: application/json
 < lakelands-position: 28
 < {"error":"refused","reason":{"head":28,"refusal":"out_of_range"},"todo":"ask for a position at or before 28","what":"refused: the lake's log ends at position 28"}
+
+# Links: a relation carried by link records, written through its link
+# routes under the record it starts from.
+> POST /lakes/finance/schema/declare_type
+> authorization: Bearer k-owner
+> content-type: application/json
+> {"type":{"name":"contract","fields":[{"name":"title","type":{"kind":"text"}}],"relations":[{"name":"signed_by","target":"partner","cardinality":"many_to_many","fields":[{"name":"since","type":{"kind":"text"}}]}]}}
+< 200
+< content-type: application/json
+< lakelands-position: 29
+< {"outcome":"applied","position":29}
+
+> PUT /lakes/finance/types/partner/records/P-1
+> authorization: Bearer k-owner
+> content-type: application/json
+> {"name":"Acme"}
+< 200
+< content-type: application/json
+< lakelands-position: 31
+< {"outcome":"applied","position":31,"version":1}
+
+> PUT /lakes/finance/types/contract/records/C-1
+> authorization: Bearer k-owner
+> content-type: application/json
+> {"title":"Supply"}
+< 200
+< content-type: application/json
+< lakelands-position: 32
+< {"outcome":"applied","position":32,"version":1}
+
+> PUT /lakes/finance/types/contract/records/C-1/links/signed_by/P-1
+> authorization: Bearer k-owner
+> content-type: application/json
+> {"since":"2026"}
+< 200
+< content-type: application/json
+< lakelands-position: 33
+< {"outcome":"applied","position":33,"version":1}
+
+# Written again, the one link per pair changes its fields.
+> PUT /lakes/finance/types/contract/records/C-1/links/signed_by/P-1
+> authorization: Bearer k-owner
+> content-type: application/json
+> {"since":"2027"}
+< 200
+< content-type: application/json
+< lakelands-position: 34
+< {"outcome":"applied","position":34,"version":2}
+
+> GET /lakes/finance/types/sys.link.contract.signed_by/records
+> authorization: Bearer k-owner
+< 200
+< content-type: application/json
+< lakelands-position: 34
+< {"data":{"rows":[{"fields":{"from":"C-1","since":"2027","to":"P-1"},"key":"C-1:P-1","type":"sys.link.contract.signed_by","version":2}],"shape":"records"},"position":34}
+
+# A link to a record that is not there, over a relation carried by a
+# field, over no relation, by a principal who may not link, and with a
+# body that is not an object.
+> PUT /lakes/finance/types/contract/records/C-1/links/signed_by/P-404
+> authorization: Bearer k-owner
+< 422
+< content-type: application/json
+< lakelands-position: 34
+< {"error":"refused","field":"to","reason":{"message":"`to` names `partner` `P-404`, which is not a live record","refusal":"constraint"},"todo":"correct the input and run the command again; nothing was written","what":"refused on `to`: `to` names `partner` `P-404`, which is not a live record"}
+
+> PUT /lakes/finance/types/invoice/records/INV-1/links/billed_by/P-1
+> authorization: Bearer k-owner
+< 422
+< content-type: application/json
+< lakelands-position: 34
+< {"error":"refused","reason":{"message":"`invoice` has no relation `billed_by` carried by link records","refusal":"invalid"},"todo":"correct the input and run the command again; nothing was written","what":"refused: `invoice` has no relation `billed_by` carried by link records"}
+
+> PUT /lakes/finance/types/contract/records/C-1/links/nowhere/P-1
+> authorization: Bearer k-owner
+< 422
+< content-type: application/json
+< lakelands-position: 34
+< {"error":"refused","reason":{"message":"`contract` has no relation `nowhere` carried by link records","refusal":"invalid"},"todo":"correct the input and run the command again; nothing was written","what":"refused: `contract` has no relation `nowhere` carried by link records"}
+
+> PUT /lakes/finance/types/contract/records/C-1/links/signed_by/P-1
+> authorization: Bearer k-clerk
+< 403
+< content-type: application/json
+< lakelands-position: 34
+< {"error":"refused","field":"from","reason":{"refusal":"not_granted"},"todo":"act as a principal whose grants allow it, or ask the lake's owner for a grant","what":"refused on `from`: you hold no grant for this"}
+
+> PUT /lakes/finance/types/contract/records/C-1/links/signed_by/P-1
+> authorization: Bearer k-owner
+> content-type: application/json
+> ["2026"]
+< 400
+< content-type: application/json
+< lakelands-position: 34
+< {"error":"refused","reason":{"message":"`PUT …/types/<type>/records/<key>/links/<relation>/<to>` takes a JSON object of fields","refusal":"invalid"},"todo":"send the fields as one JSON object","what":"`PUT …/types/<type>/records/<key>/links/<relation>/<to>` takes a JSON object of fields"}
+
+# The link is a record: `If-Match` names its version, and
+# `If-None-Match: *` asks that it not exist yet.
+> PUT /lakes/finance/types/contract/records/C-1/links/signed_by/P-1
+> authorization: Bearer k-owner
+> if-match: "1"
+> content-type: application/json
+> {"since":"2028"}
+< 412
+< content-type: application/json
+< lakelands-position: 34
+< {"actual":2,"error":"conflict","expected":1,"todo":"read the record again and retry against its current version","what":"the record changed: expected version 1, found 2"}
+
+> PUT /lakes/finance/types/contract/records/C-1/links/signed_by/P-1
+> authorization: Bearer k-owner
+> if-none-match: *
+< 412
+< content-type: application/json
+< lakelands-position: 34
+< {"actual":2,"error":"conflict","expected":0,"todo":"read the record again and retry against its current version","what":"the record changed: expected version 0, found 2"}
+
+# A link route takes PUT and DELETE only.
+> GET /lakes/finance/types/contract/records/C-1/links/signed_by/P-1
+> authorization: Bearer k-owner
+< 405
+< allow: PUT, DELETE
+< content-type: application/json
+< lakelands-position: 34
+< {"error":"refused","reason":{"message":"this route takes PUT, DELETE, not GET","refusal":"invalid"},"todo":"send it as PUT, DELETE","what":"this route takes PUT, DELETE, not GET"}
+
+# Unlinked; its history stays. Unlinking it again.
+> DELETE /lakes/finance/types/contract/records/C-1/links/signed_by/P-1
+> authorization: Bearer k-owner
+< 200
+< content-type: application/json
+< lakelands-position: 35
+< {"outcome":"applied","position":35,"version":3}
+
+> DELETE /lakes/finance/types/contract/records/C-1/links/signed_by/P-1
+> authorization: Bearer k-owner
+< 404
+< content-type: application/json
+< lakelands-position: 35
+< {"error":"not_found","missing":{"key":"C-1:P-1","kind":"record","type":"sys.link.contract.signed_by"},"todo":"check the name, or apply the declaration that introduces it first","what":"there is no `sys.link.contract.signed_by` with key `C-1:P-1`"}
