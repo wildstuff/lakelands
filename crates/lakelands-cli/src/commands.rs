@@ -1,5 +1,5 @@
 //! The commands that open a lake: `apply`, `ingest`, `feed`, `age`,
-//! `rebuild` and `serve`. Each calls the library in-process and prints
+//! `purge`, `rebuild` and `serve`. Each calls the library in-process and prints
 //! the position of every answer that has one.
 
 use std::collections::BTreeMap;
@@ -491,6 +491,28 @@ pub async fn feed(
         }
         at = batch.next;
     }
+}
+
+/// `purge`: retire every live record one source brought in, as one append
+/// (`LakeStore::purge_source`), and print what went, per type.
+pub async fn purge(out: Out<'_>, store: &Arc<dyn LakeStore>, source: &str) -> Result<(), Failure> {
+    let report = store.purge_source(&SourceId::from(source)).await?;
+    for t in &report.types {
+        put(out, format!("{}: retired {}", t.ty, t.retired))?;
+    }
+    for t in &report.unsearched {
+        put(
+            out,
+            format!("{t}: not searched, it keeps no per-field provenance"),
+        )?;
+    }
+    if report.retired == 0 {
+        return put(out, format!("nothing to retire for {source}"));
+    }
+    put(
+        out,
+        format!("purged {source} through position {}", report.position),
+    )
 }
 
 /// `rebuild`: rebuild the projection from the log.

@@ -81,9 +81,9 @@ HTTP) and REST from one catalog. Agents never write a query language.
 > (`docs/rest.md`), the PostgreSQL engine, the OpenAI-compatible
 > embedding client, the `http` and `exec` function backings, the webhook
 > deliverer, relations with fields of their own, carried by link
-> records, and aging by date (`lakelands age`). The ticker that runs
-> aging daily, MCP notifications, and the mirror between lakes come
-> after.
+> records, aging by date (`lakelands age`), and retracting a source as
+> one act (`lakelands purge`). The ticker that runs aging daily, MCP
+> notifications, and the mirror between lakes come after.
 
 ## Try it
 

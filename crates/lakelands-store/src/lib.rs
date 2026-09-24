@@ -19,6 +19,7 @@ pub mod ingest;
 pub mod lake;
 pub mod log;
 pub mod ontology;
+pub mod purge;
 pub mod reads;
 pub mod record;
 pub mod writes;

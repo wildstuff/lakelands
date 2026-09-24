@@ -769,6 +769,22 @@ interface types {
         skipped: option<string>,
     }
 
+    /// What one purge retired: per type, the types it could not search,
+    /// and the position after its append.
+    record purge-report {
+        source: source-id,
+        retired: u32,
+        types: list<type-retired>,
+        unsearched: list<type-name>,
+        position: position,
+    }
+
+    /// The records a purge retired in one type.
+    record type-retired {
+        %type: type-name,
+        retired: u32,
+    }
+
     record limits {
         default-limit: u32,
         max-limit: u32,

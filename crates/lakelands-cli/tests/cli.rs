@@ -627,6 +627,32 @@ fn apply_writes_aging_rules_after_the_declarations_and_age_runs_them() {
 }
 
 #[test]
+fn purge_retires_what_a_source_brought_in_and_prints_its_position() {
+    for backend in BACKENDS {
+        let sh = Shell::on("purge", backend);
+        sh.lake();
+        sh.run(&["apply", &sh.fixture()]);
+        let csv = sh.file("bank.csv", "Invoice,Amount\nINV-1,1.00\nINV-2,2.00\n");
+        let map = sh.file(
+            "bank.map.json",
+            r#"{"type": "invoice", "key": "Invoice", "fields": {"Amount": "amount"}}"#,
+        );
+        sh.run(&["ingest", &csv, "--source", "bank", "--map", &map]);
+        ok(
+            &sh.run(&["purge", "--source", "bank"]),
+            "invoice: retired 2\npurged bank through position 11\n",
+        );
+        // Nothing left to retire: nothing is appended, and it says so.
+        ok(
+            &sh.run(&["purge", "--source", "bank"]),
+            "nothing to retire for bank\n",
+        );
+        let empty = sh.run(&["purge", "--source", ""]);
+        assert_eq!((empty.code, empty.out.as_str()), (2, ""), "{}", empty.err);
+    }
+}
+
+#[test]
 fn rebuild_prints_the_position_it_rebuilt_through() {
     for backend in BACKENDS {
         let sh = Shell::on("rebuild", backend);

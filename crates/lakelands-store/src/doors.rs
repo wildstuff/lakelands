@@ -19,7 +19,7 @@ use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
 use lakelands_api::seam::{ChangeFeed, FeedBatch, FeedFilter, Seams, VerbInvocation};
 use lakelands_api::write::{
     AgeReport, Declaration, Migration, MigrationReport, Outcome, Proposal, ProposalFilter,
-    ProposedWrite, WriteOpts,
+    ProposedWrite, PurgeReport, WriteOpts,
 };
 use lakelands_api::{
     Catalog, Error, Find, Found, Get, LakeId, LakeStore, Patch, Position, Principal, ProposalId,
@@ -581,6 +581,17 @@ impl LakeStore for Store {
         let mut report = exec::run(move || crate::aging::run(&lake, today)).await?;
         // The moves' backed fields settle like any write's; the report
         // names the position from which what they filled is visible.
+        if let Some(last) = crate::backed::settle(&self.lake, seen).await? {
+            report.position = report.position.max(last);
+        }
+        Ok(report)
+    }
+
+    async fn purge_source(&self, source: &SourceId) -> Result<PurgeReport> {
+        let (lake, source) = (self.lake.clone(), source.clone());
+        let seen = lake.drains.load(std::sync::atomic::Ordering::Acquire);
+        let mut report = exec::run(move || crate::purge::run(&lake, &source)).await?;
+        // The retirements' backed fields settle like any write's.
         if let Some(last) = crate::backed::settle(&self.lake, seen).await? {
             report.position = report.position.max(last);
         }

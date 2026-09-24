@@ -110,6 +110,11 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   The aging rules run when the host calls `LakeStore::age(today)`, once
   a day, with the date (`docs/decisions/036-aging-runs-by-date-once.md`);
   `lakelands age --today <YYYY-MM-DD>` is the same call from the CLI.
+  A source that should be taken back is purged with
+  `LakeStore::purge_source(source)` (`lakelands purge --source <id>`):
+  every record it brought in is retired in one append, and a record
+  another hand also wrote refuses the purge
+  (`docs/decisions/039-a-source-is-retracted-as-one.md`).
 
 **Configuration is not a seam.** Engine configuration, tuning, limits
 and an optional key handle reach a lake through `Location`, and a
