@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::StorageKind;
+use lakelands_api::ontology::{Authority, StorageKind};
 use lakelands_api::{Access, Error, LakeStore, ReadAt, Refusal, TypeName, WriteOpts};
 use serde_json::json;
 
@@ -17,6 +17,72 @@ check!(
     RETIRE_NEEDS_EVERY_FIELD = a_principal_who_may_write_only_some_fields_cannot_retire,
     "006 and TypeRights::retire: retiring removes every field of a record, so it needs a write grant on every field of the type"
 );
+
+check!(
+    /// A type whose fields all come from a source has no `upsert`.
+    SOURCE_ONLY_HAS_NO_UPSERT = a_type_whose_fields_all_come_from_a_source_has_no_upsert,
+    "016 and TypeRights::upsert: upsert writes authored fields; a type with none has no upsert for anyone, the owner included: describe says so, and the door refuses it as the wrong door, naming the field"
+);
+
+async fn a_type_whose_fields_all_come_from_a_source_has_no_upsert(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let sourced = |name: &str, kind| {
+        let mut f = field(name, kind);
+        f.authority = Authority::Source;
+        f
+    };
+    declare(
+        cat.as_ref(),
+        &own,
+        type_decl(
+            "rate",
+            vec![
+                sourced("currency", StorageKind::Text),
+                sourced("value", StorageKind::Decimal),
+            ],
+        ),
+    )
+    .await?;
+    let d = cat
+        .describe_type(&own, &TypeName::from("rate"), ReadAt::default())
+        .await
+        .must("describing `rate` as the owner")?
+        .data;
+    ensure!(
+        !d.may.upsert && d.may.find && d.may.get,
+        "every field of `rate` comes from a source, so no one may upsert it, the owner \
+         included, while the owner still finds and gets it; describe says {:?}",
+        d.may
+    );
+    // The door agrees with describe: a direct upsert is the wrong door.
+    let before = store.head().await.must("reading the head")?;
+    let err = cat
+        .upsert(
+            &own,
+            &TypeName::from("rate"),
+            &"eur".into(),
+            crate::conformance::fixture::patch(json!({"currency": "EUR"})),
+            WriteOpts::default(),
+        )
+        .await
+        .must_fail("the owner upserting `rate`, whose fields all come from a source")?;
+    head_unmoved(store.as_ref(), before, "upserting a source-only type").await?;
+    ensure!(
+        matches!(
+            &err,
+            Error::Refused {
+                field: Some(f),
+                reason: Refusal::WrongDoor,
+            } if f.as_str() == "currency"
+        ),
+        "an upsert of `rate`'s source field `currency` must be refused as the wrong door, \
+         naming `currency`; it failed with {err:?}"
+    );
+    Ok(())
+}
 
 async fn a_principal_who_may_write_only_some_fields_cannot_retire(
     store: Arc<dyn LakeStore>,

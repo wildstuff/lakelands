@@ -13,7 +13,7 @@ use lakelands_api::engine::OpenMode;
 use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, Location};
 use lakelands_core::conformance::checks::ALL;
-use lakelands_core::conformance::{FreshLake, Harness, run_all};
+use lakelands_core::conformance::{FreshLake, Harness, Reopen, run_all};
 use lakelands_engine_sqlite::SqliteOpener;
 
 struct Sqlite {
@@ -37,6 +37,26 @@ impl Harness for Sqlite {
             let store: Arc<dyn LakeStore> =
                 lakelands_store::open(Location::sqlite(lake, dir), seams, OpenMode::Create).await?;
             Ok(store)
+        })
+    }
+
+    fn reopener(&self) -> Reopen {
+        let root = self.root.clone();
+        Arc::new(move |store, host| {
+            let root = root.clone();
+            Box::pin(async move {
+                let lake = store.lake().to_string();
+                store.close().await?;
+                let seams = Seams {
+                    engines: vec![Arc::new(SqliteOpener)],
+                    ..host
+                };
+                let dir = root.join(&lake);
+                let store: Arc<dyn LakeStore> =
+                    lakelands_store::open(Location::sqlite(lake, dir), seams, OpenMode::Write)
+                        .await?;
+                Ok(store)
+            })
         })
     }
 }

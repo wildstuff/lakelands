@@ -77,6 +77,53 @@ check!(
     "004: a consumer that polls from the `next` each answer gives, in pages of one or two events and with writes landing between polls, sees every matching event once, in log order; this is the position a deliverer keeps"
 );
 
+check!(
+    /// A `limit` of 0 answers one event, not none.
+    LIMIT_ZERO_IS_ONE = a_poll_with_a_limit_of_zero_answers_one_event,
+    "seams, ChangeFeed: a limit of 0 is read as 1, so a consumer that passes 0 still moves forward instead of polling the same position for ever"
+);
+
+async fn a_poll_with_a_limit_of_zero_answers_one_event(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    invoices(store.as_ref()).await?;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let from = store.head().await.must("reading the head")?.next();
+    let first = upsert(
+        cat.as_ref(),
+        &own,
+        "invoice",
+        "a",
+        json!({"status": "open"}),
+    )
+    .await?
+    .position();
+    upsert(
+        cat.as_ref(),
+        &own,
+        "invoice",
+        "b",
+        json!({"status": "open"}),
+    )
+    .await?;
+    let batch = store
+        .feed()
+        .poll(from, &FeedFilter::default(), 0)
+        .await
+        .must("polling the feed with a limit of 0")?;
+    let got: Vec<Position> = batch.events.iter().map(|e| e.position).collect();
+    ensure!(
+        got == [first] && batch.next == first.next(),
+        "two invoices were written from {from}, the first at {first}; a poll from {from} \
+         with a limit of 0 answered the events at {got:?} and next {}, where a limit of 0 \
+         is read as 1: the event at {first}, and next {}",
+        batch.next,
+        first.next()
+    );
+    Ok(())
+}
+
 async fn the_feed_answers_the_log_from_a_position_by_kind_and_type(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {

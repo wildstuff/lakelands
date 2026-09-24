@@ -23,7 +23,9 @@ use lakelands_api::{
     TypeName, VerbName, Verification, WriteContext, WriteOpts,
 };
 
-use super::{Check, Failure, FreshLake, Harness, Report, checks, run_all, run_checks, run_one};
+use super::{
+    Check, Failure, FreshLake, Harness, Reopen, Report, checks, run_all, run_checks, run_one,
+};
 
 /// Drives a future to completion on this thread. Everything the tests
 /// poll is ready at once, so a pending poll is a bug in the test.
@@ -178,6 +180,9 @@ impl Harness for DownHarness {
             Ok(store)
         })
     }
+    fn reopener(&self) -> Reopen {
+        Arc::new(|_, _| Box::pin(async { Err(down()) }))
+    }
 }
 
 /// Cannot open a lake at all.
@@ -189,6 +194,9 @@ impl Harness for NoLakes {
     }
     fn fresh(&self, _: Seams) -> FreshLake<'_> {
         Box::pin(async { Err(down()) })
+    }
+    fn reopener(&self) -> Reopen {
+        Arc::new(|_, _| Box::pin(async { Err(down()) }))
     }
 }
 

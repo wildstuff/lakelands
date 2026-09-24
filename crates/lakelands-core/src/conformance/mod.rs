@@ -51,20 +51,26 @@ use lakelands_api::seam::Seams;
 
 /// Turns an `async fn` of the suite into a [`Check`] constant whose
 /// `name` is the function's own name. A trailing `, embedding` runs the
-/// check on a lake with the suite's embedding backend bound.
+/// check on a lake with the suite's embedding backend bound; a trailing
+/// `, reopens` hands the check the harness's [`Reopen`] as its second
+/// argument.
 macro_rules! check {
     ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr) => {
-        check!(@make $(#[$doc])* $konst = $run, $about, false);
+        check!(@make $(#[$doc])* $konst = $run, $about, false, |store, _| Box::pin($run(store)));
     };
     ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, embedding) => {
-        check!(@make $(#[$doc])* $konst = $run, $about, true);
+        check!(@make $(#[$doc])* $konst = $run, $about, true, |store, _| Box::pin($run(store)));
     };
-    (@make $(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, $embedding:expr) => {
+    ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, reopens) => {
+        check!(@make $(#[$doc])* $konst = $run, $about, false,
+            |store, reopen| Box::pin($run(store, reopen)));
+    };
+    (@make $(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, $embedding:expr, $call:expr) => {
         $(#[$doc])*
         pub const $konst: $crate::conformance::Check = $crate::conformance::Check {
             name: stringify!($run),
             about: $about,
-            run: |store| Box::pin($run(store)),
+            run: $call,
             embedding: $embedding,
         };
     };
@@ -105,7 +111,16 @@ pub trait Harness: Send + Sync {
     /// gets its own, so no check sees another's writes and positions are
     /// the check's alone.
     fn fresh(&self, seams: Seams) -> FreshLake<'_>;
+
+    /// How this harness opens a lake it handed out again: the [`Reopen`]
+    /// a check that meets the lake's next writer is given.
+    fn reopener(&self) -> Reopen;
 }
+
+/// Closes a lake the harness opened and opens it again for writing with
+/// `seams` and the harness's engine, as a host's next process opens it:
+/// the same lake, a new writer.
+pub type Reopen = Arc<dyn Fn(Arc<dyn LakeStore>, Seams) -> FreshLake<'static> + Send + Sync>;
 
 /// The future [`Harness::fresh`] answers: a new, empty lake, or why none
 /// could be opened.
@@ -122,8 +137,9 @@ pub struct Check {
     pub name: &'static str,
     /// Where the rule is stated, and why it matters, in one sentence.
     pub about: &'static str,
-    /// The check itself, run against a fresh lake.
-    pub run: fn(Arc<dyn LakeStore>) -> CheckFuture,
+    /// The check itself, run against a fresh lake; a check that reopens
+    /// its lake uses the harness's [`Reopen`], the others ignore it.
+    pub run: fn(Arc<dyn LakeStore>, Reopen) -> CheckFuture,
     /// Whether its lake binds the suite's embedding backend; without it,
     /// the lake has none.
     pub embedding: bool,
@@ -242,7 +258,7 @@ async fn run_check(harness: &dyn Harness, check: &Check) -> Result<(), Failure> 
         }
     };
     fixture::default_limits(store.as_ref())?;
-    match caught((check.run)(store)).await {
+    match caught((check.run)(store, harness.reopener())).await {
         Ok(outcome) => outcome,
         Err(panic) => Err(Failure::new(format!("the check panicked: {panic}"))),
     }

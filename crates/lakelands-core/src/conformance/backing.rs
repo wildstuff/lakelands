@@ -194,3 +194,31 @@ pub fn plug_text(text: &str) {
         .unplugged
         .remove(text);
 }
+
+/// A host's system vocabulary, as a check scripts it: it adds `types` and
+/// allows every `sys.` type in every lake except those named in
+/// `withheld`. Lakelands' own types are never withheld by it.
+pub fn vocabulary(
+    types: Vec<lakelands_api::ontology::TypeDecl>,
+    withheld: &[&str],
+) -> Arc<dyn lakelands_api::seam::SystemVocabulary> {
+    Arc::new(Vocabulary {
+        types,
+        withheld: withheld.iter().map(|t| (*t).to_owned()).collect(),
+    })
+}
+
+struct Vocabulary {
+    types: Vec<lakelands_api::ontology::TypeDecl>,
+    withheld: BTreeSet<String>,
+}
+
+impl lakelands_api::seam::SystemVocabulary for Vocabulary {
+    fn types(&self) -> Vec<lakelands_api::ontology::TypeDecl> {
+        self.types.clone()
+    }
+
+    fn may_hold(&self, _: &lakelands_api::LakeId, ty: &lakelands_api::TypeName) -> bool {
+        !self.withheld.contains(ty.as_str())
+    }
+}

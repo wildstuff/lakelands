@@ -345,7 +345,7 @@ holds it to.
 | a rebuild answers every read as before | suite: `a_rebuilt_projection_answers_every_read_as_the_live_one_did` |
 | `scan` filters, the retired and restricted flags, `valid_at` | suite, through `find` and `get` (paging, restriction, views, decimals) |
 | `mark_applied` / `applied` recognise a redelivery | suite: `the_same_content_ingested_twice_appends_nothing_the_second_time`, `a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_appends_nothing` |
-| `append` is durable before it returns | none yet (needs a harness that kills the process) |
+| `append` is durable before it returns: its events are there for the next handle | engine: `an_append_that_returned_is_read_by_the_next_handle`; surviving a crash of the process or the machine is the engine's own test, not the suite's (SQLite: `tests/lake_directory.rs`) |
 | the stale-lease refusal is `Unavailable`; another fence is `Invalid` | engine: `a_stale_lease_cannot_append` |
 | releasing a stale lease leaves the current holder's lease | engine: `releasing_a_stale_lease_leaves_the_current_holders_lease` |
 | `read` past the tip or with `limit` 0 is empty; `tip` of an empty lake is none | engine: `reading_past_the_tip_or_with_limit_zero_answers_nothing` |

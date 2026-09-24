@@ -107,6 +107,46 @@ engine_check!(
     "008: any number of readers may open a lake, and none of them can take the lease, append or seal, so only the writer extends the chain"
 );
 
+engine_check!(
+    /// What an append returned from is there for the next handle.
+    APPENDED_OUTLIVES_ITS_HANDLE = reopening an_append_that_returned_is_read_by_the_next_handle,
+    "seams, append: an append is durable before it returns, so the events are there, byte for byte, for a handle opened after the writer's handle was dropped without closing"
+);
+
+fn an_append_that_returned_is_read_by_the_next_handle(
+    engine: &dyn LakeEngine,
+    harness: &dyn EngineHarness,
+) -> Result<(), Failure> {
+    let writer = harness
+        .reopen(engine.lake(), OpenMode::Write)
+        .map_err(|e| Failure::new(format!("opening a handle for writing: {e}")))?;
+    let lease = writer.take_lease("the writer").must("taking the lease")?;
+    let events = chain(0, 3, &Digest::zero(), &lease);
+    writer
+        .append(&lease, &events)
+        .must("appending three events")?;
+    // The writer ends without releasing its lease or closing the lake.
+    drop(writer);
+    let next = harness
+        .reopen(engine.lake(), OpenMode::Read)
+        .map_err(|e| Failure::new(format!("opening the next handle: {e}")))?;
+    let read = next
+        .read(Position(0), 10)
+        .must("reading through the next handle")?;
+    ensure!(
+        read == events,
+        "three events were appended and the append returned; the writer's handle was then \
+         dropped without closing, and a handle opened after it reads {} event(s){}",
+        read.len(),
+        if read.len() == events.len() {
+            " whose bytes differ"
+        } else {
+            ""
+        }
+    );
+    Ok(())
+}
+
 fn a_dropped_writer_releases_its_lease(
     engine: &dyn LakeEngine,
     harness: &dyn EngineHarness,

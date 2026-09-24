@@ -33,9 +33,11 @@ mod restriction;
 mod retire;
 mod schema;
 mod search;
+mod settings;
 mod values;
 mod versions;
 mod views;
+mod vocabulary;
 mod walks;
 
 /// Every check, in the order the suite runs them.
@@ -184,4 +186,9 @@ pub const ALL: &[Check] = &[
     aging::NO_LONGER_FITS,
     aging::RULE_AUTHORITY,
     aging::REFUSED_MOVE_LEAVES,
+    settings::SETTING_AS_OF,
+    feed::LIMIT_ZERO_IS_ONE,
+    retire::SOURCE_ONLY_HAS_NO_UPSERT,
+    search::HIT_IS_THE_RECORD,
+    vocabulary::HOST_TYPES_AT_OPEN,
 ];
