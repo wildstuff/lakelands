@@ -1,0 +1,12 @@
+[package]
+name = "lakelands-core"
+description = "The deterministic heart of a lake: the ontology, the event log model and the per-field fold."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

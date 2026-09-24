@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/lakelands-api",
+    "crates/lakelands-core",
+    "crates/lakelands-store",
+    "crates/lakelands-engine-sqlite",
+    "crates/lakelands-engine-pg",
+    "crates/lakelands-engine-mem",
+    "crates/lakelands-mock",
+    "crates/lakelands-cli",
+    "crates/lakelands-server",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/wildstuff/lakelands"
+publish = false
+
+[workspace.dependencies]
+lakelands-api = { path = "crates/lakelands-api" }
+lakelands-mock = { path = "crates/lakelands-mock" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
