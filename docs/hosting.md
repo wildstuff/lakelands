@@ -39,8 +39,8 @@ store.
   reaches outside the lake is refused, not faked. See
   `docs/decisions/013-verbs-run-by-declared-risk.md`.
 - **`ChangeFeed`.** The host reads the log, filtered by kind, from a
-  cursor, and acknowledges on its own side. The host keeps its cursor;
-  the store keeps no consumer state. A relay onto a message bus is the
+  position, and acknowledges on its own side. The host keeps the
+  position it has read up to; the store keeps no consumer state. A relay onto a message bus is the
   host's code, never Lakelands'; the dedup key of a change is
   `{lake}:{position}`. See `docs/decisions/004-the-change-feed-is-the-log.md`.
 - **`SystemVocabulary`.** The host registers its own `sys.*` types and

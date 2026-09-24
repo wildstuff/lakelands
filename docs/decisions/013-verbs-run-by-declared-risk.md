@@ -35,3 +35,16 @@ grants as everything else.
   decides.
 - `propose`, `accept` and `reject` are also plain doors: any write can
   be proposed rather than applied, not only a verb.
+
+## Extended: a `low` verb that reaches outside the lake
+
+A verb declared `low` whose effect reaches outside the lake runs at
+once, like any `low` verb, through the `VerbExecutor` the host bound for
+it; the executor's answer is recorded in the log. Declared risk is the
+only thing that decides between running and proposing, whatever the
+effect.
+
+A verb that reaches outside the lake, of any risk, is refused as
+`unbound` at call time when no executor is bound for it: never faked,
+and never recorded as a proposal, because a proposal that could not run
+when accepted would be a promise the store cannot keep.

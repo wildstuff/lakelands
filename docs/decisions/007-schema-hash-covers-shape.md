@@ -37,3 +37,24 @@ change when and only when the shape does.
   stored record, so it needs no migration.
 - It is not a hash over the declaration text. Reordering a declaration
   without changing its shape does not change the hash.
+
+## Extended: exactly what the hash covers
+
+`docs/log-format.md` §2.2 now defines the hashed object member by
+member, so two implementations compute the same hash. Four choices in it
+follow from this record's rule and are stated here so the rule stays the
+reason:
+
+- A field's whole type (kind, value type, reference target, vector
+  length) is shape: changing any of them changes how a value is stored
+  or validated.
+- A view's conditions are hashed in their typed form, so writing the
+  same view as text or as a typed expression is not a change of shape.
+- A relation's `via` and `inverse`, a field's `searchable`, and a type's
+  `valid_from` / `valid_to` are excluded. None of them changes what a
+  stored record holds or which values it accepts: `via` and `inverse`
+  name how a relation is walked, `searchable` decides what an index
+  covers, and the valid-time fields name which existing fields a read
+  filters on. Changing them rebuilds indexes at most, never a record.
+- Declared authority and `depends_on` / `on_input_change` stay excluded,
+  as above: they govern the next write, not the stored shape.

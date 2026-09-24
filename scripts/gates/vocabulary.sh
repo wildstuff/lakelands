@@ -4,9 +4,11 @@
 # Lakelands works below the platform it was extracted from and does not
 # know that platform exists. Its tenant is a lake, and none of the
 # platform's own words survive an import. Red when
-#   - a file under any `src/` directory contains one of SRC_WORDS as an
-#     identifier fragment or a word, case-insensitively (so `wild_data`,
-#     `WildData`, `WILD_` and "the wild" are all refused);
+#   - a file under any `src/` directory, or any `.rs` file under
+#     `crates/` (tests, benches and examples included), contains one of
+#     SRC_WORDS as an identifier fragment or a word, case-insensitively
+#     (so `wild_data`, `WildData`, `WILD_` and "the wild" are all
+#     refused);
 #   - any tracked file, any tracked path, or any commit message on the
 #     pull request contains one of REPO_WORDS, case-insensitively.
 # This script is the only file that may spell the lists out.
@@ -25,8 +27,8 @@ scan() { # <regex> <pathspec...>
 }
 
 while IFS= read -r hit; do
-    fail "$hit (refused in src/)"
-done < <(scan "$SRC_WORDS" ':(glob)**/src/**')
+    fail "$hit (refused in code)"
+done < <(scan "$SRC_WORDS" ':(glob)**/src/**' ':(glob)crates/**/*.rs')
 
 while IFS= read -r hit; do
     fail "$hit (refused repository-wide)"
