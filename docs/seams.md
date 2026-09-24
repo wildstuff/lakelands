@@ -975,7 +975,8 @@ sees does not depend on who else is writing:
 - A declaration made while others write takes its place in the same
   order: a write after it sees its shape, a write before it does not.
 - A read at a position answers the same whenever it is made, during the
-  writes or after them, and `find` and `get` at one position agree.
+  writes or after them, and `find` and `get` at one position agree. A
+  position `head()` answers can be read at at once.
 - Two feed consumers polling from one position while others write see the
   same events, in the same order, each once.
 - A write whose field a backing fills answers a position its own filled

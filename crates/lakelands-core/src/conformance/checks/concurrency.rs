@@ -48,10 +48,8 @@ check!(
 );
 
 check!(
-    /// A read at a position answers the same, during writes and after.
-    /// The reader reads at the position an answer at the head names;
-    /// that `head()` itself names a readable position (lakelands#105,
-    /// fixed in lakelands#108) is claimed in a follow-up to this check.
+    /// A read at a position answers the same, during writes and after,
+    /// at every position `head()` names while others write.
     READS_AT_A_POSITION = a_read_at_a_position_answers_the_same_during_writes_and_after,
     "008 and 009: a read at a position sees the lake as it was there, whoever is writing; `find` and `get` at one position agree, and answer the same when asked again later"
 );
@@ -440,25 +438,13 @@ async fn a_read_at_a_position_answers_the_same_during_writes_and_after(
         }
         Ok::<_, Failure>(out)
     });
-    let (rcat, rown, rdone) = (cat.clone(), own.clone(), done.clone());
+    let (rstore, rcat, rown, rdone) = (store.clone(), cat.clone(), own.clone(), done.clone());
     let reader = Box::pin(async move {
         let mut seen: Vec<Seen> = Vec::new();
         while !rdone.load(Ordering::SeqCst) {
-            // The position a read at the head answers: one the lake has
-            // folded. Reading at `head()` instead (lakelands#105, fixed in
-            // lakelands#108) comes with the follow-up that claims it.
-            let at = rcat
-                .find(
-                    &rown,
-                    &TypeName::from("item"),
-                    Find {
-                        limit: Some(1),
-                        ..Find::default()
-                    },
-                )
-                .await
-                .must("reading `item` at the head")?
-                .position;
+            // The head, as a host's own reader or an unpinned turn takes it:
+            // a position `head()` answers is one the lake can read at.
+            let at = rstore.head().await.must("reading the head")?;
             let (keys, one) = read_at(rcat.as_ref(), &rown, at).await?;
             ensure!(
                 one.is_some() == keys.iter().any(|k| k == "w0-r0"),
