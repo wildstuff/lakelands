@@ -2327,6 +2327,30 @@ pub async fn an_aging_rule_moves_what_holds_from_once_a_date(store: Arc<dyn Lake
             if f.as_str() == "status"),
         "{refused:?}"
     );
+    // Proposing it is checked the same way: an accept cannot bring it in.
+    let proposed = c
+        .propose(
+            &rule_writer,
+            lakelands_api::write::ProposedWrite::Upsert {
+                ty: rule_type.clone(),
+                key: key("overdue"),
+                patch: patch(&[
+                    ("on", json!("invoice")),
+                    ("field", json!("status")),
+                    ("from", json!("open")),
+                    ("to", json!("overdue")),
+                    ("when", json!("amount > 100")),
+                ]),
+                opts: WriteOpts::default(),
+            },
+            "please".into(),
+        )
+        .await;
+    assert!(
+        matches!(&proposed, Err(Error::Refused { field: Some(f), reason: Refusal::NotGranted })
+            if f.as_str() == "status"),
+        "{proposed:?}"
+    );
     c.upsert(
         own,
         &rule_type,

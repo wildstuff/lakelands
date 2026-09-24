@@ -1046,6 +1046,11 @@ fn plan_upsert(
     if patch.is_empty() {
         return Err(invalid("nothing to write: the patch carries no field"));
     }
+    // As the store's record plan: every door that writes a rule checks it,
+    // `upsert`, a verb's write and an accepted proposal alike.
+    if ty.as_str() == crate::aging::RULE_TYPE {
+        check_rule(st, who, key, &patch)?;
+    }
     let t = check_patch(st, who, ty, &patch, Origin::Authored)?;
     let actual = check_version(st, ty, key, opts)?;
     let mut patch = canonical_patch(t, patch);
@@ -1229,8 +1234,11 @@ fn plan_propose(
     // A proposal is checked as its write would be, so that an accept
     // cannot smuggle a field its proposer may not write.
     match &write {
-        ProposedWrite::Upsert { ty, patch, .. } => {
+        ProposedWrite::Upsert { ty, key, patch, .. } => {
             check_patch(st, who, ty, patch, Origin::Authored)?;
+            if ty.as_str() == crate::aging::RULE_TYPE {
+                check_rule(st, who, key, patch)?;
+            }
         }
         ProposedWrite::Retire { ty, key, .. } => {
             let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
@@ -1492,9 +1500,6 @@ impl Catalog for MockCatalog {
         let (_, st) = self.state_at(&log, None)?;
         if let Some(o) = remembered(&st, who, &opts) {
             return Ok(o);
-        }
-        if ty.as_str() == crate::aging::RULE_TYPE {
-            check_rule(&st, who, key, &patch)?;
         }
         let mut batch = Batch::at(&log);
         let by = By {
