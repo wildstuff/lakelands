@@ -27,11 +27,38 @@
 //! duration:= number ('d' | 'h' | 'm' | 's')
 //! ```
 //!
-//! Keywords are lower case. A `path` names a field of the record in
-//! scope; in a pattern step, `<type>.<field>` names a field of an
-//! earlier step. Calls name a [`Func`]; `known_at(f)` and `seen_at(f)`
+//! Keywords are lower case. An identifier is ASCII: a letter or `_`,
+//! then letters, digits or `_` — the same rule every declared name
+//! follows, so every field can be named in an expression.
+//!
+//! **Paths.** A path's first segment is looked up among the fields of the
+//! record in scope first. If it is one, a further segment digs into that
+//! field's value — meaningful for a `json` or `geo` value, null for any
+//! other. If it is not, in a pattern step the first segment names the type
+//! of an earlier step and the second a field of it (`invoice.amount`). A
+//! declaration whose `json` field has the name of a type is refused, so
+//! the two readings never meet.
+//!
+//! **Literals and calls.** A duration is a number directly followed by
+//! `d` (days), `h` (hours), `m` (minutes) or `s` (seconds), possibly with
+//! a fraction (`1.5h`). `substr` takes two or three arguments (text, start,
+//! optional length; positions count characters from 0); `round` takes one
+//! or two (value, optional number of fractional digits); `coalesce` and
+//! `concat` take one or more; every other function takes exactly the
+//! arguments its documentation names. Calls name a [`Func`]; `known_at(f)` and `seen_at(f)`
 //! read a field's provenance (`docs/decisions/010-provenance-per-field.md`),
-//! and `changed(f)` is true in a guard when the write changes `f`.
+//! `changed(f)` is true in a guard when the write changes `f`, and
+//! `previous(f)` is `f`'s value before that write. `setting('key')` reads
+//! the `value` of the lake's `sys.setting` record whose key is `key`, as
+//! of the position being read or folded, in every place an expression is
+//! evaluated; an absent key is null.
+//!
+//! **Comparisons across kinds.** A comparison between values of kinds
+//! that do not compare — a number against text that is not a number, a
+//! boolean against anything but a boolean, a JSON value against anything
+//! but another — is false for every operator, `!=` included, and never an
+//! error: a filter over mixed data selects what matches and skips the
+//! rest.
 //! `matches(s, pattern)` takes a pattern in I-Regexp (RFC 9485), the
 //! interoperable regular-expression subset, matched against the whole
 //! string; it is always evaluated by the store, never pushed down to an
@@ -52,9 +79,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::id::FieldName;
 
-/// An expression in the one grammar, typed.
+/// An expression in the one grammar, typed. A member this form does not
+/// know is refused, never ignored.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Expr {
     /// A constant.
     Lit {
@@ -127,7 +155,12 @@ pub enum Expr {
 
 /// A constant in an expression.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+#[serde(
+    tag = "type",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum Literal {
     /// `null`.
     Null,
@@ -186,6 +219,12 @@ pub enum Func {
     KnownAt,
     /// `seen_at(field)`: when the source observed the field's value.
     SeenAt,
+    /// `previous(field)`: in a guard, the field's value before the write
+    /// (null for a record the write creates).
+    Previous,
+    /// `setting('key')`: the value of the lake's `sys.setting` record with
+    /// that key, as it stood at the position being read or folded.
+    Setting,
     /// `changed(field)`: in a guard, whether the write changes the field.
     Changed,
     /// `coalesce(a, b, …)`: the first operand that is not null.
@@ -206,6 +245,8 @@ pub enum Func {
     Substr,
     /// `contains(s, part)`.
     Contains,
+    /// `replace(s, from, to)`: every occurrence of `from` replaced.
+    Replace,
     /// `starts_with(s, prefix)`.
     StartsWith,
     /// `matches(s, pattern)`: an I-Regexp (RFC 9485) pattern matched

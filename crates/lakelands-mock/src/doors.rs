@@ -703,6 +703,21 @@ fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationRepor
         }
         fields.push(conv);
     }
+    // Fields the new declaration no longer has under any name: the
+    // migration drops them, and the report says how many values that is.
+    let dropped: Vec<(FieldName, u64)> = t
+        .decl
+        .fields
+        .iter()
+        .filter(|old| field(&m.to, &renamed(&old.name)).is_none())
+        .map(|old| {
+            let holding = live
+                .iter()
+                .filter(|r| r.fields.get(&old.name).is_some_and(|v| !v.is_null()))
+                .count() as u64;
+            (old.name.clone(), holding)
+        })
+        .collect();
     let mut report = MigrationReport {
         ty: ty.clone(),
         from_schema_hash: t.schema_hash.clone(),
@@ -710,6 +725,7 @@ fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationRepor
         records_scanned: live.len() as u64,
         lossless: fields.iter().all(|f| f.not_convertible == 0),
         fields,
+        dropped,
         report_id: String::new(),
     };
     let seed = serde_json::to_vec(&(&report, head.0, m)).unwrap_or_default();

@@ -107,7 +107,7 @@ never skips it. `body.kind` names the kind.
 
 | Kind | Payload | Fold |
 |---|---|---|
-| `declared` | `declaration`, `version` (integer), `schema_hash` (string, types only) | A declaration enters the ontology, or replaces its earlier version, from this position on. `declaration.declare` is `type`, `value_type`, `verb`, `trigger` or `object_set`, with the declaration's members beside it. A new version here never reshapes stored records. |
+| `declared` | `declaration`, `version` (integer), `schema_hash` (string, types only) | A declaration enters the ontology, or replaces its earlier version, from this position on. `declaration.declare` is `type`, `value_type`, `verb`, `trigger`, `object_set` or `function`, with the declaration's members beside it. A new version here never reshapes stored records. |
 | `migrated` | `migration` (`to`, `renames`), `schema_hash`, `version`, `report_id` | A type's shape changes and every stored record of it is converted by the fold, by the lossless conversions the preflight report `report_id` checked. |
 
 The schema hash covers shape only (`docs/decisions/007-schema-hash-covers-shape.md`).
@@ -125,9 +125,17 @@ this object:
 
 - `type` is the field's whole `FieldType` object: `kind`, and
   `value_type`, `target` and `dimensions` where present.
-- `fields` and `relations` are sorted by name; a relation's own `fields`
-  likewise. `key` keeps its declared order, because the order of key
-  fields is part of the key.
+- `fields` and `relations` are sorted by name; a relation's own
+  `fields` likewise. Every declared name is an ASCII identifier (a type
+  name: identifiers joined by `.`), and on ASCII the order by code point
+  and the order by UTF-16 code unit that §1.2 uses for members are the
+  same order, so there is one sort in the whole format.
+  `key` keeps its declared order, because the order of key fields is part
+  of the key.
+- `view` is `{ "source", "where", "group_by", "measures" }` with every
+  member present: `where` is `null` when absent, `group_by` is `[]` when
+  empty. `group_by` and `measures` keep their declared order: a measure
+  may read the measures before it, so their order is meaning.
 - All four members are always present: an empty `key`, `fields` or
   `relations` is written `[]`, and a type that is not a view has
   `"view": null`.
@@ -137,8 +145,8 @@ this object:
 - Excluded, because they do not change how a record is stored or
   validated: descriptions, labels, `sensitive`, `searchable`, field
   `authority`, `derived`, `depends_on`, `on_input_change`, a relation's
-  `via`, `inverse` and description, `valid_from` / `valid_to`, and
-  `field_meta`.
+  `via`, `inverse` and description, `valid_from` / `valid_to`,
+  `language`, and `field_meta`.
 
 ### 2.3 Records
 
@@ -211,9 +219,9 @@ recorded output for it.
 An event's `id` is 32 lower-case hex digits: the first 16 bytes of a
 SHA-256 digest, or 16 random bytes.
 
-Every string in a preimage below is its UTF-8 bytes. Type and source
-names containing `0x00` are refused when declared, and keys containing
-`0x00` are refused when written, so the separators are unambiguous.
+Every string in a preimage below is its UTF-8 bytes. Declared names are
+ASCII identifiers and hold no `0x00`; a source id or a key containing
+`0x00` is refused when written. So the separators are unambiguous.
 
 - **Ingest** is content-addressed: `SHA-256("lakelands:ingest:v1" ‖ 0x00
   ‖ source ‖ 0x00 ‖ type ‖ 0x00 ‖ key ‖ 0x00 ‖ canonical(patch))`.

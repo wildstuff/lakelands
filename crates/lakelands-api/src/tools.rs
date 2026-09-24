@@ -171,6 +171,25 @@ pub enum NameProblem {
     },
 }
 
+impl std::fmt::Display for NameProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NameProblem::Collision { name, from } => {
+                write!(
+                    f,
+                    "the tool name `{name}` would come from {}",
+                    from.join(" and ")
+                )
+            }
+            NameProblem::TooLong { name } => write!(
+                f,
+                "the tool name `{name}` is longer than {MAX_TOOL_NAME} characters"
+            ),
+            NameProblem::Empty { from } => write!(f, "{from} gives an empty tool name"),
+        }
+    }
+}
+
 /// Every tool name the lake's declarations would produce, for any
 /// principal, with the declaration each comes from.
 fn all_names(types: &[TypeName], verbs: &[VerbName]) -> BTreeMap<String, Vec<String>> {

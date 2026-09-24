@@ -35,6 +35,18 @@ macro_rules! name {
             }
         }
 
+        impl PartialEq<str> for $name {
+            fn eq(&self, other: &str) -> bool {
+                self.0 == other
+            }
+        }
+
+        impl PartialEq<&str> for $name {
+            fn eq(&self, other: &&str) -> bool {
+                self.0 == *other
+            }
+        }
+
         impl std::borrow::Borrow<str> for $name {
             fn borrow(&self) -> &str {
                 &self.0

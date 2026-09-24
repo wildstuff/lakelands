@@ -30,7 +30,9 @@ pub enum Walk {
     Both,
 }
 
-/// How many hops a step takes: `min..=max`.
+/// How many hops a step takes: `min..=max`. A `max` beyond the lake's
+/// `max_depth`, or a `min` above `max`, is refused as invalid, never
+/// silently shortened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Depth {
     /// The fewest hops.
@@ -170,7 +172,10 @@ impl Pattern {
     }
 
     /// Everything within `depth` hops over the given relations, as a
-    /// graph.
+    /// graph. The steps it builds are one walk over any of the relations,
+    /// not a chain: a planner reads a pattern whose projection is
+    /// [`Projection::Graph`] and whose steps all start at depth 0 as one
+    /// multi-relation walk.
     pub fn subgraph(
         ty: TypeName,
         key: RecordKey,

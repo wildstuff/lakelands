@@ -37,3 +37,12 @@ differently?" is what keeps the closed set small.
   or predicate for it.
 - Adding a storage kind remains a deliberate change: one variant in the
   closed set and one codec per engine.
+
+## Extended: there is no integer kind
+
+Whole numbers are not a storage kind of their own. A count, a quantity or
+an identifier is a `number` (an engine compares and indexes it like any
+number) or, where exactness matters, a `decimal`; a value type such as
+`quantity` may constrain it to whole values. A separate integer kind
+would be a kind no engine must treat differently, which is exactly what
+this record says a kind is not.

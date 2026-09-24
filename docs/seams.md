@@ -125,7 +125,7 @@ grants and masking are the store's.
 | `get(type, key)` | One record, retired and restricted included. |
 | `scan(type, scan)` | Records filtered by a typed expression the engine applies **exactly**, ordered with missing values last and the key as tiebreak, continued after a keyset position. |
 | `aggregate` | `count`, `sum` (exact for decimals), `min`, `max`, `avg`, per group. |
-| `edges(type, key, relation, walk)` | One record's links. |
+| `edges(type, key, relation, walk)` | One record's links over one relation or all: `Out` those it declares, `In` those that point at it, `Both` their union with each link once (a link from a record to itself included). Links to a retired or missing record are returned as they are; hiding that end is the store's (`docs/decisions/026-the-store-walks-the-graph.md`). No order is promised; the store's walks order their own answers. |
 | `lexical(type, text, k)` | Full-text hits over searchable fields, best first. |
 | `proposals`, `is_member`, `applied`, `output` | The projections of proposals, object sets, applied ids and recorded outputs. |
 
@@ -199,6 +199,13 @@ whether a lake may hold one. Lakelands reserves only the four system
 types its fold reads: `sys.source`, `sys.provenance`, `sys.setting`,
 `sys.aging_rule` (`docs/decisions/003-reservation-by-namespace.md`). The
 default adds none and allows those four everywhere.
+
+A `sys.setting` record is one named setting of a lake. Its record key is
+the setting's key, and it has two fields: `key` (text, the same key) and
+`value` (json, the setting's value). `setting('vat_rate')` in any
+expression reads the `value` of the `sys.setting` record with key
+`vat_rate` as of the position being read or folded, so a replay reads the
+setting as it then stood.
 
 ## The facade and the doors
 

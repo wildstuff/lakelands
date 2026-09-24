@@ -157,6 +157,7 @@ pub fn fixture() -> Vec<Declaration> {
         valid_from: None,
         valid_to: None,
         field_meta: true,
+        language: None,
         description: Some("A bill received.".into()),
         label: None,
     };
@@ -1036,6 +1037,7 @@ pub async fn sys_types_are_reserved(store: Arc<dyn LakeStore>) {
         valid_from: None,
         valid_to: None,
         field_meta: true,
+        language: None,
         description: None,
         label: None,
     };
