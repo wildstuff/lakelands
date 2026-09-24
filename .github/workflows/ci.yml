@@ -72,14 +72,17 @@ jobs:
       - id: roster
         run: echo "engines=$(scripts/conformance.sh --list | jq -R . | jq -cs .)" >> "$GITHUB_OUTPUT"
 
+  # No `name:` of its own: GitHub names each matrix job `conformance
+  # (<engine>)`, and a run whose roster never answered shows one skipped
+  # `conformance` instead of a job under an unexpanded placeholder.
   conformance:
     needs: roster
+    if: needs.roster.result == 'success' && needs.roster.outputs.engines != ''
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        engine: ${{ fromJSON(needs.roster.outputs.engines) }}
-    name: conformance (${{ matrix.engine }})
+        engine: ${{ fromJSON(needs.roster.outputs.engines || '[]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
