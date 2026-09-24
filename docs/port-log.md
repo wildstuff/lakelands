@@ -21,6 +21,15 @@ any of them; it is the row below, settled. **The list is closed for
 PostgreSQL engine was taken from it, against the source's mainline at
 `87e79584fc`: no commit after the freeze touches it, so it adds no row.
 
+**Checked again on 2026-09-24, for `0.2.0`**, against the source's
+mainline at `3cea3c6a4f`: every commit after the freeze (157 of them)
+against all nine roots of `docs/import-ledger.md`, `{pg}` included, and
+for `{tools}` the ten files the catalog was cut from. Each root holds
+the same files it held at the freeze, so no change was hidden by a
+move. One commit touches any of them, and it is still the row below.
+**The list is closed for `0.2.0` as of that commit**; if the mainline
+moves before the tag, the check is run again first.
+
 | Source commit | Behaviour, in one line | Ported in, or not applicable and why |
 |---|---|---|
 | `5914084de9` | One German user-interface sentence in the capabilities module changes its form of address from formal to informal. | Not applicable: the capabilities module was not carried (cut in O2: there is no capability negotiation; see `docs/import-ledger.md`), and no storage behaviour changes: no event, no fold rule, no signature, no stored byte. |
