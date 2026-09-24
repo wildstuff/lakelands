@@ -58,7 +58,8 @@
 //! (an external verb is refused as `unbound` when called), does not aggregate,
 //! walks relations one hop over reference fields only, ranks search by
 //! word count or cosine, and evaluates the expression functions listed in
-//! its `expr` module and no others. Its clock is deterministic: an event's
+//! its `expr` module and no others (so `setting()` in an aging rule's
+//! `when` is refused here, though the store takes it). Its clock is deterministic: an event's
 //! `known_at` is one second per position after 2026-01-01, so that
 //! transcripts of a door stay byte-stable.
 //!

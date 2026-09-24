@@ -52,7 +52,9 @@ are migrated one by one.
 The preflight looks at stored values, not at the conditions that mention
 them. A trigger's `when`, an aging rule's `from` or `to`, or an object
 set's `where` that compares with a value the type no longer admits is not
-checked; it simply never holds afterwards.
+checked; it simply never holds afterwards. For an aging rule the run's own
+check applies instead: a rule whose `from` or `to` the type no longer
+admits is skipped by `age` and named in its report.
 
 ## Why
 

@@ -118,7 +118,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   `Last-Event-ID`. A client that does not read makes its session lag;
   nothing is dropped. Delivery is at least once: when a session
   subscribes again, at most one change already on its way may be told
-  twice, and each carries its position to deduplicate by. See `docs/decisions/004-the-change-feed-is-the-log.md`.
+  twice, and each carries its position to deduplicate by. This is a
+  limit, not a promise of exactly once: the change in flight when the
+  subscription is replaced was read under the old one, and is not
+  withdrawn. See `docs/decisions/004-the-change-feed-is-the-log.md`.
 - **`SystemVocabulary`.** The host registers its own `sys.*` types and
   says which lakes may hold them; each time a writer opens a lake, the
   store declares the allowed types it does not hold yet.

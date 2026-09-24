@@ -684,8 +684,12 @@ position.
 Lakelands has two consumers of its own: the MCP session's pump, which
 tells a session of the changes its principal may see
 (`lakelands-server`'s `watch`; `docs/hosting.md`), and the webhook
-deliverer below. Both read the feed as the host does, never through a
-door, and both keep their state on the host's side.
+deliverer below. How they are built, not a promise a test holds: both
+read the feed as the host does, not through a door, and keep their state
+on the host's side. The pump then decides what a session may be told
+through the contract's reads as that session's principal (`get`,
+`describe_type`), so a session learns nothing its principal could not
+read.
 
 **The webhook deliverer** is one of them, in
 `lakelands-backings`. `lakelands serve --mcp` runs one per endpoint of the
@@ -831,7 +835,9 @@ and read on every field `when` reads
 the rule is refused as not granted, naming that field; `age` then moves
 the records as the system. `setting()` in `when` reads the lake's
 settings as a filter does; no grant on `sys.setting` is asked, and if
-settings ever come under a grant, `find` and `age` change together. A bundle declares rules in its `aging_rules/` lane,
+settings ever come under a grant, `find` and `age` change together. The
+mock (`lakelands-mock`) refuses `setting()` in a rule's `when`; the
+store takes it. A bundle declares rules in its `aging_rules/` lane,
 one per file, with the same keys; `lakelands apply` writes each after
 the bundle's declarations, skipping a rule whose stored fields already
 equal the file's and clearing a field the file no longer carries. A
@@ -903,8 +909,8 @@ the `aging` section of the root's `lakelands.json`:
 
 Without an `aging` section `serve` ages nothing: a host, or
 `lakelands age --today <YYYY-MM-DD>`, calls `age`; the command prints one
-line per rule (`<rule>: moved N, M guard(s) failed`, or the reason it was
-skipped) and `aged <date> through position P`. No MCP tool calls `age`:
+line per rule (`<rule>: moved N, M guard(s) failed`, or `<rule>:
+skipped, <why>`) and `aged <date> through position P`. No MCP tool calls `age`:
 like `rebuild` and `checkpoint`, it is the host's.
 
 ## The facade and the doors
@@ -952,14 +958,16 @@ after its append (the head as it stood when nothing was appended):
 - A type declared without per-field provenance is not searched, and the
   report names it.
 - A second purge of the same source retires nothing and appends nothing.
-- The append holds one `record_retired` per record and its reactions in
-  memory before it lands, under the writer's lock: a purge of a very
-  large source is a large append and a long hold of the writer. A host
-  that cannot afford it retires by type through the doors instead.
+- How it is built, not a promise a test holds: the append holds one
+  `record_retired` per record and its reactions in memory before it
+  lands, under the writer's lock, so a purge of a very large source is a
+  large append and a long hold of the writer. A host that cannot afford
+  it retires by type through the doors instead.
 
 `lakelands purge --source <id>` prints one line per type
 (`<type>: retired N`), one per type not searched, and
-`purged <id> through position P`. The suite's `purge` checks hold each
+`purged <id> through position P`; when the source brought in nothing
+still live, it prints `nothing to retire for <id>` and appends nothing. The suite's `purge` checks hold each
 of these sentences on every engine.
 
 `Catalog::apply` declares a set of declarations as one: validated
@@ -984,8 +992,9 @@ is not a value-type migration; the fields that use the value type are
 migrated instead. The `migrate` tool and REST route take `value_type`
 instead of `to`, one of the two, never both. The preflight checks stored
 values only: a condition that compares with a value the type no longer
-admits (a trigger's `when`, an aging rule's `from` or `to`, an object
-set's `where`) is not checked, and simply never holds afterwards.
+admits (a trigger's `when`, an object set's `where`) is not checked, and
+simply never holds afterwards; an aging rule whose `from` or `to` the
+type no longer admits is skipped by `age` and named in its report.
 
 **Many callers, one writer.** A lake has one writing process
 (`docs/decisions/008-one-writer-per-lake.md`), and any number of callers
