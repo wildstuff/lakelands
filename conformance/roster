@@ -1,0 +1,10 @@
+# The engines the conformance suite runs against on every pull request.
+#
+# One line per engine crate `crates/lakelands-engine-<engine>`:
+#   <engine>  required   the suite runs against it on every PR
+#   <engine>  deferred   the crate exists but is not imported yet; a
+#                        required engine never becomes deferred again
+# The conformance-required gate reads this file; so does CI.
+sqlite  required
+mem     required
+pg      deferred   imported after 0.1.0 (lakelands#19)

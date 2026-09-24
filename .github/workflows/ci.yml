@@ -1,0 +1,98 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  nextest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      # --no-tests=pass until the first crate has a test.
+      - run: cargo nextest run --workspace --locked --no-tests=pass
+
+  # The engines come from conformance/roster, never from this file.
+  roster:
+    runs-on: ubuntu-latest
+    outputs:
+      engines: ${{ steps.roster.outputs.engines }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: roster
+        run: echo "engines=$(scripts/conformance.sh --list | jq -R . | jq -cs .)" >> "$GITHUB_OUTPUT"
+
+  conformance:
+    needs: roster
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: ${{ fromJSON(needs.roster.outputs.engines) }}
+    name: conformance (${{ matrix.engine }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - run: scripts/conformance.sh "${{ matrix.engine }}"
+
+  # One job per gate, so a red gate never hides another.
+  gate:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        gate:
+          - no-external-platform-deps
+          - cfg-budget
+          - vocabulary
+          - single-catalog
+          - seam-width
+          - core-size
+          - conformance-required
+          - dco
+          - no-external-decisions
+    name: gate (${{ matrix.gate }})
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - run: scripts/gates/${{ matrix.gate }}.sh
+        env:
+          GATE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}

@@ -1,0 +1,15 @@
+[package]
+name = "lakelands-server"
+description = "The Lakelands server door: MCP over stdio and HTTP."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dev-dependencies]
+lakelands-mock.workspace = true
+
+[lints]
+workspace = true
