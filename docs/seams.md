@@ -324,7 +324,7 @@ An engine check runs through the seam
 (`lakelands_core::conformance::engine`); a suite check runs through the
 doors, so it checks the engine only as far as the store's use of it
 reaches. "None yet" is a promise the engine must keep that no check
-holds it to; each is proposed on lakelands#15 as an engine check for O4.
+holds it to.
 
 | Promise | Checked by |
 |---|---|
@@ -341,7 +341,7 @@ holds it to; each is proposed on lakelands#15 as an engine check for O4.
 | a view past the fold is `OutOfRange` naming the head | engine: `a_view_past_the_folded_position_is_refused`; suite: `a_read_as_of_a_position_past_the_head_is_refused_as_out_of_range` |
 | a rolled-back transaction leaves nothing | engine: `a_rolled_back_transaction_leaves_nothing` |
 | edges `Out`, `In`, `Both`, a self-link once, links to a retired record kept | engine: `edges_walk_in_out_and_both`, `edges_to_a_retired_record_are_returned` |
-| edges from link records: `Out` and `In` by `from` and `to`, the link's fields in `Edge.fields`, a removed link gone, an earlier position's links | engine: `edges_over_a_link_relation_come_from_the_live_link_records_at_the_views_position`; doors: the ten `links` checks |
+| edges from link records: `Out` and `In` by `from` and `to`, the link's fields in `Edge.fields`, a removed link gone, an earlier position's links | engine: `edges_over_a_link_relation_come_from_the_live_link_records_at_the_views_position`; doors: the sixteen `links` checks |
 | a rebuild answers every read as before | suite: `a_rebuilt_projection_answers_every_read_as_the_live_one_did` |
 | `scan` filters, the retired and restricted flags, `valid_at` | suite, through `find` and `get` (paging, restriction, views, decimals) |
 | `mark_applied` / `applied` recognise a redelivery | suite: `the_same_content_ingested_twice_appends_nothing_the_second_time`, `a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_appends_nothing` |
@@ -465,6 +465,7 @@ environment.
     error, never into the log.
   - `program` must be an absolute path; a configuration naming a
     relative one is refused when it loads.
+  - An `http` section that lists no host is refused when it loads.
 
 **The trust boundary.** Allowing a host trusts all of it:
 - Every port, unless the entry names one, and every path on it.
@@ -546,9 +547,9 @@ record (`docs/decisions/022-functions-are-declarations.md`, extended):
   (the store's `EMBED_BATCH`).
   The store never holds more than one batch of vectors at a time,
   however many records a backfill makes due, so its memory per drain
-  stays bounded. The client splits a batch further by its own
-  `max_batch`. A request that fails records a failure for each text it
-  carried.
+  stays bounded. The client may split a batch further by its own
+  `max_batch`. A batch that fails, in any of its requests, records a
+  failure for each text it carried.
 
 There is no default backend: without one, `search` ranks lexically and
 over vectors callers supply, and says in its answer which ranking it
@@ -589,7 +590,9 @@ bound.
   an `http` or `https` URL or carries user information (a key goes in
   `api_key_file`), when `dimensions`, `max_batch`, `timeout_secs` or
   `max_reply_bytes` is zero, or, for `https`, when the host is not a
-  name TLS can verify or a named `ca_file` holds no certificate. The
+  name TLS can verify or a named `ca_file` cannot be read or holds no
+  certificate, and when the key file holds characters a header cannot
+  carry. The
   system bundle, when no `ca_file` is named, is looked up at the first
   request.
 - The client sends `{"model", "input": [texts…]}`, at most `max_batch`
@@ -617,8 +620,9 @@ reaches outside the lake names an executor; when that verb runs (at once
 if declared `low`, on acceptance otherwise, as
 `docs/decisions/013-verbs-run-by-declared-risk.md` decides),
 the store hands the executor a `VerbInvocation`: the lake, the verb, the
-record at the head right after the append that made the verb due,
-whole and **unmasked**, the payload, and
+record as it stands at the head when the executor is called, after the
+append that made the verb due and the function calls that append made
+due, whole and **unmasked**, the payload, and
 the position of the event that made it due. The lake and that position
 are the executor's dedup key. The executor is the host's code, bound by
 the host, and decides what it returns; the caller sees only the outcome
@@ -667,7 +671,7 @@ know what they may release. The dedup key of a change is its lake and its
 position.
 
 **The webhook deliverer** is Lakelands' own consumer, in
-`lakelands-backings`. `lakelands serve` runs one per endpoint of the
+`lakelands-backings`. `lakelands serve --mcp` runs one per endpoint of the
 `deliver` section of the root's `lakelands.json` and per lake that
 endpoint names, and only for the lakes the process holds as their
 writer.
@@ -748,6 +752,11 @@ writer.
 - **Checked when the root opens:**
   - every lake an endpoint names is one the root holds (only `lakelands
     lake new` may run before the lake it creates exists);
+  - every endpoint has a name of letters, digits, `-` and `_`, used
+    once;
+  - every URL is `http` or `https`, without user information;
+  - every endpoint names at least one lake, and its `kinds`, when given,
+    are not empty and are among the two it sends;
   - `retry_first_secs` is not longer than `retry_max_secs`;
   - no number is zero.
 
@@ -755,10 +764,12 @@ writer.
 
 `types()` lists a host's own `sys.` types as type declarations;
 `may_hold(lake, type)` says whether a lake may hold one. Lakelands
-reserves only the four system types its fold reads: `sys.source`,
+reserves only the system types its own fold reads: `sys.source`,
 `sys.provenance`, `sys.setting`, `sys.aging_rule`
-(`docs/decisions/003-reservation-by-namespace.md`). The default adds
-none and allows those four everywhere.
+(`docs/decisions/003-reservation-by-namespace.md`). Today the fold reads
+`sys.setting`; the other three are reserved ahead of their readers
+(`sys.aging_rule` with lakelands#67). The default adds none and allows
+those four everywhere.
 
 The vocabulary is consulted every time a lake is opened for writing:
 the store declares every host type that `may_hold` allows for that lake
@@ -832,7 +843,8 @@ hold, not what hosts implement:
 - `LakeStore`: one open lake, as its host holds it; it hands out a
   `Catalog` bound to a `WriteContext`, the change feed, the limits it was
   opened with (`limits`), lake maintenance (`verify`, `rebuild`,
-  `checkpoint`), and `age` (above, under `SystemVocabulary`).
+  `checkpoint`), restriction (`restrict`, `unrestrict`), and, with
+  lakelands#67, `age` (above, under `SystemVocabulary`).
 
 `Catalog::apply` declares a set of declarations as one: validated
 together, so a reference may point forward within the set, and appended

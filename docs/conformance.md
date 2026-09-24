@@ -75,8 +75,9 @@ harness passes it on as the `url` of `EngineConfig::Postgres`, with TLS
 disabled because the container serves none. Each check creates its own
 schema and the harness drops it afterwards, so one database serves the
 whole suite. The container runs PostgreSQL 16, the oldest version the
-engine supports (`docs/decisions/038-a-lake-in-postgresql.md`). The job
-exists once the roster names `pg` required. Without the variable, the
+engine supports (`docs/decisions/038-a-lake-in-postgresql.md`). The
+roster names `pg` required, so the job runs on every pull request.
+Without the variable, the
 pg tests say so and stand down, so a workspace test run on a machine
 without PostgreSQL stays green; `scripts/conformance.sh pg` refuses to
 run without it, so the suite is never skipped there. To run the same

@@ -56,13 +56,13 @@ belongs to whoever stands on it; the life on top is Wildstuff's product.
   Ingest arrives as a stream too, content-addressed, so a message
   delivered twice is a no-op.
 - **Search.** Finding your way. Full-text, vector kNN with rank
-  fusion, and typed filters over one catalog, in the same file; a
+  fusion, and typed filters over one catalog, in the same engine; a
   pattern query walks relations from a typed start. Embeddings come
   from the caller or from a pluggable, OpenAI-compatible client. The
   map is what makes search precise: a search never returns a shape the
   ontology did not declare.
 
-**For agents.** Pin a type and the lake exposes four doors — `find`,
+**For agents.** Declare a type and the lake exposes four doors — `find`,
 `get`, `upsert`, `retire` — each with a JSON schema derived from the
 type and filtered by the caller's rights, a `link` and `unlink` pair for
 each relation carried by link records, plus one tool per declared verb,
@@ -72,16 +72,17 @@ as narrow it: a type whose fields all come from a source has no
 the position its turn reads at, `propose`, `proposals`, `accept` and
 `reject` for writes that wait for a review, and `declare_type`,
 `add_field` and `migrate` for the schema. Served over MCP (stdio and
-HTTP) from one catalog. Agents never write a query language.
+HTTP) and REST from one catalog. Agents never write a query language.
 
 > **Status: `0.1.0`.** Lakelands `0.1.0` is the `lakelands` CLI and its
 > MCP server (stdio and streamable HTTP) over the SQLite and in-memory
 > engines, both passing the whole conformance suite, installable from
-> the release. `0.2.0` adds the REST door beside MCP (`docs/rest.md`);
-> the PostgreSQL engine and the OpenAI-compatible embedding client come
-> right after,
-> and so do the ticker for schedules, relations with fields of their
-> own, and the mirror between lakes.
+> the release. `0.2.0`, on develop, adds the REST door beside MCP
+> (`docs/rest.md`), the PostgreSQL engine, the OpenAI-compatible
+> embedding client, the `http` and `exec` function backings, the webhook
+> deliverer, and relations with fields of their own, carried by link
+> records. Aging by date and the ticker that runs it, MCP
+> notifications, and the mirror between lakes come after.
 
 ## Try it
 
@@ -129,12 +130,12 @@ walk's page lists every call and the answer it must give.
   arrive later. Lakelands is the opposite: schema-first, every write
   governed by declared authority, every value traceable to its event.
 - **Not autonomous.** Lakelands detects when something is due — a
-  trigger matched, a schedule fired, a verb was called — and records it
+  trigger matched, an object set changed, a verb was called — and records it
   durably. Executing it is behind a seam: an HTTP endpoint, a local
   process, a webhook, or whatever you plug in. Nothing in the store
   calls a model, runs a sandbox, or reaches the network on its own.
-- **Not a new query language.** Lakelands sits on SQLite (and
-  PostgreSQL, right after `0.1.0`) and keeps them visible. The projection is a plain database you can
+- **Not a new query language.** Lakelands sits on SQLite and
+  PostgreSQL and keeps them visible. The projection is a plain database you can
   open with any tool; only the log is authoritative.
 
 ## Commitments
@@ -156,10 +157,10 @@ walk's page lists every call and the answer it must give.
 
 `0.1.0` holds what is on disk, in every reply, or in a trait: the log
 format, per-field provenance, positions on every answer, the engine
-contract and the seams. What comes right after arrives through those
-seams without changing them: the PostgreSQL engine, the REST door (in
-`0.2.0`), the OpenAI-compatible embedding client, webhook delivery of the change feed,
-and MCP notifications. The repository goes public once The Wild runs on a
+contract and the seams. What came right after arrived through those
+seams without changing them: the PostgreSQL engine, the REST door, the
+OpenAI-compatible embedding client and webhook delivery of fired
+triggers and set changes, all in `0.2.0`; MCP notifications follow. The repository goes public once The Wild runs on a
 tagged Lakelands.
 
 ## Licence

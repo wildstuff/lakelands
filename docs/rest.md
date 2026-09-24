@@ -16,13 +16,16 @@ this page says only how a request reaches it.
 
 - **The key.** `Authorization: Bearer <key>`. Every request is resolved on
   its own, before anything about the routes is answered: without a key
-  that resolves for the lake, every path answers `401`. There is no session and no pin: a read that must see one state
+  that resolves for the lake, every path under a lake answers `401`;
+  once a key is presented, a lake segment holding a `/` answers `404`
+  before that key is resolved. There is no session and no pin: a read that must see one state
   names `as_of` itself, and a page's `cursor` already carries the position
   its first page was read at.
 - **The position.** Every reply to a caller whose key resolved carries
   `Lakelands-Position`: the position the answer was read or written at,
   or, for a failure, the head of the log when it was answered. A JSON
-  answer also carries it as `position`.
+  answer that is not a failure also carries it as `position`; a failure
+  carries it in the header only.
 - **Failures.** A failure answers one of the contract's closed set of
   errors, as JSON, with the two sentences a person reads beside it:
   `what` happened and what `todo`. A request the server cannot read (an
@@ -39,7 +42,7 @@ this page says only how a request reaches it.
   | Error | Status |
   |---|---|
   | `refused`: `not_granted`, `wrong_door`, `reserved` | 403 (401 for a missing or unknown key) |
-  | `refused`: `invalid`, `constraint`, `precondition`, `too_deep`, `migration`, `out_of_range` | 422 (400 for a request the server cannot read, 404 for no route, 405 for a method the route does not take) |
+  | `refused`: `invalid`, `constraint`, `precondition`, `too_deep`, `migration`, `out_of_range` | 422 (400 for a request the server cannot read, 404 for no route, 405 for a method the route does not take, 413 for a body over 4 MiB, 415 for a body of another media type) |
   | `refused`: `decided` | 409 |
   | `not_found` | 404 |
   | `conflict` | 412 — the version expected came in `If-Match` |
@@ -94,6 +97,8 @@ of the link type, so the version `If-Match` names is the link's.
 - **Refusals:**
   - a `<to>` that names no live record of the relation's target is a
     `constraint` on `to` (422);
+  - a link the relation's cardinality does not allow (a second live link
+    where it allows one) is a `constraint` on `to` (422);
   - a relation the type does not carry by link records, whether it is
     carried by a field or not declared, is `invalid` (422);
   - a relation whose links the caller may not write is `not_granted`
@@ -129,8 +134,9 @@ for review.
 
 ### Ingest
 
-`POST …/ingest/<source>` takes `application/x-ndjson`, one source record
-per line (`{"type":…,"key":…,"fields":{…},"seen_at":…}`), and is read as
+`POST …/ingest/<source>` takes `application/x-ndjson` (or
+`application/jsonl`, `application/json`, or no `Content-Type`), one
+source record per line (`{"type":…,"key":…,"fields":{…},"seen_at":…}`), and is read as
 it arrives. The answer is NDJSON too: one line per commit window as it
 becomes durable, `{"position":…,"records":…,"duplicates":…}`. The
 reply's `Lakelands-Position` is the head before the ingest began; each

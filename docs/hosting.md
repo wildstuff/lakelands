@@ -43,8 +43,8 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   `schema`, `tls` and `tuning` may be left out: the schema is then
   `lakelands_<lake>` and TLS is `require`. With `require` and no
   `ca_file`, the engine looks for the system's certificate bundle at the
-  well-known Unix paths; on Windows there is none, so it refuses until
-  `ca_file` names one.
+  well-known Unix paths; on Windows there is none, so opening the lake
+  fails as `unavailable` until `ca_file` names one.
 - **`PrincipalResolver`.** Maps the host's identities, roles and
   policies onto one `Principal { kind, id, lake, grants }` per call.
   Grants are per field and per principal, and the store enforces them
@@ -104,7 +104,9 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
 - **`SystemVocabulary`.** The host registers its own `sys.*` types and
   says which lakes may hold them; each time a writer opens a lake, the
   store declares the allowed types it does not hold yet.
-  Lakelands reserves only the four types its own fold reads. See `docs/decisions/003-reservation-by-namespace.md`.
+  Lakelands reserves only the types its own fold reads; today that is
+  `sys.setting`, and the other three are reserved ahead of their
+  readers. See `docs/decisions/003-reservation-by-namespace.md`.
 
 **Configuration is not a seam.** Engine configuration, tuning, limits
 and an optional key handle reach a lake through `Location`, and a
