@@ -64,33 +64,54 @@ fn no_record(ty: &TypeName, key: &RecordKey) -> Error {
 }
 
 /// Whether a revision of a type would reshape stored records, so that it
-/// needs `migrate` (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`):
-/// a field removed, or its kind, value type, target or dimensions
-/// changed, or made required; a new field required; the key changed. A
-/// change of meaning, an added optional field or relation, a loosened
-/// requirement is a declaration.
+/// needs `migrate` (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`),
+/// by the store's own reasons: a field removed, retyped or made required;
+/// a new field required; the key changed; a relation removed or
+/// retargeted, or its cardinality narrowed; a stored type turned into a
+/// view. A change of meaning, an added optional field or relation, a
+/// loosened requirement or cardinality, a view ceasing to be one, is a
+/// declaration; and between two views nothing is stored, so every change
+/// is.
 fn reshapes(
     old: &lakelands_api::ontology::TypeDecl,
     new: &lakelands_api::ontology::TypeDecl,
 ) -> bool {
+    use lakelands_api::ontology::Cardinality;
+    if old.view.is_some() && new.view.is_some() {
+        return false;
+    }
+    if old.view.is_none() && new.view.is_some() {
+        return true;
+    }
     if old.key != new.key {
         return true;
     }
     let changed = old.fields.iter().any(|o| match field(new, &o.name) {
         None => true,
-        Some(n) => {
-            n.ty.kind != o.ty.kind
-                || n.ty.value_type != o.ty.value_type
-                || n.ty.target != o.ty.target
-                || n.ty.dimensions != o.ty.dimensions
-                || (n.required && !o.required)
-        }
+        Some(n) => n.ty != o.ty || (n.required && !o.required),
     });
     let required_added = new
         .fields
         .iter()
         .any(|n| n.required && field(old, &n.name).is_none());
-    changed || required_added
+    // Whether each side of a relation may link many: (this side, target).
+    let sides = |c: Cardinality| match c {
+        Cardinality::OneToOne => (false, false),
+        Cardinality::OneToMany => (false, true),
+        Cardinality::ManyToOne => (true, false),
+        Cardinality::ManyToMany => (true, true),
+    };
+    let relation_reshaped =
+        old.relations
+            .iter()
+            .any(|o| match new.relations.iter().find(|n| n.name == o.name) {
+                None => true,
+                Some(n) => {
+                    let ((a, b), (c, d)) = (sides(o.cardinality), sides(n.cardinality));
+                    n.target != o.target || !((!a || c) && (!b || d))
+                }
+            });
+    changed || required_added || relation_reshaped
 }
 
 /// Whether declaring a type of this name is reserved: a `sys.` type is
@@ -562,6 +583,20 @@ fn check_patch<'a>(
     Ok(t)
 }
 
+/// A checked patch with every value in its one form.
+fn canonical_patch(t: &DeclaredType, patch: Patch) -> Patch {
+    patch
+        .into_iter()
+        .map(|(name, v)| {
+            let v = match field(&t.decl, &name) {
+                Some(f) if !v.is_null() => value::canonical(&f.ty, &v),
+                _ => v,
+            };
+            (name, v)
+        })
+        .collect()
+}
+
 /// Refuse a reference that names no live record of its target type, nor
 /// one written earlier in the same ingest window.
 fn check_references(
@@ -651,6 +686,7 @@ fn with_key_fields(
                 },
                 _ => Value::String(part),
             };
+            let v = value::canonical(&f.ty, &v);
             if !door_writes(door, f.authority) {
                 return Err(on(name, Refusal::WrongDoor));
             }
@@ -738,9 +774,8 @@ fn plan_upsert(
         return Err(invalid("nothing to write: the patch carries no field"));
     }
     let t = check_patch(st, who, ty, &patch, Origin::Authored)?;
-    check_references(st, t, &patch, &BTreeMap::new())?;
     let actual = check_version(st, ty, key, opts)?;
-    let mut patch = patch;
+    let mut patch = canonical_patch(t, patch);
     with_key_fields(
         t,
         st,
@@ -750,6 +785,8 @@ fn plan_upsert(
         &mut patch,
         Origin::Authored,
     )?;
+    // After the key fields are filled: a key field may be a reference too.
+    check_references(st, t, &patch, &BTreeMap::new())?;
     check_required(t, st.live(ty, key), &patch, Origin::Authored)?;
     let version = Version(actual.0 + 1);
     let mut d = Draft::new(
@@ -1898,15 +1935,14 @@ fn plan_window(
             return Err(invalid("nothing to write: the patch carries no field"));
         }
         let t = check_patch(st, who, &r.ty, &r.fields, Origin::Source)?;
-        // A record earlier in this window counts as there.
-        check_references(st, t, &r.fields, &w.versions)?;
+        let checked = canonical_patch(t, r.fields.clone());
         let slot = (r.ty.clone(), r.key.clone());
         let before = w
             .versions
             .get(&slot)
             .copied()
             .unwrap_or_else(|| st.version(&r.ty, &r.key));
-        let id = content_id(source, r, before, &r.fields);
+        let id = content_id(source, r, before, &checked);
         // A record that would change no field is a duplicate too, so a full
         // re-import of unchanged data appends nothing.
         let now = w
@@ -1915,7 +1951,7 @@ fn plan_window(
             .cloned()
             .or_else(|| st.live(&r.ty, &r.key).map(|l| l.fields.clone()));
         let unchanged = now.as_ref().is_some_and(|fields| {
-            r.fields.iter().all(|(f, v)| match fields.get(f) {
+            checked.iter().all(|(f, v)| match fields.get(f) {
                 Some(stored) => stored == v,
                 None => v.is_null(),
             })
@@ -1924,7 +1960,7 @@ fn plan_window(
             w.duplicates += 1;
             continue;
         }
-        let mut fields = r.fields.clone();
+        let mut fields = checked;
         with_key_fields(
             t,
             st,
@@ -1934,6 +1970,8 @@ fn plan_window(
             &mut fields,
             Origin::Source,
         )?;
+        // A record earlier in this window counts as there.
+        check_references(st, t, &fields, &w.versions)?;
         check_required(t, st.live(&r.ty, &r.key), &fields, Origin::Source)?;
         let mut after = now.unwrap_or_default();
         for (f, v) in &fields {
