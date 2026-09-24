@@ -188,8 +188,10 @@ this object:
 - Excluded, because they do not change how a record is stored or
   validated: descriptions, labels, `sensitive`, `searchable`, field
   `authority`, `derived`, `depends_on`, `on_input_change`, a relation's
-  `via`, `inverse` and description, `valid_from` / `valid_to`,
-  `language`, and `field_meta`.
+  `authority`, `via`, `inverse` and description, `valid_from` /
+  `valid_to`, `language`, and `field_meta`. A relation's own `fields`
+  are shape, above; so is its link type's, which has a schema hash of
+  its own.
 
 ### 2.3 Records
 
@@ -218,6 +220,39 @@ The key of a `ledger_entry` keyed by `account` `DE:01` and `booked`
 the key fields, or both; when both are given they must agree, or the
 write is refused. A type with no key fields takes the writer's key as it
 is. No key holds `0x00` (§3).
+
+**Link records.** A relation without `via` is carried by **link
+records**: ordinary records of a **link type** the store derives from
+the relation, written and read by the record kinds above. No event kind
+is added for links, so this is format version 1 unchanged
+(`docs/decisions/035-a-link-is-a-record.md`).
+
+- The link type of relation `r` on type `t` is named `sys.link.t.r`.
+  It is declared by the store, as a system declaration in the same
+  append as the declaration of `t` that holds the relation, and again
+  whenever that declaration changes the relation.
+- Its key fields are `from` (a `reference` to `t`) and `to` (a
+  `reference` to the relation's `target`), both required, so a link's
+  key is `<from key>:<to key>` by the key rule above; one relation holds
+  one link per pair. Its other fields are the relation's own `fields`,
+  with their declared authority; a relation may not name a field of its
+  own `from` or `to`.
+- Writing a link is a `record_upserted` (or a `record_ingested`, for a
+  relation whose `authority` is `source`) of the link type; removing it
+  is a `record_retired`. A link written again after its removal
+  continues its version, and every field of a link has its provenance
+  like any record's.
+- The relation's `cardinality` holds over live links: `many_to_one` and
+  `one_to_one` allow one live link per `from`, `one_to_many` and
+  `one_to_one` one per `to`. A write that would break it is refused as a
+  constraint, and nothing is appended.
+- A relation keeps its carrier: a declaration that would give a relation
+  `via` it did not have, or take its `via` away, is refused, because the
+  links would have to move between a field and link records.
+- The `sys.` guard refuses a caller's declaration of a link type, and
+  the ordinary doors (`upsert`, `retire`) refuse its records as the
+  wrong door; links are written through the relation's link doors, and
+  by ingest for a source relation.
 
 For every field a `record_upserted` or `record_ingested` event sets or
 clears, the fold records the field's provenance from the envelope
@@ -462,7 +497,7 @@ with that declaration's members beside it. Every member not marked
 | `type` | `name` (required), `key` (`[]`), `fields` (`[]`), `relations` (`[]`), `view` (none), `valid_from`, `valid_to`, `language` (none), `field_meta` (`true`), `description`, `label` (none) |
 | a field (in `fields`, a relation's `fields`, a verb's `payload`, a function's `inputs`) | `name` and `type` (required), `required` (`false`), `authority` (`authored`), `derived` (none), `depends_on` (`[]`), `on_input_change` (`keep`), `sensitive` (`false`), `searchable` (`false`), `description`, `label` (none) |
 | a field's `type` | `kind` (required), `value_type`, `target`, `dimensions` (none) |
-| a relation | `name` and `target` (required), `cardinality` (`many_to_one`), `inverse`, `via` (none), `fields` (`[]`), `description` (none) |
+| a relation | `name` and `target` (required), `cardinality` (`many_to_one`), `authority` (`authored`; who writes its links, when it has no `via`), `inverse`, `via` (none), `fields` (`[]`), `description` (none) |
 | a `view` | `source` and `measures` (required; each measure `{ "name", "expr" }`), `where` (none), `group_by` (`[]`) |
 | `value_type` | `name` and `kind` (required), `constraint` (none), `one_of` (`[]`), `format`, `scale`, `description` (none) |
 | `verb` | `name`, `on`, `risk` and `effect` (required), `payload` (`[]`), `requires` (none), `description` (none); `effect: write` carries `set`, a list of `{ "field", "value" }`; `effect: external` carries `executor` |
