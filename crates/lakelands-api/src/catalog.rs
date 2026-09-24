@@ -282,6 +282,13 @@ pub trait LakeStore: Send + Sync {
     /// Seal the current log segment and write a checkpoint.
     async fn checkpoint(&self) -> Result<Position>;
 
+    /// Run every live aging rule once for `today`, a date at UTC midnight;
+    /// any other time is refused as invalid. Moves are records written by
+    /// the store with the rule as their procedure, one append per rule,
+    /// and a date aged twice is written once
+    /// (`docs/decisions/036-aging-runs-by-date-once.md`).
+    async fn age(&self, today: crate::time::Timestamp) -> Result<crate::write::AgeReport>;
+
     /// Release the lease and flush. The lake is closed when the last
     /// handle is dropped; this makes it explicit.
     async fn close(&self) -> Result<()>;

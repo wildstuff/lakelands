@@ -298,3 +298,39 @@ pub struct Committed {
     /// How many records were already in the log and appended nothing.
     pub duplicates: u32,
 }
+
+/// What `LakeStore::age` did for one date
+/// (`docs/decisions/036-aging-runs-by-date-once.md`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgeReport {
+    /// The date aged, at UTC midnight.
+    pub date: crate::time::Timestamp,
+    /// Every live rule, in name order, and what it did.
+    pub rules: Vec<RuleRun>,
+    /// The records moved, over all rules.
+    pub transitions: u32,
+    /// The conditions that could not be evaluated, over all rules.
+    pub failed_guards: u32,
+    /// The head after the run: the last append's position, or the head as
+    /// it stood when nothing was appended.
+    pub position: Position,
+}
+
+/// What one aging rule did for one date.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuleRun {
+    /// The rule's name.
+    pub rule: String,
+    /// The rule record's version, the procedure version of its moves.
+    pub version: Version,
+    /// The records it moved.
+    pub moved: u32,
+    /// The records whose condition could not be evaluated, left as they
+    /// were.
+    pub failed_guards: u32,
+    /// Why the rule was not run, when it no longer fits the lake (its
+    /// type or field gone or changed, its values or its condition no
+    /// longer valid). A skipped rule moves nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped: Option<String>,
+}

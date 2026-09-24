@@ -121,7 +121,7 @@ async fn a_second_writer_is_refused_at_once_and_a_reader_opens_beside_it() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_new_lake_starts_with_its_creation_its_lease_and_its_settings_type() {
+async fn a_new_lake_starts_with_its_creation_its_lease_and_its_system_types() {
     let lake = name();
     let store = open(&lake, OpenMode::Create).await.unwrap();
     let feed = store.feed();
@@ -130,14 +130,17 @@ async fn a_new_lake_starts_with_its_creation_its_lease_and_its_settings_type() {
         .await
         .unwrap();
     let kinds: Vec<&str> = batch.events.iter().map(|e| e.body.kind()).collect();
-    assert_eq!(kinds, ["lake_created", "lease_taken", "declared"]);
+    assert_eq!(
+        kinds,
+        ["lake_created", "lease_taken", "declared", "declared"]
+    );
     assert_eq!(
         batch.events[0].fence, 0,
         "position 0 is written before any lease"
     );
     assert_eq!(batch.events[1].fence, 1);
     let v = store.verify(None, None).await.unwrap();
-    assert_eq!(v.through, Position(2));
+    assert_eq!(v.through, Position(3));
 }
 
 #[tokio::test(flavor = "multi_thread")]

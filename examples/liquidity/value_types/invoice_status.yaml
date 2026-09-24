@@ -1,4 +1,4 @@
 name: invoice_status
 kind: text
-one_of: [open, paid, cancelled]
+one_of: [open, paid, cancelled, overdue]
 description: Where an invoice stands.

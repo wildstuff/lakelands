@@ -7,6 +7,7 @@
 use super::Check;
 
 mod aggregates;
+mod aging;
 mod backings;
 mod bundles;
 mod cursors;
@@ -172,4 +173,15 @@ pub const ALL: &[Check] = &[
     rebuild::INDEXES_AFTER_REBUILD,
     rebuild::ONE_JSON_FORM,
     ingest::DUPLICATE_ACROSS_WINDOWS,
+    aging::MOVES_WHAT_HOLDS_FROM,
+    aging::TWICE_IS_ONCE,
+    aging::TODAY_IS_THE_DATE,
+    aging::FAILED_GUARD_LEAVES,
+    aging::MOVE_PROVENANCE,
+    aging::RULE_CHECKED,
+    aging::NAME_ORDER,
+    aging::TODAY_AT_MIDNIGHT,
+    aging::NO_LONGER_FITS,
+    aging::RULE_AUTHORITY,
+    aging::REFUSED_MOVE_LEAVES,
 ];

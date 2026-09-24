@@ -767,9 +767,9 @@ writer.
 reserves only the system types its own fold reads: `sys.source`,
 `sys.provenance`, `sys.setting`, `sys.aging_rule`
 (`docs/decisions/003-reservation-by-namespace.md`). Today the fold reads
-`sys.setting`; the other three are reserved ahead of their readers
-(`sys.aging_rule` with lakelands#67). The default adds none and allows
-those four everywhere.
+`sys.setting` and `age` reads `sys.aging_rule`; the other two are
+reserved ahead of their readers. The default adds none and allows those
+four everywhere.
 
 The vocabulary is consulted every time a lake is opened for writing:
 the store declares every host type that `may_hold` allows for that lake
@@ -787,7 +787,8 @@ setting as it then stood.
 A `sys.aging_rule` record is one **aging rule**: on a date, move a field
 of every record of a type from one value to another when a condition
 holds (`docs/decisions/036-aging-runs-by-date-once.md`). The store declares
-the type when it creates a lake, beside `sys.setting`. Its key is
+the type when it creates a lake, beside `sys.setting`, and in a lake
+created before it the next time a writer opens that lake. Its key is
 `name`, and its fields are:
 
 | Field | Kind | Holds |
@@ -801,21 +802,40 @@ the type when it creates a lake, beside `sys.setting`. Its key is
 | `description` | text | for people |
 
 A rule is written like any record, through `upsert` under the writer's
-grants, and checked when it is written: `on` names a type and `field`
-one of its fields of the authority above, `from` and `to` are values of
-that field's type, and `when` parses and uses neither `changed` nor
-`previous`. A rule that fails a check is refused as invalid. A bundle
-declares rules in its `aging_rules/` lane, one per file, with the same
-keys; `lakelands apply` writes each after the bundle's declarations,
-skipping a rule whose stored fields already equal the file's.
+grants, and checked when it is written: `on` names a type that is
+neither a `sys.` type nor a view, `field` one of its fields of the
+authority above and not part of its key, `from` and `to` are values of
+that field's type and differ, and `when` parses and uses neither `changed` nor
+`previous`. A rule that fails a check is refused as invalid, naming the
+rule field at fault. A rule's authority is checked when it is written,
+and the run carries it: its author must hold write on `field` of `on`
+and read on every field `when` reads
+(`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`), or
+the rule is refused as not granted, naming that field; `age` then moves
+the records as the system. `setting()` in `when` reads the lake's
+settings as a filter does; no grant on `sys.setting` is asked, and if
+settings ever come under a grant, `find` and `age` change together. A bundle declares rules in its `aging_rules/` lane,
+one per file, with the same keys; `lakelands apply` writes each after
+the bundle's declarations, skipping a rule whose stored fields already
+equal the file's and clearing a field the file no longer carries. A
+rule's `on` may be a type the lake already holds, so a bundle of rules
+alone retunes them.
 
-`LakeStore::age(today)` runs every live rule once for `today`, a date,
+`LakeStore::age(today)` runs every live rule once for `today`, a date
+(a rule record under a retention hold is live and runs: a hold withholds
+a record from reads, it does not stop it),
 in rule-name order, and answers what it did: the date, the rules run,
 the transitions written, the guards that failed, and the position after
-the last append. For each rule it reads the live records of `on` at the
-head and moves every record whose `field` equals `from` (as values, by
-their canonical JSON) and for which `when` holds, with `today()` and
-`now()` both meaning `today` at midnight:
+the last append (the head as it stood when nothing was appended).
+`today` is a `Timestamp` at UTC midnight; any other time is refused as
+invalid, naming `today`. For each rule it reads the live records of
+`on` at the head, restricted ones included (aging is the host's
+maintenance, not a principal's read), and moves every record whose
+`field` equals `from` (as values, by their canonical JSON) and for which
+`when` holds, with `today()` and `now()` both meaning `today` at
+midnight. `setting(...)` in `when` reads the setting as of the head at
+the time of the run; the move is an event, so a replay reads the move
+and never evaluates `when` again.
 
 - A rule's transitions are one append of `record_upserted` events, each
   setting `field` to `to`, with `origin: system`, the writer
@@ -826,11 +846,25 @@ their canonical JSON) and for which `when` holds, with `today()` and
 - Each transition has the id of `docs/log-format.md` §3 for the rule,
   the record and the date, so a second `age` for the same date appends
   nothing.
-- A `when` that cannot be evaluated for a record does not move it; it is
-  counted as a failed guard, and the run goes on.
+- A `when` that cannot be evaluated for a record, or a move the store
+  would refuse for it, does not move it; it is counted as a failed
+  guard, and the run goes on.
+- A rule the lake's shape no longer fits (its type gone, its field gone
+  or no longer `authored` or `shared`, `from` or `to` no longer a value
+  of the field's type, `when` no longer parsing) is skipped, never run
+  half: the report names it with its reason, and the other rules run.
+- `age` holds the writer's lock for the whole run and scans every live
+  record of each rule's `on` at the head, so writes wait while a large
+  type ages.
+
+The suite's `aging` checks hold each of these sentences on every
+engine.
 
 The ticker (lakelands#12) calls `age` once a day. Without it, a host, or
-`lakelands age --today <date>`, calls it.
+`lakelands age --today <YYYY-MM-DD>`, calls it; the command prints one
+line per rule (`<rule>: moved N, M guard(s) failed`, or the reason it was
+skipped) and `aged <date> through position P`. No MCP tool calls `age`:
+like `rebuild` and `checkpoint`, it is the host's.
 
 ## The facade and the doors
 

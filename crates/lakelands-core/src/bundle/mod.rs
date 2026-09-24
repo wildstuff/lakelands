@@ -17,13 +17,14 @@
 //! verbs/<name>.yaml           one verb per file
 //! triggers/<name>.yaml        one trigger per file
 //! object_sets/<name>.yaml     one object set per file
+//! aging_rules/<name>.yaml     one aging rule per file
 //! ```
 //!
 //! Files end in `.yaml` or `.yml`. The file name is the author's to
 //! choose; the declaration's name is its `name` key. Anything whose path
 //! has a segment starting with `.` is ignored, and so is a file outside
 //! the lanes that is not YAML (a `README.md`). Refused: a YAML file
-//! outside the six lanes, a file in a lane that is not YAML, and a
+//! outside the seven lanes, a file in a lane that is not YAML, and a
 //! directory inside a lane.
 //!
 //! # Rules every file follows
@@ -31,10 +32,12 @@
 //! - Keys are strict. A key the lane does not know is refused by name,
 //!   never ignored, so a misspelling cannot quietly leave a setting at
 //!   its default.
-//! - A name is declared once in the whole bundle, across all lanes, and
-//!   is neither empty nor contains the NUL character (the log separates
-//!   names by it). Type names starting `sys.` are reserved for system
-//!   types and refused.
+//! - A name is declared once in the whole bundle, across the lanes of
+//!   declarations, and is neither empty nor contains the NUL character
+//!   (the log separates names by it). An aging rule is a record, not a
+//!   declaration: its name is its own, once among the bundle's rules.
+//!   Type names starting `sys.` are reserved for system types and
+//!   refused.
 //! - Every type and value type a file refers to is declared in the
 //!   bundle. A `sys.` type may be referred to; the lake checks it.
 //! - The tool names a lake derives from type and verb names
@@ -188,13 +191,30 @@
 //! description: Open invoices issued more than thirty days ago.
 //! ```
 //!
+//! An aging rule, `aging_rules/invoice_overdue.yaml`, holds the fields of
+//! one `sys.aging_rule` record (`docs/seams.md` §`SystemVocabulary`). Its
+//! `when` must parse, and when `on` is a type of the bundle, `field` is
+//! one of its fields; `on` may also be a type the lake already holds, so
+//! a bundle of rules alone retunes them. The lake checks the rest when the
+//! rule is written:
+//!
+//! ```yaml
+//! name: invoice_overdue
+//! on: invoice
+//! field: status
+//! from: open
+//! to: overdue
+//! when: "issued_on < today() - 30d"
+//! ```
+//!
 //! # Output
 //!
 //! The declarations come out in one order whatever order the files were
 //! given in: value types, types, functions, verbs, triggers, object
 //! sets, each lane sorted by name. Value types come before the types
 //! that use them, and types before the verbs, triggers and sets that
-//! name them.
+//! name them. The aging rules come out beside them, sorted by name, as
+//! the records `lakelands apply` writes after the declarations.
 
 mod doc;
 mod lower;
@@ -211,9 +231,9 @@ use serde::de::DeserializeOwned;
 
 use lakelands_api::tools::{NameProblem, name_problems};
 use lakelands_api::write::Declaration;
-use lakelands_api::{TypeName, VerbName};
+use lakelands_api::{Patch, TypeName, VerbName};
 
-use doc::{FunctionDoc, ObjectSetDoc, TriggerDoc, TypeDoc, ValueTypeDoc, VerbDoc};
+use doc::{AgingRuleDoc, FunctionDoc, ObjectSetDoc, TriggerDoc, TypeDoc, ValueTypeDoc, VerbDoc};
 use lower::{Known, Lower, name_fault};
 
 /// A bundle, loaded: its declarations in the order a lake takes them.
@@ -222,6 +242,9 @@ pub struct Bundle {
     /// Value types, types, functions, verbs, triggers, object sets, each
     /// lane sorted by name.
     pub declarations: Vec<Declaration>,
+    /// Aging rules, as the fields of their `sys.aging_rule` records,
+    /// sorted by name.
+    pub aging_rules: Vec<Patch>,
 }
 
 /// One problem with a bundle, against the file it is in.
@@ -248,7 +271,7 @@ impl std::error::Error for BundleError {}
 pub enum Problem {
     /// The file or directory could not be read, or is not UTF-8.
     Unreadable,
-    /// A YAML file outside the six lanes, or anything in a directory
+    /// A YAML file outside the seven lanes, or anything in a directory
     /// inside a lane.
     UnknownLane,
     /// A file in a lane that is not YAML.
@@ -279,7 +302,8 @@ pub enum Problem {
     Contradiction,
 }
 
-/// The six lanes of a bundle, in the order their declarations come out.
+/// The seven lanes of a bundle, in the order their declarations come out;
+/// the aging rules last.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Lane {
     ValueTypes,
@@ -288,16 +312,18 @@ enum Lane {
     Verbs,
     Triggers,
     ObjectSets,
+    AgingRules,
 }
 
 impl Lane {
-    const ALL: [Lane; 6] = [
+    const ALL: [Lane; 7] = [
         Lane::ValueTypes,
         Lane::Types,
         Lane::Functions,
         Lane::Verbs,
         Lane::Triggers,
         Lane::ObjectSets,
+        Lane::AgingRules,
     ];
 
     fn dir(self) -> &'static str {
@@ -308,6 +334,7 @@ impl Lane {
             Lane::Verbs => "verbs",
             Lane::Triggers => "triggers",
             Lane::ObjectSets => "object_sets",
+            Lane::AgingRules => "aging_rules",
         }
     }
 }
@@ -360,6 +387,7 @@ struct Docs<'a> {
     verbs: Vec<(&'a str, VerbDoc)>,
     triggers: Vec<(&'a str, TriggerDoc)>,
     object_sets: Vec<(&'a str, ObjectSetDoc)>,
+    aging_rules: Vec<(&'a str, AgingRuleDoc)>,
 }
 
 /// Everything learnt while reading the files: the documents, the names
@@ -370,6 +398,8 @@ struct Reading<'a> {
     known: Known,
     /// Every declared name, with the file that declared it first.
     declared: BTreeMap<String, &'a str>,
+    /// Every aging rule's name, with the file that wrote it first.
+    rules: BTreeMap<String, &'a str>,
     errors: Vec<BundleError>,
 }
 
@@ -462,6 +492,20 @@ impl<'a> Reading<'a> {
                     self.docs.object_sets.push((file, d));
                 }
             }
+            Lane::AgingRules => {
+                if let Some(d) = self.doc::<AgingRuleDoc>(file, text, lane) {
+                    if let Some(first) = self.rules.get(&d.name) {
+                        let message = format!(
+                            "aging rule `{}` is already written in {first}; a rule is written once in a bundle",
+                            d.name
+                        );
+                        self.fail(file, Problem::DuplicateName, message);
+                    } else {
+                        self.rules.insert(d.name.clone(), file);
+                        self.docs.aging_rules.push((file, d));
+                    }
+                }
+            }
         }
     }
 
@@ -526,9 +570,12 @@ pub fn parse(files: &[(String, String)]) -> Result<Bundle, Vec<BundleError>> {
         mut errors,
         ..
     } = r;
-    let declarations = lower_all(docs, &known, &mut errors);
+    let (declarations, aging_rules) = lower_all(docs, &known, &mut errors);
     if errors.is_empty() {
-        Ok(Bundle { declarations })
+        Ok(Bundle {
+            declarations,
+            aging_rules,
+        })
     } else {
         errors.sort_by(|a, b| a.file.cmp(&b.file));
         Err(errors)
@@ -624,7 +671,11 @@ fn check_references(
 }
 
 /// Lower every document and check the tool names, in output order.
-fn lower_all(docs: Docs<'_>, known: &Known, errors: &mut Vec<BundleError>) -> Vec<Declaration> {
+fn lower_all(
+    docs: Docs<'_>,
+    known: &Known,
+    errors: &mut Vec<BundleError>,
+) -> (Vec<Declaration>, Vec<Patch>) {
     fn each<'a, D, T>(
         docs: Vec<(&'a str, D)>,
         known: &Known,
@@ -668,6 +719,27 @@ fn lower_all(docs: Docs<'_>, known: &Known, errors: &mut Vec<BundleError>) -> Ve
         .collect();
     check_tool_names(&tool_owners, errors);
     check_references(&types, errors);
+    let mut aging_rules: Vec<(&str, AgingRuleDoc)> = docs.aging_rules;
+    aging_rules.sort_by(|a, b| a.1.name.cmp(&b.1.name));
+    for (file, r) in &aging_rules {
+        let on = types.iter().find(|(_, t)| t.name.as_str() == r.on);
+        if let Some((_, t)) = on
+            && !t.fields.iter().any(|f| f.name.as_str() == r.field)
+        {
+            errors.push(BundleError {
+                file: (*file).to_owned(),
+                problem: Problem::UnknownReference,
+                message: format!(
+                    "`field` names `{}`, which is not a field of `{}`",
+                    r.field, r.on
+                ),
+            });
+        }
+    }
+    let aging_rules = each(aging_rules, known, errors, lower::aging_rule)
+        .into_iter()
+        .map(|(_, p)| p)
+        .collect();
 
     let mut out = Vec::new();
     out.extend(
@@ -684,7 +756,7 @@ fn lower_all(docs: Docs<'_>, known: &Known, errors: &mut Vec<BundleError>) -> Ve
             .into_iter()
             .map(|(_, d)| Declaration::ObjectSet(d)),
     );
-    out
+    (out, aging_rules)
 }
 
 /// A declaration a lake derives tool names from.

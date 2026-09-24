@@ -142,12 +142,13 @@ What each must print:
 | Command | Expected |
 |---|---|
 | `init`, `lake new` | the root and the lake's location, exit 0 |
-| `apply` | `applied 6 declaration(s), in force from position 9`, then the six: value types `invoice_status`, `money`, types `invoice`, `partner`, function `band`, trigger `went_overdue` |
-| partners ingest | one `committed` line: **3 records, 0 already in the lake**, through position **13** |
-| invoices ingest | one `committed` line: **6 records, 0 already in the lake**, through position **32**. That covers the six invoices (15 to 20), then the twelve calls the ingest made after its append: six `band` outputs and six embeddings |
-| `feed --kind output_recorded` | twelve events, 21 to 32: `band` for INV-5001 (`"mid"`) at 21; the six embeddings, INV-5001 to INV-5006 in order, at 22 to 27 (the vectors in the table above); `band` for INV-5002 to INV-5006 at 28 to 32 (`low`, `high`, `low`, `mid`, `mid`). Each `band` event has `seam` `function:exec:band` and `procedure` `band`. Each embedding has `seam` `embed:walk-fake` |
+| `apply` | `applied 6 declaration(s), in force from position 10`, then the six: value types `invoice_status`, `money`, types `invoice`, `partner`, function `band`, trigger `went_overdue` |
+| partners ingest | one `committed` line: **3 records, 0 already in the lake**, through position **14** |
+| invoices ingest | one `committed` line: **6 records, 0 already in the lake**, through position **33**. That covers the six invoices (16 to 21), then the twelve calls the ingest made after its append: six `band` outputs and six embeddings |
+| `feed --kind output_recorded` | twelve events, 22 to 33: `band` for INV-5001 (`"mid"`) at 22; the six embeddings, INV-5001 to INV-5006 in order, at 23 to 28 (the vectors in the table above); `band` for INV-5002 to INV-5006 at 29 to 33 (`low`, `high`, `low`, `mid`, `mid`). Each `band` event has `seam` `function:exec:band` and `procedure` `band`. Each embedding has `seam` `embed:walk-fake` |
 
-The positions come from a run on develop at `e4929e3`, and
+The positions come from a run after lakelands#67, which declares
+`sys.aging_rule` in every new lake beside `sys.setting`, and
 `crates/lakelands-cli/tests/walk_2.rs` holds them: it runs these
 commands with the built binary, one process each, as the walker does.
 Every command that writes appends one `lease_taken` first, as in walk 1.
@@ -168,7 +169,7 @@ cargo run -q -p lakelands-server --example mcp_call -- --server "lakelands serve
 ```
 
 **1. `invoice_approved_by_link`**, twice: `{ "outcome": "applied",
-"version": 1 }` at positions **34** and **35**. Position 33 is this
+"version": 1 }` at positions **35** and **36**. Position 34 is this
 session's `lease_taken`.
 
 ## Aging to 1 December
@@ -235,7 +236,7 @@ cargo run -q -p lakelands-server --example mcp_call -- --server "lakelands serve
   tools/call sys_link_invoice_approved_by_find '{}' \
   tools/call invoice_get '{"key": "INV-5001", "with_meta": true}' \
   tools/call search '{"type": "invoice", "mode": "hybrid", "text": "shipping", "field": "summary_vec", "k": 3}' \
-  tools/call pin '{"as_of": 35}' \
+  tools/call pin '{"as_of": 36}' \
   tools/call invoice_find "{\"where\": \"status = 'overdue'\"}" \
   tools/call pin '{"clear": true}'
 ```
@@ -258,9 +259,9 @@ keyed by their pair:
 
 - The fields: `gross` `"4760.00"`, `band` `"mid"`, `summary_vec`
   `[1, 0, 0, 0]`, and `status` `"overdue"`.
-- The metadata of `band` says `"origin": "derived"`, `"position": 21`
+- The metadata of `band` says `"origin": "derived"`, `"position": 22`
   (the call's output) and `"writer": "system:lakelands"`. So does that of
-  `summary_vec`, with `"position": 22`. That of `status` names the aging
+  `summary_vec`, with `"position": 23`. That of `status` names the aging
   as the writer: `system:lakelands`, at the first `age`'s position.
 
 **5. `search`**, hybrid, for `shipping` over `summary_vec`, `k: 3`:
@@ -268,7 +269,7 @@ keyed by their pair:
 (`0.01666…`), INV-5006 (`0.01612…`), and a `next_cursor` for the three
 not shown.
 
-**6. `pin`** `{ "as_of": 35 }`, the second link's position, is the lake
+**6. `pin`** `{ "as_of": 36 }`, the second link's position, is the lake
 as it stood before the aging. `invoice_find` for `overdue` there answers
 no rows: `{ "shape": "records", "rows": [] }`. Then `pin` `{ "clear":
 true }` releases the pin.

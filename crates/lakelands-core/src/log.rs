@@ -58,6 +58,25 @@ pub fn authored_id(writer: &str, key: &IdempotencyKey) -> EventId {
     ])
 }
 
+/// The id of an aging transition (`docs/log-format.md` §3): the rule's
+/// name, the record it moves and the date aged, in the one form of §1.3
+/// at midnight. A date aged twice gives the same ids, and the store
+/// appends nothing for an id already in the lake.
+pub fn aging_id(
+    rule: &str,
+    ty: &TypeName,
+    key: &RecordKey,
+    date: lakelands_api::Timestamp,
+) -> EventId {
+    id_of(&[
+        b"lakelands:aging:v1",
+        rule.as_bytes(),
+        ty.as_str().as_bytes(),
+        key.as_str().as_bytes(),
+        date.to_string().as_bytes(),
+    ])
+}
+
 /// The id Lakelands' store gives every other event: its lake and position.
 pub fn positional_id(lake: &LakeId, position: Position) -> EventId {
     id_of(&[

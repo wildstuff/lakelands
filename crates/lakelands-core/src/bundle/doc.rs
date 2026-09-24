@@ -200,6 +200,20 @@ pub(super) struct ObjectSetDoc {
     pub description: Option<String>,
 }
 
+/// `aging_rules/<name>.yaml`: the fields of one `sys.aging_rule` record.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct AgingRuleDoc {
+    pub name: String,
+    pub on: String,
+    pub field: String,
+    pub from: serde_json::Value,
+    pub to: serde_json::Value,
+    pub when: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
 /// `functions/<name>.yaml`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -224,6 +224,58 @@ pub fn setting_type() -> TypeDecl {
     }
 }
 
+/// The system type whose records are a lake's aging rules
+/// (`docs/decisions/036-aging-runs-by-date-once.md`).
+pub const AGING_RULE_TYPE: &str = "sys.aging_rule";
+
+/// The declaration of [`AGING_RULE_TYPE`], which every lake holds beside
+/// [`SETTING_TYPE`] (`docs/seams.md` §`SystemVocabulary`): keyed by the
+/// rule's `name`, moving `field` of the records of `on` from `from` to `to`
+/// when `when` holds on the date aged.
+pub fn aging_rule_type() -> TypeDecl {
+    use crate::ontology::{Authority, FieldDecl, FieldType, StorageKind};
+    let field = |name: &str, kind, required| FieldDecl {
+        name: name.into(),
+        ty: FieldType::kind(kind),
+        required,
+        authority: Authority::Authored,
+        derived: None,
+        function: None,
+        depends_on: vec![],
+        on_input_change: Default::default(),
+        sensitive: false,
+        searchable: false,
+        description: None,
+        label: None,
+        embed: None,
+    };
+    TypeDecl {
+        name: AGING_RULE_TYPE.into(),
+        key: vec!["name".into()],
+        fields: vec![
+            field("name", StorageKind::Text, true),
+            field("on", StorageKind::Text, true),
+            field("field", StorageKind::Text, true),
+            field("from", StorageKind::Json, true),
+            field("to", StorageKind::Json, true),
+            field("when", StorageKind::Text, true),
+            field("description", StorageKind::Text, false),
+        ],
+        relations: vec![],
+        view: None,
+        valid_from: None,
+        valid_to: None,
+        field_meta: true,
+        language: None,
+        description: Some(
+            "One aging rule: on a date, move `field` of every record of `on` from `from` to \
+             `to` when `when` holds."
+                .into(),
+        ),
+        label: None,
+    }
+}
+
 /// The system types Lakelands itself reserves, because its own fold reads
 /// them.
 pub const RESERVED_SYSTEM_TYPES: [&str; 4] = [

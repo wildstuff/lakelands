@@ -158,10 +158,20 @@ fn walk(mock: bool, engine: &str) {
         engine,
     ]);
     let applied = sh.ok(&["--root", &root, "apply", &example().display().to_string()]);
+    let rule = |l: &&str| l.starts_with("  aging rule ");
     assert!(
         applied.starts_with("applied 8 declaration(s), in force from position ")
-            && applied.lines().filter(|l| l.starts_with("  ")).count() == 8,
+            && applied
+                .lines()
+                .filter(|l| l.starts_with("  ") && !rule(l))
+                .count()
+                == 8,
         "apply applies the bundle's eight declarations as one set:\n{applied}"
+    );
+    assert_eq!(
+        applied.lines().filter(rule).collect::<Vec<_>>(),
+        ["  aging rule `invoice_overdue` written at position 13"],
+        "apply writes the bundle's aging rule after its declarations:\n{applied}"
     );
 
     let ingest = |file: &str, source: &str, map: &str| {

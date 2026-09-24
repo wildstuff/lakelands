@@ -386,8 +386,84 @@ fn an_empty_bundle_declares_nothing() {
     assert_eq!(
         load(&[]),
         Ok(Bundle {
-            declarations: vec![]
+            declarations: vec![],
+            aging_rules: vec![],
         })
+    );
+}
+
+const INVOICE: (&str, &str) = (
+    "types/invoice.yaml",
+    "name: invoice\nkey: number\nfields:\n  number: text\n  status: text\n  due_on: date_time\n",
+);
+
+#[test]
+fn an_aging_rule_is_the_fields_of_its_record_sorted_by_name() {
+    let rule = |name: &str| {
+        format!(
+            "name: {name}\non: invoice\nfield: status\nfrom: open\nto: overdue\n\
+             when: \"due_on < today() - 30d\"\n"
+        )
+    };
+    let (b, a) = (rule("b_late"), rule("a_overdue"));
+    let bundle = load(&[
+        INVOICE,
+        ("aging_rules/1.yaml", &b),
+        ("aging_rules/2.yaml", &a),
+    ])
+    .expect("loads");
+    let names: Vec<&serde_json::Value> = bundle.aging_rules.iter().map(|p| &p["name"]).collect();
+    assert_eq!(
+        names,
+        [
+            &serde_json::json!("a_overdue"),
+            &serde_json::json!("b_late")
+        ]
+    );
+    assert_eq!(
+        serde_json::to_value(&bundle.aging_rules[0]).unwrap(),
+        serde_json::json!({"name": "a_overdue", "on": "invoice", "field": "status",
+                           "from": "open", "to": "overdue", "when": "due_on < today() - 30d"})
+    );
+    // A rule's name is its own: a trigger may carry it too.
+    let trigger = ("triggers/t.yaml", "name: a_overdue\non: invoice\n");
+    assert!(load(&[INVOICE, ("aging_rules/2.yaml", &a), trigger]).is_ok());
+}
+
+#[test]
+fn an_aging_rule_is_checked_as_a_bundle_file() {
+    let rule = |extra: &str| {
+        format!(
+            "name: r\non: invoice\nfield: status\nfrom: open\nto: overdue\nwhen: \"true\"\n{extra}"
+        )
+    };
+    let e = one(
+        &[INVOICE, ("aging_rules/r.yaml", &rule("every: day\n"))],
+        Problem::Malformed,
+    );
+    assert!(e.message.contains("every"), "{e:?}");
+    let field = rule("").replace("field: status", "field: state");
+    let e = one(
+        &[INVOICE, ("aging_rules/r.yaml", &field)],
+        Problem::UnknownReference,
+    );
+    assert!(e.message.contains("state"), "{e:?}");
+    // A type the bundle does not declare is the lake's to check.
+    let on = rule("").replace("on: invoice", "on: bill");
+    assert!(load(&[("aging_rules/r.yaml", &on)]).is_ok());
+    let when = rule("").replace("when: \"true\"", "when: \"status =\"");
+    one(
+        &[INVOICE, ("aging_rules/r.yaml", &when)],
+        Problem::BadExpression,
+    );
+    let r = rule("");
+    one(
+        &[
+            INVOICE,
+            ("aging_rules/a.yaml", &r),
+            ("aging_rules/b.yaml", &r),
+        ],
+        Problem::DuplicateName,
     );
 }
 
@@ -586,7 +662,9 @@ fn the_documented_examples_load() {
     for block in doc.split("```yaml\n").skip(1) {
         let body = block.split("```").next().unwrap_or_default();
         let has = |key: &str| body.lines().any(|l| l.starts_with(key));
-        let lane = if has("kind:") {
+        let lane = if has("from:") {
+            "aging_rules"
+        } else if has("kind:") {
             "value_types"
         } else if has("risk:") {
             "verbs"
@@ -601,7 +679,7 @@ fn the_documented_examples_load() {
         };
         owned.push((format!("{lane}/{}.yaml", owned.len()), body.to_owned()));
     }
-    assert_eq!(owned.len(), 8, "every documented example is found");
+    assert_eq!(owned.len(), 9, "every documented example is found");
     fs.extend(owned.iter().map(|(p, c)| (p.as_str(), c.as_str())));
     load(&fs).expect("the documented examples load");
 }
@@ -715,6 +793,10 @@ fn an_unknown_key_in_every_lane_is_refused() {
         (
             "object_sets/x.yaml",
             "name: x\nof: partner\nwhere: \"true\"\nextra: 1\n",
+        ),
+        (
+            "aging_rules/x.yaml",
+            "name: x\non: partner\nfield: id\nfrom: 1\nto: 2\nwhen: \"true\"\nextra: 1\n",
         ),
     ] {
         let e = one(&[PARTNER, (path, doc)], Problem::Malformed);

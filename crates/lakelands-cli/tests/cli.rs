@@ -360,7 +360,7 @@ fn apply_applies_a_bundle_as_one_set_at_one_position() {
         // the set is checked as one, so the forward reference holds.
         ok(
             &sh.run(&["apply", &fixture]),
-            "applied 4 declaration(s), in force from position 6:\n  type `invoice`\n  type `partner`\n  verb `approve`\n  verb `pay`\n",
+            "applied 4 declaration(s), in force from position 7:\n  type `invoice`\n  type `partner`\n  verb `approve`\n  verb `pay`\n",
         );
     }
 }
@@ -397,7 +397,7 @@ fn apply_refuses_a_broken_bundle_whole_naming_every_problem() {
             lines[2],
             "  what to do: correct the bundle and apply it again; nothing was applied"
         );
-        ok(&sh.run(&["feed", "--from", "3"]), "");
+        ok(&sh.run(&["feed", "--from", "4"]), "");
         let file = sh.file("decls.json", "[]");
         fails(
             &sh.run(&["apply", &file]),
@@ -445,13 +445,13 @@ fn ingest_prints_one_line_per_commit_window_and_skips_what_it_has() {
         let file = sh.file("bank.ndjson", &rows);
         ok(
             &sh.run(&["ingest", &file, "--source", "bank"]),
-            "committed 32 record(s), 0 already in the lake, through position 38\n\
-         committed 8 record(s), 0 already in the lake, through position 46\n",
+            "committed 32 record(s), 0 already in the lake, through position 39\n\
+         committed 8 record(s), 0 already in the lake, through position 47\n",
         );
         ok(
             &sh.run(&["ingest", &file, "--source", "bank"]),
-            "committed 0 record(s), 32 already in the lake, through position 46\n\
-         committed 0 record(s), 8 already in the lake, through position 46\n",
+            "committed 0 record(s), 32 already in the lake, through position 47\n\
+         committed 0 record(s), 8 already in the lake, through position 47\n",
         );
         let broken = sh.file(
             "broken.ndjson",
@@ -488,7 +488,7 @@ fn ingest_reads_csv_through_a_column_map() {
     );
         ok(
             &sh.run(&["ingest", &csv, "--source", "bank", "--map", &map]),
-            "committed 3 record(s), 0 already in the lake, through position 9\n",
+            "committed 3 record(s), 0 already in the lake, through position 10\n",
         );
         let feed = sh.run(&["feed", "--from", "7", "--kind", "record_ingested"]);
         let events: Vec<serde_json::Value> = feed
@@ -531,8 +531,8 @@ fn feed_prints_the_log_in_canonical_form_from_a_position() {
     for backend in BACKENDS {
         let sh = Shell::on("feed", backend);
         sh.lake();
-        // A lake begins with its creation, the creator's lease and the settings
-        // type. Every line is an event's canonical bytes; what the lake's clock
+        // A lake begins with its creation, the creator's lease, the settings
+        // type and the aging rule type. Every line is an event's canonical bytes; what the lake's clock
         // and the hash chain make (`known_at`, `id`, `hash`, `prev`) is shown
         // as a placeholder, since the mock keeps a clock of its own.
         let s = sh.run(&["feed"]);
@@ -550,8 +550,11 @@ fn feed_prints_the_log_in_canonical_form_from_a_position() {
         assert!(
             lines[2].contains("\"name\":\"sys.setting\"") && lines[2].contains("\"position\":2")
         );
+        assert!(
+            lines[3].contains("\"name\":\"sys.aging_rule\"") && lines[3].contains("\"position\":3")
+        );
         sh.run(&["apply", &sh.fixture()]);
-        let s = sh.run(&["feed", "--from", "3"]);
+        let s = sh.run(&["feed", "--from", "4"]);
         assert_eq!(s.code, 0);
         let positions: Vec<u64> = s
             .out
@@ -561,8 +564,65 @@ fn feed_prints_the_log_in_canonical_form_from_a_position() {
                 v["position"].as_u64().unwrap()
             })
             .collect();
-        assert_eq!(positions, [3, 4, 5, 6]);
-        ok(&sh.run(&["feed", "--from", "11"]), "");
+        assert_eq!(positions, [4, 5, 6, 7]);
+        ok(&sh.run(&["feed", "--from", "12"]), "");
+    }
+}
+
+#[test]
+fn apply_writes_aging_rules_after_the_declarations_and_age_runs_them() {
+    const STALE: (&str, &str) = (
+        "aging_rules/stale.yaml",
+        "name: stale\non: invoice\nfield: status\nfrom: approved\nto: stale\nwhen: \"true\"\n",
+    );
+    for backend in BACKENDS {
+        let sh = Shell::on("age", backend);
+        sh.lake();
+        let mut files = FIXTURE.to_vec();
+        files.push(STALE);
+        let dir = sh.bundle("aged", &files);
+        ok(
+            &sh.run(&["apply", &dir]),
+            "applied 4 declaration(s), in force from position 7:\n  type `invoice`\n  type `partner`\n  verb `approve`\n  verb `pay`\n  aging rule `stale` written at position 8\n",
+        );
+        // The rule as stored equals the file's: nothing is written.
+        let rules = sh.bundle("rules", &[STALE]);
+        ok(
+            &sh.run(&["apply", &rules]),
+            "  aging rule `stale` unchanged\n",
+        );
+        // Compared as the lake stores them: `1.0` is the stored `1`.
+        let level = (
+            "aging_rules/level.yaml",
+            "name: level\non: reminder\nfield: level\nfrom: 1.0\nto: 2.0\nwhen: \"true\"\n",
+        );
+        let reminder = (
+            "types/reminder.yaml",
+            "name: reminder\nfields:\n  level: number\n",
+        );
+        let first = sh.run(&["apply", &sh.bundle("levels", &[reminder, level])]);
+        assert_eq!(first.code, 0, "{}", first.err);
+        assert!(
+            first.out.contains("aging rule `level` written"),
+            "{}",
+            first.out
+        );
+        ok(
+            &sh.run(&["apply", &sh.bundle("level-again", &[level])]),
+            "  aging rule `level` unchanged\n",
+        );
+        ok(
+            &sh.run(&["age", "--today", "2026-03-01"]),
+            "level: moved 0, 0 guard(s) failed\nstale: moved 0, 0 guard(s) failed\naged 2026-03-01 through position 10\n",
+        );
+        fails(
+            &sh.run(&["age", "--today", "+026-03-01"]),
+            "error: `+026-03-01` is not a date\n  what to do: give --today as a date, YYYY-MM-DD\n",
+        );
+        fails(
+            &sh.run(&["age", "--today", "2026-3-1"]),
+            "error: `2026-3-1` is not a date\n  what to do: give --today as a date, YYYY-MM-DD\n",
+        );
     }
 }
 
@@ -574,7 +634,7 @@ fn rebuild_prints_the_position_it_rebuilt_through() {
         sh.run(&["apply", &sh.fixture()]);
         ok(
             &sh.run(&["rebuild"]),
-            "rebuilt the projection from the log through position 6\n",
+            "rebuilt the projection from the log through position 7\n",
         );
     }
 }

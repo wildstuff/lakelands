@@ -104,9 +104,12 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
 - **`SystemVocabulary`.** The host registers its own `sys.*` types and
   says which lakes may hold them; each time a writer opens a lake, the
   store declares the allowed types it does not hold yet.
-  Lakelands reserves only the types its own fold reads; today that is
-  `sys.setting`, and the other three are reserved ahead of their
-  readers. See `docs/decisions/003-reservation-by-namespace.md`.
+  Lakelands reserves only the types its own fold reads; today those are
+  `sys.setting` and `sys.aging_rule`, and the other two are reserved
+  ahead of their readers. See `docs/decisions/003-reservation-by-namespace.md`.
+  The aging rules run when the host calls `LakeStore::age(today)`, once
+  a day, with the date (`docs/decisions/036-aging-runs-by-date-once.md`);
+  `lakelands age --today <YYYY-MM-DD>` is the same call from the CLI.
 
 **Configuration is not a seam.** Engine configuration, tuning, limits
 and an optional key handle reach a lake through `Location`, and a
