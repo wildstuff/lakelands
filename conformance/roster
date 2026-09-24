@@ -7,4 +7,4 @@
 # The conformance-required gate reads this file; so does CI.
 sqlite  required
 mem     required
-pg      deferred   imported after 0.1.0 (lakelands#19)
+pg      required

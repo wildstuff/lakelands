@@ -19,6 +19,7 @@ lakelands-api.workspace = true
 lakelands-backings.workspace = true
 lakelands-core.workspace = true
 lakelands-engine-mem.workspace = true
+lakelands-engine-pg.workspace = true
 lakelands-engine-sqlite.workspace = true
 lakelands-server = { path = "../lakelands-server" }
 lakelands-store.workspace = true

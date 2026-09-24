@@ -17,6 +17,10 @@ was cut from (`docs/import-ledger.md` lists every one). One commit touches
 any of them; it is the row below, settled. **The list is closed for
 `0.1.0`.** It is checked again before the platform switches.
 
+**The `{pg}` root, checked on 2026-09-24 for lakelands#65**, when the
+PostgreSQL engine was taken from it, against the source's mainline at
+`87e79584fc`: no commit after the freeze touches it, so it adds no row.
+
 | Source commit | Behaviour, in one line | Ported in, or not applicable and why |
 |---|---|---|
 | `5914084de9` | One German user-interface sentence in the capabilities module changes its form of address from formal to informal. | Not applicable: the capabilities module was not carried (cut in O2: there is no capability negotiation; see `docs/import-ledger.md`), and no storage behaviour changes: no event, no fold rule, no signature, no stored byte. |

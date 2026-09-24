@@ -42,6 +42,22 @@ impl Location {
         }
     }
 
+    /// A lake kept by the PostgreSQL engine in the database `url` names,
+    /// in its default schema, over TLS.
+    pub fn postgres(lake: impl Into<LakeId>, url: impl Into<String>) -> Location {
+        Location {
+            lake: lake.into(),
+            engine: EngineConfig::Postgres {
+                url: url.into(),
+                schema: None,
+                tls: PgTls::default(),
+                tuning: PgTuning::default(),
+            },
+            key: None,
+            limits: Limits::default(),
+        }
+    }
+
     /// A lake held in memory, gone when the process ends.
     pub fn memory(lake: impl Into<LakeId>) -> Location {
         Location {
@@ -69,6 +85,22 @@ pub enum EngineConfig {
     },
     /// The in-memory engine.
     Memory,
+    /// The PostgreSQL engine: the lake kept in one schema of the database
+    /// `url` names (`docs/decisions/038-a-lake-in-postgresql.md`).
+    Postgres {
+        /// The connection, as a `postgres://` URL. Its `sslmode` is not
+        /// read: TLS is `tls`.
+        url: String,
+        /// The schema that holds the lake; `lakelands_<lake>` when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        schema: Option<String>,
+        /// How the connection is secured.
+        #[serde(default)]
+        tls: PgTls,
+        /// Timeouts the engine sets on its connections.
+        #[serde(default)]
+        tuning: PgTuning,
+    },
     /// An engine this crate does not name, selected by `name` and
     /// configured by `settings` (a host's own engine, for instance).
     Other {
@@ -78,6 +110,56 @@ pub enum EngineConfig {
         #[serde(default)]
         settings: BTreeMap<String, serde_json::Value>,
     },
+}
+
+/// How the PostgreSQL engine secures its connections.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PgTls {
+    /// `require` (the default) or `disable`.
+    pub mode: PgTlsMode,
+    /// The certificate authorities the server's certificate is verified
+    /// against, as a PEM bundle; the first system bundle found at a
+    /// well-known path when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ca_file: Option<PathBuf>,
+    /// A client certificate to present (PEM), with `client_key`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_cert: Option<PathBuf>,
+    /// The client certificate's private key (PEM).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_key: Option<PathBuf>,
+}
+
+/// Whether the PostgreSQL engine's connections use TLS.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PgTlsMode {
+    /// TLS, with the server's certificate and name verified; no plaintext.
+    #[default]
+    Require,
+    /// Plaintext, for a server on the same machine or a network the
+    /// operator secures otherwise.
+    Disable,
+}
+
+/// The PostgreSQL engine's timeouts. None of them can change an answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PgTuning {
+    /// How long opening a connection may take, in seconds.
+    pub connect_timeout_secs: u32,
+    /// How long one statement may run, in seconds; 0 for no limit.
+    pub statement_timeout_secs: u32,
+}
+
+impl Default for PgTuning {
+    fn default() -> PgTuning {
+        PgTuning {
+            connect_timeout_secs: 10,
+            statement_timeout_secs: 0,
+        }
+    }
 }
 
 /// The SQLite engine's performance levers, per lake. Only levers that

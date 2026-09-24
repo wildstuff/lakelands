@@ -9,7 +9,7 @@
 //! Opening a lake is one function, [`open_store`], and [`run`] takes it
 //! as a parameter so that tests can pass another. `open_store` opens a
 //! lake through `lakelands_store::open` with the engines this binary
-//! carries (SQLite and in-memory), once per lake for the life of the
+//! carries (SQLite, in-memory and PostgreSQL), once per lake for the life of the
 //! process: a lake has one writer, and the store that holds its lease is
 //! the one every command and every server session of this process uses.
 //!
@@ -69,8 +69,8 @@ fn memory() -> lakelands_engine_mem::MemoryOpener {
         .clone()
 }
 
-/// The one place the CLI opens a lake: through the store, with the SQLite
-/// and in-memory engines. To write, it creates the lake at its location
+/// The one place the CLI opens a lake: through the store, with the SQLite,
+/// in-memory and PostgreSQL engines. To write, it creates the lake at its location
 /// the first time and takes the lease (the log records each writer's
 /// `lease_taken`); to only read, it takes no lease and appends nothing. A
 /// lake is opened once per process, keyed by its location's engine and
@@ -89,6 +89,7 @@ pub fn open_store(location: Location, mode: OpenMode, host: Seams) -> Opening {
             engines: vec![
                 Arc::new(lakelands_engine_sqlite::SqliteOpener),
                 Arc::new(memory()),
+                Arc::new(lakelands_engine_pg::PgOpener),
             ],
             ..host
         };
