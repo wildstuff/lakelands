@@ -40,7 +40,7 @@ time a fact was written, differs from run to run.
 | `types/invoice.yaml` | `invoice`, keyed by `number`. Its fields: `partner`, `issued_on`, `due_on`, `net`; `gross` (derived: `net * 1.19`); `band` (computed by the function `band`); `status` (shared); `summary` (searchable); `summary_vec` (a `vector(4)`, the embedding of `summary` under the model `walk-fake`). Its relations: `billed_to` via `partner`, and `approved_by` to `partner`, carried by link records with a `since` (`docs/decisions/035-a-link-is-a-record.md`) |
 | `functions/band.yaml` | `band`: backing `exec`, `config: { command: band }`, input `gross` |
 | `triggers/went_overdue.yaml` | fires when `status` changes to `overdue` |
-| `aging_rules/open_to_overdue.yaml` | on `invoice`, moves `status` from `open` to `overdue` when `due_on < today() - 30d` (**lands with lakelands#67**) |
+| `aging_rules/open_to_overdue.yaml` | on `invoice`, moves `status` from `open` to `overdue` when `due_on < today() - 30d`; `apply` writes it as a `sys.aging_rule` record |
 | `data/partners.csv`, `data/invoices.csv` | three partners and six invoices, exported on 30 November 2026 |
 | `data/partners.map.json`, `data/invoices.map.json` | the column maps `lakelands ingest --map` takes |
 | `lakelands.json` | the root's configuration: the `exec` command `band`, the `embed` endpoint and the `deliver` endpoint `collector`. `<fake>` stands for the fake's absolute path |
@@ -142,14 +142,17 @@ What each must print:
 | Command | Expected |
 |---|---|
 | `init`, `lake new` | the root and the lake's location, exit 0 |
-| `apply` | `applied 6 declaration(s), in force from position 10`, then the six: value types `invoice_status`, `money`, types `invoice`, `partner`, function `band`, trigger `went_overdue` |
-| partners ingest | one `committed` line: **3 records, 0 already in the lake**, through position **14** |
-| invoices ingest | one `committed` line: **6 records, 0 already in the lake**, through position **33**. That covers the six invoices (16 to 21), then the twelve calls the ingest made after its append: six `band` outputs and six embeddings |
-| `feed --kind output_recorded` | twelve events, 22 to 33: `band` for INV-5001 (`"mid"`) at 22; the six embeddings, INV-5001 to INV-5006 in order, at 23 to 28 (the vectors in the table above); `band` for INV-5002 to INV-5006 at 29 to 33 (`low`, `high`, `low`, `mid`, `mid`). Each `band` event has `seam` `function:exec:band` and `procedure` `band`. Each embedding has `seam` `embed:walk-fake` |
+| `apply` | `applied 6 declaration(s), in force from position 10`, then the six: value types `invoice_status`, `money`, types `invoice`, `partner`, function `band`, trigger `went_overdue`; then ``aging rule `open_to_overdue` written at position 11`` |
+| partners ingest | one `committed` line: **3 records, 0 already in the lake**, through position **15** |
+| invoices ingest | one `committed` line: **6 records, 0 already in the lake**, through position **34**. That covers the six invoices (17 to 22), then the twelve calls the ingest made after its append: six `band` outputs and six embeddings |
+| `feed --kind output_recorded` | twelve events, 23 to 34: `band` for INV-5001 (`"mid"`) at 23; the six embeddings, INV-5001 to INV-5006 in order, at 24 to 29 (the vectors in the table above); `band` for INV-5002 to INV-5006 at 30 to 34 (`low`, `high`, `low`, `mid`, `mid`). Each `band` event has `seam` `function:exec:band` and `procedure` `band`. Each embedding has `seam` `embed:walk-fake` |
 
-The positions come from a run after lakelands#67, which declares
-`sys.aging_rule` in every new lake beside `sys.setting`, and
-`crates/lakelands-cli/tests/walk_2.rs` holds them: it runs these
+The positions come from a run on develop at `959d4ec`, after lakelands#67, which
+declares `sys.aging_rule` in every new lake beside `sys.setting`; `apply`
+now also writes the bundle's aging rule, one position after its
+declarations, so every position after `apply` is one later than a
+bundle without the rule would give. `crates/lakelands-cli/tests/walk_2.rs`
+holds them: it runs these
 commands with the built binary, one process each, as the walker does.
 Every command that writes appends one `lease_taken` first, as in walk 1.
 
@@ -169,14 +172,10 @@ cargo run -q -p lakelands-server --example mcp_call -- --server "lakelands serve
 ```
 
 **1. `invoice_approved_by_link`**, twice: `{ "outcome": "applied",
-"version": 1 }` at positions **35** and **36**. Position 34 is this
+"version": 1 }` at positions **36** and **37**. Position 35 is this
 session's `lease_taken`.
 
 ## Aging to 1 December
-
-**This section runs once lakelands#67 is merged**, which adds the
-`aging_rules/` lane and `lakelands age`. Its positions are filled in
-from that run. Until then, `apply` above declares no rule.
 
 The walk ages before it serves. A lake has one writer, and a process
 that holds it keeps it until it ends
@@ -191,8 +190,8 @@ lakelands age --today 2026-12-01
 
 | Command | Expected |
 |---|---|
-| first `age` | the date, the one rule `open_to_overdue` run, **3** transitions (INV-5001, INV-5002, INV-5003) and 0 failed guards, in one append. The append holds three `record_upserted` events, each with the `procedure` `aging:open_to_overdue`, the writer `system:lakelands` and the context origin `scheduled`, and three `went_overdue` firings. Position: *from the run after lakelands#67* |
-| second `age` | the same date and rule, **0** transitions. The lake's head after it is the head after the first `age` plus its own `lease_taken` and nothing else: aging a date twice writes it once |
+| first `age` | `open_to_overdue: moved 3, 0 guard(s) failed`, then `aged 2026-12-01 through position 44`. After its `lease_taken` at 38, the rule's one append holds, for INV-5001, INV-5002 and INV-5003 in turn, a `record_upserted` (39, 41, 43) with the `procedure` `aging:open_to_overdue`, the writer `system:lakelands` and the context origin `scheduled`, each followed by its `went_overdue` firing (40, 42, 44) |
+| second `age` | `open_to_overdue: moved 0, 0 guard(s) failed`, then `aged 2026-12-01 through position 45`: the head after the first `age` plus this process's own `lease_taken` and nothing else. Aging a date twice writes it once |
 
 INV-5004 is due on 1 November, which is not before `today() - 30d`, so
 it stays `open`. INV-5005 is `paid`, not `open`, so the rule does not
@@ -218,8 +217,9 @@ cat hooks.jsonl
 ```
 
 `hooks.jsonl` holds exactly **three** lines, in log order, one per
-`went_overdue` firing. Each line carries `"lake": "collections"`, the
-firing's position, and `{"kind": "trigger_fired", "trigger":
+`went_overdue` firing, at positions **40**, **42** and **44**; this
+`serve`'s own `lease_taken` is 46. Each line carries `"lake":
+"collections"`, the firing's position, and `{"kind": "trigger_fired", "trigger":
 "went_overdue", "type": "invoice", "key": …}` for INV-5001, INV-5002
 and INV-5003. Nothing of the invoice's fields is posted: a firing
 carries its key only. The deliverer keeps its place in
@@ -228,7 +228,8 @@ nothing again.
 
 ## The agent's calls
 
-Calls 2 to 6 are one session:
+Calls 2 to 6 are one session, whose `lease_taken` is 47, the head
+every answer below reads at:
 
 ```sh
 cargo run -q -p lakelands-server --example mcp_call -- --server "lakelands serve --mcp" \
@@ -236,7 +237,7 @@ cargo run -q -p lakelands-server --example mcp_call -- --server "lakelands serve
   tools/call sys_link_invoice_approved_by_find '{}' \
   tools/call invoice_get '{"key": "INV-5001", "with_meta": true}' \
   tools/call search '{"type": "invoice", "mode": "hybrid", "text": "shipping", "field": "summary_vec", "k": 3}' \
-  tools/call pin '{"as_of": 36}' \
+  tools/call pin '{"as_of": 37}' \
   tools/call invoice_find "{\"where\": \"status = 'overdue'\"}" \
   tools/call pin '{"clear": true}'
 ```
@@ -259,17 +260,18 @@ keyed by their pair:
 
 - The fields: `gross` `"4760.00"`, `band` `"mid"`, `summary_vec`
   `[1, 0, 0, 0]`, and `status` `"overdue"`.
-- The metadata of `band` says `"origin": "derived"`, `"position": 22`
+- The metadata of `band` says `"origin": "derived"`, `"position": 23`
   (the call's output) and `"writer": "system:lakelands"`. So does that of
-  `summary_vec`, with `"position": 23`. That of `status` names the aging
-  as the writer: `system:lakelands`, at the first `age`'s position.
+  `summary_vec`, with `"position": 24`. That of `status` names the aging:
+  `"origin": "system"`, `"position": 39` and `"writer":
+  "system:lakelands"`.
 
 **5. `search`**, hybrid, for `shipping` over `summary_vec`, `k: 3`:
 `"ranked_by": "hybrid"`, hits INV-5002 (`0.03306…`), INV-5001
 (`0.01666…`), INV-5006 (`0.01612…`), and a `next_cursor` for the three
 not shown.
 
-**6. `pin`** `{ "as_of": 36 }`, the second link's position, is the lake
+**6. `pin`** `{ "as_of": 37 }`, the second link's position, is the lake
 as it stood before the aging. `invoice_find` for `overdue` there answers
 no rows: `{ "shape": "records", "rows": [] }`. Then `pin` `{ "clear":
 true }` releases the pin.

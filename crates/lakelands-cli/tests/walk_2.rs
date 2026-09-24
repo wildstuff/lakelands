@@ -1,8 +1,9 @@
 //! Walk 2's materials, kept from rotting: the collections bundle in
 //! `examples/collections/` loads, and the commands `docs/walks/walk-2.md`
-//! types (`init`, `lake new`, `apply`, the two `ingest --map` runs and
-//! the agent's two links through `serve --mcp`) give the page's answers
-//! at the page's positions. Each command runs the built `lakelands`
+//! types (`init`, `lake new`, `apply`, the two `ingest --map` runs, the
+//! agent's two links through `serve --mcp`, the two `age` runs, the
+//! deliverer's posts and the agent's reads after the aging) give the
+//! page's answers at the page's positions. Each command runs the built `lakelands`
 //! binary in a process of its own, as the walker runs it, since each
 //! process takes the lake's lease once and the positions count it.
 //!
@@ -17,6 +18,7 @@ use std::io::Write;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 
 use lakelands_api::write::Declaration;
 use serde_json::{Value, json};
@@ -149,10 +151,24 @@ fn the_walks_commands_fill_band_and_summary_vec_through_the_fakes() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
     let addr = listener.local_addr().unwrap();
     std::thread::spawn(move || fake::serve(listener, |_, body| fake::embed(body)));
-    // The deliverer of every `serve` posts here; nothing fires in this test.
+    // The deliverer of every `serve` posts here; each delivery is kept as
+    // its position header and the event's body.
     let hooks = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
     let hook_addr = hooks.local_addr().unwrap();
-    std::thread::spawn(move || fake::serve(hooks, |_, _| json!({})));
+    let delivered: Arc<Mutex<Vec<(String, Value)>>> = Arc::default();
+    let seen = delivered.clone();
+    std::thread::spawn(move || {
+        fake::serve(hooks, move |headers, body| {
+            let position = headers
+                .iter()
+                .find(|(k, _)| k == "lakelands-position")
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default();
+            let event: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+            seen.lock().unwrap().push((position, event["body"].clone()));
+            json!({})
+        })
+    });
 
     let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("walk-2-store-sqlite");
     let _ = fs::remove_dir_all(&root);
@@ -173,8 +189,13 @@ fn the_walks_commands_fill_band_and_summary_vec_through_the_fakes() {
     let applied = ok(&["--root", &r, "apply", &example().display().to_string()]);
     assert!(
         applied.starts_with("applied 6 declaration(s), in force from position 10:\n")
-            && applied.lines().filter(|l| l.starts_with("  ")).count() == 6,
-        "apply applies the bundle's six declarations as one set, from position 10:\n{applied}"
+            && applied.lines().filter(|l| l.starts_with("  ")).count() == 7
+            && applied
+                .lines()
+                .last()
+                .is_some_and(|l| l == "  aging rule `open_to_overdue` written at position 11"),
+        "apply applies the bundle's six declarations as one set, from position 10, and \
+         then writes its aging rule at 11:\n{applied}"
     );
     let data = example().join("data");
     let path = |name: &str| data.join(name).display().to_string();
@@ -193,16 +214,16 @@ fn the_walks_commands_fill_band_and_summary_vec_through_the_fakes() {
     let partners = ingest("partners.csv", "crm", "partners.map.json");
     assert_eq!(
         partners.trim_end(),
-        "committed 3 record(s), 0 already in the lake, through position 14"
+        "committed 3 record(s), 0 already in the lake, through position 15"
     );
     let invoices = ingest("invoices.csv", "erp", "invoices.map.json");
     assert_eq!(
         invoices.trim_end(),
-        "committed 6 record(s), 0 already in the lake, through position 33",
+        "committed 6 record(s), 0 already in the lake, through position 34",
         "the ingest answers the position its calls' outputs are visible from"
     );
 
-    // Twelve outputs, 22 to 33, in the page's order: INV-5001's band, the
+    // Twelve outputs, 23 to 34, in the page's order: INV-5001's band, the
     // six embeddings, then the other five bands.
     let feed = ok(&["--root", &r, "feed", "--kind", "output_recorded"]);
     let outputs: Vec<(u64, String, String, Value)> = feed
@@ -236,7 +257,7 @@ fn the_walks_commands_fill_band_and_summary_vec_through_the_fakes() {
     ];
     assert_eq!(outputs.len(), expected.len(), "{feed}");
     for ((position, invoice, field, output), (at, (i, f, v))) in
-        outputs.into_iter().zip((22..).zip(expected))
+        outputs.into_iter().zip((23..).zip(expected))
     {
         assert_eq!(
             (position, invoice, field, output),
@@ -246,7 +267,7 @@ fn the_walks_commands_fill_band_and_summary_vec_through_the_fakes() {
     }
 
     // The agent's two links, in one session: the server takes the lease
-    // at 34, the links land at 35 and 36.
+    // at 35, the links land at 36 and 37.
     let links = mcp(
         &r,
         &[
@@ -265,8 +286,95 @@ fn the_walks_commands_fill_band_and_summary_vec_through_the_fakes() {
     assert_eq!(
         links,
         [
-            json!({"outcome": "applied", "position": 35, "version": 1}),
             json!({"outcome": "applied", "position": 36, "version": 1}),
+            json!({"outcome": "applied", "position": 37, "version": 1}),
         ]
+    );
+
+    // Aging to 1 December moves the three invoices due before 1 November
+    // in one append after its lease at 38; the second run moves nothing
+    // and appends only its own lease.
+    let aged = ok(&["--root", &r, "age", "--today", "2026-12-01"]);
+    assert_eq!(
+        aged.trim_end(),
+        "open_to_overdue: moved 3, 0 guard(s) failed\naged 2026-12-01 through position 44"
+    );
+    let again = ok(&["--root", &r, "age", "--today", "2026-12-01"]);
+    assert_eq!(
+        again.trim_end(),
+        "open_to_overdue: moved 0, 0 guard(s) failed\naged 2026-12-01 through position 45",
+        "aging a date twice writes it once"
+    );
+
+    // The deliverer runs while `serve` does, with no client: it posts the
+    // three firings.
+    let mut serve = Command::new(env!("CARGO_BIN_EXE_lakelands"))
+        .args(["--root", &r, "serve", "--mcp"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("the server starts");
+    // The page holds `serve` up for two seconds; the test waits for the
+    // three posts instead, up to thirty, so a slow machine is not a rift.
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while delivered.lock().unwrap().len() < 3 && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    drop(serve.stdin.take());
+    serve.wait().expect("the server ends with its input");
+    let posted: Vec<(String, String)> = delivered
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(p, e)| (p.clone(), e["key"].as_str().unwrap_or_default().to_owned()))
+        .collect();
+    assert_eq!(
+        posted,
+        [
+            ("40".to_owned(), "INV-5001".to_owned()),
+            ("42".to_owned(), "INV-5002".to_owned()),
+            ("44".to_owned(), "INV-5003".to_owned()),
+        ],
+        "the deliverer posts the three `went_overdue` firings, in log order"
+    );
+
+    // The agent reads after the aging, at the head 47 its session takes,
+    // and as of 37, the second link, before it.
+    let overdue = json!({"where": "status = 'overdue'"});
+    let reads = mcp(
+        &r,
+        &[
+            ("invoice_find", overdue.clone()),
+            ("pin", json!({"as_of": 37})),
+            ("invoice_find", overdue),
+            ("pin", json!({"clear": true})),
+        ],
+    );
+    let keys = |v: &Value| -> Vec<String> {
+        v["data"]["rows"]
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .map(|r| r["key"].as_str().unwrap_or_default().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        (reads[0]["position"].clone(), keys(&reads[0])),
+        (
+            json!(47),
+            vec![
+                "INV-5001".to_owned(),
+                "INV-5002".to_owned(),
+                "INV-5003".to_owned()
+            ]
+        )
+    );
+    assert_eq!(
+        (reads[2]["position"].clone(), keys(&reads[2])),
+        (json!(37), Vec::<String>::new()),
+        "before the aging, nothing was overdue"
     );
 }

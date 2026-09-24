@@ -72,7 +72,10 @@ fn one(
 ) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut line = String::new();
-    reader.read_line(&mut line)?;
+    // A connection that ends before its request line carries nothing.
+    if reader.read_line(&mut line)? == 0 {
+        return Ok(());
+    }
     let mut headers = Vec::new();
     loop {
         line.clear();
