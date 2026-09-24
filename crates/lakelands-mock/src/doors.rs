@@ -529,6 +529,32 @@ fn check_patch<'a>(
     Ok(t)
 }
 
+/// Refuse a reference that names no live record of its target type, nor
+/// one written earlier in the same ingest window.
+fn check_references(
+    st: &State,
+    t: &DeclaredType,
+    patch: &Patch,
+    earlier: &BTreeMap<(TypeName, RecordKey), Version>,
+) -> Result<()> {
+    for (name, v) in patch {
+        let Some(target) = field(&t.decl, name).and_then(|f| f.ty.target.as_ref()) else {
+            continue;
+        };
+        let Some(key) = v.as_str() else { continue };
+        let slot = (target.clone(), RecordKey::from(key));
+        if st.live(&slot.0, &slot.1).is_none() && !earlier.contains_key(&slot) {
+            return Err(on(
+                name,
+                Refusal::Invalid {
+                    message: format!("`{name}` names `{key}`, which is no live `{target}`"),
+                },
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Refuse a record that would lack a required field its door writes.
 fn check_required(
     t: &DeclaredType,
@@ -583,6 +609,7 @@ fn plan_upsert(
 ) -> Result<Version> {
     let By { st, who, cause } = *by;
     let t = check_patch(st, who, ty, &patch, Origin::Authored)?;
+    check_references(st, t, &patch, &BTreeMap::new())?;
     let actual = check_version(st, ty, key, opts)?;
     check_required(t, st.live(ty, key), &patch, Origin::Authored)?;
     let version = Version(actual.0 + 1);
@@ -1717,6 +1744,8 @@ fn plan_window(
     };
     for r in chunk {
         let t = check_patch(st, who, &r.ty, &r.fields, Origin::Source)?;
+        // A record earlier in this window counts as there.
+        check_references(st, t, &r.fields, &w.versions)?;
         let id = content_id(source, r);
         if st.ingested.contains(&id) || !w.ids.insert(id.clone()) {
             w.duplicates += 1;

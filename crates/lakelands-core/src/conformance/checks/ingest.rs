@@ -286,3 +286,60 @@ async fn ingest_skips_redeliveries_and_unchanged_records_but_writes_a_revert(
     );
     Ok(())
 }
+
+check!(
+    /// A redelivery in a later window is still a redelivery.
+    DUPLICATE_ACROSS_WINDOWS = a_record_delivered_twice_in_two_windows_is_written_once,
+    "016 and the log format: ingest is content-addressed across windows too, so a record delivered again in a later window of the same ingest appends nothing and the feed holds one event"
+);
+
+async fn a_record_delivered_twice_in_two_windows_is_written_once(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use crate::conformance::fixture::limits;
+    use lakelands_api::event::EventBody;
+    use lakelands_api::seam::FeedFilter;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    declare(cat.as_ref(), &own, feed()).await?;
+    let from = store.head().await.must("reading the head")?.next();
+    let window = limits().commit_window_events as usize;
+    let mut records = vec![source_record("feed", "twice", json!({"body": "same"}))];
+    for i in 0..window {
+        records.push(source_record(
+            "feed",
+            &format!("filler-{i}"),
+            json!({"body": "x"}),
+        ));
+    }
+    records.push(source_record("feed", "twice", json!({"body": "same"})));
+    let windows = ingest(cat.as_ref(), &own, "wire", records)
+        .await
+        .must("ingesting `twice` at the start of one window and again in the next")?;
+    windows_reach_head(store.as_ref(), &windows, "the two-window ingest").await?;
+    ensure!(
+        windows.len() >= 2 && committed(&windows) == (window as u32 + 1, 1),
+        "the ingest must span two windows, committing {} records and counting the \
+         second `twice` as already there; it answered {} window(s) and {:?}",
+        window + 1,
+        windows.len(),
+        committed(&windows)
+    );
+    let events = store
+        .feed()
+        .poll(from, &FeedFilter::default(), u32::MAX)
+        .await
+        .must("reading the feed")?
+        .events;
+    let twice = events
+        .iter()
+        .filter(
+            |e| matches!(&e.body, EventBody::RecordIngested { key, .. } if key.as_str() == "twice"),
+        )
+        .count();
+    ensure!(
+        twice == 1,
+        "the feed must hold one event for `twice`; it holds {twice}"
+    );
+    Ok(())
+}

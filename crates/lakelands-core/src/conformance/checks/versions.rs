@@ -254,3 +254,87 @@ async fn a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_app
     );
     Ok(())
 }
+
+check!(
+    /// A compare-and-set against a version before a retirement loses.
+    CAS_ACROSS_RETIREMENT = a_write_expecting_the_version_before_a_retirement_is_a_conflict,
+    "the glossary, the log format §2.3 and 015: a retired key keeps its count, so `expected_version` is compared with the retired record's version, a match re-creates it, and an older one is a conflict reporting that version"
+);
+
+async fn a_write_expecting_the_version_before_a_retirement_is_a_conflict(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use crate::conformance::fixture::head_unmoved;
+    counter(store.as_ref()).await?;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let counter = TypeName::from("counter");
+    let expecting = |v: u64| WriteOpts {
+        expected_version: Some(Version(v)),
+        idempotency_key: None,
+    };
+    upsert(cat.as_ref(), &own, "counter", "k", json!({"n": 1})).await?;
+    cat.retire(&own, &counter, &"k".into(), WriteOpts::default())
+        .await
+        .must("retiring `k`")?;
+    let before = store.head().await.must("reading the head")?;
+    let err = cat
+        .upsert(
+            &own,
+            &counter,
+            &"k".into(),
+            patch(json!({"n": 5})),
+            expecting(1),
+        )
+        .await
+        .must_fail("writing `k` expecting version 1 after its retirement moved it to 2")?;
+    head_unmoved(
+        store.as_ref(),
+        before,
+        "writing against a pre-retirement version",
+    )
+    .await?;
+    ensure!(
+        err == Error::Conflict {
+            expected: Version(1),
+            actual: Version(2)
+        },
+        "a write expecting version 1 of a key retired at version 2 must fail as a \
+         conflict reporting the retired record's version (expected 1, actual 2); 0 is \
+         only for a key never written; it failed with {err:?}"
+    );
+    let again = cat
+        .upsert(
+            &own,
+            &counter,
+            &"k".into(),
+            patch(json!({"n": 3})),
+            expecting(2),
+        )
+        .await
+        .must("re-creating `k` expecting the retired record's version 2")?;
+    ensure!(
+        version_of(&again) == Some(Version(3)),
+        "a write expecting the retired record's version must re-create it and continue \
+         its count at 3; it answered {again:?}"
+    );
+    let err = cat
+        .upsert(
+            &own,
+            &counter,
+            &"k".into(),
+            patch(json!({"n": 9})),
+            expecting(1),
+        )
+        .await
+        .must_fail("writing the re-created `k` expecting its first life's version 1")?;
+    ensure!(
+        err == Error::Conflict {
+            expected: Version(1),
+            actual: Version(3)
+        },
+        "a version from before the retirement must never apply to the record written \
+         after it (expected 1, actual 3); it failed with {err:?}"
+    );
+    Ok(())
+}

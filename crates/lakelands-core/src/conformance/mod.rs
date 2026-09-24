@@ -76,9 +76,10 @@ pub mod fixture;
 /// Opens lakes for the suite: one engine, as its test configures it.
 ///
 /// Every lake a harness opens has the default
-/// [`Limits`](lakelands_api::location::Limits): the checks that meet a
-/// limit (a walk's depth, a page's size) read it from
-/// [`fixture::limits`], never from the engine.
+/// [`Limits`](lakelands_api::location::Limits): the runner holds each
+/// fresh lake to them ([`fixture::default_limits`]) before its check runs,
+/// and the checks that meet a limit (a walk's depth, a page's size) read
+/// it from [`fixture::limits`].
 pub trait Harness: Send + Sync {
     /// The engine's name, as the report shows it.
     fn name(&self) -> &str;
@@ -214,6 +215,7 @@ async fn run_check(harness: &dyn Harness, check: &Check) -> Result<(), Failure> 
             )));
         }
     };
+    fixture::default_limits(store.as_ref())?;
     match caught((check.run)(store)).await {
         Ok(outcome) => outcome,
         Err(panic) => Err(Failure::new(format!("the check panicked: {panic}"))),

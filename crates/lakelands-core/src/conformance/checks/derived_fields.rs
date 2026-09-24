@@ -18,7 +18,7 @@ use serde_json::json;
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Must, dec, decimal, declare, doors, field, get_at, head_unmoved, owner, patch, read, type_decl,
-    upsert,
+    upsert, value,
 };
 
 check!(
@@ -208,6 +208,159 @@ async fn a_derived_field_added_to_a_live_type_is_computed_on_later_writes(
         decimal(got) == Some(dec("11.9")),
         "`i1` was written before `gross` existed; once its amount changes to 10.00, \
          the fold must compute gross 11.9, but it reads {got:?}"
+    );
+    Ok(())
+}
+
+check!(
+    /// No door at all writes a derived field.
+    NO_DOOR_AT_ALL = a_derived_field_accepts_no_value_from_a_source_or_a_verb_either,
+    "015 and 016: a derived field is the fold's alone; a source record or a verb that would set it is refused whole, not only an upsert"
+);
+
+check!(
+    /// A derived field follows its function's version.
+    FUNCTION_VERSION_RECOMPUTES = a_derived_field_reading_a_function_is_recomputed_when_the_function_changes,
+    "022: a derived field that names a function is computed by that function's declaration in force; a new version of the function recomputes it and names that version as its procedure"
+);
+
+async fn a_derived_field_accepts_no_value_from_a_source_or_a_verb_either(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use crate::conformance::fixture::{head_unmoved, ingest, patch, source_record};
+    use lakelands_api::ontology::FieldDecl;
+    use lakelands_api::write::Declaration;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let mut net = field("net", StorageKind::Decimal);
+    net.authority = Authority::Shared;
+    let gross = FieldDecl {
+        authority: Authority::Derived,
+        derived: Some("net * 2".into()),
+        depends_on: vec!["net".into()],
+        ..field("gross", StorageKind::Decimal)
+    };
+    declare(cat.as_ref(), &own, type_decl("bill", vec![net, gross])).await?;
+    let verb: Declaration = serde_json::from_value(serde_json::json!({
+        "declare": "verb", "name": "inflate", "on": "bill", "risk": "low",
+        "effect": "write", "set": [{"field": "gross", "value": "'99'"}]
+    }))
+    .map_err(|e| Failure::new(format!("the check's verb does not read: {e}")))?;
+    let declared = cat.declare(&own, verb).await;
+    upsert(
+        cat.as_ref(),
+        &own,
+        "bill",
+        "b",
+        serde_json::json!({"net": "1"}),
+    )
+    .await?;
+
+    let before = store.head().await.must("reading the head")?;
+    let fed = ingest(
+        cat.as_ref(),
+        &own,
+        "erp",
+        vec![source_record(
+            "bill",
+            "b",
+            serde_json::json!({"gross": "5"}),
+        )],
+    )
+    .await;
+    ensure!(
+        fed.is_err(),
+        "a source record setting the derived `gross` must be refused; the ingest answered {fed:?}"
+    );
+    head_unmoved(store.as_ref(), before, "ingesting a derived field").await?;
+
+    // A verb that sets a derived field may be refused when declared, or
+    // when called; either way no value lands.
+    if declared.is_ok() {
+        let before = store.head().await.must("reading the head")?;
+        let called = cat
+            .call(
+                &own,
+                &"inflate".into(),
+                &"b".into(),
+                patch(serde_json::json!({})),
+                Default::default(),
+            )
+            .await;
+        ensure!(
+            called.is_err(),
+            "a verb setting the derived `gross` must be refused; the call answered {called:?}"
+        );
+        head_unmoved(store.as_ref(), before, "a verb setting a derived field").await?;
+    }
+    let r = read(cat.as_ref(), &own, "bill", "b").await?;
+    ensure!(
+        decimal(value(&r, "gross")) == Some(dec("2")),
+        "`gross` must still be the fold's net * 2 = 2; it reads {:?}",
+        value(&r, "gross")
+    );
+    Ok(())
+}
+
+async fn a_derived_field_reading_a_function_is_recomputed_when_the_function_changes(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use lakelands_api::ontology::FieldDecl;
+    use lakelands_api::write::Declaration;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let function = |expr: &str| -> Result<Declaration, Failure> {
+        serde_json::from_value(serde_json::json!({
+            "declare": "function", "name": "scaled", "backing": "expr",
+            "inputs": [{"name": "net", "type": {"kind": "decimal"}}],
+            "expr": expr
+        }))
+        .map_err(|e| Failure::new(format!("the check's function does not read: {e}")))
+    };
+    cat.declare(&own, function("net * 2")?)
+        .await
+        .must("declaring the function `scaled` as net * 2")?;
+    let scaled = FieldDecl {
+        authority: Authority::Derived,
+        function: Some("scaled".into()),
+        depends_on: vec!["net".into()],
+        ..field("scaled", StorageKind::Decimal)
+    };
+    declare(
+        cat.as_ref(),
+        &own,
+        type_decl("bill", vec![field("net", StorageKind::Decimal), scaled]),
+    )
+    .await?;
+    upsert(
+        cat.as_ref(),
+        &own,
+        "bill",
+        "b",
+        serde_json::json!({"net": "3"}),
+    )
+    .await?;
+    let r = read(cat.as_ref(), &own, "bill", "b").await?;
+    ensure!(
+        decimal(value(&r, "scaled")) == Some(dec("6")),
+        "`scaled` must be computed by `scaled` (net * 2) as 6; it reads {:?}",
+        value(&r, "scaled")
+    );
+
+    cat.declare(&own, function("net * 3")?)
+        .await
+        .must("declaring `scaled` again as net * 3")?;
+    let r = read(cat.as_ref(), &own, "bill", "b").await?;
+    let meta = r
+        .meta
+        .get("scaled")
+        .and_then(|m| m.procedure_version.clone());
+    ensure!(
+        decimal(value(&r, "scaled")) == Some(dec("9")) && meta.as_deref() == Some("2"),
+        "after `scaled` became net * 3 (version 2), the record's `scaled` must be \
+         recomputed to 9 and name procedure version 2; it reads {:?} with procedure \
+         version {meta:?}",
+        value(&r, "scaled")
     );
     Ok(())
 }

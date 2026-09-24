@@ -187,3 +187,226 @@ async fn a_rebuild_reproduces_the_chain(store: Arc<dyn LakeStore>) -> Result<(),
     );
     Ok(())
 }
+
+check!(
+    /// Every index answers as before after a rebuild.
+    INDEXES_AFTER_REBUILD = after_a_rebuild_every_index_answers_as_before,
+    "001 and the engine seam: the projection and its indexes are derived from the log, so after a rebuild a find by a field, a lexical and a vector search and a walk over a relation answer as they did"
+);
+
+async fn after_a_rebuild_every_index_answers_as_before(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use lakelands_api::ontology::{FieldType, RelationDecl};
+    use lakelands_api::query::{Projection, Search, SearchMode, Step, Walk};
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let mut text = field("text", StorageKind::Text);
+    text.searchable = true;
+    let embedding = lakelands_api::ontology::FieldDecl {
+        ty: FieldType {
+            dimensions: Some(2),
+            ..FieldType::kind(StorageKind::Vector)
+        },
+        ..field("embedding", StorageKind::Text)
+    };
+    let parent = lakelands_api::ontology::FieldDecl {
+        ty: FieldType {
+            target: Some("note".into()),
+            ..FieldType::kind(StorageKind::Reference)
+        },
+        ..field("parent", StorageKind::Text)
+    };
+    let mut ty = type_decl("note", vec![text, embedding, parent]);
+    ty.language = Some("en".into());
+    ty.relations = vec![RelationDecl {
+        name: "under".into(),
+        target: "note".into(),
+        cardinality: Default::default(),
+        inverse: None,
+        via: Some("parent".into()),
+        fields: Vec::new(),
+        description: None,
+    }];
+    declare(cat.as_ref(), &own, ty).await?;
+    upsert(
+        cat.as_ref(),
+        &own,
+        "note",
+        "root",
+        json!({"text": "harbour plans", "embedding": [1.0, 0.0]}),
+    )
+    .await?;
+    upsert(
+        cat.as_ref(),
+        &own,
+        "note",
+        "leaf",
+        json!({"text": "crane rental", "embedding": [0.0, 1.0], "parent": "root"}),
+    )
+    .await?;
+
+    let answers = |store: Arc<dyn LakeStore>| async move {
+        let cat = doors(store.as_ref());
+        let own = owner(store.as_ref());
+        let found = all_found(
+            cat.as_ref(),
+            &own,
+            "note",
+            Find {
+                filter: Some("text = 'crane rental'".into()),
+                ..Find::default()
+            },
+        )
+        .await?;
+        let search = |mode: SearchMode| Search {
+            ty: TypeName::from("note"),
+            mode,
+            k: 10,
+            cursor: None,
+            filter: None,
+            with_meta: false,
+            at: ReadAt::default(),
+        };
+        let lexical = cat
+            .search(
+                &own,
+                search(SearchMode::Lexical {
+                    text: "harbour".into(),
+                }),
+            )
+            .await
+            .must("searching \"harbour\"")?
+            .data;
+        let vector = cat
+            .search(
+                &own,
+                search(SearchMode::Vector {
+                    field: "embedding".into(),
+                    vector: vec![0.0, 1.0],
+                }),
+            )
+            .await
+            .must("searching near (0, 1)")?
+            .data;
+        let mut walk = lakelands_api::query::Pattern::traverse(
+            TypeName::from("note"),
+            "leaf".into(),
+            vec![Step {
+                relation: "under".into(),
+                walk: Walk::Out,
+                ty: None,
+                filter: None,
+                depth: Default::default(),
+            }],
+        );
+        walk.project = Projection::Graph;
+        let graph = cat
+            .query(&own, walk)
+            .await
+            .must("walking `under` from `leaf`")?
+            .data;
+        // What each index answers: which records, in which order, with
+        // which scores, and which links.
+        let ranked = |h: &lakelands_api::query::Hits| {
+            h.hits
+                .iter()
+                .map(|h| serde_json::json!({"key": h.record.key, "score": h.score}))
+                .collect::<Vec<_>>()
+        };
+        let (nodes, edges) = match graph {
+            lakelands_api::query::QueryResult::Graph { nodes, edges, .. } => (
+                nodes.into_iter().map(|n| n.key.0).collect::<Vec<_>>(),
+                serde_json::to_value(&edges).unwrap_or_default(),
+            ),
+            other => return Err(Failure::new(format!("a graph walk answered {other:?}"))),
+        };
+        Ok::<_, Failure>(serde_json::json!({
+            "found": found.iter().map(|r| r.key.0.clone()).collect::<Vec<_>>(),
+            "lexical": ranked(&lexical),
+            "vector": ranked(&vector),
+            "nodes": nodes,
+            "edges": edges,
+        }))
+    };
+    let before = answers(store.clone()).await?;
+    ensure!(
+        before["found"] == json!(["leaf"])
+            && before["lexical"][0]["key"] == json!("root")
+            && before["vector"][0]["key"] == json!("leaf")
+            && before["edges"].as_array().is_some_and(|e| e.len() == 1),
+        "before the rebuild the indexes must answer: find `leaf`, \"harbour\" → root, \
+         near (0, 1) → leaf, one edge leaf → root; they answered {before}"
+    );
+    store.rebuild().await.must("rebuilding the projection")?;
+    let after = answers(store.clone()).await?;
+    ensure!(
+        before == after,
+        "after the rebuild the indexes must answer as before: {before} became {after}"
+    );
+    Ok(())
+}
+
+check!(
+    /// A value reads in its one JSON form, live and rebuilt.
+    ONE_JSON_FORM = a_number_and_a_vector_read_back_in_their_one_json_form_before_and_after_a_rebuild,
+    "the log format §1.2 and 001: every value a door answers is in its canonical JSON form (`1`, never `1.0`), so a read answers the same text live and after a rebuild"
+);
+
+async fn a_number_and_a_vector_read_back_in_their_one_json_form_before_and_after_a_rebuild(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use lakelands_api::ontology::{FieldDecl, FieldType};
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let v = FieldDecl {
+        ty: FieldType {
+            dimensions: Some(3),
+            ..FieldType::kind(StorageKind::Vector)
+        },
+        ..field("v", StorageKind::Text)
+    };
+    declare(
+        cat.as_ref(),
+        &own,
+        type_decl(
+            "sample",
+            vec![
+                field("n", StorageKind::Number),
+                field("m", StorageKind::Number),
+                v,
+            ],
+        ),
+    )
+    .await?;
+    upsert(
+        cat.as_ref(),
+        &own,
+        "sample",
+        "s",
+        json!({"n": 2.0, "m": 1.5, "v": [0.0, 1.0, 0.25]}),
+    )
+    .await?;
+    let text = |store: Arc<dyn LakeStore>| async move {
+        let r = doors(store.as_ref())
+            .get(
+                &owner(store.as_ref()),
+                &TypeName::from("sample"),
+                get_at("s", None),
+            )
+            .await
+            .must("reading `s`")?
+            .data;
+        Ok::<_, Failure>(serde_json::to_string(&r.fields).unwrap_or_default())
+    };
+    let canonical = r#"{"m":1.5,"n":2,"v":[0,1,0.25]}"#;
+    let live = text(store.clone()).await?;
+    store.rebuild().await.must("rebuilding the projection")?;
+    let rebuilt = text(store.clone()).await?;
+    ensure!(
+        live == canonical && rebuilt == canonical,
+        "`s` must read {canonical} (numbers in their one form) live and after a \
+         rebuild; it read {live} live and {rebuilt} after"
+    );
+    Ok(())
+}

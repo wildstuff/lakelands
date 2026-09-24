@@ -168,3 +168,41 @@ async fn a_walk_answers_what_it_reaches_in_one_order(
     );
     Ok(())
 }
+
+check!(
+    /// A walk around a cycle ends.
+    CYCLE_TERMINATES = a_walk_over_a_cycle_ends_and_answers_each_record_once,
+    "026: the store walks the graph, so a walk over a cycle of links ends within its depth and reaches every record once"
+);
+
+async fn a_walk_over_a_cycle_ends_and_answers_each_record_once(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    org(store.as_ref()).await?;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    // The ceo reports to the one who reports to the ceo: a cycle of two.
+    upsert(cat.as_ref(), &own, "person", "ceo", json!({"boss": "vp"})).await?;
+    let mut p = from(
+        "ceo",
+        vec![step("reports_to", Walk::Out, 1, limits().max_depth)],
+    );
+    p.project = lakelands_api::query::Projection::Graph;
+    let reply = cat
+        .query(&own, p)
+        .await
+        .must("walking `reports_to` around the cycle ceo → vp → ceo")?;
+    let QueryResult::Graph { nodes, .. } = reply.data else {
+        return Err(Failure::new("a graph projection answered something else"));
+    };
+    let mut keys: Vec<&str> = nodes.iter().map(|n| n.key.as_str()).collect();
+    let all = keys.len();
+    keys.sort();
+    keys.dedup();
+    ensure!(
+        keys == ["ceo", "vp"] && all == 2,
+        "a walk around the cycle ceo → vp → ceo must answer ceo and vp, each once; it \
+         answered {all} node(s): {keys:?}"
+    );
+    Ok(())
+}

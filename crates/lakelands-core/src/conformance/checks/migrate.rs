@@ -185,3 +185,134 @@ async fn migrated_values_follow_the_conversion_table_and_renames_keep_them(
     );
     Ok(())
 }
+
+check!(
+    /// A relation's `via` cannot be migrated away.
+    VIA_REMOVAL_REFUSED = a_migration_removing_the_field_a_relation_walks_is_refused,
+    "027 and 018: a relation is carried by its `via` field; a migration that removes that field would leave the relation dangling and is refused"
+);
+
+check!(
+    /// The preflight names every field a migration drops.
+    DROPPED_REPORTED = the_preflight_names_every_dropped_field_and_an_empty_type_migrates_cleanly,
+    "027 and MigrationReport.dropped: the preflight names every removed field with how many values it discards, and a type with no records reports nothing to lose"
+);
+
+async fn a_migration_removing_the_field_a_relation_walks_is_refused(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use lakelands_api::ontology::{FieldDecl, RelationDecl};
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    declare(
+        cat.as_ref(),
+        &own,
+        type_decl("partner", vec![field("name", StorageKind::Text)]),
+    )
+    .await?;
+    let mut invoice = type_decl(
+        "invoice",
+        vec![
+            field("title", StorageKind::Text),
+            FieldDecl {
+                ty: FieldType {
+                    target: Some("partner".into()),
+                    ..FieldType::kind(StorageKind::Reference)
+                },
+                ..field("partner", StorageKind::Text)
+            },
+        ],
+    );
+    invoice.relations = vec![RelationDecl {
+        name: "billed_by".into(),
+        target: "partner".into(),
+        cardinality: Default::default(),
+        inverse: None,
+        via: Some("partner".into()),
+        fields: Vec::new(),
+        description: None,
+    }];
+    declare(cat.as_ref(), &own, invoice.clone()).await?;
+    let mut to = invoice;
+    to.fields.retain(|f| f.name.as_str() != "partner");
+    let m = Migration {
+        to,
+        renames: Vec::new(),
+    };
+    let before = store.head().await.must("reading the head")?;
+    let refused = match cat.migrate(&own, m.clone()).await {
+        Err(_) => true,
+        Ok(report) => cat
+            .migrate_apply(&own, m, &report.data.report_id)
+            .await
+            .is_err(),
+    };
+    head_unmoved(store.as_ref(), before, "migrating away a relation's `via`").await?;
+    ensure!(
+        refused,
+        "removing `partner`, the `via` of the relation `billed_by`, must be refused, at \
+         the preflight or when applied; it was applied"
+    );
+    Ok(())
+}
+
+async fn the_preflight_names_every_dropped_field_and_an_empty_type_migrates_cleanly(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let wide = type_decl(
+        "memo",
+        vec![
+            field("title", StorageKind::Text),
+            field("pages", StorageKind::Number),
+            field("ref", StorageKind::Text),
+        ],
+    );
+    declare(cat.as_ref(), &own, wide.clone()).await?;
+    let mut narrow = wide.clone();
+    narrow.fields.retain(|f| f.name.as_str() == "title");
+    let m = Migration {
+        to: narrow.clone(),
+        renames: Vec::new(),
+    };
+    let empty = preflight(store.as_ref(), &m).await?;
+    ensure!(
+        empty.records_scanned == 0 && empty.fields.is_empty() && empty.lossless,
+        "the preflight over a type with no records must scan none, convert nothing \
+         and be lossless; it answered {empty:?}"
+    );
+
+    upsert(
+        cat.as_ref(),
+        &own,
+        "memo",
+        "a",
+        json!({"title": "A", "pages": 3, "ref": "x"}),
+    )
+    .await?;
+    upsert(
+        cat.as_ref(),
+        &own,
+        "memo",
+        "b",
+        json!({"title": "B", "pages": 5}),
+    )
+    .await?;
+    upsert(cat.as_ref(), &own, "memo", "c", json!({"title": "C"})).await?;
+    let report = preflight(store.as_ref(), &m).await?;
+    let mut dropped: Vec<(String, u64)> = report
+        .dropped
+        .iter()
+        .map(|(f, n)| (f.to_string(), *n))
+        .collect();
+    dropped.sort();
+    ensure!(
+        dropped == [("pages".to_owned(), 2), ("ref".to_owned(), 1)] && report.records_scanned == 3,
+        "dropping `pages` (held by two records) and `ref` (held by one) must be \
+         reported as pages 2, ref 1 over three records; it reported {:?} over {}",
+        report.dropped,
+        report.records_scanned
+    );
+    Ok(())
+}

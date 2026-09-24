@@ -6,6 +6,7 @@
 
 use super::Check;
 
+mod aggregates;
 mod bundles;
 mod cursors;
 mod decimals;
@@ -23,6 +24,7 @@ mod proposals;
 mod provenance;
 mod reactions;
 mod rebuild;
+mod references;
 mod restriction;
 mod retire;
 mod schema;
@@ -112,4 +114,22 @@ pub const ALL: &[Check] = &[
     restriction::HOLD_WITHHOLDS_AND_KEEPS,
     reactions::VERB_WRITE_REACTS,
     bundles::BUNDLE_WHOLE,
+    versions::CAS_ACROSS_RETIREMENT,
+    references::REFERENCE_MUST_RESOLVE,
+    references::REFERENCE_WITHIN_A_WINDOW,
+    values::DECIMAL_NOT_A_NUMBER,
+    derived_fields::NO_DOOR_AT_ALL,
+    derived_fields::FUNCTION_VERSION_RECOMPUTES,
+    migrate::VIA_REMOVAL_REFUSED,
+    migrate::DROPPED_REPORTED,
+    schema::REORDERED_FIELDS,
+    aggregates::EMPTY_AGGREGATE,
+    filters::CLEARED_FIELD,
+    walks::CYCLE_TERMINATES,
+    search::SEARCH_FOLLOWS_TEXT,
+    search::WITHHELD_NEVER_HITS,
+    search::VECTOR_LEAVES_THE_NEIGHBOURS,
+    rebuild::INDEXES_AFTER_REBUILD,
+    rebuild::ONE_JSON_FORM,
+    ingest::DUPLICATE_ACROSS_WINDOWS,
 ];

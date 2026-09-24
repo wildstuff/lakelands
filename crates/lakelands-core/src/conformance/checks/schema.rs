@@ -276,3 +276,44 @@ async fn an_ordinary_principal_cannot_declare_a_sys_type(
 
     Ok(())
 }
+
+check!(
+    /// Field order is not shape.
+    REORDERED_FIELDS = redeclaring_a_type_with_its_fields_reordered_keeps_its_schema_hash,
+    "007: field order is not shape, so a type declared again with its fields in another order keeps its schema hash; the log keeps the declaration as written, so it is one revision"
+);
+
+async fn redeclaring_a_type_with_its_fields_reordered_keeps_its_schema_hash(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let first = type_decl(
+        "memo",
+        vec![
+            field("title", StorageKind::Text),
+            field("body", StorageKind::Text),
+            field("pages", StorageKind::Number),
+        ],
+    );
+    declare(cat.as_ref(), &own, first.clone()).await?;
+    let (hash, version) = hash_of(store.as_ref(), "memo").await?;
+    let before = store.head().await.must("reading the head")?;
+    let mut reordered = first;
+    reordered.fields.reverse();
+    declare(cat.as_ref(), &own, reordered).await?;
+    let after = store.head().await.must("reading the head")?;
+    let (again, next) = hash_of(store.as_ref(), "memo").await?;
+    ensure!(
+        again == hash,
+        "redeclaring `memo` with its fields reordered moved its schema hash from {hash} \
+         to {again}; order is not shape"
+    );
+    ensure!(
+        after == before.next() && next == version + 1,
+        "the reordered declaration is a revision as written: one event and version \
+         {} expected, but the head moved from {before} to {after} and the version is {next}",
+        version + 1
+    );
+    Ok(())
+}

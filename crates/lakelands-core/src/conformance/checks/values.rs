@@ -288,3 +288,32 @@ async fn null_clears_a_field_whatever_its_value_type_allows(
     );
     Ok(())
 }
+
+check!(
+    /// A decimal is written as a string of digits, never a number.
+    DECIMAL_NOT_A_NUMBER = a_decimal_written_as_a_json_number_is_refused,
+    "the log format §5: a decimal's one JSON form is a string of digits, so a JSON number, which may already have lost digits, is refused"
+);
+
+async fn a_decimal_written_as_a_json_number_is_refused(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    one_field(
+        store.as_ref(),
+        "thing",
+        FieldType::kind(StorageKind::Decimal),
+    )
+    .await?;
+    let cat = doors(store.as_ref());
+    upsert(
+        cat.as_ref(),
+        &owner(store.as_ref()),
+        "thing",
+        "k",
+        json!({"v": "12.50"}),
+    )
+    .await?;
+    refused(store.as_ref(), json!(12.5), "a decimal as a JSON number").await?;
+    refused(store.as_ref(), json!(12), "a decimal as a JSON integer").await?;
+    refused(store.as_ref(), json!("12,50"), "a decimal with a comma").await
+}
