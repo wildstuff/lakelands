@@ -1,4 +1,4 @@
-//! The commands that open a lake: `apply`, `ingest`, `feed`,
+//! The commands that open a lake: `apply`, `ingest`, `feed`, `age`,
 //! `rebuild` and `serve`. Each calls the library in-process and prints
 //! the position of every answer that has one.
 
@@ -80,8 +80,12 @@ pub async fn apply(
         )
     })?;
     // The bundle is applied as one set: validated together, appended in
-    // one append at one position, or refused whole.
+    // one append at one position, or refused whole. A bundle of aging
+    // rules alone declares nothing.
     let what: Vec<String> = bundle.declarations.iter().map(label).collect();
+    if what.is_empty() && !bundle.aging_rules.is_empty() {
+        return aging_rules(out, catalog, who, bundle.aging_rules).await;
+    }
     match catalog.apply(who, bundle.declarations).await {
         Ok(outcome) => {
             put(
@@ -102,7 +106,143 @@ pub async fn apply(
             return Err(f);
         }
     }
+    aging_rules(out, catalog, who, bundle.aging_rules).await
+}
+
+/// Write a bundle's aging rules after its declarations, each as its
+/// `sys.aging_rule` record, skipping a rule whose stored fields already
+/// equal the file's. A field the stored rule holds and the file does not
+/// is cleared.
+async fn aging_rules(
+    out: Out<'_>,
+    catalog: &dyn Catalog,
+    who: &Principal,
+    rules: Vec<lakelands_api::Patch>,
+) -> Result<(), Failure> {
+    let ty = TypeName::from(lakelands_api::seam::AGING_RULE_TYPE);
+    for mut rule in rules {
+        let name = rule
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let key = RecordKey::from(name.as_str());
+        let get = lakelands_api::Get {
+            key: key.clone(),
+            with_meta: false,
+            at: ReadAt::default(),
+        };
+        let stored = match catalog.get(who, &ty, get).await {
+            Ok(r) => Some(r.data.fields),
+            Err(lakelands_api::Error::NotFound { .. }) => None,
+            Err(e) => return Err(e.into()),
+        };
+        normalise(catalog, who, &mut rule).await;
+        if stored.as_ref() == Some(&rule) {
+            put(out, format!("  aging rule `{name}` unchanged"))?;
+            continue;
+        }
+        for f in stored.iter().flat_map(|s| s.keys()) {
+            rule.entry(f.clone()).or_insert(Value::Null);
+        }
+        let outcome = catalog
+            .upsert(who, &ty, &key, rule, Default::default())
+            .await
+            .map_err(|e| {
+                let mut f = Failure::from(e);
+                f.what = format!("aging rule `{name}`: {}", f.what);
+                f.todo = "correct the rule and apply the bundle again; the declarations and \
+                          the rules before it were applied"
+                    .to_owned();
+                f
+            })?;
+        put(
+            out,
+            format!(
+                "  aging rule `{name}` written at position {}",
+                outcome.position()
+            ),
+        )?;
+    }
     Ok(())
+}
+
+/// A rule's `from` and `to` in the one form the lake stores them in, read
+/// in the kind of the field they are values of, so that a file's `1.0` or
+/// `2026-01-01` equals the stored `1` or date-time. Left as written when
+/// the type or field cannot be read; the lake then checks them.
+async fn normalise(catalog: &dyn Catalog, who: &Principal, rule: &mut lakelands_api::Patch) {
+    let text = |k: &str| rule.get(k).and_then(Value::as_str).map(str::to_owned);
+    let (Some(on), Some(field)) = (text("on"), text("field")) else {
+        return;
+    };
+    let Ok(t) = catalog
+        .describe_type(who, &TypeName::from(on.as_str()), ReadAt::default())
+        .await
+    else {
+        return;
+    };
+    let Some(f) = t.data.fields.iter().find(|f| f.name.as_str() == field) else {
+        return;
+    };
+    let vt = match &f.ty.value_type {
+        None => None,
+        Some(name) => match catalog.describe(who, ReadAt::default()).await {
+            Ok(d) => d.data.value_types.into_iter().find(|v| &v.name == name),
+            Err(_) => return,
+        },
+    };
+    for k in ["from", "to"] {
+        if let Some(v) = rule.get_mut(k)
+            && let Ok(n) = lakelands_core::value::check(v, &f.ty, vt.as_ref())
+        {
+            *v = n;
+        }
+    }
+}
+
+/// `age`: run every aging rule once for a date (`LakeStore::age`), and
+/// print what each rule did and the position the moves are visible from.
+pub async fn age(out: Out<'_>, store: &Arc<dyn LakeStore>, today: &str) -> Result<(), Failure> {
+    let bad = || {
+        Failure::new(
+            format!("`{today}` is not a date"),
+            "give --today as a date, YYYY-MM-DD",
+        )
+    };
+    let parts: Vec<&str> = today.split('-').collect();
+    let date = match parts.as_slice() {
+        [y, m, d]
+            if [(y, 4), (m, 2), (d, 2)]
+                .iter()
+                .all(|(p, n)| p.len() == *n && p.bytes().all(|b| b.is_ascii_digit())) =>
+        {
+            let (y, m, d) = (
+                y.parse().map_err(|_| bad())?,
+                m.parse().map_err(|_| bad())?,
+                d.parse().map_err(|_| bad())?,
+            );
+            lakelands_api::Timestamp::from_date(y, m, d).ok_or_else(bad)?
+        }
+        _ => return Err(bad()),
+    };
+    let report = store.age(date).await?;
+    for r in &report.rules {
+        match &r.skipped {
+            Some(why) => put(out, format!("{}: skipped, {why}", r.rule))?,
+            None => put(
+                out,
+                format!(
+                    "{}: moved {}, {} guard(s) failed",
+                    r.rule, r.moved, r.failed_guards
+                ),
+            )?,
+        }
+    }
+    put(
+        out,
+        format!("aged {today} through position {}", report.position),
+    )
 }
 
 /// How the columns of a CSV file become a source record.

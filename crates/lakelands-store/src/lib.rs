@@ -9,6 +9,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod aging;
 pub mod backed;
 pub mod backing;
 pub mod declare;

@@ -52,3 +52,34 @@ shape, and every change is a version with its writer.
 - It does not reach outside the lake. A rule only moves a value; what
   should happen because an invoice is overdue is a trigger's and a
   host's.
+
+## Extended: what the code settles
+
+- **A date is a midnight.** `age` takes a `Timestamp` at UTC midnight,
+  the form the aging id already writes the date in; any other time is
+  refused as invalid, naming `today`. The contract gains no second date
+  type.
+- **Every record of the type** is read, restricted ones included. Aging
+  is the host's maintenance of its own lake, not a principal's read, and
+  a rule that skipped withheld records would leave them in a state no
+  other record of the type can be in.
+- **A rule that no longer fits is skipped, never run half.** The lake's
+  shape can change after a rule is written: its type or field gone, the
+  field no longer written by `upsert`, `from` no longer a value of it.
+  Such a rule moves nothing, the report names it with the reason, and
+  the other rules run, so one stale rule neither stops the day nor goes
+  unnoticed. A move the store would refuse for one record is counted
+  with the failed guards and leaves that record, for the reason a
+  failed guard does.
+- **A rule never moves a key field.** The key names the record; moving
+  a key field would make the record disagree with its own key.
+- **The run holds the writer.** Rules run one after another under the
+  writer's lock, each one append, so a rule sees what the rules before
+  it moved, and a write waits for the run instead of racing it.
+- **A rule carries its author's authority.** `age` moves records as the
+  system, for every principal and none, so the rights are checked when
+  the rule is written: its author must be able to write the field the
+  rule moves and to read every field its condition reads, or the rule
+  is refused as not granted. Otherwise a rule would let its author write
+  what it may not write, and use the condition to learn, record by
+  record, what it may not read (024).

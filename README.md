@@ -80,9 +80,10 @@ HTTP) and REST from one catalog. Agents never write a query language.
 > the release. `0.2.0`, on develop, adds the REST door beside MCP
 > (`docs/rest.md`), the PostgreSQL engine, the OpenAI-compatible
 > embedding client, the `http` and `exec` function backings, the webhook
-> deliverer, and relations with fields of their own, carried by link
-> records. Aging by date and the ticker that runs it, MCP
-> notifications, and the mirror between lakes come after.
+> deliverer, relations with fields of their own, carried by link
+> records, and aging by date (`lakelands age`). The ticker that runs
+> aging daily, MCP notifications, and the mirror between lakes come
+> after.
 
 ## Try it
 

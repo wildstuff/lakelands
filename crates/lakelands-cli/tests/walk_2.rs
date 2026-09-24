@@ -172,9 +172,9 @@ fn the_walks_commands_fill_band_and_summary_vec_through_the_fakes() {
     // lease first, so a run of the walk lands on the same numbers.
     let applied = ok(&["--root", &r, "apply", &example().display().to_string()]);
     assert!(
-        applied.starts_with("applied 6 declaration(s), in force from position 9:\n")
+        applied.starts_with("applied 6 declaration(s), in force from position 10:\n")
             && applied.lines().filter(|l| l.starts_with("  ")).count() == 6,
-        "apply applies the bundle's six declarations as one set, from position 9:\n{applied}"
+        "apply applies the bundle's six declarations as one set, from position 10:\n{applied}"
     );
     let data = example().join("data");
     let path = |name: &str| data.join(name).display().to_string();
@@ -193,16 +193,16 @@ fn the_walks_commands_fill_band_and_summary_vec_through_the_fakes() {
     let partners = ingest("partners.csv", "crm", "partners.map.json");
     assert_eq!(
         partners.trim_end(),
-        "committed 3 record(s), 0 already in the lake, through position 13"
+        "committed 3 record(s), 0 already in the lake, through position 14"
     );
     let invoices = ingest("invoices.csv", "erp", "invoices.map.json");
     assert_eq!(
         invoices.trim_end(),
-        "committed 6 record(s), 0 already in the lake, through position 32",
+        "committed 6 record(s), 0 already in the lake, through position 33",
         "the ingest answers the position its calls' outputs are visible from"
     );
 
-    // Twelve outputs, 21 to 32, in the page's order: INV-5001's band, the
+    // Twelve outputs, 22 to 33, in the page's order: INV-5001's band, the
     // six embeddings, then the other five bands.
     let feed = ok(&["--root", &r, "feed", "--kind", "output_recorded"]);
     let outputs: Vec<(u64, String, String, Value)> = feed
@@ -236,7 +236,7 @@ fn the_walks_commands_fill_band_and_summary_vec_through_the_fakes() {
     ];
     assert_eq!(outputs.len(), expected.len(), "{feed}");
     for ((position, invoice, field, output), (at, (i, f, v))) in
-        outputs.into_iter().zip((21..).zip(expected))
+        outputs.into_iter().zip((22..).zip(expected))
     {
         assert_eq!(
             (position, invoice, field, output),
@@ -246,7 +246,7 @@ fn the_walks_commands_fill_band_and_summary_vec_through_the_fakes() {
     }
 
     // The agent's two links, in one session: the server takes the lease
-    // at 33, the links land at 34 and 35.
+    // at 34, the links land at 35 and 36.
     let links = mcp(
         &r,
         &[
@@ -265,8 +265,8 @@ fn the_walks_commands_fill_band_and_summary_vec_through_the_fakes() {
     assert_eq!(
         links,
         [
-            json!({"outcome": "applied", "position": 34, "version": 1}),
             json!({"outcome": "applied", "position": 35, "version": 1}),
+            json!({"outcome": "applied", "position": 36, "version": 1}),
         ]
     );
 }

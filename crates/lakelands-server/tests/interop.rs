@@ -47,11 +47,11 @@ async fn exercise(client: &RunningService<RoleClient, ()>) {
         .unwrap();
     assert_eq!(got.is_error, Some(false));
     let s = structured(&got);
-    assert_eq!(s["position"], 7);
+    assert_eq!(s["position"], 8);
     assert_eq!(s["data"]["fields"]["status"], "open");
 
     let pinned = client.call_tool(params("pin", json!({}))).await.unwrap();
-    assert_eq!(structured(&pinned)["pinned"], 7);
+    assert_eq!(structured(&pinned)["pinned"], 8);
     let wrote = client
         .call_tool(params(
             "invoice_upsert",
@@ -59,7 +59,7 @@ async fn exercise(client: &RunningService<RoleClient, ()>) {
         ))
         .await
         .unwrap();
-    assert_eq!(structured(&wrote)["position"], 8);
+    assert_eq!(structured(&wrote)["position"], 9);
     let seen = client
         .call_tool(params("invoice_get", json!({"key": "INV-1"})))
         .await

@@ -91,7 +91,8 @@ macro_rules! door_checks {
             key_components_and_source_ids_use_each_values_one_form,
             schema_hashes_and_proposal_ids_have_the_stores_form,
             links_are_written_walked_and_held_to_their_relation,
-            a_relation_declared_again_with_another_target_reshapes_its_links);
+            a_relation_declared_again_with_another_target_reshapes_its_links,
+            an_aging_rule_moves_what_holds_from_once_a_date);
     };
     (@each $new:expr, $block_on:path; $($name:ident),* $(,)?) => {
         $(
@@ -2227,5 +2228,189 @@ pub async fn a_relation_declared_again_with_another_target_reshapes_its_links(
         matches!(&refused, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
             if message.contains("sys.link.doc.signed_by")),
         "{refused:?}"
+    );
+}
+
+/// An aging rule is checked when it is written; `age` is handed a date at
+/// midnight, moves what holds `from` where `when` holds, as the system,
+/// and a date aged twice is written once
+/// (`docs/decisions/036-aging-runs-by-date-once.md`).
+pub async fn an_aging_rule_moves_what_holds_from_once_a_date(store: Arc<dyn LakeStore>) {
+    let c = store.catalog(WriteContext::default());
+    let cast = Cast::of(store.lake());
+    let own = &cast.owner;
+    let invoice: Declaration = serde_json::from_value(json!({"declare": "type", "name": "invoice",
+        "fields": [{"name": "status", "type": {"kind": "text"}},
+                   {"name": "amount", "type": {"kind": "number"}},
+                   {"name": "due_on", "type": {"kind": "date_time"}}]}))
+    .unwrap();
+    c.declare(own, invoice).await.unwrap();
+    // `today()` is the date aged: i1 fell due sixty days before it, i2
+    // fifteen, and i3 is paid.
+    for (k, status, due) in [
+        ("i1", "open", "2026-01-01T00:00:00Z"),
+        ("i2", "open", "2026-02-15T00:00:00Z"),
+        ("i3", "paid", "2026-01-01T00:00:00Z"),
+    ] {
+        c.upsert(
+            own,
+            &ty("invoice"),
+            &key(k),
+            patch(&[
+                ("status", json!(status)),
+                ("amount", json!(200)),
+                ("due_on", json!(due)),
+            ]),
+            WriteOpts::default(),
+        )
+        .await
+        .unwrap();
+    }
+    let rule_type = ty(lakelands_api::seam::AGING_RULE_TYPE);
+    // A rule that does not fit is refused, naming the rule field at fault.
+    let refused = c
+        .upsert(
+            own,
+            &rule_type,
+            &key("bad"),
+            patch(&[
+                ("on", json!("invoice")),
+                ("field", json!("amount")),
+                ("from", json!("open")),
+                ("to", json!(1)),
+                ("when", json!("true")),
+            ]),
+            WriteOpts::default(),
+        )
+        .await;
+    assert!(
+        matches!(&refused, Err(Error::Refused { field: Some(f), reason: Refusal::Invalid { .. } })
+            if f.as_str() == "from"),
+        "{refused:?}"
+    );
+    // A rule carries its author's rights: one who may write rules but not
+    // `status` is refused, naming `status`.
+    let mut grants = Grants {
+        default: Access::Read,
+        ..Grants::default()
+    };
+    grants.types.insert(
+        rule_type.clone(),
+        TypeGrants {
+            default: Some(Access::Write),
+            fields: BTreeMap::new(),
+        },
+    );
+    let rule_writer = Principal {
+        kind: PrincipalKind::Agent,
+        id: "rule-writer".into(),
+        lake: store.lake().clone(),
+        grants,
+    };
+    let refused = c
+        .upsert(
+            &rule_writer,
+            &rule_type,
+            &key("overdue"),
+            patch(&[
+                ("on", json!("invoice")),
+                ("field", json!("status")),
+                ("from", json!("open")),
+                ("to", json!("overdue")),
+                ("when", json!("amount > 100")),
+            ]),
+            WriteOpts::default(),
+        )
+        .await;
+    assert!(
+        matches!(&refused, Err(Error::Refused { field: Some(f), reason: Refusal::NotGranted })
+            if f.as_str() == "status"),
+        "{refused:?}"
+    );
+    c.upsert(
+        own,
+        &rule_type,
+        &key("overdue"),
+        patch(&[
+            ("on", json!("invoice")),
+            ("field", json!("status")),
+            ("from", json!("open")),
+            ("to", json!("overdue")),
+            ("when", json!("due_on < today() - 30d")),
+        ]),
+        WriteOpts::default(),
+    )
+    .await
+    .unwrap();
+    let day = lakelands_api::Timestamp::from_date(2026, 3, 1).unwrap();
+    let noon = lakelands_api::Timestamp(day.0 + 12 * 3_600 * 1_000_000);
+    let at_noon = store.age(noon).await;
+    assert!(
+        matches!(&at_noon, Err(Error::Refused { field: Some(f), reason: Refusal::Invalid { .. } })
+            if f.as_str() == "today"),
+        "{at_noon:?}"
+    );
+    let report = store.age(day).await.unwrap();
+    assert_eq!((report.transitions, report.failed_guards), (1, 0));
+    assert_eq!(report.rules.len(), 1);
+    assert_eq!(report.rules[0].rule, "overdue");
+    assert_eq!(report.rules[0].version, Version(1));
+    assert_eq!(report.position, store.head().await.unwrap());
+    let status = |k: &'static str| {
+        let c = c.clone();
+        let own = own.clone();
+        async move {
+            let r = c.get(&own, &ty("invoice"), get(k)).await.unwrap().data;
+            r.fields.get("status").cloned()
+        }
+    };
+    assert_eq!(status("i1").await, Some(json!("overdue")));
+    assert_eq!(status("i2").await, Some(json!("open")));
+    assert_eq!(status("i3").await, Some(json!("paid")));
+    // Set back by hand: the day's move is in the lake, so the same date
+    // does not move it again.
+    c.upsert(
+        own,
+        &ty("invoice"),
+        &key("i1"),
+        patch(&[("status", json!("open"))]),
+        WriteOpts::default(),
+    )
+    .await
+    .unwrap();
+    let head = store.head().await.unwrap();
+    let again = store.age(day).await.unwrap();
+    assert_eq!((again.transitions, again.position), (0, head));
+    assert_eq!(
+        store.head().await.unwrap(),
+        head,
+        "a date aged twice is written once"
+    );
+    let moved = store
+        .feed()
+        .poll(Position::GENESIS, &FeedFilter::default(), 1000)
+        .await
+        .unwrap()
+        .events
+        .into_iter()
+        .find(|e| {
+            e.procedure
+                .as_ref()
+                .is_some_and(|p| p.name == "aging:overdue")
+        })
+        .unwrap();
+    assert_eq!(
+        (
+            moved.origin,
+            moved.writer.as_str(),
+            moved.context.origin,
+            moved.cause
+        ),
+        (
+            Origin::System,
+            "system:lakelands",
+            lakelands_api::WriteOrigin::Scheduled,
+            None
+        )
     );
 }

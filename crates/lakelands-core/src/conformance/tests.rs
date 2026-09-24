@@ -160,6 +160,7 @@ impl LakeStore for DownStore {
     refuse!(rebuild<>() -> Position);
     refuse!(restrict<'life1, 'life2>(ty: &'life1 TypeName, key: &'life2 RecordKey, reason: String) -> Position);
     refuse!(unrestrict<'life1, 'life2>(ty: &'life1 TypeName, key: &'life2 RecordKey) -> Position);
+    refuse!(age<>(today: lakelands_api::Timestamp) -> lakelands_api::write::AgeReport);
     refuse!(checkpoint<>() -> Position);
     refuse!(close<>() -> ());
 }

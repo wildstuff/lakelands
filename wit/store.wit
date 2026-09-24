@@ -13,7 +13,7 @@ package lakelands:data@0.2.0;
 interface store {
     use types.{
         lake-id, type-name, record-key, relation-name, verb-name, proposal-id, source-id, position,
-        principal, write-context, limits, verification, error,
+        principal, write-context, limits, verification, error, timestamp, age-report,
         find, found-reply, get, record-reply, patch, write-opts, outcome,
         proposed-write, proposal-filter, proposals-reply, source-record, committed,
         feed-filter, feed-batch,
@@ -44,6 +44,9 @@ interface store {
         /// grant (a retention hold).
         restrict: func(%type: type-name, key: record-key, reason: string) -> result<position, error>;
         unrestrict: func(%type: type-name, key: record-key) -> result<position, error>;
+        /// Run every aging rule once for `today`, a date at UTC midnight,
+        /// and answer what it moved.
+        age: func(today: timestamp) -> result<age-report, error>;
         /// Seal the active segment and append a checkpoint.
         checkpoint: func() -> result<position, error>;
         /// Release the lease and close the lake.

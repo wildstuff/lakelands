@@ -749,6 +749,26 @@ interface types {
         hash: digest,
     }
 
+    /// What one `age` did: the date, each rule in name order, and the
+    /// position after the last append.
+    record age-report {
+        date: timestamp,
+        rules: list<rule-run>,
+        transitions: u32,
+        failed-guards: u32,
+        position: position,
+    }
+
+    /// One aging rule's run: the rule's version, the records it moved,
+    /// the guards that failed, and why it was skipped if it was.
+    record rule-run {
+        rule: string,
+        version: version,
+        moved: u32,
+        failed-guards: u32,
+        skipped: option<string>,
+    }
+
     record limits {
         default-limit: u32,
         max-limit: u32,

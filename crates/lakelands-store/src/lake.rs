@@ -40,7 +40,7 @@ use crate::log::{self, Draft};
 use crate::ontology::Ontology;
 use crate::record;
 
-pub use lakelands_api::seam::{SETTING_TYPE, setting_type};
+pub use lakelands_api::seam::{AGING_RULE_TYPE, SETTING_TYPE, aging_rule_type, setting_type};
 
 /// What only the writer changes.
 pub struct Writer {
@@ -184,7 +184,7 @@ impl Lake {
             // The system types this lake may hold and does not hold yet are
             // declared on every open for writing, so a host type added after
             // the lake was created reaches it too.
-            let mut types = vec![setting_type()];
+            let mut types = vec![setting_type(), aging_rule_type()];
             if let Some(v) = &lake.seams.vocabulary {
                 types.extend(
                     v.types()

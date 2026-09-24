@@ -5,8 +5,11 @@
 //! The parser takes the whole grammar of `lakelands_api::expr`. The
 //! evaluator knows comparisons, `and`, `or`, `not`, `in`, `is null`,
 //! arithmetic and the string functions `lower`, `upper`, `trim`, `len`,
-//! `contains`, `starts_with`, `concat` and `coalesce`; any other function
-//! is refused by name. Comparisons with `null` do not hold.
+//! `contains`, `starts_with`, `concat` and `coalesce`, a date-time shifted
+//! by a duration, and `now()` and `today()` where the scope has a clock
+//! (an aging run's date); any other function, `setting()` among them, is
+//! refused by name.
+//! Comparisons with `null` do not hold.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -62,6 +65,9 @@ pub(crate) struct Scope<'a> {
     pub fields: &'a BTreeMap<FieldName, Value>,
     /// A verb's payload, as `payload.<field>`.
     pub payload: Option<&'a BTreeMap<FieldName, Value>>,
+    /// What `now()` means here, and `today()` its date at midnight; `None`
+    /// where the mock keeps no clock, and the two are refused.
+    pub now: Option<Timestamp>,
 }
 
 impl Scope<'_> {
@@ -98,15 +104,26 @@ pub(crate) fn eval(e: &Expr, s: &Scope<'_>) -> Result<Value, Error> {
                 CmpOp::Ge => matches!(o, Some(Ordering::Greater | Ordering::Equal)),
             })
         }
-        Expr::Arith { arith, lhs, rhs } => match (number(&eval(lhs, s)?), number(&eval(rhs, s)?)) {
-            (Some(a), Some(b)) => num(match arith {
-                ArithOp::Add => a + b,
-                ArithOp::Sub => a - b,
-                ArithOp::Mul => a * b,
-                ArithOp::Div => a / b,
-            }),
-            _ => Value::Null,
-        },
+        Expr::Arith { arith, lhs, rhs } => {
+            let (a, b) = (eval(lhs, s)?, eval(rhs, s)?);
+            // A date-time shifted by a duration (a number of microseconds).
+            if let (Value::String(t), Value::Number(d), ArithOp::Add | ArithOp::Sub) =
+                (&a, &b, arith)
+                && let (Ok(t), Some(d)) = (Timestamp::parse(t), d.as_i64())
+            {
+                let d = if matches!(arith, ArithOp::Sub) { -d } else { d };
+                return Ok(Value::String(Timestamp(t.0 + d).to_string()));
+            }
+            match (number(&a), number(&b)) {
+                (Some(a), Some(b)) => num(match arith {
+                    ArithOp::Add => a + b,
+                    ArithOp::Sub => a - b,
+                    ArithOp::Mul => a * b,
+                    ArithOp::Div => a / b,
+                }),
+                _ => Value::Null,
+            }
+        }
         Expr::Neg { arg } => number(&eval(arg, s)?).map_or(Value::Null, |n| num(-n)),
         Expr::And { args } => {
             for a in args {
@@ -134,6 +151,20 @@ pub(crate) fn eval(e: &Expr, s: &Scope<'_>) -> Result<Value, Error> {
             Value::Bool(found)
         }
         Expr::IsNull { arg } => Value::Bool(eval(arg, s)?.is_null()),
+        Expr::Call {
+            func: func @ (Func::Now | Func::Today),
+            args,
+        } if args.is_empty() => {
+            let now = s
+                .now
+                .ok_or_else(|| invalid("the in-memory mock keeps no clock here"))?;
+            let day = 86_400 * 1_000_000;
+            let t = match func {
+                Func::Today => Timestamp(now.0 - now.0.rem_euclid(day)),
+                _ => now,
+            };
+            Value::String(t.to_string())
+        }
         Expr::Call { func, args } => {
             let args = args
                 .iter()
@@ -539,6 +570,7 @@ mod tests {
             ty: "invoice",
             fields: &fields,
             payload: None,
+            now: None,
         };
         holds(&typed(&Condition::from(src)).unwrap(), &scope).unwrap()
     }

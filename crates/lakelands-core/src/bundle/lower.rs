@@ -14,11 +14,13 @@ use lakelands_api::ontology::{
     TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, ViewDecl,
 };
 use lakelands_api::write::{FunctionDecl, ObjectSetDecl};
-use lakelands_api::{FieldName, RelationName, TriggerName, TypeName, ValueTypeName, VerbName};
+use lakelands_api::{
+    FieldName, Patch, RelationName, TriggerName, TypeName, ValueTypeName, VerbName,
+};
 
 use super::doc::{
-    Cond, FieldDoc, FieldTypeDoc, FunctionDoc, Named, ObjectSetDoc, StrOr, TriggerDoc, TypeDoc,
-    TypeSpec, ValueTypeDoc, VerbDoc,
+    AgingRuleDoc, Cond, FieldDoc, FieldTypeDoc, FunctionDoc, Named, ObjectSetDoc, StrOr,
+    TriggerDoc, TypeDoc, TypeSpec, ValueTypeDoc, VerbDoc,
 };
 use super::{BundleError, Problem};
 
@@ -504,6 +506,30 @@ pub(super) fn object_set(l: &mut Lower<'_>, doc: ObjectSetDoc) -> ObjectSetDecl 
         filter,
         description: doc.description,
     }
+}
+
+/// An aging rule: the fields of its `sys.aging_rule` record. The type it
+/// ages may be the lake's rather than the bundle's, so a bundle of rules
+/// alone can retune them; the lake checks `on`, `field`, `from` and `to`
+/// when the rule is written.
+pub(super) fn aging_rule(l: &mut Lower<'_>, doc: AgingRuleDoc) -> Patch {
+    l.name("aging rule", &doc.name);
+    l.cond("`when`", Cond(Condition::Text(doc.when.clone())));
+    let mut p: Patch = [
+        ("name", doc.name.into()),
+        ("on", doc.on.into()),
+        ("field", doc.field.into()),
+        ("from", doc.from),
+        ("to", doc.to),
+        ("when", doc.when.into()),
+    ]
+    .into_iter()
+    .map(|(k, v)| (FieldName::from(k), v))
+    .collect();
+    if let Some(d) = doc.description {
+        p.insert("description".into(), d.into());
+    }
+    p
 }
 
 /// A function. An `expr` function (the default backing) carries its

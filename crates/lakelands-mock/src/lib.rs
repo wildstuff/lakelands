@@ -8,8 +8,8 @@
 //!
 //! [`MockLake`] implements [`LakeStore`], and the catalog it hands out
 //! implements [`Catalog`]. A lake begins as every lake does: `lake_created`
-//! at position 0 (fence 0), the creator's `lease_taken` at 1, and
-//! `sys.setting` declared at 2. The mock keeps one thing, the log: a list of
+//! at position 0 (fence 0), the creator's `lease_taken` at 1,
+//! `sys.setting` declared at 2 and `sys.aging_rule` at 3. The mock keeps one thing, the log: a list of
 //! events by position. Every read folds the log up to the position it is
 //! read at, so `as_of` sees exactly the superseded state and a rebuild
 //! changes nothing. What the doors can observe follows the contract
@@ -84,6 +84,7 @@ use lakelands_api::seam::{ChangeFeed, FeedBatch, FeedFilter};
 use lakelands_api::time::Timestamp;
 use lakelands_api::{Catalog, LakeStore, Verification};
 
+mod aging;
 pub mod checks;
 mod doors;
 mod expr;
@@ -118,7 +119,8 @@ struct Log {
 impl MockLake {
     /// A new, empty lake with default limits. Its log begins as every
     /// lake's does: `LakeCreated` at position 0, the creator's
-    /// `LeaseTaken` at 1, and `sys.setting` declared at 2.
+    /// `LeaseTaken` at 1, `sys.setting` declared at 2 and `sys.aging_rule`
+    /// at 3.
     pub fn new(lake: impl Into<LakeId>) -> MockLake {
         MockLake::with_limits(lake.into(), Limits::default())
     }
@@ -145,12 +147,16 @@ impl MockLake {
             fence: 1,
             holder: "lakelands mock".into(),
         }));
-        let setting = lakelands_api::seam::setting_type();
-        batch.push(Draft::system(EventBody::Declared {
-            schema_hash: Some(value::schema_hash(&setting)),
-            declaration: lakelands_api::write::Declaration::Type(setting),
-            version: 1,
-        }));
+        for t in [
+            lakelands_api::seam::setting_type(),
+            lakelands_api::seam::aging_rule_type(),
+        ] {
+            batch.push(Draft::system(EventBody::Declared {
+                schema_hash: Some(value::schema_hash(&t)),
+                declaration: lakelands_api::write::Declaration::Type(t),
+                version: 1,
+            }));
+        }
         mock.shared
             .append(&mut mock.shared.log(), WriteContext::default(), batch);
         mock
@@ -348,6 +354,10 @@ impl LakeStore for MockLake {
     async fn rebuild(&self) -> Result<Position> {
         // Every read folds the log, so there is no projection to rebuild.
         Ok(Shared::head(&self.shared.log()))
+    }
+
+    async fn age(&self, today: Timestamp) -> Result<lakelands_api::write::AgeReport> {
+        aging::run(&self.shared, &mut self.shared.log(), today)
     }
 
     async fn checkpoint(&self) -> Result<Position> {

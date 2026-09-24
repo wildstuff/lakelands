@@ -752,6 +752,7 @@ fn candidates<'a>(
                 ty: t.decl.name.as_str(),
                 fields: &r.fields,
                 payload: None,
+                now: None,
             };
             if !expr::holds(e, &scope)? {
                 continue;
@@ -967,6 +968,55 @@ fn check_required(
     Ok(())
 }
 
+/// Refuse an aging rule the write would leave not fitting the lake, naming
+/// the rule field at fault.
+fn check_rule(st: &State, who: &Principal, key: &RecordKey, patch: &Patch) -> Result<()> {
+    let ty = TypeName::from(crate::aging::RULE_TYPE);
+    let mut fields = st
+        .live(&ty, key)
+        .map(|r| r.fields.clone())
+        .unwrap_or_default();
+    fields
+        .entry("name".into())
+        .or_insert_with(|| Value::String(key.to_string()));
+    for (name, v) in patch {
+        if v.is_null() {
+            fields.remove(name);
+        } else {
+            fields.insert(name.clone(), v.clone());
+        }
+    }
+    let rule = crate::aging::check(st, &fields)
+        .map_err(|(field, message)| on(&field, Refusal::Invalid { message }))?;
+    // As the store: the author holds write on the field the rule moves,
+    // and read on every field its condition probes.
+    check_patch(
+        st,
+        who,
+        &rule.on,
+        &[(rule.field.clone(), rule.to.clone())].into(),
+        Origin::Authored,
+    )?;
+    let t = st.types.get(&rule.on).ok_or_else(|| no_type(&rule.on))?;
+    let mut read = Vec::new();
+    expr::paths(&rule.when, &mut read);
+    for name in read.iter().filter_map(|p| p.first()) {
+        match field(&t.decl, name) {
+            Some(f) if access(who, &rule.on, f).reads() => {}
+            Some(_) => return Err(on(name, Refusal::NotGranted)),
+            None => {
+                return Err(on(
+                    name,
+                    Refusal::Invalid {
+                        message: format!("`{}` has no field `{name}`", rule.on),
+                    },
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn check_version(st: &State, ty: &TypeName, key: &RecordKey, opts: &WriteOpts) -> Result<Version> {
     let actual = st.version(ty, key);
     match opts.expected_version {
@@ -1106,6 +1156,7 @@ fn check_call<'a>(
             ty: v.on.as_str(),
             fields: &rec.fields,
             payload: Some(payload),
+            now: None,
         };
         if !expr::holds(&expr::typed(req)?, &scope)? {
             return Err(refused(Refusal::Precondition {
@@ -1139,6 +1190,7 @@ fn plan_run(
         ty: v.on.as_str(),
         fields: &rec.fields,
         payload: Some(&payload),
+        now: None,
     };
     let mut patch = Patch::new();
     for a in set {
@@ -1440,6 +1492,9 @@ impl Catalog for MockCatalog {
         let (_, st) = self.state_at(&log, None)?;
         if let Some(o) = remembered(&st, who, &opts) {
             return Ok(o);
+        }
+        if ty.as_str() == crate::aging::RULE_TYPE {
+            check_rule(&st, who, key, &patch)?;
         }
         let mut batch = Batch::at(&log);
         let by = By {

@@ -55,7 +55,7 @@ use lakelands_core::{links, shape, value};
 
 use crate::backed::Outputs;
 use crate::declare;
-use crate::lake::{Lake, Writer, find_proposal};
+use crate::lake::{AGING_RULE_TYPE, Lake, Writer, find_proposal};
 use crate::log::{self, Draft};
 use crate::record;
 
@@ -431,7 +431,7 @@ pub(crate) fn provisional(lake: &Lake, position: Position, d: &Draft) -> Event {
 }
 
 /// The next position in an append that already holds `n` drafts.
-fn position_after(w: &Writer, n: usize) -> Position {
+pub(crate) fn position_after(w: &Writer, n: usize) -> Position {
     let first = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0.next());
     Position(first.0 + n as u64)
 }
@@ -487,6 +487,41 @@ impl Call<'_> {
         n: usize,
         who: &Principal,
     ) -> Result<RecordPlan> {
+        self.plan_record_as(
+            w,
+            view,
+            pending,
+            ty,
+            key,
+            patch,
+            door,
+            expected,
+            now,
+            n,
+            who,
+            &|_| {},
+        )
+    }
+
+    /// [`Self::plan_record`], with `stamp` setting the envelope of the
+    /// record event before the record it makes is computed: aging writes
+    /// as the system, with its rule as the procedure.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn plan_record_as(
+        &self,
+        w: &Writer,
+        view: &dyn ProjectionView,
+        pending: &Pending,
+        ty: &TypeName,
+        key: &RecordKey,
+        patch: &Patch,
+        door: Door,
+        expected: Option<Version>,
+        now: Timestamp,
+        n: usize,
+        who: &Principal,
+        stamp: &dyn Fn(&mut Draft),
+    ) -> Result<RecordPlan> {
         let decl = w.ontology.ty(ty)?;
         if patch.is_empty() {
             return Err(invalid("nothing to write: the patch carries no field"));
@@ -523,7 +558,8 @@ impl Call<'_> {
                 },
             ),
         };
-        let draft = self.draft(now, origin, body);
+        let mut draft = self.draft(now, origin, body);
+        stamp(&mut draft);
         let event = provisional(self.lake, position_after(w, n), &draft);
         let after = record::apply(
             &w.ontology,
@@ -538,6 +574,16 @@ impl Call<'_> {
         )?
         .expect("a record event makes a record");
         record::check_required(decl, &after.fields)?;
+        if ty.as_str() == AGING_RULE_TYPE {
+            let rule =
+                crate::aging::check(&w.ontology, &after.fields).map_err(|(field, message)| {
+                    Error::Refused {
+                        field: Some(field),
+                        reason: Refusal::Invalid { message },
+                    }
+                })?;
+            crate::aging::check_authority(who, &w.ontology, &rule)?;
+        }
         Ok(RecordPlan {
             draft,
             after,

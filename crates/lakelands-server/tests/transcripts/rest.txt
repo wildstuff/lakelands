@@ -35,7 +35,7 @@
 > authorization: Bearer k-clerk
 < 404
 < content-type: application/json
-< lakelands-position: 8
+< lakelands-position: 9
 < {"error":"refused","reason":{"message":"there is no such route","refusal":"invalid"},"todo":"see the routes in docs/rest.md; MCP is served at /lakes/<id>/mcp","what":"there is no such route"}
 
 > POST /lakes/finance/types/invoice/records
@@ -43,7 +43,7 @@
 < 405
 < allow: GET
 < content-type: application/json
-< lakelands-position: 8
+< lakelands-position: 9
 < {"error":"refused","reason":{"message":"this route takes GET, not POST","refusal":"invalid"},"todo":"send it as GET","what":"this route takes GET, not POST"}
 
 # The lake, and one type, described.
@@ -51,53 +51,53 @@
 > authorization: Bearer k-clerk
 < 200
 < content-type: application/json
-< lakelands-position: 8
-< {"data":{"lake":"finance","may":{"ingest":false,"review":false,"schema":false},"types":[{"access":{"field_meta":true,"searchable":true},"description":"A bill received.","fields":[{"access":"read","authority":"source","filterable":true,"name":"amount","on_input_change":"keep","required":false,"type":{"kind":"decimal"}},{"access":"write","authority":"authored","filterable":true,"name":"status","on_input_change":"keep","required":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"verdict","on_input_change":"keep","required":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","depends_on":["verdict"],"filterable":true,"name":"reason","on_input_change":"clear","required":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"note","on_input_change":"keep","required":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"partner","on_input_change":"keep","required":false,"type":{"kind":"reference","target":"partner"}}],"lifecycle":{"schema_hash":"b63567bce0ec4046d82237cc2fab92986b6a01b1a58afeb0a7b5beb29b0a4693","version":1},"lineage":{"sourced":true},"may":{"find":true,"get":true,"retire":false,"upsert":true},"name":"invoice","relations":[{"cardinality":"many_to_one","inverse":"bills","name":"billed_by","target":"partner","via":"partner"}],"verbs":["approve","pay"]},{"access":{"field_meta":true,"searchable":true},"fields":[{"access":"read","authority":"authored","filterable":true,"name":"name","on_input_change":"keep","required":false,"type":{"kind":"text"}}],"lifecycle":{"schema_hash":"129139dc0eaefc67c9c8fd5e3f55f17cb799b058ec09841f90e6022f29f15be7","version":1},"lineage":{"sourced":false},"may":{"find":true,"get":true,"retire":false,"upsert":false},"name":"partner"},{"access":{"field_meta":true,"key":["key"],"searchable":false},"description":"One named setting of the lake: `setting('key')` reads its value.","fields":[{"access":"read","authority":"authored","filterable":true,"name":"key","on_input_change":"keep","required":true,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":false,"name":"value","on_input_change":"keep","required":true,"type":{"kind":"json"}}],"lifecycle":{"schema_hash":"9c9ea74b538e4165a4833ce0d88bc0d004a57969e2a04d157cf37c407c089609","version":1},"lineage":{"sourced":false},"may":{"find":true,"get":true,"retire":false,"upsert":false},"name":"sys.setting"}],"verbs":[{"external":false,"name":"approve","on":"invoice","payload":[],"risk":"low"},{"external":false,"name":"pay","on":"invoice","payload":[{"access":"write","authority":"authored","filterable":true,"name":"reference","on_input_change":"keep","required":false,"type":{"kind":"text"}}],"risk":"high"}]},"position":8}
+< lakelands-position: 9
+< {"data":{"lake":"finance","may":{"ingest":false,"review":false,"schema":false},"types":[{"access":{"field_meta":true,"searchable":true},"description":"A bill received.","fields":[{"access":"read","authority":"source","filterable":true,"name":"amount","on_input_change":"keep","required":false,"type":{"kind":"decimal"}},{"access":"write","authority":"authored","filterable":true,"name":"status","on_input_change":"keep","required":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"verdict","on_input_change":"keep","required":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","depends_on":["verdict"],"filterable":true,"name":"reason","on_input_change":"clear","required":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"note","on_input_change":"keep","required":false,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"partner","on_input_change":"keep","required":false,"type":{"kind":"reference","target":"partner"}}],"lifecycle":{"schema_hash":"b63567bce0ec4046d82237cc2fab92986b6a01b1a58afeb0a7b5beb29b0a4693","version":1},"lineage":{"sourced":true},"may":{"find":true,"get":true,"retire":false,"upsert":true},"name":"invoice","relations":[{"cardinality":"many_to_one","inverse":"bills","name":"billed_by","target":"partner","via":"partner"}],"verbs":["approve","pay"]},{"access":{"field_meta":true,"searchable":true},"fields":[{"access":"read","authority":"authored","filterable":true,"name":"name","on_input_change":"keep","required":false,"type":{"kind":"text"}}],"lifecycle":{"schema_hash":"129139dc0eaefc67c9c8fd5e3f55f17cb799b058ec09841f90e6022f29f15be7","version":1},"lineage":{"sourced":false},"may":{"find":true,"get":true,"retire":false,"upsert":false},"name":"partner"},{"access":{"field_meta":true,"key":["name"],"searchable":false},"description":"One aging rule: on a date, move `field` of every record of `on` from `from` to `to` when `when` holds.","fields":[{"access":"read","authority":"authored","filterable":true,"name":"name","on_input_change":"keep","required":true,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"on","on_input_change":"keep","required":true,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"field","on_input_change":"keep","required":true,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":false,"name":"from","on_input_change":"keep","required":true,"type":{"kind":"json"}},{"access":"read","authority":"authored","filterable":false,"name":"to","on_input_change":"keep","required":true,"type":{"kind":"json"}},{"access":"read","authority":"authored","filterable":true,"name":"when","on_input_change":"keep","required":true,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":true,"name":"description","on_input_change":"keep","required":false,"type":{"kind":"text"}}],"lifecycle":{"schema_hash":"9db5e7a2e8b28a1714f7ef20a8e795b823134697865bf055cfdbc7d703100211","version":1},"lineage":{"sourced":false},"may":{"find":true,"get":true,"retire":false,"upsert":false},"name":"sys.aging_rule"},{"access":{"field_meta":true,"key":["key"],"searchable":false},"description":"One named setting of the lake: `setting('key')` reads its value.","fields":[{"access":"read","authority":"authored","filterable":true,"name":"key","on_input_change":"keep","required":true,"type":{"kind":"text"}},{"access":"read","authority":"authored","filterable":false,"name":"value","on_input_change":"keep","required":true,"type":{"kind":"json"}}],"lifecycle":{"schema_hash":"9c9ea74b538e4165a4833ce0d88bc0d004a57969e2a04d157cf37c407c089609","version":1},"lineage":{"sourced":false},"may":{"find":true,"get":true,"retire":false,"upsert":false},"name":"sys.setting"}],"verbs":[{"external":false,"name":"approve","on":"invoice","payload":[],"risk":"low"},{"external":false,"name":"pay","on":"invoice","payload":[{"access":"write","authority":"authored","filterable":true,"name":"reference","on_input_change":"keep","required":false,"type":{"kind":"text"}}],"risk":"high"}]},"position":9}
 
 > GET /lakes/finance/describe/partner
 > authorization: Bearer k-clerk
 < 200
 < content-type: application/json
-< lakelands-position: 8
-< {"data":{"access":{"field_meta":true,"searchable":true},"fields":[{"access":"read","authority":"authored","filterable":true,"name":"name","on_input_change":"keep","required":false,"type":{"kind":"text"}}],"lifecycle":{"schema_hash":"129139dc0eaefc67c9c8fd5e3f55f17cb799b058ec09841f90e6022f29f15be7","version":1},"lineage":{"sourced":false},"may":{"find":true,"get":true,"retire":false,"upsert":false},"name":"partner"},"position":8}
+< lakelands-position: 9
+< {"data":{"access":{"field_meta":true,"searchable":true},"fields":[{"access":"read","authority":"authored","filterable":true,"name":"name","on_input_change":"keep","required":false,"type":{"kind":"text"}}],"lifecycle":{"schema_hash":"129139dc0eaefc67c9c8fd5e3f55f17cb799b058ec09841f90e6022f29f15be7","version":1},"lineage":{"sourced":false},"may":{"find":true,"get":true,"retire":false,"upsert":false},"name":"partner"},"position":9}
 
 # find: the query parameters are the find tool's arguments.
 > GET /lakes/finance/types/invoice/records?where=status%20%3D%20%27open%27&order_by=-status,known_at(status)&limit=10&with_meta=false
 > authorization: Bearer k-clerk
 < 200
 < content-type: application/json
-< lakelands-position: 8
-< {"data":{"rows":[{"fields":{"status":"open"},"key":"INV-1","type":"invoice","version":1}],"shape":"records"},"position":8}
+< lakelands-position: 9
+< {"data":{"rows":[{"fields":{"status":"open"},"key":"INV-1","type":"invoice","version":1}],"shape":"records"},"position":9}
 
 # order_by also takes the JSON array the find tool takes.
 > GET /lakes/finance/types/invoice/records?order_by=%5B%7B%22field%22%3A%22status%22%2C%22dir%22%3A%22desc%22%7D%5D
 > authorization: Bearer k-clerk
 < 200
 < content-type: application/json
-< lakelands-position: 8
-< {"data":{"rows":[{"fields":{"status":"open"},"key":"INV-1","type":"invoice","version":1}],"shape":"records"},"position":8}
+< lakelands-position: 9
+< {"data":{"rows":[{"fields":{"status":"open"},"key":"INV-1","type":"invoice","version":1}],"shape":"records"},"position":9}
 
 # Business time: a type that declares no validity holds at any instant.
 > GET /lakes/finance/types/invoice/records?valid_at=2000-01-01T00:00:00Z
 > authorization: Bearer k-clerk
 < 200
 < content-type: application/json
-< lakelands-position: 8
-< {"data":{"rows":[{"fields":{"status":"open"},"key":"INV-1","type":"invoice","version":1}],"shape":"records"},"position":8}
+< lakelands-position: 9
+< {"data":{"rows":[{"fields":{"status":"open"},"key":"INV-1","type":"invoice","version":1}],"shape":"records"},"position":9}
 
 # A parameter find does not take is refused before anything runs.
 > GET /lakes/finance/types/invoice/records?expect_version=3
 > authorization: Bearer k-clerk
 < 400
 < content-type: application/json
-< lakelands-position: 8
+< lakelands-position: 9
 < {"error":"refused","reason":{"message":"`GET …/types/<type>/records` takes no parameter `expect_version`; nothing was done","refusal":"invalid"},"todo":"use only `where`, `order_by`, `limit`, `cursor`, `aggregate`, `with_meta`, `as_of`, `valid_at`","what":"`GET …/types/<type>/records` takes no parameter `expect_version`; nothing was done"}
 
 > GET /lakes/finance/types/invoice/records?limit=ten
 > authorization: Bearer k-clerk
 < 400
 < content-type: application/json
-< lakelands-position: 8
+< lakelands-position: 9
 < {"error":"refused","reason":{"message":"`limit` cannot be `ten`","refusal":"invalid"},"todo":"give a whole number","what":"`limit` cannot be `ten`"}
 
 # get: one record, its version as ETag.
@@ -106,14 +106,14 @@
 < 200
 < content-type: application/json
 < etag: "1"
-< lakelands-position: 8
-< {"data":{"fields":{"status":"open"},"key":"INV-1","meta":{"status":{"known_at":"{known_at}","origin":"authored","position":7,"writer":"human:owner"}},"type":"invoice","version":1},"position":8}
+< lakelands-position: 9
+< {"data":{"fields":{"status":"open"},"key":"INV-1","meta":{"status":{"known_at":"{known_at}","origin":"authored","position":8,"writer":"human:owner"}},"type":"invoice","version":1},"position":9}
 
 > GET /lakes/finance/types/invoice/records/INV-404
 > authorization: Bearer k-clerk
 < 404
 < content-type: application/json
-< lakelands-position: 8
+< lakelands-position: 9
 < {"error":"not_found","missing":{"key":"INV-404","kind":"record","type":"invoice"},"todo":"check the name, or apply the declaration that introduces it first","what":"there is no `invoice` with key `INV-404`"}
 
 # Only `/lakes/<id>/mcp` itself is MCP: a key may be `mcp`.
@@ -121,7 +121,7 @@
 > authorization: Bearer k-clerk
 < 404
 < content-type: application/json
-< lakelands-position: 8
+< lakelands-position: 9
 < {"error":"not_found","missing":{"key":"mcp","kind":"record","type":"invoice"},"todo":"check the name, or apply the declaration that introduces it first","what":"there is no `invoice` with key `mcp`"}
 
 # A read at a position the log has not reached.
@@ -129,8 +129,8 @@
 > authorization: Bearer k-clerk
 < 422
 < content-type: application/json
-< lakelands-position: 8
-< {"error":"refused","reason":{"head":8,"refusal":"out_of_range"},"todo":"ask for a position at or before 8","what":"refused: the lake's log ends at position 8"}
+< lakelands-position: 9
+< {"error":"refused","reason":{"head":9,"refusal":"out_of_range"},"todo":"ask for a position at or before 9","what":"refused: the lake's log ends at position 9"}
 
 # upsert: a sparse patch, compare-and-set through If-Match.
 > PUT /lakes/finance/types/invoice/records/INV-1
@@ -140,8 +140,8 @@
 > {"status":"held"}
 < 200
 < content-type: application/json
-< lakelands-position: 9
-< {"outcome":"applied","position":9,"version":2}
+< lakelands-position: 10
+< {"outcome":"applied","position":10,"version":2}
 
 # The same key again answers the first outcome and writes nothing.
 > PUT /lakes/finance/types/invoice/records/INV-1
@@ -151,8 +151,8 @@
 > {"status":"held"}
 < 200
 < content-type: application/json
-< lakelands-position: 9
-< {"outcome":"applied","position":9,"version":2}
+< lakelands-position: 10
+< {"outcome":"applied","position":10,"version":2}
 
 # A stale version; a weak one, which names no version.
 > PUT /lakes/finance/types/invoice/records/INV-1
@@ -161,7 +161,7 @@
 > {"status":"open"}
 < 412
 < content-type: application/json
-< lakelands-position: 9
+< lakelands-position: 10
 < {"actual":2,"error":"conflict","expected":1,"todo":"read the record again and retry against its current version","what":"the record changed: expected version 1, found 2"}
 
 > PUT /lakes/finance/types/invoice/records/INV-1
@@ -170,7 +170,7 @@
 > {"status":"open"}
 < 400
 < content-type: application/json
-< lakelands-position: 9
+< lakelands-position: 10
 < {"error":"refused","reason":{"message":"`If-Match: W/\"2\"` names no version","refusal":"invalid"},"todo":"give the record's version as its `ETag` answered it; a weak `W/` one is not taken","what":"`If-Match: W/\"2\"` names no version"}
 
 # A field the clerk may not write refuses the whole write.
@@ -179,7 +179,7 @@
 > {"status":"open","verdict":"fine"}
 < 403
 < content-type: application/json
-< lakelands-position: 9
+< lakelands-position: 10
 < {"error":"refused","field":"verdict","reason":{"refusal":"not_granted"},"todo":"act as a principal whose grants allow it, or ask the lake's owner for a grant","what":"refused on `verdict`: you hold no grant for this"}
 
 # A record that must not exist yet.
@@ -189,7 +189,7 @@
 > {"status":"open"}
 < 412
 < content-type: application/json
-< lakelands-position: 9
+< lakelands-position: 10
 < {"actual":2,"error":"conflict","expected":0,"todo":"read the record again and retry against its current version","what":"the record changed: expected version 0, found 2"}
 
 > PUT /lakes/finance/types/invoice/records/INV-2
@@ -198,15 +198,15 @@
 > {"status":"open"}
 < 200
 < content-type: application/json
-< lakelands-position: 10
-< {"outcome":"applied","position":10,"version":1}
+< lakelands-position: 11
+< {"outcome":"applied","position":11,"version":1}
 
 > PUT /lakes/finance/types/invoice/records/INV-2
 > authorization: Bearer k-owner
 > [1,2]
 < 400
 < content-type: application/json
-< lakelands-position: 10
+< lakelands-position: 11
 < {"error":"refused","reason":{"message":"`PUT …/types/<type>/records/<key>` takes a JSON object of fields","refusal":"invalid"},"todo":"send the fields as one JSON object","what":"`PUT …/types/<type>/records/<key>` takes a JSON object of fields"}
 
 # Pages: the cursor carries the position of the first page.
@@ -214,46 +214,46 @@
 > authorization: Bearer k-clerk
 < 200
 < content-type: application/json
-< lakelands-position: 10
-< {"data":{"next_cursor":"{cursor}","rows":[{"fields":{"status":"held"},"key":"INV-1","type":"invoice","version":2}],"shape":"records"},"position":10}
+< lakelands-position: 11
+< {"data":{"next_cursor":"{cursor}","rows":[{"fields":{"status":"held"},"key":"INV-1","type":"invoice","version":2}],"shape":"records"},"position":11}
 
 > GET /lakes/finance/types/invoice/records?cursor={cursor}
 > authorization: Bearer k-clerk
 < 200
 < content-type: application/json
-< lakelands-position: 10
-< {"data":{"rows":[{"fields":{"status":"open"},"key":"INV-2","type":"invoice","version":1}],"shape":"records"},"position":10}
+< lakelands-position: 11
+< {"data":{"rows":[{"fields":{"status":"open"},"key":"INV-2","type":"invoice","version":1}],"shape":"records"},"position":11}
 
 # Verbs: approve runs at once; pay waits for review (202).
 > POST /lakes/finance/verbs/approve/INV-2
 > authorization: Bearer k-clerk
 < 200
 < content-type: application/json
-< lakelands-position: 12
-< {"outcome":"applied","position":12,"version":2}
+< lakelands-position: 13
+< {"outcome":"applied","position":13,"version":2}
 
 > POST /lakes/finance/verbs/pay/INV-2
 > authorization: Bearer k-clerk
 > {"reference":"TX-7"}
 < 202
 < content-type: application/json
-< lakelands-position: 13
-< {"outcome":"proposed","position":13,"proposal":"5acb83b4daa53e135d8e398a52c74b9e","why":"`pay` is declared high risk; it runs when accepted"}
+< lakelands-position: 14
+< {"outcome":"proposed","position":14,"proposal":"d8e3b34ea3114d4717a34d8043fa6334","why":"`pay` is declared high risk; it runs when accepted"}
 
 # Proposals: the owner reviews.
 > GET /lakes/finance/proposals?state=pending
 > authorization: Bearer k-owner
 < 200
 < content-type: application/json
-< lakelands-position: 13
-< {"data":[{"id":"5acb83b4daa53e135d8e398a52c74b9e","position":13,"proposed_at":"{proposed_at}","proposer":"agent:clerk","state":"pending","why":"`pay` is declared high risk; it runs when accepted","write":{"key":"INV-2","opts":{},"payload":{"reference":"TX-7"},"verb":"pay","write":"call"}}],"position":13}
+< lakelands-position: 14
+< {"data":[{"id":"d8e3b34ea3114d4717a34d8043fa6334","position":14,"proposed_at":"{proposed_at}","proposer":"agent:clerk","state":"pending","why":"`pay` is declared high risk; it runs when accepted","write":{"key":"INV-2","opts":{},"payload":{"reference":"TX-7"},"verb":"pay","write":"call"}}],"position":14}
 
 > POST /lakes/finance/proposals/{proposal}/accept
 > authorization: Bearer k-owner
 < 200
 < content-type: application/json
-< lakelands-position: 16
-< {"outcome":"applied","position":16,"version":3}
+< lakelands-position: 17
+< {"outcome":"applied","position":17,"version":3}
 
 # Decided already.
 > POST /lakes/finance/proposals/{proposal}/reject
@@ -261,14 +261,14 @@
 > {"reason":"late"}
 < 409
 < content-type: application/json
-< lakelands-position: 16
+< lakelands-position: 17
 < {"error":"refused","reason":{"refusal":"decided"},"todo":"list the proposals to see how it was decided","what":"refused: the proposal is already decided"}
 
 > POST /lakes/finance/proposals/p-404/accept
 > authorization: Bearer k-owner
 < 404
 < content-type: application/json
-< lakelands-position: 16
+< lakelands-position: 17
 < {"error":"not_found","missing":{"id":"p-404","kind":"proposal"},"todo":"check the name, or apply the declaration that introduces it first","what":"there is no proposal `p-404`"}
 
 # notify reaches outside the lake: the clerk may not write invoices as a
@@ -277,14 +277,14 @@
 > authorization: Bearer k-clerk
 < 403
 < content-type: application/json
-< lakelands-position: 16
+< lakelands-position: 17
 < {"error":"refused","reason":{"refusal":"not_granted"},"todo":"act as a principal whose grants allow it, or ask the lake's owner for a grant","what":"refused: you hold no grant for this"}
 
 > POST /lakes/finance/verbs/notify/INV-2
 > authorization: Bearer k-owner
 < 501
 < content-type: application/json
-< lakelands-position: 16
+< lakelands-position: 17
 < {"error":"unbound","seam":"the verb executor `mailer`","todo":"bind it in the host's configuration","what":"nothing is bound for the verb executor `mailer`"}
 
 # A write proposed outright, and rejected.
@@ -293,16 +293,16 @@
 > {"write":{"write":"upsert","type":"invoice","key":"INV-2","patch":{"status":"disputed"}},"why":"check the amount first"}
 < 202
 < content-type: application/json
-< lakelands-position: 17
-< {"outcome":"proposed","position":17,"proposal":"ac24d9f7f03baaec93a74995cce342cb","why":"check the amount first"}
+< lakelands-position: 18
+< {"outcome":"proposed","position":18,"proposal":"a0b84e744701113f080f27f01061b718","why":"check the amount first"}
 
 > POST /lakes/finance/proposals/{proposal}/reject
 > authorization: Bearer k-owner
 > {"reason":"the amount is right"}
 < 200
 < content-type: application/json
-< lakelands-position: 18
-< {"outcome":"applied","position":18}
+< lakelands-position: 19
+< {"outcome":"applied","position":19}
 
 # query and search: the body is the tool's arguments.
 > POST /lakes/finance/query
@@ -310,15 +310,15 @@
 > {"start":{"type":"invoice","where":"status = 'paid'"}}
 < 200
 < content-type: application/json
-< lakelands-position: 18
-< {"data":{"rows":[{"invoice.key":"INV-2","invoice.status":"paid"}],"shape":"rows"},"position":18}
+< lakelands-position: 19
+< {"data":{"rows":[{"invoice.key":"INV-2","invoice.status":"paid"}],"shape":"rows"},"position":19}
 
 > POST /lakes/finance/query
 > authorization: Bearer k-clerk
 > {"start":{"type":"invoice"},"as_at":3}
 < 400
 < content-type: application/json
-< lakelands-position: 18
+< lakelands-position: 19
 < {"error":"refused","reason":{"message":"`query` takes no argument `as_at`; nothing was done","refusal":"invalid"},"todo":"correct the request against `POST …/query` in docs/rest.md and send it again","what":"`query` takes no argument `as_at`; nothing was done"}
 
 > POST /lakes/finance/search
@@ -326,8 +326,8 @@
 > {"type":"invoice","mode":"lexical","text":"paid"}
 < 200
 < content-type: application/json
-< lakelands-position: 18
-< {"data":{"hits":[{"record":{"fields":{"status":"paid"},"key":"INV-2","type":"invoice","version":3},"score":1.0}],"ranked_by":"lexical"},"position":18}
+< lakelands-position: 19
+< {"data":{"hits":[{"record":{"fields":{"status":"paid"},"key":"INV-2","type":"invoice","version":3},"score":1.0}],"ranked_by":"lexical"},"position":19}
 
 # retire, with the version the last write answered; If-None-Match is
 # PUT's alone.
@@ -336,7 +336,7 @@
 > if-match: "2"
 < 403
 < content-type: application/json
-< lakelands-position: 18
+< lakelands-position: 19
 < {"error":"refused","reason":{"refusal":"not_granted"},"todo":"act as a principal whose grants allow it, or ask the lake's owner for a grant","what":"refused: you hold no grant for this"}
 
 > DELETE /lakes/finance/types/invoice/records/INV-1
@@ -344,7 +344,7 @@
 > if-none-match: *
 < 400
 < content-type: application/json
-< lakelands-position: 18
+< lakelands-position: 19
 < {"error":"refused","reason":{"message":"only `PUT` takes `If-None-Match`","refusal":"invalid"},"todo":"give `If-Match: <version>` instead","what":"only `PUT` takes `If-None-Match`"}
 
 > DELETE /lakes/finance/types/invoice/records/INV-1
@@ -353,8 +353,8 @@
 > idempotency-key: retire-1
 < 200
 < content-type: application/json
-< lakelands-position: 19
-< {"outcome":"applied","position":19,"version":3}
+< lakelands-position: 20
+< {"outcome":"applied","position":20,"version":3}
 
 > DELETE /lakes/finance/types/invoice/records/INV-1
 > authorization: Bearer k-owner
@@ -362,8 +362,8 @@
 > idempotency-key: retire-1
 < 200
 < content-type: application/json
-< lakelands-position: 19
-< {"outcome":"applied","position":19,"version":3}
+< lakelands-position: 20
+< {"outcome":"applied","position":20,"version":3}
 
 # Schema: the clerk holds no schema grant; the owner declares a type,
 # adds a field, and migrates it away again through its preflight.
@@ -372,7 +372,7 @@
 > {"type":"partner","field":{"name":"city","type":{"kind":"text"}}}
 < 403
 < content-type: application/json
-< lakelands-position: 19
+< lakelands-position: 20
 < {"error":"refused","reason":{"refusal":"not_granted"},"todo":"act as a principal whose grants allow it, or ask the lake's owner for a grant","what":"refused: you hold no grant for this"}
 
 > POST /lakes/finance/schema/declare_type
@@ -380,23 +380,23 @@
 > {"type":{"name":"vendor","fields":[{"name":"name","type":{"kind":"text"}}]}}
 < 200
 < content-type: application/json
-< lakelands-position: 20
-< {"outcome":"applied","position":20}
+< lakelands-position: 21
+< {"outcome":"applied","position":21}
 
 > POST /lakes/finance/schema/add_field
 > authorization: Bearer k-owner
 > {"type":"vendor","field":{"name":"city","type":{"kind":"text"}}}
 < 200
 < content-type: application/json
-< lakelands-position: 21
-< {"outcome":"applied","position":21}
+< lakelands-position: 22
+< {"outcome":"applied","position":22}
 
 > POST /lakes/finance/schema/migrate/apply
 > authorization: Bearer k-owner
 > {"to":{"name":"vendor","fields":[{"name":"name","type":{"kind":"text"}}]}}
 < 400
 < content-type: application/json
-< lakelands-position: 21
+< lakelands-position: 22
 < {"error":"refused","reason":{"message":"applying a migration needs the `report_id` its preflight answered","refusal":"invalid"},"todo":"run the preflight at …/schema/migrate, then send its report to …/schema/migrate/apply","what":"applying a migration needs the `report_id` its preflight answered"}
 
 > POST /lakes/finance/schema/migrate
@@ -404,16 +404,16 @@
 > {"to":{"name":"vendor","fields":[{"name":"name","type":{"kind":"text"}}]}}
 < 200
 < content-type: application/json
-< lakelands-position: 21
-< {"data":{"dropped":[["city",0]],"fields":[],"from_schema_hash":"090f9f437d456f2b56a86f9eb2ebc1ac05fdb615bd5448a851763fa1c739cc92","lossless":true,"records_scanned":0,"report_id":"{report_id}","to_schema_hash":"129139dc0eaefc67c9c8fd5e3f55f17cb799b058ec09841f90e6022f29f15be7","type":"vendor"},"position":21}
+< lakelands-position: 22
+< {"data":{"dropped":[["city",0]],"fields":[],"from_schema_hash":"090f9f437d456f2b56a86f9eb2ebc1ac05fdb615bd5448a851763fa1c739cc92","lossless":true,"records_scanned":0,"report_id":"{report_id}","to_schema_hash":"129139dc0eaefc67c9c8fd5e3f55f17cb799b058ec09841f90e6022f29f15be7","type":"vendor"},"position":22}
 
 > POST /lakes/finance/schema/migrate/apply
 > authorization: Bearer k-owner
 > {"to":{"name":"vendor","fields":[{"name":"name","type":{"kind":"text"}}]},"report_id":"{report_id}"}
 < 200
 < content-type: application/json
-< lakelands-position: 22
-< {"outcome":"applied","position":22}
+< lakelands-position: 23
+< {"outcome":"applied","position":23}
 
 # ingest: NDJSON in, one line per commit window out (windows of two
 # records here). A line that is not a record ends it; what came before is
@@ -424,7 +424,7 @@
 > {"type":"invoice","key":"INV-9","fields":{"amount":"12.50"}}
 < 403
 < content-type: application/json
-< lakelands-position: 22
+< lakelands-position: 23
 < {"error":"refused","reason":{"refusal":"not_granted"},"todo":"act as a principal whose grants allow it, or ask the lake's owner for a grant","what":"refused: you hold no grant for this"}
 
 > POST /lakes/finance/ingest/bank
@@ -437,10 +437,10 @@
 > {"type":"invoice","key":"INV-13","fields":{"amount":"6"}}
 < 200
 < content-type: application/x-ndjson
-< lakelands-position: 22
-< {"duplicates":0,"position":24,"records":2}
-< {"duplicates":0,"position":26,"records":2}
-< {"duplicates":0,"position":27,"records":1}
+< lakelands-position: 23
+< {"duplicates":0,"position":25,"records":2}
+< {"duplicates":0,"position":27,"records":2}
+< {"duplicates":0,"position":28,"records":1}
 
 > POST /lakes/finance/ingest/bank
 > authorization: Bearer k-owner
@@ -450,8 +450,8 @@
 > not a record
 < 200
 < content-type: application/x-ndjson
-< lakelands-position: 27
-< {"duplicates":1,"position":28,"records":1}
+< lakelands-position: 28
+< {"duplicates":1,"position":29,"records":1}
 < {"error":"refused","reason":{"message":"line 3 is not a record: expected ident at line 1 column 2","refusal":"invalid"},"todo":"correct that line and send the body again; what came before it is committed, and sending it again appends nothing","what":"line 3 is not a record: expected ident at line 1 column 2"}
 
 # The feed is the unmasked log: the clerk may not open it. A position
@@ -460,15 +460,15 @@
 > authorization: Bearer k-clerk
 < 403
 < content-type: application/json
-< lakelands-position: 28
+< lakelands-position: 29
 < {"error":"refused","reason":{"refusal":"not_granted"},"todo":"act as a principal whose grants allow it, or ask the lake's owner for a grant","what":"refused: you hold no grant for this"}
 
 > GET /lakes/finance/feed?from=999
 > authorization: Bearer k-owner
 < 422
 < content-type: application/json
-< lakelands-position: 28
-< {"error":"refused","reason":{"head":28,"refusal":"out_of_range"},"todo":"ask for a position at or before 28","what":"refused: the lake's log ends at position 28"}
+< lakelands-position: 29
+< {"error":"refused","reason":{"head":29,"refusal":"out_of_range"},"todo":"ask for a position at or before 29","what":"refused: the lake's log ends at position 29"}
 
 # Links: a relation carried by link records, written through its link
 # routes under the record it starts from.
@@ -478,8 +478,8 @@
 > {"type":{"name":"contract","fields":[{"name":"title","type":{"kind":"text"}}],"relations":[{"name":"signed_by","target":"partner","cardinality":"many_to_many","fields":[{"name":"since","type":{"kind":"text"}}]}]}}
 < 200
 < content-type: application/json
-< lakelands-position: 29
-< {"outcome":"applied","position":29}
+< lakelands-position: 30
+< {"outcome":"applied","position":30}
 
 > PUT /lakes/finance/types/partner/records/P-1
 > authorization: Bearer k-owner
@@ -487,8 +487,8 @@
 > {"name":"Acme"}
 < 200
 < content-type: application/json
-< lakelands-position: 31
-< {"outcome":"applied","position":31,"version":1}
+< lakelands-position: 32
+< {"outcome":"applied","position":32,"version":1}
 
 > PUT /lakes/finance/types/contract/records/C-1
 > authorization: Bearer k-owner
@@ -496,8 +496,8 @@
 > {"title":"Supply"}
 < 200
 < content-type: application/json
-< lakelands-position: 32
-< {"outcome":"applied","position":32,"version":1}
+< lakelands-position: 33
+< {"outcome":"applied","position":33,"version":1}
 
 > PUT /lakes/finance/types/contract/records/C-1/links/signed_by/P-1
 > authorization: Bearer k-owner
@@ -505,8 +505,8 @@
 > {"since":"2026"}
 < 200
 < content-type: application/json
-< lakelands-position: 33
-< {"outcome":"applied","position":33,"version":1}
+< lakelands-position: 34
+< {"outcome":"applied","position":34,"version":1}
 
 # Written again, the one link per pair changes its fields.
 > PUT /lakes/finance/types/contract/records/C-1/links/signed_by/P-1
@@ -515,15 +515,15 @@
 > {"since":"2027"}
 < 200
 < content-type: application/json
-< lakelands-position: 34
-< {"outcome":"applied","position":34,"version":2}
+< lakelands-position: 35
+< {"outcome":"applied","position":35,"version":2}
 
 > GET /lakes/finance/types/sys.link.contract.signed_by/records
 > authorization: Bearer k-owner
 < 200
 < content-type: application/json
-< lakelands-position: 34
-< {"data":{"rows":[{"fields":{"from":"C-1","since":"2027","to":"P-1"},"key":"C-1:P-1","type":"sys.link.contract.signed_by","version":2}],"shape":"records"},"position":34}
+< lakelands-position: 35
+< {"data":{"rows":[{"fields":{"from":"C-1","since":"2027","to":"P-1"},"key":"C-1:P-1","type":"sys.link.contract.signed_by","version":2}],"shape":"records"},"position":35}
 
 # A link to a record that is not there, over a relation carried by a
 # field, over no relation, by a principal who may not link, and with a
@@ -532,28 +532,28 @@
 > authorization: Bearer k-owner
 < 422
 < content-type: application/json
-< lakelands-position: 34
+< lakelands-position: 35
 < {"error":"refused","field":"to","reason":{"message":"`to` names `partner` `P-404`, which is not a live record","refusal":"constraint"},"todo":"correct the input and run the command again; nothing was written","what":"refused on `to`: `to` names `partner` `P-404`, which is not a live record"}
 
 > PUT /lakes/finance/types/invoice/records/INV-1/links/billed_by/P-1
 > authorization: Bearer k-owner
 < 422
 < content-type: application/json
-< lakelands-position: 34
+< lakelands-position: 35
 < {"error":"refused","reason":{"message":"`invoice` has no relation `billed_by` carried by link records","refusal":"invalid"},"todo":"correct the input and run the command again; nothing was written","what":"refused: `invoice` has no relation `billed_by` carried by link records"}
 
 > PUT /lakes/finance/types/contract/records/C-1/links/nowhere/P-1
 > authorization: Bearer k-owner
 < 422
 < content-type: application/json
-< lakelands-position: 34
+< lakelands-position: 35
 < {"error":"refused","reason":{"message":"`contract` has no relation `nowhere` carried by link records","refusal":"invalid"},"todo":"correct the input and run the command again; nothing was written","what":"refused: `contract` has no relation `nowhere` carried by link records"}
 
 > PUT /lakes/finance/types/contract/records/C-1/links/signed_by/P-1
 > authorization: Bearer k-clerk
 < 403
 < content-type: application/json
-< lakelands-position: 34
+< lakelands-position: 35
 < {"error":"refused","field":"from","reason":{"refusal":"not_granted"},"todo":"act as a principal whose grants allow it, or ask the lake's owner for a grant","what":"refused on `from`: you hold no grant for this"}
 
 > PUT /lakes/finance/types/contract/records/C-1/links/signed_by/P-1
@@ -562,7 +562,7 @@
 > ["2026"]
 < 400
 < content-type: application/json
-< lakelands-position: 34
+< lakelands-position: 35
 < {"error":"refused","reason":{"message":"`PUT …/types/<type>/records/<key>/links/<relation>/<to>` takes a JSON object of fields","refusal":"invalid"},"todo":"send the fields as one JSON object","what":"`PUT …/types/<type>/records/<key>/links/<relation>/<to>` takes a JSON object of fields"}
 
 # The link is a record: `If-Match` names its version, and
@@ -574,7 +574,7 @@
 > {"since":"2028"}
 < 412
 < content-type: application/json
-< lakelands-position: 34
+< lakelands-position: 35
 < {"actual":2,"error":"conflict","expected":1,"todo":"read the record again and retry against its current version","what":"the record changed: expected version 1, found 2"}
 
 > PUT /lakes/finance/types/contract/records/C-1/links/signed_by/P-1
@@ -582,7 +582,7 @@
 > if-none-match: *
 < 412
 < content-type: application/json
-< lakelands-position: 34
+< lakelands-position: 35
 < {"actual":2,"error":"conflict","expected":0,"todo":"read the record again and retry against its current version","what":"the record changed: expected version 0, found 2"}
 
 # A link route takes PUT and DELETE only.
@@ -591,7 +591,7 @@
 < 405
 < allow: PUT, DELETE
 < content-type: application/json
-< lakelands-position: 34
+< lakelands-position: 35
 < {"error":"refused","reason":{"message":"this route takes PUT, DELETE, not GET","refusal":"invalid"},"todo":"send it as PUT, DELETE","what":"this route takes PUT, DELETE, not GET"}
 
 # Unlinked; its history stays. Unlinking it again.
@@ -599,12 +599,12 @@
 > authorization: Bearer k-owner
 < 200
 < content-type: application/json
-< lakelands-position: 35
-< {"outcome":"applied","position":35,"version":3}
+< lakelands-position: 36
+< {"outcome":"applied","position":36,"version":3}
 
 > DELETE /lakes/finance/types/contract/records/C-1/links/signed_by/P-1
 > authorization: Bearer k-owner
 < 404
 < content-type: application/json
-< lakelands-position: 35
+< lakelands-position: 36
 < {"error":"not_found","missing":{"key":"C-1:P-1","kind":"record","type":"sys.link.contract.signed_by"},"todo":"check the name, or apply the declaration that introduces it first","what":"there is no `sys.link.contract.signed_by` with key `C-1:P-1`"}

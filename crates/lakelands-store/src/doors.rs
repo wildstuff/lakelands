@@ -18,13 +18,13 @@ use lakelands_api::principal::WriteContext;
 use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
 use lakelands_api::seam::{ChangeFeed, FeedBatch, FeedFilter, Seams, VerbInvocation};
 use lakelands_api::write::{
-    Declaration, Migration, MigrationReport, Outcome, Proposal, ProposalFilter, ProposedWrite,
-    WriteOpts,
+    AgeReport, Declaration, Migration, MigrationReport, Outcome, Proposal, ProposalFilter,
+    ProposedWrite, WriteOpts,
 };
 use lakelands_api::{
     Catalog, Error, Find, Found, Get, LakeId, LakeStore, Patch, Position, Principal, ProposalId,
-    ReadAt, Record, RecordKey, Refusal, RelationName, Reply, Result, SourceId, TypeName, VerbName,
-    Verification,
+    ReadAt, Record, RecordKey, Refusal, RelationName, Reply, Result, SourceId, Timestamp, TypeName,
+    VerbName, Verification,
 };
 
 use crate::exec;
@@ -573,6 +573,18 @@ impl LakeStore for Store {
     async fn unrestrict(&self, ty: &TypeName, key: &RecordKey) -> Result<Position> {
         let (lake, ty, key) = (self.lake.clone(), ty.clone(), key.clone());
         exec::run(move || writes::restrict(&lake, &ty, &key, None)).await
+    }
+
+    async fn age(&self, today: Timestamp) -> Result<AgeReport> {
+        let lake = self.lake.clone();
+        let seen = lake.drains.load(std::sync::atomic::Ordering::Acquire);
+        let mut report = exec::run(move || crate::aging::run(&lake, today)).await?;
+        // The moves' backed fields settle like any write's; the report
+        // names the position from which what they filled is visible.
+        if let Some(last) = crate::backed::settle(&self.lake, seen).await? {
+            report.position = report.position.max(last);
+        }
+        Ok(report)
     }
 
     async fn checkpoint(&self) -> Result<Position> {

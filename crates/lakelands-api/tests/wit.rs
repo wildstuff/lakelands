@@ -39,8 +39,8 @@ use lakelands_api::query::{
 use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Direction, Group, Order, OrderBy};
 use lakelands_api::seam::{FeedBatch, FeedFilter};
 use lakelands_api::write::{
-    Declaration, FieldConversion, FunctionDecl, Migration, MigrationReport, ObjectSetDecl,
-    Proposal, ProposalFilter, ProposalState, ProposedWrite,
+    AgeReport, Declaration, FieldConversion, FunctionDecl, Migration, MigrationReport,
+    ObjectSetDecl, Proposal, ProposalFilter, ProposalState, ProposedWrite, RuleRun,
 };
 use lakelands_api::{
     Access, Committed, Cursor, Error, FieldMeta, Find, Found, Get, Grants, Missing, Origin,
@@ -828,6 +828,26 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 from: Position(0),
                 through: Position(1),
                 hash: lakelands_api::event::Digest::zero(),
+            }),
+        ),
+        (
+            "age_report",
+            members(&AgeReport {
+                date: t(),
+                rules: vec![],
+                transitions: 1,
+                failed_guards: 2,
+                position: Position(3),
+            }),
+        ),
+        (
+            "rule_run",
+            members(&RuleRun {
+                rule: "r".into(),
+                version: Version(1),
+                moved: 1,
+                failed_guards: 2,
+                skipped: Some("s".into()),
             }),
         ),
         (

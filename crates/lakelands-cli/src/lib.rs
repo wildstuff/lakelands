@@ -2,7 +2,7 @@
 //!
 //! `init` and `lake new` lay out a root: a directory with a
 //! configuration and one location per lake. `apply`, `ingest`, `feed`,
-//! `rebuild` and `serve` open a lake at its location and call the
+//! `age`, `rebuild` and `serve` open a lake at its location and call the
 //! library in-process: there is no command enum and no layer between the
 //! command and the catalog.
 //!
@@ -201,6 +201,17 @@ fn command() -> Command {
                         .help("Only events of this kind (repeatable), e.g. record_upserted"),
                 ),
         )
+        .subcommand(
+            Command::new("age")
+                .about("Run the lake's aging rules once for a date")
+                .arg(
+                    Arg::new("today")
+                        .long("today")
+                        .value_name("DATE")
+                        .required(true)
+                        .help("The date to age, YYYY-MM-DD"),
+                ),
+        )
         .subcommand(Command::new("rebuild").about("Delete the lake's projection and rebuild it from the log"))
         .subcommand(
             Command::new("serve")
@@ -341,6 +352,7 @@ async fn dispatch(
                 .unwrap_or_default();
             commands::feed(out, &store, from, kinds).await
         }
+        "age" => commands::age(out, &store, &text(sub, "today").unwrap_or_default()).await,
         "rebuild" => commands::rebuild(out, &store).await,
         "serve" => serve(&root, store, who, open).await,
         other => unreachable!("clap knows no command `{other}`"),

@@ -41,13 +41,13 @@ fn mcp_call_lists_the_tools_and_calls_one_in_one_session() {
         );
     }
     // The fixture's four declarations follow the lake's first append
-    // (`lake_created`, `lease_taken`, `sys.setting`), at 3 to 6.
+    // (`lake_created`, `lease_taken`, `sys.setting`, `sys.aging_rule`), at 4 to 7.
     assert!(
-        stdout.contains("position 6\n"),
+        stdout.contains("position 7\n"),
         "a call prints its position line:\n{stdout}"
     );
     assert!(
-        stdout.contains("\"pinned\": 6"),
+        stdout.contains("\"pinned\": 7"),
         "the pin answers the head:\n{stdout}"
     );
     assert!(
