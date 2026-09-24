@@ -1138,6 +1138,23 @@ mod flaky {
         ) -> Result<Outcome> {
             self.inner.migrate_apply(who, migration, report_id).await
         }
+        async fn migrate_value_type(
+            &self,
+            who: &Principal,
+            to: lakelands_api::ontology::ValueTypeDecl,
+        ) -> Result<Reply<lakelands_api::write::ValueTypeReport>> {
+            self.inner.migrate_value_type(who, to).await
+        }
+        async fn migrate_value_type_apply(
+            &self,
+            who: &Principal,
+            to: lakelands_api::ontology::ValueTypeDecl,
+            report_id: &str,
+        ) -> Result<Outcome> {
+            self.inner
+                .migrate_value_type_apply(who, to, report_id)
+                .await
+        }
         async fn ingest(
             &self,
             who: &Principal,

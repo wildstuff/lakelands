@@ -39,9 +39,9 @@ use lakelands_api::query::{
 use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Direction, Group, Order, OrderBy};
 use lakelands_api::seam::{FeedBatch, FeedFilter};
 use lakelands_api::write::{
-    AgeReport, Declaration, FieldConversion, FunctionDecl, Migration, MigrationReport,
+    AgeReport, Declaration, FieldConversion, FunctionDecl, Migration, MigrationReport, Misfit,
     ObjectSetDecl, Proposal, ProposalFilter, ProposalState, ProposedWrite, PurgeReport, RuleRun,
-    TypeRetired,
+    TypeRetired, ValueTypeReport, ValueTypeUse,
 };
 use lakelands_api::{
     Access, Committed, Cursor, Error, FieldMeta, Find, Found, Get, Grants, Missing, Origin,
@@ -849,6 +849,40 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 moved: 1,
                 failed_guards: 2,
                 skipped: Some("s".into()),
+            }),
+        ),
+        (
+            "value_type_report",
+            members(&ValueTypeReport {
+                value_type: "money".into(),
+                from_version: 1,
+                records_scanned: 2,
+                fields: vec![],
+                misfits: 1,
+                first: vec![Misfit {
+                    ty: "invoice".into(),
+                    key: "i1".into(),
+                    field: "net".into(),
+                }],
+                fits: false,
+                report_id: "r".into(),
+            }),
+        ),
+        (
+            "value_type_use",
+            members(&ValueTypeUse {
+                ty: "invoice".into(),
+                field: "net".into(),
+                values_scanned: 2,
+                misfits: 1,
+            }),
+        ),
+        (
+            "misfit",
+            members(&Misfit {
+                ty: "invoice".into(),
+                key: "i1".into(),
+                field: "net".into(),
             }),
         ),
         (

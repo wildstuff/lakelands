@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::expr::Condition;
 use crate::id::{
     Cursor, FieldName, IdempotencyKey, Position, ProposalId, RecordKey, SourceId, TypeName,
-    VerbName, Version,
+    ValueTypeName, VerbName, Version,
 };
 use crate::ontology::{FieldType, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl};
 
@@ -363,4 +363,55 @@ pub struct TypeRetired {
     pub ty: TypeName,
     /// How many of its records were retired.
     pub retired: u32,
+}
+
+/// The preflight of a value type's migration: what its new declaration
+/// would refuse among the values stored under it, computed before
+/// anything changes (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValueTypeReport {
+    /// The value type migrated.
+    pub value_type: ValueTypeName,
+    /// Its version in force.
+    pub from_version: u32,
+    /// Stored records examined, over every type that uses it, retired
+    /// and restricted ones included.
+    pub records_scanned: u64,
+    /// Per field that uses it: the values examined and those refused.
+    pub fields: Vec<ValueTypeUse>,
+    /// Values the new declaration would refuse, over every field.
+    pub misfits: u64,
+    /// The first misfits, at most ten. Never values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub first: Vec<Misfit>,
+    /// True when every stored value fits the new declaration.
+    pub fits: bool,
+    /// Names this report; `migrate_value_type_apply` must repeat it.
+    pub report_id: String,
+}
+
+/// One field that uses a value type, as a value-type preflight found it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValueTypeUse {
+    /// The type.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// The field.
+    pub field: FieldName,
+    /// Values stored in it.
+    pub values_scanned: u64,
+    /// Values the new declaration would refuse.
+    pub misfits: u64,
+}
+
+/// A stored value a new declaration would refuse: where it is, never what.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Misfit {
+    /// The record's type.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// The record's key.
+    pub key: RecordKey,
+    /// The field.
+    pub field: FieldName,
 }

@@ -13,13 +13,13 @@ use lakelands_api::describe::{LakeDescription, TypeDescription};
 use lakelands_api::engine::OpenMode;
 use lakelands_api::event::EventBody;
 use lakelands_api::location::Location;
-use lakelands_api::ontology::FieldDecl;
+use lakelands_api::ontology::{FieldDecl, ValueTypeDecl};
 use lakelands_api::principal::WriteContext;
 use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
 use lakelands_api::seam::{ChangeFeed, FeedBatch, FeedFilter, Seams, VerbInvocation};
 use lakelands_api::write::{
     AgeReport, Declaration, Migration, MigrationReport, Outcome, Proposal, ProposalFilter,
-    ProposedWrite, PurgeReport, WriteOpts,
+    ProposedWrite, PurgeReport, ValueTypeReport, WriteOpts,
 };
 use lakelands_api::{
     Catalog, Error, Find, Found, Get, LakeId, LakeStore, Patch, Position, Principal, ProposalId,
@@ -470,6 +470,36 @@ impl Catalog for Doors {
         let seen = self.seen();
         let outcome = self
             .write(who, move |c| c.migrate_apply(migration, &id))
+            .await?;
+        self.settled(outcome, seen).await
+    }
+
+    async fn migrate_value_type(
+        &self,
+        who: &Principal,
+        to: ValueTypeDecl,
+    ) -> Result<Reply<ValueTypeReport>> {
+        self.write(who, move |c| {
+            let w = c.lake.writer();
+            let view = c.lake.engine.view(None)?;
+            Ok(Reply {
+                position: view.position().unwrap_or(Position::GENESIS),
+                data: c.preflight_value_type(&w, view.as_ref(), &to)?,
+            })
+        })
+        .await
+    }
+
+    async fn migrate_value_type_apply(
+        &self,
+        who: &Principal,
+        to: ValueTypeDecl,
+        report_id: &str,
+    ) -> Result<Outcome> {
+        let id = report_id.to_owned();
+        let seen = self.seen();
+        let outcome = self
+            .write(who, move |c| c.migrate_value_type_apply(to, &id))
             .await?;
         self.settled(outcome, seen).await
     }

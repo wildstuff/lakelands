@@ -364,6 +364,18 @@ fn embeddings(t: &lakelands_api::ontology::TypeDecl) -> Result<()> {
 /// Check one declaration against the lake as `st` holds it: reserved
 /// names, a revision that would reshape records, every type it refers to
 /// declared (or itself), and every name able to become a tool.
+/// A value type's new declaration, checked as a declaration of its own:
+/// the one in force would refuse it as a tightening.
+fn check_new_value_type(
+    st: &State,
+    who: &Principal,
+    to: &lakelands_api::ontology::ValueTypeDecl,
+) -> Result<()> {
+    let mut probe = st.clone();
+    probe.value_types.retain(|v| v.name != to.name);
+    check_declaration(&probe, who, &Declaration::ValueType(to.clone()))
+}
+
 fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()> {
     let mut types: Vec<TypeName> = st.types.keys().cloned().collect();
     let mut verbs: Vec<VerbName> = st.verbs.keys().cloned().collect();
@@ -371,6 +383,9 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
         |ty: &TypeName, own: Option<&TypeName>| own == Some(ty) || st.types.contains_key(ty);
     if let Declaration::Type(t) = d {
         embeddings(t)?;
+    }
+    if let Declaration::ValueType(v) = d {
+        crate::valuetypes::check_declared(st, v)?;
     }
     match d {
         // The mock binds no function backing; `expr` is computed inside.
@@ -2237,6 +2252,69 @@ impl Catalog for MockCatalog {
         Ok(Reply {
             position,
             data: preflight(&st, position, &migration)?,
+        })
+    }
+
+    async fn migrate_value_type(
+        &self,
+        who: &Principal,
+        to: lakelands_api::ontology::ValueTypeDecl,
+    ) -> Result<Reply<lakelands_api::write::ValueTypeReport>> {
+        self.admit_write(who)?;
+        if !who.grants.schema {
+            return Err(refused(Refusal::NotGranted));
+        }
+        let log = self.log();
+        let (head, st) = self.state_at(&log, None)?;
+        check_new_value_type(&st, who, &to)?;
+        Ok(Reply {
+            position: head,
+            data: crate::valuetypes::preflight(&st, head, &to)?,
+        })
+    }
+
+    async fn migrate_value_type_apply(
+        &self,
+        who: &Principal,
+        to: lakelands_api::ontology::ValueTypeDecl,
+        report_id: &str,
+    ) -> Result<Outcome> {
+        self.admit_write(who)?;
+        if !who.grants.schema {
+            return Err(refused(Refusal::NotGranted));
+        }
+        let mut log = self.log();
+        let (head, st) = self.state_at(&log, None)?;
+        check_new_value_type(&st, who, &to)?;
+        let report = crate::valuetypes::preflight(&st, head, &to)?;
+        if report.report_id != report_id {
+            return Err(invalid(
+                "the lake moved since this report was made; run the preflight again",
+            ));
+        }
+        if !report.fits {
+            return Err(invalid(format!(
+                "value type `{}` is not tightened: {} stored value(s) would not fit it",
+                to.name, report.misfits
+            )));
+        }
+        let declaration = Declaration::ValueType(to);
+        let (schema_hash, version) = identity_version(&st, &declaration);
+        let mut batch = Batch::at(&log);
+        let position = batch.push(Draft::new(
+            who,
+            Origin::System,
+            EventBody::Declared {
+                declaration,
+                schema_hash,
+                version,
+            },
+        ));
+        self.commit(&mut log, batch);
+        Ok(Outcome::Applied {
+            position,
+            version: None,
+            output: None,
         })
     }
 

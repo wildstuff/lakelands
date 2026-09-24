@@ -78,8 +78,8 @@ key may hold any character.
 | `POST …/proposals/<id>/reject` | reject | body: `reason` (optional) |
 | `POST …/schema/declare_type` | declare a type | body: `type` |
 | `POST …/schema/add_field` | add a field | body: `type`, `field` |
-| `POST …/schema/migrate` | a migration's preflight | body: `to`, `renames` |
-| `POST …/schema/migrate/apply` | apply a migration | body: `to`, `renames`, `report_id` |
+| `POST …/schema/migrate` | a migration's preflight | body: `to` and `renames`, or `value_type` |
+| `POST …/schema/migrate/apply` | apply a migration | body: `to` and `renames`, or `value_type`; and `report_id` |
 | `POST …/ingest/<source>` | ingest | body: NDJSON, one record per line |
 | `GET …/feed` | the change feed | query: `from`, `kinds`, `types`; `Last-Event-ID` |
 

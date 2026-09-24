@@ -17,7 +17,7 @@ use crate::event::Digest;
 use crate::id::{
     LakeId, Position, ProposalId, RecordKey, RelationName, SourceId, TypeName, VerbName,
 };
-use crate::ontology::FieldDecl;
+use crate::ontology::{FieldDecl, ValueTypeDecl};
 use crate::principal::{Principal, WriteContext};
 use crate::query::{Hits, Pattern, QueryResult, Search};
 use crate::read::{Find, Found, Get, ReadAt, Reply};
@@ -25,7 +25,7 @@ use crate::record::{Patch, Record, SourceRecord};
 use crate::seam::ChangeFeed;
 use crate::write::{
     Committed, Declaration, Migration, MigrationReport, Outcome, Proposal, ProposalFilter,
-    ProposedWrite, WriteOpts,
+    ProposedWrite, ValueTypeReport, WriteOpts,
 };
 
 /// A stream of records from one source, as `ingest` takes it.
@@ -204,6 +204,28 @@ pub trait Catalog: Send + Sync {
         &self,
         who: &Principal,
         migration: Migration,
+        report_id: &str,
+    ) -> Result<Outcome>;
+
+    /// The preflight of tightening a value type: every value stored under
+    /// it, over every type and field that uses it, history included,
+    /// checked against the new declaration. Appends nothing. A loosening is
+    /// declared; a change of `kind` or `scale` is not a value-type migration
+    /// (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
+    async fn migrate_value_type(
+        &self,
+        who: &Principal,
+        to: ValueTypeDecl,
+    ) -> Result<Reply<ValueTypeReport>>;
+
+    /// Put a tightened value type in force against the preflight the caller
+    /// was shown. Refused if the lake moved since, or while any stored value
+    /// would not fit; otherwise one `declared` at the next version, and no
+    /// record changes.
+    async fn migrate_value_type_apply(
+        &self,
+        who: &Principal,
+        to: ValueTypeDecl,
         report_id: &str,
     ) -> Result<Outcome>;
 

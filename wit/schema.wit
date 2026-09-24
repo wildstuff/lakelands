@@ -7,6 +7,7 @@ interface schema {
     use types.{
         principal, read-at, type-name, lake-description-reply, type-description-reply,
         declaration, field-decl, migration, migration-report-reply, outcome, error,
+        value-type-decl, value-type-report-reply,
     };
     use store.{catalog};
 
@@ -20,4 +21,10 @@ interface schema {
     migrate: func(catalog: borrow<catalog>, who: principal, migration: migration) -> result<migration-report-reply, error>;
     /// Apply a migration against the report `migrate` answered.
     migrate-apply: func(catalog: borrow<catalog>, who: principal, migration: migration, report-id: string) -> result<outcome, error>;
+    /// The preflight of tightening a value type: every value stored under
+    /// it, checked against the new declaration. Nothing is written.
+    migrate-value-type: func(catalog: borrow<catalog>, who: principal, to: value-type-decl) -> result<value-type-report-reply, error>;
+    /// Put a tightened value type in force against the report
+    /// `migrate-value-type` answered.
+    migrate-value-type-apply: func(catalog: borrow<catalog>, who: principal, to: value-type-decl, report-id: string) -> result<outcome, error>;
 }
