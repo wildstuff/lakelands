@@ -22,3 +22,6 @@ target
 
 # Personal agent instructions with private pointers — never committed
 CLAUDE.local.md
+
+# Per-slot agent environment (see docs/development.md)
+.claude/settings.local.json
