@@ -95,6 +95,7 @@ mod purge;
 mod state;
 pub mod stream;
 mod value;
+mod valuetypes;
 
 /// The writer recorded for events the lake appends by itself.
 const SYSTEM_WRITER: &str = "system:lakelands";

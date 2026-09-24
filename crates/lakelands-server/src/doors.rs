@@ -6,9 +6,9 @@
 //! names — and [`run`] calls the catalog. So the two can never read an
 //! argument differently, and a door's answer is the same JSON on both.
 
-use lakelands_api::error::Error;
+use lakelands_api::error::{Error, Refusal};
 use lakelands_api::id::{FieldName, ProposalId, RecordKey, TypeName};
-use lakelands_api::ontology::{FieldDecl, TypeDecl};
+use lakelands_api::ontology::{FieldDecl, TypeDecl, ValueTypeDecl};
 use lakelands_api::query::{Pattern, Search};
 use lakelands_api::read::{Find, Get, ReadAt};
 use lakelands_api::record::Patch;
@@ -193,21 +193,161 @@ pub(crate) async fn run(
         Door::Migrate => {
             #[derive(Deserialize)]
             struct M {
-                to: TypeDecl,
+                #[serde(default)]
+                to: Option<TypeDecl>,
+                #[serde(default)]
+                value_type: Option<ValueTypeDecl>,
                 #[serde(default)]
                 renames: Vec<(FieldName, FieldName)>,
                 #[serde(default)]
                 report_id: Option<String>,
             }
             let m: M = args(label, &a)?;
-            let migration = Migration {
-                to: m.to,
-                renames: m.renames,
+            let wrong = |field: &str, message: &str| {
+                Fault::Contract(Error::Refused {
+                    field: Some(field.into()),
+                    reason: Refusal::Invalid {
+                        message: message.into(),
+                    },
+                })
             };
-            match m.report_id {
-                Some(r) => to_json(&c.migrate_apply(who, migration, &r).await?),
-                None => to_json(&c.migrate(who, migration).await?),
+            match (m.to, m.value_type) {
+                (Some(to), None) => {
+                    let migration = Migration {
+                        to,
+                        renames: m.renames,
+                    };
+                    match m.report_id {
+                        Some(r) => to_json(&c.migrate_apply(who, migration, &r).await?),
+                        None => to_json(&c.migrate(who, migration).await?),
+                    }
+                }
+                (None, Some(vt)) => {
+                    if !m.renames.is_empty() {
+                        return Err(wrong(
+                            "renames",
+                            "a value type has no fields to rename; `renames` belongs to `to`",
+                        ));
+                    }
+                    match m.report_id {
+                        Some(r) => to_json(&c.migrate_value_type_apply(who, vt, &r).await?),
+                        None => to_json(&c.migrate_value_type(who, vt).await?),
+                    }
+                }
+                (Some(_), Some(_)) => {
+                    return Err(wrong(
+                        "value_type",
+                        "a migration names a type (`to`) or a value type (`value_type`), not both",
+                    ));
+                }
+                (None, None) => {
+                    return Err(wrong(
+                        "to",
+                        "a migration names a type (`to`) or a value type (`value_type`)",
+                    ));
+                }
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use lakelands_api::engine::OpenMode;
+    use lakelands_api::seam::Seams;
+    use lakelands_api::{Grants, LakeStore, Location, PrincipalKind, WriteContext};
+    use serde_json::json;
+
+    use super::*;
+
+    fn owner(lake: &str) -> Principal {
+        Principal {
+            kind: PrincipalKind::Human,
+            id: "owner".into(),
+            lake: lake.into(),
+            grants: Grants::owner(),
+        }
+    }
+
+    /// The mock, and the store over the memory and SQLite engines.
+    async fn lakes() -> Vec<(&'static str, Arc<dyn LakeStore>)> {
+        let dir =
+            std::env::temp_dir().join(format!("lakelands-migrate-door-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let seams = || Seams {
+            engines: vec![
+                Arc::new(lakelands_engine_mem::MemoryOpener::new()),
+                Arc::new(lakelands_engine_sqlite::SqliteOpener),
+            ],
+            ..Seams::default()
+        };
+        vec![
+            (
+                "mock",
+                Arc::new(lakelands_mock::MockLake::new("doors")) as Arc<dyn LakeStore>,
+            ),
+            (
+                "memory",
+                lakelands_store::open(Location::memory("doors"), seams(), OpenMode::Create)
+                    .await
+                    .unwrap(),
+            ),
+            (
+                "sqlite",
+                lakelands_store::open(Location::sqlite("doors", &dir), seams(), OpenMode::Create)
+                    .await
+                    .unwrap(),
+            ),
+        ]
+    }
+
+    /// The `migrate` tool names a type (`to`) or a value type
+    /// (`value_type`), one of the two, and a value type takes no renames:
+    /// anything else is refused as invalid, naming the argument, on the
+    /// mock and on the store alike.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn migrate_takes_a_type_or_a_value_type_never_both_and_never_neither() {
+        let vt = json!({"name": "status_code", "kind": "text", "one_of": ["open", "late"]});
+        let ty = json!({"name": "memo", "fields": [{"name": "text", "type": {"kind": "text"}}]});
+        for (name, store) in lakes().await {
+            let cat = store.catalog(WriteContext::default());
+            let who = owner("doors");
+            cat.declare(&who, serde_json::from_value(json!({"declare": "value_type", "name": "status_code", "kind": "text", "one_of": ["open", "late", "void"]})).unwrap())
+                .await
+                .unwrap();
+            let call = |a: Value| {
+                let (cat, who) = (cat.clone(), who.clone());
+                async move {
+                    let a = a.as_object().cloned().unwrap_or_default();
+                    run(cat.as_ref(), &who, &Door::Migrate, "migrate", a).await
+                }
+            };
+            for (args, field) in [
+                (json!({"to": ty, "value_type": vt}), "value_type"),
+                (json!({}), "to"),
+                (json!({"report_id": "r"}), "to"),
+                (
+                    json!({"value_type": vt, "renames": [["a", "b"]]}),
+                    "renames",
+                ),
+            ] {
+                let answer = call(args.clone()).await;
+                assert!(
+                    matches!(
+                        &answer,
+                        Err(Fault::Contract(Error::Refused { field: Some(f), reason: Refusal::Invalid { .. } }))
+                            if f.as_str() == field
+                    ),
+                    "on {name}, {args} was not refused as invalid naming `{field}`"
+                );
+            }
+            let report = call(json!({"value_type": vt})).await;
+            assert!(
+                matches!(&report, Ok(v) if v["data"]["fits"] == json!(true)),
+                "on {name}, the value type's preflight did not answer"
+            );
+        }
+    }
 }

@@ -33,7 +33,9 @@
 //!   stored values, so changing them is not a declaration either.
 
 use lakelands_api::expr::{Condition, Expr};
-use lakelands_api::ontology::{Authority, FieldDecl, StorageKind, TypeDecl, VerbEffect};
+use lakelands_api::ontology::{
+    Authority, FieldDecl, StorageKind, TypeDecl, ValueTypeDecl, VerbEffect,
+};
 use lakelands_api::tools::name_problems;
 use lakelands_api::write::Declaration;
 use lakelands_api::{Error, FieldName, Refusal, RelationName, Result, TypeName, VerbName};
@@ -445,17 +447,24 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 )?;
             }
             if let Some(current) = o.value_types.get(v.name.as_str()) {
-                let c = &current.decl;
-                if c.kind != v.kind
-                    || c.one_of != v.one_of
-                    || c.constraint != v.constraint
-                    || c.scale != v.scale
-                    || c.format != v.format
-                {
-                    return Err(invalid(format!(
-                        "changing what `{}` accepts would reshape stored values; that is a migration",
-                        v.name
-                    )));
+                match value_type_change(&current.decl, v) {
+                    ValueTypeChange::Same | ValueTypeChange::Loosening => {}
+                    ValueTypeChange::Tightening => {
+                        return Err(invalid(format!(
+                            "value type `{}` would accept less than it does: stored values may \
+                             stop fitting it; tighten it through `migrate`, whose preflight \
+                             counts them",
+                            v.name
+                        )));
+                    }
+                    ValueTypeChange::Reshaping => {
+                        return Err(invalid(format!(
+                            "value type `{}` would change its `kind` or `scale`, which rewrites \
+                             stored values; that is not a value-type migration: migrate the \
+                             fields that use it",
+                            v.name
+                        )));
+                    }
                 }
             }
         }
@@ -601,4 +610,43 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
         return Err(invalid(all.join("; ")));
     }
     Ok(())
+}
+
+/// How a value type's new declaration relates to the one in force
+/// (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ValueTypeChange {
+    /// It accepts exactly what it did.
+    Same,
+    /// It accepts everything it did: no stored value can stop fitting.
+    Loosening,
+    /// It may refuse a value it accepted: a migration with a preflight.
+    Tightening,
+    /// Its `kind` or `scale` changes, which rewrites stored values.
+    Reshaping,
+}
+
+/// Compare a value type with the one in force. `one_of` may gain values
+/// or be removed, and a `constraint` or `format` removed, without a
+/// stored value ever failing; anything else it would accept differently
+/// may.
+pub fn value_type_change(current: &ValueTypeDecl, new: &ValueTypeDecl) -> ValueTypeChange {
+    if current.kind != new.kind || current.scale != new.scale {
+        return ValueTypeChange::Reshaping;
+    }
+    if current.one_of == new.one_of
+        && current.constraint == new.constraint
+        && current.format == new.format
+    {
+        return ValueTypeChange::Same;
+    }
+    let one_of = new.one_of.is_empty()
+        || (!current.one_of.is_empty() && current.one_of.iter().all(|v| new.one_of.contains(v)));
+    let constraint = new.constraint.is_none() || new.constraint == current.constraint;
+    let format = new.format.is_none() || new.format == current.format;
+    if one_of && constraint && format {
+        ValueTypeChange::Loosening
+    } else {
+        ValueTypeChange::Tightening
+    }
 }

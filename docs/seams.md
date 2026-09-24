@@ -944,6 +944,25 @@ in one append or refused whole, one refusal naming every problem
 (`docs/decisions/028-authoring-is-strict-and-whole.md`). It is how a
 bundle reaches a lake; it has no tool in `0.1.0`.
 
+A value type changes by `declare` only when no stored value can stop
+fitting it: `one_of` gains values or is removed, a `constraint` or a
+`format` is removed. A tightening (`one_of` narrowed, a `constraint` or
+`format` added or changed) goes through `Catalog::migrate_value_type`,
+whose preflight checks every value stored under the value type, over
+every field of every type that uses it, retired and restricted records
+included, as a write would check it. It counts the records scanned and
+the misfits per field, names the first, and appends nothing.
+`migrate_value_type_apply` puts the new declaration in force against
+that report, and is refused while any value misfits or if the lake moved
+since. What it appends is one `declared` at the next version: no record
+is rewritten. A change of `kind` or `scale` rewrites stored values, so it
+is not a value-type migration; the fields that use the value type are
+migrated instead. The `migrate` tool and REST route take `value_type`
+instead of `to`, one of the two, never both. The preflight checks stored
+values only: a condition that compares with a value the type no longer
+admits (a trigger's `when`, an aging rule's `from` or `to`, an object
+set's `where`) is not checked, and simply never holds afterwards.
+
 **Many callers, one writer.** A lake has one writing process
 (`docs/decisions/008-one-writer-per-lake.md`), and any number of callers
 may use its doors at once; the writer orders their writes. What a caller

@@ -692,6 +692,36 @@ interface types {
     record proposals-reply { position: position, data: list<proposal> }
     record migration-report-reply { position: position, data: migration-report }
 
+    /// A value type's preflight: what its new declaration would refuse
+    /// among the values stored under it.
+    record value-type-report {
+        value-type: value-type-name,
+        from-version: u32,
+        records-scanned: u64,
+        fields: list<value-type-use>,
+        misfits: u64,
+        first: list<misfit>,
+        fits: bool,
+        report-id: string,
+    }
+
+    /// One field that uses a value type, as its preflight found it.
+    record value-type-use {
+        %type: type-name,
+        field: field-name,
+        values-scanned: u64,
+        misfits: u64,
+    }
+
+    /// Where a stored value a new declaration would refuse is; never what.
+    record misfit {
+        %type: type-name,
+        key: record-key,
+        field: field-name,
+    }
+
+    record value-type-report-reply { position: position, data: value-type-report }
+
     // ------------------------------------------------------------------
     // Errors: the closed set every door answers with
     // ------------------------------------------------------------------

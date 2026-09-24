@@ -125,6 +125,12 @@ impl Catalog for DownCatalog {
     refuse!(migrate_apply<'life1, 'life2>(
         who: &'life1 Principal, migration: Migration, report_id: &'life2 str
     ) -> Outcome);
+    refuse!(migrate_value_type<'life1>(
+        who: &'life1 Principal, to: lakelands_api::ontology::ValueTypeDecl
+    ) -> Reply<lakelands_api::write::ValueTypeReport>);
+    refuse!(migrate_value_type_apply<'life1, 'life2>(
+        who: &'life1 Principal, to: lakelands_api::ontology::ValueTypeDecl, report_id: &'life2 str
+    ) -> Outcome);
     refuse!(ingest<'life1, 'life2>(
         who: &'life1 Principal, source: &'life2 SourceId, records: SourceStream
     ) -> CommitStream);

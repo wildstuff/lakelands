@@ -36,6 +36,7 @@ mod retire;
 mod schema;
 mod search;
 mod settings;
+mod value_types;
 mod values;
 mod versions;
 mod views;
@@ -199,6 +200,14 @@ pub const ALL: &[Check] = &[
     purge::REACTS_AS_RETIRE,
     purge::LINKS_STAY,
     purge::CLEARED_STAYS,
+    value_types::LOOSEN_BY_DECLARE,
+    value_types::DECLARE_REFUSES_TIGHTENING,
+    value_types::PREFLIGHT_COUNTS,
+    value_types::MISFITS_REFUSE,
+    value_types::FITS_DECLARES,
+    value_types::STALE_REPORT,
+    value_types::SCHEMA_GRANT,
+    value_types::BUNDLE_REFUSED_WHOLE,
     settings::SETTING_AS_OF,
     feed::LIMIT_ZERO_IS_ONE,
     retire::SOURCE_ONLY_HAS_NO_UPSERT,

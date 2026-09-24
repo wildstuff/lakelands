@@ -93,7 +93,8 @@ macro_rules! door_checks {
             links_are_written_walked_and_held_to_their_relation,
             a_relation_declared_again_with_another_target_reshapes_its_links,
             an_aging_rule_moves_what_holds_from_once_a_date,
-            a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_record);
+            a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_record,
+            a_value_type_is_loosened_by_declare_and_tightened_by_its_preflight);
     };
     (@each $new:expr, $block_on:path; $($name:ident),* $(,)?) => {
         $(
@@ -2564,4 +2565,131 @@ pub async fn a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_rec
     let report = store.purge_source(&"crm".into()).await.unwrap();
     assert_eq!(report.retired, 1, "{report:?}");
     assert!(!live("p4").await && live("p5").await && live("p7").await);
+}
+
+/// A value type is loosened by `declare`; a tightening is refused there,
+/// counted by its preflight over every stored value, refused while any
+/// would not fit, and otherwise put in force as its next version
+/// (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
+pub async fn a_value_type_is_loosened_by_declare_and_tightened_by_its_preflight(
+    store: Arc<dyn LakeStore>,
+) {
+    let c = store.catalog(WriteContext::default());
+    let cast = Cast::of(store.lake());
+    let own = &cast.owner;
+    let decl = |v: Value| serde_json::from_value::<Declaration>(v).unwrap();
+    let vt = |one_of: Value| {
+        serde_json::from_value::<lakelands_api::ontology::ValueTypeDecl>(
+            json!({"name": "status_code", "kind": "text", "one_of": one_of}),
+        )
+        .unwrap()
+    };
+    c.declare(
+        own,
+        decl(
+            json!({"declare": "value_type", "name": "status_code", "kind": "text",
+                    "one_of": ["open", "late", "void"]}),
+        ),
+    )
+    .await
+    .unwrap();
+    c.declare(
+        own,
+        decl(json!({"declare": "type", "name": "bill",
+                    "fields": [{"name": "status", "type": {"kind": "text", "value_type": "status_code"}}]})),
+    )
+    .await
+    .unwrap();
+    for (k, s) in [("b1", "late"), ("b2", "open")] {
+        c.upsert(
+            own,
+            &ty("bill"),
+            &key(k),
+            patch(&[("status", json!(s))]),
+            WriteOpts::default(),
+        )
+        .await
+        .unwrap();
+    }
+    // A loosening is declared.
+    c.declare(
+        own,
+        decl(
+            json!({"declare": "value_type", "name": "status_code", "kind": "text",
+                    "one_of": ["open", "late", "void", "held"]}),
+        ),
+    )
+    .await
+    .unwrap();
+    // A tightening is not.
+    let head = store.head().await.unwrap();
+    let refused = c
+        .declare(
+            own,
+            decl(
+                json!({"declare": "value_type", "name": "status_code", "kind": "text",
+                        "one_of": ["open", "void"]}),
+            ),
+        )
+        .await;
+    assert!(
+        matches!(&refused, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
+            if message.contains("migrate")),
+        "{refused:?}"
+    );
+    assert_eq!(store.head().await.unwrap(), head);
+    // Its preflight counts `b1`, and the apply is refused while it misfits.
+    let report = c
+        .migrate_value_type(own, vt(json!(["open", "void"])))
+        .await
+        .unwrap()
+        .data;
+    assert_eq!(
+        (report.records_scanned, report.misfits, report.fits),
+        (2, 1, false),
+        "{report:?}"
+    );
+    assert_eq!(report.first[0].key, key("b1"));
+    let refused = c
+        .migrate_value_type_apply(own, vt(json!(["open", "void"])), &report.report_id)
+        .await;
+    assert!(
+        matches!(
+            &refused,
+            Err(Error::Refused {
+                reason: Refusal::Invalid { .. },
+                ..
+            })
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(store.head().await.unwrap(), head);
+    // Without `held`, which no bill holds, every value fits.
+    let to = vt(json!(["open", "late", "void"]));
+    let report = c.migrate_value_type(own, to.clone()).await.unwrap().data;
+    assert!(report.fits, "{report:?}");
+    let applied = c
+        .migrate_value_type_apply(own, to, &report.report_id)
+        .await
+        .unwrap();
+    assert_eq!(applied.position(), store.head().await.unwrap());
+    let written = c
+        .upsert(
+            own,
+            &ty("bill"),
+            &key("b3"),
+            patch(&[("status", json!("held"))]),
+            WriteOpts::default(),
+        )
+        .await;
+    assert!(
+        matches!(
+            &written,
+            Err(Error::Refused {
+                reason: Refusal::Constraint { .. },
+                ..
+            })
+        ),
+        "{written:?}"
+    );
 }

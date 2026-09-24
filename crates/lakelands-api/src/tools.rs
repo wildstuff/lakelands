@@ -1021,10 +1021,11 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
         });
         out.push(ToolSpec {
             name: MIGRATE.into(),
-            description: "Change a type's shape. Without `report_id` it only reports what would convert; with the id of that report it applies a lossless migration.".into(),
+            description: "Change a type's shape (`to`) or tighten a value type (`value_type`), one of the two. Without `report_id` it only reports what would convert or no longer fit; with the id of that report it applies the migration.".into(),
             input_schema: obj(
                 props([
                     ("to", json!({"type": "object"})),
+                    ("value_type", json!({"type": "object"})),
                     (
                         "renames",
                         json!({"type": "array", "items": {
@@ -1033,7 +1034,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                     ),
                     ("report_id", json!({"type": "string"})),
                 ]),
-                &["to"],
+                &[],
             ),
             output_schema: json!({"type": "object"}),
             door: Door::Migrate,

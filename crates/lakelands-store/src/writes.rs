@@ -38,12 +38,14 @@ use std::collections::BTreeMap;
 
 use lakelands_api::engine::{ProjectionView, Scan};
 use lakelands_api::event::{Digest, Event, EventBody, Procedure};
-use lakelands_api::ontology::{Authority, RelationDecl, Risk, TypeDecl, VerbDecl, VerbEffect};
+use lakelands_api::ontology::{
+    Authority, RelationDecl, Risk, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
+};
 use lakelands_api::principal::{Grants, WriteContext};
 use lakelands_api::record::{Origin, StoredRecord};
 use lakelands_api::write::{
-    Declaration, FieldConversion, Migration, MigrationReport, Outcome, ProposalState,
-    ProposedWrite, WriteOpts,
+    Declaration, FieldConversion, Migration, MigrationReport, Misfit, Outcome, ProposalState,
+    ProposedWrite, ValueTypeReport, ValueTypeUse, WriteOpts,
 };
 use lakelands_api::{
     Error, FieldName, IdempotencyKey, Missing, Patch, Position, Principal, ProposalId, RecordKey,
@@ -2002,6 +2004,166 @@ impl Call<'_> {
         drafts.insert(0, d);
         drop(view);
         let events = self.lake.append(&mut w, drafts)?;
+        Ok(Outcome::Applied {
+            position: events[0].position,
+            version: None,
+            output: None,
+        })
+    }
+}
+
+impl Call<'_> {
+    /// The preflight of a value type's new declaration: every value stored
+    /// under it, in every type and field that uses it, retired and
+    /// restricted records included, checked as a write would check it.
+    pub fn preflight_value_type(
+        &self,
+        w: &Writer,
+        view: &dyn ProjectionView,
+        to: &ValueTypeDecl,
+    ) -> Result<ValueTypeReport> {
+        if !self.who.grants.schema {
+            return Err(not_granted());
+        }
+        let current = w
+            .ontology
+            .value_types
+            .get(to.name.as_str())
+            .ok_or_else(|| invalid(format!("`{}` is not a declared value type", to.name)))?;
+        match declare::value_type_change(&current.decl, to) {
+            declare::ValueTypeChange::Same => {
+                return Err(invalid(format!(
+                    "value type `{}` would accept exactly what it does; there is nothing to \
+                     migrate",
+                    to.name
+                )));
+            }
+            declare::ValueTypeChange::Reshaping => {
+                return Err(invalid(format!(
+                    "value type `{}` would change its `kind` or `scale`, which rewrites stored \
+                     values; that is not a value-type migration: migrate the fields that use it",
+                    to.name
+                )));
+            }
+            _ => {}
+        }
+        // The new declaration is checked as a declaration of its own; the
+        // one in force would refuse it as a tightening.
+        let mut probe = w.ontology.clone();
+        probe.value_types.remove(to.name.as_str());
+        declare::check_declaration(&probe, &Declaration::ValueType(to.clone()), false)?;
+        probe.put(
+            Declaration::ValueType(to.clone()),
+            current.version + 1,
+            None,
+        );
+        let all = Scan {
+            limit: u32::MAX,
+            retired: true,
+            restricted: true,
+            ..Default::default()
+        };
+        let mut report = ValueTypeReport {
+            value_type: to.name.clone(),
+            from_version: current.version,
+            records_scanned: 0,
+            fields: Vec::new(),
+            misfits: 0,
+            first: Vec::new(),
+            fits: true,
+            report_id: String::new(),
+        };
+        for (name, entry) in &probe.types {
+            let decl = &entry.decl;
+            let uses: Vec<&lakelands_api::ontology::FieldDecl> = decl
+                .fields
+                .iter()
+                .filter(|f| f.ty.value_type.as_ref() == Some(&to.name))
+                .collect();
+            if uses.is_empty() || decl.view.is_some() {
+                continue;
+            }
+            let records = view.scan(name, &all)?;
+            report.records_scanned += records.len() as u64;
+            for f in uses {
+                let mut used = ValueTypeUse {
+                    ty: name.clone(),
+                    field: f.name.clone(),
+                    values_scanned: 0,
+                    misfits: 0,
+                };
+                for r in &records {
+                    let Some(v) = r.fields.get(&f.name).filter(|v| !v.is_null()) else {
+                        continue;
+                    };
+                    used.values_scanned += 1;
+                    let patch: Patch = [(f.name.clone(), v.clone())].into();
+                    if check_values(&probe, decl, &patch, &decl.fields).is_err() {
+                        used.misfits += 1;
+                        if report.first.len() < 10 {
+                            report.first.push(Misfit {
+                                ty: name.clone(),
+                                key: r.key.clone(),
+                                field: f.name.clone(),
+                            });
+                        }
+                    }
+                }
+                report.misfits += used.misfits;
+                report.fields.push(used);
+            }
+        }
+        report.fits = report.misfits == 0;
+        // Named by what it says and where the lake stood: an apply after
+        // the lake moved is refused.
+        let head = view.position().map_or(0, |p| p.0);
+        report.report_id = lakelands_core::canonical::sha256_hex(&serde_json::json!({
+            "report": serde_json::to_value(&report).expect("a report serialises"),
+            "to": serde_json::to_value(to).expect("a declaration serialises"),
+            "head": head,
+        }));
+        Ok(report)
+    }
+
+    /// Put a tightened value type in force against the report the caller
+    /// was shown: one `declared` at the next version, no record changed.
+    pub fn migrate_value_type_apply(&self, to: ValueTypeDecl, report_id: &str) -> Result<Outcome> {
+        let mut w = self.lake.writer();
+        let view = self.lake.engine.view(None)?;
+        let report = self.preflight_value_type(&w, view.as_ref(), &to)?;
+        if report.report_id != report_id {
+            return Err(invalid(
+                "the lake moved since that preflight report; run the preflight again",
+            ));
+        }
+        if !report.fits {
+            let first: Vec<String> = report
+                .first
+                .iter()
+                .map(|m| format!("`{}` `{}`.`{}`", m.ty, m.key, m.field))
+                .collect();
+            return Err(invalid(format!(
+                "value type `{}` is not tightened: {} stored value(s) would not fit it; change \
+                 them first. First: {}",
+                to.name,
+                report.misfits,
+                first.join(", ")
+            )));
+        }
+        let declaration = Declaration::ValueType(to);
+        let version = w.ontology.next_version(&declaration);
+        let now = self.lake.clock(&mut w);
+        let d = self.draft(
+            now,
+            Origin::Authored,
+            EventBody::Declared {
+                declaration,
+                schema_hash: None,
+                version,
+            },
+        );
+        drop(view);
+        let events = self.lake.append(&mut w, vec![d])?;
         Ok(Outcome::Applied {
             position: events[0].position,
             version: None,

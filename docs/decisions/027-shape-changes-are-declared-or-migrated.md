@@ -34,6 +34,26 @@ the value of a key field — so that a record's key fields no longer make
 its key — reports that record not convertible. Re-keying records is a
 later door, not a side effect of a migration.
 
+## Extended: a value type is loosened by declaration and tightened by a preflight
+
+A value type that accepts everything it did (`one_of` gains values or is
+removed, a `constraint` or `format` is removed) is declared: no stored
+value can stop fitting it. One that may accept less goes through its own
+preflight: every value stored under it, in every field of every type that
+uses it, history included, is checked against the new declaration as a
+write would check it. The change is refused while any value would not
+fit, and applied only against the report it was shown. Since a tightening
+every stored value fits reshapes nothing, it enters as the ordinary
+`declared` event at the next version, and no record is rewritten. A change
+of a value type's `kind` or `scale` rewrites stored values (a decimal is
+kept at its scale), so it is not made this way; the fields that use it
+are migrated one by one.
+
+The preflight looks at stored values, not at the conditions that mention
+them. A trigger's `when`, an aging rule's `from` or `to`, or an object
+set's `where` that compares with a value the type no longer admits is not
+checked; it simply never holds afterwards.
+
 ## Why
 
 The log is the truth (001), so a change of shape must never quietly
