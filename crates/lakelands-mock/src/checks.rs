@@ -12,6 +12,10 @@
 //! check, given a function that makes a fresh lake and one that blocks
 //! on a future. No check assumes an absolute position: a lake may log
 //! more than the mock before its first write.
+//!
+//! A refusal's sentence is not part of the contract; its kind and field
+//! are, and the names it must mention. So a check asserts a refusal's
+//! kind, its field and the names in it, never the words around them.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -79,7 +83,10 @@ macro_rules! door_checks {
             per_field_meta_names_the_writer_and_the_position,
             apply_declares_a_set_in_one_append_with_forward_references,
             apply_refuses_the_whole_set_naming_every_problem,
-            declare_refuses_a_reference_to_an_undeclared_type);
+            declare_refuses_a_reference_to_an_undeclared_type,
+            a_relation_removed_retargeted_or_narrowed_or_a_type_turned_view_is_a_migration,
+            a_reference_key_field_filled_from_the_key_must_name_a_live_record,
+            key_components_and_source_ids_use_each_values_one_form);
     };
     (@each $new:expr, $block_on:path; $($name:ident),* $(,)?) => {
         $(
@@ -1458,8 +1465,10 @@ pub async fn apply_refuses_the_whole_set_naming_every_problem(store: Arc<dyn Lak
             panic!("a set with two problems is refused as invalid, naming both; got {other:?}")
         }
     };
-    assert!(message.contains("verb haunt"), "{message}");
-    assert!(message.contains("type partner"), "{message}");
+    // Both problems are named: the verb on an undeclared type, and the
+    // type declared twice; how the refusal words them is not the contract.
+    assert!(message.contains("haunt"), "{message}");
+    assert!(message.contains("partner"), "{message}");
     let d = catalog
         .describe(&cast.owner, ReadAt::default())
         .await
@@ -1503,4 +1512,217 @@ pub async fn declare_refuses_a_reference_to_an_undeclared_type(store: Arc<dyn La
         .unwrap();
     catalog.declare(&cast.owner, partner).await.unwrap();
     catalog.declare(&cast.owner, invoice).await.unwrap();
+}
+
+/// A revision that would reshape stored records is a migration, for
+/// relations and views as for fields (027): removing or retargeting a
+/// relation, narrowing its cardinality, or turning a stored type into a
+/// view is refused by `declare`; widening a cardinality is not.
+pub async fn a_relation_removed_retargeted_or_narrowed_or_a_type_turned_view_is_a_migration(
+    store: Arc<dyn LakeStore>,
+) {
+    use lakelands_api::ontology::Cardinality;
+    let f = setup(store).await;
+    let invoice = fixture()
+        .into_iter()
+        .find_map(|d| match d {
+            Declaration::Type(t) if t.name.as_str() == INVOICE => Some(t),
+            _ => None,
+        })
+        .unwrap();
+    let refused_whole = |decl: TypeDecl, what: &'static str| {
+        let (cat, owner, store) = (f.catalog.clone(), f.cast.owner.clone(), f.store.clone());
+        async move {
+            let before = store.head().await.unwrap();
+            let e = cat.declare(&owner, Declaration::Type(decl)).await;
+            assert!(
+                matches!(
+                    e,
+                    Err(Error::Refused {
+                        reason: Refusal::Invalid { .. },
+                        ..
+                    })
+                ),
+                "{what} must be refused as a migration; got {e:?}"
+            );
+            assert_eq!(
+                store.head().await.unwrap(),
+                before,
+                "{what} appended something"
+            );
+        }
+    };
+    let mut removed = invoice.clone();
+    removed.relations.clear();
+    refused_whole(removed, "removing the relation `billed_by`").await;
+    let mut retargeted = invoice.clone();
+    retargeted.relations[0].target = INVOICE.into();
+    refused_whole(retargeted, "retargeting `billed_by` to `invoice`").await;
+    let mut narrowed = invoice.clone();
+    narrowed.relations[0].cardinality = Cardinality::OneToOne;
+    refused_whole(narrowed, "narrowing `billed_by` to one-to-one").await;
+    let mut widened = invoice.clone();
+    widened.relations[0].cardinality = Cardinality::ManyToMany;
+    f.catalog
+        .declare(&f.cast.owner, Declaration::Type(widened))
+        .await
+        .expect("widening `billed_by` to many-to-many is a declaration");
+
+    // A stored type becomes a view with the same fields: still a migration.
+    let tally = |view: bool| -> TypeDecl {
+        serde_json::from_value(json!({
+            "name": "tally",
+            "fields": [{"name": "n", "type": {"kind": "number"}}],
+            "view": if view {
+                json!({"source": INVOICE, "measures": [{"name": "n", "expr": "count()"}]})
+            } else {
+                Value::Null
+            },
+        }))
+        .unwrap()
+    };
+    f.catalog
+        .declare(&f.cast.owner, Declaration::Type(tally(false)))
+        .await
+        .unwrap();
+    refused_whole(tally(true), "turning the stored type `tally` into a view").await;
+}
+
+/// A key field is written like any other: when a create reads it from the
+/// key and it is a reference, it must name a live record (the reference
+/// rule of lakelands#52 and the key rule of the log format §2.3).
+pub async fn a_reference_key_field_filled_from_the_key_must_name_a_live_record(
+    store: Arc<dyn LakeStore>,
+) {
+    let f = setup(store).await;
+    let assignment: TypeDecl = serde_json::from_value(json!({
+        "name": "assignment",
+        "key": ["partner"],
+        "fields": [
+            {"name": "partner", "type": {"kind": "reference", "target": PARTNER}},
+            {"name": "note", "type": {"kind": "text"}}
+        ]
+    }))
+    .unwrap();
+    f.catalog
+        .declare(&f.cast.owner, Declaration::Type(assignment))
+        .await
+        .unwrap();
+    let assignment = ty("assignment");
+    let before = f.store.head().await.unwrap();
+    let e = f
+        .catalog
+        .upsert(
+            &f.cast.owner,
+            &assignment,
+            &key("NOBODY"),
+            patch(&[("note", json!("x"))]),
+            WriteOpts::default(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&e, Error::Refused { field: Some(f), .. } if f.as_str() == "partner"),
+        "a key naming no partner must be refused on `partner`; got {e:?}"
+    );
+    assert_eq!(f.store.head().await.unwrap(), before);
+    f.catalog
+        .upsert(
+            &f.cast.owner,
+            &ty(PARTNER),
+            &key("ACME"),
+            patch(&[("name", json!("Acme"))]),
+            WriteOpts::default(),
+        )
+        .await
+        .unwrap();
+    f.catalog
+        .upsert(
+            &f.cast.owner,
+            &assignment,
+            &key("ACME"),
+            patch(&[("note", json!("x"))]),
+            WriteOpts::default(),
+        )
+        .await
+        .unwrap();
+}
+
+/// Values are kept, keyed and hashed in their one form (log format §1.2,
+/// §1.3, §2.3): a number written `2.0` is `2`, a date `2026-09-24` is
+/// `2026-09-24T00:00:00.000000Z`. So a key agrees with key fields written
+/// in another spelling, and a source record delivered again in another
+/// spelling of the same values appends nothing.
+pub async fn key_components_and_source_ids_use_each_values_one_form(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let reading: TypeDecl = serde_json::from_value(json!({
+        "name": "reading",
+        "key": ["n", "d"],
+        "fields": [
+            {"name": "n", "type": {"kind": "number"}, "authority": "shared"},
+            {"name": "d", "type": {"kind": "date_time"}, "authority": "shared"},
+            {"name": "level", "type": {"kind": "number"}, "authority": "shared"}
+        ]
+    }))
+    .unwrap();
+    f.catalog
+        .declare(&f.cast.owner, Declaration::Type(reading))
+        .await
+        .unwrap();
+    let reading = ty("reading");
+    let canonical_key = "2:2026-09-24T00%3A00%3A00.000000Z";
+    f.catalog
+        .upsert(
+            &f.cast.owner,
+            &reading,
+            &key(canonical_key),
+            patch(&[
+                ("n", json!(2.0)),
+                ("d", json!("2026-09-24")),
+                ("level", json!(1)),
+            ]),
+            WriteOpts::default(),
+        )
+        .await
+        .expect("a key made from the key fields' one form agrees with them");
+    let r = f
+        .catalog
+        .get(&f.cast.owner, &reading, get(canonical_key))
+        .await
+        .unwrap()
+        .data;
+    assert_eq!(r.fields.get(&FieldName::from("n")), Some(&json!(2)));
+    assert_eq!(
+        r.fields.get(&FieldName::from("d")),
+        Some(&json!("2026-09-24T00:00:00.000000Z"))
+    );
+
+    let deliver = |level: Value| {
+        let (cat, owner) = (f.catalog.clone(), f.cast.owner.clone());
+        async move {
+            let record = SourceRecord {
+                ty: ty("reading"),
+                key: key(canonical_key),
+                fields: patch(&[("level", level)]),
+                seen_at: None,
+            };
+            let mut acks = cat
+                .ingest(&owner, &"gauge".into(), stream::of(vec![record]))
+                .await
+                .unwrap();
+            stream::collect(&mut acks)
+                .await
+                .into_iter()
+                .map(|a| a.unwrap())
+                .fold((0, 0), |(r, d), c| (r + c.records, d + c.duplicates))
+        }
+    };
+    assert_eq!(deliver(json!(5)).await, (1, 0), "a new level is written");
+    let head = f.store.head().await.unwrap();
+    assert_eq!(
+        deliver(json!(5.0)).await,
+        (0, 1),
+        "5.0 is 5 in its one form, so the redelivery changes nothing"
+    );
+    assert_eq!(f.store.head().await.unwrap(), head);
 }

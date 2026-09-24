@@ -102,3 +102,40 @@ pub(crate) fn schema_hash(t: &TypeDecl) -> String {
     });
     hex(shape.to_string().as_bytes(), 1)
 }
+
+/// A number in its one JSON form (`docs/log-format.md` §1.2): an integral
+/// value as an integer, `2` and never `2.0`.
+fn canonical_number(v: &Value) -> Value {
+    match v.as_f64() {
+        Some(f) if v.is_f64() && f.fract() == 0.0 && f.abs() < 9_007_199_254_740_992.0 => {
+            Value::from(f as i64)
+        }
+        _ => v.clone(),
+    }
+}
+
+/// A checked value in its one form: numbers as §1.2 writes them, inside
+/// vectors and JSON values too, and a date-time in the one form of §1.3.
+/// Every value the mock stores, keys and hashes is in this form, as the
+/// store's are.
+pub(crate) fn canonical(ty: &FieldType, v: &Value) -> Value {
+    fn numbers(v: &Value) -> Value {
+        match v {
+            Value::Number(_) => canonical_number(v),
+            Value::Array(a) => Value::Array(a.iter().map(numbers).collect()),
+            Value::Object(m) => {
+                Value::Object(m.iter().map(|(k, x)| (k.clone(), numbers(x))).collect())
+            }
+            other => other.clone(),
+        }
+    }
+    match (ty.kind, v) {
+        (StorageKind::DateTime, Value::String(s)) => Timestamp::parse(s)
+            .map(|t| Value::String(t.to_string()))
+            .unwrap_or_else(|_| v.clone()),
+        (StorageKind::Number | StorageKind::Vector | StorageKind::Json | StorageKind::Geo, _) => {
+            numbers(v)
+        }
+        _ => v.clone(),
+    }
+}
