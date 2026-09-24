@@ -86,7 +86,10 @@ impl Http {
                     call,
                     format!("{} did not answer within {}s", target.shown(), t.as_secs()),
                 ),
-                Failure::Failed(why) | Failure::Tls(why) => failed(call, why),
+                Failure::Failed(why) | Failure::Body(why) | Failure::Tls(why) => failed(call, why),
+                Failure::Status(status) => {
+                    failed(call, Failure::status_sentence(status, "the http backing"))
+                }
             })?;
         output(call, &reply)
     }

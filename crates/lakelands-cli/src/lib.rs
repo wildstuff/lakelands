@@ -270,7 +270,7 @@ async fn dispatch(
             );
         }
         "lake" => {
-            let root = root::Root::open(&root_dir)?;
+            let root = root::Root::open_to_add_a_lake(&root_dir)?;
             let (_, new) = sub.subcommand().expect("a lake subcommand is required");
             let id = text(new, "id").unwrap_or_default();
             let engine = text(new, "engine").unwrap_or_default();
@@ -364,6 +364,7 @@ async fn serve(
         )
     };
     let Some(config) = root.config.server.clone() else {
+        root.deliver(std::slice::from_ref(&store))?;
         return lakelands_server::serve_stdio(store, who)
             .await
             .map_err(failed);
@@ -376,6 +377,8 @@ async fn serve(
             open(location, OpenMode::Create, root.seams()).await?,
         );
     }
+    let held: Vec<Arc<dyn LakeStore>> = lakes.values().cloned().collect();
+    root.deliver(&held)?;
     let lookup = move |lake: &LakeId| -> Result<Arc<dyn LakeStore>> {
         lakes.get(lake).cloned().ok_or_else(|| Error::Unavailable {
             message: format!("this server serves no lake `{lake}`"),

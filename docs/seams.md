@@ -666,6 +666,91 @@ that relay elsewhere (a remote client, a bridge onto a bus) and need to
 know what they may release. The dedup key of a change is its lake and its
 position.
 
+**The webhook deliverer** is Lakelands' own consumer, in
+`lakelands-backings`. `lakelands serve` runs one per endpoint of the
+`deliver` section of the root's `lakelands.json` and per lake that
+endpoint names, and only for the lakes the process holds as their
+writer.
+
+```json
+"deliver": {
+  "endpoints": [
+    { "name": "billing", "url": "https://hooks.example.com/lakelands",
+      "lakes": ["finance"], "kinds": ["trigger_fired"], "triggers": ["overdue"],
+      "secret_file": "secrets/billing.hmac", "start": "head" }
+  ],
+  "poll_millis": 1000, "batch": 100,
+  "retry_first_secs": 1, "retry_max_secs": 300,
+  "timeout_secs": 10, "max_reply_bytes": 65536
+}
+```
+
+- **What it sends.** Only `trigger_fired` and `object_set_changed`
+  events, by default both. `kinds`, `triggers` and `sets` narrow them;
+  any other kind is refused when the configuration loads. Both carry
+  keys only, so no field value leaves the lake this way: a receiver
+  reads the record through a door, under its own grants.
+- **The request.** One `POST` per event, in log order. The body is the
+  event's canonical bytes, as a line of the feed holds them. The
+  headers:
+  - `Lakelands-Lake` and `Lakelands-Position` (together the dedup key),
+    `Lakelands-Event` (the event id) and `Lakelands-Attempt` (from 1);
+  - with `secret_file`, `Lakelands-Signature: sha256=<hex>`, the
+    HMAC-SHA256 of the body's bytes.
+
+  A receiver verifies the signature over the raw body bytes before it
+  parses them. The body carries the lake, the position and the id, so a
+  replayed request is a duplicate the receiver already recognises, and
+  no timestamp is signed.
+- **The connection** is the one the `http` backing and the embedding
+  client use: no proxy, no redirect followed, `https` trusting `ca_file`
+  or the system bundle, a timeout over each whole request, a reply
+  limit.
+- **Delivery is at least once and in order.** The position is written
+  after each event the deliverer is done with, so a crash between a
+  request and that write sends the event again. Each endpoint has its
+  own position and pace.
+- **Answers.**
+  - `2xx` is delivered. The status is the verdict: the reply's body is
+    read up to `max_reply_bytes` and dropped, and a body that cannot be
+    read changes nothing. Any other reply's body is not read at all.
+  - A timeout, a failed connection or TLS, `408`, `429` or `5xx` is
+    tried again after a wait that starts at `retry_first_secs` and
+    doubles up to `retry_max_secs`, without end. So are `401`, `403` and
+    `404`: they say the endpoint is misconfigured (a wrong secret, a
+    wrong path), not the event refused, and once the operator fixes it
+    every event gets through.
+  - Any other status, `3xx` included, is the receiver refusing this
+    event. It is recorded, said in one line on standard error, and the
+    deliverer moves on.
+- **Its files** are the host's (004, extended), under
+  `deliveries/<lake>/` in the root:
+  - `<endpoint>.json` holds the position to read from next,
+    `{"next": <position>}`. Without it, an endpoint begins after the
+    lake's head (`start: head`, the default) or at its first event
+    (`start: genesis`). The operator rewinds by editing it while the
+    server is stopped.
+  - `<endpoint>.lock` is held while the deliverer runs, so a second
+    process refuses to start rather than send everything twice.
+  - `<endpoint>.ndjson` is the journal, one line per outcome:
+    `position`, `id`, `attempt`, `at` (the host's clock), and `outcome`,
+    which is `delivered`, `retrying` (with `why` and `retry_in_secs`) or
+    `refused` (with `status`). It is only ever appended to, and opened
+    for appending, so the operator rotates it by renaming.
+- **What it says.** A message names the endpoint by its `name` and by
+  host, port and path, never the URL as written, the secret or a body.
+  A URL carrying user information is refused when the configuration
+  loads.
+- **Paths.** `secret_file` and `ca_file` are relative to the root. The
+  secret is read when `serve` starts; a missing or empty file stops it.
+  The whitespace around the file's contents is dropped before signing,
+  so a receiver that reads the same file trims it too.
+- **Checked when the root opens:**
+  - every lake an endpoint names is one the root holds (only `lakelands
+    lake new` may run before the lake it creates exists);
+  - `retry_first_secs` is not longer than `retry_max_secs`;
+  - no number is zero.
+
 ## `SystemVocabulary`
 
 `types()` lists a host's own `sys.` types as type declarations;

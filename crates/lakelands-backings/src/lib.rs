@@ -1,5 +1,6 @@
 //! What reaches outside the lake on the operator's say-so: the function
-//! backings [`http`] and [`exec`], and the embedding client [`embed`].
+//! backings [`http`] and [`exec`], the embedding client [`embed`], and the
+//! webhook deliverer [`deliver`].
 //!
 //! A function a lake declares with the backing `http` or `exec` computes
 //! its fields through one of these, called by the store after the write
@@ -9,7 +10,8 @@
 //! an `http` function names a URL whose host is on the operator's list,
 //! and an `exec` function names a command the operator configured, never
 //! a program. The embedding client reaches the one endpoint the operator
-//! names, and no declaration can name another. All are configured here,
+//! names, and no declaration can name another. The deliverer posts to
+//! the endpoints the operator lists, and to no others. All are configured here,
 //! from the server configuration a host reads; nothing is read from the
 //! environment (`docs/decisions/005-no-environment-reads.md`).
 //!
@@ -28,8 +30,10 @@ use lakelands_api::{Error, Refusal};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+pub use deliver::{DeliverConfig, Deliverer, EndpointConfig, Start};
 pub use embed::{Embed, EmbedConfig};
 
+pub mod deliver;
 pub mod embed;
 pub mod exec;
 pub mod http;

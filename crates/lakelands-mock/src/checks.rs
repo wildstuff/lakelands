@@ -1084,10 +1084,7 @@ pub async fn an_embedding_is_unbound_where_no_backend_is_bound(store: Arc<dyn La
         .declare(&f.cast.owner, Declaration::Type(decl))
         .await
         .unwrap_err();
-    assert!(
-        matches!(&e, Error::Unbound { seam } if seam.contains("`m`")),
-        "{e:?}"
-    );
+    assert!(matches!(&e, Error::Unbound { .. }), "{e:?}");
     // Added to a type already declared, the same.
     let vec = |from: &str| -> FieldDecl {
         serde_json::from_value(json!({

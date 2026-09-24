@@ -58,3 +58,19 @@ that cannot be evaluated does not fire. The `trigger_fired` event is
 appended in the same append as the write, naming it as its cause, and an
 object set's `object_set_changed` is appended the same way, only when a
 record's membership actually changes.
+
+## Extended: a consumer's receipts are the host's
+
+What a consumer has done with the feed is consumer state, and it stays
+on the consumer's side, never in the lake. That covers what it
+delivered, what it tried again and what a receiver refused. Lakelands'
+own consumer, the webhook deliverer that `lakelands serve` runs, keeps
+it on the host: one append-only journal per endpoint and lake, beside
+the file holding the position it reads from (`docs/seams.md`
+§`ChangeFeed`).
+
+**Why.** A receipt written into the lake would be a write, and the feed
+would carry every write back to the consumer that made it. Each
+delivery would then make more of the log that consumers read. It would
+also make one consumer's progress part of every other reader's lake,
+which is the coupling this record keeps out.

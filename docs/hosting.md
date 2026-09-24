@@ -95,7 +95,12 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   position to poll from next. It acknowledges on its own side. The host keeps the
   position it has read up to; the store keeps no consumer state. A relay onto a message bus is the
   host's code, never Lakelands'; the dedup key of a change is
-  `{lake}:{position}`. See `docs/decisions/004-the-change-feed-is-the-log.md`.
+  `{lake}:{position}`. For webhooks, `lakelands serve` has a consumer of
+  its own: the `deliver` section of the root's `lakelands.json` names
+  endpoints, and the process that writes a lake posts its fired triggers
+  and object-set changes to them, in order, signed and retried, keeping
+  its position and journal under `deliveries/` in the root (`docs/seams.md`
+  §`ChangeFeed`). See `docs/decisions/004-the-change-feed-is-the-log.md`.
 - **`SystemVocabulary`.** The host registers its own `sys.*` types and
   says which lakes may hold them; each time a writer opens a lake, the
   store declares the allowed types it does not hold yet.
