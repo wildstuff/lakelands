@@ -317,11 +317,23 @@ So the separators are unambiguous.
   `retire` (the `record_*` event takes the id), `call` (the
   `verb_called` event takes it) and `propose` (the `write_proposed`
   event takes it).
+- **An aging transition** (`docs/decisions/036-aging-runs-by-date-once.md`):
+  `SHA-256("lakelands:aging:v1" ‖ 0x00 ‖ rule ‖ 0x00 ‖ type ‖ 0x00 ‖ key
+  ‖ 0x00 ‖ date)`, where `rule` is the aging rule's name, `type` and
+  `key` the record it moves, and `date` the day aged, in the one form of
+  §1.3 at midnight. Such an event is a `record_upserted` whose
+  `procedure.name` is `aging:<rule>`, so a reader recognises it. The
+  store appends nothing for a transition whose id is already in the
+  lake: aging a date twice writes it once.
 - **Every other event**: any id not used before in the lake. Lakelands'
   store derives it as `SHA-256("lakelands:event:v1" ‖ 0x00 ‖ lake ‖ 0x00
   ‖ position)`, the position in decimal digits: a position is used once
   in a lake, so the id is unique without a source of randomness. A
   reader never recomputes these ids; it only requires them unique.
+
+The aging id is a new derivation for an event kind version 1 already
+has; it adds no kind, member or encoding, so the format version stays 1
+(§6). A reader that does not recompute it still reads the event.
 
 The events a store appends as consequences of one write (a verb's
 writes, a fired trigger, an accepted proposal's write) take positional

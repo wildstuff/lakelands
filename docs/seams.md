@@ -463,6 +463,54 @@ expression reads the `value` of the `sys.setting` record with key
 `vat_rate` as of the position being read or folded, so a replay reads the
 setting as it then stood.
 
+A `sys.aging_rule` record is one **aging rule**: on a date, move a field
+of every record of a type from one value to another when a condition
+holds (`docs/decisions/036-aging-runs-by-date-once.md`). The store declares
+the type when it creates a lake, beside `sys.setting`. Its key is
+`name`, and its fields are:
+
+| Field | Kind | Holds |
+|---|---|---|
+| `name` | text, required | the rule's name, an identifier |
+| `on` | text, required | the type it ages |
+| `field` | text, required | the field it moves; `authored` or `shared`, never derived |
+| `from` | json, required | the value that ages |
+| `to` | json, required | the value it becomes |
+| `when` | text, required | a condition in the one grammar, over the record's fields |
+| `description` | text | for people |
+
+A rule is written like any record, through `upsert` under the writer's
+grants, and checked when it is written: `on` names a type and `field`
+one of its fields of the authority above, `from` and `to` are values of
+that field's type, and `when` parses and uses neither `changed` nor
+`previous`. A rule that fails a check is refused as invalid. A bundle
+declares rules in its `aging_rules/` lane, one per file, with the same
+keys; `lakelands apply` writes each after the bundle's declarations,
+skipping a rule whose stored fields already equal the file's.
+
+`LakeStore::age(today)` runs every live rule once for `today`, a date,
+in rule-name order, and answers what it did: the date, the rules run,
+the transitions written, the guards that failed, and the position after
+the last append. For each rule it reads the live records of `on` at the
+head and moves every record whose `field` equals `from` (as values, by
+their canonical JSON) and for which `when` holds, with `today()` and
+`now()` both meaning `today` at midnight:
+
+- A rule's transitions are one append of `record_upserted` events, each
+  setting `field` to `to`, with `origin: system`, the writer
+  `system:lakelands`, `procedure` `{ "name": "aging:<rule>", "version":
+  <the rule record's version> }`, `context.origin` `scheduled` and no
+  `cause`. Triggers and object sets react to them in the same append,
+  as to any write.
+- Each transition has the id of `docs/log-format.md` §3 for the rule,
+  the record and the date, so a second `age` for the same date appends
+  nothing.
+- A `when` that cannot be evaluated for a record does not move it; it is
+  counted as a failed guard, and the run goes on.
+
+The ticker (lakelands#12) calls `age` once a day. Without it, a host, or
+`lakelands age --today <date>`, calls it.
+
 ## The facade and the doors
 
 Two more traits sit above the seams. They are what callers and hosts
@@ -473,8 +521,8 @@ hold, not what hosts implement:
   `lakelands_api::tools::tools`.
 - `LakeStore`: one open lake, as its host holds it; it hands out a
   `Catalog` bound to a `WriteContext`, the change feed, the limits it was
-  opened with (`limits`), and lake maintenance (`verify`, `rebuild`,
-  `checkpoint`).
+  opened with (`limits`), lake maintenance (`verify`, `rebuild`,
+  `checkpoint`), and `age` (above, under `SystemVocabulary`).
 
 `Catalog::apply` declares a set of declarations as one: validated
 together, so a reference may point forward within the set, and appended
