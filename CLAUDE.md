@@ -62,6 +62,8 @@ violation, show the red run in the PR, then make it green.
 
 - Branch per issue, PR to `develop`, merge-commit only (the ruleset
   enforces it). English everywhere.
+- Parallel agents: one worktree per agent, one branch per issue —
+  the layout and the slot helper are in `docs/development.md`.
 - The core ladder (O0 → O6) is serial: one agent, one branch at a time.
   The door, spec and infra lanes run in parallel after O1 merges, each
   against `lakelands-api` with the in-memory mock.
