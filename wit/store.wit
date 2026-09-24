@@ -1,0 +1,80 @@
+package lakelands:data@0.1.0;
+
+/// One open lake and its data doors: the store facade (`LakeStore`),
+/// the per-type doors, proposals and ingest of the catalog (`Catalog`),
+/// and the change feed (`ChangeFeed`).
+///
+/// A handle is bound as the crate binds it: a `lake-store` is one open
+/// lake, and the `catalog` it hands out writes under one write context.
+/// Every door names the principal it acts for, and the store enforces
+/// that principal's grants (`docs/decisions/006-grants-not-roles.md`).
+/// A host that serves guests it does not trust resolves the principal
+/// itself and does not take a guest's word for its grants.
+interface store {
+    use types.{
+        lake-id, type-name, record-key, verb-name, proposal-id, source-id, position,
+        principal, write-context, limits, verification, error,
+        find, found-reply, get, record-reply, patch, write-opts, outcome,
+        proposed-write, proposal-filter, proposals-reply, source-record, committed,
+        feed-filter, feed-batch,
+    };
+
+    /// The lake `lake`, opened by the host. Which lakes a caller may
+    /// open, and how, is the host's to decide.
+    open: func(lake: lake-id) -> result<lake-store, error>;
+
+    /// One open lake, as its host holds it (`LakeStore`).
+    resource lake-store {
+        lake: func() -> lake-id;
+        /// Whether this handle holds the lake's writer lease.
+        is-writer: func() -> bool;
+        limits: func() -> limits;
+        /// The lake's last position.
+        head: func() -> result<position, error>;
+        /// The doors of this lake, writing under `context`.
+        catalog: func(context: write-context) -> catalog;
+        /// The change feed: the log filtered by kind
+        /// (`docs/decisions/004-the-change-feed-is-the-log.md`).
+        feed: func() -> change-feed;
+        /// Check the hash chain between two positions.
+        verify: func(%from: option<position>, through: option<position>) -> result<verification, error>;
+        /// Delete the projection and fold the log again.
+        rebuild: func() -> result<position, error>;
+        /// Withhold a record from principals without the `restricted`
+        /// grant (a retention hold).
+        restrict: func(%type: type-name, key: record-key, reason: string) -> result<position, error>;
+        unrestrict: func(%type: type-name, key: record-key) -> result<position, error>;
+        /// Seal the active segment and append a checkpoint.
+        checkpoint: func() -> result<position, error>;
+        /// Release the lease and close the lake.
+        close: func() -> result<_, error>;
+    }
+
+    /// The doors of one lake (`Catalog`). The pattern query and search are
+    /// in `query`, the schema doors in `schema`; both take this handle.
+    resource catalog {
+        lake: func() -> lake-id;
+        find: func(who: principal, %type: type-name, find: find) -> result<found-reply, error>;
+        get: func(who: principal, %type: type-name, get: get) -> result<record-reply, error>;
+        upsert: func(who: principal, %type: type-name, key: record-key, patch: patch, opts: write-opts) -> result<outcome, error>;
+        retire: func(who: principal, %type: type-name, key: record-key, opts: write-opts) -> result<outcome, error>;
+        /// Call a declared verb; it runs or is proposed by its declared
+        /// risk (`docs/decisions/013-verbs-run-by-declared-risk.md`).
+        call: func(who: principal, verb: verb-name, key: record-key, payload: patch, opts: write-opts) -> result<outcome, error>;
+        propose: func(who: principal, write: proposed-write, why: string) -> result<outcome, error>;
+        accept: func(who: principal, proposal: proposal-id) -> result<outcome, error>;
+        reject: func(who: principal, proposal: proposal-id, reason: string) -> result<outcome, error>;
+        proposals: func(who: principal, filter: proposal-filter) -> result<proposals-reply, error>;
+        /// Feed the lake the records of one delivery from a source. The
+        /// crate takes a stream; here the delivery is a list, and the
+        /// answer lists every commit window it was written in.
+        ingest: func(who: principal, source: source-id, records: list<source-record>) -> result<list<committed>, error>;
+    }
+
+    /// The change feed (`ChangeFeed`): the consumer keeps its own
+    /// position; `ack` is for feeds that relay elsewhere.
+    resource change-feed {
+        poll: func(%from: position, filter: feed-filter, limit: u32) -> result<feed-batch, error>;
+        ack: func(consumer: string, through: position) -> result<_, error>;
+    }
+}
