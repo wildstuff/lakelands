@@ -1,0 +1,4 @@
+name: invoice_status
+kind: text
+one_of: [open, overdue, paid]
+description: Where an invoice stands; the lake's aging rule moves it from open to overdue.

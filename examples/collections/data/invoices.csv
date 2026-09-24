@@ -1,0 +1,7 @@
+number,partner,issued_on,due_on,net,status,summary,exported_at
+INV-5001,P-300,2026-09-01,2026-09-30,4000.00,open,Freight from Rotterdam,2026-11-30T18:00:00Z
+INV-5002,P-300,2026-09-15,2026-10-15,1200.00,open,Haulage and shipping in October,2026-11-30T18:00:00Z
+INV-5003,P-100,2026-10-01,2026-10-31,6000.00,open,Catering for the harbour opening,2026-11-30T18:00:00Z
+INV-5004,P-100,2026-10-02,2026-11-01,800.00,open,Software licence renewal,2026-11-30T18:00:00Z
+INV-5005,P-200,2026-09-01,2026-10-01,2500.00,paid,Repair of the loading crane,2026-11-30T18:00:00Z
+INV-5006,P-200,2026-11-15,2026-12-15,3000.00,open,Freight insurance and service,2026-11-30T18:00:00Z

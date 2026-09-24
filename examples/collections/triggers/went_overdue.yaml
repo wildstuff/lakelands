@@ -1,0 +1,4 @@
+name: went_overdue
+on: invoice
+when: "changed(status) and status = 'overdue'"
+description: An invoice has just become overdue.

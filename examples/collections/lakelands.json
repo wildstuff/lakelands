@@ -1,0 +1,38 @@
+{
+  "lakelands": 1,
+  "owner": "owner",
+  "principals": [],
+  "backings": {
+    "exec": {
+      "commands": {
+        "band": {
+          "program": "<fake>",
+          "args": [
+            "band"
+          ]
+        }
+      }
+    }
+  },
+  "embed": {
+    "endpoint": "http://127.0.0.1:8701/v1/embeddings",
+    "model": "walk-fake",
+    "dimensions": 4
+  },
+  "deliver": {
+    "endpoints": [
+      {
+        "name": "collector",
+        "url": "http://127.0.0.1:8702/hooks",
+        "lakes": [
+          "collections"
+        ],
+        "kinds": [
+          "trigger_fired"
+        ],
+        "start": "genesis"
+      }
+    ],
+    "poll_millis": 200
+  }
+}

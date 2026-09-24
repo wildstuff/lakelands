@@ -1,0 +1,6 @@
+{
+  "type": "partner",
+  "key": "id",
+  "fields": { "id": "id", "name": "name", "credit_limit": "credit_limit" },
+  "seen_at": "exported_at"
+}

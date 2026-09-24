@@ -1,0 +1,7 @@
+name: band
+description: The invoice's size band, low, mid or high, computed by the program the root names `band`.
+backing: exec
+inputs:
+  gross: money
+config:
+  command: band

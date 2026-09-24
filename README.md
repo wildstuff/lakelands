@@ -122,6 +122,9 @@ walk's page lists every call and the answer it must give.
   it is, one decision per record.
 - [`docs/walks/walk-1.md`](docs/walks/walk-1.md): the first walk, end
   to end, with its expected answers.
+- [`docs/walks/walk-2.md`](docs/walks/walk-2.md): the second walk, over
+  what `0.2.0` adds: a function run by a program, an embedding on
+  write, links with fields, aging by date and the webhook deliverer.
 
 ## What it is not
 
