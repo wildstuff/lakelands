@@ -125,6 +125,21 @@ handle holds and against the token the file records now, so a writer
 that released its lease, or lost its lock without knowing, is refused. The SQLite engine keeps `lease` in the lake's
 directory this way (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`).
 
+**What a SQLite handle holds.** A handle does not hold the log's index.
+Per segment it keeps the segment's first position and how many events it
+committed, where their bytes end, its last event's hash, and every
+256th event's place in the index file (`MARK_EVERY`): its memory grows
+by a few bytes per 256 events, not per event, and a handle opened
+read-only in another process holds the same. **The ceiling:** a read by
+position costs one seek to the mark at or before it, then reading fewer
+than 256 event lines, and the commit lines between them, before the
+first event it answers, then one event line per event, in order, with
+the commit lines between. A page of the store's sequential reads costs
+what it did when the index was held, plus that seek and that skip. The log's files stay as `docs/log-format.md` §4
+describes them; an index line that is short, unreadable or not the
+position expected is refused as a damaged index, never read as another
+event.
+
 **What only PostgreSQL decides.** The PostgreSQL engine
 (`docs/decisions/038-a-lake-in-postgresql.md`) keeps a lake in one schema
 and every statement names it; no connection's `search_path` is set.
@@ -365,7 +380,7 @@ holds it to.
 | edges `Out`, `In`, `Both`, a self-link once, links to a retired record kept | engine: `edges_walk_in_out_and_both`, `edges_to_a_retired_record_are_returned` |
 | edges from link records: `Out` and `In` by `from` and `to`, the link's fields in `Edge.fields`, a removed link gone, an earlier position's links | engine: `edges_over_a_link_relation_come_from_the_live_link_records_at_the_views_position`; doors: the sixteen `links` checks |
 | a rebuild answers every read as before | suite: `a_rebuilt_projection_answers_every_read_as_the_live_one_did` |
-| ingest, the feed, an export and its verification, and a rebuild hold as much memory at four times a lake's size as at its first (lakelands#130); so does each page of a walk of a type through `find` (lakelands#134); a reopen is measured and reported until lakelands#133 | suite: `a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it` |
+| ingest, the feed, an export and its verification, a rebuild (lakelands#130) and a reopen (lakelands#133) hold as much memory at four times a lake's size as at its first; so does each page of a walk of a type through `find` (lakelands#134) | suite: `a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it` |
 | a compact answers every read as before, appends nothing, and writes wait for it; the space it gives back | suite: the four `compact` checks; engine: SQLite `tests/compact.rs`, PostgreSQL `a_compact_vacuums_the_projection_beside_an_open_reader_and_reports_its_size` |
 | `scan` filters, the retired and restricted flags, `valid_at` | suite, through `find` and `get` (paging, restriction, views, decimals) |
 | `mark_applied` / `applied` recognise a redelivery | suite: `the_same_content_ingested_twice_appends_nothing_the_second_time`, `a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_appends_nothing` |

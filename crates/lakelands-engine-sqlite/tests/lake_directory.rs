@@ -361,3 +361,59 @@ fn a_read_only_open_leaves_the_directory_as_it_was() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A handle keeps a mark per 256 events of the index, not the index, and
+/// reads an event's index line from the file when asked for it
+/// (lakelands#133). A committed index line changed to name another
+/// position is a damaged index, refused as unavailable naming it, both to
+/// a handle already open and to one that opens afterwards: never read as
+/// another event.
+#[test]
+fn an_index_line_naming_another_position_is_a_damaged_index() {
+    use lakelands_api::engine::EngineOpener;
+    use lakelands_api::id::Position;
+    use lakelands_core::conformance::engine::chain;
+
+    let dir = scratch("damaged-index");
+    let location = Location::sqlite("damaged", &dir);
+    let engine = SqliteOpener.open(&location, OpenMode::Create).unwrap();
+    let lease = engine.take_lease("writer").unwrap();
+    let events = chain(0, 600, &lakelands_api::event::Digest::zero(), &lease);
+    for batch in events.chunks(100) {
+        engine.append(&lease, batch).unwrap();
+    }
+    let reader = SqliteOpener.open(&location, OpenMode::Read).unwrap();
+    assert_eq!(reader.read(Position(0), 600).unwrap(), events);
+    assert_eq!(reader.read(Position(300), 5).unwrap(), events[300..305]);
+
+    // Position 300's line names 301 instead, the file's length unchanged.
+    let index = dir.join("index").join(format!("{:020}.idx", 0));
+    let text = std::fs::read_to_string(&index).unwrap();
+    let damaged = text.replacen("[\"e\",300,", "[\"e\",301,", 1);
+    assert_ne!(text, damaged, "the index holds position 300's line");
+    std::fs::write(&index, damaged).unwrap();
+
+    let refused = |what: &str, answer: lakelands_api::Result<Vec<_>>| match answer {
+        Err(lakelands_api::Error::Unavailable { message }) => assert!(
+            message.contains("damaged") && message.contains("300"),
+            "{what}: {message}"
+        ),
+        other => panic!("{what}: a damaged index is refused, and it answered {other:?}"),
+    };
+    refused(
+        "a handle already open",
+        reader
+            .read(Position(290), 20)
+            .map(|e| e.len())
+            .map(|_| vec![()]),
+    );
+    // A handle opened now reads the index from its first line at open,
+    // checking each line's position as it keeps its marks: the open itself
+    // refuses the damaged line.
+    let opened = SqliteOpener
+        .open(&location, OpenMode::Read)
+        .and_then(|e| e.read(Position(0), 600));
+    refused("a handle opened afterwards", opened.map(|_| vec![()]));
+    drop((reader, engine));
+    let _ = std::fs::remove_dir_all(&dir);
+}

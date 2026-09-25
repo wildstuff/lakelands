@@ -39,11 +39,9 @@
 //! and so are the walk through `find`, which measures each page on its
 //! own, as its largest page: a page holds its rows, not the type
 //! (lakelands#134), and the rebuild, which folds the log a page at a time
-//! (lakelands#130). One more is measured and reported against the same
-//! tolerance but not held to it yet, until the fix named in its line
-//! turns the claim on: the reopen reads the log a page at a time too, but
-//! the SQLite engine keeps its log index whole in memory, about 300 bytes
-//! an event (lakelands#133). A harness
+//! (lakelands#130), and the reopen, which reads the log a page at a time
+//! and on SQLite keeps a mark per 256 events of its index, not the index
+//! (lakelands#133). A harness
 //! without a meter runs everything else the check claims and reports the
 //! heap as not measured.
 //!
@@ -97,7 +95,7 @@ use crate::export;
 check!(
     /// A large lake goes through ingest, the feed and export in bounded memory.
     STREAMS = a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it,
-    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification, each page of a walk of a type through find, and a rebuild hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB; a reopen is measured against the same bound",
+    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification, each page of a walk of a type through find, a rebuild and a reopen hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB",
     given
 );
 
@@ -260,12 +258,12 @@ impl Measure {
     }
 }
 
-/// Whether the claim is held to, or measured and reported only.
+/// Whether the claim is held to. Every line is held since lakelands#133; a
+/// new operation measured before its fix holds it brings back a variant
+/// that reports it, with that line.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Claim {
     Held,
-    /// Measured and reported until the named issue's fix holds it.
-    Reported(&'static str),
 }
 
 /// One operation at one size, as reported.
@@ -720,7 +718,7 @@ impl Size<'_> {
         );
         self.row(
             "reopen",
-            Claim::Reported("lakelands#133"),
+            Claim::Held,
             records,
             head.0 + 1,
             String::new(),
@@ -809,9 +807,6 @@ fn report(given: &Given, rows: &[Row]) -> Result<(), Failure> {
                 let verdict = match (within, row.claim) {
                     (true, _) => "within".to_owned(),
                     (false, Claim::Held) => "OVER".to_owned(),
-                    (false, Claim::Reported(until)) => {
-                        format!("over, reported only until {until}")
-                    }
                 };
                 Some((limit, verdict))
             }
