@@ -44,3 +44,10 @@ that apply its grants, or through notifications that do.
 - It is not the last word on narrower feeds. A per-principal view of the
   changes is an MCP notification (lakelands#70), which applies grants
   the way a read does, not the feed.
+
+## Corrected (2026-09-25): per-principal notifications shipped
+
+The per-principal view of the changes named above as lakelands#70 has
+shipped (lakelands#94): an MCP session calls `subscribe` and is told
+`notifications/lakelands/changed` for the changes it may read, with
+grants applied the way a read applies them (`docs/hosting.md`).

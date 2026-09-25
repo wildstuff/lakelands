@@ -53,3 +53,14 @@ second rule to keep in step.
   transport presents the generator's names as they are.
 - A caller that should not see a door does not see it at all; the tool
   list is not a list of everything with some entries forbidden.
+
+## Corrected (2026-09-25): the doors added since
+
+The list of generic doors above predates two additions. A relation
+carried by link records offers `link` and `unlink`, with a tool of each
+per relation from the same generator
+(`docs/decisions/035-a-link-is-a-record.md`). And `migrate` carries the
+value-type migrations and re-keying as well as a type's reshaping, with
+no door of their own
+(`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+extended).

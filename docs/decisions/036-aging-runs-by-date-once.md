@@ -83,3 +83,10 @@ shape, and every change is a version with its writer.
   is refused as not granted. Otherwise a rule would let its author write
   what it may not write, and use the condition to learn, record by
   record, what it may not read (024).
+
+## Corrected (2026-09-25): the rule's seven fields
+
+`sys.aging_rule` is listed above by its five working fields. The type
+the store declares has seven: `name`, its key, and `description`, for
+people, beside `on`, `field`, `from`, `to` and `when` (`docs/seams.md`
+§`SystemVocabulary` gives the table).
