@@ -233,13 +233,49 @@ pub trait Catalog: Send + Sync {
     /// windows; each window answers once it is durable. Content-addressed:
     /// a record delivered twice appends nothing the second time, so
     /// at-least-once delivery is safe. The source's own offset is the
-    /// caller's; the answer carries the lake's positions.
+    /// caller's; the answer carries the lake's positions. A caller holding
+    /// the records already calls [`ingest_all`] instead.
     async fn ingest(
         &self,
         who: &Principal,
         source: &SourceId,
         records: SourceStream,
     ) -> Result<CommitStream>;
+}
+
+/// `ingest` for records already in hand: the records as the source
+/// stream, and every window's answer collected, in order. A free function
+/// over any [`Catalog`], not a door of its own. The first error ends it:
+/// the windows before it are committed, and a caller that needs to know
+/// which reads the stream `ingest` answers itself.
+pub async fn ingest_all(
+    cat: &dyn Catalog,
+    who: &Principal,
+    source: &SourceId,
+    records: Vec<SourceRecord>,
+) -> Result<Vec<Committed>> {
+    let mut commits = cat
+        .ingest(who, source, Box::pin(InHand(records.into_iter())))
+        .await?;
+    let mut out = Vec::new();
+    while let Some(window) = std::future::poll_fn(|cx| commits.as_mut().poll_next(cx)).await {
+        out.push(window?);
+    }
+    Ok(out)
+}
+
+/// Records in hand, as a source stream.
+struct InHand(std::vec::IntoIter<SourceRecord>);
+
+impl Stream for InHand {
+    type Item = SourceRecord;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<SourceRecord>> {
+        std::task::Poll::Ready(self.0.next())
+    }
 }
 
 /// What verifying a lake's log found.

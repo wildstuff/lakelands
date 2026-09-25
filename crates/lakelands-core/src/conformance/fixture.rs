@@ -24,7 +24,7 @@ use lakelands_api::{
 };
 use rust_decimal::Decimal;
 
-use super::{Failure, next};
+use super::Failure;
 
 /// Turns the result of a contract call into the check's own result.
 pub trait Must<T> {
@@ -308,14 +308,7 @@ pub async fn ingest(
     source: &str,
     records: Vec<SourceRecord>,
 ) -> lakelands_api::Result<Vec<Committed>> {
-    let mut commits = cat
-        .ingest(who, &SourceId::from(source), stream(records))
-        .await?;
-    let mut out = Vec::new();
-    while let Some(window) = next(&mut commits).await {
-        out.push(window?);
-    }
-    Ok(out)
+    lakelands_api::ingest_all(cat, who, &SourceId::from(source), records).await
 }
 
 /// Fail unless the lake's head is still `before`: a refused write must

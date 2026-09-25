@@ -694,7 +694,9 @@ once, possibly empty, never waiting for new events:
   `filter.types`; an empty list in the filter admits every kind or every
   type. An event has a type when it is a `record_*`, `trigger_fired` or
   `object_set_changed` event, a `declared` type or a `migrated` one; an
-  event without one passes only a filter with no types.
+  event without one passes only a filter with no types. The kinds are
+  free strings, so a relay may name one a newer format adds;
+  `lakelands_api::event::KINDS` lists the kinds of this format version.
 - `next`: the position after the last event examined, matched or not,
   which is where the next poll starts.
 - `head`: the lake's last position when the poll began.

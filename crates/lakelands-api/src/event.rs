@@ -288,29 +288,46 @@ pub enum EventBody {
     },
 }
 
-impl EventBody {
-    /// The kind's name as the log and the change feed spell it.
-    pub fn kind(&self) -> &'static str {
-        match self {
-            EventBody::LakeCreated { .. } => "lake_created",
-            EventBody::LeaseTaken { .. } => "lease_taken",
-            EventBody::Declared { .. } => "declared",
-            EventBody::Migrated { .. } => "migrated",
-            EventBody::RecordUpserted { .. } => "record_upserted",
-            EventBody::RecordIngested { .. } => "record_ingested",
-            EventBody::RecordRetired { .. } => "record_retired",
-            EventBody::RecordRestricted { .. } => "record_restricted",
-            EventBody::RecordUnrestricted { .. } => "record_unrestricted",
-            EventBody::VerbCalled { .. } => "verb_called",
-            EventBody::WriteProposed { .. } => "write_proposed",
-            EventBody::WriteAccepted { .. } => "write_accepted",
-            EventBody::WriteRejected { .. } => "write_rejected",
-            EventBody::TriggerFired { .. } => "trigger_fired",
-            EventBody::ObjectSetChanged { .. } => "object_set_changed",
-            EventBody::OutputRecorded { .. } => "output_recorded",
-            EventBody::Checkpoint { .. } => "checkpoint",
+/// The kinds of one format version: `EventBody::kind` and [`KINDS`] come
+/// from this one list, so they cannot drift, and a variant not listed
+/// here does not compile.
+macro_rules! kinds {
+    ($($variant:ident => $name:literal,)*) => {
+        /// Every event kind of the current format version, as the log and
+        /// the change feed spell them, in the order `EventBody` declares
+        /// them. `FeedFilter::kinds` takes free strings, so a relay may name
+        /// a kind a newer format adds; this is the closed set of this one.
+        pub const KINDS: &[&str] = &[$($name),*];
+
+        impl EventBody {
+            /// The kind's name as the log and the change feed spell it.
+            pub fn kind(&self) -> &'static str {
+                match self {
+                    $(EventBody::$variant { .. } => $name,)*
+                }
+            }
         }
-    }
+    };
+}
+
+kinds! {
+    LakeCreated => "lake_created",
+    LeaseTaken => "lease_taken",
+    Declared => "declared",
+    Migrated => "migrated",
+    RecordUpserted => "record_upserted",
+    RecordIngested => "record_ingested",
+    RecordRetired => "record_retired",
+    RecordRestricted => "record_restricted",
+    RecordUnrestricted => "record_unrestricted",
+    VerbCalled => "verb_called",
+    WriteProposed => "write_proposed",
+    WriteAccepted => "write_accepted",
+    WriteRejected => "write_rejected",
+    TriggerFired => "trigger_fired",
+    ObjectSetChanged => "object_set_changed",
+    OutputRecorded => "output_recorded",
+    Checkpoint => "checkpoint",
 }
 
 /// A sealed segment, as a checkpoint lists it.
