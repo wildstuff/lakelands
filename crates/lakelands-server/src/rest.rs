@@ -871,6 +871,12 @@ impl Stream for Lines {
                 return Poll::Ready(None);
             }
             if let Some(i) = this.buf.iter().position(|b| *b == b'\n') {
+                // The line is held to the cap however the body was cut: a
+                // read may bring its last bytes and its line feed at once.
+                if i > MAX_LINE {
+                    let n = this.line + 1;
+                    return this.stop(format!("line {n} is longer than {MAX_LINE} bytes"));
+                }
                 let text: Vec<u8> = this.buf.drain(..=i).collect();
                 this.line += 1;
                 if text.iter().all(u8::is_ascii_whitespace) {

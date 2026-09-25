@@ -146,14 +146,16 @@ for review.
 
 `POST …/ingest/<source>` takes `application/x-ndjson` (or
 `application/jsonl`, `application/json`, or no `Content-Type`), one
-source record per line (`{"type":…,"key":…,"fields":{…},"seen_at":…}`), and is read as
-it arrives. The answer is NDJSON too: one line per commit window as it
-becomes durable, `{"position":…,"records":…,"duplicates":…}`. The
-reply's `Lakelands-Position` is the head before the ingest began; each
-window's own position is in its line. A line that
-is not a record ends the ingest with a last line naming it; what came
-before it is committed, and since ingest is content-addressed, sending
-the whole body again appends nothing twice.
+source record per line (`{"type":…,"key":…,"fields":{…},"seen_at":…}`),
+and is read as it arrives. The answer is NDJSON too: one line per commit
+window as it becomes durable,
+`{"position":…,"records":…,"duplicates":…}`. The reply's
+`Lakelands-Position` is the head before the ingest began; each window's
+own position is in its line. A line is at most 4 MiB before its line
+feed, however the body is cut into reads. A line that is longer, or is
+not a record, ends the ingest with a last line naming it (`invalid`);
+what came before it is committed, and since ingest is content-addressed,
+sending the whole body again appends nothing twice.
 
 ### The change feed
 

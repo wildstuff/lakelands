@@ -505,6 +505,78 @@ async fn a_body_over_four_mebibytes_is_413() {
     assert_eq!(store.head().await.unwrap(), head, "nothing was written");
 }
 
+/// POST one NDJSON line of `len` bytes (a record padded with spaces)
+/// and its line feed as an ingest, in chunks of `chunk` bytes, each
+/// written on its own, so the line feed comes in the last one; answer
+/// the lines of the answer.
+async fn ingest_one_line(addr: SocketAddr, len: usize, chunk: usize) -> Vec<serde_json::Value> {
+    let record = r#"{"type":"invoice","key":"INV-L","fields":{"amount":"1.00"}}"#;
+    let mut body = format!("{record}{}", " ".repeat(len - record.len())).into_bytes();
+    body.push(b'\n');
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let head = format!(
+        "POST /lakes/finance/ingest/bank HTTP/1.1\r\nhost: {addr}\r\nconnection: close\r\n\
+         authorization: Bearer k-owner\r\ncontent-type: application/x-ndjson\r\n\
+         transfer-encoding: chunked\r\n\r\n"
+    );
+    stream.write_all(head.as_bytes()).await.unwrap();
+    for part in body.chunks(chunk) {
+        let mut framed = format!("{:x}\r\n", part.len()).into_bytes();
+        framed.extend_from_slice(part);
+        framed.extend_from_slice(b"\r\n");
+        // The server may stop reading once it refuses; the answer says so.
+        if stream.write_all(&framed).await.is_err() {
+            break;
+        }
+        stream.flush().await.unwrap();
+    }
+    let _ = stream.write_all(b"0\r\n\r\n").await;
+    let mut raw = Vec::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        stream.read_to_end(&mut raw),
+    )
+    .await
+    .expect("an answer within thirty seconds")
+    .unwrap();
+    let raw = String::from_utf8_lossy(&raw).into_owned();
+    let (head, body) = raw.split_once("\r\n\r\n").unwrap();
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    dechunk(body)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+/// An ingest line is at most 4 MiB, to the byte, however the body is cut:
+/// a line one byte over, whose line feed arrives in the same read as its
+/// last byte, is refused as a line twice the cap is, and nothing of it
+/// is committed (lakelands#135).
+#[tokio::test]
+async fn an_ingest_line_over_four_mebibytes_is_refused_to_the_byte() {
+    const CAP: usize = 4 << 20;
+    const CHUNK: usize = 64 << 10;
+    let store = rest_lake(Backend::Mock).await;
+    let (addr, task) = serve(store.clone()).await;
+
+    let taken = ingest_one_line(addr, CAP, CHUNK).await;
+    assert_eq!(taken.len(), 1, "{taken:?}");
+    assert_eq!(taken[0]["records"], json!(1), "a line of 4 MiB is taken");
+
+    let head = store.head().await.unwrap();
+    let over = ingest_one_line(addr, CAP + 1, CHUNK).await;
+    let twice = ingest_one_line(addr, 2 * CAP, CHUNK).await;
+    task.abort();
+    assert_eq!(twice.len(), 1, "{twice:?}");
+    assert_eq!(
+        (&twice[0]["error"], &twice[0]["reason"]["refusal"]),
+        (&json!("refused"), &json!("invalid")),
+        "{twice:?}"
+    );
+    assert_eq!(over, twice, "one byte over is refused as twice the cap is");
+    assert_eq!(store.head().await.unwrap(), head, "nothing was committed");
+}
+
 /// A lake the server cannot open answers `unavailable` (503), whatever
 /// the route, and carries no position: there is no log it was read at.
 #[tokio::test]
