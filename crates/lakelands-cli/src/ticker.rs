@@ -382,6 +382,9 @@ mod tests {
         ) -> lakelands_api::Result<lakelands_api::write::PurgeReport> {
             self.inner.purge_source(source).await
         }
+        async fn compact(&self) -> lakelands_api::Result<lakelands_api::write::CompactReport> {
+            self.inner.compact().await
+        }
         async fn close(&self) -> lakelands_api::Result<()> {
             self.inner.close().await
         }

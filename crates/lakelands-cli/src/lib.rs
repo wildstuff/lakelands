@@ -2,7 +2,7 @@
 //!
 //! `init` and `lake new` lay out a root: a directory with a
 //! configuration and one location per lake. `apply`, `ingest`, `feed`,
-//! `age`, `purge`, `rebuild`, `export` and `serve` open a lake at its location and call the
+//! `age`, `purge`, `rebuild`, `compact`, `export` and `serve` open a lake at its location and call the
 //! library in-process: there is no command enum and no layer between the
 //! command and the catalog.
 //!
@@ -226,6 +226,7 @@ fn command() -> Command {
                 ),
         )
         .subcommand(Command::new("rebuild").about("Delete the lake's projection and rebuild it from the log"))
+        .subcommand(Command::new("compact").about("Give back the storage the lake's projection no longer uses"))
         .subcommand(
             Command::new("export")
                 .about("Write the lake's log as its segment files and a manifest")
@@ -380,6 +381,7 @@ async fn dispatch(
         "age" => commands::age(out, &store, &text(sub, "today").unwrap_or_default()).await,
         "purge" => commands::purge(out, &store, &text(sub, "source").unwrap_or_default()).await,
         "rebuild" => commands::rebuild(out, &store).await,
+        "compact" => commands::compact(out, &store).await,
         "export" => {
             commands::export(out, &store, Path::new(&text(sub, "to").unwrap_or_default())).await
         }

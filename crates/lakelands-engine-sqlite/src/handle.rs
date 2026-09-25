@@ -12,7 +12,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use lakelands_api::engine::{
     CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
-    VectorIndex,
+    Reclaimed, VectorIndex,
 };
 use lakelands_api::error::{Error, Refusal, Result};
 use lakelands_api::event::{Digest, EventId, SegmentDigest};
@@ -39,6 +39,7 @@ struct Transaction {
 pub struct SqliteLake {
     lake: LakeId,
     mode: OpenMode,
+    path: PathBuf,
     log: Mutex<Log>,
     lease_file: LeaseFile,
     held: Mutex<Option<Held>>,
@@ -128,6 +129,7 @@ impl SqliteLake {
             lease_file: LeaseFile::new(&dir),
             lake,
             mode,
+            path,
             log: Mutex::new(log),
             held: Mutex::new(None),
             writer: Mutex::new(writer),
@@ -187,6 +189,19 @@ impl SqliteLake {
                 lease.fence
             )
         }))
+    }
+
+    /// The projection's storage in bytes: `projection.db` and its
+    /// write-ahead journal.
+    fn size(&self) -> Result<u64> {
+        let wal = self.path.with_extension("db-wal");
+        [&self.path, &wal]
+            .into_iter()
+            .try_fold(0, |sum, p| match std::fs::metadata(p) {
+                Ok(m) => Ok(sum + m.len()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(sum),
+                Err(e) => Err(crate::io_error("measuring", p, e)),
+            })
     }
 
     /// Hold a put for the open transaction.
@@ -448,6 +463,59 @@ impl ProjectionStore for SqliteLake {
                 .map_err(sql)
         })
     }
+
+    /// Truncates the write-ahead journal, rewrites `projection.db` without
+    /// its free pages (`VACUUM`), and truncates the journal again. The log
+    /// is not touched. `VACUUM` is one transaction: when it fails, the
+    /// projection is as it was.
+    fn compact(&self) -> Result<Reclaimed> {
+        let transaction = lock(&self.transaction);
+        if transaction.is_some() {
+            return Err(invalid(
+                "the projection is compacted between appends: a transaction is open",
+            ));
+        }
+        self.write(|conn| {
+            // A transaction a failed commit left open is abandoned, as
+            // `begin` and `clear` abandon it.
+            if !conn.is_autocommit() {
+                conn.execute_batch("ROLLBACK").map_err(sql)?;
+            }
+            let before = self.size()?;
+            if !truncate_journal(conn)? {
+                return Err(unavailable(format!(
+                    "lake `{}` could not be compacted: a reader holds a snapshot of its \
+                     projection; nothing a read answers has changed, so compact again when the \
+                     reader is done",
+                    self.lake
+                )));
+            }
+            conn.execute_batch("VACUUM").map_err(|e| {
+                unavailable(format!(
+                    "lake `{}` could not be compacted, and its projection is as it was: {e}",
+                    self.lake
+                ))
+            })?;
+            // The rewrite is committed. A reader that holds a snapshot now
+            // keeps the journal from being truncated: the compact is done
+            // all the same, and `after` counts the journal it left.
+            truncate_journal(conn)?;
+            Ok(Reclaimed {
+                before: Some(before),
+                after: Some(self.size()?),
+            })
+        })
+    }
+}
+
+/// Checkpoint the write-ahead journal into `projection.db` and truncate
+/// it; `false` when a reader holding a snapshot past the busy timeout kept
+/// it from being truncated. Either way no answer has changed.
+fn truncate_journal(conn: &Connection) -> Result<bool> {
+    let busy: i64 = conn
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))
+        .map_err(sql)?;
+    Ok(busy == 0)
 }
 
 /// A vector as the index stores it: its components as little-endian

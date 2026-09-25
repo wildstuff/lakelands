@@ -194,6 +194,31 @@ pub trait ProjectionStore: Send + Sync {
     /// Delete everything, kept history included, for a rebuild from the
     /// log.
     fn clear(&self) -> Result<()>;
+
+    /// Give the storage the projection no longer uses back, and change
+    /// nothing a view answers: no state, kept history included, no
+    /// applied id, no recorded output. Called outside a transaction, under
+    /// the writer's lock. A compact that fails leaves every answer as it
+    /// was (`docs/decisions/040-maintenance-never-changes-an-answer.md`).
+    fn compact(&self) -> Result<Reclaimed>;
+}
+
+/// What a compact of the projection measured: its storage in bytes before
+/// and after, as the engine measures it. An engine that keeps nothing to
+/// reclaim measures nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reclaimed {
+    /// The projection's storage before.
+    pub before: Option<u64>,
+    /// The projection's storage after.
+    pub after: Option<u64>,
+}
+
+impl Reclaimed {
+    /// Nothing measured, nothing reclaimed.
+    pub fn nothing() -> Reclaimed {
+        Reclaimed::default()
+    }
 }
 
 /// One declaration in force, as a view returns it.

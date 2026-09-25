@@ -984,6 +984,25 @@ impl Lake {
         Ok(events.last().map_or(through, |e| e.position))
     }
 
+    /// Give back the storage the projection no longer uses. It runs under
+    /// the writer's lock, so a write waits and lands before or after it;
+    /// it appends nothing, and the head stays where it is
+    /// (`docs/decisions/040-maintenance-never-changes-an-answer.md`).
+    pub fn compact(&self) -> Result<lakelands_api::write::CompactReport> {
+        let w = self.writer();
+        if w.lease.is_none() {
+            return Err(Error::Unavailable {
+                message: "this lake is open read-only here".into(),
+            });
+        }
+        let reclaimed = self.engine.projection().compact()?;
+        Ok(lakelands_api::write::CompactReport {
+            before: reclaimed.before,
+            after: reclaimed.after,
+            head: self.head(),
+        })
+    }
+
     /// Give the lease up. The handle reads on; it no longer writes.
     pub fn close(&self) -> Result<()> {
         let mut w = self.writer();

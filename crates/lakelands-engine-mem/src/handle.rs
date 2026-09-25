@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use lakelands_api::engine::{
     CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
-    VectorIndex,
+    Reclaimed, VectorIndex,
 };
 use lakelands_api::error::{Error, Refusal, Result};
 use lakelands_api::event::{Digest, EventId, SegmentDigest};
@@ -247,6 +247,13 @@ impl ProjectionStore for MemoryLake {
         lake.projection = Default::default();
         lake.vectors.clear();
         Ok(())
+    }
+
+    /// The memory engine keeps no storage to give back: it measures and
+    /// reclaims nothing.
+    fn compact(&self) -> Result<Reclaimed> {
+        self.writable()?;
+        Ok(Reclaimed::nothing())
     }
 }
 

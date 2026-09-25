@@ -39,9 +39,10 @@ use lakelands_api::query::{
 use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Direction, Group, Order, OrderBy};
 use lakelands_api::seam::{FeedBatch, FeedFilter};
 use lakelands_api::write::{
-    AgeReport, Declaration, FieldConversion, FunctionDecl, Migration, MigrationReport, Misfit,
-    ObjectSetDecl, Proposal, ProposalFilter, ProposalState, ProposedWrite, PurgeReport, RecordRef,
-    ReferenceRewrite, Rekeyed, RuleRun, TypeRetired, ValueTypeReport, ValueTypeUse,
+    AgeReport, CompactReport, Declaration, FieldConversion, FunctionDecl, Migration,
+    MigrationReport, Misfit, ObjectSetDecl, Proposal, ProposalFilter, ProposalState, ProposedWrite,
+    PurgeReport, RecordRef, ReferenceRewrite, Rekeyed, RuleRun, TypeRetired, ValueTypeReport,
+    ValueTypeUse,
 };
 use lakelands_api::{
     Access, Committed, Cursor, Error, FieldMeta, Find, Found, Get, Grants, Missing, Origin,
@@ -925,6 +926,14 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 types: vec![],
                 unsearched: vec![],
                 position: Position(3),
+            }),
+        ),
+        (
+            "compact_report",
+            members(&CompactReport {
+                before: Some(2),
+                after: Some(1),
+                head: Position(3),
             }),
         ),
         (

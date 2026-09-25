@@ -321,6 +321,13 @@ pub trait LakeStore: Send + Sync {
     /// (`docs/decisions/039-a-source-is-retracted-as-one.md`).
     async fn purge_source(&self, source: &SourceId) -> Result<crate::write::PurgeReport>;
 
+    /// Give back the storage the projection no longer uses. It appends
+    /// nothing and changes no answer, no event and no byte of an export;
+    /// it prunes no history and does not seal. Only the writer's handle
+    /// compacts; writes wait while it runs
+    /// (`docs/decisions/040-maintenance-never-changes-an-answer.md`).
+    async fn compact(&self) -> Result<crate::write::CompactReport>;
+
     /// Release the lease and flush. The lake is closed when the last
     /// handle is dropped; this makes it explicit.
     async fn close(&self) -> Result<()>;

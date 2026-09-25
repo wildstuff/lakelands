@@ -444,6 +444,7 @@ async fn every_host_operation_is_unbound_naming_it() {
                 .await
                 .map(|_| ()),
         ),
+        ("compact", remote.compact().await.map(|_| ())),
     ];
     for (op, answer) in answers {
         match answer {

@@ -827,6 +827,14 @@ interface types {
         position: position,
     }
 
+    /// What one compact measured of the projection's storage, in bytes,
+    /// as the engine measures it, and the head it left unmoved.
+    record compact-report {
+        before: option<u64>,
+        after: option<u64>,
+        head: position,
+    }
+
     /// The records a purge retired in one type.
     record type-retired {
         %type: type-name,

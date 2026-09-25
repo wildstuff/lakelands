@@ -47,7 +47,7 @@ use lakelands_api::id::{LakeId, Position, RecordKey, SourceId, TypeName};
 use lakelands_api::location::Limits;
 use lakelands_api::seam::ChangeFeed;
 use lakelands_api::time::Timestamp;
-use lakelands_api::write::{AgeReport, PurgeReport};
+use lakelands_api::write::{AgeReport, CompactReport, PurgeReport};
 use lakelands_api::{Catalog, LakeStore, Verification, WriteContext};
 
 use crate::wire::Wire;
@@ -239,6 +239,10 @@ impl LakeStore for RemoteLake {
 
     async fn purge_source(&self, _source: &SourceId) -> Result<PurgeReport> {
         Err(host_only("purge_source"))
+    }
+
+    async fn compact(&self) -> Result<CompactReport> {
+        Err(host_only("compact"))
     }
 
     /// Nothing is held but pooled connections, which close with the

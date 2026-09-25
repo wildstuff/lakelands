@@ -120,6 +120,39 @@ async fn a_second_writer_is_refused_at_once_and_a_reader_opens_beside_it() {
     assert!(again.is_writer());
 }
 
+/// Only the writer's handle compacts: a handle opened read-only, and a
+/// writer that gave its lease up, refuse it as unavailable, as they refuse
+/// a checkpoint; the writer's compact appends nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_read_only_handle_refuses_compact_and_the_writer_compacts_in_place() {
+    let lake = name();
+    let writer = open(&lake, OpenMode::Create).await.unwrap();
+    let reader = open(&lake, OpenMode::Read).await.unwrap();
+    let head = writer.head().await.unwrap();
+    for (who, store) in [("a reader", &reader), ("a writer", &writer)] {
+        if who == "a writer" {
+            let report = writer.compact().await.unwrap();
+            assert_eq!(
+                (report.before, report.after, report.head),
+                (None, None, head)
+            );
+            writer.close().await.unwrap();
+        }
+        for (op, answer) in [
+            ("compact", store.compact().await.map(|_| ())),
+            ("checkpoint", store.checkpoint().await.map(|_| ())),
+        ] {
+            match answer {
+                Err(Error::Unavailable { message }) => {
+                    assert_eq!(message, "this lake is open read-only here", "{who}, {op}");
+                }
+                other => panic!("{who}, {op}: expected unavailable, got {other:?}"),
+            }
+        }
+    }
+    assert_eq!(writer.head().await.unwrap(), head, "nothing was appended");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_new_lake_starts_with_its_creation_its_lease_and_its_system_types() {
     let lake = name();
