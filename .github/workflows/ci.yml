@@ -17,6 +17,11 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  # The runner has about 14 GB free. Full debug info and incremental
+  # state more than double the test artifacts and the cache; line tables
+  # keep file and line in a failing test's backtrace.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_INCREMENTAL: 0
 
 jobs:
   fmt:
@@ -52,6 +57,14 @@ jobs:
   nextest:
     runs-on: ubuntu-latest
     steps:
+      # This job builds every test of the workspace; the runner image's
+      # toolchains Lakelands never uses take the disk it needs.
+      - name: free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /usr/local/share/boost "$AGENT_TOOLSDIRECTORY/CodeQL"
+          df -h /
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -62,6 +75,7 @@ jobs:
       # state another test left behind fails here, where nextest's
       # process per test would hide it.
       - run: cargo test --locked -p lakelands-cli -p lakelands-server
+      - run: df -h /
       - run: cargo test --locked -p lakelands-cli -p lakelands-server -- --test-threads=1
 
   # The engines come from conformance/roster, never from this file.
