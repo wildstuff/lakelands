@@ -37,6 +37,11 @@ use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
+/// A wait for an answer that should come: past it, a hang is a failure.
+/// It orders nothing, and a loaded machine may take seconds to schedule
+/// the server, so it is the load driver's WAIT (lakelands#158).
+const WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// The headers a transcript pins.
 const PINNED: [&str; 5] = [
     "allow:",
@@ -154,9 +159,9 @@ async fn exchange(addr: SocketAddr, block: &[&str]) -> (String, Vec<String>, Str
     let mut bytes = Vec::new();
     let mut buf = [0u8; 4096];
     let raw = loop {
-        let n = tokio::time::timeout(std::time::Duration::from_secs(10), stream.read(&mut buf))
+        let n = tokio::time::timeout(WAIT, stream.read(&mut buf))
             .await
-            .expect("an answer within ten seconds")
+            .expect("an answer within the wait")
             .unwrap();
         let raw = String::from_utf8_lossy(&bytes).into_owned();
         if n == 0 {
