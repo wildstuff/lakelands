@@ -513,7 +513,38 @@ async fn ingest_one_line(addr: SocketAddr, len: usize, chunk: usize) -> Vec<serd
     let record = r#"{"type":"invoice","key":"INV-L","fields":{"amount":"1.00"}}"#;
     let mut body = format!("{record}{}", " ".repeat(len - record.len())).into_bytes();
     body.push(b'\n');
-    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let (mut reader, mut stream) = TcpStream::connect(addr).await.unwrap().into_split();
+    // The answer is read as it comes, while the body is still being sent:
+    // a server that refuses and closes with request bytes unread may be
+    // answered by a reset (macOS does), and the reset ends the reading.
+    // A reset after the answer's last chunk is its end; before it, a
+    // failure.
+    let answer = tokio::spawn(async move {
+        let mut raw = Vec::new();
+        let mut buf = [0u8; 64 << 10];
+        let complete = |raw: &[u8]| {
+            String::from_utf8_lossy(raw)
+                .split_once("\r\n\r\n")
+                .is_some_and(|(_, body)| body.ends_with("0\r\n\r\n"))
+        };
+        loop {
+            match reader.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    raw.extend_from_slice(&buf[..n]);
+                    if complete(&raw) {
+                        break;
+                    }
+                }
+                Err(_) if complete(&raw) => break,
+                Err(e) => panic!(
+                    "the answer broke off: {e}: {:?}",
+                    String::from_utf8_lossy(&raw)
+                ),
+            }
+        }
+        raw
+    });
     let head = format!(
         "POST /lakes/finance/ingest/bank HTTP/1.1\r\nhost: {addr}\r\nconnection: close\r\n\
          authorization: Bearer k-owner\r\ncontent-type: application/x-ndjson\r\n\
@@ -525,20 +556,18 @@ async fn ingest_one_line(addr: SocketAddr, len: usize, chunk: usize) -> Vec<serd
         framed.extend_from_slice(part);
         framed.extend_from_slice(b"\r\n");
         // The server may stop reading once it refuses; the answer says so.
-        if stream.write_all(&framed).await.is_err() {
+        if answer.is_finished() || stream.write_all(&framed).await.is_err() {
             break;
         }
-        stream.flush().await.unwrap();
+        if stream.flush().await.is_err() {
+            break;
+        }
     }
     let _ = stream.write_all(b"0\r\n\r\n").await;
-    let mut raw = Vec::new();
-    tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        stream.read_to_end(&mut raw),
-    )
-    .await
-    .expect("an answer within thirty seconds")
-    .unwrap();
+    let raw = tokio::time::timeout(std::time::Duration::from_secs(30), answer)
+        .await
+        .expect("an answer within thirty seconds")
+        .unwrap();
     let raw = String::from_utf8_lossy(&raw).into_owned();
     let (head, body) = raw.split_once("\r\n\r\n").unwrap();
     assert!(head.starts_with("HTTP/1.1 200"), "{head}");
