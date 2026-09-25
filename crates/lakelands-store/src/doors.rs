@@ -680,7 +680,7 @@ impl ChangeFeed for Feed {
             // Read in batches, and stop at `limit` matches or the head:
             // nothing past the last position examined is read or verified.
             'read: while next <= head && events.len() < want {
-                let batch = lake.read_events(next, Some(want.clamp(64, 1024) as u32))?;
+                let batch = lake.read_events(next, want.clamp(64, 1024) as u32)?;
                 if batch.is_empty() {
                     break;
                 }
