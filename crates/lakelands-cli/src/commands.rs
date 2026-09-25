@@ -1,6 +1,6 @@
 //! The commands that open a lake: `apply`, `ingest`, `feed`, `age`,
-//! `purge`, `rebuild` and `serve`. Each calls the library in-process and prints
-//! the position of every answer that has one.
+//! `purge`, `rebuild`, `export` and `serve`. Each calls the library
+//! in-process and prints the position of every answer that has one.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -17,7 +17,7 @@ use lakelands_api::record::{SourceRecord, Value};
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::Declaration;
 use lakelands_api::{Catalog, LakeStore, Principal};
-use lakelands_core::{bundle, canonical};
+use lakelands_core::{bundle, canonical, export};
 use serde::Deserialize;
 
 use crate::say::Failure;
@@ -521,5 +521,35 @@ pub async fn rebuild(out: Out<'_>, store: &Arc<dyn LakeStore>) -> Result<(), Fai
     put(
         out,
         format!("rebuilt the projection from the log through position {p}"),
+    )
+}
+
+/// `export`: write the lake's log as its segment files and a manifest
+/// into a directory that is empty or absent, through the head the export
+/// read when it began; a write landing during the export is not in it.
+pub async fn export(out: Out<'_>, store: &Arc<dyn LakeStore>, to: &Path) -> Result<(), Failure> {
+    let manifest = export::write(store.as_ref(), to)
+        .await
+        .map_err(|e| match e {
+            lakelands_api::Error::Refused {
+                reason: lakelands_api::Refusal::Precondition { .. },
+                ..
+            } => Failure::new(e.to_string(), "export into an empty or new directory"),
+            e => e.into(),
+        })?;
+    for s in &manifest.segments {
+        put(
+            out,
+            format!("{}: positions {}..{}", s.file, s.first, s.last),
+        )?;
+    }
+    put(
+        out,
+        format!(
+            "exported {} through position {} to {}",
+            manifest.lake,
+            manifest.through,
+            to.display()
+        ),
     )
 }

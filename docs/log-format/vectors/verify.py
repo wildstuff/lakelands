@@ -6,6 +6,16 @@ sorted by UTF-16 code units, the ECMAScript number form), SHA-256 from
 the standard library, and the rules of docs/log-format.md read as text.
 Run it from this directory: `python3 verify.py`. It prints one line per
 check and exits non-zero on the first mismatch.
+
+Given a directory, `python3 verify.py <dir>` checks a lake's log as an
+export or a SQLite lake directory holds it instead, reading only
+`<dir>/log/` (log-format §4.2): canonical lines each ending in a line
+feed, positions consecutive from 0 and naming their files in 20 digits,
+the hash chain from 64 zeros, every checkpoint against the position,
+the hash and the files before it, and format versions that are 1 or 2
+and never go down. It prints one line
+per file and the last position and hash, or the position where the
+files stop being the log, and exits non-zero there.
 """
 
 import hashlib
@@ -112,7 +122,62 @@ def check(ok, what):
         sys.exit(1)
 
 
+FIRST_FORMAT, NEWEST_FORMAT = 1, 2
+
+
+def verify_dir(root):
+    """Check the segment files under `root/log/` alone; see the module doc."""
+    files = sorted(p for p in (root / "log").iterdir() if p.suffix == ".jsonl")
+    check(bool(files), f"{root}/log holds segment files")
+    position, prev, version = 0, "0" * 64, 0
+    sealed = []
+
+    def need(ok, why):
+        if not ok:
+            print(f"FAIL position {position}: {why}")
+            sys.exit(1)
+
+    for i, path in enumerate(files):
+        first = position
+        need(len(path.stem) == 20 and path.stem.isdigit() and int(path.stem) == first,
+             f"{path.name} is the file starting at {first}, named in 20 digits")
+        raw = path.read_bytes()
+        need(raw.endswith(b"\n"), f"{path.name} ends in a line feed")
+        for line in raw[:-1].split(b"\n"):
+            try:
+                event = json.loads(line.decode("utf-8"))
+            except ValueError as e:
+                need(False, f"the line is JSON ({e})")
+            need(canonical(event) == line, "the line is canonical")
+            need(event.get("position") == position, f"the line is position {event.get('position')}")
+            v = event.get("v")
+            need(type(v) is int and FIRST_FORMAT <= v <= NEWEST_FORMAT,
+                 f"format {v} is one of {FIRST_FORMAT} to {NEWEST_FORMAT}")
+            need(v >= version, f"format {v} is not below the {version} before it")
+            version = v
+            need(event.get("prev") == prev, "prev names the hash of the event before it")
+            body = {k: x for k, x in event.items() if k != "hash"}
+            need(sha(canonical(body)) == event.get("hash"), "the hash is SHA-256 of the line without it")
+            is_checkpoint = event["body"].get("kind") == "checkpoint"
+            if position == first and i > 0:
+                need(is_checkpoint, "a later file starts with a checkpoint")
+            if is_checkpoint:
+                b = event["body"]
+                need(position == first and i > 0, "a checkpoint is the first event of a later file")
+                need(b.get("through") == position - 1, "the checkpoint names the position before it")
+                need(b.get("hash") == prev, "the checkpoint repeats the sealed segment's last hash")
+                need(b.get("segments") == sealed, "the checkpoint lists every file before it with its digest")
+            prev = event["hash"]
+            position += 1
+        need(position > first, f"{path.name} holds an event")
+        sealed.append({"first": first, "last": position - 1, "digest": sha(raw)})
+        print(f"ok   {path.name}: positions {first}..{position - 1}")
+    print(f"ok   {root}: verified through position {position - 1}, hash {prev}")
+
+
 def main():
+    if len(sys.argv) > 1:
+        return verify_dir(Path(sys.argv[1]))
     expected = json.loads((HERE / "expected.json").read_text("utf-8"))
     prev = "0" * 64
     events = []

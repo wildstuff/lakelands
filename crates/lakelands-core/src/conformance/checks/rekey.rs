@@ -139,7 +139,7 @@ fn to_iban() -> Migration {
 /// The fixture, with accounts a1 (DE1), a2 (DE2), a3 (DE3, retired), a4
 /// (DE4, restricted); payment p1 to a1; entry a1/1; a1 owned by x. `iban`
 /// is optional before the migration, so `missing` can leave one out.
-async fn lake(store: &dyn LakeStore, ibans: [Option<&str>; 4]) -> Result<(), Failure> {
+pub(super) async fn lake(store: &dyn LakeStore, ibans: [Option<&str>; 4]) -> Result<(), Failure> {
     let cat = doors(store);
     let own = owner(store);
     for d in [
@@ -212,7 +212,7 @@ async fn lake(store: &dyn LakeStore, ibans: [Option<&str>; 4]) -> Result<(), Fai
     Ok(())
 }
 
-const IBANS: [Option<&str>; 4] = [Some("DE1"), Some("DE2"), Some("DE3"), Some("DE4")];
+pub(super) const IBANS: [Option<&str>; 4] = [Some("DE1"), Some("DE2"), Some("DE3"), Some("DE4")];
 
 async fn preflight(cat: &dyn Catalog, who: &Principal) -> Result<MigrationReport, Failure> {
     Ok(cat
@@ -222,7 +222,7 @@ async fn preflight(cat: &dyn Catalog, who: &Principal) -> Result<MigrationReport
         .data)
 }
 
-async fn apply(store: &dyn LakeStore) -> Result<Position, Failure> {
+pub(super) async fn apply(store: &dyn LakeStore) -> Result<Position, Failure> {
     let cat = doors(store);
     let own = owner(store);
     let r = preflight(cat.as_ref(), &own).await?;

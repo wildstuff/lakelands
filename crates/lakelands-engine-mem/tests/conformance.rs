@@ -7,6 +7,7 @@
 //! as the process. The lakes are the harness's one opener's, so a check
 //! can open its lake again.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -57,6 +58,11 @@ impl Harness for Memory {
                 Ok(store)
             })
         })
+    }
+
+    fn scratch(&self) -> PathBuf {
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("memory-conformance-{}", std::process::id()))
     }
 }
 

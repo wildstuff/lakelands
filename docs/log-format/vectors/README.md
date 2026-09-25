@@ -38,6 +38,18 @@ Two implementations check them, sharing no code:
 - `verify.py` recomputes the same values with its own RFC 8785
   serialiser and Python's standard library: `python3 verify.py`.
 
+`verify.py <dir>` checks a lake's log instead: an export
+(`lakelands export --to <dir>`) or a SQLite lake directory. It reads
+only `<dir>/log/` and checks every line is canonical, the positions run
+from 0 and name their files in 20 digits, the hash chain, every
+checkpoint against the position, the hash and the files before it, and
+that format versions are 1 or 2 and never go down; it prints the last position and hash, or the position where the
+files stop being the log. `crates/lakelands-store/tests/export.rs` runs
+it in CI over an export with a checkpoint and a re-key, and over the
+same export damaged, and `crates/lakelands-engine-sqlite/tests/lake_directory.rs`
+over a SQLite lake directory; both fail when `python3` is missing. `python3 verify.py .` checks this directory's own
+two segments the same way.
+
 The random ids at positions 0, 1, 2, 3, 6 and 7 are fixed values, so the
 hashes are reproducible. A change to the format that changes these bytes
 changes this directory in the same pull request.

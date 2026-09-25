@@ -15,6 +15,7 @@ mod cursors;
 mod decimals;
 mod derived_fields;
 mod embeddings;
+mod export;
 mod feed;
 mod fields;
 mod filters;
@@ -223,6 +224,12 @@ pub const ALL: &[Check] = &[
     rekey::STALE,
     rekey::SETS,
     rekey::AGAIN,
+    export::ONE_FILE_PER_SEGMENT,
+    export::VERIFIES,
+    export::MIXED_VERSIONS,
+    export::PREFIX,
+    export::NOT_EMPTY,
+    export::DAMAGE,
     settings::SETTING_AS_OF,
     feed::LIMIT_ZERO_IS_ONE,
     retire::SOURCE_ONLY_HAS_NO_UPSERT,

@@ -146,7 +146,9 @@ and every statement names it; no connection's `search_path` is set.
 - **The log.** It is kept as rows holding each event's canonical bytes
   unchanged, and an append is one transaction that checks the fence
   against the lease row. `lakelands_engine_pg::export` writes the
-  segments as the §4.2 files, which verify without the engine.
+  segments as the §4.2 files, which verify without the engine, for a
+  lake whose store cannot be opened; they are the bytes the store's
+  export writes.
 - **The connection.** It comes from `EngineConfig::Postgres`: the URL,
   the schema, `tls` (`require` by default, rustls, verified against
   `ca_file` or a system bundle; or `disable`) and the timeouts. A URL
@@ -931,7 +933,7 @@ hold, not what hosts implement:
 - `LakeStore`: one open lake, as its host holds it; it hands out a
   `Catalog` bound to a `WriteContext`, the change feed, the limits it was
   opened with (`limits`), lake maintenance (`verify`, `rebuild`,
-  `checkpoint`), restriction (`restrict`, `unrestrict`), `age` (above,
+  `checkpoint`; the export, below, is a function over it), restriction (`restrict`, `unrestrict`), `age` (above,
   under `SystemVocabulary`), and `purge_source` (below).
 
 `LakeStore::head` answers the last position the projection has folded:
@@ -978,6 +980,28 @@ still live, it prints `nothing to retire for <id>` and appends nothing.
 The suite's `purge` checks hold the sentences about what a purge retires
 and refuses on every engine; the lines `lakelands purge` prints are held
 by the CLI's tests.
+
+`lakelands_core::export::write(store, dir)` writes a lake's log as the
+segment files of the log format (§4.2) and a manifest, `export.json`,
+into an empty or absent directory
+(`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`).
+It is a function over any `LakeStore`, not a method of it: it reads the
+head and then the change feed through that head, splitting the files at
+each `checkpoint`, so it works on every engine and over a client, and
+costs the seams nothing. An export is the log as the host reads it:
+every event, retired and restricted records' history and every
+principal's writes included, unmasked. `export::verify(dir)` checks the
+files alone and answers the last position and hash, the pair
+`LakeStore::verify` answers for the lake.
+`lakelands export --to <dir>` prints one line per file (`<file>:
+positions a..b`) and `exported <lake> through position P to <dir>`,
+where P is the head the export read: a write landing while it runs is
+not in it. A directory that holds anything is refused as a failed
+precondition naming it, and nothing is written. The suite's `export`
+checks hold the files, the verifier and the refusal on every engine;
+the client's tests hold that an export over the REST door is the
+served store's own, byte for byte, and the PostgreSQL engine's tests
+that `lakelands_engine_pg::export` writes the same bytes.
 
 `Catalog::apply` declares a set of declarations as one: validated
 together, so a reference may point forward within the set, and appended

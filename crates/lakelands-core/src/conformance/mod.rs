@@ -41,6 +41,7 @@
 use std::fmt;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
@@ -53,7 +54,8 @@ use lakelands_api::seam::Seams;
 /// `name` is the function's own name. A trailing `, embedding` runs the
 /// check on a lake with the suite's embedding backend bound; a trailing
 /// `, reopens` hands the check the harness's [`Reopen`] as its second
-/// argument.
+/// argument, and a trailing `, scratch` the directory of its own the
+/// harness supplies ([`Harness::scratch`]).
 macro_rules! check {
     ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr) => {
         check!(@make $(#[$doc])* $konst = $run, $about, false, |store, _| Box::pin($run(store)));
@@ -63,7 +65,11 @@ macro_rules! check {
     };
     ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, reopens) => {
         check!(@make $(#[$doc])* $konst = $run, $about, false,
-            |store, reopen| Box::pin($run(store, reopen)));
+            |store, given| Box::pin($run(store, given.reopen)));
+    };
+    ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, scratch) => {
+        check!(@make $(#[$doc])* $konst = $run, $about, false,
+            |store, given| Box::pin($run(store, given.scratch)));
     };
     (@make $(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, $embedding:expr, $call:expr) => {
         $(#[$doc])*
@@ -116,6 +122,21 @@ pub trait Harness: Send + Sync {
     /// How this harness opens a lake it handed out again: the [`Reopen`]
     /// a check that meets the lake's next writer is given.
     fn reopener(&self) -> Reopen;
+
+    /// A directory of the harness's own, which a check that writes files
+    /// (an export) writes under: each such check is given the
+    /// subdirectory named after it, and removes what it wrote. The suite
+    /// reads no environment, so the engine's test chooses where it lies.
+    fn scratch(&self) -> PathBuf;
+}
+
+/// What the runner hands a check beside its lake: the harness's
+/// [`Reopen`], and the check's own directory under [`Harness::scratch`].
+pub struct Given {
+    /// How the harness opens the check's lake again.
+    pub reopen: Reopen,
+    /// A directory for the check alone; it may not exist yet.
+    pub scratch: PathBuf,
 }
 
 /// Closes a lake the harness opened and opens it again for writing with
@@ -139,8 +160,9 @@ pub struct Check {
     /// Where the rule is stated, and why it matters, in one sentence.
     pub about: &'static str,
     /// The check itself, run against a fresh lake; a check that reopens
-    /// its lake uses the harness's [`Reopen`], the others ignore it.
-    pub run: fn(Arc<dyn LakeStore>, Reopen) -> CheckFuture,
+    /// its lake uses the harness's [`Reopen`], one that writes files its
+    /// scratch directory, and the others ignore what they are [`Given`].
+    pub run: fn(Arc<dyn LakeStore>, Given) -> CheckFuture,
     /// Whether its lake binds the suite's embedding backend; without it,
     /// the lake has none.
     pub embedding: bool,
@@ -260,7 +282,11 @@ async fn run_check(harness: &dyn Harness, check: &Check) -> Result<(), Failure> 
         }
     };
     fixture::default_limits(store.as_ref())?;
-    match caught((check.run)(store, harness.reopener())).await {
+    let given = Given {
+        reopen: harness.reopener(),
+        scratch: harness.scratch().join(check.name),
+    };
+    match caught((check.run)(store, given)).await {
         Ok(outcome) => outcome,
         Err(panic) => Err(Failure::new(format!("the check panicked: {panic}"))),
     }

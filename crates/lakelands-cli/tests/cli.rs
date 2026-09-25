@@ -757,6 +757,34 @@ fn rebuild_prints_the_position_it_rebuilt_through() {
 }
 
 #[test]
+fn export_prints_its_files_and_the_head_it_read_and_refuses_a_directory_in_use() {
+    for backend in BACKENDS {
+        let sh = Shell::on("export", backend);
+        sh.lake();
+        sh.run(&["apply", &sh.fixture()]);
+        let to = sh.root.join("out").display().to_string();
+        ok(
+            &sh.run(&["export", "--to", &to]),
+            "log/00000000000000000000.jsonl: positions 0..7\n\
+             exported finance through position 7 to <root>/out\n",
+        );
+        // The mock hashes no event's canonical bytes, so only the store's
+        // export is a chain a verifier can follow.
+        if !matches!(backend, Backend::Mock) {
+            let files = lakelands_core::export::verify(&sh.root.join("out")).unwrap();
+            assert_eq!(files.through, lakelands_api::Position(7));
+        }
+        fails(
+            &sh.run(&["export", "--to", &to]),
+            "error: refused: <root>/out is not empty; an export writes only into an empty or new \
+             directory\n  what to do: export into an empty or new directory\n",
+        );
+        let empty = sh.run(&["export", "--to", ""]);
+        assert_eq!((empty.code, empty.out.as_str()), (2, ""), "{}", empty.err);
+    }
+}
+
+#[test]
 fn serve_needs_a_protocol_named() {
     for backend in BACKENDS {
         let sh = Shell::on("serve", backend);

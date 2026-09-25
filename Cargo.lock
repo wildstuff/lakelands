@@ -971,6 +971,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "lakelands-api",
+ "lakelands-core",
  "lakelands-engine-mem",
  "lakelands-mock",
  "lakelands-server",
