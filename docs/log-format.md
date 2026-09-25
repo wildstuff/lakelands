@@ -115,7 +115,12 @@ whose date-time is in any other form, even if it names a valid instant.
 `known_at` never decreases along the log. A writer whose clock reads
 earlier than the previous event's `known_at` writes the previous value
 again. Only `position` orders events; `known_at` is when the lake learned
-something, and it is what the fold materialises per field.
+something, and it is what the fold materialises per field. A verifier
+refuses a `known_at` below the one before it, naming the event's
+position, as it refuses a format version that goes down (§6); every log
+a Lakelands store has written keeps the rule, so checking it moves no
+format version. The rule is what lets a reader find the position the
+log had at an instant by a binary search (`LakeStore::position_at`).
 
 `seen_at` is the source's capture time for values from a source, as the
 source reported it. The lake does not check it against anything.

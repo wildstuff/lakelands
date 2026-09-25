@@ -237,3 +237,21 @@ fn the_version_2_rekey_event_recomputes() {
     let last = expected["events"].as_array().unwrap().last().unwrap();
     assert_eq!(event.prev.0, str_of(last, "hash"), "it follows position 7");
 }
+
+/// The negative vector `negative/known-at-goes-back`: the first segment
+/// of the vectors with the last event's `known_at` set before the one
+/// before it, its hash made right. `export::verify` refuses it at that
+/// position (log-format §1.3), as `verify.py` and `Lake::verify` do.
+#[test]
+fn the_negative_vector_whose_known_at_goes_back_is_refused_at_its_position() {
+    let dir = vectors().join("negative/known-at-goes-back");
+    match lakelands_core::export::verify(&dir) {
+        Err(lakelands_api::Error::Unavailable { message }) => assert!(
+            message.contains("at position 6:") && message.contains("known_at"),
+            "{message}"
+        ),
+        other => {
+            panic!("a known_at going back is refused at position 6, and it answered {other:?}")
+        }
+    }
+}

@@ -1004,7 +1004,8 @@ hold, not what hosts implement:
   `lakelands_api::tools::tools`.
 - `LakeStore`: one open lake, as its host holds it; it hands out a
   `Catalog` bound to a `WriteContext`, the change feed, the limits it was
-  opened with (`limits`), lake maintenance (`verify`, `rebuild`,
+  opened with (`limits`), the position the log had at an instant
+  (`position_at`, below), lake maintenance (`verify`, `rebuild`,
   `checkpoint`, `compact`; the export, below, is a function over it), restriction (`restrict`, `unrestrict`), `age` (above,
   under `SystemVocabulary`), and `purge_source` (below).
 
@@ -1040,6 +1041,16 @@ until the rebuild has folded through it, and a read as of a position it
 has folded answers. A handle
 opened only to read in another process meanwhile reads at the
 `folded_through` it finds, which is its head.
+
+`LakeStore::position_at(known_at)` answers the position the log had at
+an instant: the last position, no later than the head, whose event's
+`known_at` is at or before it, or none for an instant before the lake's
+first event. A read `as_of` the answer sees the lake as it stood then.
+It is a binary search over positions, reading one event per probe, about
+log₂ N reads; it relies on `known_at` never decreasing along the log,
+which the verifiers check (`docs/log-format.md` §1.3). It is the host's:
+`lakelands-client` answers it `unbound`, naming it (suite:
+`position_at_answers_the_last_position_at_or_before_an_instant`).
 
 `LakeStore::purge_source(source)` retires every live record one source
 brought in, across every type it reached, restricted records and the

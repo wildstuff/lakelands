@@ -142,6 +142,12 @@ impl LakeStore for Store {
     async fn compact(&self) -> Result<lakelands_api::write::CompactReport> {
         self.inner.compact().await
     }
+    async fn position_at(
+        &self,
+        known_at: lakelands_api::Timestamp,
+    ) -> lakelands_api::Result<Option<lakelands_api::Position>> {
+        self.inner.position_at(known_at).await
+    }
     async fn close(&self) -> Result<()> {
         self.inner.close().await
     }

@@ -169,6 +169,21 @@ async fn verify_py_verifies_an_export_with_a_checkpoint_and_a_rekey() {
 type Damage<'a> = (&'a SegmentFile, &'a dyn Fn(&mut Value), Position);
 
 /// What `verify.py <dir>` prints.
+/// The log format's negative vector, a `known_at` going back at position
+/// 6, is refused there by `verify.py` too (log-format §1.3).
+#[test]
+fn verify_py_refuses_the_negative_vector_whose_known_at_goes_back() {
+    let vectors = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors");
+    let said = python(
+        &vectors.join("verify.py"),
+        &vectors.join("negative/known-at-goes-back"),
+    );
+    assert!(
+        said.contains("FAIL position 6:") && said.contains("known_at"),
+        "verify.py refuses the negative vector at position 6:\n{said}"
+    );
+}
+
 fn python(script: &std::path::Path, dir: &std::path::Path) -> String {
     let run = Command::new("python3")
         .arg(script)
@@ -255,6 +270,9 @@ impl LakeStore for BreaksMidway {
     }
     async fn compact(&self) -> Result<lakelands_api::write::CompactReport> {
         self.0.inner.compact().await
+    }
+    async fn position_at(&self, known_at: lakelands_api::Timestamp) -> Result<Option<Position>> {
+        self.0.inner.position_at(known_at).await
     }
     async fn close(&self) -> Result<()> {
         self.0.inner.close().await

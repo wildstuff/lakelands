@@ -241,6 +241,10 @@ impl LakeStore for RemoteLake {
         Err(host_only("purge_source"))
     }
 
+    async fn position_at(&self, _known_at: Timestamp) -> Result<Option<Position>> {
+        Err(host_only("position_at"))
+    }
+
     async fn compact(&self) -> Result<CompactReport> {
         Err(host_only("compact"))
     }

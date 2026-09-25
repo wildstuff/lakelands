@@ -50,6 +50,15 @@ same export damaged, and `crates/lakelands-engine-sqlite/tests/lake_directory.rs
 over a SQLite lake directory; both fail when `python3` is missing. `python3 verify.py .` checks this directory's own
 two segments the same way.
 
+**A negative vector.** `negative/known-at-goes-back/log/` holds the
+first segment above with the event at position 6 given a `known_at`
+before the one of position 5, its hash made right, so only that rule is
+broken (§1.3). Every verifier refuses it at position 6:
+- `python3 verify.py negative/known-at-goes-back`;
+- `lakelands_core::export::verify`, in `log_vectors.rs`;
+- `Lake::verify`, over the same events handed to an engine, in
+  `crates/lakelands-store/tests/lake.rs`.
+
 The random ids at positions 0, 1, 2, 3, 6 and 7 are fixed values, so the
 hashes are reproducible. A change to the format that changes these bytes
 changes this directory in the same pull request.

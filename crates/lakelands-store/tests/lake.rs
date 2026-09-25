@@ -2360,3 +2360,53 @@ async fn retry_past_the_reach() {
         "the retry runs nothing again"
     );
 }
+
+/// The log format's negative vector, a `known_at` going back at position
+/// 6, handed to an engine as it stands and verified by the store:
+/// `verify` refuses it at that position (`docs/log-format.md` §1.3), as
+/// `export::verify` and `verify.py` do over its files.
+#[tokio::test(flavor = "multi_thread")]
+async fn verify_refuses_a_known_at_that_goes_back_naming_its_position() {
+    use lakelands_api::engine::CanonicalEvent;
+    use lakelands_api::event::{Digest, EventId};
+
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/log-format/vectors/negative/known-at-goes-back/log")
+        .join(format!("{:020}.jsonl", 0));
+    let text = std::fs::read_to_string(&path).unwrap();
+    let events: Vec<CanonicalEvent> = text
+        .lines()
+        .map(|line| {
+            let e: serde_json::Value = serde_json::from_str(line).unwrap();
+            let s = |m: &str| e[m].as_str().unwrap().to_owned();
+            CanonicalEvent {
+                position: Position(e["position"].as_u64().unwrap()),
+                id: EventId(s("id")),
+                prev: Digest(s("prev")),
+                hash: Digest(s("hash")),
+                fence: e["fence"].as_u64().unwrap(),
+                bytes: line.as_bytes().to_vec(),
+            }
+        })
+        .collect();
+    // The vectors' lake is named `vectors`; no other test uses the name.
+    let engine = opener()
+        .open(&Location::memory("vectors"), OpenMode::Create)
+        .unwrap();
+    let lease = engine.take_lease("vectors").unwrap();
+    assert_eq!(lease.fence, 1, "the vector's events carry fence 1");
+    engine.append(&lease, &events).unwrap();
+    engine.release_lease(&lease).unwrap();
+    drop(engine);
+
+    let store = open("vectors", OpenMode::Read).await.unwrap();
+    match store.verify(None, None).await {
+        Err(Error::Unavailable { message }) => assert!(
+            message.contains("at position 6") && message.contains("known_at"),
+            "{message}"
+        ),
+        other => {
+            panic!("a known_at going back is refused at position 6, and it answered {other:?}")
+        }
+    }
+}

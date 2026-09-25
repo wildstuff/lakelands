@@ -61,6 +61,7 @@ pub const ALL: &[Check] = &[
     positions::AS_OF_BEFORE_A_WRITE,
     positions::RETIRE_KEEPS_HISTORY,
     positions::PAST_THE_HEAD,
+    positions::POSITION_AT_AN_INSTANT,
     versions::VERSIONS_COUNT_CHANGES,
     versions::STALE_EXPECTED_VERSION,
     versions::IDEMPOTENT_RETRY,

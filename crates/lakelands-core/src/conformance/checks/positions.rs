@@ -6,6 +6,10 @@
 //! from, so reading as of that position sees the write, and reading as of
 //! the position before it does not. This is the check an engine cannot
 //! pass by keeping only current state.
+//!
+//! `position_at` turns an instant into such a position: the last one, no
+//! later than the head, whose event's `known_at` is at or before it
+//! (`docs/log-format.md` §1.3).
 
 use std::sync::Arc;
 
@@ -17,6 +21,12 @@ use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Must, all, before, declare, doors, field, get_at, owner, type_decl, upsert, value,
 };
+
+check!(
+    /// An instant answers the last position at or before it.
+    POSITION_AT_AN_INSTANT = position_at_answers_the_last_position_at_or_before_an_instant,
+    "009 and log-format §1.3: position_at answers, at each event's known_at, the last event at or before it; between two instants the earlier one's last; before the first event none; past the head the head; and a read as of the answer sees the lake as it stood then"
+);
 
 check!(
     /// Writes and reads both answer their position.
@@ -256,5 +266,111 @@ async fn a_read_as_of_a_position_past_the_head_is_refused_as_out_of_range(
         "a read as of position {beyond}, past the head {head}, must be refused as out of \
          range naming the head; it answered {got:?}"
     );
+    Ok(())
+}
+
+async fn position_at_answers_the_last_position_at_or_before_an_instant(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    declare(
+        cat.as_ref(),
+        &own,
+        type_decl("tick", vec![field("n", StorageKind::Number)]),
+    )
+    .await?;
+    // One record per append, each under a key of its own.
+    let mut written = Vec::new();
+    for n in 0..12 {
+        let key = format!("t{n}");
+        let o = upsert(cat.as_ref(), &own, "tick", &key, json!({"n": n})).await?;
+        written.push((key, n, o.position()));
+    }
+    let head = store.head().await.must("reading the head")?;
+    let events = store
+        .feed()
+        .poll(
+            Position::GENESIS,
+            &lakelands_api::seam::FeedFilter::default(),
+            10_000,
+        )
+        .await
+        .must("reading the log")?
+        .events;
+    let at = |t: lakelands_api::Timestamp| {
+        let store = store.clone();
+        async move {
+            store
+                .position_at(t)
+                .await
+                .must(&format!("asking position_at({t})"))
+        }
+    };
+    // The last position no later than the head at or before `t`.
+    let expected = |t: lakelands_api::Timestamp| {
+        events
+            .iter()
+            .rev()
+            .find(|e| e.position <= head && e.known_at <= t)
+            .map(|e| e.position)
+    };
+    let mut instants: Vec<lakelands_api::Timestamp> = events.iter().map(|e| e.known_at).collect();
+    instants.dedup();
+    for (i, t) in instants.iter().enumerate() {
+        let got = at(*t).await?;
+        ensure!(
+            got == expected(*t),
+            "position_at({t}), an event's known_at, answers {got:?}; the last event at or \
+             before it is {:?}",
+            expected(*t)
+        );
+        if let Some(next) = instants.get(i + 1)
+            && next.0 - t.0 >= 2
+        {
+            let between = lakelands_api::Timestamp(t.0 + 1);
+            let got = at(between).await?;
+            ensure!(
+                got == expected(*t),
+                "position_at({between}), between {t} and {next}, answers {got:?}; the last event \
+                 at {t} is {:?}",
+                expected(*t)
+            );
+        }
+    }
+    let before_first = lakelands_api::Timestamp(instants[0].0 - 1);
+    let got = at(before_first).await?;
+    ensure!(
+        got.is_none(),
+        "position_at({before_first}), before the lake's first event, answers {got:?}; none \
+         is expected"
+    );
+    let far = lakelands_api::Timestamp(instants[instants.len() - 1].0 + 3_600_000_000);
+    let got = at(far).await?;
+    ensure!(
+        got == Some(head),
+        "position_at({far}), past every event, answers {got:?}; the head {head} is expected"
+    );
+    // A read as of the answer sees each write, made at that instant or
+    // before it.
+    for (key, n, position) in &written {
+        let t = events
+            .iter()
+            .find(|e| e.position == *position)
+            .map(|e| e.known_at)
+            .ok_or_else(|| Failure::new(format!("the log holds position {position}")))?;
+        let answer = at(t)
+            .await?
+            .ok_or_else(|| Failure::new(format!("position_at({t}) answers none")))?;
+        let r = cat
+            .get(&own, &TypeName::from("tick"), get_at(key, Some(answer)))
+            .await
+            .must(&format!("reading `tick` `{key}` as of {answer}"))?;
+        ensure!(
+            value(&r.data, "n") == Some(&json!(n)),
+            "`tick` `{key}` was written at {t}; as of position_at({t}) = {answer} it reads {:?}",
+            value(&r.data, "n")
+        );
+    }
     Ok(())
 }

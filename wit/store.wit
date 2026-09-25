@@ -54,6 +54,9 @@ interface store {
         /// Give back the storage the projection no longer uses; appends
         /// nothing and changes no answer.
         compact: func() -> result<compact-report, error>;
+        /// The last position, no later than the head, whose event's
+        /// known-at is at or before the instant; none before the first.
+        position-at: func(known-at: timestamp) -> result<option<position>, error>;
         /// Seal the active segment and append a checkpoint.
         checkpoint: func() -> result<position, error>;
         /// Release the lease and close the lake.
