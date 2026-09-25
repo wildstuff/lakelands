@@ -158,7 +158,11 @@ own position is in its line. A line is at most 4 MiB before its line
 feed, however the body is cut into reads. A line that is longer, or is
 not a record, ends the ingest with a last line naming it (`invalid`);
 what came before it is committed, and since ingest is content-addressed,
-sending the whole body again appends nothing twice.
+sending the whole body again appends nothing twice. A refused ingest is
+answered even while the body is still arriving: the server reads the
+rest of the body and drops it, for at most fifteen seconds, before it
+closes, so a client that sends on past the refused line still reads
+the answer.
 
 ### The change feed
 
