@@ -491,8 +491,22 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
                 _ => None,
             };
             if let Some(ty) = target {
+                // As the store: a declaration that names an undeclared
+                // type is invalid, naming both.
                 if !st.types.contains_key(ty) {
-                    return Err(no_type(ty));
+                    return Err(invalid(match other {
+                        Declaration::Verb(v) => {
+                            format!("verb `{}` acts on `{ty}`, which is not declared", v.name)
+                        }
+                        Declaration::Trigger(t) => {
+                            format!("trigger `{}` watches `{ty}`, which is not declared", t.name)
+                        }
+                        Declaration::ObjectSet(s) => format!(
+                            "object set `{}` holds `{ty}`, which is not declared",
+                            s.name
+                        ),
+                        _ => format!("`{ty}` is not declared"),
+                    }));
                 }
                 if reserved(ty.as_str(), who) {
                     return Err(refused(Refusal::Reserved));

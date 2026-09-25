@@ -489,6 +489,19 @@
 < lakelands-position: 29
 < {"error":"refused","reason":{"head":29,"refusal":"out_of_range"},"todo":"ask for a position at or before 29","what":"refused: the lake's log ends at position 29"}
 
+# Caught up, the stream says so once: the comment `: next` names the
+# first position not yet examined, the `next` a poll would answer. What
+# the filter passes over is examined too: nothing matches here, and the
+# stream is caught up past the head.
+> GET /lakes/finance/feed?from=0&types=nowhere
+> authorization: Bearer k-owner
+< 200
+< cache-control: no-store
+< content-type: text/event-stream
+< lakelands-position: 29
+< : next 30
+< 
+
 # Links: a relation carried by link records, written through its link
 # routes under the record it starts from.
 > POST /lakes/finance/schema/declare_type
@@ -627,3 +640,51 @@
 < content-type: application/json
 < lakelands-position: 36
 < {"error":"not_found","missing":{"key":"C-1:P-1","kind":"record","type":"sys.link.contract.signed_by"},"todo":"check the name, or apply the declaration that introduces it first","what":"there is no `sys.link.contract.signed_by` with key `C-1:P-1`"}
+
+# Any declaration, and a set of them as one, for programs: `declare` and
+# `apply` under the schema grant. Agents author types with
+# `declare_type`; MCP serves no general `declare`.
+> POST /lakes/finance/schema/declare
+> authorization: Bearer k-owner
+> content-type: application/json
+> {"declaration":{"declare":"trigger","name":"went_paid","on":"invoice","when":"status = 'paid'"}}
+< 200
+< content-type: application/json
+< lakelands-position: 37
+< {"outcome":"applied","position":37}
+
+> POST /lakes/finance/schema/declare
+> authorization: Bearer k-clerk
+> content-type: application/json
+> {"declaration":{"declare":"trigger","name":"clerk_trigger","on":"invoice"}}
+< 403
+< content-type: application/json
+< lakelands-position: 37
+< {"error":"refused","reason":{"refusal":"not_granted"},"todo":"act as a principal whose grants allow it, or ask the lake's owner for a grant","what":"refused: you hold no grant for this"}
+
+> POST /lakes/finance/schema/apply
+> authorization: Bearer k-owner
+> content-type: application/json
+> {"declarations":[{"declare":"type","name":"memo2","fields":[{"name":"text","type":{"kind":"text"}}]},{"declare":"trigger","name":"memo_written","on":"memo2"}]}
+< 200
+< content-type: application/json
+< lakelands-position: 39
+< {"outcome":"applied","position":39}
+
+> POST /lakes/finance/schema/apply
+> authorization: Bearer k-owner
+> content-type: application/json
+> {"declarations":[{"declare":"trigger","name":"orphan","on":"nowhere"}]}
+< 422
+< content-type: application/json
+< lakelands-position: 39
+< {"error":"refused","reason":{"message":"trigger `orphan` watches `nowhere`, which is not declared","refusal":"invalid"},"todo":"correct the input and run the command again; nothing was written","what":"refused: trigger `orphan` watches `nowhere`, which is not declared"}
+
+> POST /lakes/finance/schema/declare
+> authorization: Bearer k-owner
+> content-type: application/json
+> {"declaration":{"declare":"trigger","name":"t2","on":"invoice"},"force":true}
+< 400
+< content-type: application/json
+< lakelands-position: 39
+< {"error":"refused","reason":{"message":"the arguments do not fit `POST …/schema/declare`: unknown field `force`, expected `declaration`","refusal":"invalid"},"todo":"correct the request against `POST …/schema/declare` in docs/rest.md and send it again","what":"the arguments do not fit `POST …/schema/declare`: unknown field `force`, expected `declaration`"}

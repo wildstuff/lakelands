@@ -50,10 +50,24 @@ use crate::stream;
 ///     my_runtime::block_on
 /// );
 /// ```
+///
+/// A check marked `#[host_ops]` calls a host operation of the
+/// [`LakeStore`] (`age`, `purge_source`), which a host holds next to its
+/// store and no network door offers. Given `remote` after `$block_on`,
+/// the macro expands for a lake reached over a network door: each marked
+/// check is ignored, saying why on its own line, and every other check
+/// runs unchanged. A check that calls a host operation without the mark
+/// fails there as `Unbound`, never silently.
 #[macro_export]
 macro_rules! door_checks {
     ($new:expr, $block_on:path) => {
-        $crate::door_checks!(@each $new, $block_on;
+        $crate::door_checks!(@all local, $new, $block_on);
+    };
+    ($new:expr, $block_on:path, remote) => {
+        $crate::door_checks!(@all remote, $new, $block_on);
+    };
+    (@all $at:ident, $new:expr, $block_on:path) => {
+        $crate::door_checks!(@each $at, $new, $block_on;
             every_write_advances_the_position,
             an_absent_field_is_unchanged_and_null_clears_it,
             one_forbidden_field_refuses_the_whole_write,
@@ -92,17 +106,28 @@ macro_rules! door_checks {
             schema_hashes_and_proposal_ids_have_the_stores_form,
             links_are_written_walked_and_held_to_their_relation,
             a_relation_declared_again_with_another_target_reshapes_its_links,
-            an_aging_rule_moves_what_holds_from_once_a_date,
-            a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_record,
+            #[host_ops] an_aging_rule_moves_what_holds_from_once_a_date,
+            #[host_ops] a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_record,
             a_value_type_is_loosened_by_declare_and_tightened_by_its_preflight);
     };
-    (@each $new:expr, $block_on:path; $($name:ident),* $(,)?) => {
+    (@each $at:ident, $new:expr, $block_on:path;
+        $($(#[$mark:ident])? $name:ident),* $(,)?) => {
         $(
-            #[test]
-            fn $name() {
-                $block_on($crate::checks::$name(($new)()));
-            }
+            $crate::door_checks!(@one $at, $new, $block_on, [$($mark)?] $name);
         )*
+    };
+    (@one remote, $new:expr, $block_on:path, [host_ops] $name:ident) => {
+        #[test]
+        #[ignore = "calls a host operation, which no network door offers"]
+        fn $name() {
+            $block_on($crate::checks::$name(($new)()));
+        }
+    };
+    (@one $at:ident, $new:expr, $block_on:path, [$($mark:ident)?] $name:ident) => {
+        #[test]
+        fn $name() {
+            $block_on($crate::checks::$name(($new)()));
+        }
     };
 }
 
@@ -414,17 +439,6 @@ impl Fixture {
 
     async fn head(&self) -> Position {
         self.store.head().await.expect("the lake has a head")
-    }
-
-    /// The log's length, as the feed sees it.
-    async fn events(&self) -> usize {
-        let b = self
-            .store
-            .feed()
-            .poll(Position::GENESIS, &FeedFilter::default(), u32::MAX)
-            .await
-            .expect("the feed reads");
-        b.events.len()
     }
 }
 
@@ -1385,12 +1399,10 @@ pub async fn the_feed_is_the_log_by_position(store: Arc<dyn LakeStore>) {
         .await
         .unwrap();
     assert!(empty.events.is_empty());
-    assert_eq!(f.store.rebuild().await.unwrap(), p2);
-    assert_eq!(
-        f.events().await,
-        b.head.0 as usize + 1,
-        "a rebuild changes nothing in the log"
-    );
+    // That a rebuild changes nothing in the feed is the conformance
+    // suite's to claim, on every engine
+    // (`rebuilding_the_projection_changes_nothing_in_the_feed`): a rebuild
+    // is the host's, and no door serves it.
 }
 
 /// A pattern step over a relation the type does not declare is refused,

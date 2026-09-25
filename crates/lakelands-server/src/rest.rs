@@ -560,6 +560,22 @@ fn matched(method: &Method, rest: &[String]) -> Option<Target> {
             BodyAs::Args,
             Writes::No,
         ),
+        (["schema", "declare"], Method::POST) => r(
+            Door::Declare,
+            "POST …/schema/declare",
+            none,
+            &[],
+            BodyAs::Args,
+            Writes::No,
+        ),
+        (["schema", "apply"], Method::POST) => r(
+            Door::Apply,
+            "POST …/schema/apply",
+            none,
+            &[],
+            BodyAs::Args,
+            Writes::No,
+        ),
         (["schema", "add_field"], Method::POST) => r(
             Door::AddField,
             "POST …/schema/add_field",
@@ -1030,6 +1046,9 @@ async fn tail(
     tx: mpsc::Sender<Bytes>,
 ) {
     let mut last_sent = Instant::now();
+    // The `next` last told, so a client that stops when caught up hears it
+    // once per position, not once per pause.
+    let mut told: Option<Position> = None;
     loop {
         let batch = match source.poll(at, &filter, FEED_BATCH).await {
             Ok(b) => b,
@@ -1057,7 +1076,19 @@ async fn tail(
         let caught_up = batch.next > batch.head || batch.next == at;
         at = batch.next;
         if caught_up {
-            if last_sent.elapsed() >= KEEP_ALIVE {
+            // Caught up: the first position not yet examined, the `next` a
+            // poll would answer, told when it moved since it was last told.
+            if told != Some(at) {
+                if tx
+                    .send(format!(": next {}\n\n", at.0).into())
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                told = Some(at);
+                last_sent = Instant::now();
+            } else if last_sent.elapsed() >= KEEP_ALIVE {
                 if tx
                     .send(Bytes::from_static(b": keep-alive\n\n"))
                     .await
