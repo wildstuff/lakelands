@@ -84,8 +84,10 @@ HTTP) and REST from one catalog. Agents never write a query language.
 > deliverer, relations with fields of their own, carried by link
 > records, aging by date (`lakelands age`), retracting a source as one
 > act (`lakelands purge`), and MCP notifications of the changes a
-> session may see, and the ticker in `serve` that runs aging daily.
-> The mirror between lakes comes after.
+> session may see, the ticker in `serve` that runs aging daily, and
+> `lakelands-client`, which holds a lake another process serves over
+> the REST door as the same `LakeStore` the store is. The mirror
+> between lakes comes after.
 
 ## Try it
 
@@ -166,8 +168,9 @@ format, per-field provenance, positions on every answer, the engine
 contract and the seams. What came right after arrived through those
 seams without changing them: the PostgreSQL engine, the REST door, the
 OpenAI-compatible embedding client and webhook delivery of fired
-triggers and set changes, and MCP notifications, all in `0.2.0`. The repository goes public once The Wild runs on a
-tagged Lakelands.
+triggers and set changes, MCP notifications and a client for a lake
+served over REST, all in `0.2.0`. The repository goes public once The
+Wild runs on a tagged Lakelands.
 
 ## Licence
 
