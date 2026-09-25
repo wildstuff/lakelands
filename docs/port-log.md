@@ -38,6 +38,15 @@ files it held at the freeze, and Lakelands has taken nothing new from
 the source since. The row below is still the only one. **The list is
 closed for `0.2.0` as of `c0b30a3f2e`.**
 
+**Checked again on 2026-09-25, a second time before the `0.2.0` tag**,
+against the source's mainline at `db4b2949e7`: the 113 commits after
+`c0b30a3f2e` (284 after the freeze in all) were checked against all nine
+roots, `{tools}` by its ten files. None of them touches a root, each
+root still holds the files it held at the freeze, and Lakelands has
+taken nothing new from the source since. The row below is still the only
+one. **The list is closed for `0.2.0` as of `db4b2949e7`**; on the day of
+the tag only the commits after it are checked, if the mainline has moved.
+
 | Source commit | Behaviour, in one line | Ported in, or not applicable and why |
 |---|---|---|
 | `5914084de9` | One German user-interface sentence in the capabilities module changes its form of address from formal to informal. | Not applicable: the capabilities module was not carried (cut in O2: there is no capability negotiation; see `docs/import-ledger.md`), and no storage behaviour changes: no event, no fold rule, no signature, no stored byte. |
