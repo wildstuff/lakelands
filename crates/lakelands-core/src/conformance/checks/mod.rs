@@ -38,6 +38,7 @@ mod retire;
 mod schema;
 mod search;
 mod settings;
+mod streaming;
 mod value_types;
 mod values;
 mod versions;
@@ -254,4 +255,5 @@ pub const ALL: &[Check] = &[
     purge::BACKED_NO_OWNER,
     value_types::CONSTRAINT_AND_FORMAT,
     value_types::CONDITION_NEVER_HOLDS,
+    streaming::STREAMS,
 ];

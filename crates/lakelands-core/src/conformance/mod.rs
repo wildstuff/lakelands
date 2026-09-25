@@ -54,8 +54,9 @@ use lakelands_api::seam::Seams;
 /// `name` is the function's own name. A trailing `, embedding` runs the
 /// check on a lake with the suite's embedding backend bound; a trailing
 /// `, reopens` hands the check the harness's [`Reopen`] as its second
-/// argument, and a trailing `, scratch` the directory of its own the
-/// harness supplies ([`Harness::scratch`]).
+/// argument, a trailing `, scratch` the directory of its own the
+/// harness supplies ([`Harness::scratch`]), and a trailing `, given` all
+/// of [`Given`].
 macro_rules! check {
     ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr) => {
         check!(@make $(#[$doc])* $konst = $run, $about, false, |store, _| Box::pin($run(store)));
@@ -70,6 +71,10 @@ macro_rules! check {
     ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, scratch) => {
         check!(@make $(#[$doc])* $konst = $run, $about, false,
             |store, given| Box::pin($run(store, given.scratch)));
+    };
+    ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, given) => {
+        check!(@make $(#[$doc])* $konst = $run, $about, false,
+            |store, given| Box::pin($run(store, given)));
     };
     (@make $(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, $embedding:expr, $call:expr) => {
         $(#[$doc])*
@@ -128,15 +133,56 @@ pub trait Harness: Send + Sync {
     /// subdirectory named after it, and removes what it wrote. The suite
     /// reads no environment, so the engine's test chooses where it lies.
     fn scratch(&self) -> PathBuf;
+
+    /// What the harness counts of its process's heap, for the checks that
+    /// claim an operation over a whole lake runs in bounded memory. A
+    /// harness without one runs those checks for what they claim besides
+    /// memory, and they report the heap as not measured.
+    fn meter(&self) -> Option<Arc<dyn Meter>> {
+        None
+    }
+
+    /// How many records the suite's large lake holds at its first size;
+    /// it grows to four times this. [`LARGE_LAKE`] unless the engine's
+    /// test asks for more, as a long run does.
+    fn large_lake(&self) -> u32 {
+        LARGE_LAKE
+    }
+}
+
+/// The records of the suite's large lake at its first size, when the
+/// harness does not name another: more than one page of the feed and of
+/// an export at the default limits, small enough for every pull request.
+pub const LARGE_LAKE: u32 = 2_000;
+
+/// A count of the heap the process holds, kept by the engine's test
+/// binary (its global allocator), so that the suite can measure what an
+/// operation holds while it runs. The suite never installs an allocator.
+pub trait Meter: Send + Sync {
+    /// The bytes allocated and not yet freed, now.
+    fn live(&self) -> u64;
+
+    /// The most [`Meter::live`] has been since the last reset.
+    fn peak(&self) -> u64;
+
+    /// Start a new peak at what is live now.
+    fn reset_peak(&self);
 }
 
 /// What the runner hands a check beside its lake: the harness's
-/// [`Reopen`], and the check's own directory under [`Harness::scratch`].
+/// [`Reopen`], the check's own directory under [`Harness::scratch`], and
+/// the harness's [`Meter`] and large-lake size.
 pub struct Given {
     /// How the harness opens the check's lake again.
     pub reopen: Reopen,
     /// A directory for the check alone; it may not exist yet.
     pub scratch: PathBuf,
+    /// The harness's [`Meter`], if it has one.
+    pub meter: Option<Arc<dyn Meter>>,
+    /// The harness's [`Harness::large_lake`].
+    pub large_lake: u32,
+    /// The harness's name, for a check that reports figures.
+    pub harness: String,
 }
 
 /// Closes a lake the harness opened and opens it again for writing with
@@ -285,6 +331,9 @@ async fn run_check(harness: &dyn Harness, check: &Check) -> Result<(), Failure> 
     let given = Given {
         reopen: harness.reopener(),
         scratch: harness.scratch().join(check.name),
+        meter: harness.meter(),
+        large_lake: harness.large_lake(),
+        harness: harness.name().to_owned(),
     };
     match caught((check.run)(store, given)).await {
         Ok(outcome) => outcome,

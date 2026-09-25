@@ -29,6 +29,9 @@ tokio = { version = "1", default-features = false }
 async-trait = "0.1"
 futures-core = "0.3"
 regex = "1"
+# A counting global allocator for the conformance tests' heap meter; the
+# workspace forbids unsafe code, which an allocator needs.
+peak_alloc = "0.3"
 lakelands-core = { path = "crates/lakelands-core" }
 lakelands-store = { path = "crates/lakelands-store" }
 lakelands-engine-mem = { path = "crates/lakelands-engine-mem" }

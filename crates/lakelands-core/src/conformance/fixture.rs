@@ -410,3 +410,27 @@ pub async fn join_all<T>(callers: Vec<Caller<'_, T>>) -> Vec<T> {
         .map(|v| v.expect("every caller ended"))
         .collect()
 }
+
+/// Wait `d` without a runtime: a thread sleeps and wakes the task. For a
+/// check that must let the lake run on its own for a while, as a slow
+/// consumer does.
+pub async fn pause(d: std::time::Duration) {
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut started = false;
+    std::future::poll_fn(|cx| {
+        if done.load(std::sync::atomic::Ordering::Acquire) {
+            return Poll::Ready(());
+        }
+        if !started {
+            started = true;
+            let (done, waker) = (done.clone(), cx.waker().clone());
+            std::thread::spawn(move || {
+                std::thread::sleep(d);
+                done.store(true, std::sync::atomic::Ordering::Release);
+                waker.wake();
+            });
+        }
+        Poll::Pending
+    })
+    .await
+}
