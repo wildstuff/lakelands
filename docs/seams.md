@@ -978,6 +978,13 @@ hold, not what hosts implement:
   `checkpoint`, `compact`; the export, below, is a function over it), restriction (`restrict`, `unrestrict`), `age` (above,
   under `SystemVocabulary`), and `purge_source` (below).
 
+A host writes a reaction through a `Catalog` bound to a reactive
+`WriteContext` one deeper than the write it reacts to, and the log keeps
+each write's depth. The store refuses a write deeper than the lake's
+`max_reactive_depth`, a limit of its `Location`, as `too_deep` naming
+that ceiling, on every door that writes, and appends nothing (suite:
+`a_chain_of_reactions_past_the_lakes_ceiling_is_refused_too_deep_and_appends_nothing`).
+
 `LakeStore::head` answers the last position the projection has folded:
 a position a read can be answered at at once, on every engine. An
 append is durable before it is folded; the store publishes its head

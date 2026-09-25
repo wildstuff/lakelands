@@ -31,3 +31,13 @@ must learn. A caller holds a principal, not a context.
 - It is not a substitute for the change feed. A host learns what to
   react to from the feed (004) and writes its reaction with a reactive
   context.
+
+## Extended: the depth is the chain's, whatever the origin (2026-09-25)
+
+The ceiling holds for every write whose depth passes it, whatever origin
+its context names. A depth above 0 means the write is a reaction, so a
+direct or scheduled context deeper than the ceiling contradicts itself.
+The store refuses it as `too_deep` rather than believe the origin: the
+context is the host's, the ceiling the store's. The conformance check
+`a_chain_of_reactions_past_the_lakes_ceiling_is_refused_too_deep_and_appends_nothing`
+holds it on every engine.

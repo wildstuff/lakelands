@@ -16,7 +16,7 @@ use lakelands_api::id::{
     VerbName, Version,
 };
 use lakelands_api::ontology::{Authority, FieldDecl, Risk, VerbDecl, VerbEffect};
-use lakelands_api::principal::{Access, Principal, PrincipalKind, WriteContext, WriteOrigin};
+use lakelands_api::principal::{Access, Principal, PrincipalKind, WriteContext};
 use lakelands_api::query::{Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Walk};
 use lakelands_api::read::{Direction, Find, Found, Get, OrderBy, ReadAt, Reply};
 use lakelands_api::record::{Origin, Patch, Record, SourceRecord, StoredRecord, Value};
@@ -154,12 +154,12 @@ impl MockCatalog {
         Ok(())
     }
 
-    /// Admit a write: also refuse a reaction chain deeper than the lake
-    /// allows.
+    /// Admit a write: also refuse a write deeper in a chain of reactions
+    /// than the lake allows, whatever origin its context names.
     fn admit_write(&self, who: &Principal) -> Result<()> {
         self.admit(who)?;
         let max = self.shared.limits.max_reactive_depth;
-        if self.context.origin == WriteOrigin::Reactive && self.context.depth > max {
+        if self.context.depth > max {
             return Err(refused(Refusal::TooDeep { max }));
         }
         Ok(())
