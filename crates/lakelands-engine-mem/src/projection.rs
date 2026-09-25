@@ -249,6 +249,30 @@ impl Projection {
             .take_while(move |((t, _), _)| t == ty)
             .filter_map(move |(_, h)| h.at(at))
     }
+
+    /// At most `n` records of `ty` in their state at `at` after the key
+    /// `after` (from the first when `None`), in key order, whatever their
+    /// flags.
+    pub(crate) fn records_after(
+        &self,
+        ty: &TypeName,
+        at: Option<Position>,
+        after: Option<&str>,
+        n: u32,
+    ) -> Vec<StoredRecord> {
+        use std::ops::Bound;
+        let from = match after {
+            Some(k) => Bound::Excluded((ty.clone(), RecordKey::from(k))),
+            None => Bound::Included((ty.clone(), RecordKey::from(""))),
+        };
+        self.records
+            .range((from, Bound::Unbounded))
+            .take_while(|((t, _), _)| t == ty)
+            .filter_map(|(_, h)| h.at(at))
+            .take(n as usize)
+            .cloned()
+            .collect()
+    }
 }
 
 #[cfg(test)]

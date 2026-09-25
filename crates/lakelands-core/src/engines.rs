@@ -208,6 +208,57 @@ pub fn cmp_places(a: &Place<'_>, b: &Place<'_>, order_by: &[Order]) -> Ordering 
         .unwrap_or_else(|| a.key.cmp(b.key))
 }
 
+/// Whether a scan selects `record`: its flags, `valid_at` and the filter.
+pub fn admits(decl: Option<&TypeDecl>, record: &StoredRecord, scan: &Scan) -> bool {
+    (scan.retired || !record.retired)
+        && (scan.restricted || !record.restricted)
+        && valid(decl, record, scan.valid_at)
+        && selects(scan.filter.as_ref(), record)
+}
+
+/// How many rows a key-ordered scan asks its storage for at a time: the
+/// page it wants, at most 1 024, so an unfiltered page reads its rows and
+/// no more, and a filtered one reads batch after batch until it is full.
+pub fn key_batch(scan: &Scan) -> u32 {
+    scan.limit.clamp(1, 1024)
+}
+
+/// A scan ordered by the key alone, which storage kept in key order can
+/// answer by reading from `after` and stopping at `limit`: its rows are
+/// read in batches (`key_batch`), each continuing after the last key read,
+/// until the page is full or the type is out. `read(after, n)` answers at
+/// most `n` states after the key `after` (from the first when `None`), in
+/// key order. It answers what [`scan`] answers over every state.
+pub fn scan_in_key_order<E>(
+    decl: Option<&TypeDecl>,
+    scan: &Scan,
+    mut read: impl FnMut(Option<&str>, u32) -> Result<Vec<StoredRecord>, E>,
+) -> Result<Vec<StoredRecord>, E> {
+    debug_assert!(scan.order_by.is_empty());
+    let mut out = Vec::new();
+    if scan.limit == 0 {
+        return Ok(out);
+    }
+    let batch = key_batch(scan);
+    let mut after: Option<String> = scan.after.as_ref().map(|a| a.key.to_string());
+    loop {
+        let rows = read(after.as_deref(), batch)?;
+        let read_all = rows.len() < batch as usize;
+        for r in rows {
+            after = Some(r.key.to_string());
+            if admits(decl, &r, scan) {
+                out.push(r);
+                if out.len() >= scan.limit as usize {
+                    return Ok(out);
+                }
+            }
+        }
+        if read_all {
+            return Ok(out);
+        }
+    }
+}
+
 /// A scan over the states of one type's records at one position, `decl`
 /// the type's declaration in force there: the flags, `valid_at` and the
 /// filter select; the sort keys order; the keyset position continues;
@@ -219,9 +270,7 @@ pub fn scan<'a>(
 ) -> Vec<StoredRecord> {
     let mut rows: Vec<&StoredRecord> = records
         .into_iter()
-        .filter(|r| (scan.retired || !r.retired) && (scan.restricted || !r.restricted))
-        .filter(|r| valid(decl, r, scan.valid_at))
-        .filter(|r| selects(scan.filter.as_ref(), r))
+        .filter(|r| admits(decl, r, scan))
         .collect();
     rows.sort_by(|a, b| {
         cmp_places(

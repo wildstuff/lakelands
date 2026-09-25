@@ -35,13 +35,13 @@
 //! fourfold and exceeds the tolerance by far, even at the suite's small
 //! sizes.
 //!
-//! Ingest, the feed, the export and its verification are held to this.
-//! Three more are measured and reported against the same tolerance but
-//! not held to it yet, each until the fix named in its line turns the
-//! claim on. The rebuild and the reopen fold a range read whole
-//! (lakelands#130). The walk through `find` measures each page on its
-//! own, as its largest page: a page may hold its rows, not the type, but
-//! today every page reads the whole type (lakelands#134). A harness
+//! Ingest, the feed, the export and its verification are held to this,
+//! and so is the walk through `find`, which measures each page on its
+//! own, as its largest page: a page holds its rows, not the type
+//! (lakelands#134). Two more are measured and reported against the same
+//! tolerance but not held to it yet, until the fix named in their lines
+//! turns the claim on: the rebuild and the reopen fold a range read whole
+//! (lakelands#130). A harness
 //! without a meter runs everything else the check claims and reports the
 //! heap as not measured.
 //!
@@ -95,7 +95,7 @@ use crate::export;
 check!(
     /// A large lake goes through ingest, the feed and export in bounded memory.
     STREAMS = a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it,
-    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start and an export with its verification hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB; a walk of a type through find, a rebuild and a reopen are measured against the same bound",
+    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start and an export with its verification, and each page of a walk of a type through find, hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB; a rebuild and a reopen are measured against the same bound",
     given
 );
 
@@ -639,7 +639,7 @@ impl Size<'_> {
         );
         self.row(
             "find-walk",
-            Claim::Reported("lakelands#134"),
+            Claim::Held,
             records,
             head.0 + 1,
             format!("{pages} pages of at most {limit}; the largest page"),

@@ -250,12 +250,27 @@ key ascending to break ties; values ranked and compared by
 `lakelands_core::expr::order::cmp_values`, the one sort order
 (`docs/decisions/029-every-answer-has-one-order.md`) — then only those
 strictly after `scan.after` in that order, then at most `scan.limit`
-(literal: 0 answers nothing). The store sorts and pages itself in this
-release, and asks for unordered, unlimited scans; an engine implements
-`order_by`, `after` and `limit` anyway, so that it can take over paging
-later without a contract change. Moving paging to the engine is an
+(literal: 0 answers nothing). `find` pages through this contract: the
+store asks for the page it answers, in its order, after the cursor's
+row, and one row more than it answers. An engine's paging is an
 optimisation that may never change an answer
 (`docs/decisions/029-every-answer-has-one-order.md`).
+
+**The ceiling of `find`.** `find` asks the engine for its page,
+never the type: its order, the row it continues after, and `limit + 1`
+rows. A filter only the store can evaluate is applied over engine pages
+read one after another, so its cost is the rows read to fill the page:
+bounded in memory, linear in time. A page ordered by key reads about
+`limit` rows, not the type; every engine reads it in key order from
+`after` and stops when it is full (`lakelands_core::engines::
+scan_in_key_order`). A page ordered by a field reads the type at the
+position and sorts it, and holds it only for that answer, because the
+one order across kinds has no SQL `ORDER BY`. Because each such engine
+page sorts the type again, a filter only the store evaluates asks for
+twice as many rows each time it reads on: a page costs a few sorts of the
+type, never one per `limit` rows. Bounding the sort is lakelands#137,
+after `0.2.0`. A view type's page is computed from its source's records,
+whole, as before.
 
 **`lexical`.** Search is ranked retrieval: the view's position decides
 what may be seen, not how the current text ranks. A view answers from
@@ -346,7 +361,7 @@ holds it to.
 | edges `Out`, `In`, `Both`, a self-link once, links to a retired record kept | engine: `edges_walk_in_out_and_both`, `edges_to_a_retired_record_are_returned` |
 | edges from link records: `Out` and `In` by `from` and `to`, the link's fields in `Edge.fields`, a removed link gone, an earlier position's links | engine: `edges_over_a_link_relation_come_from_the_live_link_records_at_the_views_position`; doors: the sixteen `links` checks |
 | a rebuild answers every read as before | suite: `a_rebuilt_projection_answers_every_read_as_the_live_one_did` |
-| ingest, the feed, an export and its verification hold as much memory at four times a lake's size as at its first; a rebuild and a reopen are measured and reported until lakelands#130, and a walk of a type through `find` (its largest page) until lakelands#134 | suite: `a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it` |
+| ingest, the feed, an export and its verification hold as much memory at four times a lake's size as at its first; so does each page of a walk of a type through `find` (lakelands#134); a rebuild and a reopen are measured and reported until lakelands#130 | suite: `a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it` |
 | a compact answers every read as before, appends nothing, and writes wait for it; the space it gives back | suite: the four `compact` checks; engine: SQLite `tests/compact.rs`, PostgreSQL `a_compact_vacuums_the_projection_beside_an_open_reader_and_reports_its_size` |
 | `scan` filters, the retired and restricted flags, `valid_at` | suite, through `find` and `get` (paging, restriction, views, decimals) |
 | `mark_applied` / `applied` recognise a redelivery | suite: `the_same_content_ingested_twice_appends_nothing_the_second_time`, `a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_appends_nothing` |
@@ -360,6 +375,8 @@ holds it to.
 | a commit backwards, or with a put past `through`, is `Invalid`; a view does not see an open transaction; a view keeps its position after later commits | engine: `a_commit_backwards_or_with_a_put_past_through_is_invalid`, `a_view_does_not_see_an_open_transaction`, `a_view_keeps_its_position_after_later_commits` |
 | a put of the same thing at the same position replaces it | engine: `a_put_at_the_same_position_replaces_the_state_there` |
 | `scan`'s order, `after` and `limit`, including a limit of 0 and values of mixed kinds | engine: `mixed_kinds_sort_the_same_on_every_engine`, `a_scan_continues_strictly_after_its_keyset_position` |
+| a key-ordered `scan` read in batches answers as one scan over every state | engine: `a_key_ordered_scan_answers_across_its_batches_as_one_scan` |
+| a `find` page crosses the seam as about `limit` rows, with or without a filter only the store evaluates | store: `tests/find_pages.rs` |
 | `scan`'s filter matches the evaluator exactly, including comparisons across kinds and filters that error; the flags and `valid_at` | engine: `scan_filters_exactly_as_the_evaluator_including_mixed_kinds_and_errors`, `scan_honours_retired_restricted_and_valid_at` |
 | `lexical`'s hit set, its language, searchable fields only, live only (restricted included), ties by key, `k`; at an earlier position, visibility from the position and text from the head | engine: `lexical_hits_are_the_pipelines_over_searchable_live_records`, `lexical_finds_every_token_the_pipeline_makes_beyond_ascii`, `lexical_at_an_earlier_position_ranks_by_the_head_and_keeps_what_was_visible_then` |
 | `nearest`'s exact top `k` by cosine, ties, a zero vector, a wrong length; `put` replaces; `clear` empties the index | engine: `nearest_ranks_by_cosine_with_ties_by_key`, `a_zero_vector_scores_zero_and_a_wrong_length_is_invalid`, `put_replaces_a_vector_and_remove_forgets_it`, `clear_empties_the_projection_and_the_vector_index` |

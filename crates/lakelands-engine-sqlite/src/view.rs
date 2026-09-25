@@ -104,6 +104,38 @@ impl Read<'_> {
         rows.map(|r| decode_record(&r.map_err(sql)?)).collect()
     }
 
+    /// At most `n` records of a type at the view's position after the key
+    /// `after` (from the first when `None`), in key order: a seek into the
+    /// primary key `(ty, key, since)`, which sorts bytewise as keys do. The
+    /// first page and a later one are two statements, so that neither
+    /// hides the seek behind an `OR`.
+    fn records_after(
+        &self,
+        ty: &TypeName,
+        after: Option<&str>,
+        n: u32,
+    ) -> Result<Vec<StoredRecord>> {
+        let from = if after.is_some() { "AND key > ?4" } else { "" };
+        let mut stmt = self
+            .conn
+            .prepare_cached(&format!(
+                "SELECT state FROM records WHERE ty = ?1 AND {} {from} ORDER BY key LIMIT ?3",
+                holds_at(2)
+            ))
+            .map_err(sql)?;
+        let state = |r: &rusqlite::Row<'_>| r.get::<_, String>(0);
+        let rows: Vec<String> = match after {
+            Some(after) => stmt
+                .query_map(params![ty.as_str(), self.at(), n, after], state)
+                .and_then(Iterator::collect),
+            None => stmt
+                .query_map(params![ty.as_str(), self.at(), n], state)
+                .and_then(Iterator::collect),
+        }
+        .map_err(sql)?;
+        rows.iter().map(|r| decode_record(r)).collect()
+    }
+
     /// Records of a type by their keys, at the view's position.
     fn records_by_key(&self, ty: &TypeName, keys: BTreeSet<String>) -> Result<Vec<StoredRecord>> {
         let mut out = Vec::with_capacity(keys.len());
@@ -219,6 +251,13 @@ impl ProjectionView for SqliteView<'_> {
             };
             let records = match narrowed {
                 Some(keys) => r.records_by_key(ty, keys)?,
+                // Ordered by the key alone, the page is read from `after`
+                // in key order and stops when it is full.
+                None if scan.order_by.is_empty() => {
+                    return engines::scan_in_key_order(decl.as_ref(), scan, |after, n| {
+                        r.records_after(ty, after, n)
+                    });
+                }
                 None => r.records(ty)?,
             };
             Ok(engines::scan(decl.as_ref(), &records, scan))
