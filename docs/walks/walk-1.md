@@ -122,8 +122,10 @@ September.
 
 ## The commands
 
-From a fresh clone, in the repository's root. The `walk` directory may
-be created anywhere; the page creates it inside the clone, so the paths
+From a fresh clone, in the repository's root. `cargo install` puts
+`lakelands` in cargo's default root; to install it elsewhere, add
+`--root <dir>` and put `<dir>/bin` first on your `PATH`. The `walk`
+directory may be created anywhere; the page creates it inside the clone, so the paths
 to the example are short. The walk runs on the
 SQLite engine, the default of `lake new`: a lake kept in memory lives
 only as long as its process, so a sequence of CLI commands cannot walk
@@ -181,8 +183,9 @@ so the server need not be run by hand. A pin holds within one session
 only, so each run below makes a pinned turn's calls together.
 
 Every `serve --mcp` process becomes the lake's writer and appends one
-`lease_taken`, so each run moves the head by one: it is 49 in the first
-run after the September ingest, 50 in the next, and so on. `<head>`
+`lease_taken`, so each run moves the head by one: the September ingest
+ends at 50, so it is 51 in the first run after it (the `tools/list`
+below), 52 in the next, and so on. `<head>`
 below is the run's own head. A reply's `position` is the position it
 reflects; `pin`'s reply also says what is `pinned`.
 
