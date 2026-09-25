@@ -343,9 +343,11 @@ impl Catalog for RemoteCatalog {
     ///
     /// The answer is held to the feed's silence bound, in two phases.
     /// While records are sent, the bound counts only while the
-    /// connection holds a record it has not taken — the server stopped
-    /// reading. Time spent waiting on the source is the caller's pace and
-    /// never counts, however slow. Once the source has ended, an answer
+    /// connection holds a record it has not taken and the answer says
+    /// nothing — the server stopped reading, and does not say it works:
+    /// any line of the answer, the empty line it sends while a window
+    /// commits included, starts the bound again. Time spent waiting on
+    /// the source is the caller's pace and never counts, however slow. Once the source has ended, an answer
     /// silent for the bound is taken for dead. Either way the stream ends
     /// with `Unavailable`. A line longer than `max_answer_bytes` ends it
     /// the same way.
@@ -371,6 +373,7 @@ impl Catalog for RemoteCatalog {
         Ok(Box::pin(Commits {
             silent: Box::pin(tokio::time::sleep(self.wire.silence)),
             armed: false,
+            spoke: Instant::now(),
             wire: self.wire.clone(),
             path,
             body: r.into_body(),
@@ -486,6 +489,8 @@ struct Commits {
     silent: Pin<Box<tokio::time::Sleep>>,
     /// Whether `silent` counts from the last frame after the upload.
     armed: bool,
+    /// When the answer last brought a frame.
+    spoke: Instant,
     wire: Arc<Wire>,
     path: String,
     body: Incoming,
@@ -552,9 +557,10 @@ impl Stream for Commits {
                             if taken.on_source {
                                 return Poll::Pending;
                             }
-                            // A record is ready and the connection has not
-                            // taken it: the server stopped reading.
-                            let due = taken.at + this.wire.silence;
+                            // A record is ready, the connection has not
+                            // taken it and the answer is quiet: the server
+                            // stopped reading.
+                            let due = taken.at.max(this.spoke) + this.wire.silence;
                             if Instant::now() < due {
                                 this.silent
                                     .as_mut()
@@ -568,7 +574,7 @@ impl Stream for Commits {
                             let e = this.wire.unavailable(
                                 &this.path,
                                 format_args!(
-                                    "took nothing for {} seconds while records were being sent",
+                                    "took nothing and answered nothing for {} seconds while records were being sent",
                                     this.wire.silence.as_secs()
                                 ),
                             );
@@ -596,6 +602,7 @@ impl Stream for Commits {
                 Poll::Ready(None) => this.ended = true,
                 Poll::Ready(Some(Ok(frame))) => {
                     this.armed = false;
+                    this.spoke = Instant::now();
                     if let Ok(data) = frame.into_data() {
                         this.buf.extend_from_slice(&data);
                     }
@@ -798,6 +805,76 @@ mod tests {
             waited < Duration::from_secs(10),
             "answered after {waited:?}"
         );
+    }
+
+    /// Large records, `n` of them, so the connection's buffers fill.
+    struct Many(usize);
+
+    impl Stream for Many {
+        type Item = SourceRecord;
+
+        fn poll_next(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<SourceRecord>> {
+            if self.0 == 0 {
+                return Poll::Ready(None);
+            }
+            self.0 -= 1;
+            Poll::Ready(Some(
+                serde_json::from_value(serde_json::json!({
+                    "type": "invoice", "key": format!("INV-{}", self.0),
+                    "fields": {"note": "n".repeat(64 << 10)}
+                }))
+                .unwrap(),
+            ))
+        }
+    }
+
+    /// A server that stops reading while a window commits, for several
+    /// times the bound, and sends an empty line meanwhile, is working: the
+    /// upload waits for it and the answer comes through (lakelands#166).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_upload_the_server_holds_while_it_answers_empty_lines_is_waited_for() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let mut seen = Vec::new();
+            let mut b = [0u8; 1];
+            while !seen.ends_with(b"\r\n\r\n") && s.read(&mut b).await.unwrap() > 0 {
+                seen.push(b[0]);
+            }
+            let head = "HTTP/1.1 200 OK\r\ncontent-type: application/x-ndjson\r\n\
+                        lakelands-position: 3\r\ntransfer-encoding: chunked\r\n\r\n";
+            s.write_all(head.as_bytes()).await.unwrap();
+            // A window commits: nothing is read, an empty line is sent.
+            for _ in 0..12 {
+                tokio::time::sleep(SILENCE / 3).await;
+                s.write_all(b"1\r\n\n\r\n").await.unwrap();
+            }
+            // Then the rest of the upload is read, and answered.
+            let mut buf = vec![0u8; 64 << 10];
+            let mut tail = Vec::new();
+            loop {
+                let n = s.read(&mut buf).await.unwrap();
+                tail.extend_from_slice(&buf[..n]);
+                if n == 0 || tail.ends_with(b"0\r\n\r\n") {
+                    break;
+                }
+                let keep = tail.len().saturating_sub(8);
+                tail.drain(..keep);
+            }
+            let line = r#"{"position":5,"records":512,"duplicates":0}"#;
+            let reply = format!("{:x}\r\n{line}\r\n0\r\n\r\n", line.len());
+            s.write_all(reply.as_bytes()).await.unwrap();
+        });
+        let lake = remote(addr);
+        let mut commits = lake
+            .catalog(WriteContext::default())
+            .ingest(&importer(), &"bank".into(), Box::pin(Many(512)))
+            .await
+            .expect("the ingest starts");
+        let out = lakelands_mock::stream::collect(&mut commits).await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].as_ref().map(|c| c.records), Ok(512));
     }
 
     /// While the source still has records to give, its pace is the
