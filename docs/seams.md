@@ -872,16 +872,21 @@ and never evaluates `when` again.
 - A `when` that cannot be evaluated for a record, or a move the store
   would refuse for it, does not move it; it is counted as a failed
   guard, and the run goes on.
-- A rule the lake's shape no longer fits (its type gone, its field gone
-  or no longer `authored` or `shared`, `from` or `to` no longer a value
-  of the field's type, `when` no longer parsing) is skipped, never run
-  half: the report names it with its reason, and the other rules run.
+- A rule the lake's shape no longer fits (its field dropped by a
+  migration or no longer `authored` or `shared`, `from` or `to` no
+  longer a value of the field's type) is skipped, never run half: the
+  report names it with its reason, and the other rules run.
 - `age` holds the writer's lock for the whole run and scans every live
   record of each rule's `on` at the head, so writes wait while a large
   type ages.
 
-The suite's `aging` checks hold each of these sentences on every
-engine.
+The suite's `aging` checks hold these sentences on every engine, with
+two held elsewhere: that a lake made before aging gains
+`sys.aging_rule` at its next writer's open is a store test
+(`lakelands-store/tests/older_lake.rs`), since the contract cannot make
+such a lake; and that writes wait for a rule's run is one of the
+`concurrency` checks. What `lakelands apply` and `lakelands age` print
+is held by the CLI's tests.
 
 **The ticker** is `lakelands serve`'s caller of `age`, configured by
 the `aging` section of the root's `lakelands.json`:
@@ -967,8 +972,10 @@ after its append (the head as it stood when nothing was appended):
 `lakelands purge --source <id>` prints one line per type
 (`<type>: retired N`), one per type not searched, and
 `purged <id> through position P`; when the source brought in nothing
-still live, it prints `nothing to retire for <id>` and appends nothing. The suite's `purge` checks hold each
-of these sentences on every engine.
+still live, it prints `nothing to retire for <id>` and appends nothing.
+The suite's `purge` checks hold the sentences about what a purge retires
+and refuses on every engine; the lines `lakelands purge` prints are held
+by the CLI's tests.
 
 `Catalog::apply` declares a set of declarations as one: validated
 together, so a reference may point forward within the set, and appended

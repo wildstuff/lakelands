@@ -626,6 +626,97 @@ fn apply_writes_aging_rules_after_the_declarations_and_age_runs_them() {
     }
 }
 
+/// What `apply`, `age` and `purge` print that the store's checks cannot
+/// hold: a rule field the file dropped is cleared, a skipped rule's line,
+/// and a type the purge did not search (lakelands#116, items 4, 8, 12).
+#[test]
+fn apply_clears_a_dropped_rule_field_and_age_and_purge_print_what_they_left() {
+    const TICKET: (&str, &str) = (
+        "types/ticket.yaml",
+        "name: ticket\nfields:\n  state: text\n",
+    );
+    const NOTED: (&str, &str) = (
+        "aging_rules/stale.yaml",
+        "name: stale\non: ticket\nfield: state\nfrom: new\nto: stale\nwhen: \"true\"\ndescription: tickets left new\n",
+    );
+    const PLAIN: (&str, &str) = (
+        "aging_rules/stale.yaml",
+        "name: stale\non: ticket\nfield: state\nfrom: new\nto: stale\nwhen: \"true\"\n",
+    );
+    for backend in BACKENDS {
+        let sh = Shell::on("rule-fields", backend);
+        sh.lake();
+        let first = sh.run(&["apply", &sh.bundle("noted", &[TICKET, NOTED])]);
+        assert_eq!(first.code, 0, "{backend:?}: {}", first.err);
+        // The file no longer carries `description`: the stored rule loses it.
+        let again = sh.run(&["apply", &sh.bundle("plain", &[PLAIN])]);
+        assert!(
+            again.code == 0 && again.out.contains("aging rule `stale` written"),
+            "{backend:?}: {} {}",
+            again.out,
+            again.err
+        );
+        let feed = sh.run(&["feed", "--kind", "record_upserted"]);
+        let last: serde_json::Value = serde_json::from_str(
+            feed.out
+                .lines()
+                .last()
+                .expect("the rule's writes are in the feed"),
+        )
+        .unwrap();
+        assert_eq!(
+            last["body"]["patch"]["description"],
+            serde_json::Value::Null,
+            "{backend:?}: re-applying without `description` clears it: {last}"
+        );
+        assert!(
+            last["body"]["patch"]
+                .as_object()
+                .is_some_and(|p| p.contains_key("description")),
+            "{backend:?}: the clearing write names `description`: {last}"
+        );
+
+        // `state` comes from a source now: the rule no longer fits.
+        let sourced = (
+            "types/ticket.yaml",
+            "name: ticket\nfields:\n  state: { type: text, authority: source }\n",
+        );
+        let redeclared = sh.run(&["apply", &sh.bundle("sourced", &[sourced])]);
+        assert_eq!(redeclared.code, 0, "{backend:?}: {}", redeclared.err);
+        let aged = sh.run(&["age", "--today", "2026-03-01"]);
+        assert!(
+            aged.code == 0
+                && aged.out.lines().any(|l| l.starts_with("stale: skipped, "))
+                && aged
+                    .out
+                    .lines()
+                    .last()
+                    .is_some_and(|l| l.starts_with("aged 2026-03-01 through position ")),
+            "{backend:?}: a skipped rule prints `<rule>: skipped, <why>`: {} {}",
+            aged.out,
+            aged.err
+        );
+
+        // A type that keeps no per-field provenance is named, not searched.
+        let ledger = (
+            "types/ledger.yaml",
+            "name: ledger\nfield_meta: false\nfields:\n  sum: { type: number, authority: source }\n",
+        );
+        let applied = sh.run(&["apply", &sh.bundle("ledger", &[ledger])]);
+        assert_eq!(applied.code, 0, "{backend:?}: {}", applied.err);
+        let rows = sh.file(
+            "ledger.ndjson",
+            "{\"type\": \"ledger\", \"key\": \"l1\", \"fields\": {\"sum\": 1}}\n",
+        );
+        let fed = sh.run(&["ingest", &rows, "--source", "books"]);
+        assert_eq!(fed.code, 0, "{backend:?}: {}", fed.err);
+        ok(
+            &sh.run(&["purge", "--source", "books"]),
+            "ledger: not searched, it keeps no per-field provenance\nnothing to retire for books\n",
+        );
+    }
+}
+
 #[test]
 fn purge_retires_what_a_source_brought_in_and_prints_its_position() {
     for backend in BACKENDS {
