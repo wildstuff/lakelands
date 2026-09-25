@@ -144,6 +144,13 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   Lakelands (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`);
   an export is the whole log, unmasked, so it is handed over as the
   lake itself would be.
+  In a quiet hour the host can call `LakeStore::compact()` (`lakelands
+  compact`) to give back the storage the projection no longer uses; it
+  changes no answer and appends nothing, and writes wait while it runs
+  (`docs/decisions/040-maintenance-never-changes-an-answer.md`). On
+  PostgreSQL, `VACUUM` skips, with a warning, a table the connecting role
+  does not own, and the compact reclaims nothing there; connect as the
+  role that owns the lake's schema.
 
 **Configuration is not a seam.** Engine configuration, tuning, limits
 and an optional key handle reach a lake through `Location`, and a

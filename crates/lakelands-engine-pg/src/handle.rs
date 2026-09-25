@@ -16,7 +16,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use lakelands_api::engine::{
     CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
-    VectorIndex,
+    Reclaimed, VectorIndex,
 };
 use lakelands_api::error::{Error, Refusal, Result};
 use lakelands_api::event::{Digest, EventId, SegmentDigest};
@@ -484,6 +484,46 @@ impl ProjectionStore for PgLake {
             self.names.t("meta")
         ))
     }
+
+    /// `VACUUM (ANALYZE)` over the projection's tables and its `meta`,
+    /// outside a transaction; never `VACUUM FULL`, which would lock every
+    /// reader out while it rewrote. Readers go on reading. A `VACUUM` that
+    /// fails cannot be rolled back, but it changes no row a view reads at
+    /// any point. The log's tables are not touched.
+    fn compact(&self) -> Result<Reclaimed> {
+        let writing = self.writing()?;
+        let transaction = lock(&self.transaction);
+        if transaction.is_some() {
+            return Err(invalid(
+                "the projection is compacted between appends: a transaction is open",
+            ));
+        }
+        let tables: Vec<&str> = PROJECTION_TABLES.iter().copied().chain(["meta"]).collect();
+        let mut db = lock(&writing.projection);
+        // A transaction a failed commit left open is abandoned, as `clear`
+        // abandons it: `VACUUM` cannot run inside one.
+        let _ = db.batch("ROLLBACK");
+        let before = size(&mut db, &self.target.schema, &tables)?;
+        let listed: Vec<String> = tables.iter().map(|t| self.names.t(t)).collect();
+        db.batch(&format!("VACUUM (ANALYZE) {}", listed.join(", ")))?;
+        let after = size(&mut db, &self.target.schema, &tables)?;
+        Ok(Reclaimed {
+            before: Some(before),
+            after: Some(after),
+        })
+    }
+}
+
+/// The summed size in bytes of some of a schema's tables, their indexes
+/// and TOAST included.
+fn size(db: &mut Db, schema: &str, tables: &[&str]) -> Result<u64> {
+    let row = db.query_one(
+        "SELECT coalesce(sum(pg_catalog.pg_total_relation_size(c.oid)), 0)::int8 \
+         FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+         WHERE n.nspname = $1 AND c.relname = ANY($2) AND c.relkind = 'r'",
+        &[&schema, &tables],
+    )?;
+    Ok(row.get::<_, i64>(0) as u64)
 }
 
 /// A vector as the index stores it: its components as little-endian

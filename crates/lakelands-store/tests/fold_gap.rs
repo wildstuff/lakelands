@@ -149,6 +149,9 @@ impl ProjectionStore for Failing {
     fn clear(&self) -> Result<()> {
         self.inner.projection().clear()
     }
+    fn compact(&self) -> Result<lakelands_api::engine::Reclaimed> {
+        self.inner.projection().compact()
+    }
 }
 
 struct FailingOpener {

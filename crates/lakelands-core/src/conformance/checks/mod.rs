@@ -10,6 +10,7 @@ mod aggregates;
 mod aging;
 mod backings;
 mod bundles;
+mod compact;
 mod concurrency;
 mod cursors;
 mod decimals;
@@ -231,6 +232,10 @@ pub const ALL: &[Check] = &[
     export::PREFIX,
     export::NOT_EMPTY,
     export::DAMAGE,
+    compact::ANSWERS_AS_BEFORE,
+    compact::APPENDS_NOTHING,
+    compact::AGAIN_AND_ON,
+    compact::WRITES_DURING,
     settings::SETTING_AS_OF,
     feed::LIMIT_ZERO_IS_ONE,
     retire::SOURCE_ONLY_HAS_NO_UPSERT,

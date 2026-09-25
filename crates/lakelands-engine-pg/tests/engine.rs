@@ -384,3 +384,116 @@ fn a_location_without_a_schema_puts_the_lake_in_lakelands_and_its_name() {
     // Only this test's schema: the other tests' lakes are still open.
     admin(&url, &format!("DROP SCHEMA \"{expected}\" CASCADE"));
 }
+
+/// A compact is `VACUUM (ANALYZE)` of the projection's tables, run outside
+/// a transaction and never `FULL`: a reader that holds a snapshot open on
+/// the projection keeps reading and does not hold it up, the log's tables
+/// are not vacuumed, and the report carries the tables' measured size
+/// (`docs/decisions/040-maintenance-never-changes-an-answer.md`).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_compact_vacuums_the_projection_beside_an_open_reader_and_reports_its_size() {
+    let Some(url) = common::url_or_skip("compact") else {
+        return;
+    };
+    let schema = common::fresh_schema();
+    let location = common::location(&url, "tidy", &schema);
+    let seams = || Seams {
+        engines: vec![Arc::new(PgOpener)],
+        ..Seams::default()
+    };
+    let store = lakelands_store::open(location.clone(), seams(), OpenMode::Create)
+        .await
+        .unwrap();
+    let owner = Principal {
+        kind: PrincipalKind::Human,
+        id: "owner".into(),
+        lake: "tidy".into(),
+        grants: Grants::owner(),
+    };
+    let cat = store.catalog(WriteContext::default());
+    let note: Declaration = serde_json::from_value(json!({
+        "declare": "type", "name": "note",
+        "fields": [{"name": "text", "type": {"kind": "text"}, "searchable": true}]
+    }))
+    .unwrap();
+    cat.declare(&owner, note).await.unwrap();
+    for round in 0..3 {
+        for key in ["a", "b", "c"] {
+            let patch =
+                serde_json::from_value(json!({ "text": format!("{key} {round}") })).unwrap();
+            cat.upsert(
+                &owner,
+                &"note".into(),
+                &key.into(),
+                patch,
+                Default::default(),
+            )
+            .await
+            .unwrap();
+        }
+    }
+    store.rebuild().await.unwrap();
+    let head = store.head().await.unwrap();
+
+    // A reader handle, and a session holding a snapshot of the projection.
+    let reader = lakelands_store::open(location, seams(), OpenMode::Read)
+        .await
+        .unwrap();
+    let (snapshot_url, records) = (url.clone(), format!("\"{schema}\".records"));
+    let (hold, release) = std::sync::mpsc::channel::<()>();
+    let (held, holding) = std::sync::mpsc::channel::<i64>();
+    let holder = std::thread::spawn(move || {
+        let mut client = postgres::Client::connect(&snapshot_url, postgres::NoTls).unwrap();
+        let mut t = client
+            .build_transaction()
+            .isolation_level(postgres::IsolationLevel::RepeatableRead)
+            .start()
+            .unwrap();
+        let n: i64 = t
+            .query_one(&format!("SELECT count(*) FROM {records}"), &[])
+            .unwrap()
+            .get(0);
+        held.send(n).unwrap();
+        // A compact that waited for this snapshot would never be done: the
+        // holder gives up after a while and says so.
+        let waited = release
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .is_err();
+        let again: i64 = t
+            .query_one(&format!("SELECT count(*) FROM {records}"), &[])
+            .unwrap()
+            .get(0);
+        t.commit().unwrap();
+        (n, again, waited)
+    });
+    holding.recv().unwrap();
+
+    let report = store.compact().await.unwrap();
+    let _ = hold.send(());
+    let (n, again, waited) = holder.join().unwrap();
+    assert!(!waited, "the compact waited for a reader's snapshot");
+    assert_eq!(
+        n, again,
+        "the snapshot read the same rows across the compact"
+    );
+    assert_eq!(report.head, head);
+    let (before, after) = (report.before.unwrap(), report.after.unwrap());
+    assert!(before > 0 && after > 0, "{report:?}");
+    assert_eq!(reader.head().await.unwrap(), head, "the reader reads on");
+
+    // The synchronous client runs off the test's runtime.
+    let vacuumed = |table: &str| -> bool {
+        let statement = format!(
+            "SELECT last_vacuum IS NOT NULL AND last_analyze IS NOT NULL \
+             FROM pg_catalog.pg_stat_user_tables \
+             WHERE schemaname = '{schema}' AND relname = '{table}'"
+        );
+        tokio::task::block_in_place(|| admin(&url, &statement)[0].get(0))
+    };
+    for table in ["records", "applied", "outputs", "meta"] {
+        assert!(vacuumed(table), "the projection's `{table}` was vacuumed");
+    }
+    assert!(!vacuumed("log"), "the log's table was not vacuumed");
+    drop((store, reader));
+    common::drop_schema(&url, &schema);
+}

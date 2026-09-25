@@ -18,8 +18,8 @@ use lakelands_api::principal::WriteContext;
 use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
 use lakelands_api::seam::{ChangeFeed, FeedBatch, FeedFilter, Seams, VerbInvocation};
 use lakelands_api::write::{
-    AgeReport, Declaration, Migration, MigrationReport, Outcome, Proposal, ProposalFilter,
-    ProposedWrite, PurgeReport, ValueTypeReport, WriteOpts,
+    AgeReport, CompactReport, Declaration, Migration, MigrationReport, Outcome, Proposal,
+    ProposalFilter, ProposedWrite, PurgeReport, ValueTypeReport, WriteOpts,
 };
 use lakelands_api::{
     Catalog, Error, Find, Found, Get, LakeId, LakeStore, Patch, Position, Principal, ProposalId,
@@ -626,6 +626,11 @@ impl LakeStore for Store {
             report.position = report.position.max(last);
         }
         Ok(report)
+    }
+
+    async fn compact(&self) -> Result<CompactReport> {
+        let lake = self.lake.clone();
+        exec::run(move || lake.compact()).await
     }
 
     async fn checkpoint(&self) -> Result<Position> {

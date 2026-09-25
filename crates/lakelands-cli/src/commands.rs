@@ -1,5 +1,5 @@
 //! The commands that open a lake: `apply`, `ingest`, `feed`, `age`,
-//! `purge`, `rebuild`, `export` and `serve`. Each calls the library
+//! `purge`, `rebuild`, `compact`, `export` and `serve`. Each calls the library
 //! in-process and prints the position of every answer that has one.
 
 use std::collections::BTreeMap;
@@ -522,6 +522,27 @@ pub async fn rebuild(out: Out<'_>, store: &Arc<dyn LakeStore>) -> Result<(), Fai
         out,
         format!("rebuilt the projection from the log through position {p}"),
     )
+}
+
+/// `compact`: give back the storage the projection no longer uses, and
+/// print what the engine measured of it before and after. An engine that
+/// measures nothing, the memory engine's, has nothing to reclaim.
+pub async fn compact(out: Out<'_>, store: &Arc<dyn LakeStore>) -> Result<(), Failure> {
+    let report = store.compact().await?;
+    let lake = store.lake();
+    match (report.before, report.after) {
+        (Some(before), Some(after)) => put(
+            out,
+            format!(
+                "compacted {lake}: projection {before} → {after} bytes at position {}",
+                report.head
+            ),
+        ),
+        _ => put(
+            out,
+            format!("nothing to reclaim in {lake}: its engine keeps no storage to give back"),
+        ),
+    }
 }
 
 /// `export`: write the lake's log as its segment files and a manifest

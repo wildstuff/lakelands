@@ -370,6 +370,15 @@ impl LakeStore for MockLake {
         purge::run(&self.shared, &mut self.shared.log(), source)
     }
 
+    async fn compact(&self) -> Result<lakelands_api::write::CompactReport> {
+        // The mock keeps no storage beside its log: nothing to reclaim.
+        Ok(lakelands_api::write::CompactReport {
+            before: None,
+            after: None,
+            head: Shared::head(&self.shared.log()),
+        })
+    }
+
     async fn checkpoint(&self) -> Result<Position> {
         let mut log = self.shared.log();
         let head = Shared::head(&log);

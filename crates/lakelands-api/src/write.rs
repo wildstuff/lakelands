@@ -474,3 +474,20 @@ pub struct RecordRef {
     /// The key.
     pub key: RecordKey,
 }
+
+/// What `LakeStore::compact` did to the projection's storage
+/// (`docs/decisions/040-maintenance-never-changes-an-answer.md`). The
+/// sizes are the engine's own measure, not a promise: the projection's
+/// file and its journal on SQLite, its tables on PostgreSQL, none on the
+/// memory engine.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactReport {
+    /// The projection's storage in bytes before, if the engine measures it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<u64>,
+    /// The projection's storage in bytes after, if the engine measures it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<u64>,
+    /// The lake's head, which a compact never moves.
+    pub head: Position,
+}

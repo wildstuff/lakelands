@@ -14,6 +14,7 @@ interface store {
     use types.{
         lake-id, type-name, record-key, relation-name, verb-name, proposal-id, source-id, position,
         principal, write-context, limits, verification, error, timestamp, age-report, purge-report,
+        compact-report,
         find, found-reply, get, record-reply, patch, write-opts, outcome,
         proposed-write, proposal-filter, proposals-reply, source-record, committed,
         feed-filter, feed-batch,
@@ -50,6 +51,9 @@ interface store {
         /// Retire, in one append, every live record the source brought in;
         /// a co-owned record refuses the whole purge.
         purge-source: func(source: source-id) -> result<purge-report, error>;
+        /// Give back the storage the projection no longer uses; appends
+        /// nothing and changes no answer.
+        compact: func() -> result<compact-report, error>;
         /// Seal the active segment and append a checkpoint.
         checkpoint: func() -> result<position, error>;
         /// Release the lease and close the lake.

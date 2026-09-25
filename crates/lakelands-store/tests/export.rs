@@ -253,6 +253,9 @@ impl LakeStore for BreaksMidway {
     async fn purge_source(&self, source: &SourceId) -> Result<PurgeReport> {
         self.0.inner.purge_source(source).await
     }
+    async fn compact(&self) -> Result<lakelands_api::write::CompactReport> {
+        self.0.inner.compact().await
+    }
     async fn close(&self) -> Result<()> {
         self.0.inner.close().await
     }

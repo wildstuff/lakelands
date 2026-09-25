@@ -162,7 +162,7 @@ An engine is found by name and opened through `EngineOpener`:
 | Method | Contract |
 |---|---|
 | `name` | The name the engine answers to in `EngineConfig`. |
-| `open(location, mode)` | Open the lake `Read`, `Write` or `Create` (write, creating it if absent, opening it if present). `Read` or `Write` of a lake that does not exist is `Unavailable`; a location configured for another engine is `Invalid`. Opening never takes the lease; a writer takes it afterwards with `take_lease`. A handle opened `Read` refuses `take_lease`, `append` and `seal_segment` as `Unavailable`, and writes nothing to the projection (`begin`, the puts and `clear` are `Unavailable`), so any number of readers can hold the lake while one process writes (`docs/decisions/008-one-writer-per-lake.md`). A read-only open of a lake that does not exist creates nothing. The store folds only on the writer's handle; a reader reads what the writer folded. |
+| `open(location, mode)` | Open the lake `Read`, `Write` or `Create` (write, creating it if absent, opening it if present). `Read` or `Write` of a lake that does not exist is `Unavailable`; a location configured for another engine is `Invalid`. Opening never takes the lease; a writer takes it afterwards with `take_lease`. A handle opened `Read` refuses `take_lease`, `append` and `seal_segment` as `Unavailable`, and writes nothing to the projection (`begin`, the puts, `clear` and `compact` are `Unavailable`), so any number of readers can hold the lake while one process writes (`docs/decisions/008-one-writer-per-lake.md`). A read-only open of a lake that does not exist creates nothing. The store folds only on the writer's handle; a reader reads what the writer folded. |
 
 ### `ProjectionStore`: what the fold writes
 
@@ -199,6 +199,7 @@ state again); it never adds a second one.
 | `put_output(…, at)` | A seam's recorded output, by seam and input digest, valid from `at`, the position of the event that recorded it. A later output for the same seam and input replaces the earlier one from its position on (022, extended: a redeclaration retries a failure). |
 | `mark_applied(id, at)` | Remember an applied event id, so a redelivery is recognised. The first position marked for an id is kept. |
 | `clear` | Delete everything, kept history and the vector index included, for a rebuild; `folded_through` is none afterwards. |
+| `compact` | Give back the storage the projection no longer uses, outside a transaction (`Invalid` inside one), and answer its size in bytes before and after as the engine measures it, or none. No view answers otherwise afterwards: no state, kept history included, no applied id and no recorded output goes. A compact that fails leaves every answer as it was (`docs/decisions/040-maintenance-never-changes-an-answer.md`). |
 
 Rebuilding a projection from the log produces the same state, byte for
 byte, as the projection it replaces
@@ -346,6 +347,7 @@ holds it to.
 | edges from link records: `Out` and `In` by `from` and `to`, the link's fields in `Edge.fields`, a removed link gone, an earlier position's links | engine: `edges_over_a_link_relation_come_from_the_live_link_records_at_the_views_position`; doors: the sixteen `links` checks |
 | a rebuild answers every read as before | suite: `a_rebuilt_projection_answers_every_read_as_the_live_one_did` |
 | ingest, the feed, an export and its verification hold as much memory at four times a lake's size as at its first; a rebuild and a reopen are measured and reported until lakelands#130 | suite: `a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it` |
+| a compact answers every read as before, appends nothing, and writes wait for it; the space it gives back | suite: the four `compact` checks; engine: SQLite `tests/compact.rs`, PostgreSQL `a_compact_vacuums_the_projection_beside_an_open_reader_and_reports_its_size` |
 | `scan` filters, the retired and restricted flags, `valid_at` | suite, through `find` and `get` (paging, restriction, views, decimals) |
 | `mark_applied` / `applied` recognise a redelivery | suite: `the_same_content_ingested_twice_appends_nothing_the_second_time`, `a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_appends_nothing` |
 | `append` is durable before it returns: its events are there for the next handle | engine: `an_append_that_returned_is_read_by_the_next_handle`; surviving a crash of the process or the machine is the engine's own test, not the suite's (SQLite: `tests/lake_directory.rs`) |
@@ -934,7 +936,7 @@ hold, not what hosts implement:
 - `LakeStore`: one open lake, as its host holds it; it hands out a
   `Catalog` bound to a `WriteContext`, the change feed, the limits it was
   opened with (`limits`), lake maintenance (`verify`, `rebuild`,
-  `checkpoint`; the export, below, is a function over it), restriction (`restrict`, `unrestrict`), `age` (above,
+  `checkpoint`, `compact`; the export, below, is a function over it), restriction (`restrict`, `unrestrict`), `age` (above,
   under `SystemVocabulary`), and `purge_source` (below).
 
 `LakeStore::head` answers the last position the projection has folded:
@@ -981,6 +983,44 @@ still live, it prints `nothing to retire for <id>` and appends nothing.
 The suite's `purge` checks hold the sentences about what a purge retires
 and refuses on every engine; the lines `lakelands purge` prints are held
 by the CLI's tests.
+
+`LakeStore::compact()` gives back the storage the projection no longer
+uses, when the host chooses
+(`docs/decisions/040-maintenance-never-changes-an-answer.md`). It runs
+on the writer's handle alone; a handle opened read-only refuses it as
+`Unavailable`, as it refuses `checkpoint`. Unlike `checkpoint`, it
+appends nothing and does not seal:
+
+- **No answer changes.** Every read at the head and as of every earlier
+  position, the feed, `verify`'s answer and an export are as they were.
+  Kept history, applied ids and recorded outputs are never pruned.
+- **Writes wait.** It holds the writer's lock throughout, like `age`: a
+  write that arrives meanwhile waits, then lands after it. On SQLite a
+  large projection takes seconds.
+- **SQLite:** the journal is truncated, `projection.db` is rewritten
+  without its free pages (`VACUUM`), and the journal is truncated again;
+  the log's files are not touched. `VACUUM` is one transaction: a reader
+  in another process holding a snapshot past the busy timeout makes the
+  compact `Unavailable`, saying so, and the projection is as it was. A
+  snapshot taken after the rewrite committed keeps only the last truncate
+  from running: the compact succeeds, and `after` counts the journal it
+  left.
+- **PostgreSQL:** `VACUUM (ANALYZE)` of the projection's tables, outside
+  a transaction, never `FULL`, so readers go on reading. It cannot be
+  rolled back, but it never changes a row a read sees. The log's tables
+  are not touched.
+- **Memory:** nothing to reclaim.
+- **The report** names the head, unmoved, and the projection's size in
+  bytes before and after. The sizes are the engine's own measure, not a
+  promise: the file and its journal on SQLite, the tables' total size on
+  PostgreSQL, none on memory. Only each engine's tests hold anything
+  about them.
+
+`lakelands compact` prints `compacted <lake>: projection <before> →
+<after> bytes at position P`, or `nothing to reclaim in <lake>: its
+engine keeps no storage to give back`. `serve` does not compact on its
+own. The suite's `compact` checks hold the answers, the log and the
+export on every engine, writers writing meanwhile included.
 
 `lakelands_core::export::write(store, dir)` writes a lake's log as the
 segment files of the log format (§4.2) and a manifest, `export.json`,

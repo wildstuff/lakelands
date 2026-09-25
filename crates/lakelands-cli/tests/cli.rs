@@ -757,6 +757,35 @@ fn rebuild_prints_the_position_it_rebuilt_through() {
 }
 
 #[test]
+fn compact_prints_what_the_engine_measured_or_that_it_keeps_nothing() {
+    for backend in [Backend::Store, Backend::StoreInMemory] {
+        let sh = Shell::on("compact", backend);
+        sh.lake();
+        sh.run(&["apply", &sh.fixture()]);
+        sh.run(&["rebuild"]);
+        let run = sh.run(&["compact"]);
+        assert_eq!(run.code, 0, "{}", run.err);
+        if backend == Backend::StoreInMemory {
+            assert_eq!(
+                run.out,
+                "nothing to reclaim in finance: its engine keeps no storage to give back\n"
+            );
+            continue;
+        }
+        // The sizes are SQLite's own measure; the line and the head are
+        // what is pinned.
+        let line = run
+            .out
+            .strip_prefix("compacted finance: projection ")
+            .and_then(|l| l.strip_suffix(" bytes at position 7\n"))
+            .unwrap_or_else(|| panic!("{}", run.out));
+        let (before, after) = line.split_once(" → ").expect("before → after");
+        let (before, after): (u64, u64) = (before.parse().unwrap(), after.parse().unwrap());
+        assert!(after <= before, "{}", run.out);
+    }
+}
+
+#[test]
 fn export_prints_its_files_and_the_head_it_read_and_refuses_a_directory_in_use() {
     for backend in BACKENDS {
         let sh = Shell::on("export", backend);
