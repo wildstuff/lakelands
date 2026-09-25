@@ -1,9 +1,8 @@
 # The log format
 
 **Format version 2.** Reviewed so that a verifier can be written from
-this document alone (lakelands#14). Until `0.1.0` is tagged, a
-correction still lands here without a version bump; from then on every
-change bumps the version (§6). Version 2 adds one member,
+this document alone (lakelands#14). `0.1.0` is tagged, so every change
+to the format bumps the version (§6). Version 2 adds one member,
 `migrated.rekeyed` (§2.2, §6); a lake that never re-keys a type writes
 version 1 and reads exactly as before.
 

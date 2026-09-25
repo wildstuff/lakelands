@@ -54,3 +54,12 @@ see whether it would answer differently now. The store calls a seam
 only after the append that made the call due, outside the fold: the
 fold reads the log and the outputs recorded in it, and nothing else
 (`docs/decisions/022-functions-are-declarations.md`, extended).
+
+## Corrected (2026-09-25): a redeclaration calls again
+
+"The store never calls the seam again for the same input" holds for a
+replay and for every later event that touches the record. It has one
+deliberate exception: declaring the function or the type again retries
+a recorded failure once, and the later output holds
+(`docs/decisions/022-functions-are-declarations.md`, "Extended: a
+redeclaration retries a recorded failure").

@@ -33,3 +33,11 @@ keeps the store from carrying another product's vocabulary.
   the same field rights.
 - It does not make every type with a dot in its name special; only the
   `sys.` prefix is reserved.
+
+## Corrected (2026-09-25): two are reserved ahead of their readers
+
+The sentence above calls the four reserved types "the system types its
+own fold reads". Of the four, the fold reads `sys.setting` and `age`
+reads `sys.aging_rule`; `sys.source` and `sys.provenance` are reserved
+ahead of their readers (`docs/seams.md` §`SystemVocabulary`). The four
+names are reserved either way; the page says which have a reader today.

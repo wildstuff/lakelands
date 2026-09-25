@@ -385,8 +385,10 @@ value` computes one output from `{ lake, function, inputs, config }`.
 The default is `expr`, evaluated inside the store in the one expression
 grammar. Because it is deterministic, its results are recomputed on
 replay rather than recorded. `lakelands_store::ExprBacking` is that
-backing as the seam presents it, for a host or a door that calls a
-function directly. The call's `config` carries the expression as
+backing as the seam presents it, for a host that binds it and calls a
+function host-side. No door calls a function ad hoc: a function is
+computed by the store where the ontology names it
+(`docs/decisions/022-functions-are-declarations.md`). The call's `config` carries the expression as
 `{ "expr": … }` (typed or text form), its `inputs` the values by input
 name, and the answer is the computed value, a number as an exact decimal
 string. The fold computes function fields with the same evaluator in
@@ -683,7 +685,9 @@ once, possibly empty, never waiting for new events:
 The consumer keeps the position it has read up to. The store's own feed
 keeps no consumer state, and its `ack` is accepted and does nothing; `ack` exists for feeds
 that relay elsewhere (a remote client, a bridge onto a bus) and need to
-know what they may release. The dedup key of a change is its lake and its
+know what they may release. So a consumer's state is entirely its own:
+on the store's feed, `ack` is neither backpressure nor a release, and a
+consumer that never calls it loses nothing. The dedup key of a change is its lake and its
 position.
 
 Lakelands has two consumers of its own: the MCP session's pump, which
@@ -796,6 +800,16 @@ reserves only the system types its own fold reads: `sys.source`,
 `sys.setting` and `age` reads `sys.aging_rule`; the other two are
 reserved ahead of their readers. The default adds none and allows those
 four everywhere.
+
+`types()` carries type declarations only. A host whose vocabulary also
+needs value types, verbs, triggers or functions applies them itself,
+after open, on the writer, through `declare` or `apply`. Neither is
+idempotent: declaring again is a new version and has meaning (a
+recorded failure is retried once; 022), so the
+host first compares what it would apply with what the lake holds
+(`describe` and `describe_type` answer each declaration's version, and a
+type's schema hash) and applies only what differs. The vocabulary's
+types are declared by the open; everything else is the host's apply.
 
 The vocabulary is consulted every time a lake is opened for writing:
 the store declares every host type that `may_hold` allows for that lake
@@ -931,7 +945,9 @@ Two more traits sit above the seams. They are what callers and hosts
 hold, not what hosts implement:
 
 - `Catalog`: the doors of one lake, for any caller, every call naming its
-  principal. Tool names for LLM-facing transports come only from
+  principal. A principal names its lake too; a call whose principal
+  names another lake than the catalog's is refused as `not_granted`, on
+  every door (door check: `a_principal_of_another_lake_is_refused`). Tool names for LLM-facing transports come only from
   `lakelands_api::tools::tools`.
 - `LakeStore`: one open lake, as its host holds it; it hands out a
   `Catalog` bound to a `WriteContext`, the change feed, the limits it was

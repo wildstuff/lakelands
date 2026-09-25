@@ -32,3 +32,11 @@ writer already" tells the operator what to do.
   lake through its one writer; the writer orders their appends.
 - It is not replication. Standby writers and failover are outside this
   decision; the lease is what makes them safe to add later.
+
+## Corrected (2026-09-25): the refusal is at the lease, not at open
+
+"A second process that tries to open the lake for writing fails at
+once" holds for a lake opened through the store, which takes the lease
+as it opens a lake for writing. At the engine seam, opening never takes
+the lease: `open` succeeds, and it is `take_lease` that fails at once,
+naming the holder (`docs/seams.md` §Engine, `open` and `take_lease`).
