@@ -179,7 +179,7 @@ impl Call<'_> {
         let Some(pos) = view.applied(&id)? else {
             return Ok(None);
         };
-        let events = self.lake.read_events(pos, Some(3))?;
+        let events = self.lake.read_events(pos, 3)?;
         if events.is_empty() {
             return Ok(None);
         }
@@ -212,7 +212,7 @@ impl Call<'_> {
     /// the read is bounded so that a retry never reads to the head of a
     /// large lake (`docs/seams.md` §`VerbExecutor`).
     fn recorded_output(&self, called: Position) -> Result<Option<Value>> {
-        let events = self.lake.read_events(called.next(), Some(RETRY_REACH))?;
+        let events = self.lake.read_events(called.next(), RETRY_REACH)?;
         Ok(events.into_iter().find_map(|e| match e.body {
             EventBody::OutputRecorded { seam, output, .. }
                 if e.cause == Some(called) && seam.starts_with("verb:") =>

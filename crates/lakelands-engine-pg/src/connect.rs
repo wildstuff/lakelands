@@ -131,6 +131,27 @@ impl Db {
         driver(move || client.query_opt(statement, params)).map_err(sql)
     }
 
+    /// Run a query and hand each row to `f` as it arrives, holding one row
+    /// at a time, never the answer.
+    pub(crate) fn query_each(
+        &mut self,
+        statement: &str,
+        params: Params<'_>,
+        mut f: impl FnMut(&Row) -> Result<()> + Send,
+    ) -> Result<()> {
+        use postgres::fallible_iterator::FallibleIterator;
+        let client = self.client.as_mut().expect("a connection until dropped");
+        driver(move || {
+            let mut rows = client
+                .query_raw(statement, params.iter().copied())
+                .map_err(sql)?;
+            while let Some(row) = rows.next().map_err(sql)? {
+                f(&row)?;
+            }
+            Ok(())
+        })
+    }
+
     pub(crate) fn query_one(&mut self, statement: &str, params: Params<'_>) -> Result<Row> {
         let client = self.client.as_mut().expect("a connection until dropped");
         driver(move || client.query_one(statement, params)).map_err(sql)

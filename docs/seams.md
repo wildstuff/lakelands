@@ -166,10 +166,14 @@ An engine is found by name and opened through `EngineOpener`:
 
 ### `ProjectionStore`: what the fold writes
 
-The fold calls the projection inside one transaction per append;
-`commit(through)` records the position folded through in the same
-transaction, so a crash leaves the projection at a whole append, and
-opening a lake folds the log from `folded_through` on.
+The fold calls the projection inside one transaction per chunk: an
+append for a write, a page of the log (1 024 events) for a rebuild or an
+open's catch-up. `commit(through)` records the position folded through
+in the same transaction, so a crash leaves the projection at a whole
+chunk, and opening a lake folds the log from `folded_through` on. A
+page's boundary may fall inside an append; a view inside an append
+already answers each event's states. What a fold that stops leaves, and
+what reads answer meanwhile, is under `LakeStore::head` below.
 
 - The store never nests transactions and never puts outside one.
 - Nothing put in a transaction is visible to any view until it commits;
@@ -361,7 +365,7 @@ holds it to.
 | edges `Out`, `In`, `Both`, a self-link once, links to a retired record kept | engine: `edges_walk_in_out_and_both`, `edges_to_a_retired_record_are_returned` |
 | edges from link records: `Out` and `In` by `from` and `to`, the link's fields in `Edge.fields`, a removed link gone, an earlier position's links | engine: `edges_over_a_link_relation_come_from_the_live_link_records_at_the_views_position`; doors: the sixteen `links` checks |
 | a rebuild answers every read as before | suite: `a_rebuilt_projection_answers_every_read_as_the_live_one_did` |
-| ingest, the feed, an export and its verification hold as much memory at four times a lake's size as at its first; so does each page of a walk of a type through `find` (lakelands#134); a rebuild and a reopen are measured and reported until lakelands#130 | suite: `a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it` |
+| ingest, the feed, an export and its verification, and a rebuild hold as much memory at four times a lake's size as at its first (lakelands#130); so does each page of a walk of a type through `find` (lakelands#134); a reopen is measured and reported until lakelands#133 | suite: `a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it` |
 | a compact answers every read as before, appends nothing, and writes wait for it; the space it gives back | suite: the four `compact` checks; engine: SQLite `tests/compact.rs`, PostgreSQL `a_compact_vacuums_the_projection_beside_an_open_reader_and_reports_its_size` |
 | `scan` filters, the retired and restricted flags, `valid_at` | suite, through `find` and `get` (paging, restriction, views, decimals) |
 | `mark_applied` / `applied` recognise a redelivery | suite: `the_same_content_ingested_twice_appends_nothing_the_second_time`, `a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_appends_nothing` |
@@ -981,6 +985,22 @@ last folded position, and nothing more is appended until the projection
 has caught up: the next append first folds what the log holds past the
 projection, or answers that fold's error and appends nothing. A handle
 opened only to read names the position the writer has folded.
+
+`rebuild`, `verify` and the fold at open read the log in pages of 1 024
+events and hold no more than one. A rebuild and an open's catch-up fold
+page by page, each page in its own transaction that commits
+`folded_through` at its last event. A fold that stops, by an error or a
+crash, leaves the projection folded through the last page it committed:
+`head()` names that position, a read at or before it answers the lake as
+of there, a read past it is refused as `OutOfRange` naming it, as for a
+failed append, and never answers from half a page. The next fold (an
+append's, a `rebuild`, or the next open) continues from there. While a
+rebuild runs, the writer's lock holds every write back and `head()`
+still names the head from before it: a read at that head is out of range
+until the rebuild has folded through it, and a read as of a position it
+has folded answers. A handle
+opened only to read in another process meanwhile reads at the
+`folded_through` it finds, which is its head.
 
 `LakeStore::purge_source(source)` retires every live record one source
 brought in, across every type it reached, restricted records and the

@@ -477,7 +477,7 @@ belongs in the suite, not beside one engine:
 
 **streaming**
 
-- `a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it` — 016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start and an export with its verification, and each page of a walk of a type through find, hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB; a rebuild and a reopen are measured against the same bound
+- `a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it` — 016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification, each page of a walk of a type through find, and a rebuild hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB; a reopen is measured against the same bound
 
 ### Through the engine seam (41 checks)
 

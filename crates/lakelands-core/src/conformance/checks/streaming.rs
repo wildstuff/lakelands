@@ -36,12 +36,14 @@
 //! sizes.
 //!
 //! Ingest, the feed, the export and its verification are held to this,
-//! and so is the walk through `find`, which measures each page on its
+//! and so are the walk through `find`, which measures each page on its
 //! own, as its largest page: a page holds its rows, not the type
-//! (lakelands#134). Two more are measured and reported against the same
-//! tolerance but not held to it yet, until the fix named in their lines
-//! turns the claim on: the rebuild and the reopen fold a range read whole
-//! (lakelands#130). A harness
+//! (lakelands#134), and the rebuild, which folds the log a page at a time
+//! (lakelands#130). One more is measured and reported against the same
+//! tolerance but not held to it yet, until the fix named in its line
+//! turns the claim on: the reopen reads the log a page at a time too, but
+//! the SQLite engine keeps its log index whole in memory, about 300 bytes
+//! an event (lakelands#133). A harness
 //! without a meter runs everything else the check claims and reports the
 //! heap as not measured.
 //!
@@ -95,7 +97,7 @@ use crate::export;
 check!(
     /// A large lake goes through ingest, the feed and export in bounded memory.
     STREAMS = a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it,
-    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start and an export with its verification, and each page of a walk of a type through find, hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB; a rebuild and a reopen are measured against the same bound",
+    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification, each page of a walk of a type through find, and a rebuild hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB; a reopen is measured against the same bound",
     given
 );
 
@@ -677,7 +679,7 @@ impl Size<'_> {
         );
         self.row(
             "rebuild",
-            Claim::Reported("lakelands#130"),
+            Claim::Held,
             records,
             head.0 + 1,
             format!("{} records read back", before.0),
@@ -718,7 +720,7 @@ impl Size<'_> {
         );
         self.row(
             "reopen",
-            Claim::Reported("lakelands#130"),
+            Claim::Reported("lakelands#133"),
             records,
             head.0 + 1,
             String::new(),

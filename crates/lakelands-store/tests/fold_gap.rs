@@ -25,8 +25,8 @@ use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::{FeedFilter, Seams};
 use lakelands_api::write::{Declaration, Outcome, Proposal};
 use lakelands_api::{
-    Catalog, Error, Get, Grants, LakeId, LakeStore, Location, Position, Principal, PrincipalKind,
-    ReadAt, RecordKey, Result, TypeName, WriteContext,
+    Catalog, Error, Find, Get, Grants, LakeId, LakeStore, Location, Position, Principal,
+    PrincipalKind, ReadAt, RecordKey, Refusal, Result, TypeName, WriteContext,
 };
 use lakelands_engine_mem::MemoryOpener;
 use serde_json::json;
@@ -42,6 +42,11 @@ struct Failing {
     lag: Arc<AtomicU64>,
     /// How many segments were sealed.
     sealed: Arc<AtomicU32>,
+    /// Refuse every record state from this position on (`u64::MAX`: none).
+    fail_from: Arc<AtomicU64>,
+    /// Refuse every read of the log from this position on (`u64::MAX`:
+    /// none).
+    read_fail_from: Arc<AtomicU64>,
 }
 
 impl LakeEngine for Failing {
@@ -64,6 +69,11 @@ impl LakeEngine for Failing {
         self.inner.append(lease, events)
     }
     fn read(&self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>> {
+        if from.0 >= self.read_fail_from.load(Ordering::SeqCst) {
+            return Err(Error::Unavailable {
+                message: format!("the log could not be read from position {from} (planted)"),
+            });
+        }
         self.inner.read(from, limit)
     }
     fn seal_segment(&self, lease: &Lease) -> Result<Option<SegmentDigest>> {
@@ -114,6 +124,14 @@ impl ProjectionStore for Failing {
             .put_declaration(declaration, version, schema_hash, at)
     }
     fn put_record(&self, record: &StoredRecord) -> Result<()> {
+        if record.position.0 >= self.fail_from.load(Ordering::SeqCst) {
+            return Err(Error::Unavailable {
+                message: format!(
+                    "the projection refused a record at position {} (planted)",
+                    record.position
+                ),
+            });
+        }
         let armed = self.armed.load(Ordering::SeqCst);
         if armed > 0 {
             if armed != ALWAYS {
@@ -159,6 +177,8 @@ struct FailingOpener {
     armed: Arc<AtomicU32>,
     lag: Arc<AtomicU64>,
     sealed: Arc<AtomicU32>,
+    fail_from: Arc<AtomicU64>,
+    read_fail_from: Arc<AtomicU64>,
 }
 
 impl EngineOpener for FailingOpener {
@@ -171,6 +191,8 @@ impl EngineOpener for FailingOpener {
             armed: self.armed.clone(),
             lag: self.lag.clone(),
             sealed: self.sealed.clone(),
+            fail_from: self.fail_from.clone(),
+            read_fail_from: self.read_fail_from.clone(),
         }))
     }
 }
@@ -190,6 +212,8 @@ struct Lake {
     armed: Arc<AtomicU32>,
     lag: Arc<AtomicU64>,
     sealed: Arc<AtomicU32>,
+    fail_from: Arc<AtomicU64>,
+    read_fail_from: Arc<AtomicU64>,
 }
 
 /// A lake with the type `note`, and the switch that makes its folds fail.
@@ -211,12 +235,16 @@ async fn lake_with_switches() -> (Arc<dyn LakeStore>, Arc<dyn Catalog>, Principa
     let armed = Arc::new(AtomicU32::new(0));
     let lag = Arc::new(AtomicU64::new(0));
     let sealed = Arc::new(AtomicU32::new(0));
+    let fail_from = Arc::new(AtomicU64::new(u64::MAX));
+    let read_fail_from = Arc::new(AtomicU64::new(u64::MAX));
     let seams = Seams {
         engines: vec![Arc::new(FailingOpener {
             inner: MemoryOpener::new(),
             armed: armed.clone(),
             lag: lag.clone(),
             sealed: sealed.clone(),
+            fail_from: fail_from.clone(),
+            read_fail_from: read_fail_from.clone(),
         })],
         ..Seams::default()
     };
@@ -272,6 +300,8 @@ async fn lake_with_switches() -> (Arc<dyn LakeStore>, Arc<dyn Catalog>, Principa
             armed,
             lag,
             sealed,
+            fail_from,
+            read_fail_from,
         },
     )
 }
@@ -444,5 +474,159 @@ async fn close_keeps_the_head_at_the_last_folded_position() {
         store.head().await.unwrap(),
         before,
         "closing gave up the lease and published the unfolded tip as the head"
+    );
+}
+
+/// A page of the log, as the store folds it (lakelands#130).
+const PAGE: u64 = 1024;
+
+/// The first `limit` notes as of `as_of` (the head when `None`), as the
+/// reply serialises, or the refusal it is.
+async fn notes_at(cat: &dyn Catalog, who: &Principal, as_of: Option<Position>) -> Result<String> {
+    let find = Find {
+        limit: Some(50),
+        at: ReadAt {
+            as_of,
+            valid_at: None,
+        },
+        ..Find::default()
+    };
+    let reply = cat.find(who, &"note".into(), find).await?;
+    Ok(serde_json::to_string(&reply).unwrap())
+}
+
+/// A rebuild folds the log a page at a time, each page committed. One that
+/// stops in its third page leaves the projection folded through the end
+/// of its second, and `head()` names that position: a read there, or at
+/// the head, answers as it did before the rebuild; a read past it (the
+/// head before the rebuild, or the third page's first position) is
+/// refused as out of range; and the next open folds the rest, after which
+/// every read answers as before.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rebuild_stopped_in_a_page_answers_through_the_last_page_and_the_next_open_finishes_it() {
+    let (store, cat, who, l) = lake_with_switches().await;
+    for i in 0..2600 {
+        write(cat.as_ref(), &who, &format!("n{i:04}"))
+            .await
+            .unwrap();
+    }
+    let head = store.head().await.unwrap();
+    assert!(
+        head.0 >= 3 * PAGE - 500,
+        "the log spans three pages: {head}"
+    );
+    let second_page_end = Position(2 * PAGE - 1);
+    let at_page = notes_at(cat.as_ref(), &who, Some(second_page_end))
+        .await
+        .unwrap();
+    let at_head = notes_at(cat.as_ref(), &who, None).await.unwrap();
+
+    l.fail_from.store(2 * PAGE + 5, Ordering::SeqCst);
+    let failed = store.rebuild().await;
+    assert!(
+        matches!(failed, Err(Error::Unavailable { .. })),
+        "the third page's fold failed, and the rebuild answered {failed:?}"
+    );
+    assert_eq!(
+        store.head().await.unwrap(),
+        second_page_end,
+        "head() names the last position folded: the end of the second page"
+    );
+    assert_eq!(
+        notes_at(cat.as_ref(), &who, None).await.unwrap(),
+        at_page,
+        "a read at the head answers the lake as of the second page's end"
+    );
+    for as_of in [Some(head), Some(Position(2 * PAGE))] {
+        let past = notes_at(cat.as_ref(), &who, as_of).await;
+        assert!(
+            matches!(
+                past,
+                Err(Error::Refused {
+                    reason: Refusal::OutOfRange { .. },
+                    ..
+                })
+            ),
+            "a read as of {as_of:?}, past the last page folded, is out of range: {past:?}"
+        );
+    }
+    assert_eq!(
+        notes_at(cat.as_ref(), &who, Some(second_page_end))
+            .await
+            .unwrap(),
+        at_page,
+        "a read at the end of the last page folded answers as before the rebuild"
+    );
+
+    l.fail_from.store(u64::MAX, Ordering::SeqCst);
+    store.close().await.unwrap();
+    drop((store, cat));
+    let store = lakelands_store::open(
+        Location::memory(l.name.as_str()),
+        l.seams.clone(),
+        OpenMode::Write,
+    )
+    .await
+    .unwrap();
+    let cat = store.catalog(WriteContext::default());
+    // The open takes the lease, one event past the rebuild's head.
+    assert_eq!(store.head().await.unwrap(), head.next());
+    assert_eq!(
+        notes_at(cat.as_ref(), &who, Some(head)).await.unwrap(),
+        at_head,
+        "after the next open folded the rest, a read at the old head answers as before"
+    );
+}
+
+/// A rebuild whose read of the log fails in its third page stops as one
+/// whose fold fails does: the projection is folded through the second
+/// page, `head()` names that position, and the lake is behind. An append
+/// then first folds the rest; while the log still cannot be read it
+/// answers that error and appends nothing, and once it can, the append
+/// folds the rest, lands after the log's last event, and every read at
+/// the old head answers as before.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rebuild_whose_log_read_fails_leaves_the_lake_behind_until_a_fold_catches_up() {
+    let (store, cat, who, l) = lake_with_switches().await;
+    for i in 0..2600 {
+        write(cat.as_ref(), &who, &format!("n{i:04}"))
+            .await
+            .unwrap();
+    }
+    let head = store.head().await.unwrap();
+    let at_head = notes_at(cat.as_ref(), &who, None).await.unwrap();
+
+    l.read_fail_from.store(2 * PAGE, Ordering::SeqCst);
+    let failed = store.rebuild().await;
+    assert!(
+        matches!(failed, Err(Error::Unavailable { .. })),
+        "the third page could not be read, and the rebuild answered {failed:?}"
+    );
+    assert_eq!(store.head().await.unwrap(), Position(2 * PAGE - 1));
+
+    let refused = write(cat.as_ref(), &who, "late").await;
+    assert!(
+        matches!(refused, Err(Error::Unavailable { .. })),
+        "the lake is behind and the log still cannot be read past the second page; the \
+         append answered {refused:?}"
+    );
+    assert_eq!(
+        store.head().await.unwrap(),
+        Position(2 * PAGE - 1),
+        "nothing moved"
+    );
+
+    l.read_fail_from.store(u64::MAX, Ordering::SeqCst);
+    let landed = write(cat.as_ref(), &who, "late").await.unwrap();
+    assert_eq!(
+        landed.position(),
+        head.next(),
+        "the append folded the rest first, and lands right after the log's last event: the \
+         refused append wrote nothing"
+    );
+    assert_eq!(
+        notes_at(cat.as_ref(), &who, Some(head)).await.unwrap(),
+        at_head,
+        "every event the rebuild could not read is folded"
     );
 }

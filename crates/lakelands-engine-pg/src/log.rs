@@ -214,25 +214,35 @@ pub(crate) fn read(
         .collect())
 }
 
-/// A segment's lines: each event's bytes followed by one line feed.
-fn lines(db: &mut Db, names: &Names, first: i64) -> Result<Vec<u8>> {
-    let rows = db.query(
+/// Hand a segment's lines to `f` in position order, one at a time: each
+/// event's bytes, without the line feed that ends it in the file. A
+/// segment is never held whole.
+fn each_line(
+    db: &mut Db,
+    names: &Names,
+    first: i64,
+    mut f: impl FnMut(&[u8]) -> Result<()> + Send,
+) -> Result<()> {
+    db.query_each(
         &format!(
             "SELECT bytes FROM {} WHERE segment = $1 ORDER BY position",
             names.t("log")
         ),
         &[&first],
-    )?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.extend_from_slice(&r.get::<_, Vec<u8>>(0));
-        out.push(b'\n');
-    }
-    Ok(out)
+        |r| f(r.get::<_, &[u8]>(0)),
+    )
 }
 
-fn digest_of(bytes: &[u8]) -> Digest {
-    Digest(lakelands_core::canonical::hex(&Sha256::digest(bytes)))
+/// A segment's digest (`docs/log-format.md` §4.2): the SHA-256 of its
+/// lines, each followed by a line feed, hashed as they are read.
+fn digest_of(db: &mut Db, names: &Names, first: i64) -> Result<Digest> {
+    let mut hash = Sha256::new();
+    each_line(db, names, first, |line| {
+        hash.update(line);
+        hash.update(b"\n");
+        Ok(())
+    })?;
+    Ok(Digest(lakelands_core::canonical::hex(&hash.finalize())))
 }
 
 /// The first and last positions a segment holds, if it holds any.
@@ -261,7 +271,7 @@ pub(crate) fn seal(db: &mut Db, names: &Names, lease: &Lease) -> Result<Option<S
         let Some((from, to)) = span(db, names, first)? else {
             return Ok(None);
         };
-        let digest = digest_of(&lines(db, names, first)?);
+        let digest = digest_of(db, names, first)?;
         db.execute(
             &format!(
                 "UPDATE {} SET digest = $2 WHERE first = $1",
@@ -299,7 +309,7 @@ pub(crate) fn segments(db: &mut Db, names: &Names) -> Result<Vec<SegmentDigest>>
         };
         let digest = match r.get::<_, Option<String>>(1) {
             Some(d) => Digest(d),
-            None => digest_of(&lines(db, names, first)?),
+            None => digest_of(db, names, first)?,
         };
         out.push(SegmentDigest {
             first: from,
@@ -327,14 +337,31 @@ pub(crate) fn export(db: &mut Db, names: &Names, dir: &Path) -> Result<()> {
         .map(|r| r.get(0))
         .collect();
     for first in firsts {
-        let bytes = lines(db, names, first)?;
-        if bytes.is_empty() {
-            continue;
-        }
+        // Written as the rows arrive, under a temporary name that becomes
+        // the file's once it is whole and synced: a failed export leaves
+        // no file short of its segment. A segment with no line has none.
         let path = log.join(format!("{first:020}.jsonl"));
-        std::fs::File::create(&path)
-            .and_then(|mut f| f.write_all(&bytes).and_then(|()| f.sync_all()))
-            .map_err(|e| unavailable(format!("writing {} failed: {e}", path.display())))?;
+        let partial = log.join(format!("{first:020}.jsonl.partial"));
+        let failed =
+            |e: std::io::Error| unavailable(format!("writing {} failed: {e}", path.display()));
+        let mut file: Option<std::io::BufWriter<std::fs::File>> = None;
+        each_line(db, names, first, |line| {
+            if file.is_none() {
+                file = Some(std::io::BufWriter::new(
+                    std::fs::File::create(&partial).map_err(failed)?,
+                ));
+            }
+            let w = file.as_mut().expect("opened above");
+            w.write_all(line)
+                .and_then(|()| w.write_all(b"\n"))
+                .map_err(failed)
+        })?;
+        if let Some(w) = file {
+            w.into_inner()
+                .map_err(|e| failed(e.into_error()))
+                .and_then(|f| f.sync_all().map_err(failed))
+                .and_then(|()| std::fs::rename(&partial, &path).map_err(failed))?;
+        }
     }
     Ok(())
 }

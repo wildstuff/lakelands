@@ -26,7 +26,7 @@
 //! sees each append once it is committed.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use lakelands_api::engine::{CanonicalEvent, Lease};
@@ -175,16 +175,23 @@ impl Log {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => return Err(io_error("reading", &path, e)),
             };
-            let mut tail = Vec::new();
             file.seek(SeekFrom::Start(segment.index_read))
-                .and_then(|_| file.read_to_end(&mut tail))
                 .map_err(|e| io_error("reading", &path, e))?;
+            // The tail not indexed yet is read a line at a time, never
+            // whole: after a crash it can be most of the active segment.
+            let mut tail = std::io::BufReader::new(file);
+            let mut line = Vec::new();
             let mut group = Vec::new();
             let mut read = 0u64;
-            for line in tail.split_inclusive(|b| *b == b'\n') {
-                if line.last() != Some(&b'\n') {
+            loop {
+                line.clear();
+                let n = tail
+                    .read_until(b'\n', &mut line)
+                    .map_err(|e| io_error("reading", &path, e))?;
+                if n == 0 || line.last() != Some(&b'\n') {
                     break;
                 }
+                let line = line.as_slice();
                 read += line.len() as u64;
                 let parsed: serde_json::Value = serde_json::from_slice(line).map_err(|e| {
                     unavailable(format!("the log index {} is damaged: {e}", path.display()))
@@ -415,16 +422,21 @@ impl Log {
         Ok(out)
     }
 
-    /// The digest of a segment's committed bytes.
+    /// The digest of a segment's committed bytes, hashed as they are read:
+    /// a segment is never held whole.
     fn digest_of(&self, segment: &Segment) -> Result<Digest> {
         let path = self.segment_path(segment.first);
-        let mut file = File::open(&path).map_err(|e| io_error("reading", &path, e))?;
-        let mut bytes = vec![0; segment.end() as usize];
-        file.read_exact(&mut bytes)
+        let file = File::open(&path).map_err(|e| io_error("reading", &path, e))?;
+        let mut hash = Sha256::new();
+        let read = std::io::copy(&mut file.take(segment.end()), &mut hash)
             .map_err(|e| io_error("reading", &path, e))?;
-        Ok(Digest(lakelands_core::canonical::hex(&Sha256::digest(
-            &bytes,
-        ))))
+        if read != segment.end() {
+            return Err(unavailable(format!(
+                "{} ends before its committed events do; the log is damaged",
+                path.display()
+            )));
+        }
+        Ok(Digest(lakelands_core::canonical::hex(&hash.finalize())))
     }
 
     /// Close the active segment, if it holds any event, and start the next.

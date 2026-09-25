@@ -137,8 +137,9 @@ pub trait LakeEngine: Send + Sync {
 }
 
 /// The projection's write side. The fold calls it inside one transaction
-/// per append; the transaction commits with the position it folded
-/// through, so a crash leaves the projection at a whole append.
+/// per chunk (an append for a write, a page of the log for a rebuild or an
+/// open's catch-up); the transaction commits with the position it folded
+/// through, so a crash leaves the projection at a whole chunk.
 pub trait ProjectionStore: Send + Sync {
     /// Start a transaction.
     fn begin(&self) -> Result<()>;

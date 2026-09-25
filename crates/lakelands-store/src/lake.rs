@@ -259,23 +259,21 @@ impl Lake {
             w.ontology = Ontology::from_declared(&view.declarations()?);
             w.settings = settings_in(view.as_ref())?;
         }
-        let from = folded.map_or(Position::GENESIS, Position::next);
-        let events = self.read_events(from, None)?;
-        if let Some(last) = events.last() {
-            w.last_known_at = last.known_at;
-            w.format = w.format.max(last.v);
-            // Only the writer folds; a handle opened read-only reads what
-            // the writer folded, and writes nothing.
-            if w.lease.is_some() {
-                self.fold_all(&mut w, &events)?;
-                // Opening a lake never calls a backing.
-                w.due.clear();
-            }
-        } else if let Some((pos, _)) = &w.tip
-            && let Some(e) = self.read_events(*pos, Some(1))?.first()
+        // The last event's time and format: versions only go up, so the
+        // tip's is the log's newest.
+        if let Some((pos, _)) = &w.tip
+            && let Some(e) = self.read_events(*pos, 1)?.first()
         {
             w.last_known_at = e.known_at;
             w.format = w.format.max(e.v);
+        }
+        // Only the writer folds; a handle opened read-only reads what the
+        // writer folded, and writes nothing.
+        if w.lease.is_some() {
+            let from = folded.map_or(Position::GENESIS, Position::next);
+            self.fold_from(&mut w, from)?;
+            // Opening a lake never calls a backing.
+            w.due.clear();
         }
         if w.lease.is_some() {
             self.publish(&w);
@@ -289,12 +287,22 @@ impl Lake {
         Ok(())
     }
 
-    /// Events from a position, opened and checked, at most `limit`.
-    pub fn read_events(&self, from: Position, limit: Option<u32>) -> Result<Vec<Event>> {
+    /// The log from a position, a page at a time, opened and checked: a
+    /// caller holds one page, never the range (`Pages`).
+    pub fn pages(&self, from: Position) -> Pages<'_> {
+        Pages {
+            lake: self,
+            at: Some(from),
+        }
+    }
+
+    /// Events from a position, opened and checked, at most `limit`. A read
+    /// of a range goes through `pages`.
+    pub fn read_events(&self, from: Position, limit: u32) -> Result<Vec<Event>> {
         let mut out = Vec::new();
         let mut at = from;
         loop {
-            let want = limit.map_or(1024, |l| (l as usize - out.len()).min(1024) as u32);
+            let want = (limit as usize - out.len()).min(PAGE as usize) as u32;
             if want == 0 {
                 break;
             }
@@ -306,7 +314,7 @@ impl Lake {
                 out.push(log::open(stored)?);
             }
             at = Position(batch.last().expect("not empty").position.0 + 1);
-            if limit.is_some_and(|l| out.len() >= l as usize) {
+            if out.len() >= limit as usize {
                 break;
             }
         }
@@ -543,13 +551,41 @@ impl Lake {
         Ok(())
     }
 
-    /// Fold the events the log holds past the projection, in one fold
-    /// transaction, and publish the head once they are folded.
+    /// Fold the log from `from` on, a page at a time, each page in its own
+    /// transaction that commits `folded_through` at its last event. A fold
+    /// stops in one of two ways: reading a page of the log fails, or
+    /// folding it does, and that page rolls back. Either way the
+    /// projection is folded through the last page committed, the writer is
+    /// `behind`, and the head names that position; nothing is appended
+    /// until the next fold (an append's `refold`, a `rebuild`, or the next
+    /// open's catch-up) has continued from there. Every read is answered
+    /// at or before `folded_through`, so no read sees half a page.
+    fn fold_from(&self, w: &mut Writer, from: Position) -> Result<()> {
+        let folded = (|| {
+            for page in self.pages(from) {
+                self.fold_all(w, &page?)?;
+            }
+            Ok(())
+        })();
+        if folded.is_err() {
+            // Whatever stopped it, a read of the log or a page's fold, the
+            // projection is behind the log: nothing is appended until a
+            // fold has caught up, and the head names the last page
+            // committed, as `head()` promises.
+            w.behind = true;
+            let through = self.engine.projection().folded_through().ok().flatten();
+            self.head
+                .store(through.map_or(0, |p| p.0), Ordering::Release);
+        }
+        folded
+    }
+
+    /// Fold the events the log holds past the projection, a page at a
+    /// time, and publish the head once they are folded.
     fn refold(&self, w: &mut Writer) -> Result<()> {
         let folded = self.engine.projection().folded_through()?;
         let from = folded.map_or(Position::GENESIS, Position::next);
-        let events = self.read_events(from, None)?;
-        self.fold_all(w, &events)?;
+        self.fold_from(w, from)?;
         w.behind = false;
         self.publish(w);
         Ok(())
@@ -887,10 +923,13 @@ impl Lake {
         self.engine.projection().clear()?;
         w.ontology = Ontology::default();
         w.settings = BTreeMap::new();
-        let events = self.read_events(Position::GENESIS, None)?;
-        self.fold_all(&mut w, &events)?;
-        // A rebuild reads the recorded outputs; it never calls a backing.
+        // A page at a time: a rebuild that stops is continued by the next
+        // fold from where it committed, as a failed fold is.
+        let folded = self.fold_from(&mut w, Position::GENESIS);
+        // A rebuild reads the recorded outputs; it never calls a backing,
+        // whether it finished or stopped.
         w.due.clear();
+        folded?;
         // Everything the log holds is folded again: the head is its tip.
         self.publish(&w);
         Ok(w.tip.as_ref().map_or(Position::GENESIS, |t| t.0))
@@ -907,39 +946,41 @@ impl Lake {
         let mut before: Option<(Position, Digest)> = if from == Position::GENESIS {
             None
         } else {
-            let e = self.read_events(Position(from.0 - 1), Some(1))?;
+            let e = self.read_events(Position(from.0 - 1), 1)?;
             e.first().map(|e| (e.position, e.hash.clone()))
         };
         let segments = self.engine.segments()?;
         let mut last = None;
         let mut last_v = 0;
-        for e in self.read_events(from, None)? {
-            if through.is_some_and(|t| e.position > t) {
-                break;
-            }
-            log::check_link(before.as_ref().map(|(p, h)| (p, h)), &e)?;
-            // Versions go only upward (`docs/log-format.md` §6).
-            if e.v < last_v {
-                return Err(Error::Unavailable {
-                    message: format!(
-                        "the log is damaged at position {}: it is written in format {} after \
+        'pages: for page in self.pages(from) {
+            for e in page? {
+                if through.is_some_and(|t| e.position > t) {
+                    break 'pages;
+                }
+                log::check_link(before.as_ref().map(|(p, h)| (p, h)), &e)?;
+                // Versions go only upward (`docs/log-format.md` §6).
+                if e.v < last_v {
+                    return Err(Error::Unavailable {
+                        message: format!(
+                            "the log is damaged at position {}: it is written in format {} after \
                          an event in format {last_v}",
-                        e.position, e.v
-                    ),
-                });
+                            e.position, e.v
+                        ),
+                    });
+                }
+                last_v = e.v;
+                if let EventBody::Checkpoint {
+                    through,
+                    hash,
+                    segments: listed,
+                } = &e.body
+                {
+                    check_checkpoint(&e, *through, hash, listed)?;
+                    check_segments(listed, &segments, e.position)?;
+                }
+                before = Some((e.position, e.hash.clone()));
+                last = Some(e);
             }
-            last_v = e.v;
-            if let EventBody::Checkpoint {
-                through,
-                hash,
-                segments: listed,
-            } = &e.body
-            {
-                check_checkpoint(&e, *through, hash, listed)?;
-                check_segments(listed, &segments, e.position)?;
-            }
-            before = Some((e.position, e.hash.clone()));
-            last = Some(e);
         }
         let last = last.ok_or_else(|| Error::Refused {
             field: None,
@@ -1127,6 +1168,33 @@ pub fn find_proposal(view: &dyn ProjectionView, id: &ProposalId) -> Result<Propo
     .ok_or_else(|| Error::NotFound {
         missing: lakelands_api::Missing::Proposal { id: id.clone() },
     })
+}
+
+/// How many events a page of the log holds at most.
+const PAGE: u32 = 1024;
+
+/// The log read a page at a time (`Lake::pages`): each item is up to
+/// `PAGE` events, opened and checked; the iteration ends after the tip, or
+/// after the first error.
+pub struct Pages<'a> {
+    lake: &'a Lake,
+    at: Option<Position>,
+}
+
+impl Iterator for Pages<'_> {
+    type Item = Result<Vec<Event>>;
+
+    fn next(&mut self) -> Option<Result<Vec<Event>>> {
+        let at = self.at.take()?;
+        match self.lake.read_events(at, PAGE) {
+            Ok(page) => {
+                let last = page.last()?;
+                self.at = Some(last.position.next());
+                Some(Ok(page))
+            }
+            Err(e) => Some(Err(e)),
+        }
+    }
 }
 
 /// What one append has written so far, read before the projection.
