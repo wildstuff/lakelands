@@ -242,6 +242,7 @@ pub const ALL: &[Check] = &[
     retire::SOURCE_ONLY_HAS_NO_UPSERT,
     search::HIT_IS_THE_RECORD,
     vocabulary::HOST_TYPES_AT_OPEN,
+    vocabulary::RESERVED_NAME_REFUSES_OPEN,
     backings::FAILURE_RETRIED,
     embeddings::EMBED_SEARCH_OTHER_BACKEND,
     embeddings::EMBED_WAITS,

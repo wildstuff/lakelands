@@ -4,7 +4,9 @@
 //! writer opens the lake and declares the types it allows and the lake
 //! does not hold yet, so a type the host adds later reaches a lake that
 //! already exists, and a lake the host withholds a type from never holds
-//! it.
+//! it. A vocabulary naming a type under `sys.link.`, or one of the four
+//! names the store keeps for its own readers, is refused at the writer's
+//! open, naming the type, and nothing is appended.
 
 use std::sync::Arc;
 
@@ -13,13 +15,20 @@ use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, ReadAt, TypeName};
 use serde_json::json;
 
-use crate::conformance::fixture::{doors, field, owner, read, type_decl, upsert};
+use crate::conformance::fixture::{Must, doors, field, owner, read, type_decl, upsert};
 use crate::conformance::{Failure, Reopen, backing};
 
 check!(
     /// A host type is declared when a writer opens the lake.
     HOST_TYPES_AT_OPEN = a_host_type_is_declared_when_a_writer_opens_the_lake,
     "003 and seams, SystemVocabulary: each writer open declares the host's sys. types the lake may hold and does not hold yet; a type added later reaches the existing lake, and a withheld one never does",
+    reopens
+);
+
+check!(
+    /// A vocabulary under a reserved name refuses the writer's open.
+    RESERVED_NAME_REFUSES_OPEN = a_vocabulary_naming_a_reserved_type_refuses_the_writers_open,
+    "003, 035 and seams, SystemVocabulary: a host vocabulary naming a type under sys.link. or one of the store's own four (sys.source, sys.provenance, sys.setting, sys.aging_rule) is refused at the writer's open as invalid, naming the type as reserved; nothing is appended, and the lake never holds it",
     reopens
 );
 
@@ -112,5 +121,58 @@ async fn a_host_type_is_declared_when_a_writer_opens_the_lake(
         "the vocabulary still withholds `sys.host_hidden`; the lake holds it after the \
          second open"
     );
+    Ok(())
+}
+
+async fn a_vocabulary_naming_a_reserved_type_refuses_the_writers_open(
+    store: Arc<dyn LakeStore>,
+    reopen: Reopen,
+) -> Result<(), Failure> {
+    let with = |vocabulary| Seams {
+        backings: backing::backings(),
+        vocabulary,
+        ..Seams::default()
+    };
+    let mut store = store;
+    for name in ["sys.source", "sys.link.invoice.approver"] {
+        let before = store.head().await.must("reading the head")?;
+        let taken = || type_decl(name, vec![field("x", StorageKind::Text)]);
+        let answer = reopen(
+            store.clone(),
+            with(Some(backing::vocabulary(vec![taken()], &[]))),
+        )
+        .await;
+        match answer {
+            Err(lakelands_api::Error::Refused {
+                reason: lakelands_api::Refusal::Invalid { message },
+                ..
+            }) if message.contains(&format!("`{name}`")) && message.contains("reserved") => {}
+            Err(e) => {
+                return Err(Failure::new(format!(
+                    "a vocabulary naming `{name}` is refused at the writer's open as invalid, \
+                     naming the type as reserved; it answered {e} ({e:?})"
+                )));
+            }
+            Ok(_) => {
+                return Err(Failure::new(format!(
+                    "a vocabulary naming `{name}` is refused at the writer's open; the lake \
+                     opened"
+                )));
+            }
+        }
+        store = reopen(store.clone(), with(None))
+            .await
+            .map_err(|e| reopened("without the reserved name", e))?;
+        let after = store.head().await.must("reading the head")?;
+        ensure!(
+            after == before.next(),
+            "a refused open appends nothing: the head was {before} before it, and after the \
+             next open (which takes the lease, one event) it is {after}"
+        );
+        ensure!(
+            !holds(store.as_ref(), name).await,
+            "a vocabulary naming `{name}` was refused; the lake holds `{name}` all the same"
+        );
+    }
     Ok(())
 }

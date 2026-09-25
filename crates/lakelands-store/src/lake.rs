@@ -194,11 +194,19 @@ impl Lake {
             // the lake was created reaches it too.
             let mut types = vec![setting_type(), aging_rule_type()];
             if let Some(v) = &lake.seams.vocabulary {
-                types.extend(
-                    v.types()
-                        .into_iter()
-                        .filter(|t| v.may_hold(&lake.id, &t.name)),
-                );
+                let held: Vec<lakelands_api::ontology::TypeDecl> = v
+                    .types()
+                    .into_iter()
+                    .filter(|t| v.may_hold(&lake.id, &t.name))
+                    .collect();
+                // Every vocabulary type is checked before anything is
+                // appended, held already or not: a process whose
+                // vocabulary collides with the store's own names must not
+                // write.
+                for t in &held {
+                    crate::declare::check_vocabulary_type(t)?;
+                }
+                types.extend(held);
             }
             types.retain(|t| !w.ontology.types.contains_key(&t.name));
             for t in types {
