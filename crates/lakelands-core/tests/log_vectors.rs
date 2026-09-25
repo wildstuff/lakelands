@@ -203,3 +203,37 @@ fn a_view_hashes_its_conditions_in_typed_form() {
         "the declaration, conditions written as text, hashes to the vector's shape"
     );
 }
+
+/// Format version 2's one addition, `migrated.rekeyed`, in a worked event
+/// (`docs/log-format.md` §6): its line is canonical, it reads into the
+/// contract's event with the moved key, and its hash recomputes.
+#[test]
+fn the_version_2_rekey_event_recomputes() {
+    let v2 = read_json("rekey.json");
+    let line = str_of(&v2, "line");
+    let value: Value = serde_json::from_str(line).unwrap();
+    assert_eq!(
+        canonical::to_vec(&value),
+        line.as_bytes(),
+        "the line is canonical"
+    );
+    let event: Event = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(
+        canonical::of(&event),
+        line.as_bytes(),
+        "the contract writes the event exactly as the line"
+    );
+    assert_eq!(event.v, 2);
+    let EventBody::Migrated { rekeyed, .. } = &event.body else {
+        panic!("a migrated event")
+    };
+    assert_eq!(rekeyed.len(), 1);
+    assert_eq!(rekeyed[0].to.as_str(), "DE%3A01");
+    let mut body = value;
+    body.as_object_mut().unwrap().remove("hash");
+    assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
+    assert_eq!(event.hash.0, str_of(&v2, "hash"));
+    let expected = read_json("expected.json");
+    let last = expected["events"].as_array().unwrap().last().unwrap();
+    assert_eq!(event.prev.0, str_of(last, "hash"), "it follows position 7");
+}

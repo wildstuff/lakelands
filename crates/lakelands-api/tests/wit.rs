@@ -40,8 +40,8 @@ use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Direction, Group, Orde
 use lakelands_api::seam::{FeedBatch, FeedFilter};
 use lakelands_api::write::{
     AgeReport, Declaration, FieldConversion, FunctionDecl, Migration, MigrationReport, Misfit,
-    ObjectSetDecl, Proposal, ProposalFilter, ProposalState, ProposedWrite, PurgeReport, RuleRun,
-    TypeRetired, ValueTypeReport, ValueTypeUse,
+    ObjectSetDecl, Proposal, ProposalFilter, ProposalState, ProposedWrite, PurgeReport, RecordRef,
+    ReferenceRewrite, Rekeyed, RuleRun, TypeRetired, ValueTypeReport, ValueTypeUse,
 };
 use lakelands_api::{
     Access, Committed, Cursor, Error, FieldMeta, Find, Found, Get, Grants, Missing, Origin,
@@ -377,6 +377,21 @@ fn migration_report() -> MigrationReport {
             sample_keys: vec!["k".into()],
         }],
         dropped: vec![("f".into(), 1)],
+        rekeyed: vec![Rekeyed {
+            ty: "invoice".into(),
+            records: 1,
+            collisions: 0,
+            missing: 0,
+        }],
+        references: vec![ReferenceRewrite {
+            ty: "payment".into(),
+            field: "invoice".into(),
+            values: 1,
+        }],
+        sample_collisions: vec![RecordRef {
+            ty: "invoice".into(),
+            key: "k".into(),
+        }],
         lossless: true,
         report_id: "r".into(),
     }
@@ -849,6 +864,23 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 moved: 1,
                 failed_guards: 2,
                 skipped: Some("s".into()),
+            }),
+        ),
+        (
+            "rekeyed",
+            members(&Rekeyed {
+                ty: "invoice".into(),
+                records: 1,
+                collisions: 0,
+                missing: 0,
+            }),
+        ),
+        (
+            "reference_rewrite",
+            members(&ReferenceRewrite {
+                ty: "payment".into(),
+                field: "invoice".into(),
+                values: 1,
             }),
         ),
         (

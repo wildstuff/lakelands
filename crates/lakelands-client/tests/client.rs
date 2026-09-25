@@ -96,6 +96,9 @@ async fn every_error_comes_back_as_the_error_the_server_answered() {
         records_scanned: 3,
         fields: Vec::new(),
         dropped: Vec::new(),
+        rekeyed: Vec::new(),
+        references: Vec::new(),
+        sample_collisions: Vec::new(),
         lossless: false,
         report_id: "r".into(),
     };

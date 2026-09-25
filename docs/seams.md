@@ -868,7 +868,9 @@ and never evaluates `when` again.
   as to any write.
 - Each transition has the id of `docs/log-format.md` §3 for the rule,
   the record and the date, so a second `age` for the same date appends
-  nothing.
+  nothing. The id names the record's key, so after a re-key the same date
+  can move a record once more, when after its own transition the rule's
+  `from` and `when` hold for it again.
 - A `when` that cannot be evaluated for a record, or a move the store
   would refuse for it, does not move it; it is counted as a failed
   guard, and the run goes on.
@@ -1002,6 +1004,27 @@ values only: a condition that compares with a value the type no longer
 admits (a trigger's `when`, an object set's `where`) is not checked, and
 simply never holds afterwards; an aging rule whose `from` or `to` the
 type no longer admits is skipped by `age` and named in its report.
+
+A migration may re-key a type: name other key fields, or change a key
+field's value. Its preflight (`MigrationReport.rekeyed`, `references`,
+`sample_collisions`) counts, per type, the records whose key moves,
+retired and restricted ones included, with every type keyed by a
+reference to a re-keyed type (link types among them) and every reference
+value that names a moved key; two records that would take one key, or a
+record without a value for a new key field, make it not lossless. Applied,
+it is one `migrated` event listing every move (`rekeyed`, log format
+version 2, `docs/log-format.md` §2.3 and §6): each record keeps its
+fields, version and per-field provenance at its new key, the old key is
+ended as of that position (kept as a retired state at version 0 with no
+field, which every scan of stored history skips), object-set memberships
+move with the record, and references follow. A source that writes a
+re-keyed type must send the new keys from then on: its own key mapping
+(a column map's `key`, the keys its feed carries) has to follow. A write
+at an old key whose key fields make another key is refused as invalid; a
+write of an old key's bare string with no key field has the key field
+filled from it and is a new record at version 1. A migration that takes
+every key field away, names a key field that is not required or of a
+kind no key is made of, or would re-key a view is refused.
 
 **Many callers, one writer.** A lake has one writing process
 (`docs/decisions/008-one-writer-per-lake.md`), and any number of callers

@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use lakelands_api::engine::{CanonicalEvent, LakeEngine, Lease, OpenMode, ProjectionView};
-use lakelands_api::event::{Digest, Event, EventBody, LOG_FORMAT_VERSION, SegmentDigest};
+use lakelands_api::event::{Digest, Event, EventBody, LOG_FORMAT_BASE, SegmentDigest};
 use lakelands_api::location::{EngineConfig, Limits, Location};
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::record::StoredRecord;
@@ -60,6 +60,9 @@ pub struct Writer {
     /// A fold failed after its events were in the log: the projection is
     /// behind the log, and nothing is appended until it has caught up.
     pub behind: bool,
+    /// The log format version the lake writes: the version of its last
+    /// event, raised by an append that needs a newer one, never lowered.
+    pub format: u32,
 }
 
 /// One open lake.
@@ -161,6 +164,7 @@ impl Lake {
                 settings: BTreeMap::new(),
                 due: Vec::new(),
                 behind: false,
+                format: LOG_FORMAT_BASE,
             }),
             head: AtomicU64::new(0),
             holds_lease: AtomicBool::new(false),
@@ -174,7 +178,7 @@ impl Lake {
                 drafts.push(Draft::system(
                     now,
                     EventBody::LakeCreated {
-                        format: LOG_FORMAT_VERSION,
+                        format: LOG_FORMAT_BASE,
                     },
                 ));
             }
@@ -259,6 +263,7 @@ impl Lake {
         let events = self.read_events(from, None)?;
         if let Some(last) = events.last() {
             w.last_known_at = last.known_at;
+            w.format = w.format.max(last.v);
             // Only the writer folds; a handle opened read-only reads what
             // the writer folded, and writes nothing.
             if w.lease.is_some() {
@@ -270,6 +275,7 @@ impl Lake {
             && let Some(e) = self.read_events(*pos, Some(1))?.first()
         {
             w.last_known_at = e.known_at;
+            w.format = w.format.max(e.v);
         }
         if w.lease.is_some() {
             self.publish(&w);
@@ -322,6 +328,15 @@ impl Lake {
         if w.behind {
             self.refold(w)?;
         }
+        // A re-key needs format 2; the lake writes it from then on.
+        let v = if drafts
+            .iter()
+            .any(|d| matches!(&d.body, EventBody::Migrated { rekeyed, .. } if !rekeyed.is_empty()))
+        {
+            w.format.max(2)
+        } else {
+            w.format
+        };
         let mut events = Vec::with_capacity(drafts.len());
         let mut stored: Vec<CanonicalEvent> = Vec::with_capacity(drafts.len());
         let (mut prev_pos, mut prev_hash) = match &w.tip {
@@ -336,7 +351,7 @@ impl Lake {
             } else {
                 lease.fence
             };
-            let (event, canon) = log::seal(&self.id, position, &prev_hash, fence, d);
+            let (event, canon) = log::seal_at(v, &self.id, position, &prev_hash, fence, d);
             prev_pos = Some(position);
             prev_hash = event.hash.clone();
             events.push(event);
@@ -344,6 +359,7 @@ impl Lake {
         }
         self.engine.append(&lease, &stored)?;
         w.tip = prev_pos.map(|p| (p, prev_hash));
+        w.format = v;
         if let Some(last) = events.last() {
             w.last_known_at = w.last_known_at.max(last.known_at);
         }
@@ -393,6 +409,138 @@ impl Lake {
                 Err(e)
             }
         }
+    }
+
+    /// Move the records a re-keying migration lists to their new keys,
+    /// keeping their fields, versions and per-field provenance; end each
+    /// old key that is no one's new key; and rewrite every reference to a
+    /// moved key (`crate::rekey`). An ended key reads as not found from
+    /// here on, and a later record at it starts at version 1.
+    fn rekey(
+        &self,
+        w: &Writer,
+        view: &dyn ProjectionView,
+        projection: &dyn lakelands_api::engine::ProjectionStore,
+        staged: &mut Staged,
+        e: &Event,
+        rekeyed: &[lakelands_api::write::Rekey],
+    ) -> Result<()> {
+        let mut moves: crate::rekey::Moves = BTreeMap::new();
+        for r in rekeyed {
+            moves
+                .entry(r.ty.clone())
+                .or_default()
+                .insert(r.from.clone(), r.to.clone());
+        }
+        // Every moved record is read before any is written: a new key may
+        // be another record's old one.
+        let mut moved = Vec::new();
+        for (ty, m) in &moves {
+            let decl = w.ontology.ty(ty)?.clone();
+            for (from, to) in m {
+                let r = match staged.get(ty, from) {
+                    Some(r) => r.clone(),
+                    None => view.get(ty, from)?.ok_or_else(|| Error::Unavailable {
+                        message: format!(
+                            "the migration at position {} moves `{ty}` `{from}`, which the lake \
+                             does not hold",
+                            e.position
+                        ),
+                    })?,
+                };
+                let fields = crate::rekey::rewritten(&decl, &r.fields, &moves);
+                moved.push((
+                    from.clone(),
+                    StoredRecord {
+                        key: to.clone(),
+                        fields,
+                        position: e.position,
+                        ..r
+                    },
+                ));
+            }
+        }
+        let arrivals: std::collections::BTreeSet<(TypeName, RecordKey)> = moved
+            .iter()
+            .map(|(_, r)| (r.ty.clone(), r.key.clone()))
+            .collect();
+        // Object-set membership moves with the record: the new key is in
+        // every set the old key was in, and an ended key is in none.
+        let mut members = Vec::new();
+        for (from, r) in &moved {
+            for s in w
+                .ontology
+                .object_sets
+                .values()
+                .filter(|s| s.decl.of == r.ty)
+            {
+                let name = &s.decl.name;
+                members.push((
+                    name.clone(),
+                    r.ty.clone(),
+                    from.clone(),
+                    r.key.clone(),
+                    view.is_member(name, &r.ty, from)?,
+                ));
+            }
+        }
+        for (set, ty, from, to, member) in members {
+            projection.put_membership(&set, &ty, &to, member, e.position)?;
+            if member && !arrivals.contains(&(ty.clone(), from.clone())) {
+                projection.put_membership(&set, &ty, &from, false, e.position)?;
+            }
+        }
+        for (from, r) in moved {
+            if !arrivals.contains(&(r.ty.clone(), from.clone())) {
+                let ended = StoredRecord::ended(r.ty.clone(), from, e.position);
+                projection.put_record(&ended)?;
+                staged.put(ended);
+            }
+            projection.put_record(&r)?;
+            staged.put(r);
+        }
+        // References to a moved key, in records that did not move.
+        for (name, entry) in &w.ontology.types {
+            let decl = &entry.decl;
+            if decl.view.is_some()
+                || !decl.fields.iter().any(|f| {
+                    f.ty.kind == StorageKind::Reference
+                        && f.ty.target.as_ref().is_some_and(|t| moves.contains_key(t))
+                })
+            {
+                continue;
+            }
+            let records = view.scan(
+                name,
+                &lakelands_api::engine::Scan {
+                    limit: u32::MAX,
+                    retired: true,
+                    restricted: true,
+                    ..Default::default()
+                },
+            )?;
+            for r in records.into_iter().filter(|r| !r.is_ended()) {
+                let touched = |k: &RecordKey| {
+                    arrivals.contains(&(name.clone(), k.clone()))
+                        || moves.get(name).is_some_and(|m| m.contains_key(k))
+                };
+                if touched(&r.key) {
+                    continue;
+                }
+                let r = staged.get(&r.ty, &r.key).cloned().unwrap_or(r);
+                let fields = crate::rekey::rewritten(decl, &r.fields, &moves);
+                if fields != r.fields {
+                    let next = StoredRecord {
+                        fields,
+                        position: e.position,
+                        ..r
+                    };
+                    projection.put_record(&next)?;
+                    staged.put(next);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Fold the events the log holds past the projection, in one fold
@@ -524,6 +672,7 @@ impl Lake {
                 migration,
                 schema_hash,
                 version,
+                rekeyed,
                 ..
             } => {
                 let before = w.ontology.ty(&migration.to.name)?.clone();
@@ -543,7 +692,7 @@ impl Lake {
                 );
                 let decl = Declaration::Type(migration.to.clone());
                 projection.put_declaration(&decl, *version, Some(schema_hash), e.position)?;
-                for r in records {
+                for r in records.into_iter().filter(|r| !r.is_ended()) {
                     let r = staged.get(&r.ty, &r.key).cloned().unwrap_or(r);
                     let converted = shape::migrate_record(&before, migration, &r.fields)
                         .map_err(|err| Error::Unavailable {
@@ -574,6 +723,9 @@ impl Lake {
                     };
                     projection.put_record(&next)?;
                     staged.put(next);
+                }
+                if !rekeyed.is_empty() {
+                    self.rekey(w, view, projection, staged, e, rekeyed)?;
                 }
             }
             EventBody::RecordUpserted { ty, key, .. }
@@ -760,11 +912,23 @@ impl Lake {
         };
         let segments = self.engine.segments()?;
         let mut last = None;
+        let mut last_v = 0;
         for e in self.read_events(from, None)? {
             if through.is_some_and(|t| e.position > t) {
                 break;
             }
             log::check_link(before.as_ref().map(|(p, h)| (p, h)), &e)?;
+            // Versions go only upward (`docs/log-format.md` §6).
+            if e.v < last_v {
+                return Err(Error::Unavailable {
+                    message: format!(
+                        "the log is damaged at position {}: it is written in format {} after \
+                         an event in format {last_v}",
+                        e.position, e.v
+                    ),
+                });
+            }
+            last_v = e.v;
             if let EventBody::Checkpoint {
                 through,
                 hash,

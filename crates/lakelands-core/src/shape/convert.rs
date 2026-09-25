@@ -185,6 +185,9 @@ pub fn preflight(
         lossless: fields.iter().all(|f| f.not_convertible == 0),
         fields,
         dropped,
+        rekeyed: Vec::new(),
+        references: Vec::new(),
+        sample_collisions: Vec::new(),
         report_id: String::new(),
     };
     report.report_id = canonical::sha256_hex(

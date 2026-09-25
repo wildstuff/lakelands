@@ -18,10 +18,17 @@ use crate::record::{Origin, Patch, Value};
 use crate::time::Timestamp;
 use crate::write::{Declaration, Migration, ProposedWrite};
 
-/// The log format version this contract writes. Every event carries the
-/// version it was written under; a reader refuses a version newer than
-/// the one it knows, by name and with a message, never by guessing.
-pub const LOG_FORMAT_VERSION: u32 = 1;
+/// The newest log format version this contract reads and writes. Every
+/// event carries the version it was written under; a reader refuses a
+/// version newer than the one it knows, by name and with a message, never
+/// by guessing. Version 2 adds `migrated.rekeyed` (`docs/log-format.md`
+/// §6).
+pub const LOG_FORMAT_VERSION: u32 = 2;
+
+/// The version a lake is created with and writes until it needs a newer
+/// one: a lake that never re-keys a type stays at version 1, byte for
+/// byte.
+pub const LOG_FORMAT_BASE: u32 = 1;
 
 /// A SHA-256 digest, as 64 lower-case hexadecimal digits.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -138,6 +145,10 @@ pub enum EventBody {
         version: u32,
         /// The preflight report it was applied against.
         report_id: String,
+        /// Every record key the migration moves, over every type it
+        /// re-keys (format version 2); empty when no key changes.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        rekeyed: Vec<crate::write::Rekey>,
     },
     /// An authored write: `upsert`, a verb's effect, an accepted
     /// proposal.

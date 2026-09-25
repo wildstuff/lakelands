@@ -165,6 +165,15 @@ def main():
     check(shape.decode("utf-8") == view["shape_canonical"], "schema-hash.json: the shape object's canonical bytes")
     check(sha(shape) == view["schema_hash"], f"schema-hash.json: schema hash {view['schema_hash'][:12]}…")
 
+    v2 = json.loads((HERE / "rekey.json").read_text("utf-8"))
+    event = json.loads(v2["line"])
+    check(canonical(event) == v2["line"].encode("utf-8"), "rekey.json: the version-2 line is canonical")
+    body = {k: v for k, v in event.items() if k != "hash"}
+    check(event["v"] == 2 and event["body"]["kind"] == "migrated" and event["body"]["rekeyed"],
+          "rekey.json: a version-2 `migrated` event with `rekeyed`")
+    check(sha(canonical(body)) == event["hash"] == v2["hash"], f"rekey.json: hash {v2['hash'][:12]}…")
+    check(event["prev"] == expected["events"][-1]["hash"], "rekey.json: it follows position 7")
+
     for n, want in [(1e21, "1e+21"), (1e-7, "1e-7"), (0.000001, "0.000001"), (333333333.3333333, "333333333.3333333"),
                     (-0.0, "0"), (9007199254740992.0, "9007199254740992"), (5e-324, "5e-324")]:
         check(es_number(n) == want, f"number form {want}")

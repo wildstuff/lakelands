@@ -56,6 +56,49 @@ checked; it simply never holds afterwards. For an aging rule the run's own
 check applies instead: a rule whose `from` or `to` the type no longer
 admits is skipped by `age` and named in its report.
 
+## Extended: a type is re-keyed by a migration
+
+The rule above that a migration keeps the type's key is lifted: a
+migration may name other key fields, or change a key field's value. A
+record's key is its name everywhere in the lake, so the preflight covers
+everything that names the records it moves:
+
+- every record of the type, retired and restricted included, whose key
+  the new key fields make differently; two records that would take one
+  new key, or a record without a value for a new key field, make the
+  migration not lossless;
+- every type whose key fields reference a re-keyed type, re-keyed with it
+  (link records, keyed by their two ends, are the common case); the
+  closure is computed with a visited set;
+- every reference value, in any type, that names a moved key.
+
+The moves are listed in the `migrated` event (`rekeyed`, log format
+version 2), and the fold moves each record with its fields, version and
+per-field provenance unchanged: who wrote a value, and when, stays true of
+it. That is why the move is a new member, and a new format version, rather
+than a retirement and a new write per record, which would have made every
+moved value the migration's. The old key is ended, not retired: a read
+before the migration finds it, a read from the migration on does not, and
+a later record whose key is the same string is a new record at version 1.
+The store keeps an ended key as a retired state at version 0 with no
+field. That state is no record: every scan of stored history (a later
+migration's preflight, a value type's, the closure of a second re-key)
+skips it, so a type that was re-keyed migrates again like any other. A
+moved record keeps its object-set memberships at its new key. A migration
+that takes every key field away, names a key field that is not required
+or of a kind no key is made of, or would re-key a view is refused.
+
+Two things follow outside the lake's own records. A source that writes
+the type must send the new keys: its own key mapping (a column map's
+`key`, the keys its feed carries) has to follow the migration. A write
+whose key fields make another key than the one it names is refused as
+invalid, as before; a write that names an old key's bare string and
+carries no key field has its key field filled from that string (§2.3),
+and is a new record at version 1. And the aging id (`docs/log-format.md` §3) names the record's
+key, so a date aged before a re-key and again after it can move a record
+a second time, when after its own transition the rule's `from` and `when`
+hold for it again.
+
 ## Why
 
 The log is the truth (001), so a change of shape must never quietly

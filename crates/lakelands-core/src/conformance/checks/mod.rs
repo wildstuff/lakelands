@@ -31,6 +31,7 @@ mod purge;
 mod reactions;
 mod rebuild;
 mod references;
+mod rekey;
 mod restriction;
 mod retire;
 mod schema;
@@ -208,6 +209,20 @@ pub const ALL: &[Check] = &[
     value_types::STALE_REPORT,
     value_types::SCHEMA_GRANT,
     value_types::BUNDLE_REFUSED_WHOLE,
+    rekey::PREFLIGHT_COUNTS,
+    rekey::COLLISION,
+    rekey::MISSING,
+    rekey::MOVES,
+    rekey::REFERENCES,
+    rekey::LINKS,
+    rekey::CLOSURE,
+    rekey::OLD_KEY_ENDED,
+    rekey::FORMAT_TWO,
+    rekey::FORMAT_ONE,
+    rekey::NO_KEY,
+    rekey::STALE,
+    rekey::SETS,
+    rekey::AGAIN,
     settings::SETTING_AS_OF,
     feed::LIMIT_ZERO_IS_ONE,
     retire::SOURCE_ONLY_HAS_NO_UPSERT,

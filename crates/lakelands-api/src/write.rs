@@ -263,7 +263,18 @@ pub struct MigrationReport {
     /// report lossy.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dropped: Vec<(FieldName, u64)>,
-    /// True when every stored value converts without loss.
+    /// Per type a re-key moves: its records, and the new keys that
+    /// collide or cannot be made.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rekeyed: Vec<Rekeyed>,
+    /// Per reference field, in any type, the values the re-key rewrites.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<ReferenceRewrite>,
+    /// The first new keys more than one record would take, at most ten.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sample_collisions: Vec<RecordRef>,
+    /// True when every stored value converts without loss, and every
+    /// record a re-key moves takes a new key of its own.
     pub lossless: bool,
     /// Names this report; `migrate_apply` must repeat it.
     pub report_id: String,
@@ -414,4 +425,52 @@ pub struct Misfit {
     pub key: RecordKey,
     /// The field.
     pub field: FieldName,
+}
+
+/// One record key a re-keying migration moves (`migrated.rekeyed`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rekey {
+    /// The record's type.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// Its key before.
+    pub from: RecordKey,
+    /// Its key after.
+    pub to: RecordKey,
+}
+
+/// What a re-key does to one type's records.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rekeyed {
+    /// The type.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// Records whose key changes, retired and restricted included.
+    pub records: u64,
+    /// Records whose new key another record would take too.
+    pub collisions: u64,
+    /// Records a new key cannot be made for: a key field has no value.
+    pub missing: u64,
+}
+
+/// The values of one reference field a re-key rewrites to new keys.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReferenceRewrite {
+    /// The type holding the field.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// The field.
+    pub field: FieldName,
+    /// Values rewritten.
+    pub values: u64,
+}
+
+/// A record named by its type and key; never its values.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordRef {
+    /// The type.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// The key.
+    pub key: RecordKey,
 }
