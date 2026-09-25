@@ -19,6 +19,20 @@
 //! last row, so the next page starts strictly after it and the page set is
 //! stable while the lake is written.
 //!
+//! **A page reads a page.** `find` over a stored type asks the engine for
+//! the page in that order, `order_by`, `after` and `limit + 1` pushed
+//! down, and never for the type. A filter the engine cannot apply is
+//! applied here over engine pages read one after another, each continuing
+//! after the last row read, until the page and one row more are kept or
+//! the type is out. So a page's cost is the rows read to fill it: a
+//! selective filter the store evaluates over a large type is bounded in
+//! memory and linear in time, by design. A page ordered by the key alone
+//! reads about `limit` rows in the engine too; one ordered by a field is
+//! sorted by the engine over the type at the position, for that answer
+//! only, and since each such engine page sorts the type again, the store
+//! asks for twice as many rows each time it reads on
+//! (`docs/seams.md`, the ceiling of `find`).
+//!
 //! **Views** are computed on read: the source's records at the same
 //! position, filtered by the view's `where`, grouped by its `group_by`
 //! fields (whose values form the view record's key, in declared order, by
@@ -30,7 +44,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use lakelands_api::describe::{LakeDescription, TypeDescription};
-use lakelands_api::engine::{ProjectionView, Scan};
+use lakelands_api::engine::{After, ProjectionView, Scan};
 use lakelands_api::expr::{Expr, Func};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::query::{
@@ -258,6 +272,69 @@ impl<'a> Reader<'a> {
         Ok(out)
     }
 
+    /// At most `want` records of a stored type the principal may see, in
+    /// `order` after `after`, read from the engine a page at a time: the
+    /// filter goes down when the engine can apply it, and is applied here
+    /// over one engine page after another when it cannot.
+    fn page(
+        &self,
+        decl: &TypeDecl,
+        filter: Option<&Expr>,
+        order: &[Order],
+        after: Option<(Vec<Value>, RecordKey)>,
+        want: usize,
+    ) -> Result<Vec<StoredRecord>> {
+        let push = filter.filter(|e| !needs_store(e)).cloned();
+        let here = match (filter, &push) {
+            (Some(e), None) => Some(e),
+            _ => None,
+        };
+        let mut scan = Scan {
+            filter: push,
+            order_by: order.to_vec(),
+            after: after.map(|(values, key)| After { values, key }),
+            limit: u32::try_from(want).unwrap_or(u32::MAX),
+            valid_at: self.valid_at,
+            restricted: self.who.grants.restricted,
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        loop {
+            let rows = self.view.scan(&decl.name, &scan)?;
+            let last_page = rows.len() < scan.limit as usize;
+            if let Some(last) = rows.last() {
+                scan.after = Some(After {
+                    values: Self::sort_values(order, last),
+                    key: last.key.clone(),
+                });
+            }
+            for r in rows {
+                let keep = !r.retired
+                    && (self.who.grants.restricted || !r.restricted)
+                    && self
+                        .valid_at
+                        .is_none_or(|t| valid_time::record_holds(decl, &r.fields, t))
+                    && here.is_none_or(|e| self.holds(e, &r.fields, Some(&r.meta)));
+                if keep {
+                    out.push(r);
+                    if out.len() >= want {
+                        return Ok(out);
+                    }
+                }
+            }
+            if last_page {
+                return Ok(out);
+            }
+            // An engine page ordered by a field sorts the type again, so the
+            // store asks for twice as many rows each time it reads on: a
+            // few sorts per page, not one per `want` rows. A key-ordered
+            // read stays at `want` rows, which is what bounds its memory.
+            if !order.is_empty() {
+                scan.limit = scan.limit.saturating_mul(2);
+            }
+        }
+    }
+
     /// A view type's records, computed.
     fn view_records(
         &self,
@@ -411,8 +488,8 @@ impl<'a> Reader<'a> {
             probed.extend(a.group_by.iter().cloned());
         }
         rights::check_probe(self.who, &decl, probed.iter())?;
-        let rows = self.records(&decl, filter.as_ref())?;
         if let Some(a) = &find.aggregate {
+            let rows = self.records(&decl, filter.as_ref())?;
             return self.aggregated(&decl, &rows, a);
         }
         let limit = self.limit(find.limit)?;
@@ -420,14 +497,24 @@ impl<'a> Reader<'a> {
             Some(c) => decode(c)?.after,
             None => None,
         };
-        let mut keyed: Vec<((Vec<Value>, RecordKey), StoredRecord)> = rows
-            .into_iter()
-            .map(|r| ((Self::sort_values(&find.order_by, &r), r.key.clone()), r))
-            .collect();
-        keyed.sort_by(|a, b| Self::compare(&find.order_by, &a.0, &b.0));
-        if let Some(after) = &after {
-            keyed.retain(|(k, _)| Self::compare(&find.order_by, k, after) == Ordering::Greater);
-        }
+        let mut keyed: Vec<((Vec<Value>, RecordKey), StoredRecord)> = if decl.view.is_some() {
+            // A view's records are computed from its source, whole.
+            let mut keyed: Vec<_> = self
+                .records(&decl, filter.as_ref())?
+                .into_iter()
+                .map(|r| ((Self::sort_values(&find.order_by, &r), r.key.clone()), r))
+                .collect();
+            keyed.sort_by(|a, b| Self::compare(&find.order_by, &a.0, &b.0));
+            if let Some(after) = &after {
+                keyed.retain(|(k, _)| Self::compare(&find.order_by, k, after) == Ordering::Greater);
+            }
+            keyed
+        } else {
+            self.page(&decl, filter.as_ref(), &find.order_by, after, limit + 1)?
+                .into_iter()
+                .map(|r| ((Self::sort_values(&find.order_by, &r), r.key.clone()), r))
+                .collect()
+        };
         let more = keyed.len() > limit;
         keyed.truncate(limit);
         let next_cursor = if more {

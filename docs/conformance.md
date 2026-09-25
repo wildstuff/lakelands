@@ -474,9 +474,9 @@ belongs in the suite, not beside one engine:
 
 **streaming**
 
-- `a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it` — 016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start and an export with its verification hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB; a walk of a type through find, a rebuild and a reopen are measured against the same bound
+- `a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it` — 016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start and an export with its verification, and each page of a walk of a type through find, hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB; a rebuild and a reopen are measured against the same bound
 
-### Through the engine seam (40 checks)
+### Through the engine seam (41 checks)
 
 **log**
 
@@ -513,6 +513,7 @@ belongs in the suite, not beside one engine:
 
 - `mixed_kinds_sort_the_same_on_every_engine` — 029: a scan orders numbers, then instants, then text, then booleans, then JSON, a missing value last in either direction, ties by key, so every engine puts the same records in the same places
 - `a_scan_continues_strictly_after_its_keyset_position` — seams §scan: a scan answers only what sorts strictly after `after`, and at most `limit` of it, 0 answering nothing, so an engine that pages natively gives the store's pages
+- `a_key_ordered_scan_answers_across_its_batches_as_one_scan` — seams §scan and lakelands#134: a scan ordered by the key alone, read in batches from `after`, answers what one scan over every state answers, whatever its limit, its `after`, its flags and its filter, at the head and at an earlier position, however many rows each batch passes over
 - `scan_filters_exactly_as_the_evaluator_including_mixed_kinds_and_errors` — seams §scan: an engine selects exactly the records the one evaluator selects, comparisons across kinds included, and a filter that errors for a record does not select it
 - `scan_honours_retired_restricted_and_valid_at` — seams §scan: retired and restricted records come only when asked for, and a valid-timed type's records only when valid at `valid_at`
 - `lexical_hits_are_the_pipelines_over_searchable_live_records` — 025 and seams §lexical: a hit holds a token the one pipeline makes of the query in a searchable field of a live record, restricted ones included (the store applies grants); the hit set is the same on every engine, ties by key, at most k

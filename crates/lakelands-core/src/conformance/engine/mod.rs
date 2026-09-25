@@ -129,6 +129,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     projection::CLEAR,
     reads::MIXED_KINDS,
     reads::AFTER_AND_LIMIT,
+    reads::KEY_BATCHES,
     reads::FILTER_AS_EVALUATOR,
     reads::FLAGS_AND_VALID_AT,
     reads::LEXICAL_HITS,

@@ -72,7 +72,18 @@ impl ProjectionView for MemView {
     }
 
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
-        Ok(self.read(|p, at| engines::scan(p.type_at(ty, at), p.records_at(ty, at), scan)))
+        Ok(self.read(|p, at| {
+            let decl = p.type_at(ty, at);
+            if scan.order_by.is_empty() {
+                // Ordered by the key alone: read from `after`, stop when full.
+                let page: std::result::Result<_, std::convert::Infallible> =
+                    engines::scan_in_key_order(decl, scan, |after, n| {
+                        Ok(p.records_after(ty, at, after, n))
+                    });
+                return page.unwrap_or_else(|never| match never {});
+            }
+            engines::scan(decl, p.records_at(ty, at), scan)
+        }))
     }
 
     fn edges(

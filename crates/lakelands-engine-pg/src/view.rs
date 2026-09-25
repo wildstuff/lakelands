@@ -102,6 +102,40 @@ impl Read<'_> {
             .collect()
     }
 
+    /// At most `n` records of a type at the view's position after the key
+    /// `after` (from the first when `None`), in key order, bytewise: a walk
+    /// of the index `records_key_c`. The first page and a later one are two
+    /// statements, so that neither hides the index condition behind an
+    /// `OR`.
+    fn records_after(
+        &mut self,
+        ty: &TypeName,
+        after: Option<&str>,
+        n: u32,
+    ) -> Result<Vec<StoredRecord>> {
+        let at = self.at();
+        let limit = i64::from(n);
+        let from = if after.is_some() {
+            "AND key COLLATE \"C\" > $4"
+        } else {
+            ""
+        };
+        let query = format!(
+            "SELECT state FROM {} WHERE ty = $1 AND {} {from} ORDER BY key COLLATE \"C\" LIMIT $3",
+            self.names.t("records"),
+            holds_at(2)
+        );
+        let rows = match after {
+            Some(after) => self
+                .db
+                .query(&query, &[&ty.as_str(), &at, &limit, &after])?,
+            None => self.db.query(&query, &[&ty.as_str(), &at, &limit])?,
+        };
+        rows.iter()
+            .map(|r| decode_record(&r.get::<_, String>(0)))
+            .collect()
+    }
+
     /// Records of a type by their keys, at the view's position.
     fn records_by_key(
         &mut self,
@@ -234,6 +268,13 @@ impl ProjectionView for PgView<'_> {
             };
             let records = match narrowed {
                 Some(keys) => r.records_by_key(ty, keys)?,
+                // Ordered by the key alone, the page is read from `after`
+                // in key order and stops when it is full.
+                None if scan.order_by.is_empty() => {
+                    return engines::scan_in_key_order(decl.as_ref(), scan, |after, n| {
+                        r.records_after(ty, after, n)
+                    });
+                }
                 None => r.records(ty)?,
             };
             Ok(engines::scan(decl.as_ref(), &records, scan))

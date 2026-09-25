@@ -3,9 +3,10 @@
 //! §`ProjectionView`, §`VectorIndex`,
 //! `docs/decisions/029-every-answer-has-one-order.md`).
 //!
-//! The store sorts and pages itself in this release, but a scan's order,
-//! continuation and limit are contract all the same, so an engine that
-//! later takes paging over cannot change an answer. Full text ranks by the
+//! The store asks the engine for its pages: a scan's order, continuation
+//! and limit are what `find` answers from. A scan ordered by the key alone
+//! is read in batches from `after` (`lakelands_core::engines::
+//! scan_in_key_order`), and answers as one scan over every state would. Full text ranks by the
 //! head and keeps what the view's position could see. The vector index is
 //! exact: the true top `k` by cosine, ties by key.
 
@@ -32,6 +33,12 @@ engine_check!(
     /// A scan continues strictly after its keyset position.
     AFTER_AND_LIMIT = a_scan_continues_strictly_after_its_keyset_position,
     "seams §scan: a scan answers only what sorts strictly after `after`, and at most `limit` of it, 0 answering nothing, so an engine that pages natively gives the store's pages"
+);
+
+engine_check!(
+    /// A key-ordered scan answers across its batches as one scan.
+    KEY_BATCHES = a_key_ordered_scan_answers_across_its_batches_as_one_scan,
+    "seams §scan and lakelands#134: a scan ordered by the key alone, read in batches from `after`, answers what one scan over every state answers, whatever its limit, its `after`, its flags and its filter, at the head and at an earlier position, however many rows each batch passes over"
 );
 
 engine_check!(
@@ -248,6 +255,85 @@ fn a_scan_continues_strictly_after_its_keyset_position(
         past.is_empty(),
         "a scan after the last row answered {past:?}"
     );
+    Ok(())
+}
+
+/// Records in the key-batch check: more than one batch of 1 024.
+const BATCHED: u64 = 2100;
+
+fn a_key_ordered_scan_answers_across_its_batches_as_one_scan(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    // Every third record retired and every fifth restricted at position
+    // 1; every fourth moved to n = -1 at position 2.
+    let state = |i: u64, at: u64| {
+        let n = if at >= 2 && i.is_multiple_of(4) {
+            -1
+        } else {
+            i as i64
+        };
+        let mut r = record("t", &format!("k{i:04}"), json!({"n": n}), at);
+        r.retired = i.is_multiple_of(3);
+        r.restricted = i.is_multiple_of(5);
+        r
+    };
+    fold(engine, 1, |p| {
+        (0..BATCHED).try_for_each(|i| p.put_record(&state(i, 1)))
+    })?;
+    fold(engine, 2, |p| {
+        (0..BATCHED)
+            .filter(|i| i.is_multiple_of(4))
+            .try_for_each(|i| p.put_record(&state(i, 2)))
+    })?;
+    let ty = TypeName::from("t");
+    let filter = crate::expr::parse("n >= 1000").expect("the check's filter parses");
+    for at in [Some(Position(1)), None] {
+        let view_at = view(engine, at)?;
+        let pos = if at.is_some() { 1 } else { 2 };
+        for flags in [false, true] {
+            for filtered in [false, true] {
+                for after in [None, Some("k1023"), Some("k2099"), Some("zzz")] {
+                    for limit in [0, 1, 7, 1025, u32::MAX] {
+                        let scan = Scan {
+                            filter: filtered.then(|| filter.clone()),
+                            after: after.map(|k| After {
+                                values: vec![],
+                                key: RecordKey::from(k),
+                            }),
+                            limit,
+                            retired: flags,
+                            restricted: flags,
+                            ..Scan::default()
+                        };
+                        let expected: Vec<String> = (0..BATCHED)
+                            .map(|i| state(i, pos))
+                            .filter(|r| (flags || !r.retired) && (flags || !r.restricted))
+                            .filter(|r| {
+                                !filtered || r.fields.get("n").and_then(Value::as_i64) >= Some(1000)
+                            })
+                            .map(|r| r.key.to_string())
+                            .filter(|k| after.is_none_or(|a| k.as_str() > a))
+                            .take(limit as usize)
+                            .collect();
+                        let got = keys(&view_at.scan(&ty, &scan).must("scanning in key order")?);
+                        ensure!(
+                            got == expected,
+                            "a key-ordered scan at position {pos} (flags {flags}, filter \
+                             {filtered}, after {after:?}, limit {limit}) answered {} rows, \
+                             first {:?}, last {:?}; one scan over every state answers {}, \
+                             first {:?}, last {:?}",
+                            got.len(),
+                            got.first(),
+                            got.last(),
+                            expected.len(),
+                            expected.first(),
+                            expected.last()
+                        );
+                    }
+                }
+            }
+        }
+    }
     Ok(())
 }
 
