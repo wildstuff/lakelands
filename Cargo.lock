@@ -944,10 +944,15 @@ name = "lakelands-cli"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "clap",
  "futures-core",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "lakelands-api",
  "lakelands-backings",
+ "lakelands-client",
  "lakelands-core",
  "lakelands-engine-mem",
  "lakelands-engine-pg",

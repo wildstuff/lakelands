@@ -437,6 +437,11 @@ async fn serve(
     let http = lakelands_server::serve_http(config, resolver, Arc::new(lookup))
         .await
         .map_err(failed)?;
+    // Standard output is the protocol's; the address goes to standard
+    // error, so a server bound to port 0 can be found.
+    if let Ok(addr) = http.local_addr() {
+        eprintln!("lakelands: serving HTTP at http://{addr}/");
+    }
     // The command ends with its stdio client: the HTTP door beside it, the
     // deliverers and the lake's writer lease end with the process.
     tokio::select! {
