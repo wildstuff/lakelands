@@ -112,13 +112,15 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   a principal who reads every field of the type in full, since its
   condition may read any of them. That rule sends less than one that
   asks only for the fields the condition reads, never more; a
-  condition-exact rule may follow. On stdio these
-  come on the same stream. On streamable HTTP they come on the session's
-  event stream, a `GET` under its own key, which resumes after
-  `Last-Event-ID`. A client that does not read makes its session lag;
-  nothing is dropped. Delivery is at least once: when a session
-  subscribes again, at most one change already on its way may be told
-  twice, and each carries its position to deduplicate by. This is a
+  condition-exact rule may follow. On stdio these come on the same
+  stream. On streamable HTTP they come on the session's event stream, a
+  `GET` under its own key, which resumes after `Last-Event-ID`. A stdio
+  session answers one request after another: requests sent while one is
+  served wait their turn, so a client that needs requests served side by
+  side takes the HTTP door. A client that does not read makes its
+  session lag; nothing is dropped. Delivery is at least once: when a
+  session subscribes again, at most one change already on its way may be
+  told twice, and each carries its position to deduplicate by. This is a
   limit, not a promise of exactly once: the change in flight when the
   subscription is replaced was read under the old one, and is not
   withdrawn. See `docs/decisions/004-the-change-feed-is-the-log.md`.

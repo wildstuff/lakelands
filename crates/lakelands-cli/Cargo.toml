@@ -29,8 +29,13 @@ tokio = { workspace = true, features = ["rt", "sync", "macros", "time", "net", "
 
 [dev-dependencies]
 async-trait.workspace = true
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", default-features = false, features = ["client", "http1"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+lakelands-client = { path = "../lakelands-client" }
 lakelands-mock.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util", "process", "io-util"] }
 
 [features]
 # The PostgreSQL engine links a database client; a build without it
