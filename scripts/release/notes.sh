@@ -17,7 +17,7 @@ repo="${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner -q .nameWithOwner
 match='v*'
 exclude=()
 [[ "$tag" == *-* ]] || exclude=(--exclude 'v*-*')
-previous="$(git describe --tags --abbrev=0 --match "$match" "${exclude[@]}" "$tag^" 2>/dev/null || true)"
+previous="$(git describe --tags --abbrev=0 --match "$match" ${exclude[@]+"${exclude[@]}"} "$tag^" 2>/dev/null || true)"
 range="${previous:+$previous..}$tag"
 
 echo "Pull requests merged ${previous:+since $previous}${previous:-to date}:"

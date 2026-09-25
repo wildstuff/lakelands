@@ -20,9 +20,15 @@ if [ "${1:-}" = "--list" ]; then
     exit 0
 fi
 
+# Written for bash 3.2 and later, the first shell a stranger has: no
+# mapfile, and an array that may be empty is expanded as
+# ${a[@]+"${a[@]}"}, since bash before 4.4 calls an empty array unset
+# under `set -u`.
 engines=("$@")
-[ "${#engines[@]}" -gt 0 ] || mapfile -t engines < <(required)
-for engine in "${engines[@]}"; do
+if [ "${#engines[@]}" -eq 0 ]; then
+    while IFS= read -r engine; do engines+=("$engine"); done < <(required)
+fi
+for engine in ${engines[@]+"${engines[@]}"}; do
     echo "conformance: $engine"
     # An engine whose entry point runs the suite must have tests to run.
     # Only an engine whose tests/conformance.rs does not call the runner
@@ -44,6 +50,6 @@ for engine in "${engines[@]}"; do
     # engine that has it, so both are in the conformance job.
     tests=(--test conformance)
     [ -f "$crate/tests/engine_seam.rs" ] && tests+=(--test engine_seam)
-    cargo nextest run --locked "${flags[@]}" \
+    cargo nextest run --locked ${flags[@]+"${flags[@]}"} \
         -p "lakelands-engine-$engine" "${tests[@]}"
 done
