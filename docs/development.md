@@ -128,10 +128,39 @@ directory.
    `spec/log-format`), never who made it.
 3. **Build and test** in the slot. Run the gates locally before pushing.
 4. **PR to `develop`.** Merge commits only; the ruleset refuses anything
-   else.
+   else. Before the merge, build and test the merge result, not only the
+   branch (see below).
 5. **Park.** After the merge:
-   `git switch --detach origin/develop && git branch -D <branch>`.
+   `git switch --detach origin/develop && git branch -d <branch>`.
    The slot is ready for the next issue.
+
+## Rules for a shared clone
+
+Every slot is a worktree of one clone, so the slots share more than the
+table above suggests. Three rules follow from that.
+
+- **Delete only your own branches, after the merge, by exact name.**
+  All worktrees share one branch namespace; only a branch checked out
+  somewhere is protected. A delete by pattern (`git branch --list
+  'spec/*' | xargs git branch -D`) reaches another slot's unpushed
+  work. Name the branch you created, check that it is merged, and keep
+  the output visible. A lost tip is found again with
+  `git fsck --lost-found` and restored with `git branch <name> <sha>`.
+- **`cargo clean` before every run in a target directory that is
+  shared.** One target directory belongs to one worktree. When a second
+  worktree has to build in the same one (a scratch worktree beside the
+  slot, a rebuild of someone else's branch), clean it before each run.
+  Without that, a test run can pick up what the other tree built and
+  report on it without saying so; one such run here tested another
+  worktree's planted violation instead of its own code.
+- **Build the merge result before merging.** `git merge-tree` reporting
+  no conflict says the texts combine, not that the result compiles or
+  passes: two branches that each pass can rename, remove or change the
+  same item from different files. Before the merge, check out the
+  merge of the PR head into the current `origin/develop` (for example
+  `git switch --detach origin/develop && git merge --no-ff --no-commit
+  <branch>`), build it and run the tests, then drop it with
+  `git merge --abort`.
 
 ## Which work runs in parallel
 
