@@ -65,6 +65,9 @@ const FEED_BATCH: u32 = 256;
 /// A quiet feed sends a comment this often, so a proxy keeps it open and
 /// a closed connection is noticed.
 pub(crate) const KEEP_ALIVE: Duration = Duration::from_secs(15);
+/// How long the rest of an ingest body is read and dropped once the
+/// ingest has stopped reading it, before the connection is closed anyway.
+const DRAIN: Duration = KEEP_ALIVE;
 
 // ---------------------------------------------------------------- replies
 
@@ -844,8 +847,14 @@ fn line(v: &Value) -> Bytes {
 
 /// The records of an NDJSON body, as it arrives. A line that is not a
 /// record ends the stream; what it was is left in `fault`.
+///
+/// Dropped before the body's end — a refused line, a failed commit — it
+/// reads the rest of the body and drops it, for at most [`DRAIN`], so the
+/// connection is not closed on bytes the client is still sending: a close
+/// with request bytes unread answers them with a reset, and the client
+/// may lose the answer to it.
 struct Lines {
-    body: Incoming,
+    body: Option<Incoming>,
     buf: Vec<u8>,
     line: usize,
     ended: bool,
@@ -894,7 +903,10 @@ impl Stream for Lines {
                 let n = this.line + 1;
                 return this.stop(format!("line {n} is longer than {MAX_LINE} bytes"));
             }
-            match Pin::new(&mut this.body).poll_frame(cx) {
+            let Some(body) = this.body.as_mut() else {
+                return Poll::Ready(None);
+            };
+            match Pin::new(body).poll_frame(cx) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(None) => {
                     this.ended = true;
@@ -909,9 +921,29 @@ impl Stream for Lines {
                 }
                 Poll::Ready(Some(Err(e))) => {
                     let n = this.line + 1;
+                    this.body = None;
                     return this.stop(format!("the body was cut off at line {n}: {e}"));
                 }
             }
+        }
+    }
+}
+
+impl Drop for Lines {
+    fn drop(&mut self) {
+        let Some(mut body) = self.body.take() else {
+            return;
+        };
+        if self.ended || body.is_end_stream() {
+            return;
+        }
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = tokio::time::timeout(DRAIN, async {
+                    while let Some(Ok(_)) = body.frame().await {}
+                })
+                .await;
+            });
         }
     }
 }
@@ -941,7 +973,7 @@ async fn ingest(
     let head = store.head().await.ok();
     let fault = Arc::new(Mutex::new(None));
     let lines = Lines {
-        body: req.into_body(),
+        body: Some(req.into_body()),
         buf: Vec::new(),
         line: 0,
         ended: false,

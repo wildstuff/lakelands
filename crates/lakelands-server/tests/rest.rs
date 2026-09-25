@@ -611,6 +611,62 @@ async fn an_ingest_line_over_four_mebibytes_is_refused_to_the_byte() {
     assert_eq!(store.head().await.unwrap(), head, "nothing was committed");
 }
 
+/// A refused ingest is answered while the body is still arriving: after
+/// the refusing line the server reads the rest of the body and drops it,
+/// so a client that keeps sending, many times the line cap, finishes
+/// sending and reads the whole answer, where a close with the body unread
+/// would answer it with a reset (lakelands#156).
+#[tokio::test]
+async fn a_refused_ingest_is_answered_while_the_body_keeps_arriving() {
+    const REST: usize = 32 << 20;
+    let store = rest_lake(Backend::Mock).await;
+    let (addr, task) = serve(store.clone()).await;
+    let head = store.head().await.unwrap();
+
+    let refusing = b"not a record\n";
+    let filler = [b' '; 64 << 10];
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let request = format!(
+        "POST /lakes/finance/ingest/bank HTTP/1.1\r\nhost: {addr}\r\nconnection: close\r\n\
+         authorization: Bearer k-owner\r\ncontent-type: application/x-ndjson\r\n\
+         content-length: {}\r\n\r\n",
+        refusing.len() + REST
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    stream.write_all(refusing).await.unwrap();
+    // No pause for the answer: the whole body goes out, then the answer
+    // is read to its end.
+    for _ in 0..REST / filler.len() {
+        stream
+            .write_all(&filler)
+            .await
+            .expect("the server reads the body to its end");
+    }
+    let mut raw = Vec::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        stream.read_to_end(&mut raw),
+    )
+    .await
+    .expect("an answer within thirty seconds")
+    .expect("the answer is read to its end, without a reset");
+    task.abort();
+    let raw = String::from_utf8_lossy(&raw).into_owned();
+    let (status, body) = raw.split_once("\r\n\r\n").unwrap();
+    assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+    let answer: Vec<serde_json::Value> = dechunk(body)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(answer.len(), 1, "{answer:?}");
+    assert_eq!(
+        (&answer[0]["error"], &answer[0]["reason"]["refusal"]),
+        (&json!("refused"), &json!("invalid")),
+        "{answer:?}"
+    );
+    assert_eq!(store.head().await.unwrap(), head, "nothing was committed");
+}
+
 /// A lake the server cannot open answers `unavailable` (503), whatever
 /// the route, and carries no position: there is no log it was read at.
 #[tokio::test]
