@@ -8,6 +8,8 @@
 
 #![allow(dead_code)]
 
+pub mod flaky;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 

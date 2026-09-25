@@ -152,7 +152,10 @@ for review.
 source record per line (`{"type":…,"key":…,"fields":{…},"seen_at":…}`),
 and is read as it arrives. The answer is NDJSON too: one line per commit
 window as it becomes durable,
-`{"position":…,"records":…,"duplicates":…}`. The reply's
+`{"position":…,"records":…,"duplicates":…}`. While a window takes
+longer than fifteen seconds to commit, the answer carries an empty line
+every fifteen seconds, so a client that holds the answer to a silence
+bound knows the server is working; a client skips it. The reply's
 `Lakelands-Position` is the head before the ingest began; each window's
 own position is in its line. A line is at most 4 MiB before its line
 feed, however the body is cut into reads. A line that is longer, or is

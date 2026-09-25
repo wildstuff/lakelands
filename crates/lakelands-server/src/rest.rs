@@ -988,7 +988,21 @@ async fn ingest(
     let (tx, rx) = mpsc::channel(16);
     tokio::spawn(async move {
         let _catalog = catalog;
-        while let Some(c) = std::future::poll_fn(|cx| commits.as_mut().poll_next(cx)).await {
+        loop {
+            // A window that takes longer than the keep-alive to commit is
+            // answered with an empty line meanwhile, so a client that
+            // holds the answer to a silence bound hears the server works.
+            let next = std::future::poll_fn(|cx| commits.as_mut().poll_next(cx));
+            let c = match tokio::time::timeout(KEEP_ALIVE, next).await {
+                Ok(Some(c)) => c,
+                Ok(None) => break,
+                Err(_) => {
+                    if tx.send(Bytes::from_static(b"\n")).await.is_err() {
+                        return;
+                    }
+                    continue;
+                }
+            };
             let out = match c {
                 Ok(c) => line(&to_json(&c)),
                 Err(e) => {

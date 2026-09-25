@@ -667,6 +667,54 @@ async fn a_refused_ingest_is_answered_while_the_body_keeps_arriving() {
     assert_eq!(store.head().await.unwrap(), head, "nothing was committed");
 }
 
+/// A window that takes longer than the keep-alive to commit is answered
+/// with an empty line meanwhile, so a client holding the answer to a
+/// silence bound hears the server works; then its line comes, and the
+/// ingest ends as it would have (lakelands#166).
+#[tokio::test]
+async fn a_window_slower_than_the_keep_alive_is_answered_with_an_empty_line() {
+    use std::sync::atomic::Ordering;
+    let faults = Arc::new(common::flaky::Faults::default());
+    // Past one keep-alive of fifteen seconds, short of two.
+    faults.first_window_millis.store(17_000, Ordering::SeqCst);
+    let store: Arc<dyn LakeStore> = Arc::new(common::flaky::Store {
+        inner: rest_lake(Backend::Mock).await,
+        faults,
+    });
+    let (addr, task) = serve(store.clone()).await;
+
+    let body = "{\"type\":\"invoice\",\"key\":\"INV-K\",\"fields\":{\"amount\":\"1.00\"}}\n";
+    let request = format!(
+        "POST /lakes/finance/ingest/bank HTTP/1.1\r\nhost: {addr}\r\nconnection: close\r\n\
+         authorization: Bearer k-owner\r\ncontent-type: application/x-ndjson\r\n\
+         content-length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut raw = Vec::new();
+    tokio::time::timeout(WAIT, stream.read_to_end(&mut raw))
+        .await
+        .expect("an answer within the wait")
+        .unwrap();
+    task.abort();
+    let raw = String::from_utf8_lossy(&raw).into_owned();
+    let (status, body) = raw.split_once("\r\n\r\n").unwrap();
+    assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+    let answer = dechunk(body);
+    let (quiet, lines) = answer.split_at(answer.len() - answer.trim_start().len());
+    assert_eq!(
+        quiet, "\n",
+        "one empty line while the window commits: {answer:?}"
+    );
+    let lines: Vec<serde_json::Value> = lines
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 1, "{answer:?}");
+    assert_eq!(lines[0]["records"], json!(1), "{answer:?}");
+}
+
 /// A lake the server cannot open answers `unavailable` (503), whatever
 /// the route, and carries no position: there is no log it was read at.
 #[tokio::test]
