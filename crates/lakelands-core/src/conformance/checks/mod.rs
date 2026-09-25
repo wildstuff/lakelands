@@ -230,4 +230,6 @@ pub const ALL: &[Check] = &[
     concurrency::AGE_UNDER_WRITES,
     purge::CO_OWNED_COUNTED,
     purge::BACKED_NO_OWNER,
+    value_types::CONSTRAINT_AND_FORMAT,
+    value_types::CONDITION_NEVER_HOLDS,
 ];

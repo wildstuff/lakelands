@@ -10,7 +10,9 @@
 //! report's id and a page cursor are opaque and minted differently, so
 //! the last ones answered are shown as `{report_id}` and `{cursor}`, and
 //! a request may name them so; the last proposal answered may be named
-//! as `{proposal}` in a request.
+//! as `{proposal}` in a request. A request without a `content-type`
+//! line is sent as `application/json`; `content-type: (none)` sends its
+//! body with no `Content-Type` at all.
 //!
 //! The lake here commits ingests in windows of two records, so a window
 //! boundary is in the transcript, and declares one verb whose executor no
@@ -107,7 +109,10 @@ fn request(addr: SocketAddr, block: &[&str]) -> Vec<u8> {
                     && name.bytes().all(|b| b.is_ascii_lowercase() || b == b'-') =>
             {
                 typed |= name == "content-type";
-                write!(head, "{l}\r\n").unwrap();
+                // `content-type: (none)` sends a body with no media type.
+                if *l != "content-type: (none)" {
+                    write!(head, "{l}\r\n").unwrap();
+                }
             }
             _ => body.push(*l),
         }
