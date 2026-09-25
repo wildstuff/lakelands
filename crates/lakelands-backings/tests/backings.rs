@@ -97,7 +97,8 @@ async fn exec_gives_the_command_an_empty_environment() {
 async fn exec_fails_on_a_failure_status_bad_output_or_the_timeout() {
     let b = exec(
         &[
-            ("false", "/bin/false", &[]),
+            // `false` is not at one path on every Unix; `/bin/sh` is.
+            ("false", "/bin/sh", &["-c", "exit 1"]),
             ("words", "/bin/echo", &["not json"]),
             ("slow", "/bin/sleep", &["5"]),
         ],
