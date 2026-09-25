@@ -127,17 +127,18 @@ directory.
    The branch name says what the change is (`core/workspace`,
    `spec/log-format`), never who made it.
 3. **Build and test** in the slot. Run the gates locally before pushing.
+   This run stays the slot's duty, also after a rebase: the rebased tree
+   is built and tested before it is pushed.
 4. **PR to `develop`.** Merge commits only; the ruleset refuses anything
-   else. Before the merge, build and test the merge result, not only the
-   branch (see below).
+   else. A PR merges on green CI and a clean merge tree (see below).
 5. **Park.** After the merge:
    `git switch --detach origin/develop && git branch -d <branch>`.
    The slot is ready for the next issue.
 
 ## Rules for a shared clone
 
-Every slot is a worktree of one clone, so the slots share more than the
-table above suggests. Three rules follow from that.
+Every slot is a worktree of one clone on one machine, so the slots share
+more than the table above suggests. These rules follow from that.
 
 - **Delete only your own branches, after the merge, by exact name.**
   All worktrees share one branch namespace; only a branch checked out
@@ -153,14 +154,38 @@ table above suggests. Three rules follow from that.
   Without that, a test run can pick up what the other tree built and
   report on it without saying so; one such run here tested another
   worktree's planted violation instead of its own code.
-- **Build the merge result before merging.** `git merge-tree` reporting
-  no conflict says the texts combine, not that the result compiles or
-  passes: two branches that each pass can rename, remove or change the
-  same item from different files. Before the merge, check out the
-  merge of the PR head into the current `origin/develop` (for example
-  `git switch --detach origin/develop && git merge --no-ff --no-commit
-  <branch>`), build it and run the tests, then drop it with
-  `git merge --abort`.
+- **Merge on green CI and a clean merge tree.** `git merge-tree`
+  reporting no conflict says the texts combine, not that the result
+  compiles: two branches that each pass can change the same item from
+  different files. CI answers that. A pull request's run checks out the
+  merge of its head into `develop` and builds and tests that. So a PR
+  merges when its run on the current head is green and `git merge-tree`
+  against the current `origin/develop` is clean; a local full run is not
+  the gate. When `develop` moves under a PR and it conflicts, rebase, run
+  the slot's own checks on the rebased tree, and push for a new run.
+- **A PR number, a head and a run id come from the command's output.**
+  Report them only after `gh pr create`, `git rev-parse HEAD` and
+  `gh run list` have answered, never from what they are expected to be,
+  and never in the same step that runs those commands.
+- **Never stop a process by a command-line pattern.** `pkill -f` matches
+  every process whose command line contains the pattern: the shell that
+  runs it, and another slot's build or test of the same crate. Stop what
+  you started by what only you have, the executable under your own
+  target directory:
+
+  ```bash
+  for p in /proc/[0-9]*; do
+    case "$(readlink "$p/exe" 2>/dev/null)" in
+      "$CARGO_TARGET_DIR"/*) kill "${p#/proc/}" ;;
+    esac
+  done
+  ```
+- **Remove a throwaway worktree after its merge.** A worktree made for
+  one branch, beside the slot, goes with the branch:
+  `git worktree remove <dir>`, and its target directory with it.
+- **Figures from a loaded machine say so.** Timings and throughput
+  measured while other slots build are bounds, not targets. Report them
+  with the machine's load average and core count beside them.
 
 ## Which work runs in parallel
 
