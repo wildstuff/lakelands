@@ -293,14 +293,28 @@ fn link_cardinality(
         if f.as_deref() == Some(from.as_str()) && o.as_deref() == Some(to.as_str()) {
             continue;
         }
-        if (per_from && f.as_deref() == Some(from.as_str()))
-            || (per_to && o.as_deref() == Some(to.as_str()))
-        {
+        // The store's words, so a transcript reads the same on both.
+        let why = if per_from && f.as_deref() == Some(from.as_str()) {
+            Some(format!(
+                "`{from}` already links over `{}` to `{}`",
+                r.name,
+                o.as_deref().unwrap_or_default()
+            ))
+        } else if per_to && o.as_deref() == Some(to.as_str()) {
+            Some(format!(
+                "`{to}` is already linked over `{}` from `{}`",
+                r.name,
+                f.as_deref().unwrap_or_default()
+            ))
+        } else {
+            None
+        };
+        if let Some(why) = why {
             return Err(on(
                 &FieldName::from(links::TO),
                 Refusal::Constraint {
                     message: format!(
-                        "`{}` allows one link ({:?}), and one is live; unlink it first",
+                        "{why}, and `{}` allows one ({:?}); unlink it first",
                         r.name, r.cardinality
                     ),
                 },

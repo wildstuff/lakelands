@@ -365,12 +365,12 @@ async fn a_link_that_would_break_the_relations_cardinality_is_refused(
         matches!(
             &second,
             Err(Error::Refused {
+                field: Some(f),
                 reason: Refusal::Constraint { .. },
-                ..
-            })
+            }) if f.as_str() == "to"
         ),
         "`approved_by` is many_to_one: i1 already links to p1, so linking it to p2 is \
-         refused as a constraint; it answered {second:?}"
+         refused as a constraint on `to`; it answered {second:?}"
     );
     head_unmoved(store.as_ref(), before, "a link against the cardinality").await?;
     Ok(())
@@ -748,12 +748,12 @@ async fn a_relation_that_allows_one_link_per_target_refuses_a_second(
         matches!(
             &second,
             Err(Error::Refused {
+                field: Some(f),
                 reason: Refusal::Constraint { .. },
-                ..
-            })
+            }) if f.as_str() == "to"
         ),
         "`handled_by` is one_to_many: p1 is already handled by i1, so i2 cannot link to it; \
-         it answered {second:?}"
+         the refusal is a constraint on `to`; it answered {second:?}"
     );
     head_unmoved(store.as_ref(), before, "a second link into one target").await?;
     Ok(())

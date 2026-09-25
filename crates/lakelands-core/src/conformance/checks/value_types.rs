@@ -574,3 +574,192 @@ async fn an_apply_that_loosens_one_value_type_and_tightens_another_is_refused_wh
     );
     Ok(())
 }
+
+check!(
+    /// Removing a constraint or a format loosens; changing a constraint
+    /// tightens.
+    CONSTRAINT_AND_FORMAT = removing_a_constraint_or_a_format_is_declared_and_changing_a_constraint_is_refused,
+    "027 extended and seams: `declare` takes a value type whose `constraint` or `format` is removed, since no stored value can stop fitting it; a `constraint` changed may reject a stored value, so `declare` refuses it, naming `migrate`"
+);
+
+async fn removing_a_constraint_or_a_format_is_declared_and_changing_a_constraint_is_refused(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    for d in [
+        json!({"name": "rating", "kind": "number", "constraint": "value >= 0"}),
+        json!({"name": "grade", "kind": "number", "constraint": "value >= 0"}),
+        json!({"name": "site", "kind": "text", "format": "domain"}),
+    ] {
+        cat.declare(&own, Declaration::ValueType(vt(d)))
+            .await
+            .must("declaring a value type")?;
+    }
+    for (what, d) in [
+        (
+            "removes its constraint",
+            vt(json!({"name": "rating", "kind": "number"})),
+        ),
+        (
+            "removes its format",
+            vt(json!({"name": "site", "kind": "text"})),
+        ),
+    ] {
+        cat.declare(&own, Declaration::ValueType(d))
+            .await
+            .must(&format!("declaring a value type that {what}"))?;
+    }
+    for name in ["rating", "site"] {
+        let v = versions(store.as_ref(), name).await?;
+        ensure!(
+            v == [1, 2],
+            "`{name}` was declared and then loosened by `declare`; its versions are {v:?}"
+        );
+    }
+    let before = store.head().await.must("reading the head")?;
+    let e = cat
+        .declare(
+            &own,
+            Declaration::ValueType(vt(
+                json!({"name": "grade", "kind": "number", "constraint": "value >= 1"}),
+            )),
+        )
+        .await
+        .must_fail("declaring a value type that changes its constraint")?;
+    ensure!(
+        is_invalid_naming(&e, "migrate"),
+        "a value type whose constraint changes was refused as {e:?}; invalid, naming \
+         `migrate`, was expected: a changed constraint may reject a stored value"
+    );
+    head_unmoved(
+        store.as_ref(),
+        before,
+        "declaring a value type that changes its constraint",
+    )
+    .await?;
+    Ok(())
+}
+
+check!(
+    /// A condition on a value the type no longer admits never holds.
+    CONDITION_NEVER_HOLDS = a_trigger_or_set_on_a_value_the_type_no_longer_admits_never_holds,
+    "027 extended and seams: the preflight checks stored values, not the conditions that mention them; a trigger's `when` or an object set's `where` comparing with a value a tightening removed stays declared and simply never holds afterwards"
+);
+
+async fn a_trigger_or_set_on_a_value_the_type_no_longer_admits_never_holds(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use lakelands_api::expr::Condition;
+    use lakelands_api::ontology::TriggerDecl;
+    use lakelands_api::write::ObjectSetDecl;
+    lake(store.as_ref()).await?;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    for d in [
+        Declaration::Trigger(TriggerDecl {
+            name: "went_late".into(),
+            on: "invoice".into(),
+            when: Some(Condition::from("status = 'late'")),
+            description: None,
+        }),
+        Declaration::ObjectSet(ObjectSetDecl {
+            name: "late_ones".into(),
+            of: "invoice".into(),
+            filter: Condition::from("status = 'late'"),
+            description: None,
+        }),
+    ] {
+        cat.declare(&own, d)
+            .await
+            .must("declaring a trigger and a set on `late`")?;
+    }
+    upsert(
+        cat.as_ref(),
+        &own,
+        "invoice",
+        "i1",
+        json!({"status": "open"}),
+    )
+    .await?;
+    // `late` leaves `status_code`: no stored value holds it, so it applies.
+    let tighter = status(&["open", "paid", "void"]);
+    let r = preflight(cat.as_ref(), &own, tighter.clone()).await?;
+    cat.migrate_value_type_apply(&own, tighter, &r.report_id)
+        .await
+        .must("tightening `status_code` past the trigger and the set")?;
+    // Both conditions stay declared: the preflight never looked at them.
+    let described = cat
+        .describe(&own, lakelands_api::ReadAt::default())
+        .await
+        .must("describing the lake after the tightening")?
+        .data;
+    ensure!(
+        described.triggers.iter().any(|t| t.as_str() == "went_late"),
+        "the tightening left the trigger on `late` declared; describe lists {:?}",
+        described.triggers
+    );
+    let sets: Vec<String> = store
+        .feed()
+        .poll(Position::GENESIS, &FeedFilter::default(), 10_000)
+        .await
+        .must("reading the log's declarations")?
+        .events
+        .into_iter()
+        .filter_map(|e| match e.body {
+            EventBody::Declared {
+                declaration: Declaration::ObjectSet(o),
+                ..
+            } => Some(o.name.to_string()),
+            _ => None,
+        })
+        .collect();
+    ensure!(
+        sets == ["late_ones"],
+        "the set of `late` records was declared once and is still the lake's; the log's \
+         set declarations are {sets:?}"
+    );
+    let from = store.head().await.must("reading the head")?;
+    for s in ["paid", "void", "open"] {
+        upsert(cat.as_ref(), &own, "invoice", "i1", json!({"status": s})).await?;
+    }
+    // A record first written after the tightening: a set that held would
+    // take it in.
+    upsert(
+        cat.as_ref(),
+        &own,
+        "invoice",
+        "i2",
+        json!({"status": "open"}),
+    )
+    .await?;
+    let late = cat
+        .upsert(
+            &own,
+            &"invoice".into(),
+            &"i1".into(),
+            crate::conformance::fixture::patch(json!({"status": "late"})),
+            WriteOpts::default(),
+        )
+        .await;
+    ensure!(
+        late.is_err(),
+        "`late` is no longer a `status_code`, and writing it answered {late:?}"
+    );
+    let reacted: Vec<String> = store
+        .feed()
+        .poll(from.next(), &FeedFilter::default(), 1000)
+        .await
+        .must("reading the feed")?
+        .events
+        .into_iter()
+        .filter(|e| matches!(e.body.kind(), "trigger_fired" | "object_set_changed"))
+        .map(|e| e.body.kind().to_owned())
+        .collect();
+    ensure!(
+        reacted.is_empty(),
+        "the trigger on `late` and the set of `late` records stay declared and never hold: \
+         after the tightening, writes of paid, void and open, and a new record, made {reacted:?}"
+    );
+    Ok(())
+}

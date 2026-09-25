@@ -2143,3 +2143,129 @@ async fn an_embedding_declared_wrongly_is_refused_naming_the_field() {
     let ok = with(&["secret"], |v| v.sensitive = true);
     cat.declare(&o, Declaration::Type(ok)).await.unwrap();
 }
+
+/// An executor that waits at a gate: it says when it has been called, and
+/// answers only once released.
+struct Gate {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    calls: std::sync::atomic::AtomicU32,
+}
+
+#[async_trait::async_trait]
+impl lakelands_api::seam::VerbExecutor for Gate {
+    fn name(&self) -> &str {
+        "bank"
+    }
+    async fn execute(
+        &self,
+        _: &lakelands_api::seam::VerbInvocation,
+    ) -> lakelands_api::Result<serde_json::Value> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.entered.notify_one();
+        self.release.notified().await;
+        Ok(json!({ "paid": true }))
+    }
+}
+
+/// A retry looks for the call's output among the 4,096 events after the
+/// call; an output recorded further on is answered as none, the position
+/// stands, and nothing runs again (`docs/seams.md`, `VerbExecutor`). The
+/// reach is the store's constant (`RETRY_REACH` in `writes.rs`), the same
+/// on every engine, which is why this is a store test on the memory
+/// engine. A store that blocks fails the test at the time limit instead of
+/// hanging it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_retry_past_the_reach_answers_the_position_without_the_output() {
+    tokio::time::timeout(std::time::Duration::from_secs(120), retry_past_the_reach())
+        .await
+        .expect("the retry past the reach finishes within two minutes");
+}
+
+async fn retry_past_the_reach() {
+    let lake = name();
+    let gate = Arc::new(Gate {
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+        calls: Default::default(),
+    });
+    let store = lakelands_store::open(
+        Location::memory(lake.as_str()),
+        Seams {
+            executors: vec![gate.clone()],
+            ..seams()
+        },
+        OpenMode::Create,
+    )
+    .await
+    .unwrap();
+    let cat = store.catalog(WriteContext::default());
+    let o = owner(&lake);
+    for d in invoice_with_verbs() {
+        cat.declare(&o, d).await.unwrap();
+    }
+    for k in ["i1", "busy"] {
+        cat.upsert(
+            &o,
+            &"invoice".into(),
+            &k.into(),
+            patch(json!({"status": "open"})),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    }
+    let key = WriteOpts {
+        idempotency_key: Some("pay-far".into()),
+        ..Default::default()
+    };
+    let first = {
+        let (cat, o, key) = (cat.clone(), o.clone(), key.clone());
+        tokio::spawn(async move {
+            cat.call(&o, &"pay".into(), &"i1".into(), patch(json!({})), key)
+                .await
+                .unwrap()
+        })
+    };
+    gate.entered.notified().await;
+    // The lake takes more than the reach of other events while the
+    // executor runs, so its output lands past it.
+    for n in 0..4_100 {
+        cat.upsert(
+            &o,
+            &"invoice".into(),
+            &"busy".into(),
+            patch(json!({"status": format!("s{n}")})),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    }
+    gate.release.notify_one();
+    let first = first.await.unwrap();
+    let Outcome::Applied {
+        position, output, ..
+    } = &first
+    else {
+        panic!("a low verb runs: {first:?}")
+    };
+    assert_eq!(
+        output,
+        &Some(json!({"paid": true})),
+        "the call answers its output"
+    );
+    let again = cat
+        .call(&o, &"pay".into(), &"i1".into(), patch(json!({})), key)
+        .await
+        .unwrap();
+    assert!(
+        matches!(&again, Outcome::Applied { position: p, output: None, .. } if p == position),
+        "past the reach, a retry answers the call's position {position} with no output: \
+         {again:?}"
+    );
+    assert_eq!(
+        gate.calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the retry runs nothing again"
+    );
+}

@@ -688,3 +688,118 @@
 < content-type: application/json
 < lakelands-position: 39
 < {"error":"refused","reason":{"message":"the arguments do not fit `POST …/schema/declare`: unknown field `force`, expected `declaration`","refusal":"invalid"},"todo":"correct the request against `POST …/schema/declare` in docs/rest.md and send it again","what":"the arguments do not fit `POST …/schema/declare`: unknown field `force`, expected `declaration`"}
+
+# lakelands#116: what the page promises of these routes, held here.
+# Ingest takes NDJSON under its other names, and a body with no media
+# type at all.
+> POST /lakes/finance/ingest/bank
+> authorization: Bearer k-owner
+> content-type: application/jsonl
+> {"type":"invoice","key":"INV-20","fields":{"amount":"1"}}
+< 200
+< content-type: application/x-ndjson
+< lakelands-position: 39
+< {"duplicates":0,"position":40,"records":1}
+
+> POST /lakes/finance/ingest/bank
+> authorization: Bearer k-owner
+> content-type: application/json
+> {"type":"invoice","key":"INV-21","fields":{"amount":"2"}}
+< 200
+< content-type: application/x-ndjson
+< lakelands-position: 40
+< {"duplicates":0,"position":41,"records":1}
+
+> POST /lakes/finance/ingest/bank
+> authorization: Bearer k-owner
+> content-type: (none)
+> {"type":"invoice","key":"INV-22","fields":{"amount":"3"}}
+< 200
+< content-type: application/x-ndjson
+< lakelands-position: 41
+< {"duplicates":0,"position":42,"records":1}
+
+# A link its relation's cardinality does not allow is a constraint on
+# `to`.
+> POST /lakes/finance/schema/declare_type
+> authorization: Bearer k-owner
+> content-type: application/json
+> {"type":{"name":"lease","fields":[{"name":"unit","type":{"kind":"text"}}],"relations":[{"name":"held_by","target":"partner","cardinality":"many_to_one"}]}}
+< 200
+< content-type: application/json
+< lakelands-position: 43
+< {"outcome":"applied","position":43}
+
+> PUT /lakes/finance/types/partner/records/P-2
+> authorization: Bearer k-owner
+> content-type: application/json
+> {"name":"Birch"}
+< 200
+< content-type: application/json
+< lakelands-position: 45
+< {"outcome":"applied","position":45,"version":1}
+
+> PUT /lakes/finance/types/lease/records/L-1
+> authorization: Bearer k-owner
+> content-type: application/json
+> {"unit":"4B"}
+< 200
+< content-type: application/json
+< lakelands-position: 46
+< {"outcome":"applied","position":46,"version":1}
+
+> PUT /lakes/finance/types/lease/records/L-1/links/held_by/P-1
+> authorization: Bearer k-owner
+> content-type: application/json
+> {}
+< 200
+< content-type: application/json
+< lakelands-position: 47
+< {"outcome":"applied","position":47,"version":1}
+
+> PUT /lakes/finance/types/lease/records/L-1/links/held_by/P-2
+> authorization: Bearer k-owner
+> content-type: application/json
+> {}
+< 422
+< content-type: application/json
+< lakelands-position: 47
+< {"error":"refused","field":"to","reason":{"message":"`L-1` already links over `held_by` to `P-1`, and `held_by` allows one (ManyToOne); unlink it first","refusal":"constraint"},"todo":"correct the input and run the command again; nothing was written","what":"refused on `to`: `L-1` already links over `held_by` to `P-1`, and `held_by` allows one (ManyToOne); unlink it first"}
+
+# A value type tightens through `migrate` with `value_type`: its
+# preflight, its apply, and `to` beside it refused.
+> POST /lakes/finance/schema/declare
+> authorization: Bearer k-owner
+> content-type: application/json
+> {"declaration":{"declare":"value_type","name":"tier","kind":"text","one_of":["gold","silver","bronze"]}}
+< 200
+< content-type: application/json
+< lakelands-position: 48
+< {"outcome":"applied","position":48}
+
+> POST /lakes/finance/schema/migrate
+> authorization: Bearer k-owner
+> content-type: application/json
+> {"value_type":{"name":"tier","kind":"text","one_of":["gold","silver"]}}
+< 200
+< content-type: application/json
+< lakelands-position: 48
+< {"data":{"fields":[],"fits":true,"from_version":1,"misfits":0,"records_scanned":0,"report_id":"{report_id}","value_type":"tier"},"position":48}
+
+> POST /lakes/finance/schema/migrate/apply
+> authorization: Bearer k-owner
+> content-type: application/json
+> {"value_type":{"name":"tier","kind":"text","one_of":["gold","silver"]},"report_id":"{report_id}"}
+< 200
+< content-type: application/json
+< lakelands-position: 49
+< {"outcome":"applied","position":49}
+
+> POST /lakes/finance/schema/migrate
+> authorization: Bearer k-owner
+> content-type: application/json
+> {"to":{"name":"vendor","fields":[{"name":"name","type":{"kind":"text"}}]},"value_type":{"name":"tier","kind":"text","one_of":["gold"]}}
+< 422
+< content-type: application/json
+< lakelands-position: 49
+< {"error":"refused","field":"value_type","reason":{"message":"a migration names a type (`to`) or a value type (`value_type`), not both","refusal":"invalid"},"todo":"correct the input and run the command again; nothing was written","what":"refused on `value_type`: a migration names a type (`to`) or a value type (`value_type`), not both"}
