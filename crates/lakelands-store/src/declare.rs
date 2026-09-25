@@ -360,6 +360,26 @@ fn link_relations(t: &TypeDecl) -> Vec<(TypeName, RelationName)> {
         .collect()
 }
 
+/// Whether a host vocabulary type may be declared under its name
+/// (`docs/decisions/003-reservation-by-namespace.md`). A name under
+/// `sys.link.` belongs to the link types the store derives from relations
+/// (035), and the four names of `RESERVED_SYSTEM_TYPES` to the store's own
+/// readers; a vocabulary that names one is refused, naming it.
+pub fn check_vocabulary_type(t: &TypeDecl) -> Result<()> {
+    let why = if lakelands_core::links::is_link_type(&t.name) {
+        "the store derives the link types under `sys.link.` from relations itself"
+    } else if lakelands_api::seam::RESERVED_SYSTEM_TYPES.contains(&t.name.as_str()) {
+        "the store keeps it for its own reader"
+    } else {
+        return Ok(());
+    };
+    Err(invalid(format!(
+        "the host vocabulary's type `{}` is reserved: {why}; nothing was appended, and the \
+         lake is not opened for writing until the vocabulary names it otherwise",
+        t.name
+    )))
+}
+
 /// Check one declaration against the ontology it would join. `who_is_system`
 /// is true only for the store's own declarations.
 pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> Result<()> {

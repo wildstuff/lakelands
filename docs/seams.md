@@ -855,6 +855,21 @@ and the lake does not hold yet, as system declarations in one append
 (at creation, together with `sys.setting`). A type the host adds later
 reaches an existing lake the next time a writer opens it.
 
+Two kinds of name are not a host's to take, and a vocabulary that names
+one is refused when a writer opens the lake. The name is reserved
+(`docs/decisions/003-reservation-by-namespace.md`), and the refusal is
+`invalid` with a message naming the type and saying it is reserved,
+since the `reserved` refusal carries no message to name it in. The open
+appends nothing, and the process does not write until its vocabulary
+names the type otherwise. **`sys.link.*`** is where the
+store puts the link types it derives from relations, one per relation
+carried by link records (`docs/decisions/035-a-link-is-a-record.md`); a
+host type there could collide with one of them. **The four reserved
+names** belong to the store's own readers, including `sys.source` and
+`sys.provenance`, whose readers are not written yet: they have no
+declared shape, and the shape comes with the reader, not with a host
+type that took the name first.
+
 A `sys.setting` record is one named setting of a lake. Its record key is
 the setting's key, and it has two fields: `key` (text, the same key) and
 `value` (json, the setting's value). `setting('vat_rate')` in any
