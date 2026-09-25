@@ -31,6 +31,7 @@ mod proposals;
 mod provenance;
 mod purge;
 mod reactions;
+mod reactive_depth;
 mod rebuild;
 mod references;
 mod rekey;
@@ -261,4 +262,5 @@ pub const ALL: &[Check] = &[
     value_types::CONSTRAINT_AND_FORMAT,
     value_types::CONDITION_NEVER_HOLDS,
     streaming::STREAMS,
+    reactive_depth::TOO_DEEP,
 ];
