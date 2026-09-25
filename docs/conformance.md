@@ -73,6 +73,9 @@ scripts/conformance.sh mem      # one engine
 scripts/conformance.sh          # every required engine
 ```
 
+The script runs under bash 3.2 and later, so the system shell of macOS
+runs it as well as a current bash. It needs `cargo-nextest`.
+
 `conformance/roster` lists the engines. A `required` engine runs both
 halves on every pull request, as its own CI job; a `deferred` engine has
 a crate but is not imported yet, and a required engine never becomes
