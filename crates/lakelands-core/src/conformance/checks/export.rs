@@ -61,7 +61,7 @@ check!(
 check!(
     /// A damaged export is refused at its position.
     DAMAGE = a_damaged_export_is_refused_naming_the_position,
-    "030 and log-format §2.6 and §4.2: verifying an export refuses a changed byte, a space inserted, a missing last line feed, a format version below the first, past the newest or going down, a checkpoint naming the wrong position before it, a missing file, an empty log/, a file too many, a file not named in 20 digits and two lines out of order, and names the position where the files stop being the log",
+    "030 and log-format §2.6 and §4.2: verifying an export refuses a changed byte, a space inserted, a missing last line feed, a format version below the first, past the newest or going down, a known_at going back, a checkpoint naming the wrong position before it, a missing file, an empty log/, a file too many, a file not named in 20 digits and two lines out of order, and names the position where the files stop being the log",
     scratch
 );
 
@@ -505,6 +505,16 @@ async fn a_damaged_export_is_refused_naming_the_position(
             &format!("its last event in format {v} after format 2"),
         )?;
     }
+
+    // The last event's known_at before the one before it (log-format
+    // §1.3), its hash made right.
+    let dir = fresh("known_at").await?;
+    let mut lines = lines_of(&dir, &active)?;
+    lines[last] = rehashed(&lines[last], |e| {
+        e["known_at"] = json!("2000-01-01T00:00:00.000000Z");
+    })?;
+    rewrite(&dir, &active, &lines)?;
+    refused_at(&dir, head, "its last event's known_at going back")?;
 
     // A checkpoint naming the wrong position before it, its hash made right.
     let dir = fresh("through").await?;

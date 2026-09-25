@@ -216,7 +216,7 @@ named, and nothing from the environment.
   segment would name another route, and an idempotency key holding a
   line break.
 - The host's own operations (`verify`, `rebuild`, `restrict`,
-  `unrestrict`, `checkpoint`, `age`, `purge_source`) are no door's, and
-  are `unbound`.
+  `unrestrict`, `checkpoint`, `age`, `purge_source`, `compact`,
+  `position_at`) are no door's, and are `unbound`.
 - Its `limits()` are the ones it was configured with, not the server's:
   the server keeps its own, and its refusals win.

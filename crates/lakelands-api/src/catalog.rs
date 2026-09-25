@@ -326,6 +326,13 @@ pub trait LakeStore: Send + Sync {
         through: Option<Position>,
     ) -> Result<Verification>;
 
+    /// The position the log had at an instant: the last position, no later
+    /// than the head, whose event's `known_at` is at or before `known_at`;
+    /// none for an instant before the lake's first event. `known_at`
+    /// never decreases along the log (`docs/log-format.md` §1.3), so this
+    /// is a binary search over positions.
+    async fn position_at(&self, known_at: crate::time::Timestamp) -> Result<Option<Position>>;
+
     /// Delete the projection and rebuild it from the log. Answers the
     /// position it was rebuilt through.
     async fn rebuild(&self) -> Result<Position>;

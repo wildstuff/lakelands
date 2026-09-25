@@ -245,12 +245,13 @@ async fn write_into(store: &dyn LakeStore, dir: &Path) -> Result<Manifest> {
 }
 
 /// Where a verification stands: the next position, the hash before it,
-/// the last format version seen (0 before the first line), and the files
-/// sealed so far.
+/// the last format version seen (0 before the first line), the last
+/// `known_at` (none before the first line), and the files sealed so far.
 struct Chain {
     next: Position,
     prev: Digest,
     version: u32,
+    known_at: Option<lakelands_api::Timestamp>,
     sealed: Vec<(Position, Position, String)>,
 }
 
@@ -294,6 +295,19 @@ impl Chain {
                 format!("the line is position {}", event.position),
             ));
         }
+        // `known_at` never goes back (log-format §1.3).
+        if let Some(before) = self.known_at
+            && event.known_at < before
+        {
+            return Err(damaged(
+                at,
+                format!(
+                    "its known_at {} is before the {before} of the event before it",
+                    event.known_at
+                ),
+            ));
+        }
+        self.known_at = Some(event.known_at);
         if event.prev != self.prev {
             return Err(damaged(
                 at,
@@ -374,6 +388,7 @@ pub fn verify(dir: &Path) -> Result<Verification> {
         next: Position::GENESIS,
         prev: Digest::zero(),
         version: 0,
+        known_at: None,
         sealed: Vec::new(),
     };
     for (index, path) in files.iter().enumerate() {

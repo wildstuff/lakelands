@@ -628,6 +628,11 @@ impl LakeStore for Store {
         Ok(report)
     }
 
+    async fn position_at(&self, known_at: Timestamp) -> Result<Option<Position>> {
+        let lake = self.lake.clone();
+        exec::run(move || lake.position_at(known_at)).await
+    }
+
     async fn compact(&self) -> Result<CompactReport> {
         let lake = self.lake.clone();
         exec::run(move || lake.compact()).await

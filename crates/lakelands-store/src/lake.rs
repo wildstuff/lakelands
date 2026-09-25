@@ -951,12 +951,16 @@ impl Lake {
         through: Option<Position>,
     ) -> Result<lakelands_api::Verification> {
         let from = from.unwrap_or(Position::GENESIS);
-        let mut before: Option<(Position, Digest)> = if from == Position::GENESIS {
-            None
-        } else {
-            let e = self.read_events(Position(from.0 - 1), 1)?;
-            e.first().map(|e| (e.position, e.hash.clone()))
-        };
+        let (mut before, mut known): (Option<(Position, Digest)>, Option<Timestamp>) =
+            if from == Position::GENESIS {
+                (None, None)
+            } else {
+                let e = self.read_events(Position(from.0 - 1), 1)?;
+                (
+                    e.first().map(|e| (e.position, e.hash.clone())),
+                    e.first().map(|e| e.known_at),
+                )
+            };
         let segments = self.engine.segments()?;
         let mut last = None;
         let mut last_v = 0;
@@ -977,6 +981,19 @@ impl Lake {
                     });
                 }
                 last_v = e.v;
+                // `known_at` never goes back (`docs/log-format.md` §1.3).
+                if let Some(k) = known
+                    && e.known_at < k
+                {
+                    return Err(Error::Unavailable {
+                        message: format!(
+                            "the log is damaged at position {}: its known_at {} is before the \
+                             {k} of the event before it",
+                            e.position, e.known_at
+                        ),
+                    });
+                }
+                known = Some(e.known_at);
                 if let EventBody::Checkpoint {
                     through,
                     hash,
@@ -999,6 +1016,38 @@ impl Lake {
             through: last.position,
             hash: last.hash,
         })
+    }
+
+    /// The last position no later than the head whose event's `known_at`
+    /// is at or before `t`; none before the lake's first event. A binary
+    /// search, reading one event per probe: `known_at` never decreases
+    /// along the log (`docs/log-format.md` §1.3).
+    pub fn position_at(&self, t: Timestamp) -> Result<Option<Position>> {
+        let head = self.head();
+        let known_at = |p: u64| -> Result<Timestamp> {
+            self.read_events(Position(p), 1)?
+                .first()
+                .map(|e| e.known_at)
+                .ok_or_else(|| Error::Unavailable {
+                    message: format!(
+                        "the log ends before position {p}, which is at or before the head {head}"
+                    ),
+                })
+        };
+        if known_at(0)? > t {
+            return Ok(None);
+        }
+        // `lo` is always a position at or before `t`.
+        let (mut lo, mut hi) = (0, head.0);
+        while lo < hi {
+            let mid = lo + (hi - lo).div_ceil(2);
+            if known_at(mid)? <= t {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        Ok(Some(Position(lo)))
     }
 
     /// Seal the active segment and write the checkpoint that opens the next.

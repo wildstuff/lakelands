@@ -370,6 +370,17 @@ impl LakeStore for MockLake {
         purge::run(&self.shared, &mut self.shared.log(), source)
     }
 
+    async fn position_at(&self, known_at: Timestamp) -> Result<Option<Position>> {
+        // The last event at or before the instant, over the whole log.
+        let log = self.shared.log();
+        Ok(log
+            .events
+            .iter()
+            .take_while(|e| e.known_at <= known_at)
+            .last()
+            .map(|e| e.position))
+    }
+
     async fn compact(&self) -> Result<lakelands_api::write::CompactReport> {
         // The mock keeps no storage beside its log: nothing to reclaim.
         Ok(lakelands_api::write::CompactReport {

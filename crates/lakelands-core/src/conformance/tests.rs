@@ -171,6 +171,7 @@ impl LakeStore for DownStore {
     refuse!(age<>(today: lakelands_api::Timestamp) -> lakelands_api::write::AgeReport);
     refuse!(purge_source<'life1>(source: &'life1 lakelands_api::SourceId) -> lakelands_api::write::PurgeReport);
     refuse!(compact<>() -> lakelands_api::write::CompactReport);
+    refuse!(position_at<>(known_at: lakelands_api::Timestamp) -> Option<Position>);
     refuse!(checkpoint<>() -> Position);
     refuse!(close<>() -> ());
 }

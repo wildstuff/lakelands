@@ -129,7 +129,7 @@ def verify_dir(root):
     """Check the segment files under `root/log/` alone; see the module doc."""
     files = sorted(p for p in (root / "log").iterdir() if p.suffix == ".jsonl")
     check(bool(files), f"{root}/log holds segment files")
-    position, prev, version = 0, "0" * 64, 0
+    position, prev, version, known_at = 0, "0" * 64, 0, ""
     sealed = []
 
     def need(ok, why):
@@ -155,6 +155,12 @@ def verify_dir(root):
                  f"format {v} is one of {FIRST_FORMAT} to {NEWEST_FORMAT}")
             need(v >= version, f"format {v} is not below the {version} before it")
             version = v
+            # known_at is in its one form (§1.3), so its text orders as its
+            # instant does: never before the event before it.
+            k = event.get("known_at")
+            need(isinstance(k, str) and k >= known_at,
+                 f"known_at {k} is not before the {known_at} before it")
+            known_at = k
             need(event.get("prev") == prev, "prev names the hash of the event before it")
             body = {k: x for k, x in event.items() if k != "hash"}
             need(sha(canonical(body)) == event.get("hash"), "the hash is SHA-256 of the line without it")
