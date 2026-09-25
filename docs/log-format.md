@@ -472,7 +472,10 @@ so on. The last segment is **active** and takes appends; the others are
 **sealed** and never change. An engine may keep files of its own beside
 `log/`, such as an index or its lease; a verifier reads only `log/`. An engine that keeps events elsewhere (a
 table, an object store) keeps each event's canonical bytes unchanged and
-can export its segments as exactly these files.
+can export its segments as exactly these files. An export
+(`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`)
+may write an `export.json` manifest beside `log/`; it is optional, not
+part of the format, and never trusted.
 
 A segment's **digest** is SHA-256 over its file's bytes: its events'
 lines in order, each ending in its line feed, and nothing else (no byte

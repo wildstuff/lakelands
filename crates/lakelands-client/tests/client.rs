@@ -1,7 +1,8 @@
 //! What the door checks do not reach: every error decoded as the one the
 //! server answered, an ingest's windows and a refused record over the
-//! wire, `poll` read as the store's own feed reads, the host operations,
-//! and the keys: refused before sending, never shown.
+//! wire, `poll` read as the store's own feed reads, an export over the
+//! wire as the store's own, the host operations, and the keys: refused
+//! before sending, never shown.
 
 mod common;
 
@@ -357,6 +358,64 @@ async fn poll_reads_what_the_stores_own_feed_reads() {
     assert_eq!(positions.last(), Some(&written.position()));
     assert_eq!(next.next, Position(written.position().0 + 1));
     assert_eq!(remote.head().await.unwrap(), written.position());
+}
+
+/// An export through a client is the served store's own, byte for byte:
+/// every event crosses the wire and re-serialises to its stored bytes,
+/// the host's checkpoint and a restricted record's hold included.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_export_over_the_wire_is_the_served_stores_own() {
+    let store = common::memory_lake("finance", Limits::default()).await;
+    let (addr, keys) = common::serve(store.clone()).await;
+    let remote: Arc<dyn LakeStore> = Arc::new(common::remote(addr, store.lake(), keys));
+    let f = setup(remote.clone()).await;
+    let write = |k: &'static str, status: &'static str| {
+        let (c, who) = (f.catalog.clone(), f.cast.owner.clone());
+        async move {
+            c.upsert(
+                &who,
+                &"invoice".into(),
+                &k.into(),
+                patch(&[("status", json!(status))]),
+                WriteOpts::default(),
+            )
+            .await
+            .expect("the write applies")
+        }
+    };
+    write("INV-1", "open").await;
+    write("INV-2", "open").await;
+    store.checkpoint().await.unwrap();
+    store
+        .restrict(&"invoice".into(), &"INV-2".into(), "a hold".into())
+        .await
+        .unwrap();
+    write("INV-1", "paid").await;
+
+    let base = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("client-export-{}", std::process::id()));
+    let (ours, theirs) = (base.join("remote"), base.join("store"));
+    let _ = std::fs::remove_dir_all(&base);
+    let got = lakelands_core::export::write(remote.as_ref(), &ours)
+        .await
+        .unwrap();
+    let want = lakelands_core::export::write(store.as_ref(), &theirs)
+        .await
+        .unwrap();
+    assert_eq!(got, want, "the same manifest");
+    assert_eq!(got.segments.len(), 2, "{got:?}");
+    for s in &want.segments {
+        assert_eq!(
+            std::fs::read(ours.join(&s.file)).unwrap(),
+            std::fs::read(theirs.join(&s.file)).unwrap(),
+            "{}: byte for byte",
+            s.file
+        );
+    }
+    let files = lakelands_core::export::verify(&ours).unwrap();
+    let lake = store.verify(None, None).await.unwrap();
+    assert_eq!((files.through, files.hash), (lake.through, lake.hash));
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// The host's operations are no network door's: each is `Unbound`,

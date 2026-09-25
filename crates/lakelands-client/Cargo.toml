@@ -24,6 +24,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 tower-service = "0.3"
 
 [dev-dependencies]
+lakelands-core.workspace = true
 lakelands-engine-mem.workspace = true
 lakelands-mock.workspace = true
 lakelands-server = { path = "../lakelands-server" }

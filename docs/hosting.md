@@ -139,6 +139,11 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   every record it brought in is retired in one append, and a record
   another hand also wrote refuses the purge
   (`docs/decisions/039-a-source-is-retracted-as-one.md`).
+  A lake's log is exported with `lakelands_core::export::write(store,
+  dir)` (`lakelands export --to <dir>`) as files that verify without
+  Lakelands (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`);
+  an export is the whole log, unmasked, so it is handed over as the
+  lake itself would be.
 
 **Configuration is not a seam.** Engine configuration, tuning, limits
 and an optional key handle reach a lake through `Location`, and a

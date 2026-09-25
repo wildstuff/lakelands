@@ -59,6 +59,10 @@ impl Harness for Sqlite {
             })
         })
     }
+
+    fn scratch(&self) -> PathBuf {
+        self.root.join("scratch")
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

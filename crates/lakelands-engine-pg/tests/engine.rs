@@ -1,5 +1,5 @@
 //! What only the PostgreSQL engine decides: the export of its log as the
-//! format's files, the lease as a row and a lock, and what it refuses at
+//! format's files (the same bytes the store's export writes), the lease as a row and a lock, and what it refuses at
 //! open (`docs/decisions/038-a-lake-in-postgresql.md`).
 
 mod common;
@@ -135,6 +135,36 @@ async fn an_exported_lake_verifies_from_its_segment_files_alone() {
             "digest": hex(&Sha256::digest(&raw)),
         }));
     }
+
+    // The store's export, over the feed of the same lake opened to read,
+    // writes the same files byte for byte.
+    let seams = Seams {
+        engines: vec![Arc::new(PgOpener)],
+        ..Seams::default()
+    };
+    let reader = lakelands_store::open(location.clone(), seams, OpenMode::Read)
+        .await
+        .unwrap();
+    let via = dir.with_file_name(format!("pg-export-store-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&via);
+    let manifest = lakelands_core::export::write(reader.as_ref(), &via)
+        .await
+        .unwrap();
+    let names: Vec<String> = manifest.segments.iter().map(|s| s.file.clone()).collect();
+    let engine_names: Vec<String> = files
+        .iter()
+        .map(|f| format!("log/{}", f.file_name().unwrap().to_string_lossy()))
+        .collect();
+    assert_eq!(names, engine_names, "the same files");
+    for name in &names {
+        assert_eq!(
+            std::fs::read(via.join(name)).unwrap(),
+            std::fs::read(dir.join(name)).unwrap(),
+            "{name}: the store's export and the engine's agree byte for byte"
+        );
+    }
+    lakelands_core::export::verify(&dir).unwrap();
+    let _ = std::fs::remove_dir_all(&via);
     let _ = std::fs::remove_dir_all(&dir);
     common::drop_schema(&url, &schema);
 }

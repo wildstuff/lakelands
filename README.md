@@ -83,7 +83,8 @@ HTTP) and REST from one catalog. Agents never write a query language.
 > embedding client, the `http` and `exec` function backings, the webhook
 > deliverer, relations with fields of their own, carried by link
 > records, aging by date (`lakelands age`), retracting a source as one
-> act (`lakelands purge`), and MCP notifications of the changes a
+> act (`lakelands purge`), exporting a lake's log as files that verify
+> without Lakelands (`lakelands export`), and MCP notifications of the changes a
 > session may see, the ticker in `serve` that runs aging daily, and
 > `lakelands-client`, which holds a lake another process serves over
 > the REST door as the same `LakeStore` the store is. The mirror

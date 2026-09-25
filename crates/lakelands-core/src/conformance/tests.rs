@@ -190,6 +190,9 @@ impl Harness for DownHarness {
     fn reopener(&self) -> Reopen {
         Arc::new(|_, _| Box::pin(async { Err(down()) }))
     }
+    fn scratch(&self) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("lakelands-conformance-{}", std::process::id()))
+    }
 }
 
 /// Cannot open a lake at all.
@@ -204,6 +207,9 @@ impl Harness for NoLakes {
     }
     fn reopener(&self) -> Reopen {
         Arc::new(|_, _| Box::pin(async { Err(down()) }))
+    }
+    fn scratch(&self) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("lakelands-conformance-{}", std::process::id()))
     }
 }
 

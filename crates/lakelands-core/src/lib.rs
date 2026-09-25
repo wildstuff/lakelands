@@ -16,6 +16,7 @@ pub mod conformance;
 pub mod derive;
 pub mod describe;
 pub mod engines;
+pub mod export;
 pub mod expr;
 pub mod graph;
 pub mod links;

@@ -7,6 +7,7 @@
 
 mod common;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use lakelands_api::LakeStore;
@@ -57,6 +58,11 @@ impl Harness for Pg {
                 Ok(store)
             })
         })
+    }
+
+    fn scratch(&self) -> PathBuf {
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("pg-conformance-{}", std::process::id()))
     }
 }
 

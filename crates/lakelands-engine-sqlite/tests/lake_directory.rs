@@ -6,7 +6,9 @@
 //! as the log format's `verify.py` reads its vectors: every line is the
 //! canonical bytes of the event it parses to, the hashes chain from 64
 //! zeros, positions follow each other, and every checkpoint lists the
-//! sealed segments with the digests of their files.
+//! sealed segments with the digests of their files. The verifiers of an
+//! export, `lakelands_core::export::verify` and `verify.py <dir>`, read
+//! the directory the same way and agree.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -146,6 +148,36 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
             "digest": hex(&Sha256::digest(&raw)),
         }));
     }
+
+    // Both verifiers of an export read the lake directory as one: the
+    // library's, and `verify.py`, which shares no code with Lakelands and
+    // needs `python3` (a run without it fails saying so).
+    let files_say = lakelands_core::export::verify(&dir).unwrap();
+    assert_eq!(
+        (files_say.through.0, files_say.hash.0.as_str()),
+        (next - 1, prev.as_str())
+    );
+    let script =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors/verify.py");
+    let run = match std::process::Command::new("python3")
+        .arg(&script)
+        .arg(&dir)
+        .output()
+    {
+        Ok(run) => run,
+        Err(e) => panic!(
+            "this test runs `python3 {}` over the lake directory and needs python3 on the \
+             PATH: {e}",
+            script.display()
+        ),
+    };
+    let said = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success(),
+        "verify.py refused the lake directory:\n{said}"
+    );
+    let last = format!("verified through position {}, hash {prev}", next - 1);
+    assert!(said.trim_end().ends_with(&last), "{said}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
