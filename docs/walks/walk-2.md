@@ -25,7 +25,11 @@ the files below and from the fake's rules. An answer that differs is a
 **The clock plays no part.** Every date the lake reasons about is handed
 to it: by the export and by `lakelands age --today 2026-12-01`. The
 answers below hold on any day the walk is run. Only `known_at`, the
-time a fact was written, differs from run to run.
+time a fact was written, differs from run to run. This holds because the
+walk's `lakelands.json` has no `aging` section: with one, `lakelands
+serve` runs the ticker and ages each lake by the host's clock
+(`docs/seams.md`, the ticker), which would move `status` on its own. The
+walk leaves the ticker out and ages by hand.
 
 ## The materials
 
@@ -117,16 +121,26 @@ INV-5001 and INV-5006, in that order.
 
 From a fresh clone, in the repository's root. `cargo install` puts the
 fake where the configuration can name it by an absolute path, since
-`exec` runs no program given by a relative one. The `walk` directory
-may be created anywhere; the page creates it inside the clone.
+`exec` runs no program given by a relative one. It also replaces a
+`lakelands` already installed, such as the `0.1.0` release used for
+walk 1; to keep that one, add `--root <dir>` to both `cargo install`
+lines and put `<dir>/bin` first on your `PATH`. The `walk` directory may
+be created anywhere; the page creates it inside the clone.
+
+The two fakes listen on the fixed ports 8701 (embeddings) and 8702
+(deliveries), which `lakelands.json` names, so both must be free. A fake
+that cannot bind its port says so in its log and ends. The ingest then
+records every embedding as a failure (see "A failed call is final"
+below), so check `embed.log` and `hook.log` if a vector is missing. Both
+fakes log to a file, so their lines stay out of the commands' output.
 
 ```sh
 cargo install --path crates/lakelands-cli
 cargo install --path crates/lakelands-cli --example walk_2_fake
-walk_2_fake embed 127.0.0.1:8701 &
 lakelands init walk
 cd walk
-walk_2_fake hook 127.0.0.1:8702 hooks.jsonl > /dev/null &
+walk_2_fake embed 127.0.0.1:8701 > embed.log 2>&1 &
+walk_2_fake hook 127.0.0.1:8702 hooks.jsonl > hook.log 2>&1 &
 lakelands lake new collections
 sed "s|<fake>|$(command -v walk_2_fake)|" ../examples/collections/lakelands.json > lakelands.json
 lakelands apply ../examples/collections
@@ -159,7 +173,9 @@ Every command that writes appends one `lease_taken` first, as in walk 1.
 ## The agent links two invoices
 
 As in walk 1, the agent's calls go through the `mcp_call` example
-client from the `walk` directory. The client starts `lakelands serve
+client from the `walk` directory. The first `cargo run` of it compiles
+the server and the example, which takes minutes and prints nothing with
+`-q`; the later runs start at once. The client starts `lakelands serve
 --mcp` itself and prints each reply's position line and its whole
 envelope, `{ "data": …, "position": N }`. Every `serve --mcp` appends
 one `lease_taken`. It also runs the deliverer of `lakelands.json` for as
@@ -264,6 +280,14 @@ keyed by their pair:
   `summary_vec`, with `"position": 24`. That of `status` names the aging:
   `"origin": "system"`, `"position": 39` and `"writer":
   "system:lakelands"`.
+- `gross` is derived too, but by the expression `net * 1.19`, in the
+  ingest's own event. Its metadata therefore carries that event's
+  provenance: `"writer": "human:owner"`, `"source": "erp"`, its
+  `seen_at` and `"position": 17`. `band` and `summary_vec` are filled
+  later by calls the store makes itself, so they name the store as their
+  writer and their own positions. The source fields name `human:owner`
+  because the owner is the principal who ran the ingest; `source: erp`
+  says where the values came from.
 
 **5. `search`**, hybrid, for `shipping` over `summary_vec`, `k: 3`:
 `"ranked_by": "hybrid"`, hits INV-5002 (`0.03306…`), INV-5001
@@ -282,6 +306,14 @@ true }` releases the pin.
   INV-5003 (Harbor Supplies, 7140.00, approved at P-100 since
   15 October) went overdue on 1 December. Before the aging, none was.
 - About freight: INV-5002 and INV-5001, and INV-5006 after them.
+
+## Ending the walk
+
+Stop the two fakes, so that a second walk can bind their ports:
+
+```sh
+kill %1 %2
+```
 
 ## Found before the walk
 
