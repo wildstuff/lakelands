@@ -850,6 +850,9 @@ interface types {
     }
 
     record feed-filter {
+        /// Event kinds as the log spells them. Free strings, so a relay may
+        /// name a kind a newer format adds; this format version's kinds are
+        /// `lakelands_api::event::KINDS` (`docs/log-format.md`).
         kinds: list<string>,
         types: list<type-name>,
     }

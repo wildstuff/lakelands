@@ -35,7 +35,7 @@ pub mod time;
 pub mod tools;
 pub mod write;
 
-pub use catalog::{Catalog, CommitStream, LakeStore, SourceStream, Verification};
+pub use catalog::{Catalog, CommitStream, LakeStore, SourceStream, Verification, ingest_all};
 pub use error::{Error, Missing, Refusal, Result};
 pub use id::{
     Cursor, FieldName, IdempotencyKey, LakeId, Position, ProposalId, RecordKey, RelationName,
