@@ -10,6 +10,9 @@ scripts/gates/<gate>.sh               # one gate
 GATE_BASE=<rev> scripts/gates/all.sh  # commits since <rev> (default: merge base with origin/develop)
 ```
 
+The gates need bash 4 or later, `git` and `perl`; the system bash of
+macOS is 3.2, so install a newer one there (`brew install bash`).
+
 Exit status 0 is green, 1 is red (one line per violation), 2 is a gate
 that could not run. Each script's header states its rule and exactly
 what it counts.

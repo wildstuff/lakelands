@@ -309,10 +309,17 @@ true }` releases the pin.
 
 ## Ending the walk
 
-Stop the two fakes, so that a second walk can bind their ports:
+Stop the two fakes, so that a second walk can bind their ports. In the
+terminal that started them:
 
 ```sh
 kill %1 %2
+```
+
+A script, which has no job table, ends them by name:
+
+```sh
+pkill -f 'walk_2_fake (embed|hook)'
 ```
 
 ## Found before the walk
