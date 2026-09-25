@@ -5,8 +5,9 @@
 //!
 //! The work that reads or writes a whole lake has to work in pages. That
 //! is ingest from a source, the feed read from the start, an export and
-//! its verification, a rebuild of the projection, and a reopen. Each may
-//! hold a window, a page or a segment's worth of memory, set by the
+//! its verification, a walk of a type through `find` page by page, a
+//! rebuild of the projection, and a reopen. Each may hold a window, a
+//! page or a segment's worth of memory, set by the
 //! lake's limits or by constants, but not more as the lake grows. One
 //! check builds a lake of [`Given::large_lake`] records, runs every
 //! operation on it, grows it to four times that size and runs them all
@@ -35,11 +36,14 @@
 //! sizes.
 //!
 //! Ingest, the feed, the export and its verification are held to this.
-//! The rebuild and the reopen are measured and reported against the same
-//! tolerance but not held to it yet: both fold a range read whole
-//! (lakelands#130), and the fix turns the claim on. A harness without a
-//! meter runs everything else the check claims and reports the heap as
-//! not measured.
+//! Three more are measured and reported against the same tolerance but
+//! not held to it yet, each until the fix named in its line turns the
+//! claim on. The rebuild and the reopen fold a range read whole
+//! (lakelands#130). The walk through `find` measures each page on its
+//! own, as its largest page: a page may hold its rows, not the type, but
+//! today every page reads the whole type (lakelands#134). A harness
+//! without a meter runs everything else the check claims and reports the
+//! heap as not measured.
 //!
 //! **What a green run does not show.** Two limits of the measurement:
 //!
@@ -91,7 +95,7 @@ use crate::export;
 check!(
     /// A large lake goes through ingest, the feed and export in bounded memory.
     STREAMS = a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it,
-    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start and an export with its verification hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB; a rebuild and a reopen are measured against the same bound",
+    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start and an export with its verification hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB; a walk of a type through find, a rebuild and a reopen are measured against the same bound",
     given
 );
 
@@ -258,7 +262,8 @@ impl Measure {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Claim {
     Held,
-    Reported,
+    /// Measured and reported until the named issue's fix holds it.
+    Reported(&'static str),
 }
 
 /// One operation at one size, as reported.
@@ -568,6 +573,81 @@ impl Size<'_> {
         Ok(())
     }
 
+    /// Walk every `reading` through `find`, a page of `max_limit` at a
+    /// time with the cursor, measuring each page on its own: a page holds
+    /// its rows, whatever the size of the type.
+    async fn find_walk(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+        let cat = doors(store);
+        let head = store.head().await.must("reading the head")?;
+        let limit = limits().max_limit;
+        let mut find = Find {
+            limit: Some(limit),
+            ..Find::default()
+        };
+        let (mut pages, mut rows) = (0u64, 0u64);
+        // Filled after each page is measured, so no page pays for it.
+        let mut seen = std::collections::HashSet::new();
+        let mut worst: Option<Heap> = None;
+        let started = Instant::now();
+        loop {
+            let m = Measure::start(&self.given.meter, false);
+            let reply = cat
+                .find(&self.own, &TypeName::from(TY), find.clone())
+                .await
+                .must(&format!("finding page {} of `reading`", pages + 1))?;
+            let (heap, _) = m.stop();
+            if let Some(h) = heap
+                && worst.is_none_or(|w| h.held() > w.held())
+            {
+                worst = Some(h);
+            }
+            let Found::Records {
+                rows: page,
+                next_cursor,
+            } = reply.data
+            else {
+                return Err(Failure::new(
+                    "finding `reading` records without an aggregate answered groups",
+                ));
+            };
+            ensure!(
+                page.len() as u64 <= u64::from(limit),
+                "a page of `find` with a limit of {limit} answered {} records",
+                page.len()
+            );
+            for record in &page {
+                ensure!(
+                    seen.insert(record.key.clone()),
+                    "walking `reading` through `find` page by page answered `{}` twice; a \
+                     walk answers every record once",
+                    record.key
+                );
+            }
+            pages += 1;
+            rows += page.len() as u64;
+            match next_cursor {
+                Some(c) => find.cursor = Some(c),
+                None => break,
+            }
+        }
+        ensure!(
+            seen.len() as u64 == self.live,
+            "walking `reading` through `find` page by page answered {rows} records, {} of \
+             them distinct; the lake holds {}",
+            seen.len(),
+            self.live
+        );
+        self.row(
+            "find-walk",
+            Claim::Reported("lakelands#134"),
+            records,
+            head.0 + 1,
+            format!("{pages} pages of at most {limit}; the largest page"),
+            (worst, started.elapsed()),
+        );
+        Ok(())
+    }
+
     /// Rebuild the projection; every answer stays as it was.
     async fn rebuild(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
         let head = store.head().await.must("reading the head")?;
@@ -597,7 +677,7 @@ impl Size<'_> {
         );
         self.row(
             "rebuild",
-            Claim::Reported,
+            Claim::Reported("lakelands#130"),
             records,
             head.0 + 1,
             format!("{} records read back", before.0),
@@ -638,7 +718,7 @@ impl Size<'_> {
         );
         self.row(
             "reopen",
-            Claim::Reported,
+            Claim::Reported("lakelands#130"),
             records,
             head.0 + 1,
             String::new(),
@@ -676,6 +756,7 @@ async fn a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_doe
         let log = size.feed(store.as_ref(), records).await?;
         let dir = given.scratch.join(format!("export-{records}"));
         size.export(store.as_ref(), records, &log, &dir).await?;
+        size.find_walk(store.as_ref(), records).await?;
         size.rebuild(store.as_ref(), records).await?;
         store = size.reopen(store, records).await?;
         from = records;
@@ -724,9 +805,11 @@ fn report(given: &Given, rows: &[Row]) -> Result<(), Failure> {
                     ));
                 }
                 let verdict = match (within, row.claim) {
-                    (true, _) => "within",
-                    (false, Claim::Held) => "OVER",
-                    (false, Claim::Reported) => "over, reported only until lakelands#130",
+                    (true, _) => "within".to_owned(),
+                    (false, Claim::Held) => "OVER".to_owned(),
+                    (false, Claim::Reported(until)) => {
+                        format!("over, reported only until {until}")
+                    }
                 };
                 Some((limit, verdict))
             }
@@ -744,8 +827,8 @@ fn report(given: &Given, rows: &[Row]) -> Result<(), Failure> {
             ),
             None => "heap not measured".to_owned(),
         };
-        let bound_text = against.map_or(String::new(), |(limit, verdict)| {
-            format!(", bound {} MiB: {verdict}", mib(limit))
+        let bound_text = against.as_ref().map_or(String::new(), |(limit, verdict)| {
+            format!(", bound {} MiB: {verdict}", mib(*limit))
         });
         eprintln!(
             "streaming on `{}`: {:<13} {:>8} records {:>8} events {:>8.2} s {:>9.0} events/s  \
@@ -774,8 +857,8 @@ fn report(given: &Given, rows: &[Row]) -> Result<(), Failure> {
                     "after": h.after,
                     "held": h.held(),
                 })),
-                "bound": against.map(|(limit, _)| limit),
-                "verdict": against.map(|(_, v)| v),
+                "bound": against.as_ref().map(|(limit, _)| *limit),
+                "verdict": against.as_ref().map(|(_, v)| v.clone()),
                 "vm_hwm": row.hwm,
                 "what": row.what,
             });
