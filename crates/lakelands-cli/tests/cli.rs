@@ -1166,14 +1166,18 @@ fn serve_mcp_ends_with_its_stdio_client_even_with_a_server_section() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    // The client goes away at once.
+    // The client goes away at once. The bound only turns a child that
+    // never ends into a failure; a loaded machine takes seconds to start
+    // one that opens a lake and binds a port, so it is the load driver's
+    // WAIT, not ten seconds (lakelands#158).
+    const WAIT: Duration = Duration::from_secs(60);
     drop(server.stdin.take());
     let started = Instant::now();
     let status = loop {
         if let Some(status) = server.try_wait().unwrap() {
             break status;
         }
-        if started.elapsed() > Duration::from_secs(10) {
+        if started.elapsed() > WAIT {
             let _ = server.kill();
             panic!("serve --mcp with a server section did not end with its client");
         }

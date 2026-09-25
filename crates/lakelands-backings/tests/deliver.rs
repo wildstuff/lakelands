@@ -419,8 +419,9 @@ async fn a_2xx_is_delivered_whatever_its_body() {
     c.endpoints[0].url = f.url();
     let mut d = deliverers(&c, &dir, &lake).unwrap().pop().unwrap();
     // Bounded: a deliverer that took the body for a failure would retry
-    // this event forever.
-    tokio::time::timeout(std::time::Duration::from_secs(5), d.round(store.as_ref()))
+    // this event forever. The bound only turns that into a failure, so it
+    // is generous for a loaded machine (lakelands#158).
+    tokio::time::timeout(std::time::Duration::from_secs(60), d.round(store.as_ref()))
         .await
         .expect("a 2xx with an oversized body is delivered, not retried")
         .unwrap();

@@ -76,7 +76,8 @@ fn remote(url: String, ca: &str) -> RemoteLake {
         keys: BTreeMap::from([("owner".to_owned(), "k-owner".into())]),
         feed_key: Some("owner".into()),
         ca_file: Some(tls_file(ca)),
-        timeout_secs: 10,
+        // Generous for a loaded machine: it only ends a hang (lakelands#158).
+        timeout_secs: 60,
         max_answer_bytes: DEFAULT_MAX_ANSWER_BYTES,
         limits: Limits::default(),
     })
