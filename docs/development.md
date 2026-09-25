@@ -171,6 +171,11 @@ open up once the contract has merged. Two slots that would edit the
 same file (for example a CI workflow, or a spec document that the
 workspace step creates as a stub) are sequenced, not raced.
 
+## Long runs
+
+The streaming check's long run (25 000 and 100 000 records) runs by hand, one engine at a time, on a release build: `cargo test --release -p lakelands-engine-<mem|sqlite|pg> --test conformance -- --ignored --nocapture` (pg needs `LAKELANDS_TEST_PG_URL`).
+Run it while no other slot is building, and report its lines with the machine's load average: the times are mostly waits on durable commits.
+
 ## Removing a slot
 
 ```bash
