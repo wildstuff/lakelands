@@ -296,6 +296,28 @@ pub enum Place {
     Group,
 }
 
+/// The units `date_bucket` knows.
+const BUCKET_UNITS: [&str; 5] = ["day", "week", "month", "quarter", "year"];
+
+/// The instant, in UTC, at which the bucket of `unit` holding `t` starts:
+/// midnight of the day, Monday 00:00 of the ISO week, or the first of the
+/// month, of the quarter's first month, or of January.
+fn bucket_start(t: Timestamp, unit: &str) -> Result<Timestamp> {
+    const DAY: i64 = 86_400_000_000;
+    let days = t.0.div_euclid(DAY);
+    let (y, m, _) = t.date();
+    let first = |month: u32| Timestamp::from_date(y, month, 1).ok_or_else(overflow);
+    match unit {
+        "day" => Ok(Timestamp(days * DAY)),
+        // 1970-01-01 was a Thursday: Monday is three days before it.
+        "week" => Ok(Timestamp((days - (days + 3).rem_euclid(7)) * DAY)),
+        "month" => first(m),
+        "quarter" => first((m - 1) / 3 * 3 + 1),
+        "year" => first(1),
+        other => err(format!("date_bucket() knows no unit '{other}'")),
+    }
+}
+
 /// Check an expression before evaluating it: every call has a count of
 /// arguments its function takes, a function that names a field is given
 /// one, `setting` is given a quoted key, numbers are numbers this
@@ -341,6 +363,24 @@ pub fn check(e: &Expr, place: Place) -> Result<()> {
                     ) =>
                 {
                     return err("setting() takes a quoted key");
+                }
+                Func::DateBucket => {
+                    let unit = match args.get(1) {
+                        Some(Expr::Lit {
+                            value: Literal::Text(u),
+                        }) => u.as_str(),
+                        _ => {
+                            return err(
+                                "date_bucket() takes its unit quoted: 'day', 'week', 'month', 'quarter' or 'year'",
+                            );
+                        }
+                    };
+                    if !BUCKET_UNITS.contains(&unit) {
+                        return err(format!(
+                            "date_bucket() knows no unit '{unit}'; the units are 'day', 'week', \
+                             'month', 'quarter' and 'year'"
+                        ));
+                    }
                 }
                 Func::Previous | Func::Changed if place != Place::Write => {
                     return err(format!("{name}() has meaning only in a guard over a write"));
@@ -682,6 +722,16 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
         }
         Func::Matches => Val::Bool(i_regexp(&s(1))?.is_match(&s(0))),
         Func::Abs => Val::Num(number(&vals[0])?.abs()),
+        Func::DateBucket => match (as_time(&vals[0]), &vals[1]) {
+            (Some(t), Val::Text(unit)) => Val::Time(bucket_start(t, unit)?),
+            (None, _) => Val::Null,
+            (_, other) => {
+                return err(format!(
+                    "date_bucket() takes its unit as text, not {}",
+                    describe(other)
+                ));
+            }
+        },
         Func::Round => {
             let digits = match vals.get(1) {
                 Some(d) => u32::try_from(usize_of(d)?).map_err(|_| overflow())?,
@@ -785,6 +835,62 @@ mod tests {
 
     fn yes(text: &str, record: Value) -> bool {
         run(text, record).map(|v| truthy(&v)).unwrap()
+    }
+
+    #[test]
+    fn date_bucket_answers_the_utc_start_of_its_bucket() {
+        let bucket = |d: &str, unit: &str| {
+            run(&format!("date_bucket(d, '{unit}')"), json!({"d": d})).unwrap()
+        };
+        let t = |s: &str| Val::Time(Timestamp::parse(s).unwrap());
+        let d = "2026-08-19T17:45:12.250000Z";
+        assert_eq!(bucket(d, "day"), t("2026-08-19T00:00:00Z"));
+        assert_eq!(bucket(d, "week"), t("2026-08-17T00:00:00Z"));
+        assert_eq!(bucket(d, "month"), t("2026-08-01T00:00:00Z"));
+        assert_eq!(bucket(d, "quarter"), t("2026-07-01T00:00:00Z"));
+        assert_eq!(bucket(d, "year"), t("2026-01-01T00:00:00Z"));
+        // ISO weeks start on Monday, across the year's end: 2026-01-01 is
+        // a Thursday, 2026-12-31 a Thursday, 2024-12-29 a Sunday.
+        assert_eq!(bucket("2026-01-01", "week"), t("2025-12-29T00:00:00Z"));
+        assert_eq!(bucket("2026-12-31", "week"), t("2026-12-28T00:00:00Z"));
+        assert_eq!(bucket("2024-12-29", "week"), t("2024-12-23T00:00:00Z"));
+        assert_eq!(bucket("2024-12-30", "week"), t("2024-12-30T00:00:00Z"));
+        // A leap day, and before 1970.
+        assert_eq!(bucket("2028-02-29", "month"), t("2028-02-01T00:00:00Z"));
+        assert_eq!(
+            bucket("1969-12-31T23:59:59Z", "day"),
+            t("1969-12-31T00:00:00Z")
+        );
+        assert_eq!(
+            bucket("1969-12-31T23:59:59Z", "week"),
+            t("1969-12-29T00:00:00Z")
+        );
+        // Missing, or not an instant: null.
+        assert_eq!(run("date_bucket(d, 'day')", json!({})).unwrap(), Val::Null);
+        assert_eq!(
+            run("date_bucket(d, 'day')", json!({"d": "soon"})).unwrap(),
+            Val::Null
+        );
+        assert_eq!(
+            run("date_bucket(d, 'day')", json!({"d": 7})).unwrap(),
+            Val::Null
+        );
+    }
+
+    #[test]
+    fn date_bucket_takes_one_of_its_units_quoted() {
+        for (text, why) in [
+            ("date_bucket(d, 'fortnight')", "knows no unit 'fortnight'"),
+            ("date_bucket(d, unit)", "takes its unit quoted"),
+            ("date_bucket(d)", "takes 2 argument(s), not 1"),
+        ] {
+            // Refused by the parser or by the check, whichever meets it.
+            let e = match parse(text) {
+                Ok(e) => check(&e, Place::Record).unwrap_err().to_string(),
+                Err(e) => e.to_string(),
+            };
+            assert!(e.contains(why), "{text}: {e}");
+        }
     }
 
     #[test]

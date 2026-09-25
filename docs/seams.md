@@ -317,6 +317,20 @@ order, so every engine answers them identically
 indexes that make the scans behind them faster; it never computes a
 group.
 
+An aggregate's `group_by` keys are field names (`"partner"`) or named
+expressions (`{"name": "month", "expr": "date_bucket(due_on, 'month')"}`),
+evaluated per record by the one evaluator and answered under their name
+in each group's `by`. A named key's name follows the rule for field names
+and differs from every other key's, and the principal must be allowed to
+read every field its expression reads (024). A value the expression
+cannot compute for a record is null, so that record falls in the null
+group, which sorts last. `date_bucket(x, unit)` answers the instant in
+UTC at which the bucket holding `x` starts, for `day`, `week` (ISO, from
+Monday), `month`, `quarter` and `year`; it belongs to reads, and a
+declaration calling it is refused (`docs/decisions/017-one-expression-grammar.md`,
+extended). **The ceiling:** buckets are UTC only, and there is no number
+bucket (lakelands#174).
+
 ### `VectorIndex`
 
 `put`, `remove`, `nearest(type, field, query, k)` and `count`, over the
@@ -1045,12 +1059,13 @@ opened only to read in another process meanwhile reads at the
 `LakeStore::position_at(known_at)` answers the position the log had at
 an instant: the last position, no later than the head, whose event's
 `known_at` is at or before it, or none for an instant before the lake's
-first event. A read `as_of` the answer sees the lake as it stood then.
+first event, and a read `as_of` the answer sees the lake as it stood
+then (suite: `position_at_answers_the_last_position_at_or_before_an_instant`).
 It is a binary search over positions, reading one event per probe, about
 log₂ N reads; it relies on `known_at` never decreasing along the log,
-which the verifiers check (`docs/log-format.md` §1.3). It is the host's:
-`lakelands-client` answers it `unbound`, naming it (suite:
-`position_at_answers_the_last_position_at_or_before_an_instant`).
+which the verifiers check (`docs/log-format.md` §1.3). It is no door's
+yet, only the host's: `lakelands-client` answers it `unbound`, naming it
+(client test: `every_host_operation_is_unbound_naming_it`).
 
 `LakeStore::purge_source(source)` retires every live record one source
 brought in, across every type it reached, restricted records and the

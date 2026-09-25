@@ -168,7 +168,6 @@ async fn verify_py_verifies_an_export_with_a_checkpoint_and_a_rekey() {
 /// A damage to one file's first line, and the position it is refused at.
 type Damage<'a> = (&'a SegmentFile, &'a dyn Fn(&mut Value), Position);
 
-/// What `verify.py <dir>` prints.
 /// The log format's negative vector, a `known_at` going back at position
 /// 6, is refused there by `verify.py` too (log-format §1.3).
 #[test]
@@ -184,6 +183,7 @@ fn verify_py_refuses_the_negative_vector_whose_known_at_goes_back() {
     );
 }
 
+/// What `verify.py <dir>` prints.
 fn python(script: &std::path::Path, dir: &std::path::Path) -> String {
     let run = Command::new("python3")
         .arg(script)

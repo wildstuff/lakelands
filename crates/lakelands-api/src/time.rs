@@ -76,6 +76,12 @@ fn days_in_month(y: i64, m: i64) -> i64 {
 }
 
 impl Timestamp {
+    /// The civil date, in UTC, the instant falls on: year, month, day.
+    pub fn date(self) -> (i64, u32, u32) {
+        let (y, m, d) = civil_from_days(self.0.div_euclid(MICROS_PER_SEC * SECS_PER_DAY));
+        (y, m as u32, d as u32)
+    }
+
     /// Midnight UTC at the start of a civil date.
     pub fn from_date(year: i64, month: u32, day: u32) -> Option<Timestamp> {
         let (m, d) = (i64::from(month), i64::from(day));

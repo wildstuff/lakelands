@@ -12,8 +12,9 @@ export or a SQLite lake directory holds it instead, reading only
 `<dir>/log/` (log-format §4.2): canonical lines each ending in a line
 feed, positions consecutive from 0 and naming their files in 20 digits,
 the hash chain from 64 zeros, every checkpoint against the position,
-the hash and the files before it, and format versions that are 1 or 2
-and never go down. It prints one line
+the hash and the files before it, format versions that are 1 or 2
+and never go down, and every `known_at` in its one form and never before
+the `known_at` before it (log-format §1.3). It prints one line
 per file and the last position and hash, or the position where the
 files stop being the log, and exits non-zero there.
 """
@@ -21,6 +22,7 @@ files stop being the log, and exits non-zero there.
 import hashlib
 import json
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -123,6 +125,7 @@ def check(ok, what):
 
 
 FIRST_FORMAT, NEWEST_FORMAT = 1, 2
+ONE_FORM = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z")
 
 
 def verify_dir(root):
@@ -155,11 +158,12 @@ def verify_dir(root):
                  f"format {v} is one of {FIRST_FORMAT} to {NEWEST_FORMAT}")
             need(v >= version, f"format {v} is not below the {version} before it")
             version = v
-            # known_at is in its one form (§1.3), so its text orders as its
-            # instant does: never before the event before it.
+            # known_at in its one form (§1.3), whose text orders as its
+            # instant does, and never before the event before it.
             k = event.get("known_at")
-            need(isinstance(k, str) and k >= known_at,
-                 f"known_at {k} is not before the {known_at} before it")
+            need(isinstance(k, str) and ONE_FORM.fullmatch(k) is not None,
+                 f"known_at {k} is in the one form YYYY-MM-DDTHH:MM:SS.ffffffZ")
+            need(k >= known_at, f"known_at {k} is not before the {known_at} before it")
             known_at = k
             need(event.get("prev") == prev, "prev names the hash of the event before it")
             body = {k: x for k, x in event.items() if k != "hash"}

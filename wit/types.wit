@@ -387,7 +387,20 @@ interface types {
 
     record aggregate {
         measures: list<agg-measure>,
-        group-by: list<field-name>,
+        group-by: list<group-key>,
+    }
+
+    /// One key of an aggregate's grouping: a field's value, or a named
+    /// expression's value per record, answered under its name.
+    variant group-key {
+        field(field-name),
+        named(named-group),
+    }
+
+    /// A group key computed by an expression, answered under `name`.
+    record named-group {
+        name: field-name,
+        expr: condition,
     }
 
     record find {

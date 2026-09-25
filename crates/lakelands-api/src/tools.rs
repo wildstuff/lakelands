@@ -556,7 +556,12 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
                                        "func": {"enum": ["count", "sum", "min", "max", "avg"]},
                                        "field": one_of(filterable())},
                         "required": ["name", "func"], "additionalProperties": false}},
-                    "group_by": {"type": "array", "items": one_of(filterable())}},
+                    "group_by": {"type": "array", "items": {"anyOf": [
+                        one_of(filterable()),
+                        {"type": "object",
+                         "properties": {"name": {"type": "string"},
+                                        "expr": {"type": "string", "description": "An expression in the grammar, e.g. date_bucket(due_on, 'month')."}},
+                         "required": ["name", "expr"], "additionalProperties": false}]}}},
                     "required": ["measures"], "additionalProperties": false}),
             ),
             ("with_meta", json!({"type": "boolean"})),

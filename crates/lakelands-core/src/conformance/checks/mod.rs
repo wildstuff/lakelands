@@ -13,6 +13,7 @@ mod bundles;
 mod compact;
 mod concurrency;
 mod cursors;
+mod date_bucket;
 mod decimals;
 mod derived_fields;
 mod embeddings;
@@ -166,6 +167,9 @@ pub const ALL: &[Check] = &[
     migrate::DROPPED_REPORTED,
     schema::REORDERED_FIELDS,
     aggregates::EMPTY_AGGREGATE,
+    date_bucket::GROUPS,
+    date_bucket::WHERE,
+    date_bucket::NOT_DECLARED,
     filters::CLEARED_FIELD,
     walks::CYCLE_TERMINATES,
     search::SEARCH_FOLLOWS_TEXT,

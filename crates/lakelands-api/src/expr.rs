@@ -66,6 +66,10 @@
 //! Aggregates (`count`, `sum`, `min`, `max`, `avg`) appear only in view
 //! measures and in `find`'s aggregate, where a set of records is in
 //! scope.
+//! `date_bucket(x, 'unit')` belongs to reads alone: `find`'s `where` and
+//! group keys and a pattern's `where`. A declaration, whose expressions
+//! the log keeps, refuses it, since the log format closes the functions
+//! a logged expression may call.
 //!
 //! # Determinism
 //!
@@ -256,6 +260,13 @@ pub enum Func {
     Abs,
     /// `round(n, digits)`.
     Round,
+    /// `date_bucket(x, 'unit')`: the instant, in UTC, at which the bucket
+    /// holding `x` starts; `unit` is `'day'`, `'week'` (ISO, from Monday),
+    /// `'month'`, `'quarter'` or `'year'`. Null when `x` is not an
+    /// instant. A read's function only: it is refused in a declaration,
+    /// whose expressions the log keeps, until a format version admits it
+    /// (`docs/log-format.md` §6, Appendix B).
+    DateBucket,
     /// `count(…)`: aggregate; see the module documentation.
     Count,
     /// `sum(field)`: aggregate.
