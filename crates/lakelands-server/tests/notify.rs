@@ -336,6 +336,72 @@ async fn subscribe_refuses_a_kind_it_does_not_tell_of_and_a_position_past_the_he
     );
 }
 
+/// A subscription with keys is told only the changes of those records, of
+/// any type when it names none; an empty key is refused, naming `keys`;
+/// and subscribing again with other keys tells at most one change of the
+/// old ones that was already on its way (lakelands#146).
+#[tokio::test]
+async fn a_subscription_with_keys_is_told_those_records_only() {
+    for backend in BACKENDS {
+        let store = common::lake_on(backend).await;
+        let mut s = Stdio::open(store.clone(), common::owner()).await;
+        let from = store.head().await.unwrap().next().0;
+        s.call("subscribe", json!({"keys": ["K-1"]})).await;
+        let p1 = write(store.as_ref(), "invoice", "K-1", json!({"status": "open"})).await;
+        write(store.as_ref(), "invoice", "K-2", json!({"status": "open"})).await;
+        let p3 = write(store.as_ref(), "invoice", "K-1", json!({"status": "paid"})).await;
+        let told: Vec<Value> = vec![s.change().await, s.change().await];
+        let told: Vec<(Value, Value)> = told
+            .iter()
+            .map(|m| (m["params"]["position"].clone(), m["params"]["key"].clone()))
+            .collect();
+        assert_eq!(
+            told,
+            [(json!(p1), json!("K-1")), (json!(p3), json!("K-1"))],
+            "{backend:?}: only K-1's changes"
+        );
+
+        let r = s
+            .request(
+                "tools/call",
+                json!({"name": "subscribe", "arguments": {"keys": ["K-1", ""]}}),
+            )
+            .await;
+        let refusal = &r["result"]["content"][1]["text"];
+        let refusal: Value = serde_json::from_str(refusal.as_str().unwrap()).unwrap();
+        assert_eq!(
+            (&refusal["field"], &refusal["reason"]["refusal"]),
+            (&json!("keys"), &json!("invalid")),
+            "{backend:?}: {r}"
+        );
+
+        // Again from the same position, now for K-2: its change comes, and
+        // of K-1 at most the one change already on its way.
+        s.call("subscribe", json!({"keys": ["K-2"], "from": from}))
+            .await;
+        s.seen.clear();
+        let p4 = write(store.as_ref(), "invoice", "K-2", json!({"status": "paid"})).await;
+        let mut old = 0;
+        let mut k2 = Vec::new();
+        while k2.last() != Some(&json!(p4)) {
+            let m = s.change().await;
+            match m["params"]["key"].as_str() {
+                Some("K-2") => k2.push(m["params"]["position"].clone()),
+                _ => old += 1,
+            }
+        }
+        assert!(
+            old <= 1,
+            "{backend:?}: {old} changes of K-1 after subscribing to K-2"
+        );
+        assert_eq!(
+            k2.len(),
+            2,
+            "{backend:?}: K-2's two changes, from the earlier position: {k2:?}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------- HTTP
 
 async fn serve(store: Arc<dyn LakeStore>) -> (SocketAddr, tokio::task::JoinHandle<()>) {

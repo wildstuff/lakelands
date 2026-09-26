@@ -464,15 +464,17 @@ async fn every_host_operation_is_unbound_naming_it() {
     assert_eq!(taken.load(Ordering::SeqCst), 0);
 }
 
-/// A feed filter with keys is refused before anything is sent, naming
-/// `keys`: the REST feed does not filter by key yet (lakelands#146).
+/// A feed filter with an empty key is refused before anything is sent,
+/// naming `keys`: the door takes each key as a `key` parameter, and an
+/// empty one is refused there. A filter with keys is sent (the door
+/// checks answer it); only an empty key stops here (lakelands#146).
 #[tokio::test(flavor = "multi_thread")]
-async fn a_feed_filter_with_keys_is_refused_before_anything_is_sent() {
+async fn a_feed_filter_with_an_empty_key_is_refused_before_anything_is_sent() {
     let (addr, taken) = fake(Vec::new()).await;
     let lake = LakeId::from("finance");
     let remote = common::remote(addr, &lake, keys(&["owner"]));
     let filter = FeedFilter {
-        keys: vec![RecordKey::from("INV-1")],
+        keys: vec![RecordKey::from("INV-1"), RecordKey::from("")],
         ..FeedFilter::default()
     };
     match remote.feed().poll(Position(0), &filter, 10).await {
@@ -480,7 +482,7 @@ async fn a_feed_filter_with_keys_is_refused_before_anything_is_sent() {
             field: Some(field),
             reason: lakelands_api::Refusal::Invalid { .. },
         }) => assert_eq!(field.as_str(), "keys"),
-        other => panic!("a filter with keys is refused as invalid, naming `keys`: {other:?}"),
+        other => panic!("an empty key is refused as invalid, naming `keys`: {other:?}"),
     }
     assert_eq!(taken.load(Ordering::SeqCst), 0);
 }

@@ -72,7 +72,7 @@ use std::time::Duration;
 
 use lakelands_api::error::{Error, Refusal};
 use lakelands_api::event::{Event, EventBody};
-use lakelands_api::id::{Position, TypeName};
+use lakelands_api::id::{Position, RecordKey, TypeName};
 use lakelands_api::principal::{Grants, PrincipalKind};
 use lakelands_api::read::{Get, ReadAt};
 use lakelands_api::seam::FeedFilter;
@@ -108,6 +108,9 @@ struct Subscription {
     /// Fixed at `subscribe` when given; otherwise every type the principal
     /// may read when the change happens.
     types: Option<Vec<TypeName>>,
+    /// Fixed at `subscribe` when given: only changes of records with these
+    /// keys, of the types above, or of any type when none are named.
+    keys: Option<Vec<RecordKey>>,
 }
 
 #[derive(Debug)]
@@ -164,10 +167,11 @@ impl Watch {
         from: Position,
         kinds: Vec<String>,
         types: Option<Vec<TypeName>>,
+        keys: Option<Vec<RecordKey>>,
     ) {
         {
             let mut i = self.inner();
-            i.subscription = Some(Subscription { kinds, types });
+            i.subscription = Some(Subscription { kinds, types, keys });
             i.next = from;
             i.generation += 1;
         }
@@ -447,6 +451,13 @@ impl<'a> View<'a> {
         };
         if let Some(types) = &s.types
             && !types.contains(ty)
+        {
+            return Seen::Hidden;
+        }
+        // Filtered here, not in the pump's feed filter, which must go on
+        // showing the declarations.
+        if let Some(keys) = &s.keys
+            && !keys.contains(key)
         {
             return Seen::Hidden;
         }
