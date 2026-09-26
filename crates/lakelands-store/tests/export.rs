@@ -271,6 +271,12 @@ impl LakeStore for BreaksMidway {
     async fn compact(&self) -> Result<lakelands_api::write::CompactReport> {
         self.0.inner.compact().await
     }
+    async fn vector_coverage(
+        &self,
+        ty: &lakelands_api::TypeName,
+    ) -> Result<Vec<lakelands_api::read::VectorCoverage>> {
+        self.0.inner.vector_coverage(ty).await
+    }
     async fn position_at(&self, known_at: lakelands_api::Timestamp) -> Result<Option<Position>> {
         self.0.inner.position_at(known_at).await
     }

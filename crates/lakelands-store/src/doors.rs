@@ -633,6 +633,14 @@ impl LakeStore for Store {
         exec::run(move || lake.position_at(known_at)).await
     }
 
+    async fn vector_coverage(
+        &self,
+        ty: &TypeName,
+    ) -> Result<Vec<lakelands_api::read::VectorCoverage>> {
+        let (lake, ty) = (self.lake.clone(), ty.clone());
+        exec::run(move || lake.vector_coverage(&ty)).await
+    }
+
     async fn compact(&self) -> Result<CompactReport> {
         let lake = self.lake.clone();
         exec::run(move || lake.compact()).await

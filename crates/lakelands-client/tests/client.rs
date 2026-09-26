@@ -452,6 +452,10 @@ async fn every_host_operation_is_unbound_naming_it() {
             "position_at",
             remote.position_at(midnight).await.map(|_| ()),
         ),
+        (
+            "vector_coverage",
+            remote.vector_coverage(&ty).await.map(|_| ()),
+        ),
     ];
     for (op, answer) in answers {
         match answer {

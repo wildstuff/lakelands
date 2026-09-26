@@ -227,6 +227,19 @@ pub struct Get {
     pub at: ReadAt,
 }
 
+/// How much of one embedding field is embedded, as
+/// `LakeStore::vector_coverage` answers it at the head.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VectorCoverage {
+    /// The field.
+    pub field: FieldName,
+    /// Live records whose field holds a vector.
+    pub embedded: u64,
+    /// Live records whose field holds no vector although its `embed.from`
+    /// fields hold text: never embedded, failed, or waiting for a retry.
+    pub due: u64,
+}
+
 #[cfg(test)]
 mod group_key_tests {
     use super::GroupKey;

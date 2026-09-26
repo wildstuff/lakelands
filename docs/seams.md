@@ -333,6 +333,17 @@ bucket (lakelands#174).
 
 ### `VectorIndex`
 
+`LakeStore::vector_coverage(type)` answers, for each embedding field of
+the type at the head, `embedded` and `due`. `embedded` counts the live
+records holding a vector, restricted ones included, read from `count`.
+`due` counts the live records holding no vector although their
+`embed.from` fields hold text: never embedded, failed, or waiting for a
+redeclaration's retry (022). A record with no text to embed is counted
+by neither. It is the host's, with no door yet; `lakelands-client`
+answers it `unbound`. Counting `due` walks the type's records without a
+vector, a page at a time, so its time is linear in them (suite:
+`vector_coverage_counts_embedded_and_due_records_at_the_head`).
+
 `put`, `remove`, `nearest(type, field, query, k)` and `count`, over the
 vectors of one field of one type:
 
@@ -1040,7 +1051,8 @@ hold, not what hosts implement:
 - `LakeStore`: one open lake, as its host holds it; it hands out a
   `Catalog` bound to a `WriteContext`, the change feed, the limits it was
   opened with (`limits`), the position the log had at an instant
-  (`position_at`, below), lake maintenance (`verify`, `rebuild`,
+  (`position_at`, below), how much of each embedding field is embedded
+  (`vector_coverage`, under `VectorIndex`), lake maintenance (`verify`, `rebuild`,
   `checkpoint`, `compact`; the export, below, is a function over it), restriction (`restrict`, `unrestrict`), `age` (above,
   under `SystemVocabulary`), and `purge_source` (below).
 

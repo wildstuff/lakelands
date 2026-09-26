@@ -333,6 +333,12 @@ pub trait LakeStore: Send + Sync {
     /// is a binary search over positions.
     async fn position_at(&self, known_at: crate::time::Timestamp) -> Result<Option<Position>>;
 
+    /// For each of a type's embedding fields, at the head: how many live
+    /// records hold a vector, and how many hold none although they have
+    /// text to embed. The host's, with no door; counting what is due walks
+    /// the type's records without a vector, a page at a time.
+    async fn vector_coverage(&self, ty: &TypeName) -> Result<Vec<crate::read::VectorCoverage>>;
+
     /// Delete the projection and rebuild it from the log. Answers the
     /// position it was rebuilt through.
     async fn rebuild(&self) -> Result<Position>;

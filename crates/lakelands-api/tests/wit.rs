@@ -929,6 +929,14 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             }),
         ),
         (
+            "vector_coverage",
+            members(&lakelands_api::read::VectorCoverage {
+                field: "vec".into(),
+                embedded: 3,
+                due: 1,
+            }),
+        ),
+        (
             "compact_report",
             members(&CompactReport {
                 before: Some(2),

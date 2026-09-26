@@ -245,6 +245,13 @@ impl LakeStore for RemoteLake {
         Err(host_only("position_at"))
     }
 
+    async fn vector_coverage(
+        &self,
+        _ty: &TypeName,
+    ) -> Result<Vec<lakelands_api::read::VectorCoverage>> {
+        Err(host_only("vector_coverage"))
+    }
+
     async fn compact(&self) -> Result<CompactReport> {
         Err(host_only("compact"))
     }

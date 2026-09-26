@@ -840,6 +840,13 @@ interface types {
         position: position,
     }
 
+    /// How much of one embedding field is embedded, at the head.
+    record vector-coverage {
+        field: field-name,
+        embedded: u64,
+        due: u64,
+    }
+
     /// What one compact measured of the projection's storage, in bytes,
     /// as the engine measures it, and the head it left unmoved.
     record compact-report {

@@ -381,6 +381,21 @@ impl LakeStore for MockLake {
             .map(|e| e.position))
     }
 
+    async fn vector_coverage(
+        &self,
+        ty: &lakelands_api::TypeName,
+    ) -> Result<Vec<lakelands_api::read::VectorCoverage>> {
+        // The mock binds no embedding backend and refuses every embedding
+        // field, so a type it holds has none to cover.
+        let log = self.shared.log();
+        if !state::State::fold(&log.events).types.contains_key(ty) {
+            return Err(lakelands_api::Error::NotFound {
+                missing: lakelands_api::Missing::Type { name: ty.clone() },
+            });
+        }
+        Ok(Vec::new())
+    }
+
     async fn compact(&self) -> Result<lakelands_api::write::CompactReport> {
         // The mock keeps no storage beside its log: nothing to reclaim.
         Ok(lakelands_api::write::CompactReport {
