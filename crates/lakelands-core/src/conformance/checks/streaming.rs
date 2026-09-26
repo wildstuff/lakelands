@@ -45,6 +45,20 @@
 //! without a meter runs everything else the check claims and reports the
 //! heap as not measured.
 //!
+//! **Reported lines.** Two more operations are measured against the same
+//! bound and reported, but never fail the check, until an index or a fix
+//! earns the claim and its line turns held (lakelands#188). Each runs one
+//! query per size, and its time is only ever reported:
+//!
+//! - *search*: one hybrid search, k = 10, for a fixed text through the
+//!   suite's embedding backend. Every record holds a vector, so the vector
+//!   side ranks the whole field: the engines search it by brute force.
+//! - *traverse*: a pattern query of three steps walking a relation carried
+//!   by link records backwards from one start. Every record from the third
+//!   on links to two earlier ones by a fixed rule, so the lake holds about
+//!   twice as many links as records, and the walk answers the same rows at
+//!   every size: its cost may depend on what it reaches, not on the lake.
+//!
 //! **What a green run does not show.** Two limits of the measurement:
 //!
 //! - The 1 MiB slack hides a hoard below about 175 bytes per record at
@@ -80,23 +94,30 @@ use std::time::{Duration, Instant};
 
 use futures_core::Stream;
 use lakelands_api::event::{Digest, EventBody};
-use lakelands_api::ontology::{Authority, StorageKind, TypeDecl};
+use lakelands_api::ontology::{
+    Authority, Cardinality, EmbedDecl, FieldDecl, FieldType, RelationDecl, StorageKind, TypeDecl,
+};
+use lakelands_api::query::{Depth, Pattern, QueryResult, Search, SearchMode, Step, Walk};
 use lakelands_api::seam::{FeedFilter, Seams};
 use lakelands_api::{
-    Find, Found, LakeStore, Position, Principal, SourceId, SourceRecord, TypeName,
+    Find, Found, LakeStore, Position, Principal, ReadAt, RecordKey, SourceId, SourceRecord,
+    TypeName,
 };
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 
+use crate::conformance::backing::EMBED_MODEL;
 use crate::conformance::fixture::{Must, declare, doors, field, limits, owner, pause, type_decl};
 use crate::conformance::{Failure, Given, Meter, backing, next};
 use crate::export;
+use crate::links::{link_key, link_type_name};
 
 check!(
     /// A large lake goes through ingest, the feed and export in bounded memory.
     STREAMS = a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it,
-    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification, each page of a walk of a type through find, a rebuild and a reopen hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB",
-    given
+    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification, each page of a walk of a type through find, a rebuild and a reopen hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB; a hybrid search and a three-hop walk over link records answer what they must and are measured against the same bound, reported only",
+    given,
+    embedding
 );
 
 /// How much larger the lake grows for the second measurement.
@@ -114,37 +135,86 @@ const UNREAD: Duration = Duration::from_millis(200);
 
 const TY: &str = "reading";
 const SOURCE: &str = "meters";
+/// The relation the walk follows, and the source its links arrive from.
+const FOLLOWS: &str = "follows";
+const LINKS: &str = "chains";
+/// The record whose note the search asks for, and the one the walk
+/// starts from.
+const SOUGHT: u64 = 42;
+const WALK_FROM: u64 = 1;
+/// How many hops the walk takes, one step each.
+const HOPS: usize = 3;
+/// How many hits the search asks for.
+const K: u32 = 10;
 
 /// `reading`: a sequence number, a site, a value and a note of 200
-/// characters, all from the source.
+/// characters, all from the source; the note is searchable, and `vec`
+/// embeds the site through the suite's backend. The 97 sites are 97
+/// texts, so the backend is called 97 times whatever the lake's size,
+/// and every record holds a vector. `follows` links a record to two
+/// earlier ones, by link records that arrive from a source.
 fn reading() -> TypeDecl {
     let source = |name: &str, kind| {
         let mut f = field(name, kind);
         f.authority = Authority::Source;
         f
     };
-    type_decl(
+    let mut ty = type_decl(
         TY,
         vec![
             source("seq", StorageKind::Number),
             source("site", StorageKind::Text),
             source("value", StorageKind::Number),
-            source("note", StorageKind::Text),
+            FieldDecl {
+                searchable: true,
+                ..source("note", StorageKind::Text)
+            },
+            FieldDecl {
+                ty: FieldType {
+                    dimensions: Some(2),
+                    ..FieldType::kind(StorageKind::Vector)
+                },
+                authority: Authority::Derived,
+                embed: Some(EmbedDecl {
+                    from: vec!["site".into()],
+                    model: EMBED_MODEL.into(),
+                }),
+                ..field("vec", StorageKind::Text)
+            },
         ],
-    )
+    );
+    ty.relations = vec![RelationDecl {
+        name: FOLLOWS.into(),
+        target: TY.into(),
+        cardinality: Cardinality::ManyToMany,
+        inverse: None,
+        via: None,
+        fields: Vec::new(),
+        authority: Authority::Source,
+        description: None,
+    }];
+    ty
+}
+
+fn key(i: u64) -> RecordKey {
+    format!("r{i:09}").as_str().into()
+}
+
+/// The note of record `i`: one word, its own.
+fn note(i: u64) -> String {
+    format!("{:08x}", i.wrapping_mul(2_654_435_761) as u32).repeat(25)
 }
 
 /// Record `i` of the source, as first delivered.
 fn content(i: u64, value: f64) -> SourceRecord {
-    let word = format!("{:08x}", i.wrapping_mul(2_654_435_761) as u32);
     SourceRecord {
         ty: TypeName::from(TY),
-        key: format!("r{i:09}").as_str().into(),
+        key: key(i),
         fields: crate::conformance::fixture::patch(json!({
             "seq": i,
             "site": format!("site-{}", i % 97),
             "value": value,
-            "note": word.repeat(25),
+            "note": note(i),
         })),
         seen_at: None,
     }
@@ -188,6 +258,77 @@ impl Stream for Readings {
         self.taken.fetch_add(1, Ordering::Relaxed);
         Poll::Ready(Some(self.record(i)))
     }
+}
+
+/// Whether record `i` was delivered by the lake of `first` records and
+/// its growth: the records at offsets 7 and 13 of every twenty of a
+/// delivery never are.
+fn delivered(i: u64, first: u64) -> bool {
+    let from = if i < first { 0 } else { first };
+    !matches!((i - from) % 20, 7 | 13)
+}
+
+/// The records `i` follows: `i / 2 - 1` and `i / 2`, from record 2 on,
+/// where both ends were delivered. Each record reached walking `follows`
+/// backwards has four followers, `2x` to `2x + 3`, so a walk from one
+/// start reaches the same records at every size of the lake.
+fn follows(i: u64, first: u64) -> impl Iterator<Item = u64> {
+    let targets = if i >= 2 && delivered(i, first) {
+        vec![i / 2 - 1, i / 2]
+    } else {
+        Vec::new()
+    };
+    targets.into_iter().filter(move |t| delivered(*t, first))
+}
+
+/// The link records of `follows` from records `from` to `end`, computed
+/// as they are polled, like [`Readings`].
+struct Links {
+    first: u64,
+    at: u64,
+    end: u64,
+    ahead: Vec<SourceRecord>,
+}
+
+impl Stream for Links {
+    type Item = SourceRecord;
+
+    fn poll_next(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<SourceRecord>> {
+        let link = link_type_name(&TY.into(), &FOLLOWS.into());
+        while self.ahead.is_empty() && self.at < self.end {
+            let i = self.at;
+            self.at += 1;
+            let first = self.first;
+            self.ahead = follows(i, first)
+                .map(|t| SourceRecord {
+                    ty: link.clone(),
+                    key: link_key(&key(i), &key(t)),
+                    fields: crate::conformance::fixture::patch(json!({
+                        "from": key(i).as_str(),
+                        "to": key(t).as_str(),
+                    })),
+                    seen_at: None,
+                })
+                .collect();
+        }
+        Poll::Ready(self.ahead.pop())
+    }
+}
+
+/// How many rows the walk of [`HOPS`] steps backwards over `follows`
+/// from [`WALK_FROM`] answers in a lake of `size` records: one per path.
+fn walk_rows(size: u64, first: u64) -> u64 {
+    // The end of every path so far, once per path.
+    let mut ends = vec![WALK_FROM];
+    for _ in 0..HOPS {
+        ends = ends
+            .iter()
+            .flat_map(|&x| (2 * x..2 * x + 4).map(move |y| (x, y)))
+            .filter(|&(x, y)| y < size && follows(y, first).any(|t| t == x))
+            .map(|(_, y)| y)
+            .collect();
+    }
+    ends.len() as u64
 }
 
 /// How many of `n` records from a [`Readings`] are duplicates.
@@ -258,12 +399,14 @@ impl Measure {
     }
 }
 
-/// Whether the claim is held to. Every line is held since lakelands#133; a
-/// new operation measured before its fix holds it brings back a variant
-/// that reports it, with that line.
+/// Whether the claim is held to, or measured and reported only.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Claim {
     Held,
+    /// Measured against the same bound and reported, never failed, until
+    /// the index or the fix that earns the claim holds it; names the
+    /// issue that measures it.
+    Reported(&'static str),
 }
 
 /// One operation at one size, as reported.
@@ -345,6 +488,8 @@ struct Size<'a> {
     rows: Vec<Row>,
     /// How many `reading` records the lake holds.
     live: u64,
+    /// How many `follows` links it holds.
+    links: u64,
 }
 
 impl Size<'_> {
@@ -648,6 +793,148 @@ impl Size<'_> {
         Ok(())
     }
 
+    /// Link every record delivered from `from` to `size` to the two it
+    /// [`follows`], through a source; not measured.
+    async fn link(&mut self, store: &dyn LakeStore, from: u64, size: u64) -> Result<(), Failure> {
+        let first = u64::from(self.given.large_lake.max(20));
+        let want: u64 = (from..size).map(|i| follows(i, first).count() as u64).sum();
+        let what = format!("ingesting the `{FOLLOWS}` links of records {from} to {size}");
+        let mut commits = doors(store)
+            .ingest(
+                &self.own,
+                &SourceId::from(LINKS),
+                Box::pin(Links {
+                    first,
+                    at: from,
+                    end: size,
+                    ahead: Vec::new(),
+                }),
+            )
+            .await
+            .map_err(|e| Failure::new(format!("{what} was refused: {e}")))?;
+        let mut got = 0u64;
+        while let Some(w) = next(&mut commits).await {
+            got += u64::from(w.must(&what)?.records);
+        }
+        ensure!(
+            got == want,
+            "{what}: the windows answered {got} links; the source delivered {want}"
+        );
+        self.links += got;
+        Ok(())
+    }
+
+    /// One hybrid search for the note of [`SOUGHT`]: the backend embeds
+    /// the text, the lexical side finds the one record holding it, and
+    /// the vector side ranks every vector of `vec`.
+    async fn search(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+        let head = store.head().await.must("reading the head")?;
+        let sought = key(SOUGHT);
+        let m = Measure::start(&self.given.meter, false);
+        let got = doors(store)
+            .search(
+                &self.own,
+                Search {
+                    ty: TypeName::from(TY),
+                    mode: SearchMode::Hybrid {
+                        text: note(SOUGHT),
+                        field: "vec".into(),
+                        vector: None,
+                    },
+                    k: K,
+                    cursor: None,
+                    filter: None,
+                    with_meta: false,
+                    at: ReadAt::default(),
+                },
+            )
+            .await
+            .must(&format!("a hybrid search for the note of `{sought}`"))?
+            .data;
+        let measured = m.stop();
+        let keys: Vec<&str> = got.hits.iter().map(|h| h.record.key.as_str()).collect();
+        ensure!(
+            got.ranked_by == "hybrid"
+                && got.hits.len() == K as usize
+                && keys.first() == Some(&sought.as_str()),
+            "a hybrid search with k = {K} for the note only `{sought}` holds, with the suite's \
+             backend bound, must rank by both lists, answer {K} hits and put `{sought}` first; \
+             it ranked by {:?} and answered {keys:?}",
+            got.ranked_by
+        );
+        self.row(
+            "search",
+            Claim::Reported("lakelands#188"),
+            records,
+            head.0 + 1,
+            format!("hybrid, k = {K}, over {} vectors", self.live),
+            measured,
+        );
+        Ok(())
+    }
+
+    /// Walk `follows` backwards from [`WALK_FROM`], one step per hop, as
+    /// rows, page by page, measured as one query.
+    async fn traverse(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+        let head = store.head().await.must("reading the head")?;
+        let first = u64::from(self.given.large_lake.max(20));
+        let want = walk_rows(records, first);
+        let step = || Step {
+            relation: FOLLOWS.into(),
+            walk: Walk::In,
+            ty: None,
+            filter: None,
+            depth: Depth { min: 1, max: 1 },
+        };
+        let mut pattern = Pattern::traverse(
+            TypeName::from(TY),
+            key(WALK_FROM),
+            (0..HOPS).map(|_| step()).collect(),
+        );
+        pattern.limit = Some(limits().max_limit);
+        let cat = doors(store);
+        let (mut rows, mut pages) = (0u64, 0u64);
+        let m = Measure::start(&self.given.meter, false);
+        loop {
+            let reply = cat.query(&self.own, pattern.clone()).await.must(&format!(
+                "walking `{FOLLOWS}` back {HOPS} hops, page {}",
+                pages + 1
+            ))?;
+            let QueryResult::Rows {
+                rows: page,
+                next_cursor,
+            } = reply.data
+            else {
+                return Err(Failure::new("a rows projection answered something else"));
+            };
+            rows += page.len() as u64;
+            pages += 1;
+            match next_cursor {
+                Some(c) => pattern.cursor = Some(c),
+                None => break,
+            }
+        }
+        let measured = m.stop();
+        ensure!(
+            rows == want,
+            "walking `{FOLLOWS}` back {HOPS} hops from `{}` answered {rows} rows; the links \
+             make {want} paths",
+            key(WALK_FROM)
+        );
+        self.row(
+            "traverse",
+            Claim::Reported("lakelands#188"),
+            records,
+            head.0 + 1,
+            format!(
+                "{HOPS} hops, {rows} rows in {pages} pages, over {} links",
+                self.links
+            ),
+            measured,
+        );
+        Ok(())
+    }
+
     /// Rebuild the projection; every answer stays as it was.
     async fn rebuild(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
         let head = store.head().await.must("reading the head")?;
@@ -696,6 +983,7 @@ impl Size<'_> {
         let before = answers(store.as_ref(), &self.own).await?;
         let seams = Seams {
             backings: backing::backings(),
+            embed: Some(backing::embedder()),
             executors: backing::executors(),
             ..Seams::default()
         };
@@ -747,16 +1035,20 @@ async fn a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_doe
         own,
         rows: Vec::new(),
         live: 0,
+        links: 0,
     };
     let mut store = store;
     let mut from = 0;
     for records in [first, first * u64::from(GROWTH)] {
         size.ingest(store.as_ref(), from, records - from).await?;
+        size.link(store.as_ref(), from, records).await?;
         store.checkpoint().await.must("taking a checkpoint")?;
         let log = size.feed(store.as_ref(), records).await?;
         let dir = given.scratch.join(format!("export-{records}"));
         size.export(store.as_ref(), records, &log, &dir).await?;
         size.find_walk(store.as_ref(), records).await?;
+        size.search(store.as_ref(), records).await?;
+        size.traverse(store.as_ref(), records).await?;
         size.rebuild(store.as_ref(), records).await?;
         store = size.reopen(store, records).await?;
         from = records;
@@ -807,6 +1099,7 @@ fn report(given: &Given, rows: &[Row]) -> Result<(), Failure> {
                 let verdict = match (within, row.claim) {
                     (true, _) => "within".to_owned(),
                     (false, Claim::Held) => "OVER".to_owned(),
+                    (false, Claim::Reported(by)) => format!("over, reported only ({by})"),
                 };
                 Some((limit, verdict))
             }
@@ -845,6 +1138,10 @@ fn report(given: &Given, rows: &[Row]) -> Result<(), Failure> {
                 "engine": given.harness,
                 "phase": row.phase,
                 "held": row.claim == Claim::Held,
+                "reported_by": match row.claim {
+                    Claim::Held => None,
+                    Claim::Reported(by) => Some(by),
+                },
                 "records": row.records,
                 "events": row.events,
                 "seconds": secs,

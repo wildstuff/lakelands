@@ -55,8 +55,8 @@ use lakelands_api::seam::Seams;
 /// check on a lake with the suite's embedding backend bound; a trailing
 /// `, reopens` hands the check the harness's [`Reopen`] as its second
 /// argument, a trailing `, scratch` the directory of its own the
-/// harness supplies ([`Harness::scratch`]), and a trailing `, given` all
-/// of [`Given`].
+/// harness supplies ([`Harness::scratch`]), a trailing `, given` all
+/// of [`Given`], and `, given, embedding` both.
 macro_rules! check {
     ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr) => {
         check!(@make $(#[$doc])* $konst = $run, $about, false, |store, _| Box::pin($run(store)));
@@ -74,6 +74,10 @@ macro_rules! check {
     };
     ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, given) => {
         check!(@make $(#[$doc])* $konst = $run, $about, false,
+            |store, given| Box::pin($run(store, given)));
+    };
+    ($(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, given, embedding) => {
+        check!(@make $(#[$doc])* $konst = $run, $about, true,
             |store, given| Box::pin($run(store, given)));
     };
     (@make $(#[$doc:meta])* $konst:ident = $run:ident, $about:expr, $embedding:expr, $call:expr) => {
