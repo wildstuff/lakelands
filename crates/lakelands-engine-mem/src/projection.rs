@@ -16,13 +16,14 @@
 //! a position inside a multi-event append sees each state from the event
 //! that made it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::engine::Declared;
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
-use lakelands_api::id::{Position, ProposalId, RecordKey, TypeName};
+use lakelands_api::id::{FieldName, Position, ProposalId, RecordKey, TypeName};
 use lakelands_api::ontology::TypeDecl;
+use lakelands_api::read::Direction;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
 
@@ -55,6 +56,11 @@ impl<T> History<T> {
         let at = at?;
         let i = self.0.partition_point(|(p, _)| *p <= at);
         i.checked_sub(1).map(|i| &self.0[i].1)
+    }
+
+    /// The latest state put.
+    pub(crate) fn latest(&self) -> Option<&T> {
+        self.0.last().map(|(_, t)| t)
     }
 }
 
@@ -130,7 +136,18 @@ pub(crate) struct Projection {
     pub(crate) outputs: BTreeMap<(String, Digest), History<Value>>,
     pub(crate) applied: BTreeMap<EventId, Position>,
     pub(crate) folded: Option<Position>,
+    /// The order index of the head (`engines::order_rows`): per type and
+    /// declared field, the head records holding it, by sort key and key.
+    pub(crate) sorted: BTreeMap<(TypeName, FieldName), SortedRows>,
+    /// Each head record's rows in `sorted`, to take them out again.
+    sorted_rows: BTreeMap<(TypeName, RecordKey), RecordRows>,
 }
+
+/// One record's rows of the order index: field, then sort key.
+type RecordRows = Vec<(FieldName, Vec<u8>)>;
+
+/// One field's rows of the order index: sort key, then record key.
+pub(crate) type SortedRows = BTreeSet<(Vec<u8>, RecordKey)>;
 
 impl Projection {
     /// Applies one transaction's puts and records that the projection now
@@ -150,11 +167,146 @@ impl Projection {
                  position {through}"
             )));
         }
+        let mut records = BTreeSet::new();
+        let mut types = BTreeSet::new();
         for put in puts {
+            match &put {
+                Put::Record(r) => {
+                    records.insert((r.ty.clone(), r.key.clone()));
+                }
+                Put::Declaration(d) => {
+                    if let Declaration::Type(t) = &d.declaration {
+                        types.insert(t.name.clone());
+                    }
+                }
+                _ => {}
+            }
             self.apply(put);
+        }
+        // The order index follows the head: every record whose latest
+        // state the transaction put, and every record of a type it
+        // declared again.
+        for ty in &types {
+            let keys: Vec<RecordKey> = self
+                .records
+                .range((ty.clone(), RecordKey::from(""))..)
+                .take_while(|((t, _), _)| t == ty)
+                .map(|((_, k), _)| k.clone())
+                .collect();
+            records.extend(keys.into_iter().map(|k| (ty.clone(), k)));
+        }
+        for (ty, key) in records {
+            self.index(&ty, &key);
         }
         self.folded = Some(through);
         Ok(())
+    }
+
+    /// Rewrite one record's rows in the order index from its latest state,
+    /// under its type's declaration at the head.
+    fn index(&mut self, ty: &TypeName, key: &RecordKey) {
+        for (field, sort_key) in self
+            .sorted_rows
+            .remove(&(ty.clone(), key.clone()))
+            .unwrap_or_default()
+        {
+            if let Some(set) = self.sorted.get_mut(&(ty.clone(), field)) {
+                set.remove(&(sort_key, key.clone()));
+            }
+        }
+        let head = self
+            .records
+            .get(&(ty.clone(), key.clone()))
+            .and_then(History::latest);
+        // The declaration in force after every state put: the head's.
+        let (Some(record), Some(decl)) = (head, self.type_at(ty, Some(Position(u64::MAX)))) else {
+            return;
+        };
+        let rows: RecordRows = lakelands_core::engines::order_rows(decl, record)
+            .into_iter()
+            .map(|(f, k)| (f.clone(), k))
+            .collect();
+        for (field, sort_key) in &rows {
+            self.sorted
+                .entry((ty.clone(), field.clone()))
+                .or_default()
+                .insert((sort_key.clone(), key.clone()));
+        }
+        self.sorted_rows.insert((ty.clone(), key.clone()), rows);
+    }
+
+    /// At most `n` rows of the order index for `field` of `ty`, in the
+    /// index's order for `dir` (the sort key ascending or descending, the
+    /// key ascending either way), strictly after `from`.
+    pub(crate) fn sorted_after(
+        &self,
+        ty: &TypeName,
+        field: &FieldName,
+        dir: Direction,
+        from: Option<(&[u8], &str)>,
+        n: u32,
+    ) -> Vec<(Vec<u8>, RecordKey)> {
+        use std::ops::Bound;
+        let Some(set) = self.sorted.get(&(ty.clone(), field.clone())) else {
+            return Vec::new();
+        };
+        let n = n as usize;
+        let from = from.map(|(k, key)| (k.to_vec(), RecordKey::from(key)));
+        match dir {
+            Direction::Asc => {
+                let start = match &from {
+                    Some(f) => Bound::Excluded(f.clone()),
+                    None => Bound::Unbounded,
+                };
+                set.range((start, Bound::Unbounded))
+                    .take(n)
+                    .cloned()
+                    .collect()
+            }
+            Direction::Desc => {
+                let mut out = Vec::new();
+                // The rest of the run `from` is in, then the runs below it,
+                // each in key order.
+                let below = match &from {
+                    Some((k, key)) => {
+                        out.extend(
+                            set.range((
+                                Bound::Excluded((k.clone(), key.clone())),
+                                Bound::Unbounded,
+                            ))
+                            .take_while(|(sk, _)| sk == k)
+                            .take(n)
+                            .cloned(),
+                        );
+                        Bound::Excluded((k.clone(), RecordKey::from("")))
+                    }
+                    None => Bound::Unbounded,
+                };
+                let mut run: Vec<(Vec<u8>, RecordKey)> = Vec::new();
+                for row in set.range((Bound::Unbounded, below)).rev() {
+                    if out.len() >= n {
+                        break;
+                    }
+                    if run.first().is_some_and(|(sk, _)| *sk != row.0) {
+                        out.extend(run.drain(..).rev().take(n - out.len()));
+                    }
+                    run.push(row.clone());
+                }
+                if out.len() < n {
+                    out.extend(run.drain(..).rev().take(n - out.len()));
+                }
+                out.truncate(n);
+                out
+            }
+        }
+    }
+
+    /// Whether the head record `key` of `ty` has a row in the order index
+    /// for `field`.
+    pub(crate) fn has_sorted(&self, ty: &TypeName, key: &RecordKey, field: &FieldName) -> bool {
+        self.sorted_rows
+            .get(&(ty.clone(), key.clone()))
+            .is_some_and(|rows| rows.iter().any(|(f, _)| f == field))
     }
 
     fn apply(&mut self, put: Put) {

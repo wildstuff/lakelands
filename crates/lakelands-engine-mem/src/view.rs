@@ -82,6 +82,53 @@ impl ProjectionView for MemView {
                     });
                 return page.unwrap_or_else(|never| match never {});
             }
+            // Ordered by a declared field at the head: read in the order
+            // index's order, stop when full.
+            if at.is_some()
+                && at == p.folded
+                && let Some(first) = engines::by_order_index(decl, scan)
+            {
+                let head = |key: &RecordKey| {
+                    p.records
+                        .get(&(ty.clone(), key.clone()))
+                        .and_then(|h| h.at(at))
+                        .cloned()
+                };
+                let page: std::result::Result<_, std::convert::Infallible> =
+                    engines::scan_in_field_order(
+                        decl,
+                        scan,
+                        |from, n| {
+                            Ok(p.sorted_after(ty, &first.field, first.dir, from, n)
+                                .into_iter()
+                                .filter_map(|(k, key)| Some((k, head(&key)?)))
+                                .collect())
+                        },
+                        |after, n| {
+                            let mut out = Vec::new();
+                            let mut from = after.map(str::to_owned);
+                            // Key-ordered batches of the head, less the
+                            // records the index holds for the field.
+                            loop {
+                                let batch = p.records_after(ty, at, from.as_deref(), n);
+                                let done = batch.len() < n as usize;
+                                for r in batch {
+                                    from = Some(r.key.to_string());
+                                    if !p.has_sorted(ty, &r.key, &first.field) {
+                                        out.push(r);
+                                        if out.len() >= n as usize {
+                                            return Ok(out);
+                                        }
+                                    }
+                                }
+                                if done {
+                                    return Ok(out);
+                                }
+                            }
+                        },
+                    );
+                return page.unwrap_or_else(|never| match never {});
+            }
             engines::scan(decl, p.records_at(ty, at), scan)
         }))
     }
