@@ -169,7 +169,7 @@ and every statement names it; no connection's `search_path` is set.
   longer read's transaction opens with the folded position in the same
   round trip. The ceiling is latency on the reader: the store reads each
   record an ingest writes once, and its applied id once, so an ingest
-  costs about two round trips per record there and @@PERWINDOW@@ per
+  costs about two round trips per record there and about fifteen per
   window on the other two connections.
 - **The log.** It is kept as rows holding each event's canonical bytes
   unchanged, and an append is one transaction that checks the fence
