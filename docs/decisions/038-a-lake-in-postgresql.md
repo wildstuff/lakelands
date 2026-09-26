@@ -83,6 +83,18 @@ configured. With `disable` the connection is plaintext.
     `READ COMMITTED` each statement could see a later commit than the one
     before it, and a record could be read at one position and its type at
     another.
+  - The fold's puts are held until its commit and written then, a
+    table at a time, as multi-row statements (lakelands#183). A round
+    trip costs more than a row, and nothing needs a put before the
+    commit: no view sees an open transaction, and the store reads what
+    it put in the same fold from what it staged. The engine's own
+    questions about a put (what it supersedes, where it ends, whether it
+    is the head, whether the thing had a state before) are answered at
+    the commit, over the buffered puts and the committed rows together,
+    so the result is what committing after each put would leave. A
+    record's head indexes are written at the commit, from its latest
+    state and under the declaration of its type in force then, which is
+    also what a fold putting one record at a time ends with.
 - **The rulebook decides.** The projection keeps its history as every
   engine does (states valid from `since` until `until`), recorded
   outputs included. A later output for the same call, a failed call made

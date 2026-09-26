@@ -33,7 +33,7 @@
 //!
 //! Every table is named with the lake's schema ([`Names`]).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use lakelands_api::engine::Declared;
 use lakelands_api::error::Result;
@@ -174,27 +174,34 @@ pub(crate) const PROJECTION_TABLES: [&str; 10] = [
 pub(crate) struct History {
     pub(crate) table: &'static str,
     pub(crate) ident: &'static [&'static str],
+    /// The SQL type of its `state` column.
+    pub(crate) state: &'static str,
 }
 
 pub(crate) const DECLARATIONS: History = History {
     table: "declarations",
     ident: &["ident"],
+    state: "text",
 };
 pub(crate) const RECORDS: History = History {
     table: "records",
     ident: &["ty", "key"],
+    state: "text",
 };
 pub(crate) const PROPOSALS: History = History {
     table: "proposals",
     ident: &["id"],
+    state: "text",
 };
 pub(crate) const OUTPUTS: History = History {
     table: "outputs",
     ident: &["seam", "input"],
+    state: "text",
 };
 pub(crate) const MEMBERS: History = History {
     table: "members",
     ident: &["object_set", "ty", "key"],
+    state: "boolean",
 };
 
 impl History {
@@ -212,8 +219,9 @@ impl History {
     /// next one, if any, begins. A state already at `since` is replaced
     /// and keeps its end.
     ///
-    /// One statement: the supersede, the insert or replace, and what the
-    /// history held before, all in one snapshot.
+    /// One statement: the supersede and the insert or replace, in one
+    /// snapshot. Declarations are put so, as they come; every other state
+    /// is buffered and put with [`History::put_many`].
     pub(crate) fn put(
         &self,
         db: &mut Db,
@@ -221,7 +229,7 @@ impl History {
         ident: &[&(dyn ToSql + Sync)],
         since: Position,
         state: &(dyn ToSql + Sync),
-    ) -> Result<Put> {
+    ) -> Result<()> {
         let table = names.t(self.table);
         let n = self.ident.len();
         let at = since.0 as i64;
@@ -230,18 +238,15 @@ impl History {
         args.push(state);
         let columns = self.ident.join(", ");
         let marks: Vec<String> = (1..=n + 1).map(|i| format!("${i}")).collect();
-        let row = db.query_one(
+        db.execute(
             &format!(
                 "WITH superseded AS (\
                    UPDATE {table} SET until = ${s} WHERE {w} AND since < ${s} \
                    AND (until IS NULL OR until > ${s})\
-                 ), put AS (\
-                   INSERT INTO {table} ({columns}, since, until, state) VALUES ({marks}, \
-                   (SELECT min(since) FROM {table} WHERE {w} AND since > ${s}), ${v}) \
-                   ON CONFLICT ({columns}, since) DO UPDATE SET state = EXCLUDED.state \
-                   RETURNING until IS NULL AS head\
                  ) \
-                 SELECT (SELECT head FROM put), EXISTS (SELECT 1 FROM {table} WHERE {w})",
+                 INSERT INTO {table} ({columns}, since, until, state) VALUES ({marks}, \
+                 (SELECT min(since) FROM {table} WHERE {w} AND since > ${s}), ${v}) \
+                 ON CONFLICT ({columns}, since) DO UPDATE SET state = EXCLUDED.state",
                 w = self.ident_where(1),
                 s = n + 1,
                 v = n + 2,
@@ -249,19 +254,110 @@ impl History {
             ),
             &args,
         )?;
-        Ok(Put {
-            head: row.get(0),
-            first: !row.get::<_, bool>(1),
-        })
+        Ok(())
+    }
+
+    /// Put the states a transaction buffered, all in one statement, as
+    /// the one-row put would put them one after the other: for every
+    /// thing, its rows from the one in force at its earliest buffered
+    /// position on and its buffered rows (a buffered row replacing one at
+    /// the same position) are ordered by position, and each ends where the
+    /// next begins. Its earlier rows are not touched.
+    ///
+    /// Answers the things whose latest state is now a buffered one, each
+    /// with whether the history held a state of it before.
+    pub(crate) fn put_many<S: ToSql + Sync>(
+        &self,
+        db: &mut Db,
+        names: &Names,
+        rows: &BTreeMap<(Vec<String>, i64), S>,
+    ) -> Result<Vec<(Vec<String>, bool)>> {
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+        let table = names.t(self.table);
+        let n = self.ident.len();
+        let mut idents: Vec<Vec<&str>> = vec![Vec::with_capacity(rows.len()); n];
+        let mut since = Vec::with_capacity(rows.len());
+        let mut states = Vec::with_capacity(rows.len());
+        for ((ident, at), state) in rows {
+            for (column, v) in idents.iter_mut().zip(ident) {
+                column.push(v.as_str());
+            }
+            since.push(*at);
+            states.push(state);
+        }
+        let mut args: Vec<&(dyn ToSql + Sync)> = Vec::with_capacity(n + 2);
+        for column in &idents {
+            args.push(column);
+        }
+        args.push(&since);
+        args.push(&states);
+        let columns = self.ident.join(", ");
+        let on = |a: &str, b: &str| {
+            self.ident
+                .iter()
+                .map(|c| format!("{a}.{c} = {b}.{c}"))
+                .collect::<Vec<_>>()
+                .join(" AND ")
+        };
+        let arrays: Vec<String> = (1..=n).map(|i| format!("${i}::text[]")).collect();
+        let answer = db.query(
+            &format!(
+                "WITH b AS (\
+                   SELECT * FROM unnest({arrays}, ${s}::int8[], ${v}::{ty}[]) \
+                   AS b({columns}, since, state)\
+                 ), f AS (\
+                   SELECT {columns}, min(since) AS first FROM b GROUP BY {columns}\
+                 ), u AS (\
+                   SELECT {columns}, since, bool_or(fresh) AS fresh FROM (\
+                     SELECT {tcolumns}, t.since, false AS fresh FROM {table} t JOIN f ON {tf} \
+                     WHERE t.until IS NULL OR t.until > f.first \
+                     UNION ALL SELECT {columns}, since, true FROM b\
+                   ) x GROUP BY {columns}, since\
+                 ), n AS (\
+                   SELECT {columns}, since, fresh, \
+                   lead(since) OVER (PARTITION BY {columns} ORDER BY since) AS next FROM u\
+                 ), ended AS (\
+                   UPDATE {table} t SET until = n.next FROM n \
+                   WHERE NOT n.fresh AND {tn} AND t.since = n.since \
+                   AND t.until IS DISTINCT FROM n.next\
+                 ), put AS (\
+                   INSERT INTO {table} ({columns}, since, until, state) \
+                   SELECT {bcolumns}, b.since, n.next, b.state FROM b JOIN n ON {bn} \
+                   AND b.since = n.since \
+                   ON CONFLICT ({columns}, since) DO UPDATE \
+                   SET state = EXCLUDED.state, until = EXCLUDED.until\
+                 ) \
+                 SELECT {ncolumns}, EXISTS (SELECT 1 FROM {table} t WHERE {tn}) \
+                 FROM n WHERE n.fresh AND n.next IS NULL",
+                arrays = arrays.join(", "),
+                s = n + 1,
+                v = n + 2,
+                ty = self.state,
+                tcolumns = prefixed("t", self.ident),
+                bcolumns = prefixed("b", self.ident),
+                ncolumns = prefixed("n", self.ident),
+                tf = on("t", "f"),
+                tn = on("t", "n"),
+                bn = on("b", "n"),
+            ),
+            &args,
+        )?;
+        Ok(answer
+            .iter()
+            .map(|row| ((0..n).map(|i| row.get(i)).collect(), row.get(n)))
+            .collect())
     }
 }
 
-/// What a history put found.
-pub(crate) struct Put {
-    /// The state put is the latest: no later one exists.
-    pub(crate) head: bool,
-    /// The history held no state of the thing before the put.
-    pub(crate) first: bool,
+/// Columns named with a table's alias.
+fn prefixed(alias: &str, columns: &[&str]) -> String {
+    columns
+        .iter()
+        .map(|c| format!("{alias}.{c}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The declarations of types in force at the head, as read in the fold's
@@ -380,109 +476,201 @@ pub(crate) fn head_record(
     .transpose()
 }
 
-/// Rewrite the head indexes of one record from its latest state, under
-/// the declaration of its type at the head. `first` says the history held
-/// no state of the record before this one, so no index holds a row of it
-/// to delete.
-pub(crate) fn index_record(
+/// The head index rows of records, as arrays for one statement each.
+#[derive(Default)]
+struct IndexRows<'r> {
+    text: [Vec<&'r str>; 4],
+    tokens: [Vec<String>; 3],
+    edges: [Vec<String>; 5],
+}
+
+/// Rewrite the head indexes of records from their latest states, each
+/// under the declaration of its type at the head, in two statements: the
+/// old rows of the `stale` records go, then the new rows of all of them
+/// go in. A record not in `stale` had no state before, so no index holds
+/// a row of it.
+pub(crate) fn index_records(
     db: &mut Db,
     names: &Names,
-    decl: Option<&TypeDecl>,
-    r: &StoredRecord,
-    first: bool,
+    records: &[(Option<&TypeDecl>, &StoredRecord)],
+    stale: &[(&str, &str)],
 ) -> Result<()> {
-    let (ty, key) = (r.ty.as_str(), r.key.as_str());
-    if !first {
-        for table in ["text_index", "full_text"] {
-            db.execute(
-                &format!("DELETE FROM {} WHERE ty = $1 AND key = $2", names.t(table)),
-                &[&ty, &key],
-            )?;
+    if !stale.is_empty() {
+        let (tys, keys): (Vec<&str>, Vec<&str>) = stale.iter().copied().unzip();
+        db.execute(
+            &format!(
+                "WITH d AS (SELECT * FROM unnest($1::text[], $2::text[]) AS d(ty, key)), \
+                 x AS (DELETE FROM {text} t USING d WHERE t.ty = d.ty AND t.key = d.key), \
+                 y AS (DELETE FROM {full} t USING d WHERE t.ty = d.ty AND t.key = d.key) \
+                 DELETE FROM {edges} t USING d WHERE t.src_ty = d.ty AND t.src_key = d.key",
+                text = names.t("text_index"),
+                full = names.t("full_text"),
+                edges = names.t("edges"),
+            ),
+            &[&tys, &keys],
+        )?;
+    }
+    let mut rows = IndexRows::default();
+    for (decl, r) in records {
+        let (ty, key) = (r.ty.as_str(), r.key.as_str());
+        for (field, value) in &r.fields {
+            if let Some(value) = value.as_str() {
+                for (column, v) in rows.text.iter_mut().zip([ty, field.as_str(), value, key]) {
+                    column.push(v);
+                }
+            }
         }
-        db.execute(
-            &format!(
-                "DELETE FROM {} WHERE src_ty = $1 AND src_key = $2",
-                names.t("edges")
-            ),
-            &[&ty, &key],
-        )?;
+        let Some(decl) = decl else { continue };
+        for e in engines::links_of(decl, r, None) {
+            let link = [
+                ty,
+                key,
+                e.relation.as_str(),
+                e.to.0.as_str(),
+                e.to.1.as_str(),
+            ];
+            for (column, v) in rows.edges.iter_mut().zip(link) {
+                column.push(v.to_owned());
+            }
+        }
+        // Every head state is indexed, whatever its flags: a view at an
+        // earlier position may keep a record the head has retired.
+        for token in engines::record_tokens(decl, r) {
+            rows.tokens[0].push(ty.to_owned());
+            rows.tokens[1].push(token);
+            rows.tokens[2].push(key.to_owned());
+        }
     }
-    let (fields, values): (Vec<&str>, Vec<&str>) = r
-        .fields
-        .iter()
-        .filter_map(|(field, value)| Some((field.as_str(), value.as_str()?)))
-        .unzip();
-    if !fields.is_empty() {
-        db.execute(
-            &format!(
-                "INSERT INTO {} (ty, field, value, key) \
-                 SELECT $1, f, v, $2 FROM unnest($3::text[], $4::text[]) AS u(f, v) \
-                 ON CONFLICT DO NOTHING",
-                names.t("text_index")
-            ),
-            &[&ty, &key, &fields, &values],
-        )?;
-    }
-    let Some(decl) = decl else {
+    if rows.text[0].is_empty() && rows.tokens[0].is_empty() && rows.edges[0].is_empty() {
         return Ok(());
-    };
-    for e in engines::links_of(decl, r, None) {
-        db.execute(
-            &format!(
-                "INSERT INTO {} (src_ty, src_key, relation, dst_ty, dst_key) \
-                 VALUES ($1, $2, $3, $4, $5)",
-                names.t("edges")
-            ),
-            &[
-                &ty,
-                &key,
-                &e.relation.as_str(),
-                &e.to.0.as_str(),
-                &e.to.1.as_str(),
-            ],
-        )?;
     }
-    // Every head state is indexed, whatever its flags: a view at an
-    // earlier position may keep a record the head has retired.
-    let tokens: Vec<String> = engines::record_tokens(decl, r).into_iter().collect();
-    if !tokens.is_empty() {
-        db.execute(
-            &format!(
-                "INSERT INTO {} (ty, token, key) SELECT $1, t, $2 FROM unnest($3::text[]) AS t",
-                names.t("full_text")
-            ),
-            &[&ty, &key, &tokens],
-        )?;
-    }
+    let [t1, t2, t3, t4] = &rows.text;
+    let [f1, f2, f3] = &rows.tokens;
+    let [e1, e2, e3, e4, e5] = &rows.edges;
+    db.execute(
+        &format!(
+            "WITH x AS (INSERT INTO {text} (ty, field, value, key) \
+               SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[]) \
+               ON CONFLICT DO NOTHING), \
+             y AS (INSERT INTO {full} (ty, token, key) \
+               SELECT * FROM unnest($5::text[], $6::text[], $7::text[])) \
+             INSERT INTO {edges} (src_ty, src_key, relation, dst_ty, dst_key) \
+             SELECT * FROM unnest($8::text[], $9::text[], $10::text[], $11::text[], $12::text[])",
+            text = names.t("text_index"),
+            full = names.t("full_text"),
+            edges = names.t("edges"),
+        ),
+        &[t1, t2, t3, t4, f1, f2, f3, e1, e2, e3, e4, e5],
+    )?;
     Ok(())
 }
 
-/// Put a record's state and, when it is the latest, its head indexes,
-/// under its type's declaration at the head as `types` holds it.
-pub(crate) fn put_record(
-    db: &mut Db,
-    names: &Names,
-    types: &mut HeadTypes,
-    r: &StoredRecord,
-) -> Result<()> {
-    let state = serde_json::to_string(r).expect("a record serialises");
-    let put = RECORDS.put(
-        db,
-        names,
-        &[&r.ty.as_str(), &r.key.as_str()],
-        r.position,
-        &state,
-    )?;
-    if put.head {
-        let decl = types.get(db, names, &r.ty)?;
-        index_record(db, names, decl.as_ref(), r, put.first)?;
+/// The puts of the fold's open transaction, held until it commits and
+/// then written a table at a time ([`Buffer::write`]). Each thing's
+/// states are keyed by its identifying columns and position, so a put at
+/// a position already put in the transaction replaces it, as the one-row
+/// put replaces a state at the same position.
+///
+/// Nothing reads the buffer before the commit: no view sees an open
+/// transaction, and the store reads a state it put in the same fold from
+/// what it staged. The questions the engine asks of a put (the state it
+/// supersedes, where it ends, whether it is the head, whether the thing
+/// had a state before) are answered at the commit, over the buffer and
+/// the table together.
+#[derive(Default)]
+pub(crate) struct Buffer {
+    records: BTreeMap<(Vec<String>, i64), StoredRecord>,
+    proposals: BTreeMap<(Vec<String>, i64), String>,
+    outputs: BTreeMap<(Vec<String>, i64), String>,
+    members: BTreeMap<(Vec<String>, i64), bool>,
+    /// Applied ids, each with the first position it was marked at.
+    applied: BTreeMap<String, i64>,
+}
+
+impl Buffer {
+    pub(crate) fn record(&mut self, r: &StoredRecord) {
+        let ident = vec![r.ty.as_str().to_owned(), r.key.as_str().to_owned()];
+        self.records.insert((ident, r.position.0 as i64), r.clone());
     }
-    Ok(())
+
+    pub(crate) fn proposal(&mut self, id: &str, at: Position, state: String) {
+        self.proposals
+            .insert((vec![id.to_owned()], at.0 as i64), state);
+    }
+
+    pub(crate) fn output(&mut self, seam: &str, input: &str, at: Position, state: String) {
+        let ident = vec![seam.to_owned(), input.to_owned()];
+        self.outputs.insert((ident, at.0 as i64), state);
+    }
+
+    pub(crate) fn member(&mut self, set: &str, ty: &str, key: &str, at: Position, member: bool) {
+        let ident = vec![set.to_owned(), ty.to_owned(), key.to_owned()];
+        self.members.insert((ident, at.0 as i64), member);
+    }
+
+    pub(crate) fn applied(&mut self, id: &str, at: Position) {
+        self.applied.entry(id.to_owned()).or_insert(at.0 as i64);
+    }
+
+    /// Write every buffered put: one statement per history table, the
+    /// head indexes of the records whose latest state is now a buffered
+    /// one, under their types' declarations at the head as `types` reads
+    /// them after every declaration the transaction put, and the applied
+    /// ids. That leaves what putting them one by one leaves.
+    pub(crate) fn write(self, db: &mut Db, names: &Names, types: &mut HeadTypes) -> Result<()> {
+        let records: BTreeMap<(Vec<String>, i64), String> = self
+            .records
+            .iter()
+            .map(|(k, r)| {
+                let state = serde_json::to_string(r).expect("a record serialises");
+                (k.clone(), state)
+            })
+            .collect();
+        let heads = RECORDS.put_many(db, names, &records)?;
+        PROPOSALS.put_many(db, names, &self.proposals)?;
+        OUTPUTS.put_many(db, names, &self.outputs)?;
+        MEMBERS.put_many(db, names, &self.members)?;
+        let mut indexed = Vec::with_capacity(heads.len());
+        let mut stale = Vec::new();
+        for (ident, had) in &heads {
+            let r = self
+                .records
+                .range((ident.clone(), i64::MIN)..=(ident.clone(), i64::MAX))
+                .next_back()
+                .map(|(_, r)| r)
+                .expect("a head the buffer put");
+            indexed.push((types.get(db, names, &r.ty)?, r));
+            if *had {
+                stale.push((ident[0].as_str(), ident[1].as_str()));
+            }
+        }
+        let indexed: Vec<(Option<&TypeDecl>, &StoredRecord)> =
+            indexed.iter().map(|(d, r)| (d.as_ref(), *r)).collect();
+        index_records(db, names, &indexed, &stale)?;
+        if !self.applied.is_empty() {
+            let (ids, at): (Vec<&str>, Vec<i64>) = self
+                .applied
+                .iter()
+                .map(|(id, at)| (id.as_str(), *at))
+                .unzip();
+            db.execute(
+                &format!(
+                    "INSERT INTO {} (id, at) SELECT * FROM unnest($1::text[], $2::int8[]) \
+                     ON CONFLICT DO NOTHING",
+                    names.t("applied")
+                ),
+                &[&ids, &at],
+            )?;
+        }
+        Ok(())
+    }
 }
 
 /// Put a declaration and, for a type now in force at the head, rewrite
-/// the head indexes of its records under it. `types` forgets every head
-/// declaration it held, since this one may change one.
+/// the head indexes of its records in the table under it. `types`
+/// forgets every head declaration it held, since this one may change one.
+/// Records the transaction buffered are indexed at its commit, under the
+/// declaration in force then.
 pub(crate) fn put_declaration(
     db: &mut Db,
     names: &Names,
@@ -496,9 +684,14 @@ pub(crate) fn put_declaration(
     if let Declaration::Type(t) = &d.declaration {
         let head = types.get(db, names, &t.name)?;
         if head.as_ref() == Some(t) {
-            for r in head_records(db, names, &t.name)? {
-                index_record(db, names, head.as_ref(), &r, false)?;
-            }
+            let records = head_records(db, names, &t.name)?;
+            let indexed: Vec<(Option<&TypeDecl>, &StoredRecord)> =
+                records.iter().map(|r| (head.as_ref(), r)).collect();
+            let stale: Vec<(&str, &str)> = records
+                .iter()
+                .map(|r| (r.ty.as_str(), r.key.as_str()))
+                .collect();
+            index_records(db, names, &indexed, &stale)?;
         }
     }
     Ok(())

@@ -90,6 +90,12 @@ engine_check!(
 );
 
 engine_check!(
+    /// Several puts in one transaction leave what they leave one by one.
+    PUTS_IN_ONE_TRANSACTION = several_puts_of_one_thing_in_one_transaction_leave_what_they_leave_one_by_one,
+    "seams §ProjectionStore: puts of the same things in one transaction, at later positions, at the same one or before a later one, leave the history and the head's indexes a commit after each put would leave"
+);
+
+engine_check!(
     /// `clear` empties the projection and the vector index.
     CLEAR = clear_empties_the_projection_and_the_vector_index,
     "seams §ProjectionStore: clear deletes every state, kept history and the vector index included, and leaves nothing folded, for a rebuild from the log"
@@ -615,6 +621,83 @@ fn a_put_before_a_later_state_ends_where_that_state_begins(
         five.len() == 1 && three.is_empty(),
         "at the head, `five` answered {five:?} and `three` {three:?}; the state put at 3 is \
          not the latest, so the head still reads `five`"
+    );
+    Ok(())
+}
+
+fn several_puts_of_one_thing_in_one_transaction_leave_what_they_leave_one_by_one(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    let words: Declaration = serde_json::from_value(json!({
+        "declare": "type", "name": "t", "language": "en",
+        "fields": [{"name": "word", "type": {"kind": "text"}, "searchable": true}],
+        "relations": [{"name": "next", "target": "t", "via": "next"}]
+    }))
+    .expect("a declaration in the check is well-formed");
+    fold(engine, 1, |p| {
+        p.put_declaration(&words, 1, None, Position(0))?;
+        p.put_record(&record("t", "a", json!({"word": "one", "next": "b"}), 1))?;
+        p.put_record(&record("t", "b", json!({"word": "zero"}), 1))
+    })?;
+    // `a`, which had a state, twice at later positions and once again at
+    // the last; `b` at 5, then at 3, before the state it just put.
+    fold(engine, 6, |p| {
+        p.put_record(&record("t", "a", json!({"word": "four", "next": "b"}), 4))?;
+        p.put_record(&record("t", "a", json!({"word": "ten", "next": "a"}), 6))?;
+        p.put_record(&record("t", "a", json!({"word": "six"}), 6))?;
+        p.put_record(&record("t", "b", json!({"word": "five"}), 5))?;
+        p.put_record(&record("t", "b", json!({"word": "three"}), 3))
+    })?;
+    let ty = TypeName::from("t");
+    for (key, states) in [
+        ("a", ["one", "one", "one", "four", "four", "six"]),
+        ("b", ["zero", "zero", "three", "three", "five", "five"]),
+    ] {
+        for (at, expected) in (1..).zip(states) {
+            let got = view(engine, Some(Position(at)))?
+                .get(&ty, &RecordKey::from(key))
+                .must("reading the record")?
+                .and_then(|r| r.fields.get("word").cloned());
+            ensure!(
+                got == Some(json!(expected)),
+                "in one transaction `a` was put at 4, at 6 and at 6 again, and `b` at 5 and then \
+                 at 3; a view at {at} read {got:?} for `{key}`, but the state valid there is \
+                 {expected:?}"
+            );
+        }
+    }
+    let head = view(engine, None)?;
+    let mut hits = BTreeMap::new();
+    for word in ["one", "four", "ten", "six", "zero", "three", "five"] {
+        let found: Vec<String> = head
+            .lexical(&ty, word, 10)
+            .must("searching")?
+            .into_iter()
+            .map(|(k, _)| k.to_string())
+            .collect();
+        hits.insert(word, found);
+    }
+    let expected: BTreeMap<&str, Vec<String>> = [
+        ("one", vec![]),
+        ("four", vec![]),
+        ("ten", vec![]),
+        ("six", vec!["a".to_owned()]),
+        ("zero", vec![]),
+        ("three", vec![]),
+        ("five", vec!["b".to_owned()]),
+    ]
+    .into_iter()
+    .collect();
+    ensure!(
+        hits == expected,
+        "at the head, full-text search found {hits:?}; only the latest states are the head's, \
+         `a` reading `six` and `b` reading `five`, so it must find {expected:?}"
+    );
+    let out = links(engine, "t", "a", None, Walk::Out)?;
+    ensure!(
+        out.is_empty(),
+        "`a` linked to `b` at 1 and 4 and to itself in a put replaced at 6, and its latest state \
+         links nowhere; its out edges at the head are {out:?}"
     );
     Ok(())
 }

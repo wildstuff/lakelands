@@ -441,6 +441,73 @@ async fn ingest_skips_redeliveries_and_unchanged_records_but_writes_a_revert() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_write_to_a_record_in_one_window_is_folded_over_the_first() {
+    // The window reads `a1` from the projection once and hands that read
+    // to the fold; the fold's own first put of `a1` must answer the second
+    // write, never the read from before the window.
+    let lake = name();
+    let store = open(&lake, OpenMode::Create).await.unwrap();
+    let cat = store.catalog(WriteContext::default());
+    let o = owner(&lake);
+    let mut label = field("label", StorageKind::Text);
+    label.authority = Authority::Source;
+    let mut limit = field("limit", StorageKind::Decimal);
+    limit.authority = Authority::Source;
+    cat.declare(&o, Declaration::Type(ty("acct", vec![label, limit])))
+        .await
+        .unwrap();
+    let rec = |fields: serde_json::Value| SourceRecord {
+        ty: "acct".into(),
+        key: "a1".into(),
+        fields: patch(fields),
+        seen_at: None,
+    };
+    let deliver = |records: Vec<SourceRecord>| {
+        let cat = cat.clone();
+        let o = o.clone();
+        async move {
+            let s: lakelands_api::SourceStream = Box::pin(Stream(records.into_iter()));
+            let mut out = cat.ingest(&o, &"bank".into(), s).await.unwrap();
+            let mut windows = Vec::new();
+            while let Some(w) = std::future::poll_fn(|cx| out.as_mut().poll_next(cx)).await {
+                windows.push(w.unwrap());
+            }
+            windows
+        }
+    };
+    deliver(vec![rec(json!({"label": "old"}))]).await;
+    let windows = deliver(vec![
+        rec(json!({"label": "new"})),
+        rec(json!({"limit": "5.00"})),
+    ])
+    .await;
+    assert_eq!(windows.len(), 1, "both writes go in one window");
+    assert_eq!(windows[0].records, 2);
+    let r = cat
+        .get(
+            &o,
+            &"acct".into(),
+            Get {
+                key: "a1".into(),
+                with_meta: false,
+                at: ReadAt::default(),
+            },
+        )
+        .await
+        .unwrap()
+        .data;
+    assert_eq!(
+        (
+            r.fields["label"].clone(),
+            r.fields["limit"].clone(),
+            r.version
+        ),
+        (json!("new"), json!("5.00"), lakelands_api::Version(3)),
+        "the second write is folded over the first, not over the state before the window"
+    );
+}
+
 struct Stream<I>(I);
 
 impl<I: Iterator<Item = SourceRecord> + Unpin> futures_core::Stream for Stream<I> {
