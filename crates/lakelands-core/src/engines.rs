@@ -46,7 +46,7 @@ use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::time::Timestamp;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposedWrite};
 
-pub use crate::expr::order::cmp_values;
+pub use crate::expr::order::{cmp_values, sort_key};
 use crate::expr::{RecordScope, holds};
 
 /// The clock an engine evaluates a filter with. The store hands an engine
@@ -268,25 +268,71 @@ pub fn scan<'a>(
     records: impl IntoIterator<Item = &'a StoredRecord>,
     scan: &Scan,
 ) -> Vec<StoredRecord> {
-    let mut rows: Vec<&StoredRecord> = records
+    // Each row's place is encoded once (`sort_key`), and the sort compares
+    // bytes: the order `cmp_places` gives, without ranking and parsing
+    // every value again on every comparison.
+    let mut rows: Vec<(PlaceKey, &StoredRecord)> = records
         .into_iter()
         .filter(|r| admits(decl, r, scan))
+        .map(|r| {
+            (
+                PlaceKey::of(&Place::of(r, &scan.order_by), &scan.order_by),
+                r,
+            )
+        })
         .collect();
-    rows.sort_by(|a, b| {
-        cmp_places(
-            &Place::of(a, &scan.order_by),
-            &Place::of(b, &scan.order_by),
-            &scan.order_by,
-        )
-    });
-    if let Some(after) = &scan.after {
-        let after = Place::after(after);
-        rows.retain(|r| cmp_places(&Place::of(r, &scan.order_by), &after, &scan.order_by).is_gt());
-    }
+    rows.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    let from = match &scan.after {
+        Some(after) => {
+            let after = PlaceKey::of(&Place::after(after), &scan.order_by);
+            rows.partition_point(|(k, _)| *k <= after)
+        }
+        None => 0,
+    };
     rows.into_iter()
+        .skip(from)
         .take(scan.limit as usize)
-        .cloned()
+        .map(|(_, r)| r.clone())
         .collect()
+}
+
+/// A place as bytes: its order is [`cmp_places`]' order, and two places
+/// are equal exactly when that order calls them equal.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct PlaceKey {
+    values: Vec<SortPart>,
+    key: String,
+}
+
+/// One sort key of a place. A column is sorted one way throughout, so an
+/// ascending part never meets a descending one; a missing value is last
+/// either way.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum SortPart {
+    Asc(Vec<u8>),
+    Desc(std::cmp::Reverse<Vec<u8>>),
+    Missing,
+}
+
+impl PlaceKey {
+    fn of(place: &Place<'_>, order_by: &[Order]) -> PlaceKey {
+        PlaceKey {
+            values: order_by
+                .iter()
+                .enumerate()
+                .map(
+                    |(i, o)| match (place.values.get(i).and_then(Option::as_ref), o.dir) {
+                        (None, _) => SortPart::Missing,
+                        (Some(v), Direction::Asc) => SortPart::Asc(sort_key(v)),
+                        (Some(v), Direction::Desc) => {
+                            SortPart::Desc(std::cmp::Reverse(sort_key(v)))
+                        }
+                    },
+                )
+                .collect(),
+            key: place.key.to_owned(),
+        }
+    }
 }
 
 /// The links `record` declares over the relations of `decl` carried by a
@@ -467,6 +513,137 @@ mod tests {
         assert_eq!(cmp_values(&json!(9), &json!("10")), Ordering::Less);
         assert_eq!(cmp_values(&json!("1.0"), &json!(1)), Ordering::Equal);
         assert_eq!(cmp_values(&json!(2.5), &json!(-3)), Ordering::Greater);
+    }
+
+    /// Values of every kind the rulebook ranks, with equal values written
+    /// differently: scales, numbers as text, one instant in two offsets,
+    /// JSON a float and an integer print the same in.
+    fn sort_corpus() -> Vec<serde_json::Value> {
+        let mut values = vec![
+            json!(0),
+            json!(0.0),
+            json!("0"),
+            json!("-0.00"),
+            json!(1),
+            json!(1.0),
+            json!("1.00"),
+            json!("1"),
+            json!(-1),
+            json!(-1.5),
+            json!("-1.55"),
+            json!(-10),
+            json!(10),
+            json!(100),
+            json!("100.5"),
+            json!(0.001),
+            json!("0.0010"),
+            json!(1e20),
+            json!(-1e-20),
+            json!(1e300),
+            json!(2.5),
+            json!("-3"),
+            json!("79228162514264337593543950335"),
+            json!("-0.0000000000000000000000000001"),
+            json!("2026-01-01"),
+            json!("2026-01-01T00:00:00Z"),
+            json!("2026-01-01T01:00:00+01:00"),
+            json!("2025-12-31T23:59:59.999999Z"),
+            json!("1969-07-20T20:17:00Z"),
+            json!("abc"),
+            json!("Abc"),
+            json!("ab"),
+            json!("ä"),
+            json!(""),
+            json!(" "),
+            json!("1e3"),
+            json!(false),
+            json!(true),
+            json!({"a": 1}),
+            json!({"a": 1.0}),
+            json!([1, 2]),
+            json!([]),
+            json!(null),
+        ];
+        // Decimals of many scales and both signs, as numbers and as text.
+        let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+        for _ in 0..300 {
+            x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let mantissa = (x >> 20) % 2_000_001;
+            let scale = (x >> 8) % 7;
+            let sign = if x & 1 == 0 { "" } else { "-" };
+            let text = format!(
+                "{sign}{}.{:0>width$}",
+                mantissa / 10u64.pow(scale as u32),
+                mantissa % 10u64.pow(scale as u32),
+                width = scale as usize
+            );
+            let text = text.trim_end_matches('.').to_owned();
+            values.push(json!(text));
+            if let Ok(n) = text.parse::<f64>() {
+                values.push(json!(n));
+            }
+        }
+        values
+    }
+
+    #[test]
+    fn sort_keys_order_as_cmp_values_and_are_equal_where_it_is() {
+        let values = sort_corpus();
+        for a in &values {
+            for b in &values {
+                assert_eq!(
+                    sort_key(a).cmp(&sort_key(b)),
+                    cmp_values(a, b),
+                    "the sort keys of {a} and {b} order them otherwise than cmp_values"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_scan_sorted_by_keys_answers_what_cmp_places_orders() {
+        let records: Vec<StoredRecord> = sort_corpus()
+            .into_iter()
+            .enumerate()
+            .map(|(i, v)| StoredRecord {
+                ty: TypeName::from("t"),
+                key: RecordKey::from(format!("k{:04}", (i * 37) % 1000)),
+                version: lakelands_api::Version(1),
+                fields: [(FieldName::from("v"), v)].into_iter().collect(),
+                meta: BTreeMap::new(),
+                position: lakelands_api::Position(1),
+                retired: false,
+                restricted: false,
+            })
+            .collect();
+        for dir in [Direction::Asc, Direction::Desc] {
+            let order_by = vec![Order {
+                field: FieldName::from("v"),
+                by: OrderBy::Value,
+                dir,
+            }];
+            let mut expected: Vec<&StoredRecord> = records.iter().collect();
+            expected.sort_by(|a, b| {
+                cmp_places(
+                    &Place::of(a, &order_by),
+                    &Place::of(b, &order_by),
+                    &order_by,
+                )
+            });
+            let got = scan(
+                None,
+                &records,
+                &Scan {
+                    order_by: order_by.clone(),
+                    limit: u32::MAX,
+                    ..Default::default()
+                },
+            );
+            let keys = |rows: Vec<&StoredRecord>| -> Vec<String> {
+                rows.into_iter().map(|r| r.key.to_string()).collect()
+            };
+            assert_eq!(keys(got.iter().collect()), keys(expected), "{dir:?}");
+        }
     }
 
     #[test]

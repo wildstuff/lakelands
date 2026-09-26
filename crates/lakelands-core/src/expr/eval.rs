@@ -432,7 +432,7 @@ fn literal(l: &Literal) -> Result<Val> {
 }
 
 /// A value as an exact number, if it reads as one.
-fn as_number(v: &Val) -> Option<Decimal> {
+pub(crate) fn as_number(v: &Val) -> Option<Decimal> {
     match v {
         Val::Num(d) => Some(*d),
         Val::Text(s) => Decimal::from_str(s).ok(),
@@ -445,7 +445,7 @@ fn number(v: &Val) -> Result<Decimal> {
 }
 
 /// A value as an instant, if it reads as one.
-fn as_time(v: &Val) -> Option<Timestamp> {
+pub(crate) fn as_time(v: &Val) -> Option<Timestamp> {
     match v {
         Val::Time(t) => Some(*t),
         Val::Text(s) => Timestamp::parse(s).ok(),
