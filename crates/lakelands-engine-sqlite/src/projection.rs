@@ -82,6 +82,13 @@ CREATE TABLE IF NOT EXISTS edges (
 );
 CREATE INDEX IF NOT EXISTS edges_src ON edges (src_ty, src_key);
 CREATE INDEX IF NOT EXISTS edges_dst ON edges (dst_ty, dst_key);
+CREATE TABLE IF NOT EXISTS sort_index (
+    ty TEXT NOT NULL, field TEXT NOT NULL, key TEXT NOT NULL, sort_key BLOB NOT NULL,
+    PRIMARY KEY (ty, field, key)
+);
+CREATE INDEX IF NOT EXISTS sort_index_asc ON sort_index (ty, field, sort_key, key);
+CREATE INDEX IF NOT EXISTS sort_index_desc ON sort_index (ty, field, sort_key DESC, key);
+CREATE INDEX IF NOT EXISTS sort_index_key ON sort_index (ty, key);
 CREATE TABLE IF NOT EXISTS search_rows (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ty TEXT NOT NULL, key TEXT NOT NULL,
@@ -98,7 +105,7 @@ CREATE TABLE IF NOT EXISTS vectors (
 ";
 
 /// Every table the projection holds, cleared by a rebuild.
-pub(crate) const TABLES: [&str; 12] = [
+pub(crate) const TABLES: [&str; 13] = [
     "meta",
     "declarations",
     "records",
@@ -108,6 +115,7 @@ pub(crate) const TABLES: [&str; 12] = [
     "applied",
     "text_index",
     "edges",
+    "sort_index",
     "search_rows",
     "full_text",
     "vectors",
@@ -230,6 +238,70 @@ pub(crate) fn folded(conn: &Connection) -> Result<Option<Position>> {
         .map_err(sql)
 }
 
+/// The position the order index was last kept through, if any. It
+/// describes the head only when it is the position folded through: a
+/// writer that does not keep the index leaves it behind.
+pub(crate) fn sorted(conn: &Connection) -> Result<Option<Position>> {
+    conn.prepare_cached("SELECT v FROM meta WHERE k = 'sorted'")
+        .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)).optional())
+        .map(|v| v.map(|v| Position(v as u64)))
+        .map_err(sql)
+}
+
+/// Rebuild the order index from the head records when it does not
+/// describe the head, in one transaction, and mark it kept through the
+/// position folded through.
+pub(crate) fn rebuild_sorted(conn: &Connection) -> Result<()> {
+    let folded = folded(conn)?;
+    if folded.is_none() || sorted(conn)? == folded {
+        return Ok(());
+    }
+    conn.execute_batch("BEGIN IMMEDIATE; DELETE FROM sort_index;")
+        .map_err(sql)?;
+    let rebuilt =
+        (|| {
+            let types: Vec<String> = conn
+                .prepare("SELECT DISTINCT ty FROM records WHERE until IS NULL")
+                .and_then(|mut s| s.query_map([], |r| r.get(0))?.collect())
+                .map_err(sql)?;
+            for ty in types {
+                let ty = TypeName::from(ty);
+                let Some(decl) = type_at(conn, &ty, None)? else {
+                    continue;
+                };
+                for r in head_records(conn, &ty)? {
+                    for (field, sort_key) in engines::order_rows(&decl, &r) {
+                        conn.prepare_cached(
+                        "INSERT INTO sort_index (ty, field, key, sort_key) VALUES (?1, ?2, ?3, ?4)",
+                    )
+                    .and_then(|mut s| {
+                        s.execute(params![ty.as_str(), field.as_str(), r.key.as_str(), sort_key])
+                    })
+                    .map_err(sql)?;
+                    }
+                }
+            }
+            mark_sorted(conn, folded.expect("checked above"))
+        })();
+    match rebuilt {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(sql),
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+/// Record that the order index is kept through `through`.
+pub(crate) fn mark_sorted(conn: &Connection, through: Position) -> Result<()> {
+    conn.prepare_cached(
+        "INSERT INTO meta (k, v) VALUES ('sorted', ?1) ON CONFLICT (k) DO UPDATE SET v = ?1",
+    )
+    .and_then(|mut s| s.execute(params![through.0 as i64]))
+    .map(|_| ())
+    .map_err(sql)
+}
+
 pub(crate) fn set_folded(conn: &Connection, through: Position) -> Result<()> {
     conn.execute(
         "INSERT INTO meta (k, v) VALUES ('folded', ?1) ON CONFLICT (k) DO UPDATE SET v = ?1",
@@ -329,6 +401,9 @@ pub(crate) fn index_record(
     conn.prepare_cached("DELETE FROM edges WHERE src_ty = ?1 AND src_key = ?2")
         .and_then(|mut s| s.execute(params![ty, key]))
         .map_err(sql)?;
+    conn.prepare_cached("DELETE FROM sort_index WHERE ty = ?1 AND key = ?2")
+        .and_then(|mut s| s.execute(params![ty, key]))
+        .map_err(sql)?;
     for (field, value) in &r.fields {
         if let Some(text) = value.as_str() {
             conn.prepare_cached(
@@ -352,6 +427,13 @@ pub(crate) fn index_record(
     let Some(decl) = decl else {
         return Ok(());
     };
+    for (field, sort_key) in engines::order_rows(decl, r) {
+        conn.prepare_cached(
+            "INSERT INTO sort_index (ty, field, key, sort_key) VALUES (?1, ?2, ?3, ?4)",
+        )
+        .and_then(|mut s| s.execute(params![ty, field.as_str(), key, sort_key]))
+        .map_err(sql)?;
+    }
     for e in engines::links_of(decl, r, None) {
         conn.prepare_cached(
             "INSERT INTO edges (src_ty, src_key, relation, dst_ty, dst_key) \

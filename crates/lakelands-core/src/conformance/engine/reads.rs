@@ -42,6 +42,12 @@ engine_check!(
 );
 
 engine_check!(
+    /// A field-ordered scan walks page by page as one scan.
+    FIELD_ORDER_WALK = a_field_ordered_scan_walks_page_by_page_as_one_scan,
+    "seams §scan and lakelands#137: a scan ordered by fields, walked page by page from `after`, answers what one scan over every state answers, whatever its directions, its filter and its flags, after later puts and a redeclaration, at the head and at an earlier position"
+);
+
+engine_check!(
     /// A scan's filter selects exactly what the evaluator selects.
     FILTER_AS_EVALUATOR = scan_filters_exactly_as_the_evaluator_including_mixed_kinds_and_errors,
     "seams §scan: an engine selects exactly the records the one evaluator selects, comparisons across kinds included, and a filter that errors for a record does not select it"
@@ -1072,5 +1078,167 @@ fn edges_over_a_link_relation_come_from_the_live_link_records_at_the_views_posit
         both.len() == 2,
         "at 3 both links point into p1; the engine answered {both:?}"
     );
+    Ok(())
+}
+
+/// The values a field-ordered walk sorts: every kind the rulebook ranks,
+/// equal values written differently, and ties.
+fn order_value(i: u64) -> Value {
+    let values = [
+        json!(3),
+        json!("3.0"),
+        json!(-2.5),
+        json!("10"),
+        json!("2026-01-01T00:00:00Z"),
+        json!("2026-01-01T01:00:00+01:00"),
+        json!("2025-06-30"),
+        json!("apple"),
+        json!("Apple"),
+        json!("apple"),
+        json!(""),
+        json!(false),
+        json!(true),
+        json!({"a": 1}),
+        json!([1, 2]),
+        json!(0),
+        json!("-0.00"),
+    ];
+    values[(i as usize * 7) % values.len()].clone()
+}
+
+fn a_field_ordered_scan_walks_page_by_page_as_one_scan(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    const N: u64 = 160;
+    let declare = |fields: &[&str]| -> Result<Declaration, Failure> {
+        let fields: Vec<Value> = fields
+            .iter()
+            .map(|f| json!({"name": f, "type": {"kind": "text"}}))
+            .collect();
+        serde_json::from_value(json!({"declare": "type", "name": "t", "fields": fields}))
+            .map_err(|e| Failure::new(format!("the check's declaration does not read: {e}")))
+    };
+    // `v` is missing from every fifth record, `w` has three values, and
+    // `x` is carried before any declaration names it.
+    let state = |i: u64, at: u64| {
+        let mut fields = serde_json::Map::new();
+        let v = if at >= 2 && i.is_multiple_of(4) {
+            order_value(i + 5)
+        } else {
+            order_value(i)
+        };
+        if !(i.is_multiple_of(5) ^ (at >= 2 && i.is_multiple_of(10))) {
+            fields.insert("v".into(), v);
+        }
+        fields.insert("w".into(), json!(["a", "b", "c"][(i % 3) as usize]));
+        if !i.is_multiple_of(6) {
+            fields.insert("x".into(), json!((i * 13) % 17));
+        }
+        let mut r = record(
+            "t",
+            &format!("k{:03}", (i * 37) % 997),
+            Value::Object(fields),
+            at,
+        );
+        r.retired = i.is_multiple_of(9);
+        r.restricted = i.is_multiple_of(11);
+        r
+    };
+    let two = declare(&["v", "w"])?;
+    let three = declare(&["v", "w", "x"])?;
+    fold(engine, 1, |p| {
+        p.put_declaration(&two, 1, None, Position(0))?;
+        (0..N).try_for_each(|i| p.put_record(&state(i, 1)))
+    })?;
+    // Every fourth moves, and every tenth loses or gains `v`, some twice
+    // in the transaction.
+    fold(engine, 2, |p| {
+        (0..N)
+            .filter(|i| i.is_multiple_of(4) || i.is_multiple_of(10))
+            .try_for_each(|i| {
+                let mut again = state(i, 1);
+                again.position = Position(2);
+                p.put_record(&again)?;
+                p.put_record(&state(i, 2))
+            })
+    })?;
+    fold(engine, 3, |p| {
+        p.put_declaration(&three, 2, None, Position(3))
+    })?;
+    let ty = TypeName::from("t");
+    let by = |field: &str, dir| Order {
+        field: field.into(),
+        by: OrderBy::Value,
+        dir,
+    };
+    let filter = crate::expr::parse("w != 'b'").expect("the check's filter parses");
+    for (at, decl, pos) in [(Some(Position(1)), &two, 1), (None, &three, 2)] {
+        let Declaration::Type(decl) = decl else {
+            unreachable!("the check declares types")
+        };
+        let states: Vec<StoredRecord> = (0..N).map(|i| state(i, pos)).collect();
+        let view_at = view(engine, at)?;
+        for order_by in [
+            vec![by("v", Direction::Asc)],
+            vec![by("v", Direction::Desc)],
+            vec![by("w", Direction::Asc), by("v", Direction::Desc)],
+            vec![by("x", Direction::Desc), by("w", Direction::Asc)],
+            vec![by("x", Direction::Asc)],
+        ] {
+            for filtered in [false, true] {
+                for flags in [false, true] {
+                    for limit in [1, 7, 50] {
+                        let scan = Scan {
+                            filter: filtered.then(|| filter.clone()),
+                            order_by: order_by.clone(),
+                            limit,
+                            retired: flags,
+                            restricted: flags,
+                            ..Scan::default()
+                        };
+                        let expected = keys(&crate::engines::scan(
+                            Some(decl),
+                            &states,
+                            &Scan {
+                                limit: u32::MAX,
+                                ..scan.clone()
+                            },
+                        ));
+                        let mut got = Vec::new();
+                        let mut page = scan.clone();
+                        for _ in 0..=N {
+                            let rows = view_at.scan(&ty, &page).must("scanning a page")?;
+                            let Some(last) = rows.last() else { break };
+                            page.after = Some(After {
+                                values: order_by
+                                    .iter()
+                                    .map(|o| {
+                                        last.fields.get(&o.field).cloned().unwrap_or(Value::Null)
+                                    })
+                                    .collect(),
+                                key: last.key.clone(),
+                            });
+                            got.extend(keys(&rows));
+                        }
+                        let first_wrong = got
+                            .iter()
+                            .zip(&expected)
+                            .position(|(g, e)| g != e)
+                            .unwrap_or(got.len().min(expected.len()));
+                        ensure!(
+                            got == expected,
+                            "walking {order_by:?} at position {pos} (filter {filtered}, flags \
+                             {flags}) in pages of {limit} answered {} rows, one scan over every \
+                             state {}; they part at row {first_wrong}: {:?} against {:?}",
+                            got.len(),
+                            expected.len(),
+                            got.get(first_wrong),
+                            expected.get(first_wrong)
+                        );
+                    }
+                }
+            }
+        }
+    }
     Ok(())
 }

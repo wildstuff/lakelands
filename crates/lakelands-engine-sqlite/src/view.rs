@@ -13,9 +13,10 @@ use std::collections::BTreeSet;
 use lakelands_api::engine::{Declared, ProjectionView, Scan};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
-use lakelands_api::id::{Position, RecordKey, RelationName, TypeName, VerbName};
+use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName, VerbName};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::query::{Edge, Walk};
+use lakelands_api::read::{Direction, Order};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter};
 use lakelands_core::engines;
@@ -37,6 +38,8 @@ struct Read<'c> {
     conn: &'c Connection,
     at: Position,
     head: bool,
+    /// The view is at the head and the order index describes it.
+    sorted: bool,
 }
 
 fn decode<T: serde::de::DeserializeOwned>(state: &str) -> Result<T> {
@@ -54,10 +57,12 @@ impl SqliteView<'_> {
         let conn = self.lake.reader()?;
         conn.execute_batch("BEGIN").map_err(sql)?;
         let result = projection::folded(&conn).and_then(|folded| {
+            let head = folded == Some(at);
             f(&Read {
                 conn: &conn,
                 at,
-                head: folded == Some(at),
+                head,
+                sorted: head && projection::sorted(&conn)? == folded,
             })
         });
         let _ = conn.execute_batch("COMMIT");
@@ -130,6 +135,84 @@ impl Read<'_> {
                 .and_then(Iterator::collect),
             None => stmt
                 .query_map(params![ty.as_str(), self.at(), n], state)
+                .and_then(Iterator::collect),
+        }
+        .map_err(sql)?;
+        rows.iter().map(|r| decode_record(r)).collect()
+    }
+
+    /// At most `n` head records of a type with a row in the order index for
+    /// `order`'s field, with their sort keys, in the index's order for its
+    /// direction, strictly after `from`: a seek into `sort_index_asc` or
+    /// `sort_index_desc`.
+    fn sorted_after(
+        &self,
+        ty: &TypeName,
+        order: &Order,
+        from: Option<(&[u8], &str)>,
+        n: u32,
+    ) -> Result<Vec<(Vec<u8>, StoredRecord)>> {
+        let (seek, by) = match order.dir {
+            Direction::Asc => ("AND (s.sort_key, s.key) > (?4, ?5)", "s.sort_key, s.key"),
+            Direction::Desc => (
+                "AND (s.sort_key < ?4 OR (s.sort_key = ?4 AND s.key > ?5))",
+                "s.sort_key DESC, s.key",
+            ),
+        };
+        let seek = if from.is_some() { seek } else { "" };
+        let mut stmt = self
+            .conn
+            .prepare_cached(&format!(
+                "SELECT s.sort_key, r.state FROM sort_index s JOIN records r \
+                 ON r.ty = s.ty AND r.key = s.key AND r.until IS NULL \
+                 WHERE s.ty = ?1 AND s.field = ?2 {seek} ORDER BY {by} LIMIT ?3"
+            ))
+            .map_err(sql)?;
+        let row = |r: &rusqlite::Row<'_>| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, String>(1)?));
+        let rows: Vec<(Vec<u8>, String)> = match from {
+            Some((k, key)) => stmt
+                .query_map(params![ty.as_str(), order.field.as_str(), n, k, key], row)
+                .and_then(Iterator::collect),
+            None => stmt
+                .query_map(params![ty.as_str(), order.field.as_str(), n], row)
+                .and_then(Iterator::collect),
+        }
+        .map_err(sql)?;
+        rows.into_iter()
+            .map(|(k, state)| Ok((k, decode_record(&state)?)))
+            .collect()
+    }
+
+    /// At most `n` head records of a type without a row in the order index
+    /// for `field`, in key order after `after`.
+    fn unsorted_after(
+        &self,
+        ty: &TypeName,
+        field: &FieldName,
+        after: Option<&str>,
+        n: u32,
+    ) -> Result<Vec<StoredRecord>> {
+        let from = if after.is_some() {
+            "AND r.key > ?4"
+        } else {
+            ""
+        };
+        let mut stmt = self
+            .conn
+            .prepare_cached(&format!(
+                "SELECT r.state FROM records r WHERE r.ty = ?1 AND r.until IS NULL {from} \
+                 AND NOT EXISTS (SELECT 1 FROM sort_index s \
+                 WHERE s.ty = r.ty AND s.field = ?2 AND s.key = r.key) \
+                 ORDER BY r.key LIMIT ?3"
+            ))
+            .map_err(sql)?;
+        let state = |r: &rusqlite::Row<'_>| r.get::<_, String>(0);
+        let rows: Vec<String> = match after {
+            Some(after) => stmt
+                .query_map(params![ty.as_str(), field.as_str(), n, after], state)
+                .and_then(Iterator::collect),
+            None => stmt
+                .query_map(params![ty.as_str(), field.as_str(), n], state)
                 .and_then(Iterator::collect),
         }
         .map_err(sql)?;
@@ -258,6 +341,19 @@ impl ProjectionView for SqliteView<'_> {
                         r.records_after(ty, after, n)
                     });
                 }
+                // Ordered by a declared field at the head, the page is read
+                // in the order index's order and stops when it is full.
+                None if r.sorted => match engines::by_order_index(decl.as_ref(), scan) {
+                    Some(first) => {
+                        return engines::scan_in_field_order(
+                            decl.as_ref(),
+                            scan,
+                            |from, n| r.sorted_after(ty, first, from, n),
+                            |after, n| r.unsorted_after(ty, &first.field, after, n),
+                        );
+                    }
+                    None => r.records(ty)?,
+                },
                 None => r.records(ty)?,
             };
             Ok(engines::scan(decl.as_ref(), &records, scan))
