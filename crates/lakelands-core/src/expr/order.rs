@@ -17,7 +17,7 @@ use lakelands_api::Timestamp;
 use lakelands_api::expr::CmpOp;
 use serde_json::Value;
 
-use super::eval::{Val, compare, from_json};
+use super::eval::{Val, as_number, as_time, compare, from_json};
 
 /// A value's rank among the kinds a sort orders.
 fn rank(v: &Val) -> u8 {
@@ -56,5 +56,82 @@ pub fn cmp_values(a: &Value, b: &Value) -> Ordering {
         // Booleans and JSON values have no order of their own; their
         // canonical bytes give one (`false` before `true`).
         crate::canonical::to_vec(a).cmp(&crate::canonical::to_vec(b))
+    }
+}
+
+/// A present value's sort key: bytes whose order is [`cmp_values`]'
+/// order, equal exactly where it calls two values equal. A sort that
+/// computes each value's key once compares bytes, where [`cmp_values`]
+/// ranks and parses both values on every comparison.
+///
+/// The key is the value's rank, then its kind's encoding:
+/// - a number, or text that reads as one: its sign, then, for a number
+///   that is not zero, its decimal exponent and its significant digits,
+///   so `1`, `1.0` and `"1.00"` share a key. A negative number's exponent
+///   and digits are complemented and end in `0xff`, so a longer one of
+///   the same exponent, which is further from zero, sorts first;
+/// - an instant, or text that reads as one: its microseconds, big-endian
+///   with the sign bit flipped;
+/// - other text: its UTF-8 bytes, the order `String` has;
+/// - a boolean: `false` before `true`;
+/// - a JSON value: its canonical bytes, as [`cmp_values`] orders them.
+pub fn sort_key(value: &Value) -> Vec<u8> {
+    // The kind is read as `rank` reads it, each parse done once: text is a
+    // number when it reads as a decimal, else an instant when it reads as
+    // one, else text.
+    let v = from_json(value);
+    let mut key = Vec::new();
+    match &v {
+        Val::Num(d) => number_key(*d, &mut key),
+        Val::Time(t) => instant_key(*t, &mut key),
+        Val::Text(s) => match (as_number(&v), as_time(&v)) {
+            (Some(d), _) => number_key(d, &mut key),
+            (None, Some(t)) => instant_key(t, &mut key),
+            (None, None) => {
+                key.push(2);
+                key.extend_from_slice(s.as_bytes());
+            }
+        },
+        Val::Bool(b) => key.extend([3, u8::from(*b)]),
+        Val::Json(_) | Val::Null => {
+            key.push(4);
+            key.extend(crate::canonical::to_vec(value));
+        }
+        Val::Duration(d) => {
+            key.push(5);
+            key.extend_from_slice(&((*d as u64) ^ (1 << 63)).to_be_bytes());
+        }
+    }
+    key
+}
+
+/// An instant's sort key: its rank, then its microseconds, big-endian
+/// with the sign bit flipped.
+fn instant_key(t: Timestamp, key: &mut Vec<u8>) {
+    key.push(1);
+    key.extend_from_slice(&((t.0 as u64) ^ (1 << 63)).to_be_bytes());
+}
+
+/// A number's part of its sort key.
+fn number_key(d: rust_decimal::Decimal, key: &mut Vec<u8>) {
+    key.push(0);
+    if d.is_zero() {
+        key.push(1);
+        return;
+    }
+    let d = d.normalize();
+    let digits = d.mantissa().unsigned_abs().to_string();
+    // The value is 0.<digits> × 10^exponent.
+    let exponent = digits.len() as i64 - i64::from(d.scale());
+    let biased = (exponent + 0x8000) as u16;
+    if d.is_sign_negative() {
+        key.push(0);
+        key.extend_from_slice(&(!biased).to_be_bytes());
+        key.extend(digits.bytes().map(|b| !b));
+        key.push(0xff);
+    } else {
+        key.push(2);
+        key.extend_from_slice(&biased.to_be_bytes());
+        key.extend(digits.bytes());
     }
 }
