@@ -54,6 +54,12 @@ engine_check!(
 );
 
 engine_check!(
+    /// Edges follow a record's latest state.
+    EDGES_FOLLOW_THE_LATEST_STATE = edges_follow_a_records_latest_state,
+    "026: a record put again links where its new state says, and no longer where its earlier state did, in both directions"
+);
+
+engine_check!(
     /// A commit backwards, or with a put past `through`, is invalid.
     COMMIT_INVALID = a_commit_backwards_or_with_a_put_past_through_is_invalid,
     "seams §ProjectionStore: a commit never moves the projection backwards, and never commits a state valid from after the position it says it folded through"
@@ -75,6 +81,12 @@ engine_check!(
     /// A put at the same position replaces the state there.
     SAME_POSITION = a_put_at_the_same_position_replaces_the_state_there,
     "seams §ProjectionStore: a put of the same thing at the same position replaces the state there; the fold writing a state again never adds a second one"
+);
+
+engine_check!(
+    /// A put before a later state ends where that state begins.
+    PUT_BEFORE_A_LATER_STATE = a_put_before_a_later_state_ends_where_that_state_begins,
+    "seams §ProjectionStore: a state put at a position before a later state of the same thing is valid until that later state begins, which stays the latest"
 );
 
 engine_check!(
@@ -339,6 +351,26 @@ fn edges_walk_in_out_and_both(engine: &dyn LakeEngine) -> Result<(), Failure> {
     Ok(())
 }
 
+fn edges_follow_a_records_latest_state(engine: &dyn LakeEngine) -> Result<(), Failure> {
+    billing(engine)?;
+    let mut moved = record("invoice", "i2", json!({"customer": "c2"}), 1);
+    moved.version = Version(2);
+    fold(engine, 1, |p| {
+        p.put_record(&record("customer", "c2", json!({}), 1))?;
+        p.put_record(&moved)
+    })?;
+    let out = links(engine, "invoice", "i2", None, Walk::Out)?;
+    let old = links(engine, "customer", "c1", None, Walk::In)?;
+    let new = links(engine, "customer", "c2", None, Walk::In)?;
+    ensure!(
+        out == ["i2>billed_to>c2"] && old == ["i1>billed_to>c1"] && new == ["i2>billed_to>c2"],
+        "invoice i2 was billed to c1 and replaced i1, then put again billed to c2 alone; its \
+         out edges are {out:?}, c1's in edges {old:?} and c2's {new:?}, but i2 links only to \
+         c2 now"
+    );
+    Ok(())
+}
+
 fn edges_to_a_retired_record_are_returned(engine: &dyn LakeEngine) -> Result<(), Failure> {
     billing(engine)?;
     let mut retired = record("customer", "c1", json!({}), 1);
@@ -535,6 +567,54 @@ fn clear_empties_the_projection_and_the_vector_index(
     ensure!(
         a.is_none(),
         "after clear the record put before it reads {a:?}"
+    );
+    Ok(())
+}
+
+fn a_put_before_a_later_state_ends_where_that_state_begins(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    let words: Declaration = serde_json::from_value(json!({
+        "declare": "type", "name": "t", "language": "en",
+        "fields": [{"name": "word", "type": {"kind": "text"}, "searchable": true}]
+    }))
+    .expect("a declaration in the check is well-formed");
+    fold(engine, 1, |p| {
+        p.put_declaration(&words, 1, None, Position(0))?;
+        p.put_record(&record("t", "a", json!({"word": "one"}), 1))
+    })?;
+    fold(engine, 5, |p| {
+        p.put_record(&record("t", "a", json!({"word": "five"}), 5))
+    })?;
+    fold(engine, 5, |p| {
+        p.put_record(&record("t", "a", json!({"word": "three"}), 3))
+    })?;
+    let (ty, key) = (TypeName::from("t"), RecordKey::from("a"));
+    for (as_of, expected) in [
+        (Some(1), "one"),
+        (Some(2), "one"),
+        (Some(3), "three"),
+        (Some(4), "three"),
+        (Some(5), "five"),
+        (None, "five"),
+    ] {
+        let got = view(engine, as_of.map(Position))?
+            .get(&ty, &key)
+            .must("reading the record")?
+            .and_then(|r| r.fields.get("word").cloned());
+        ensure!(
+            got == Some(json!(expected)),
+            "`a` was put with `one` at 1 and `five` at 5, then `three` at 3; a view at \
+             {as_of:?} read {got:?}, but the state valid there is {expected:?}"
+        );
+    }
+    let head = view(engine, None)?;
+    let five = head.lexical(&ty, "five", 10).must("searching")?;
+    let three = head.lexical(&ty, "three", 10).must("searching")?;
+    ensure!(
+        five.len() == 1 && three.is_empty(),
+        "at the head, `five` answered {five:?} and `three` {three:?}; the state put at 3 is \
+         not the latest, so the head still reads `five`"
     );
     Ok(())
 }

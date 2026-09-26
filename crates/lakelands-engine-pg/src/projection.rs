@@ -33,6 +33,8 @@
 //!
 //! Every table is named with the lake's schema ([`Names`]).
 
+use std::collections::HashMap;
+
 use lakelands_api::engine::Declared;
 use lakelands_api::error::Result;
 use lakelands_api::id::{Position, RecordKey, TypeName};
@@ -207,7 +209,11 @@ impl History {
 
     /// Put a state of one thing valid from `since`, keeping every other
     /// state: the one it supersedes ends at `since`, and it ends where the
-    /// next one, if any, begins.
+    /// next one, if any, begins. A state already at `since` is replaced
+    /// and keeps its end.
+    ///
+    /// One statement: the supersede, the insert or replace, and what the
+    /// history held before, all in one snapshot.
     pub(crate) fn put(
         &self,
         db: &mut Db,
@@ -215,58 +221,64 @@ impl History {
         ident: &[&(dyn ToSql + Sync)],
         since: Position,
         state: &(dyn ToSql + Sync),
-    ) -> Result<()> {
+    ) -> Result<Put> {
         let table = names.t(self.table);
         let n = self.ident.len();
         let at = since.0 as i64;
         let mut args: Vec<&(dyn ToSql + Sync)> = ident.to_vec();
         args.push(&at);
-        let mut replace = args.clone();
-        replace.push(state);
-        let replaced = db.execute(
+        args.push(state);
+        let columns = self.ident.join(", ");
+        let marks: Vec<String> = (1..=n + 1).map(|i| format!("${i}")).collect();
+        let row = db.query_one(
             &format!(
-                "UPDATE {table} SET state = ${} WHERE {} AND since = ${}",
-                n + 2,
-                self.ident_where(1),
-                n + 1
-            ),
-            &replace,
-        )?;
-        if replaced > 0 {
-            return Ok(());
-        }
-        let next: Option<i64> = db
-            .query_one(
-                &format!(
-                    "SELECT min(since) FROM {table} WHERE {} AND since > ${}",
-                    self.ident_where(1),
-                    n + 1
-                ),
-                &args,
-            )?
-            .get(0);
-        db.execute(
-            &format!(
-                "UPDATE {table} SET until = ${n1} WHERE {} AND since < ${n1} \
-                 AND (until IS NULL OR until > ${n1})",
-                self.ident_where(1),
-                n1 = n + 1
+                "WITH superseded AS (\
+                   UPDATE {table} SET until = ${s} WHERE {w} AND since < ${s} \
+                   AND (until IS NULL OR until > ${s})\
+                 ), put AS (\
+                   INSERT INTO {table} ({columns}, since, until, state) VALUES ({marks}, \
+                   (SELECT min(since) FROM {table} WHERE {w} AND since > ${s}), ${v}) \
+                   ON CONFLICT ({columns}, since) DO UPDATE SET state = EXCLUDED.state \
+                   RETURNING until IS NULL AS head\
+                 ) \
+                 SELECT (SELECT head FROM put), EXISTS (SELECT 1 FROM {table} WHERE {w})",
+                w = self.ident_where(1),
+                s = n + 1,
+                v = n + 2,
+                marks = marks.join(", "),
             ),
             &args,
         )?;
-        let columns = self.ident.join(", ");
-        let marks: Vec<String> = (1..=n + 3).map(|i| format!("${i}")).collect();
-        let mut insert = args.clone();
-        insert.push(&next);
-        insert.push(state);
-        db.execute(
-            &format!(
-                "INSERT INTO {table} ({columns}, since, until, state) VALUES ({})",
-                marks.join(", ")
-            ),
-            &insert,
-        )?;
-        Ok(())
+        Ok(Put {
+            head: row.get(0),
+            first: !row.get::<_, bool>(1),
+        })
+    }
+}
+
+/// What a history put found.
+pub(crate) struct Put {
+    /// The state put is the latest: no later one exists.
+    pub(crate) head: bool,
+    /// The history held no state of the thing before the put.
+    pub(crate) first: bool,
+}
+
+/// The declarations of types in force at the head, as read in the fold's
+/// open transaction: each type's read once, and all forgotten when a
+/// declaration is put, since it may change one. Dropped with the
+/// transaction.
+#[derive(Default)]
+pub(crate) struct HeadTypes(HashMap<TypeName, Option<TypeDecl>>);
+
+impl HeadTypes {
+    fn get(&mut self, db: &mut Db, names: &Names, ty: &TypeName) -> Result<Option<TypeDecl>> {
+        if let Some(decl) = self.0.get(ty) {
+            return Ok(decl.clone());
+        }
+        let decl = type_at(db, names, ty, None)?;
+        self.0.insert(ty.clone(), decl.clone());
+        Ok(decl)
     }
 }
 
@@ -368,58 +380,48 @@ pub(crate) fn head_record(
     .transpose()
 }
 
-/// Whether a record's state put at `position` is its latest.
-fn is_head(
-    db: &mut Db,
-    names: &Names,
-    ty: &TypeName,
-    key: &RecordKey,
-    position: Position,
-) -> Result<bool> {
-    Ok(db
-        .query_one(
-            &format!(
-                "SELECT until IS NULL FROM {} WHERE ty = $1 AND key = $2 AND since = $3",
-                names.t("records")
-            ),
-            &[&ty.as_str(), &key.as_str(), &(position.0 as i64)],
-        )?
-        .get(0))
-}
-
 /// Rewrite the head indexes of one record from its latest state, under
-/// the declaration of its type at the head.
+/// the declaration of its type at the head. `first` says the history held
+/// no state of the record before this one, so no index holds a row of it
+/// to delete.
 pub(crate) fn index_record(
     db: &mut Db,
     names: &Names,
     decl: Option<&TypeDecl>,
     r: &StoredRecord,
+    first: bool,
 ) -> Result<()> {
     let (ty, key) = (r.ty.as_str(), r.key.as_str());
-    for table in ["text_index", "full_text"] {
+    if !first {
+        for table in ["text_index", "full_text"] {
+            db.execute(
+                &format!("DELETE FROM {} WHERE ty = $1 AND key = $2", names.t(table)),
+                &[&ty, &key],
+            )?;
+        }
         db.execute(
-            &format!("DELETE FROM {} WHERE ty = $1 AND key = $2", names.t(table)),
+            &format!(
+                "DELETE FROM {} WHERE src_ty = $1 AND src_key = $2",
+                names.t("edges")
+            ),
             &[&ty, &key],
         )?;
     }
-    db.execute(
-        &format!(
-            "DELETE FROM {} WHERE src_ty = $1 AND src_key = $2",
-            names.t("edges")
-        ),
-        &[&ty, &key],
-    )?;
-    for (field, value) in &r.fields {
-        if let Some(text) = value.as_str() {
-            db.execute(
-                &format!(
-                    "INSERT INTO {} (ty, field, value, key) VALUES ($1, $2, $3, $4) \
-                     ON CONFLICT DO NOTHING",
-                    names.t("text_index")
-                ),
-                &[&ty, &field.as_str(), &text, &key],
-            )?;
-        }
+    let (fields, values): (Vec<&str>, Vec<&str>) = r
+        .fields
+        .iter()
+        .filter_map(|(field, value)| Some((field.as_str(), value.as_str()?)))
+        .unzip();
+    if !fields.is_empty() {
+        db.execute(
+            &format!(
+                "INSERT INTO {} (ty, field, value, key) \
+                 SELECT $1, f, v, $2 FROM unnest($3::text[], $4::text[]) AS u(f, v) \
+                 ON CONFLICT DO NOTHING",
+                names.t("text_index")
+            ),
+            &[&ty, &key, &fields, &values],
+        )?;
     }
     let Some(decl) = decl else {
         return Ok(());
@@ -455,34 +457,47 @@ pub(crate) fn index_record(
     Ok(())
 }
 
-/// Put a record's state and, when it is the latest, its head indexes.
-pub(crate) fn put_record(db: &mut Db, names: &Names, r: &StoredRecord) -> Result<()> {
+/// Put a record's state and, when it is the latest, its head indexes,
+/// under its type's declaration at the head as `types` holds it.
+pub(crate) fn put_record(
+    db: &mut Db,
+    names: &Names,
+    types: &mut HeadTypes,
+    r: &StoredRecord,
+) -> Result<()> {
     let state = serde_json::to_string(r).expect("a record serialises");
-    RECORDS.put(
+    let put = RECORDS.put(
         db,
         names,
         &[&r.ty.as_str(), &r.key.as_str()],
         r.position,
         &state,
     )?;
-    if is_head(db, names, &r.ty, &r.key, r.position)? {
-        let decl = type_at(db, names, &r.ty, None)?;
-        index_record(db, names, decl.as_ref(), r)?;
+    if put.head {
+        let decl = types.get(db, names, &r.ty)?;
+        index_record(db, names, decl.as_ref(), r, put.first)?;
     }
     Ok(())
 }
 
 /// Put a declaration and, for a type now in force at the head, rewrite
-/// the head indexes of its records under it.
-pub(crate) fn put_declaration(db: &mut Db, names: &Names, d: &Declared) -> Result<()> {
+/// the head indexes of its records under it. `types` forgets every head
+/// declaration it held, since this one may change one.
+pub(crate) fn put_declaration(
+    db: &mut Db,
+    names: &Names,
+    types: &mut HeadTypes,
+    d: &Declared,
+) -> Result<()> {
+    types.0.clear();
     let ident = engines::declaration_key(&d.declaration);
     let state = serde_json::to_string(d).expect("a declaration serialises");
     DECLARATIONS.put(db, names, &[&ident], d.since, &state)?;
     if let Declaration::Type(t) = &d.declaration {
-        let head = type_at(db, names, &t.name, None)?;
+        let head = types.get(db, names, &t.name)?;
         if head.as_ref() == Some(t) {
             for r in head_records(db, names, &t.name)? {
-                index_record(db, names, head.as_ref(), &r)?;
+                index_record(db, names, head.as_ref(), &r, false)?;
             }
         }
     }

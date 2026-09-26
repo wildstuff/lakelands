@@ -1,11 +1,13 @@
 //! Reads of the projection at one position.
 //!
-//! Every read runs in one `REPEATABLE READ READ ONLY` transaction on the
-//! handle's reader connection, so it sees one committed state of the
-//! projection, and reads the history rows that hold at the view's
-//! position. When that position is the one the projection reflects (the
-//! head), a read may find its candidates through the head indexes;
-//! otherwise it reads the states at the position directly. Either way
+//! A read of more than one statement, or one that asks whether the view
+//! is at the head, runs in one `REPEATABLE READ READ ONLY` transaction on
+//! the handle's reader connection, so all of it sees one committed state
+//! of the projection; a read of one statement runs alone, since one
+//! statement already sees one. A read reads the history rows that hold at
+//! the view's position. When that position is the one the projection
+//! reflects (the head), a read may find its candidates through the head
+//! indexes; otherwise it reads the states at the position directly. Either way
 //! `lakelands_core::engines` decides what matches, where it sorts and what
 //! it scores, exactly as on every other engine.
 
@@ -49,14 +51,48 @@ impl PgView<'_> {
         };
         let mut db = self.lake.reader();
         let names = self.lake.names();
-        db.transaction("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY", |db| {
-            let folded = projection::folded(db, names)?;
+        // The transaction opens and reads the folded marker in one round
+        // trip, so the head flag is of the state every query in it sees.
+        let folded = db.simple(&format!(
+            "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; \
+             SELECT n FROM {} WHERE k = 'folded'",
+            names.t("meta")
+        ));
+        let answer = folded.and_then(|folded| {
+            let folded = folded.into_iter().flatten().next();
             f(&mut Read {
-                db,
+                db: &mut db,
                 names,
                 at,
-                head: folded == Some(at),
+                head: folded == Some(at.0.to_string()),
             })
+        });
+        match answer {
+            Ok(r) => {
+                db.batch("COMMIT")?;
+                Ok(r)
+            }
+            Err(e) => {
+                let _ = db.batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
+}
+
+impl PgView<'_> {
+    /// Run `f`, which runs exactly one statement and never asks whether
+    /// the view is at the head, outside a transaction: one statement reads
+    /// one committed state, so it needs none, and costs one round trip.
+    fn single<R>(&self, empty: R, f: impl FnOnce(&mut Read<'_>) -> Result<R>) -> Result<R> {
+        let Some(at) = self.at else {
+            return Ok(empty);
+        };
+        f(&mut Read {
+            db: &mut self.lake.reader(),
+            names: self.lake.names(),
+            at,
+            head: false,
         })
     }
 }
@@ -247,7 +283,7 @@ impl ProjectionView for PgView<'_> {
     }
 
     fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
-        self.read(None, |r| r.record(ty, key))
+        self.single(None, |r| r.record(ty, key))
     }
 
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
@@ -429,7 +465,7 @@ impl ProjectionView for PgView<'_> {
     }
 
     fn is_member(&self, set: &str, ty: &TypeName, key: &RecordKey) -> Result<bool> {
-        self.read(false, |r| {
+        self.single(false, |r| {
             let at = r.at();
             Ok(r.db
                 .query_opt(
@@ -446,7 +482,7 @@ impl ProjectionView for PgView<'_> {
     }
 
     fn applied(&self, id: &EventId) -> Result<Option<Position>> {
-        self.read(None, |r| {
+        self.single(None, |r| {
             let at = r.at();
             Ok(r.db
                 .query_opt(
@@ -461,7 +497,7 @@ impl ProjectionView for PgView<'_> {
     }
 
     fn output(&self, seam: &str, input: &Digest) -> Result<Option<Value>> {
-        self.read(None, |r| {
+        self.single(None, |r| {
             let at = r.at();
             r.db.query_opt(
                 &format!(

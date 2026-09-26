@@ -494,7 +494,7 @@ belongs in the suite, not beside one engine:
 
 - `a_chain_of_reactions_past_the_lakes_ceiling_is_refused_too_deep_and_appends_nothing` — 021: a host writes each reaction one deeper than its cause; the store takes every write up to the lake's max_reactive_depth and refuses the next as too_deep naming the ceiling, an upsert and a retire alike and whatever origin the context names, appending nothing, while the log keeps the chain before it with each write's depth
 
-### Through the engine seam (41 checks)
+### Through the engine seam (44 checks)
 
 **log**
 
@@ -521,10 +521,12 @@ belongs in the suite, not beside one engine:
 - `a_rolled_back_transaction_leaves_nothing` — seams §Engine: the fold writes one transaction per append, so a crash or an abandoned append leaves the projection at a whole append
 - `edges_walk_in_out_and_both` — 026: out gives the links a record declares, in the links that point at it, both their union with each link once; the store's walks are built on them
 - `edges_to_a_retired_record_are_returned` — 026: an engine returns a link to a retired or missing record as it is; hiding that end is the store's
+- `edges_follow_a_records_latest_state` — 026: a record put again links where its new state says, and no longer where its earlier state did, in both directions
 - `a_commit_backwards_or_with_a_put_past_through_is_invalid` — seams §ProjectionStore: a commit never moves the projection backwards, and never commits a state valid from after the position it says it folded through
 - `a_view_does_not_see_an_open_transaction` — seams §ProjectionStore: nothing put in a transaction is visible to any view until it commits, and then all of it at once
 - `a_view_keeps_its_position_after_later_commits` — seams §LakeEngine: a view keeps answering its own position while the fold moves on
 - `a_put_at_the_same_position_replaces_the_state_there` — seams §ProjectionStore: a put of the same thing at the same position replaces the state there; the fold writing a state again never adds a second one
+- `a_put_before_a_later_state_ends_where_that_state_begins` — seams §ProjectionStore: a state put at a position before a later state of the same thing is valid until that later state begins, which stays the latest
 - `clear_empties_the_projection_and_the_vector_index` — seams §ProjectionStore: clear deletes every state, kept history and the vector index included, and leaves nothing folded, for a rebuild from the log
 
 **reads**
@@ -537,6 +539,7 @@ belongs in the suite, not beside one engine:
 - `lexical_hits_are_the_pipelines_over_searchable_live_records` — 025 and seams §lexical: a hit holds a token the one pipeline makes of the query in a searchable field of a live record, restricted ones included (the store applies grants); the hit set is the same on every engine, ties by key, at most k
 - `lexical_finds_every_token_the_pipeline_makes_beyond_ascii` — 025: every token the one pipeline makes is a term an engine finds, in any script, combining marks included, so no engine's own tokenizer narrows the hit set
 - `lexical_at_an_earlier_position_ranks_by_the_head_and_keeps_what_was_visible_then` — seams §lexical: a view answers from the full-text index at the head and keeps only the records live at its own position
+- `a_record_put_after_a_redeclaration_in_the_same_transaction_is_indexed_under_it` — 025 and seams §ProjectionStore: a put reads the declarations as the transaction holds them, so a type declared again inside one fold's transaction governs every record put after it, and the records it already held
 - `nearest_ranks_by_cosine_with_ties_by_key` — seams §VectorIndex: nearest answers the exact top k by the cosine of the angle, best first, equal scores by key
 - `a_zero_vector_scores_zero_and_a_wrong_length_is_invalid` — seams §VectorIndex: a vector of zeros scores 0 against everything, and a query whose length differs from a stored vector's is refused as invalid
 - `put_replaces_a_vector_and_remove_forgets_it` — seams §VectorIndex: put replaces a record's vector for the field, remove forgets it, forgetting one that is absent does nothing, and count counts

@@ -72,6 +72,13 @@ engine_check!(
 );
 
 engine_check!(
+    /// A record put after its type is declared again in the same
+    /// transaction is indexed under the new declaration.
+    LEXICAL_REDECLARED_MID_FOLD = a_record_put_after_a_redeclaration_in_the_same_transaction_is_indexed_under_it,
+    "025 and seams §ProjectionStore: a put reads the declarations as the transaction holds them, so a type declared again inside one fold's transaction governs every record put after it, and the records it already held"
+);
+
+engine_check!(
     /// The vector index ranks by cosine, ties by key.
     NEAREST_BY_COSINE = nearest_ranks_by_cosine_with_ties_by_key,
     "seams §VectorIndex: nearest answers the exact top k by the cosine of the angle, best first, equal scores by key"
@@ -568,6 +575,35 @@ fn lexical_at_an_earlier_position_ranks_by_the_head_and_keeps_what_was_visible_t
         hit_keys(&head) == ["kept", "new"],
         "at the head, `river` answered {:?}; `later-retired` is retired there",
         hit_keys(&head)
+    );
+    Ok(())
+}
+
+fn a_record_put_after_a_redeclaration_in_the_same_transaction_is_indexed_under_it(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    let narrow = declare(json!({
+        "declare": "type", "name": "doc", "language": "en",
+        "fields": [
+            {"name": "title", "type": {"kind": "text"}, "searchable": true},
+            {"name": "body", "type": {"kind": "text"}}
+        ]
+    }));
+    fold(engine, 4, |p| {
+        p.put_declaration(&narrow, 1, None, Position(1))?;
+        p.put_record(&record("doc", "early", json!({"body": "river"}), 2))?;
+        p.put_declaration(&documents(), 2, None, Position(3))?;
+        p.put_record(&record("doc", "late", json!({"body": "river"}), 4))
+    })?;
+    let hits = view(engine, None)?
+        .lexical(&TypeName::from("doc"), "river", 10)
+        .must("searching")?;
+    ensure!(
+        hit_keys(&hits) == ["early", "late"],
+        "one transaction declared `doc` with an unsearchable `body`, put `early`, declared it \
+         again with `body` searchable and put `late`, both with `river` in `body`; searching \
+         `river` answered {:?}, but under the declaration in force both are hits",
+        hit_keys(&hits)
     );
     Ok(())
 }
