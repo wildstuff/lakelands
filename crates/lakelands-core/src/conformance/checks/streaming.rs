@@ -41,23 +41,23 @@
 //! (lakelands#134), and the rebuild, which folds the log a page at a time
 //! (lakelands#130), and the reopen, which reads the log a page at a time
 //! and on SQLite keeps a mark per 256 events of its index, not the index
-//! (lakelands#133). A harness
+//! (lakelands#133), and a walk over link records: a pattern query of
+//! three steps walking a relation carried by link records backwards from
+//! one start. Every record from the third on links to two earlier ones by
+//! a fixed rule, so the lake holds about twice as many links as records,
+//! and the walk answers the same rows at every size: what it holds
+//! depends on what it reaches, not on the lake. Its time is reported
+//! only; on the memory engine and on PostgreSQL it still grows with the
+//! links (lakelands#190). A harness
 //! without a meter runs everything else the check claims and reports the
 //! heap as not measured.
 //!
-//! **Reported lines.** Two more operations are measured against the same
-//! bound and reported, but never fail the check, until an index or a fix
-//! earns the claim and its line turns held (lakelands#188). Each runs one
-//! query per size, and its time is only ever reported:
-//!
-//! - *search*: one hybrid search, k = 10, for a fixed text through the
-//!   suite's embedding backend. Every record holds a vector, so the vector
-//!   side ranks the whole field: the engines search it by brute force.
-//! - *traverse*: a pattern query of three steps walking a relation carried
-//!   by link records backwards from one start. Every record from the third
-//!   on links to two earlier ones by a fixed rule, so the lake holds about
-//!   twice as many links as records, and the walk answers the same rows at
-//!   every size: its cost may depend on what it reaches, not on the lake.
+//! **A reported line.** One more operation is measured against the same
+//! bound and reported, but never fails the check, until the index that
+//! earns the claim turns its line held (lakelands#188): one hybrid search
+//! per size, k = 10, for a fixed text through the suite's embedding
+//! backend. Every record holds a vector, so the vector side ranks the
+//! whole field: the engines search it by brute force.
 //!
 //! **What a green run does not show.** Two limits of the measurement:
 //!
@@ -115,7 +115,7 @@ use crate::links::{link_key, link_type_name};
 check!(
     /// A large lake goes through ingest, the feed and export in bounded memory.
     STREAMS = a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it,
-    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification, each page of a walk of a type through find, a rebuild and a reopen hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB; a hybrid search and a three-hop walk over link records answer what they must and are measured against the same bound, reported only",
+    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification, each page of a walk of a type through find, a rebuild, a reopen and a three-hop walk over link records hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB; a hybrid search answers what it must and is measured against the same bound, reported only",
     given,
     embedding
 );
@@ -923,7 +923,7 @@ impl Size<'_> {
         );
         self.row(
             "traverse",
-            Claim::Reported("lakelands#188"),
+            Claim::Held,
             records,
             head.0 + 1,
             format!(
