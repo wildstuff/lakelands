@@ -485,7 +485,15 @@ impl<'a> Reader<'a> {
         probed.extend(find.order_by.iter().map(|o| o.field.clone()));
         if let Some(a) = &find.aggregate {
             probed.extend(a.measures.iter().filter_map(|m| m.field.clone()));
-            probed.extend(a.group_by.iter().cloned());
+            // A field key probes its field; a named key, every field its
+            // expression reads (024).
+            let keys = aggregate::group_keys(&a.group_by).map_err(|e| invalid(e.to_string()))?;
+            for (name, expr) in keys {
+                match expr {
+                    None => probed.push(name),
+                    Some(e) => probed.extend(core_derive::reads(&e)),
+                }
+            }
         }
         rights::check_probe(self.who, &decl, probed.iter())?;
         if let Some(a) = &find.aggregate {

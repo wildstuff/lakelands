@@ -107,13 +107,54 @@ pub struct AggMeasure {
 }
 
 /// An aggregation: measures, optionally per group.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Aggregate {
     /// The measures.
     pub measures: Vec<AggMeasure>,
-    /// Fields whose values form one group each; empty is one group.
+    /// What forms one group each: fields' values, or named expressions';
+    /// empty is one group.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub group_by: Vec<FieldName>,
+    pub group_by: Vec<GroupKey>,
+}
+
+/// One key of an aggregate's grouping. A field name groups by that
+/// field's value, as it is written: `"partner"`. A named expression
+/// groups by its value per record, answered under `name` in the group's
+/// `by`: `{"name": "month", "expr": "date_bucket(due_on, 'month')"}`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum GroupKey {
+    /// A field's value.
+    Field(FieldName),
+    /// An expression's value, under a name of its own.
+    Named {
+        /// The name the group's value is answered under.
+        name: FieldName,
+        /// The expression, evaluated per record as a `where` is.
+        expr: crate::expr::Condition,
+    },
+}
+
+impl GroupKey {
+    /// The name the key's value is answered under.
+    pub fn name(&self) -> &FieldName {
+        match self {
+            GroupKey::Field(f) => f,
+            GroupKey::Named { name, .. } => name,
+        }
+    }
+}
+
+impl From<&str> for GroupKey {
+    fn from(field: &str) -> GroupKey {
+        GroupKey::Field(FieldName::from(field))
+    }
+}
+
+impl From<FieldName> for GroupKey {
+    fn from(field: FieldName) -> GroupKey {
+        GroupKey::Field(field)
+    }
 }
 
 /// `find`: records of one type, filtered, ordered and paged, or

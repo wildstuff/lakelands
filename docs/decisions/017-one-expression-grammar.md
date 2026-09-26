@@ -35,3 +35,17 @@ that pushes filters down into its own query language, complete.
 - It is not extensible by a bundle. A new function is a contract change.
 - The text form is not a second language beside the typed form. Both
   are the same expressions.
+
+## Extended: a read's function (lakelands#145)
+
+The function set grew on the read side. `date_bucket(x, unit)` answers
+the instant at which the UTC bucket holding `x` starts (`day`, `week`
+from Monday as ISO counts weeks, `month`, `quarter`, `year`). It serves
+`find`'s `where`, an aggregate's named group keys and a pattern's
+`where`. What a declaration may call is the log format's concern: the
+log keeps a declaration's expressions, and the format closes the
+functions they may call (`docs/log-format.md` §6, Appendix B). A
+declaration calling `date_bucket` is therefore refused as invalid,
+naming the function, until a format version admits it (lakelands#174).
+A new function is still a contract change. Where it may stand is part of
+that contract, and a function that only reads moves no log format.

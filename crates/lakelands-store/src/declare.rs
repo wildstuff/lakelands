@@ -32,7 +32,7 @@
 //!   value type's `one_of`, `constraint`, `scale` and `format` constrain
 //!   stored values, so changing them is not a declaration either.
 
-use lakelands_api::expr::{Condition, Expr};
+use lakelands_api::expr::{Condition, Expr, Func};
 use lakelands_api::ontology::{
     Authority, FieldDecl, StorageKind, TypeDecl, ValueTypeDecl, VerbEffect,
 };
@@ -66,6 +66,34 @@ fn invalid_field(field: &FieldName, message: impl Into<String>) -> Error {
 
 fn name(what: &str, n: &str) -> Result<()> {
     names::fault(what, n).map_or(Ok(()), |m| Err(invalid(m)))
+}
+
+/// A condition a declaration carries, which the log keeps: checked as
+/// [`condition`] checks it, and refused if it calls a function no logged
+/// expression may call yet. `date_bucket` belongs to reads until a format
+/// version admits it (`docs/log-format.md` §6, Appendix B).
+fn declared(c: &Condition, place: Place, at: &str) -> Result<Expr> {
+    let e = condition(c, place, at)?;
+    if calls(&e, Func::DateBucket) {
+        return Err(invalid(format!(
+            "{at}: date_bucket() is a read's function and may not stand in a declaration: \
+             the log keeps a declaration's expressions, and a logged expression calling it \
+             would need a new log format version"
+        )));
+    }
+    Ok(e)
+}
+
+/// Whether an expression calls `f` anywhere.
+fn calls(e: &Expr, f: Func) -> bool {
+    match e {
+        Expr::Lit { .. } | Expr::Path { .. } => false,
+        Expr::Cmp { lhs, rhs, .. } | Expr::Arith { lhs, rhs, .. } => calls(lhs, f) || calls(rhs, f),
+        Expr::Neg { arg } | Expr::Not { arg } | Expr::IsNull { arg } => calls(arg, f),
+        Expr::And { args } | Expr::Or { args } => args.iter().any(|a| calls(a, f)),
+        Expr::In { arg, list } => calls(arg, f) || list.iter().any(|a| calls(a, f)),
+        Expr::Call { func, args } => *func == f || args.iter().any(|a| calls(a, f)),
+    }
 }
 
 /// A condition in its typed form, checked for its place.
@@ -106,7 +134,7 @@ fn field_type(o: &Ontology, owner: &str, f: &FieldDecl, pending: &TypeName) -> R
         value::conformance(f, &o.value_type_list()).map_err(|e| wrong(&e.to_string()))?;
     }
     if let Some(d) = &f.derived {
-        condition(d, Place::Write, &format!("{owner}, field `{}`", f.name))?;
+        declared(d, Place::Write, &format!("{owner}, field `{}`", f.name))?;
     }
     if let Some(func) = &f.function {
         if f.derived.is_some() {
@@ -308,7 +336,7 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             ))
         })?;
         if let Some(w) = &v.r#where {
-            condition(w, Place::Record, &format!("{owner}, view `where`"))?;
+            declared(w, Place::Record, &format!("{owner}, view `where`"))?;
         }
         for g in &v.group_by {
             let Some(f) = source.fields.iter().find(|f| &f.name == g) else {
@@ -326,7 +354,7 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
         }
         for m in &v.measures {
             name("measure", m.name.as_str())?;
-            condition(
+            declared(
                 &m.expr,
                 Place::Group,
                 &format!("{owner}, measure `{}`", m.name),
@@ -460,7 +488,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 )));
             }
             if let Some(c) = &v.constraint {
-                condition(
+                declared(
                     c,
                     Place::Record,
                     &format!("value type `{}`, constraint", v.name),
@@ -500,7 +528,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 field_type(o, &format!("verb `{}`, payload", v.name), f, &v.on)?;
             }
             if let Some(r) = &v.requires {
-                condition(r, Place::Record, &format!("verb `{}`, requires", v.name))?;
+                declared(r, Place::Record, &format!("verb `{}`, requires", v.name))?;
             }
             match &v.effect {
                 VerbEffect::Write { set } => {
@@ -514,7 +542,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                                 v.name, a.field, v.on
                             )));
                         }
-                        condition(
+                        declared(
                             &a.value,
                             Place::Record,
                             &format!("verb `{}`, `{}`", v.name, a.field),
@@ -533,7 +561,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 ))
             })?;
             if let Some(w) = &t.when {
-                condition(w, Place::Write, &format!("trigger `{}`", t.name))?;
+                declared(w, Place::Write, &format!("trigger `{}`", t.name))?;
             }
         }
         Declaration::ObjectSet(s) => {
@@ -544,7 +572,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     s.name, s.of
                 ))
             })?;
-            condition(
+            declared(
                 &s.filter,
                 Place::Record,
                 &format!("object set `{}`", s.name),
@@ -580,7 +608,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             }
             match (f.backing.as_str(), &f.expr) {
                 ("expr", Some(e)) => {
-                    let e = condition(e, Place::Record, &format!("function `{}`", f.name))?;
+                    let e = declared(e, Place::Record, &format!("function `{}`", f.name))?;
                     // The expression reads only the inputs it declares, so
                     // the inputs a field is checked against are all it reads.
                     for read in derive::reads(&e) {

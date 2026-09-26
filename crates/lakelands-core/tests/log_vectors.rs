@@ -245,6 +245,17 @@ fn the_version_2_rekey_event_recomputes() {
 #[test]
 fn the_negative_vector_whose_known_at_goes_back_is_refused_at_its_position() {
     let dir = vectors().join("negative/known-at-goes-back");
+    // Only the rule is broken: position 6's hash is its line's own, and it
+    // names position 5's as the hash before it.
+    let text = fs::read_to_string(dir.join("log").join(format!("{:020}.jsonl", 0))).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    let six: Value = serde_json::from_str(lines[6]).unwrap();
+    let five: Value = serde_json::from_str(lines[5]).unwrap();
+    let mut body = six.clone();
+    body.as_object_mut().unwrap().remove("hash");
+    assert_eq!(sha(&canonical::to_vec(&body)), str_of(&six, "hash"));
+    assert_eq!(str_of(&six, "prev"), str_of(&five, "hash"));
+    assert!(str_of(&six, "known_at") < str_of(&five, "known_at"));
     match lakelands_core::export::verify(&dir) {
         Err(lakelands_api::Error::Unavailable { message }) => assert!(
             message.contains("at position 6:") && message.contains("known_at"),

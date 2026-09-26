@@ -76,6 +76,7 @@ pub fn func_name(f: Func) -> &'static str {
         Func::Matches => "matches",
         Func::Abs => "abs",
         Func::Round => "round",
+        Func::DateBucket => "date_bucket",
         Func::Count => "count",
         Func::Sum => "sum",
         Func::Min => "min",
@@ -84,7 +85,7 @@ pub fn func_name(f: Func) -> &'static str {
     }
 }
 
-const FUNCS: [Func; 26] = [
+const FUNCS: [Func; 27] = [
     Func::Now,
     Func::Today,
     Func::KnownAt,
@@ -106,6 +107,7 @@ const FUNCS: [Func; 26] = [
     Func::Matches,
     Func::Abs,
     Func::Round,
+    Func::DateBucket,
     Func::Count,
     Func::Sum,
     Func::Min,
@@ -138,7 +140,7 @@ pub fn arity(f: Func) -> (usize, Option<usize>) {
         | Func::Avg => (1, Some(1)),
         Func::Count => (0, Some(1)),
         Func::Round => (1, Some(2)),
-        Func::Contains | Func::StartsWith | Func::Matches => (2, Some(2)),
+        Func::Contains | Func::StartsWith | Func::Matches | Func::DateBucket => (2, Some(2)),
         Func::Substr => (2, Some(3)),
         Func::If | Func::Replace => (3, Some(3)),
         Func::Coalesce | Func::Concat => (1, None),

@@ -22,8 +22,8 @@
 
 use std::collections::BTreeMap;
 
-use lakelands_api::expr::{CmpOp, Expr, Func};
-use lakelands_api::read::{AggFunc, Aggregate, Group};
+use lakelands_api::expr::{CmpOp, Condition, Expr, Func};
+use lakelands_api::read::{AggFunc, Aggregate, Group, GroupKey};
 use lakelands_api::{FieldName, Timestamp, Value};
 use rust_decimal::Decimal;
 
@@ -196,6 +196,76 @@ pub fn groups<'a>(rows: &[&'a Row], by: &[FieldName]) -> Vec<Grouped<'a>> {
     map.into_values().collect()
 }
 
+/// An aggregate's group keys, resolved: each key's name and, for a named
+/// expression, the expression, parsed and checked as a `where` is. Names
+/// follow the rule for field names and are distinct.
+pub fn group_keys(keys: &[GroupKey]) -> Result<Vec<(FieldName, Option<Expr>)>> {
+    let mut out: Vec<(FieldName, Option<Expr>)> = Vec::with_capacity(keys.len());
+    for key in keys {
+        let name = key.name();
+        if let Some(fault) = crate::names::fault("group", name.as_str()) {
+            return Err(EvalError(fault));
+        }
+        if out.iter().any(|(n, _)| n == name) {
+            return Err(EvalError(format!(
+                "two group keys are named `{name}`; each needs a name of its own"
+            )));
+        }
+        let expr = match key {
+            GroupKey::Field(_) => None,
+            GroupKey::Named { expr, .. } => {
+                let e = match expr {
+                    Condition::Expr(e) => e.clone(),
+                    Condition::Text(t) => super::parse(t).map_err(|e| {
+                        EvalError(format!("group `{name}`: `{t}` does not parse: {e}"))
+                    })?,
+                };
+                super::check(&e, super::Place::Record)
+                    .map_err(|e| EvalError(format!("group `{name}`: {e}")))?;
+                Some(e)
+            }
+        };
+        out.push((name.clone(), expr));
+    }
+    Ok(out)
+}
+
+/// Split records into groups by resolved keys, in canonical key order: a
+/// field's value, or an expression's per record. A value the expression
+/// cannot compute for a record is null, the missing group.
+fn keyed_groups<'a>(
+    rows: &[&'a Row],
+    keys: &[(FieldName, Option<Expr>)],
+    now: Timestamp,
+) -> Vec<Grouped<'a>> {
+    let mut map: BTreeMap<Vec<u8>, Grouped<'a>> = BTreeMap::new();
+    for row in rows {
+        let key: BTreeMap<FieldName, Value> = keys
+            .iter()
+            .map(|(name, expr)| {
+                let v = match expr {
+                    None => row.get(name).cloned().unwrap_or(Value::Null),
+                    Some(e) => {
+                        let scope = RecordScope {
+                            fields: row,
+                            settings: None,
+                            now,
+                        };
+                        eval(e, &scope).map_or(Value::Null, |v| to_value(&v))
+                    }
+                };
+                (name.clone(), v)
+            })
+            .collect();
+        let bytes = crate::canonical::of(&key);
+        map.entry(bytes)
+            .or_insert_with(|| (key, Vec::new()))
+            .1
+            .push(row);
+    }
+    map.into_values().collect()
+}
+
 /// `find`'s aggregate over a set of records. No records and no grouping
 /// give one group, so `count` answers 0 rather than nothing.
 pub fn aggregate(
@@ -203,7 +273,8 @@ pub fn aggregate(
     agg: &Aggregate,
     now: Timestamp,
 ) -> Result<Vec<Group>> {
-    let mut grouped = groups(rows, &agg.group_by);
+    let keys = group_keys(&agg.group_by)?;
+    let mut grouped = keyed_groups(rows, &keys, now);
     if grouped.is_empty() && agg.group_by.is_empty() {
         grouped.push((BTreeMap::new(), Vec::new()));
     }
