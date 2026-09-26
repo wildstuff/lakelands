@@ -47,6 +47,13 @@ taken nothing new from the source since. The row below is still the only
 one. **The list is closed for `0.2.0` as of `db4b2949e7`**; on the day of
 the tag only the commits after it are checked, if the mainline has moved.
 
+**Checked on 2026-09-26, the day of the `0.2.0` tag**, against the
+source's mainline at `ca9364c420`: the 47 commits after `db4b2949e7`
+(331 after the freeze in all), checked the same way. None of them
+touches a root, and each root still holds the files it held at the
+freeze. The row below is still the only one. **The list is closed for
+`0.2.0` as of `ca9364c420`.**
+
 | Source commit | Behaviour, in one line | Ported in, or not applicable and why |
 |---|---|---|
 | `5914084de9` | One German user-interface sentence in the capabilities module changes its form of address from formal to informal. | Not applicable: the capabilities module was not carried (cut in O2: there is no capability negotiation; see `docs/import-ledger.md`), and no storage behaviour changes: no event, no fold rule, no signature, no stored byte. |
