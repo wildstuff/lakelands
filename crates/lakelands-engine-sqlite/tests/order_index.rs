@@ -62,6 +62,30 @@ fn a_stale_order_index_is_not_read_and_a_writers_open_rebuilds_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn a_field_ordered_page_reads_its_page_not_the_type() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("order-page-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let engine = SqliteOpener
+        .open(&Location::sqlite("sorted", &dir), OpenMode::Create)
+        .unwrap();
+    fill(engine.as_ref());
+    // The last record in either direction holds no `v`; a state no read
+    // can decode there fails any read that reaches it.
+    let last = last_missing();
+    rusqlite::Connection::open(dir.join("projection.db"))
+        .unwrap()
+        .execute(
+            "UPDATE records SET state = 'unreadable' WHERE ty = 't' AND key = ?1",
+            [&last],
+        )
+        .unwrap();
+    first_pages_answer(engine.as_ref());
+    drop(engine);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The records the lake holds: a declared `v` of every kind the rulebook
 /// ranks, missing from every seventh.
 fn states() -> Vec<StoredRecord> {
@@ -158,5 +182,47 @@ fn walks_as_one_scan(engine: &dyn LakeEngine, when: &str) {
             walked.extend(rows.iter().map(|r| r.key.to_string()));
         }
         assert_eq!(walked, whole, "{when}: walking `v` {dir:?}");
+    }
+}
+
+/// The key of the record a field-ordered walk of `v` reaches last in
+/// either direction: the last in key order of those without `v`.
+fn last_missing() -> String {
+    states()
+        .iter()
+        .filter(|r| !r.fields.contains_key("v"))
+        .map(|r| r.key.to_string())
+        .max()
+        .unwrap()
+}
+
+/// The first page of `v` in either direction answers as one sort of every
+/// state does, without reading the record the walk reaches last.
+fn first_pages_answer(engine: &dyn LakeEngine) {
+    let Declaration::Type(decl) = declaration() else {
+        unreachable!()
+    };
+    let view = engine.view(None).unwrap();
+    for dir in [Direction::Asc, Direction::Desc] {
+        let scan = Scan {
+            order_by: vec![Order {
+                field: "v".into(),
+                by: OrderBy::Value,
+                dir,
+            }],
+            limit: 7,
+            ..Scan::default()
+        };
+        let expected: Vec<String> = engines::scan(Some(&decl), &states(), &scan)
+            .iter()
+            .map(|r| r.key.to_string())
+            .collect();
+        let page: Vec<String> = view
+            .scan(&TypeName::from("t"), &scan)
+            .unwrap_or_else(|e| panic!("a page of 7 by `v` {dir:?} read past its page: {e}"))
+            .iter()
+            .map(|r| r.key.to_string())
+            .collect();
+        assert_eq!(page, expected, "the first page of `v` {dir:?}");
     }
 }
