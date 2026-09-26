@@ -301,6 +301,19 @@ type, never one per `limit` rows. Bounding the sort is lakelands#137,
 after `0.2.0`. A view type's page is computed from its source's records,
 whole, as before.
 
+**The ceiling of a walk.** A pattern query asks the engine for the edges
+of each record it reaches (`edges`), so what a walk holds follows what
+it reaches, not the lake: three hops walking link records backwards
+from one start, 48 rows, held 0.1 MiB of heap at 25 000 records and at
+100 000 on every engine. Its time does not yet follow only what it
+reaches. The memory engine reads a link type's records at the position
+for every record reached, and PostgreSQL's walk grows too: the same walk
+took 0.23 s over 40 621 links and 0.83 s over 162 496 on the memory
+engine, 0.09 s and 0.42 s on PostgreSQL, and 0.01 s at both sizes on
+SQLite, on a machine of 12 cores at a load of 17 to 30 (the streaming
+check's long run, its `traverse` line, lakelands#188). The line is
+reported, not held.
+
 **`lexical`.** Search is ranked retrieval: the view's position decides
 what may be seen, not how the current text ranks. A view answers from
 the engine's full-text index as it stands at the head, and keeps only
@@ -377,7 +390,15 @@ one cosine (`lakelands_core::engines::cosine`): `nearest` reads every
 vector of the field, so its cost grows linearly with the vectors a field
 holds, and with their length. At 1,536 dimensions that is about 6 KiB
 read and one dot product per vector per query; a field of a hundred
-thousand vectors is a scan of some 600 MiB. An index that answers faster
+thousand vectors is a scan of some 600 MiB. Measured by the streaming
+check's long run (its `search` line, lakelands#188): one hybrid search,
+k = 10, over a field of 90 000 vectors of two dimensions took 0.77 s on
+the memory engine, 0.07 s on SQLite and 0.30 s on PostgreSQL, and held
+6.4, 7.6 and 18.7 MiB of heap, against 1.6, 1.9 and 4.7 MiB at 22 500
+vectors, on a machine of 12 cores at a load of 17 to 30. The ranking
+holds something per vector, about 75 to 210 bytes, so both time and heap
+grow with the field, and the line stays reported until an index earns
+the claim. An index that answers faster
 than a scan, sqlite-vec among them, is an implementation of this seam
 after `0.1.0`: it picks candidates, and the one cosine ranks them, so an
 answer never depends on its arithmetic.
