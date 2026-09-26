@@ -73,6 +73,7 @@ impl PgLake {
                 let lease = connect::session_keeping_state(&target)?;
                 let mut projection = connect::connect(&target)?;
                 prepare(&mut projection, &names, &target.schema, &lake, mode)?;
+                projection::rebuild_sorted(&mut projection, &names)?;
                 Some(Writing {
                     lease: Mutex::new(lease),
                     projection: Mutex::new(projection),

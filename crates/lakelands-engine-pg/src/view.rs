@@ -16,9 +16,10 @@ use std::collections::BTreeSet;
 use lakelands_api::engine::{Declared, ProjectionView, Scan};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
-use lakelands_api::id::{Position, RecordKey, RelationName, TypeName, VerbName};
+use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName, VerbName};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::query::{Edge, Walk};
+use lakelands_api::read::{Direction, Order};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter};
 use lakelands_core::engines;
@@ -40,6 +41,8 @@ struct Read<'c> {
     names: &'c Names,
     at: Position,
     head: bool,
+    /// The view is at the head and the order index describes it.
+    sorted: bool,
 }
 
 impl PgView<'_> {
@@ -51,20 +54,25 @@ impl PgView<'_> {
         };
         let mut db = self.lake.reader();
         let names = self.lake.names();
-        // The transaction opens and reads the folded marker in one round
-        // trip, so the head flag is of the state every query in it sees.
-        let folded = db.simple(&format!(
+        // The transaction opens and reads the folded and sorted markers in
+        // one round trip, so the flags are of the state every query in it
+        // sees.
+        let markers = db.simple(&format!(
             "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; \
-             SELECT n FROM {} WHERE k = 'folded'",
-            names.t("meta")
+             SELECT concat((SELECT n FROM {m} WHERE k = 'folded'), ' ', \
+             (SELECT n FROM {m} WHERE k = 'sorted'))",
+            m = names.t("meta")
         ));
-        let answer = folded.and_then(|folded| {
-            let folded = folded.into_iter().flatten().next();
+        let answer = markers.and_then(|markers| {
+            let markers = markers.into_iter().flatten().next().unwrap_or_default();
+            let (folded, sorted) = markers.split_once(' ').unwrap_or((&markers, ""));
+            let head = folded == at.0.to_string();
             f(&mut Read {
                 db: &mut db,
                 names,
                 at,
-                head: folded == Some(at.0.to_string()),
+                head,
+                sorted: head && sorted == folded,
             })
         });
         match answer {
@@ -93,6 +101,7 @@ impl PgView<'_> {
             names: self.lake.names(),
             at,
             head: false,
+            sorted: false,
         })
     }
 }
@@ -166,6 +175,86 @@ impl Read<'_> {
                 .db
                 .query(&query, &[&ty.as_str(), &at, &limit, &after])?,
             None => self.db.query(&query, &[&ty.as_str(), &at, &limit])?,
+        };
+        rows.iter()
+            .map(|r| decode_record(&r.get::<_, String>(0)))
+            .collect()
+    }
+
+    /// At most `n` head records of a type with a row in the order index for
+    /// `order`'s field, with their sort keys, in the index's order for its
+    /// direction, strictly after `from`: a seek into `sort_index_asc` or
+    /// `sort_index_desc`.
+    fn sorted_after(
+        &mut self,
+        ty: &TypeName,
+        order: &Order,
+        from: Option<(&[u8], &str)>,
+        n: u32,
+    ) -> Result<Vec<(Vec<u8>, StoredRecord)>> {
+        let limit = i64::from(n);
+        let (seek, by) = match order.dir {
+            Direction::Asc => (
+                "AND (s.sort_key, s.key COLLATE \"C\") > ($4, $5 COLLATE \"C\")",
+                "s.sort_key, s.key COLLATE \"C\"",
+            ),
+            Direction::Desc => (
+                "AND (s.sort_key < $4 OR (s.sort_key = $4 AND s.key COLLATE \"C\" > $5))",
+                "s.sort_key DESC, s.key COLLATE \"C\"",
+            ),
+        };
+        let seek = if from.is_some() { seek } else { "" };
+        let query = format!(
+            "SELECT s.sort_key, r.state FROM {sorted} s JOIN {records} r \
+             ON r.ty = s.ty AND r.key = s.key AND r.until IS NULL \
+             WHERE s.ty = $1 AND s.field = $2 {seek} ORDER BY {by} LIMIT $3",
+            sorted = self.names.t("sort_index"),
+            records = self.names.t("records"),
+        );
+        let rows = match from {
+            Some((k, key)) => self.db.query(
+                &query,
+                &[&ty.as_str(), &order.field.as_str(), &limit, &k, &key],
+            )?,
+            None => self
+                .db
+                .query(&query, &[&ty.as_str(), &order.field.as_str(), &limit])?,
+        };
+        rows.iter()
+            .map(|r| Ok((r.get(0), decode_record(&r.get::<_, String>(1))?)))
+            .collect()
+    }
+
+    /// At most `n` head records of a type without a row in the order index
+    /// for `field`, in key order after `after`.
+    fn unsorted_after(
+        &mut self,
+        ty: &TypeName,
+        field: &FieldName,
+        after: Option<&str>,
+        n: u32,
+    ) -> Result<Vec<StoredRecord>> {
+        let limit = i64::from(n);
+        let from = if after.is_some() {
+            "AND r.key COLLATE \"C\" > $4"
+        } else {
+            ""
+        };
+        let query = format!(
+            "SELECT r.state FROM {records} r WHERE r.ty = $1 AND r.until IS NULL {from} \
+             AND NOT EXISTS (SELECT 1 FROM {sorted} s \
+             WHERE s.ty = r.ty AND s.field = $2 AND s.key = r.key) \
+             ORDER BY r.key COLLATE \"C\" LIMIT $3",
+            sorted = self.names.t("sort_index"),
+            records = self.names.t("records"),
+        );
+        let rows = match after {
+            Some(after) => self
+                .db
+                .query(&query, &[&ty.as_str(), &field.as_str(), &limit, &after])?,
+            None => self
+                .db
+                .query(&query, &[&ty.as_str(), &field.as_str(), &limit])?,
         };
         rows.iter()
             .map(|r| decode_record(&r.get::<_, String>(0)))
@@ -310,6 +399,20 @@ impl ProjectionView for PgView<'_> {
                     return engines::scan_in_key_order(decl.as_ref(), scan, |after, n| {
                         r.records_after(ty, after, n)
                     });
+                }
+                // Ordered by a declared field at the head, the page is read
+                // in the order index's order and stops when it is full.
+                None if r.sorted && engines::by_order_index(decl.as_ref(), scan).is_some() => {
+                    let first = engines::by_order_index(decl.as_ref(), scan)
+                        .expect("checked above")
+                        .clone();
+                    let r = std::cell::RefCell::new(r);
+                    return engines::scan_in_field_order(
+                        decl.as_ref(),
+                        scan,
+                        |from, n| r.borrow_mut().sorted_after(ty, &first, from, n),
+                        |after, n| r.borrow_mut().unsorted_after(ty, &first.field, after, n),
+                    );
                 }
                 None => r.records(ty)?,
             };

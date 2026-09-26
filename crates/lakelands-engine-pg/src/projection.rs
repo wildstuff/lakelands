@@ -128,6 +128,14 @@ CREATE TABLE IF NOT EXISTS {s}.full_text (
     PRIMARY KEY (ty, token, key)
 );
 CREATE INDEX IF NOT EXISTS full_text_key ON {s}.full_text (ty, key);
+CREATE TABLE IF NOT EXISTS {s}.sort_index (
+    ty TEXT NOT NULL, field TEXT NOT NULL, key TEXT NOT NULL, sort_key BYTEA NOT NULL,
+    PRIMARY KEY (ty, field, key)
+);
+CREATE INDEX IF NOT EXISTS sort_index_asc ON {s}.sort_index (ty, field, sort_key, key COLLATE \"C\");
+CREATE INDEX IF NOT EXISTS sort_index_desc
+    ON {s}.sort_index (ty, field, sort_key DESC, key COLLATE \"C\");
+CREATE INDEX IF NOT EXISTS sort_index_key ON {s}.sort_index (ty, key);
 CREATE TABLE IF NOT EXISTS {s}.vectors (
     ty TEXT NOT NULL, field TEXT NOT NULL, key TEXT NOT NULL, data BYTEA NOT NULL,
     PRIMARY KEY (ty, field, key)
@@ -138,7 +146,7 @@ CREATE TABLE IF NOT EXISTS {s}.vectors (
 }
 
 /// Every table of a lake's schema.
-pub(crate) const LAKE_TABLES: [&str; 14] = [
+pub(crate) const LAKE_TABLES: [&str; 15] = [
     "meta",
     "lease",
     "segments",
@@ -152,12 +160,13 @@ pub(crate) const LAKE_TABLES: [&str; 14] = [
     "text_index",
     "edges",
     "full_text",
+    "sort_index",
     "vectors",
 ];
 
 /// The projection's tables, cleared by a rebuild; the log, its segments,
 /// the lease and the lake's name stay.
-pub(crate) const PROJECTION_TABLES: [&str; 10] = [
+pub(crate) const PROJECTION_TABLES: [&str; 11] = [
     "declarations",
     "records",
     "proposals",
@@ -167,6 +176,7 @@ pub(crate) const PROJECTION_TABLES: [&str; 10] = [
     "text_index",
     "edges",
     "full_text",
+    "sort_index",
     "vectors",
 ];
 
@@ -394,15 +404,84 @@ pub(crate) fn folded(db: &mut Db, names: &Names) -> Result<Option<Position>> {
         .map(|v| Position(v as u64)))
 }
 
+/// Record the position folded through, and that the order index is kept
+/// through it too, in one statement.
 pub(crate) fn set_folded(db: &mut Db, names: &Names, through: Position) -> Result<()> {
     db.execute(
         &format!(
-            "INSERT INTO {} (k, n) VALUES ('folded', $1) ON CONFLICT (k) DO UPDATE SET n = $1",
+            "INSERT INTO {} (k, n) VALUES ('folded', $1), ('sorted', $1) \
+             ON CONFLICT (k) DO UPDATE SET n = $1",
             names.t("meta")
         ),
         &[&(through.0 as i64)],
     )?;
     Ok(())
+}
+
+/// Rebuild the order index from the head records when it does not
+/// describe the head (`sorted` is not `folded`), in one transaction, and
+/// mark it kept through the position folded through. A lake made before
+/// the index, or written by a binary that does not keep it, is rebuilt
+/// once, when a writer opens it.
+pub(crate) fn rebuild_sorted(db: &mut Db, names: &Names) -> Result<()> {
+    db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED", |db| {
+        let row = db.query_one(
+            &format!(
+                "SELECT (SELECT n FROM {m} WHERE k = 'folded'), \
+                 (SELECT n FROM {m} WHERE k = 'sorted')",
+                m = names.t("meta")
+            ),
+            &[],
+        )?;
+        let (folded, sorted): (Option<i64>, Option<i64>) = (row.get(0), row.get(1));
+        let Some(folded) = folded.filter(|f| sorted != Some(*f)) else {
+            return Ok(());
+        };
+        db.execute(&format!("DELETE FROM {}", names.t("sort_index")), &[])?;
+        let types: Vec<String> = db
+            .query(
+                &format!(
+                    "SELECT DISTINCT ty FROM {} WHERE until IS NULL",
+                    names.t("records")
+                ),
+                &[],
+            )?
+            .iter()
+            .map(|r| r.get(0))
+            .collect();
+        for ty in types {
+            let ty = TypeName::from(ty);
+            let Some(decl) = type_at(db, names, &ty, None)? else {
+                continue;
+            };
+            let (mut tys, mut fields, mut keys, mut sort_keys) =
+                (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+            for r in head_records(db, names, &ty)? {
+                for (field, sort_key) in engines::order_rows(&decl, &r) {
+                    tys.push(ty.as_str().to_owned());
+                    fields.push(field.as_str().to_owned());
+                    keys.push(r.key.as_str().to_owned());
+                    sort_keys.push(sort_key);
+                }
+            }
+            db.execute(
+                &format!(
+                    "INSERT INTO {} (ty, field, key, sort_key) \
+                     SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::bytea[])",
+                    names.t("sort_index")
+                ),
+                &[&tys, &fields, &keys, &sort_keys],
+            )?;
+        }
+        db.execute(
+            &format!(
+                "INSERT INTO {} (k, n) VALUES ('sorted', $1) ON CONFLICT (k) DO UPDATE SET n = $1",
+                names.t("meta")
+            ),
+            &[&folded],
+        )?;
+        Ok(())
+    })
 }
 
 pub(crate) fn decode<T: serde::de::DeserializeOwned>(state: &str, what: &str) -> Result<T> {
@@ -482,7 +561,12 @@ struct IndexRows<'r> {
     text: [Vec<&'r str>; 4],
     tokens: [Vec<String>; 3],
     edges: [Vec<String>; 5],
+    sorted: SortRows<'r>,
 }
+
+/// The order index rows of records, as arrays: types, fields, keys and
+/// sort keys.
+type SortRows<'r> = (Vec<&'r str>, Vec<String>, Vec<&'r str>, Vec<Vec<u8>>);
 
 /// Rewrite the head indexes of records from their latest states, each
 /// under the declaration of its type at the head, in two statements: the
@@ -501,10 +585,12 @@ pub(crate) fn index_records(
             &format!(
                 "WITH d AS (SELECT * FROM unnest($1::text[], $2::text[]) AS d(ty, key)), \
                  x AS (DELETE FROM {text} t USING d WHERE t.ty = d.ty AND t.key = d.key), \
-                 y AS (DELETE FROM {full} t USING d WHERE t.ty = d.ty AND t.key = d.key) \
+                 y AS (DELETE FROM {full} t USING d WHERE t.ty = d.ty AND t.key = d.key), \
+                 z AS (DELETE FROM {sorted} t USING d WHERE t.ty = d.ty AND t.key = d.key) \
                  DELETE FROM {edges} t USING d WHERE t.src_ty = d.ty AND t.src_key = d.key",
                 text = names.t("text_index"),
                 full = names.t("full_text"),
+                sorted = names.t("sort_index"),
                 edges = names.t("edges"),
             ),
             &[&tys, &keys],
@@ -521,6 +607,12 @@ pub(crate) fn index_records(
             }
         }
         let Some(decl) = decl else { continue };
+        for (field, sort_key) in engines::order_rows(decl, r) {
+            rows.sorted.0.push(ty);
+            rows.sorted.1.push(field.as_str().to_owned());
+            rows.sorted.2.push(key);
+            rows.sorted.3.push(sort_key);
+        }
         for e in engines::links_of(decl, r, None) {
             let link = [
                 ty,
@@ -541,26 +633,36 @@ pub(crate) fn index_records(
             rows.tokens[2].push(key.to_owned());
         }
     }
-    if rows.text[0].is_empty() && rows.tokens[0].is_empty() && rows.edges[0].is_empty() {
+    if rows.text[0].is_empty()
+        && rows.tokens[0].is_empty()
+        && rows.edges[0].is_empty()
+        && rows.sorted.0.is_empty()
+    {
         return Ok(());
     }
     let [t1, t2, t3, t4] = &rows.text;
     let [f1, f2, f3] = &rows.tokens;
     let [e1, e2, e3, e4, e5] = &rows.edges;
+    let (s1, s2, s3, s4) = &rows.sorted;
     db.execute(
         &format!(
             "WITH x AS (INSERT INTO {text} (ty, field, value, key) \
                SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[]) \
                ON CONFLICT DO NOTHING), \
              y AS (INSERT INTO {full} (ty, token, key) \
-               SELECT * FROM unnest($5::text[], $6::text[], $7::text[])) \
+               SELECT * FROM unnest($5::text[], $6::text[], $7::text[])), \
+             z AS (INSERT INTO {sorted} (ty, field, key, sort_key) \
+               SELECT * FROM unnest($13::text[], $14::text[], $15::text[], $16::bytea[])) \
              INSERT INTO {edges} (src_ty, src_key, relation, dst_ty, dst_key) \
              SELECT * FROM unnest($8::text[], $9::text[], $10::text[], $11::text[], $12::text[])",
             text = names.t("text_index"),
             full = names.t("full_text"),
+            sorted = names.t("sort_index"),
             edges = names.t("edges"),
         ),
-        &[t1, t2, t3, t4, f1, f2, f3, e1, e2, e3, e4, e5],
+        &[
+            t1, t2, t3, t4, f1, f2, f3, e1, e2, e3, e4, e5, s1, s2, s3, s4,
+        ],
     )?;
     Ok(())
 }
