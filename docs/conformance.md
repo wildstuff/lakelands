@@ -494,7 +494,7 @@ belongs in the suite, not beside one engine:
 
 - `a_chain_of_reactions_past_the_lakes_ceiling_is_refused_too_deep_and_appends_nothing` — 021: a host writes each reaction one deeper than its cause; the store takes every write up to the lake's max_reactive_depth and refuses the next as too_deep naming the ceiling, an upsert and a retire alike and whatever origin the context names, appending nothing, while the log keeps the chain before it with each write's depth
 
-### Through the engine seam (44 checks)
+### Through the engine seam (45 checks)
 
 **log**
 
@@ -527,6 +527,7 @@ belongs in the suite, not beside one engine:
 - `a_view_keeps_its_position_after_later_commits` — seams §LakeEngine: a view keeps answering its own position while the fold moves on
 - `a_put_at_the_same_position_replaces_the_state_there` — seams §ProjectionStore: a put of the same thing at the same position replaces the state there; the fold writing a state again never adds a second one
 - `a_put_before_a_later_state_ends_where_that_state_begins` — seams §ProjectionStore: a state put at a position before a later state of the same thing is valid until that later state begins, which stays the latest
+- `several_puts_of_one_thing_in_one_transaction_leave_what_they_leave_one_by_one` — seams §ProjectionStore: puts of the same things in one transaction, at later positions, at the same one or before a later one, leave the history and the head's indexes a commit after each put would leave
 - `clear_empties_the_projection_and_the_vector_index` — seams §ProjectionStore: clear deletes every state, kept history and the vector index included, and leaves nothing folded, for a rebuild from the log
 
 **reads**
