@@ -38,7 +38,8 @@
 //! Ingest, the feed, the export and its verification are held to this,
 //! and so are the walk through `find`, which measures each page on its
 //! own, as its largest page: a page holds its rows, not the type
-//! (lakelands#134), and the rebuild, which folds the log a page at a time
+//! (lakelands#134), and the first pages ordered by a field, which read the
+//! order index and not the type (lakelands#137), and the rebuild, which folds the log a page at a time
 //! (lakelands#130), and the reopen, which reads the log a page at a time
 //! and on SQLite keeps a mark per 256 events of its index, not the index
 //! (lakelands#133), and a walk over link records: a pattern query of
@@ -98,6 +99,7 @@ use lakelands_api::ontology::{
     Authority, Cardinality, EmbedDecl, FieldDecl, FieldType, RelationDecl, StorageKind, TypeDecl,
 };
 use lakelands_api::query::{Depth, Pattern, QueryResult, Search, SearchMode, Step, Walk};
+use lakelands_api::read::{Direction, Order, OrderBy};
 use lakelands_api::seam::{FeedFilter, Seams};
 use lakelands_api::{
     Find, Found, LakeStore, Position, Principal, ReadAt, RecordKey, SourceId, SourceRecord,
@@ -793,6 +795,72 @@ impl Size<'_> {
         Ok(())
     }
 
+    /// Walk the first pages of `reading` ordered by its `note`, a text field
+    /// every record holds with its own value, a page of `max_limit` at a
+    /// time with the cursor, measuring each page on its own: a page ordered
+    /// by a field holds its rows, not the type (lakelands#137).
+    async fn sorted_walk(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+        const PAGES: u64 = 5;
+        let cat = doors(store);
+        let head = store.head().await.must("reading the head")?;
+        let limit = limits().max_limit;
+        let mut find = Find {
+            limit: Some(limit),
+            order_by: vec![Order {
+                field: "note".into(),
+                by: OrderBy::Value,
+                dir: Direction::Asc,
+            }],
+            ..Find::default()
+        };
+        let mut previous: Option<String> = None;
+        let mut worst: Option<Heap> = None;
+        let started = Instant::now();
+        for page in 1..=PAGES {
+            let m = Measure::start(&self.given.meter, false);
+            let reply = cat
+                .find(&self.own, &TypeName::from(TY), find.clone())
+                .await
+                .must(&format!("finding page {page} of `reading` by `note`"))?;
+            let (heap, _) = m.stop();
+            if let Some(h) = heap
+                && worst.is_none_or(|w| h.held() > w.held())
+            {
+                worst = Some(h);
+            }
+            let Found::Records { rows, next_cursor } = reply.data else {
+                return Err(Failure::new(
+                    "finding `reading` records without an aggregate answered groups",
+                ));
+            };
+            for r in &rows {
+                let note = r
+                    .fields
+                    .get("note")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned);
+                ensure!(
+                    previous <= note,
+                    "walking `reading` by `note` answered {note:?} after {previous:?}"
+                );
+                previous = note;
+            }
+            match next_cursor {
+                Some(c) => find.cursor = Some(c),
+                None => break,
+            }
+        }
+        self.row(
+            "find-sorted",
+            Claim::Held,
+            records,
+            head.0 + 1,
+            format!("{PAGES} pages of at most {limit} by `note`; the largest page"),
+            (worst, started.elapsed()),
+        );
+        Ok(())
+    }
+
     /// Link every record delivered from `from` to `size` to the two it
     /// [`follows`], through a source; not measured.
     async fn link(&mut self, store: &dyn LakeStore, from: u64, size: u64) -> Result<(), Failure> {
@@ -1047,6 +1115,7 @@ async fn a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_doe
         let dir = given.scratch.join(format!("export-{records}"));
         size.export(store.as_ref(), records, &log, &dir).await?;
         size.find_walk(store.as_ref(), records).await?;
+        size.sorted_walk(store.as_ref(), records).await?;
         size.search(store.as_ref(), records).await?;
         size.traverse(store.as_ref(), records).await?;
         size.rebuild(store.as_ref(), records).await?;
