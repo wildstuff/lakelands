@@ -850,17 +850,27 @@ mod tests {
                 tokio::time::sleep(SILENCE / 3).await;
                 s.write_all(b"1\r\n\n\r\n").await.unwrap();
             }
-            // Then the rest of the upload is read, and answered.
+            // Then the rest of the upload is read, and answered. The
+            // server goes on saying it works while it reads, as the real
+            // one does after every quiet keep-alive: the buffers that
+            // filled drain before the client takes its next record, and on
+            // a slow machine that takes longer than the bound.
             let mut buf = vec![0u8; 64 << 10];
             let mut tail = Vec::new();
+            let mut alive = tokio::time::interval(SILENCE / 3);
             loop {
-                let n = s.read(&mut buf).await.unwrap();
-                tail.extend_from_slice(&buf[..n]);
-                if n == 0 || tail.ends_with(b"0\r\n\r\n") {
-                    break;
+                tokio::select! {
+                    n = s.read(&mut buf) => {
+                        let n = n.unwrap();
+                        tail.extend_from_slice(&buf[..n]);
+                        if n == 0 || tail.ends_with(b"0\r\n\r\n") {
+                            break;
+                        }
+                        let keep = tail.len().saturating_sub(8);
+                        tail.drain(..keep);
+                    }
+                    _ = alive.tick() => s.write_all(b"1\r\n\n\r\n").await.unwrap(),
                 }
-                let keep = tail.len().saturating_sub(8);
-                tail.drain(..keep);
             }
             let line = r#"{"position":5,"records":512,"duplicates":0}"#;
             let reply = format!("{:x}\r\n{line}\r\n0\r\n\r\n", line.len());
