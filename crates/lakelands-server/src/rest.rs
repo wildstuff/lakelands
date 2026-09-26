@@ -1071,6 +1071,7 @@ async fn feed(
     let filter = FeedFilter {
         kinds: words("kinds"),
         types: words("types").into_iter().map(Into::into).collect(),
+        keys: Vec::new(),
     };
     let head = store.head().await.map_err(contract)?;
     if from.0 > head.0 + 1 {

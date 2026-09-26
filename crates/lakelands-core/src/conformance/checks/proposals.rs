@@ -515,6 +515,7 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
             &lakelands_api::seam::FeedFilter {
                 kinds: vec!["output_recorded".into()],
                 types: vec![],
+                keys: Vec::new(),
             },
             u32::MAX,
         )
@@ -559,6 +560,7 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
             &lakelands_api::seam::FeedFilter {
                 kinds: vec!["output_recorded".into()],
                 types: vec![],
+                keys: Vec::new(),
             },
             u32::MAX,
         )

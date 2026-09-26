@@ -147,6 +147,18 @@ impl ChangeFeed for RemoteFeed {
                 head,
             });
         }
+        // The REST feed takes no keys yet (lakelands#146's door half); a
+        // filter with keys is refused, naming them, rather than dropped.
+        if !filter.keys.is_empty() {
+            return Err(Error::Refused {
+                field: Some("keys".into()),
+                reason: lakelands_api::Refusal::Invalid {
+                    message: "the REST feed does not filter by key yet; poll by type and \
+                              compare keys, or hold the lake in-process"
+                        .into(),
+                },
+            });
+        }
         let key = wire.feed_key()?;
         let words = |w: &[String]| enc(&w.join(","));
         let mut query = format!("from={}", from.0);

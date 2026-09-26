@@ -673,6 +673,22 @@ fn type_of(body: &EventBody) -> Option<&TypeName> {
     }
 }
 
+/// The record an event is about, by its key: the `record_*` events,
+/// `trigger_fired`, `object_set_changed` and `verb_called`.
+fn key_of(body: &EventBody) -> Option<&RecordKey> {
+    match body {
+        EventBody::RecordUpserted { key, .. }
+        | EventBody::RecordIngested { key, .. }
+        | EventBody::RecordRetired { key, .. }
+        | EventBody::RecordRestricted { key, .. }
+        | EventBody::RecordUnrestricted { key, .. }
+        | EventBody::TriggerFired { key, .. }
+        | EventBody::ObjectSetChanged { key, .. }
+        | EventBody::VerbCalled { key, .. } => Some(key),
+        _ => None,
+    }
+}
+
 #[async_trait]
 impl ChangeFeed for Feed {
     async fn poll(&self, from: Position, filter: &FeedFilter, limit: u32) -> Result<FeedBatch> {
@@ -698,7 +714,9 @@ impl ChangeFeed for Feed {
                         filter.kinds.is_empty() || filter.kinds.iter().any(|k| k == e.body.kind());
                     let type_ok = filter.types.is_empty()
                         || type_of(&e.body).is_some_and(|t| filter.types.contains(t));
-                    if kind_ok && type_ok {
+                    let key_ok = filter.keys.is_empty()
+                        || key_of(&e.body).is_some_and(|k| filter.keys.contains(k));
+                    if kind_ok && type_ok && key_ok {
                         events.push(e);
                         if events.len() >= want {
                             break 'read;

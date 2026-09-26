@@ -423,6 +423,7 @@ impl Deliverer {
         let filter = FeedFilter {
             kinds: self.kinds.clone(),
             types: vec![],
+            keys: Vec::new(),
         };
         let from = match self.kept()? {
             Some(p) => p,

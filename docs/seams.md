@@ -730,6 +730,27 @@ once, possibly empty, never waiting for new events:
   event without one passes only a filter with no types. The kinds are
   free strings, so a relay may name one a newer format adds;
   `lakelands_api::event::KINDS` lists the kinds of this format version.
+  A non-empty `filter.keys` admits only events about a record with one
+  of those keys: the `record_*` events, `trigger_fired`,
+  `object_set_changed` and `verb_called`, each naming its record.
+  - With `types` named, the event's type and key must both match, so
+    `types: [invoice], keys: [INV-1]` is one record's history.
+  - With `types` empty, a key matches in any type.
+  - `verb_called` names no type, so it passes only when `types` is empty,
+    as for the type filter.
+  - No other event passes a key filter.
+  - A link is a record of its link type, keyed by its own key, so a
+    record's links are followed by naming the link type, not the
+    record's key.
+  - A re-key is not followed: the old key answers the record's events
+    up to the `migrated` event, and the new key those after it (suite:
+    `a_feed_filtered_by_key_answers_that_records_events_only`,
+    `a_key_filter_does_not_follow_a_rekey`).
+
+  A key filter reads the log from `from` as every filter does, so one
+  record's history asked for from position 0 reads the whole log.
+  `lakelands-client` refuses a filter with keys as invalid, naming
+  `keys`, until the REST feed takes them.
 - `next`: the position after the last event examined, matched or not,
   which is where the next poll starts.
 - `head`: the lake's last position when the poll began.

@@ -451,11 +451,13 @@ impl ChangeFeed for Feed {
             next = e.position.next();
             let kind_ok =
                 filter.kinds.is_empty() || filter.kinds.iter().any(|k| k == e.body.kind());
-            let type_ok = filter.types.is_empty() || {
-                let body = serde_json::to_value(&e.body).unwrap_or_default();
-                filter.types.iter().any(|t| body["type"] == t.as_str())
-            };
-            if kind_ok && type_ok {
+            let body = serde_json::to_value(&e.body).unwrap_or_default();
+            let type_ok =
+                filter.types.is_empty() || filter.types.iter().any(|t| body["type"] == t.as_str());
+            // An event about a record names its key at the top of its body.
+            let key_ok =
+                filter.keys.is_empty() || filter.keys.iter().any(|k| body["key"] == k.as_str());
+            if kind_ok && type_ok && key_ok {
                 events.push(e.clone());
             }
         }

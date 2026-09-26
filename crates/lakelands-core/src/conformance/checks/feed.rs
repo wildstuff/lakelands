@@ -15,6 +15,18 @@ use crate::conformance::Failure;
 use crate::conformance::fixture::{Must, declare, doors, field, owner, type_decl, upsert};
 
 check!(
+    /// A key filter answers one record's events.
+    BY_KEY = a_feed_filtered_by_key_answers_that_records_events_only,
+    "004 and lakelands#146: a feed filtered by types and keys answers exactly the events about those records, in log order, each once: its upserts, a verb called on it, a trigger it fired, its object-set changes, a restrict, an unrestrict and its retire; with types empty a key matches in any type and verb_called passes too; kinds narrow it further; no event that names no record passes"
+);
+
+check!(
+    /// A key filter does not follow a re-key.
+    BY_OLD_KEY = a_key_filter_does_not_follow_a_rekey,
+    "004, 027 and lakelands#146: a feed filtered by a record's old key answers its events up to the migration that re-keyed it and none after; the new key answers what came after"
+);
+
+check!(
     /// The feed answers the log from a position.
     FEED_IS_THE_LOG = the_feed_answers_the_log_from_a_position_by_kind_and_type,
     "004: `poll` answers the events from a position in log order, filtered by kind and type, with the position to poll from next and the head"
@@ -171,6 +183,7 @@ async fn the_feed_answers_the_log_from_a_position_by_kind_and_type(
     let invoices_only = FeedFilter {
         kinds: vec!["record_upserted".into()],
         types: vec![TypeName::from("invoice")],
+        keys: Vec::new(),
     };
     let first = feed
         .poll(from, &invoices_only, 1)
@@ -335,6 +348,7 @@ async fn polling_from_next_in_small_pages_sees_every_matching_event_once_in_orde
     let invoices_only = FeedFilter {
         kinds: vec!["record_upserted".into()],
         types: vec!["invoice".into()],
+        keys: Vec::new(),
     };
     let mut next = store.head().await.must("reading the head")?.next();
     let mut seen: Vec<Position> = Vec::new();
@@ -392,6 +406,276 @@ async fn polling_from_next_in_small_pages_sees_every_matching_event_once_in_orde
         seen == written,
         "polling from `next` in pages of one and two, with writes between the polls, must see \
          each invoice write once and in log order: written at {written:?}, seen at {seen:?}"
+    );
+    Ok(())
+}
+
+/// The kinds of the events that are about a record.
+const ABOUT_A_RECORD: [&str; 8] = [
+    "record_upserted",
+    "record_ingested",
+    "record_retired",
+    "record_restricted",
+    "record_unrestricted",
+    "trigger_fired",
+    "object_set_changed",
+    "verb_called",
+];
+
+/// Every event of the lake, from the start.
+async fn whole_log(store: &dyn LakeStore) -> Result<Vec<Event>, Failure> {
+    Ok(store
+        .feed()
+        .poll(Position::GENESIS, &FeedFilter::default(), 10_000)
+        .await
+        .must("reading the whole feed")?
+        .events)
+}
+
+async fn polled(store: &dyn LakeStore, filter: FeedFilter) -> Result<Vec<Event>, Failure> {
+    Ok(store
+        .feed()
+        .poll(Position::GENESIS, &filter, 10_000)
+        .await
+        .must(&format!("reading the feed with {filter:?}"))?
+        .events)
+}
+
+/// Whether an event is about the record `key` of one of `types` (any type
+/// when empty), read from its body's own members.
+fn about(e: &Event, types: &[&str], key: &str) -> bool {
+    let body = serde_json::to_value(&e.body).unwrap_or_default();
+    let kind = e.body.kind();
+    ABOUT_A_RECORD.contains(&kind)
+        && body["key"] == key
+        && (types.is_empty() || types.iter().any(|t| body["type"] == *t))
+}
+
+fn positions(events: &[Event]) -> Vec<u64> {
+    events.iter().map(|e| e.position.0).collect()
+}
+
+async fn a_feed_filtered_by_key_answers_that_records_events_only(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    for ty in ["invoice", "credit"] {
+        declare(
+            cat.as_ref(),
+            &own,
+            type_decl(
+                ty,
+                vec![
+                    field("status", StorageKind::Text),
+                    field("amount", StorageKind::Number),
+                ],
+            ),
+        )
+        .await?;
+    }
+    for d in [
+        json!({"declare": "trigger", "name": "paid", "on": "invoice", "when": "status = 'paid'"}),
+        json!({"declare": "object_set", "name": "open_ones", "of": "invoice", "where": "status = 'open'"}),
+        json!({"declare": "verb", "name": "approve", "on": "invoice", "risk": "low",
+               "effect": "write", "set": [{"field": "status", "value": "'approved'"}]}),
+    ] {
+        let d: Declaration = serde_json::from_value(d)
+            .map_err(|e| Failure::new(format!("the check's declaration does not read: {e}")))?;
+        cat.declare(&own, d)
+            .await
+            .must("declaring the check's reactions")?;
+    }
+    for (ty, key) in [
+        ("invoice", "INV-1"),
+        ("invoice", "INV-2"),
+        ("credit", "INV-1"),
+    ] {
+        upsert(
+            cat.as_ref(),
+            &own,
+            ty,
+            key,
+            json!({"status": "open", "amount": 1}),
+        )
+        .await?;
+    }
+    cat.call(
+        &own,
+        &"approve".into(),
+        &"INV-1".into(),
+        crate::conformance::fixture::patch(json!({})),
+        lakelands_api::WriteOpts::default(),
+    )
+    .await
+    .must("calling `approve` on INV-1")?;
+    upsert(
+        cat.as_ref(),
+        &own,
+        "invoice",
+        "INV-1",
+        json!({"status": "paid"}),
+    )
+    .await?;
+    let (invoice, inv1) = (
+        TypeName::from("invoice"),
+        lakelands_api::RecordKey::from("INV-1"),
+    );
+    store
+        .restrict(&invoice, &inv1, "a hold".into())
+        .await
+        .must("restricting INV-1")?;
+    store
+        .unrestrict(&invoice, &inv1)
+        .await
+        .must("lifting the hold")?;
+    for key in ["INV-2", "INV-1"] {
+        cat.retire(
+            &own,
+            &invoice,
+            &key.into(),
+            lakelands_api::WriteOpts::default(),
+        )
+        .await
+        .must(&format!("retiring {key}"))?;
+    }
+
+    let log = whole_log(store.as_ref()).await?;
+    let keys = || vec![inv1.clone()];
+
+    // Types and keys: one record's history.
+    let got = polled(
+        store.as_ref(),
+        FeedFilter {
+            types: vec![invoice.clone()],
+            keys: keys(),
+            ..FeedFilter::default()
+        },
+    )
+    .await?;
+    let want: Vec<Event> = log
+        .iter()
+        .filter(|e| about(e, &["invoice"], "INV-1"))
+        .cloned()
+        .collect();
+    ensure!(
+        got == want,
+        "a feed filtered by `invoice` and `INV-1` answered positions {:?}; the events about \
+         that record are at {:?}",
+        positions(&got),
+        positions(&want)
+    );
+    let kinds: std::collections::BTreeSet<&str> = got.iter().map(|e| e.body.kind()).collect();
+    for kind in [
+        "record_upserted",
+        "trigger_fired",
+        "object_set_changed",
+        "record_restricted",
+        "record_unrestricted",
+        "record_retired",
+    ] {
+        ensure!(
+            kinds.contains(kind),
+            "INV-1's history holds a `{kind}` event; the keyed feed answered the kinds {kinds:?}"
+        );
+    }
+
+    // Keys alone: the key in any type, and the verb called on it.
+    let got = polled(
+        store.as_ref(),
+        FeedFilter {
+            keys: keys(),
+            ..FeedFilter::default()
+        },
+    )
+    .await?;
+    let want: Vec<Event> = log
+        .iter()
+        .filter(|e| about(e, &[], "INV-1"))
+        .cloned()
+        .collect();
+    ensure!(
+        got == want,
+        "a feed filtered by the key `INV-1` alone answered positions {:?}; the events about a \
+         record keyed INV-1, in any type, are at {:?}",
+        positions(&got),
+        positions(&want)
+    );
+    ensure!(
+        got.iter().any(|e| e.body.kind() == "verb_called")
+            && got
+                .iter()
+                .any(|e| serde_json::to_value(&e.body).unwrap_or_default()["type"] == "credit"),
+        "with types empty, the key matches the `credit` of that key and the verb called on it; \
+         the feed answered the kinds {:?}",
+        got.iter().map(|e| e.body.kind()).collect::<Vec<_>>()
+    );
+
+    // Kinds narrow a key filter further.
+    let got = polled(
+        store.as_ref(),
+        FeedFilter {
+            kinds: vec!["record_upserted".into()],
+            types: vec![invoice.clone()],
+            keys: keys(),
+        },
+    )
+    .await?;
+    let want: Vec<Event> = log
+        .iter()
+        .filter(|e| e.body.kind() == "record_upserted" && about(e, &["invoice"], "INV-1"))
+        .cloned()
+        .collect();
+    ensure!(
+        got == want && !got.is_empty(),
+        "kinds and a key together answered positions {:?}; INV-1's upserts are at {:?}",
+        positions(&got),
+        positions(&want)
+    );
+    Ok(())
+}
+
+async fn a_key_filter_does_not_follow_a_rekey(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+    super::rekey::lake(store.as_ref(), super::rekey::IBANS).await?;
+    let at = super::rekey::apply(store.as_ref()).await?;
+    upsert(
+        doors(store.as_ref()).as_ref(),
+        &owner(store.as_ref()),
+        "account",
+        "DE1",
+        json!({"holder": "after the re-key"}),
+    )
+    .await?;
+    let account = TypeName::from("account");
+    let old = polled(
+        store.as_ref(),
+        FeedFilter {
+            types: vec![account.clone()],
+            keys: vec!["1".into()],
+            ..FeedFilter::default()
+        },
+    )
+    .await?;
+    ensure!(
+        !old.is_empty() && old.iter().all(|e| e.position < at),
+        "account 1's old key answers its events before the re-key at {at} and none after; \
+         the feed answered positions {:?}",
+        positions(&old)
+    );
+    let new = polled(
+        store.as_ref(),
+        FeedFilter {
+            types: vec![account],
+            keys: vec!["DE1".into()],
+            ..FeedFilter::default()
+        },
+    )
+    .await?;
+    ensure!(
+        !new.is_empty() && new.iter().all(|e| e.position > at),
+        "account 1's new key DE1 answers what came after the re-key at {at}; the feed \
+         answered positions {:?}",
+        positions(&new)
     );
     Ok(())
 }

@@ -122,7 +122,7 @@ pub struct Aggregate {
 /// groups by its value per record, answered under `name` in the group's
 /// `by`: `{"name": "month", "expr": "date_bucket(due_on, 'month')"}`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(untagged, deny_unknown_fields)]
 pub enum GroupKey {
     /// A field's value.
     Field(FieldName),
@@ -225,4 +225,21 @@ pub struct Get {
     /// The time axes.
     #[serde(default, flatten)]
     pub at: ReadAt,
+}
+
+#[cfg(test)]
+mod group_key_tests {
+    use super::GroupKey;
+
+    #[test]
+    fn a_group_key_reads_either_form_and_refuses_an_unknown_member() {
+        let field: GroupKey = serde_json::from_str(r#""partner""#).unwrap();
+        assert_eq!(field, GroupKey::from("partner"));
+        let named: GroupKey =
+            serde_json::from_str(r#"{"name": "m", "expr": "date_bucket(on, 'month')"}"#).unwrap();
+        assert_eq!(named.name().as_str(), "m");
+        let extra =
+            serde_json::from_str::<GroupKey>(r#"{"name": "m", "expr": "x", "unit": "day"}"#);
+        assert!(extra.is_err(), "an unknown member is refused: {extra:?}");
+    }
 }

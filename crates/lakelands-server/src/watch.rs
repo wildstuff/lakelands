@@ -295,6 +295,7 @@ pub async fn pump(
         let filter = FeedFilter {
             kinds,
             types: vec![],
+            keys: Vec::new(),
         };
         let batch = match feed.poll(from, &filter, BATCH).await {
             Ok(b) => b,

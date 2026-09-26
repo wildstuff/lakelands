@@ -233,6 +233,7 @@ async fn fired_triggers_go_in_log_order_as_the_feed_holds_them_signed_over_the_r
             &FeedFilter {
                 kinds: vec!["trigger_fired".into(), "object_set_changed".into()],
                 types: vec![],
+                keys: Vec::new(),
             },
             100,
         )

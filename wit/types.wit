@@ -868,6 +868,8 @@ interface types {
         /// `lakelands_api::event::KINDS` (`docs/log-format.md`).
         kinds: list<string>,
         types: list<type-name>,
+        /// Only events about records with these keys; all when empty.
+        keys: list<record-key>,
     }
 
     record feed-batch {
