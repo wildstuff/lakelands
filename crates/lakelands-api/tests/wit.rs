@@ -958,6 +958,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             members(&FeedFilter {
                 kinds: vec!["k".into()],
                 types: vec!["invoice".into()],
+                keys: vec!["INV-1".into()],
             }),
         ),
         (

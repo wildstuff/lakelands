@@ -323,14 +323,17 @@ async fn poll_reads_what_the_stores_own_feed_reads() {
         FeedFilter {
             kinds: vec!["record_upserted".into()],
             types: Vec::new(),
+            keys: Vec::new(),
         },
         FeedFilter {
             kinds: Vec::new(),
             types: vec![TypeName::from("invoice")],
+            keys: Vec::new(),
         },
         FeedFilter {
             kinds: Vec::new(),
             types: vec![TypeName::from("nowhere")],
+            keys: Vec::new(),
         },
     ];
     let head = store.head().await.unwrap();
@@ -457,6 +460,27 @@ async fn every_host_operation_is_unbound_naming_it() {
             }
             other => panic!("{op}: expected unbound, got {other:?}"),
         }
+    }
+    assert_eq!(taken.load(Ordering::SeqCst), 0);
+}
+
+/// A feed filter with keys is refused before anything is sent, naming
+/// `keys`: the REST feed does not filter by key yet (lakelands#146).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_feed_filter_with_keys_is_refused_before_anything_is_sent() {
+    let (addr, taken) = fake(Vec::new()).await;
+    let lake = LakeId::from("finance");
+    let remote = common::remote(addr, &lake, keys(&["owner"]));
+    let filter = FeedFilter {
+        keys: vec![RecordKey::from("INV-1")],
+        ..FeedFilter::default()
+    };
+    match remote.feed().poll(Position(0), &filter, 10).await {
+        Err(Error::Refused {
+            field: Some(field),
+            reason: lakelands_api::Refusal::Invalid { .. },
+        }) => assert_eq!(field.as_str(), "keys"),
+        other => panic!("a filter with keys is refused as invalid, naming `keys`: {other:?}"),
     }
     assert_eq!(taken.load(Ordering::SeqCst), 0);
 }

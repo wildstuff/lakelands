@@ -478,6 +478,7 @@ pub async fn feed(
     let filter = FeedFilter {
         kinds,
         types: Vec::new(),
+        keys: Vec::new(),
     };
     let mut at = from;
     loop {

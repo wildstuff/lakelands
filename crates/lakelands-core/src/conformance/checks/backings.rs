@@ -128,6 +128,7 @@ async fn outputs(store: &dyn LakeStore) -> Result<Vec<Event>, Failure> {
             &FeedFilter {
                 kinds: vec!["output_recorded".into()],
                 types: vec![],
+                keys: Vec::new(),
             },
             u32::MAX,
         )

@@ -207,6 +207,7 @@ async fn a_checkpoint_seals_a_segment_and_verification_follows_it() {
             &FeedFilter {
                 kinds: vec!["checkpoint".into()],
                 types: vec![],
+                keys: Vec::new(),
             },
             10,
         )
@@ -242,6 +243,7 @@ async fn the_feed_filters_by_kind_and_type_and_says_where_to_go_on() {
     let filter = FeedFilter {
         kinds: vec!["record_upserted".into()],
         types: vec!["b".into()],
+        keys: Vec::new(),
     };
     let batch = store.feed().poll(Position(0), &filter, 10).await.unwrap();
     assert_eq!(batch.events.len(), 1);

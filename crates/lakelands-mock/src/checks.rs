@@ -882,6 +882,7 @@ pub async fn a_riskier_verb_is_proposed_and_accept_applies_it(store: Arc<dyn Lak
             &FeedFilter {
                 kinds: vec!["write_proposed".into(), "write_accepted".into()],
                 types: Vec::new(),
+                keys: Vec::new(),
             },
             10,
         )
@@ -1386,6 +1387,7 @@ pub async fn the_feed_is_the_log_by_position(store: Arc<dyn LakeStore>) {
             &FeedFilter {
                 kinds: vec!["record_upserted".into()],
                 types: vec![ty(INVOICE)],
+                keys: Vec::new(),
             },
             1,
         )

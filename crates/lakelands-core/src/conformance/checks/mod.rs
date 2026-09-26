@@ -244,6 +244,8 @@ pub const ALL: &[Check] = &[
     compact::WRITES_DURING,
     settings::SETTING_AS_OF,
     feed::LIMIT_ZERO_IS_ONE,
+    feed::BY_KEY,
+    feed::BY_OLD_KEY,
     retire::SOURCE_ONLY_HAS_NO_UPSERT,
     search::HIT_IS_THE_RECORD,
     vocabulary::HOST_TYPES_AT_OPEN,
