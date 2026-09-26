@@ -75,21 +75,24 @@ of changes without polling, `propose`, `proposals`, `accept` and
 `add_field` and `migrate` for the schema. Served over MCP (stdio and
 HTTP) and REST from one catalog. Agents never write a query language.
 
-> **Status: `0.1.0`.** Lakelands `0.1.0` is the `lakelands` CLI and its
-> MCP server (stdio and streamable HTTP) over the SQLite and in-memory
-> engines, both passing the whole conformance suite, installable from
-> the release. `0.2.0`, on develop, adds the REST door beside MCP
-> (`docs/rest.md`), the PostgreSQL engine, the OpenAI-compatible
-> embedding client, the `http` and `exec` function backings, the webhook
-> deliverer, relations with fields of their own, carried by link
-> records, aging by date (`lakelands age`), retracting a source as one
-> act (`lakelands purge`), exporting a lake's log as files that verify
-> without Lakelands (`lakelands export`), giving a projection's unused
-> storage back without changing an answer (`lakelands compact`), and MCP notifications of the changes a
-> session may see, the ticker in `serve` that runs aging daily, and
-> `lakelands-client`, which holds a lake another process serves over
-> the REST door as the same `LakeStore` the store is. The mirror
-> between lakes comes after.
+> **Status: `0.2.0`.** Lakelands `0.2.0` is the `lakelands` CLI, its
+> MCP server (stdio and streamable HTTP) and its REST door over the
+> SQLite, in-memory and PostgreSQL engines, all three passing the whole
+> conformance suite, installable from the release. Beside what `0.1.0`
+> held it has the OpenAI-compatible embedding client and embedding on
+> write, the `http` and `exec` function backings, the webhook deliverer
+> and the ticker in `serve`, relations with fields of their own carried
+> by link records, aging by date (`lakelands age`), retracting a source
+> as one act (`lakelands purge`), value-type and key migrations,
+> exporting a lake's log as files that verify without Lakelands
+> (`lakelands export`), giving a projection's unused storage back
+> without changing an answer (`lakelands compact`), MCP notifications of
+> the changes a session may see, `lakelands-client`, which holds a lake
+> another process serves over the REST door as the same `LakeStore` the
+> store is, the position the log had at an instant, bucketed
+> aggregation on reads, a record's history through the feed, and vector
+> coverage per field. Views over more than one source, the mirror
+> between lakes and multi-row PostgreSQL commits come after.
 
 ## Try it
 
