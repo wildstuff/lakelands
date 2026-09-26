@@ -117,8 +117,12 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   `GET` under its own key, which resumes after `Last-Event-ID`. A stdio
   session answers one request after another: requests sent while one is
   served wait their turn, so a client that needs requests served side by
-  side takes the HTTP door. A client that does not read makes its
-  session lag; nothing is dropped. Delivery is at least once: when a
+  side takes the HTTP door. On a heavily loaded machine a stdio request
+  can therefore wait far longer than its own work: behind the requests
+  queued before it, each behind the writes of the other doors to the
+  same lake (the load run saw more than 60 s at a load of 40 on 12
+  cores, and under 11 s at a load under 10). A client that does not
+  read makes its session lag; nothing is dropped. Delivery is at least once: when a
   session subscribes again, at most one change already on its way may be
   told twice, and each carries its position to deduplicate by. This is a
   limit, not a promise of exactly once: the change in flight when the
