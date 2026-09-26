@@ -39,6 +39,17 @@
 //! waits and reads the same event again, so a transient failure delays a
 //! notification and never drops it.
 //!
+//! **What one change costs.** Each change a session is told costs one
+//! read: the record at the event's position, which decides whether the
+//! principal may see it then. The fields a type shows the principal, and
+//! whether it reads the type whole, are read once per type and kept for
+//! the pump's life. A declaration or migration of anything, or a pass that
+//! does not go on where the last one ended, drops them: the pump reads the
+//! feed in order and never filters declarations out, so no stale view
+//! outlives the declaration that changed it. The principal and its grants
+//! are fixed for the session the pump belongs to, so the view needs no
+//! other invalidation — and must never be shared across sessions.
+//!
 //! **The queue.** The pump puts notifications on a bounded queue
 //! ([`QUEUE`]) and polls the feed only when the queue takes them, so a
 //! client that does not read makes the session lag, and nothing is
@@ -265,6 +276,9 @@ pub async fn pump(
         }
     }
     let host = host(store.lake());
+    let mut view = View::new(catalog.as_ref(), &who, &host);
+    // Where the view's reads go on from; `None` after a pass broke off.
+    let mut view_at: Option<Position> = None;
     'poll: loop {
         if queue.is_closed() {
             return;
@@ -290,10 +304,17 @@ pub async fn pump(
                 continue;
             }
         };
-        let mut view = View::new(catalog.as_ref(), &who, &host);
+        // The view holds only while the passes read on without a gap.
+        if view_at != Some(from) {
+            view.forget();
+        }
+        view_at = None;
         for e in &batch.events {
             if watch.generation() != generation {
                 continue 'poll;
+            }
+            if matches!(e.body.kind(), "declared" | "migrated") {
+                view.forget();
             }
             let queued = match e.body.kind() {
                 "declared" | "migrated" if e.position >= declared => Some(Queued {
@@ -311,6 +332,7 @@ pub async fn pump(
                             Seen::Hidden => None,
                             Seen::Retry => {
                                 // Not past this event: read it again.
+                                view_at = Some(e.position);
                                 wait(&watch, &queue, pause).await;
                                 continue 'poll;
                             }
@@ -327,6 +349,7 @@ pub async fn pump(
             watch.advance(generation, e.position.next());
         }
         watch.advance(generation, batch.next);
+        view_at = Some(batch.next);
         let caught_up = batch.events.is_empty() || batch.next > batch.head;
         if caught_up {
             wait(&watch, &queue, pause).await;
@@ -358,11 +381,12 @@ struct View<'a> {
     catalog: &'a dyn Catalog,
     who: &'a Principal,
     host: &'a Principal,
-    /// The field names shown to the principal, by type and position.
-    shown: BTreeMap<(TypeName, Position), Vec<String>>,
-    /// Whether the principal reads every field of a type in full, by type
-    /// and position.
-    whole: BTreeMap<(TypeName, Position), bool>,
+    /// The field names shown to the principal, by type, since the last
+    /// declaration the pump passed.
+    shown: BTreeMap<TypeName, Vec<String>>,
+    /// Whether the principal reads every field of a type in full, by type,
+    /// since the last declaration the pump passed.
+    whole: BTreeMap<TypeName, bool>,
 }
 
 impl<'a> View<'a> {
@@ -374,6 +398,12 @@ impl<'a> View<'a> {
             shown: BTreeMap::new(),
             whole: BTreeMap::new(),
         }
+    }
+
+    /// Drop what was kept of the types' views.
+    fn forget(&mut self) {
+        self.shown.clear();
+        self.whole.clear();
     }
 
     /// How the principal may see an event.
@@ -474,7 +504,7 @@ impl<'a> View<'a> {
     /// The field names of `ty` the principal is shown at `at`: those it
     /// may read, and the masked ones by name.
     async fn shown(&mut self, ty: &TypeName, at: Position) -> Result<Vec<String>, Seen> {
-        if let Some(s) = self.shown.get(&(ty.clone(), at)) {
+        if let Some(s) = self.shown.get(ty) {
             return Ok(s.clone());
         }
         let d = self
@@ -489,14 +519,14 @@ impl<'a> View<'a> {
             .filter(|f| f.access != lakelands_api::Access::None)
             .map(|f| f.name.to_string())
             .collect();
-        self.shown.insert((ty.clone(), at), s.clone());
+        self.shown.insert(ty.clone(), s.clone());
         Ok(s)
     }
 
     /// Whether the principal reads every field of `ty` in full at `at`,
     /// as the host sees the type: none hidden, none masked.
     async fn whole(&mut self, ty: &TypeName, at: Position) -> Result<bool, Seen> {
-        if let Some(w) = self.whole.get(&(ty.clone(), at)) {
+        if let Some(w) = self.whole.get(ty) {
             return Ok(*w);
         }
         let d = self
@@ -509,7 +539,7 @@ impl<'a> View<'a> {
             .fields
             .iter()
             .all(|f| self.who.grants.access(ty, &f.name).reads());
-        self.whole.insert((ty.clone(), at), w);
+        self.whole.insert(ty.clone(), w);
         Ok(w)
     }
 }

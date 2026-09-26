@@ -924,6 +924,78 @@ async fn a_lake_that_fails_for_a_moment_delays_a_notification_and_loses_none() {
     }
 }
 
+/// Each change told costs one read, the record at its position; what a
+/// type shows the principal is read once and kept until a declaration
+/// changes it, and the next change after a redeclaration is shown with
+/// the new fields, never a stale view (lakelands#171).
+#[tokio::test]
+async fn a_change_told_costs_one_read_and_a_redeclaration_is_seen() {
+    use std::sync::atomic::Ordering;
+    const N: usize = 20;
+    for backend in BACKENDS {
+        let inner = common::lake_on(backend).await;
+        let faults = Arc::new(flaky::Faults::default());
+        let store: Arc<dyn LakeStore> = Arc::new(flaky::Store {
+            inner: inner.clone(),
+            faults: faults.clone(),
+        });
+        let mut s = Stdio::open(store.clone(), common::owner()).await;
+        s.call("subscribe", json!({"kinds": ["record_upserted"]}))
+            .await;
+        faults.gets.store(0, Ordering::SeqCst);
+        faults.describes.store(0, Ordering::SeqCst);
+        for i in 0..N {
+            write(
+                inner.as_ref(),
+                "invoice",
+                &format!("C-{i}"),
+                json!({"status": "open"}),
+            )
+            .await;
+        }
+        for _ in 0..N {
+            s.change().await;
+        }
+        assert_eq!(
+            (
+                faults.gets.load(Ordering::SeqCst),
+                faults.describes.load(Ordering::SeqCst)
+            ),
+            (N, 1),
+            "{backend:?}: one get per change, one description per type"
+        );
+
+        // A redeclaration drops the kept view: a field it adds is shown.
+        declare_memo(inner.as_ref()).await;
+        write(inner.as_ref(), "memo", "M-1", json!({"text": "a"})).await;
+        let first = s.change().await;
+        assert_eq!(
+            first["params"]["fields"],
+            json!(["text"]),
+            "{backend:?}: {first}"
+        );
+        let memo = serde_json::from_value(json!({
+            "name": "memo", "fields": [
+                {"name": "text", "type": {"kind": "text"}},
+                {"name": "tag", "type": {"kind": "text"}}
+            ]
+        }))
+        .unwrap();
+        inner
+            .catalog(WriteContext::default())
+            .declare(&common::owner(), Declaration::Type(memo))
+            .await
+            .unwrap();
+        write(inner.as_ref(), "memo", "M-1", json!({"tag": "b"})).await;
+        let second = s.change().await;
+        assert_eq!(
+            second["params"]["fields"],
+            json!(["tag"]),
+            "{backend:?}: {second}"
+        );
+    }
+}
+
 /// The two 300 ms pauses let the pump queue before the step that follows;
 /// under load it may have queued less, which weakens the test's claim,
 /// never makes it fail.

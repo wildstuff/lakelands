@@ -1,6 +1,6 @@
 //! A lake that answers `Unavailable` a set number of times on `head`
-//! and on `get`, can take its time before an ingest's first window, and
-//! otherwise is the lake it wraps.
+//! and on `get`, can take its time before an ingest's first window,
+//! counts the reads made through it, and otherwise is the lake it wraps.
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -28,14 +28,18 @@ use lakelands_api::write::{
 use lakelands_api::{Catalog, LakeStore};
 
 /// How many more times `head` and `get` fail, how many more times `get`
-/// answers that its reads have not reached the position yet, and how
-/// many milliseconds an ingest's first window takes to commit.
+/// answers that its reads have not reached the position yet, how many
+/// milliseconds an ingest's first window takes to commit, and how many
+/// reads were made.
 #[derive(Default)]
 pub struct Faults {
     pub head: AtomicUsize,
     pub get: AtomicUsize,
     pub behind: AtomicUsize,
     pub first_window_millis: AtomicU64,
+    /// How many `get`s and `describe_type`s were asked of it.
+    pub gets: AtomicUsize,
+    pub describes: AtomicUsize,
 }
 
 /// An ingest's windows, the first one late: the body is not read while
@@ -167,12 +171,14 @@ impl Catalog for Doors {
         ty: &TypeName,
         at: ReadAt,
     ) -> Result<Reply<TypeDescription>> {
+        self.faults.describes.fetch_add(1, Ordering::SeqCst);
         self.inner.describe_type(who, ty, at).await
     }
     async fn find(&self, who: &Principal, ty: &TypeName, find: Find) -> Result<Reply<Found>> {
         self.inner.find(who, ty, find).await
     }
     async fn get(&self, who: &Principal, ty: &TypeName, get: Get) -> Result<Reply<Record>> {
+        self.faults.gets.fetch_add(1, Ordering::SeqCst);
         fail(&self.faults.get)?;
         behind(&self.faults.behind, get.at.as_of)?;
         self.inner.get(who, ty, get).await
