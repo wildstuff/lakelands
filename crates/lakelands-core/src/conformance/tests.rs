@@ -172,6 +172,7 @@ impl LakeStore for DownStore {
     refuse!(purge_source<'life1>(source: &'life1 lakelands_api::SourceId) -> lakelands_api::write::PurgeReport);
     refuse!(compact<>() -> lakelands_api::write::CompactReport);
     refuse!(position_at<>(known_at: lakelands_api::Timestamp) -> Option<Position>);
+    refuse!(vector_coverage<'life1>(ty: &'life1 TypeName) -> Vec<lakelands_api::read::VectorCoverage>);
     refuse!(checkpoint<>() -> Position);
     refuse!(close<>() -> ());
 }

@@ -178,6 +178,7 @@ pub const ALL: &[Check] = &[
     search::HYBRID_WITHOUT_BACKEND,
     search::HYBRID_THROUGH_BACKEND,
     embeddings::EMBED_WRITE,
+    embeddings::VECTOR_COVERAGE,
     embeddings::EMBED_ONCE,
     embeddings::EMBED_REBUILD,
     embeddings::EMBED_OTHER_MODEL,

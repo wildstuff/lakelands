@@ -27,6 +27,13 @@ use crate::conformance::fixture::{
 use crate::conformance::{Failure, Reopen, backing};
 
 check!(
+    /// The host counts what is embedded and what is due.
+    VECTOR_COVERAGE = vector_coverage_counts_embedded_and_due_records_at_the_head,
+    "022, extended, and lakelands#147: vector_coverage answers, per embedding field at the head, the live records holding a vector and those whose text is not embedded (never embedded, failed or waiting for a retry), not counting a record without text; a redeclaration's retry and a retire move the counts; an unknown type is not found and a type without embeddings answers none",
+    embedding
+);
+
+check!(
     /// A write embeds its text and records the vector.
     EMBED_WRITE = a_write_embeds_its_text_and_records_the_vector,
     "022, extended, and the log format: the store embeds the joined `from` text after the write, records the vector as output_recorded under embed:<model> naming the field, and the field holds it",
@@ -858,6 +865,107 @@ async fn no_request_carries_more_than_sixty_four_texts(
         sizes.iter().all(|n| *n <= 64) && sizes.iter().sum::<usize>() == 150,
         "declaring the embedding made 150 distinct texts due at once; every request carries at most 64 of them and \
          all 150 are sent once; the requests carried {sizes:?}"
+    );
+    Ok(())
+}
+
+async fn coverage(store: &dyn LakeStore, what: &str) -> Result<(u64, u64), Failure> {
+    let c = store
+        .vector_coverage(&lakelands_api::TypeName::from("note"))
+        .await
+        .must(&format!("asking vector_coverage of `note` {what}"))?;
+    match c.as_slice() {
+        [one] if one.field.as_str() == "vec" => Ok((one.embedded, one.due)),
+        other => Err(Failure::new(format!(
+            "`note` has one embedding field, `vec`; vector_coverage {what} answered {other:?}"
+        ))),
+    }
+}
+
+async fn vector_coverage_counts_embedded_and_due_records_at_the_head(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    notes(store.as_ref()).await?;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    for (key, title) in [
+        ("n1", "Coverage harbour one"),
+        ("n2", "Coverage harbour two"),
+        ("n3", "Coverage harbour three"),
+        ("n0", ""),
+    ] {
+        upsert(cat.as_ref(), &own, "note", key, json!({"title": title})).await?;
+    }
+    let got = coverage(store.as_ref(), "once the backend settled").await?;
+    ensure!(
+        got == (3, 0),
+        "three notes with text are embedded and one has none: (embedded, due) is (3, 0), and \
+         vector_coverage answered {got:?}"
+    );
+
+    let failing = ["Coverage harbour four", "Coverage harbour five"];
+    for (key, title) in [("n4", failing[0]), ("n5", failing[1])] {
+        unplug_text(title);
+        upsert(cat.as_ref(), &own, "note", key, json!({"title": title})).await?;
+    }
+    let got = coverage(store.as_ref(), "with two embeddings failed").await?;
+    ensure!(
+        got == (3, 2),
+        "two notes whose embedding failed are due: (3, 2) is expected, and vector_coverage \
+         answered {got:?}"
+    );
+
+    for title in failing {
+        plug_text(title);
+    }
+    declare(
+        cat.as_ref(),
+        &own,
+        notes_with(vec_field(&["title", "body"], EMBED_MODEL, 2), vec![]),
+    )
+    .await?;
+    let got = coverage(store.as_ref(), "after the redeclaration's retry").await?;
+    ensure!(
+        got == (5, 0),
+        "declaring `note` again retries the two failures: (5, 0) is expected, and \
+         vector_coverage answered {got:?}"
+    );
+
+    cat.retire(
+        &own,
+        &"note".into(),
+        &"n1".into(),
+        lakelands_api::WriteOpts::default(),
+    )
+    .await
+    .must("retiring n1")?;
+    let got = coverage(store.as_ref(), "after a retire").await?;
+    ensure!(
+        got == (4, 0),
+        "a retired note holds no vector the head counts: (4, 0) is expected, and \
+         vector_coverage answered {got:?}"
+    );
+
+    let missing = store
+        .vector_coverage(&lakelands_api::TypeName::from("nowhere"))
+        .await;
+    ensure!(
+        matches!(missing, Err(lakelands_api::Error::NotFound { .. })),
+        "vector_coverage of a type the lake does not hold is not found; it answered {missing:?}"
+    );
+    declare(
+        cat.as_ref(),
+        &own,
+        type_decl("plain", vec![field("text", StorageKind::Text)]),
+    )
+    .await?;
+    let none = store
+        .vector_coverage(&lakelands_api::TypeName::from("plain"))
+        .await
+        .must("asking vector_coverage of a type without embeddings")?;
+    ensure!(
+        none.is_empty(),
+        "a type without embedding fields covers none; vector_coverage answered {none:?}"
     );
     Ok(())
 }

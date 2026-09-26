@@ -385,6 +385,12 @@ mod tests {
         async fn compact(&self) -> lakelands_api::Result<lakelands_api::write::CompactReport> {
             self.inner.compact().await
         }
+        async fn vector_coverage(
+            &self,
+            ty: &lakelands_api::TypeName,
+        ) -> lakelands_api::Result<Vec<lakelands_api::read::VectorCoverage>> {
+            self.inner.vector_coverage(ty).await
+        }
         async fn position_at(
             &self,
             known_at: lakelands_api::Timestamp,

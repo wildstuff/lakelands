@@ -1050,6 +1050,70 @@ impl Lake {
         Ok(Some(Position(lo)))
     }
 
+    /// For each embedding field of `ty` at the head: the live records with
+    /// a vector, from the engine's index, and those without one whose
+    /// `embed.from` fields hold text, counted over pages of the records
+    /// the engine selects by `<field> is null`, restricted ones included.
+    pub fn vector_coverage(
+        &self,
+        ty: &TypeName,
+    ) -> Result<Vec<lakelands_api::read::VectorCoverage>> {
+        let view = self.engine.view(None)?;
+        let decl = view
+            .declarations()?
+            .into_iter()
+            .find_map(|d| match d.declaration {
+                Declaration::Type(t) if &t.name == ty => Some(t),
+                _ => None,
+            })
+            .ok_or_else(|| Error::NotFound {
+                missing: lakelands_api::Missing::Type { name: ty.clone() },
+            })?;
+        let mut out = Vec::new();
+        for f in &decl.fields {
+            let Some(embed) = &f.embed else {
+                continue;
+            };
+            let embedded = match self.engine.vectors() {
+                Some(index) => index.count(ty, f.name.as_str())?,
+                None => 0,
+            };
+            let mut scan = lakelands_api::engine::Scan {
+                filter: Some(lakelands_api::expr::Expr::IsNull {
+                    arg: Box::new(lakelands_api::expr::Expr::Path {
+                        path: vec![f.name.clone()],
+                    }),
+                }),
+                limit: PAGE,
+                restricted: true,
+                ..Default::default()
+            };
+            let mut due = 0;
+            loop {
+                let rows = view.scan(ty, &scan)?;
+                due += rows
+                    .iter()
+                    .filter(|r| crate::backed::embed_text(embed, &r.fields).is_some())
+                    .count() as u64;
+                match rows.last() {
+                    Some(last) if rows.len() == PAGE as usize => {
+                        scan.after = Some(lakelands_api::engine::After {
+                            values: vec![],
+                            key: last.key.clone(),
+                        });
+                    }
+                    _ => break,
+                }
+            }
+            out.push(lakelands_api::read::VectorCoverage {
+                field: f.name.clone(),
+                embedded,
+                due,
+            });
+        }
+        Ok(out)
+    }
+
     /// Seal the active segment and write the checkpoint that opens the next.
     pub fn checkpoint(&self) -> Result<Position> {
         let mut w = self.writer();
