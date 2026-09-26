@@ -326,6 +326,8 @@ impl Session {
             kinds: Option<Vec<String>>,
             #[serde(default)]
             types: Option<Vec<lakelands_api::id::TypeName>>,
+            #[serde(default)]
+            keys: Option<Vec<lakelands_api::id::RecordKey>>,
         }
         let s: S = args(label, &a)?;
         let from = s.from.unwrap_or(head.next());
@@ -333,6 +335,14 @@ impl Session {
             return Err(Fault::Contract(Error::Refused {
                 field: Some("from".into()),
                 reason: Refusal::OutOfRange { head },
+            }));
+        }
+        if s.keys.iter().flatten().any(|k| k.as_str().is_empty()) {
+            return Err(Fault::Contract(Error::Refused {
+                field: Some("keys".into()),
+                reason: Refusal::Invalid {
+                    message: "a key to subscribe to is empty".into(),
+                },
             }));
         }
         let kinds = crate::watch::kinds(s.kinds).map_err(|bad| {
@@ -344,7 +354,7 @@ impl Session {
                 ),
             )
         })?;
-        self.watch.subscribe(from, kinds, s.types);
+        self.watch.subscribe(from, kinds, s.types, s.keys);
         Ok(json!({"position": head.0, "subscribed": true, "from": from.0}))
     }
 }

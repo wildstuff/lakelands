@@ -821,7 +821,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
 
     out.push(ToolSpec {
         name: SUBSCRIBE.into(),
-        description: "Be told of changes without polling: from `from` on (by default, from now), this session is sent a `notifications/lakelands/changed` for every change of a record it may read, of the kinds and types asked (by default every kind, and every type it may read when the change happens). A notification names the position, the kind, the type, the key and the changed fields it may read; never a value. Subscribing again replaces the subscription; it ends with the session.".into(),
+        description: "Be told of changes without polling: from `from` on (by default, from now), this session is sent a `notifications/lakelands/changed` for every change of a record it may read, of the kinds, types and keys asked (by default every kind, every type it may read when the change happens, and every record). A notification names the position, the kind, the type, the key and the changed fields it may read; never a value. Subscribing again replaces the subscription; it ends with the session.".into(),
         input_schema: obj(
             props([
                 (
@@ -838,6 +838,11 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                     "types",
                     json!({"type": "array", "items": names(|t| t.may.find),
                            "description": "Only these types, fixed now; every type readable at each change when left out."}),
+                ),
+                (
+                    "keys",
+                    json!({"type": "array", "items": {"type": "string", "minLength": 1},
+                           "description": "Only the records with these keys, fixed now: of the types asked, or of any type when none are; every record when left out. One record's history is one type and one key."}),
                 ),
             ]),
             &[],

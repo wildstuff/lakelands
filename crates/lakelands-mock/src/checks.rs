@@ -93,6 +93,7 @@ macro_rules! door_checks {
             a_cursor_keeps_its_page_set_while_writes_land,
             a_principal_of_another_lake_is_refused,
             the_feed_is_the_log_by_position,
+            the_feed_filtered_by_key_answers_those_records_events,
             a_step_over_an_undeclared_relation_is_refused,
             a_dependent_field_declared_clear_is_cleared_with_its_input,
             two_writers_keep_each_others_fields,
@@ -1405,6 +1406,54 @@ pub async fn the_feed_is_the_log_by_position(store: Arc<dyn LakeStore>) {
     // suite's to claim, on every engine
     // (`rebuilding_the_projection_changes_nothing_in_the_feed`): a rebuild
     // is the host's, and no door serves it.
+}
+
+/// The feed filtered by key answers only the events of those records, in
+/// order: with a type, one record's history; with no type, a key in any
+/// type. A key may hold a comma, and is still one key (lakelands#146).
+pub async fn the_feed_filtered_by_key_answers_those_records_events(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let from = f.head().await.next();
+    let (p1, _) = applied(
+        &f.write(&f.cast.clerk, "INV-1", &[("status", json!("open"))])
+            .await,
+    );
+    applied(
+        &f.write(&f.cast.clerk, "INV-2", &[("status", json!("open"))])
+            .await,
+    );
+    let (p3, _) = applied(
+        &f.write(&f.cast.clerk, "INV-1", &[("status", json!("paid"))])
+            .await,
+    );
+    let (p4, _) = applied(
+        &f.write(&f.cast.clerk, "INV,4", &[("status", json!("open"))])
+            .await,
+    );
+    let feed = f.store.feed();
+    let positions = |keys: &[&str], types: &[&str]| {
+        let filter = FeedFilter {
+            kinds: Vec::new(),
+            types: types.iter().map(|t| ty(t)).collect(),
+            keys: keys.iter().map(|k| key(k)).collect(),
+        };
+        let feed = feed.clone();
+        async move {
+            let b = feed.poll(from, &filter, 100).await.unwrap();
+            b.events.iter().map(|e| e.position).collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(
+        positions(&["INV-1"], &[INVOICE]).await,
+        [p1, p3],
+        "one record's history"
+    );
+    assert_eq!(
+        positions(&["INV-1", "INV,4"], &[]).await,
+        [p1, p3, p4],
+        "keys in any type"
+    );
+    assert_eq!(positions(&["INV"], &[]).await, [], "a key is matched whole");
 }
 
 /// A pattern step over a relation the type does not declare is refused,

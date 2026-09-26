@@ -45,6 +45,13 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   `ca_file`, the engine looks for the system's certificate bundle at the
   well-known Unix paths; on Windows there is none, so opening the lake
   fails as `unavailable` until `ca_file` names one.
+
+  A process serving a SQLite lake shows up to the tuning's `mmap_mb`
+  (256 MiB unless set; `0` turns it off) more resident memory once it
+  has read that much of the projection: file pages mapped for reads,
+  which the operating system reclaims under pressure, not heap. A host
+  that watches the process's heap reads `Anonymous` in
+  `/proc/<pid>/smaps_rollup`, not its resident size.
 - **`PrincipalResolver`.** Maps the host's identities, roles and
   policies onto one `Principal { kind, id, lake, grants }` per call.
   Grants are per field and per principal, and the store enforces them
@@ -106,7 +113,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   receives `notifications/lakelands/changed` for each change of a record
   its principal may read. Without a list of types, the types are the ones
   it may read when each change happens, so a type declared later is
-  included; a list given to `subscribe` is fixed. A notification names
+  included; a list given to `subscribe` is fixed. `keys` narrows it to
+  those records, of the types given or of any type, and is fixed the
+  same way; subscribing again with other keys tells at most one change
+  of the old ones that was already on its way. A notification names
   the position, kind, type, key and the changed fields it is shown, never
   a value. A trigger's firing or an object set's change is told only to
   a principal who reads every field of the type in full, since its

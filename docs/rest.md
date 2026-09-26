@@ -88,7 +88,7 @@ key may hold any character.
 | `POST …/schema/migrate` | a migration's preflight | body: `to` and `renames`, or `value_type` |
 | `POST …/schema/migrate/apply` | apply a migration | body: `to` and `renames`, or `value_type`; and `report_id` |
 | `POST …/ingest/<source>` | ingest | body: NDJSON, one record per line |
-| `GET …/feed` | the change feed | query: `from`, `kinds`, `types`; `Last-Event-ID` |
+| `GET …/feed` | the change feed | query: `from`, `kinds`, `types`, `key` (repeated); `Last-Event-ID` |
 
 A parameter or a body member the door does not take is refused before
 anything runs, so a misspelling never turns a compare-and-set into an
@@ -171,8 +171,12 @@ the answer.
 
 `GET …/feed` answers `text/event-stream`: every event of the log from
 `from` (0 when absent; past the head's next position it is refused as
-`out_of_range`) that matches `kinds` and `types`, then each new
-one as it is appended, until the client goes away. Each event's `id` is
+`out_of_range`) that matches `kinds`, `types` and `key`, then each new
+one as it is appended, until the client goes away. `key` is given once
+per key, since a key may hold a comma, and never empty; with `types` it
+answers those records' events (`types=invoice&key=INV-1` is one
+record's history), without them a key in any type (`docs/seams.md`
+§`ChangeFeed`). Each event's `id` is
 its position, its `event` its kind, its `data` the event as JSON; a
 reconnecting client sends `Last-Event-ID` and resumes after it. Each
 time the stream catches up at a position it has not named before, it

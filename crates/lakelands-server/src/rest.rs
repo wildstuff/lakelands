@@ -183,6 +183,9 @@ enum Kind {
     Order,
     /// Comma-separated words.
     List,
+    /// One value per occurrence, given as often as needed: for values
+    /// that may hold a comma, as a record key may.
+    Each,
 }
 
 const AT: [(&str, Kind); 2] = [("as_of", Kind::Int), ("valid_at", Kind::Text)];
@@ -206,10 +209,11 @@ const PROPOSALS: [(&str, Kind); 7] = [
     AT[0],
     AT[1],
 ];
-const FEED: [(&str, Kind); 3] = [
+const FEED: [(&str, Kind); 4] = [
     ("from", Kind::Int),
     ("kinds", Kind::List),
     ("types", Kind::List),
+    ("key", Kind::Each),
 ];
 
 fn order(text: &str) -> Option<Value> {
@@ -274,6 +278,7 @@ fn query_args(
             Kind::List => Some(json!(
                 v.split(',').filter(|w| !w.is_empty()).collect::<Vec<_>>()
             )),
+            Kind::Each => (!v.is_empty()).then(|| json!(v)),
         };
         let Some(value) = value else {
             return Err(invalid(
@@ -284,10 +289,18 @@ fn query_args(
                     Kind::Flag => "give `true` or `false`",
                     Kind::Json => "give it as JSON",
                     Kind::Order => "give fields separated by commas, `-field` for descending",
+                    Kind::Each => "give a value that is not empty, or leave the parameter out",
                     Kind::Text | Kind::List => "correct it",
                 },
             ));
         };
+        if matches!(kind, Kind::Each) {
+            let all = out.entry(k.clone()).or_insert_with(|| json!([]));
+            all.as_array_mut()
+                .expect("an `Each` holds a list")
+                .push(value);
+            continue;
+        }
         if out.insert(k.clone(), value).is_some() {
             return Err(invalid(
                 StatusCode::BAD_REQUEST,
@@ -1071,7 +1084,7 @@ async fn feed(
     let filter = FeedFilter {
         kinds: words("kinds"),
         types: words("types").into_iter().map(Into::into).collect(),
-        keys: Vec::new(),
+        keys: words("key").into_iter().map(Into::into).collect(),
     };
     let head = store.head().await.map_err(contract)?;
     if from.0 > head.0 + 1 {

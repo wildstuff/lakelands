@@ -147,15 +147,13 @@ impl ChangeFeed for RemoteFeed {
                 head,
             });
         }
-        // The REST feed takes no keys yet (lakelands#146's door half); a
-        // filter with keys is refused, naming them, rather than dropped.
-        if !filter.keys.is_empty() {
+        // An empty key would be an empty `key=`, which the door refuses;
+        // it is refused here, before anything is sent.
+        if filter.keys.iter().any(|k| k.as_str().is_empty()) {
             return Err(Error::Refused {
                 field: Some("keys".into()),
                 reason: lakelands_api::Refusal::Invalid {
-                    message: "the REST feed does not filter by key yet; poll by type and \
-                              compare keys, or hold the lake in-process"
-                        .into(),
+                    message: "a feed filter names an empty key".into(),
                 },
             });
         }
@@ -168,6 +166,10 @@ impl ChangeFeed for RemoteFeed {
         if !filter.types.is_empty() {
             let types: Vec<String> = filter.types.iter().map(|t| t.as_str().to_owned()).collect();
             query.push_str(&format!("&types={}", words(&types)));
+        }
+        // One `key` per key: a key may hold a comma.
+        for k in &filter.keys {
+            query.push_str(&format!("&key={}", enc(k.as_str())));
         }
         let path = "feed".to_owned();
         let call = Call::new(Method::GET, path.clone())
