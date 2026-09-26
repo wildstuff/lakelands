@@ -303,11 +303,16 @@ bounded in memory, linear in time. A page ordered by key reads about
 `after` and stops when it is full (`lakelands_core::engines::
 scan_in_key_order`). A page ordered by a field reads the type at the
 position and sorts it, and holds it only for that answer, because the
-one order across kinds has no SQL `ORDER BY`. Because each such engine
-page sorts the type again, a filter only the store evaluates asks for
-twice as many rows each time it reads on: a page costs a few sorts of the
-type, never one per `limit` rows. Bounding the sort is lakelands#137,
-after `0.2.0`. A view type's page is computed from its source's records,
+one order across kinds has no SQL `ORDER BY`. The sort encodes each
+value once as bytes whose order is that order
+(`lakelands_core::engines::sort_key`) and compares the bytes. A page of
+50 ordered by a text field over 100 000 records takes about 0.2 s in
+memory, 0.5 s on SQLite and 0.6 s on PostgreSQL, read and sort together.
+Because each such engine page sorts the type again, a filter only the
+store evaluates asks for twice as many rows each time it reads on: a page
+costs a few sorts of the type, never one per `limit` rows. An index that
+lets a field-ordered page read about `limit` rows is lakelands#137's
+next step. A view type's page is computed from its source's records,
 whole, as before.
 
 **The ceiling of a walk.** A pattern query asks the engine for the edges
