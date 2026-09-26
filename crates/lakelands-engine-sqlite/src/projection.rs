@@ -84,11 +84,10 @@ CREATE INDEX IF NOT EXISTS edges_src ON edges (src_ty, src_key);
 CREATE INDEX IF NOT EXISTS edges_dst ON edges (dst_ty, dst_key);
 CREATE TABLE IF NOT EXISTS sort_index (
     ty TEXT NOT NULL, field TEXT NOT NULL, key TEXT NOT NULL, sort_key BLOB NOT NULL,
-    PRIMARY KEY (ty, field, key)
+    PRIMARY KEY (ty, key, field)
 );
 CREATE INDEX IF NOT EXISTS sort_index_asc ON sort_index (ty, field, sort_key, key);
 CREATE INDEX IF NOT EXISTS sort_index_desc ON sort_index (ty, field, sort_key DESC, key);
-CREATE INDEX IF NOT EXISTS sort_index_key ON sort_index (ty, key);
 CREATE TABLE IF NOT EXISTS search_rows (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ty TEXT NOT NULL, key TEXT NOT NULL,

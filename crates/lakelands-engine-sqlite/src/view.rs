@@ -163,9 +163,11 @@ impl Read<'_> {
         let mut stmt = self
             .conn
             .prepare_cached(&format!(
-                "SELECT s.sort_key, r.state FROM sort_index s JOIN records r \
-                 ON r.ty = s.ty AND r.key = s.key AND r.until IS NULL \
-                 WHERE s.ty = ?1 AND s.field = ?2 {seek} ORDER BY {by} LIMIT ?3"
+                "SELECT s.sort_key, r.state FROM \
+                 (SELECT s.sort_key, s.key FROM sort_index s \
+                  WHERE s.ty = ?1 AND s.field = ?2 {seek} ORDER BY {by} LIMIT ?3) s \
+                 JOIN records r ON r.ty = ?1 AND r.key = s.key AND r.until IS NULL \
+                 ORDER BY {by}"
             ))
             .map_err(sql)?;
         let row = |r: &rusqlite::Row<'_>| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, String>(1)?));

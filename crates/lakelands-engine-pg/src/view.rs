@@ -204,10 +204,16 @@ impl Read<'_> {
             ),
         };
         let seek = if from.is_some() { seek } else { "" };
+        // The index's rows first, in its order and cut at the limit, then
+        // their records: every row is a head record's, so the join keeps
+        // them all, and the page follows the index whatever the planner
+        // knows of the tables.
         let query = format!(
-            "SELECT s.sort_key, r.state FROM {sorted} s JOIN {records} r \
-             ON r.ty = s.ty AND r.key = s.key AND r.until IS NULL \
-             WHERE s.ty = $1 AND s.field = $2 {seek} ORDER BY {by} LIMIT $3",
+            "SELECT s.sort_key, r.state FROM \
+             (SELECT s.sort_key, s.key FROM {sorted} s \
+              WHERE s.ty = $1 AND s.field = $2 {seek} ORDER BY {by} LIMIT $3) s \
+             JOIN {records} r ON r.ty = $1 AND r.key = s.key AND r.until IS NULL \
+             ORDER BY {by}",
             sorted = self.names.t("sort_index"),
             records = self.names.t("records"),
         );

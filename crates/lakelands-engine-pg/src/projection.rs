@@ -130,12 +130,11 @@ CREATE TABLE IF NOT EXISTS {s}.full_text (
 CREATE INDEX IF NOT EXISTS full_text_key ON {s}.full_text (ty, key);
 CREATE TABLE IF NOT EXISTS {s}.sort_index (
     ty TEXT NOT NULL, field TEXT NOT NULL, key TEXT NOT NULL, sort_key BYTEA NOT NULL,
-    PRIMARY KEY (ty, field, key)
+    PRIMARY KEY (ty, key, field)
 );
 CREATE INDEX IF NOT EXISTS sort_index_asc ON {s}.sort_index (ty, field, sort_key, key COLLATE \"C\");
 CREATE INDEX IF NOT EXISTS sort_index_desc
     ON {s}.sort_index (ty, field, sort_key DESC, key COLLATE \"C\");
-CREATE INDEX IF NOT EXISTS sort_index_key ON {s}.sort_index (ty, key);
 CREATE TABLE IF NOT EXISTS {s}.vectors (
     ty TEXT NOT NULL, field TEXT NOT NULL, key TEXT NOT NULL, data BYTEA NOT NULL,
     PRIMARY KEY (ty, field, key)
