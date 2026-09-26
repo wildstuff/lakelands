@@ -311,8 +311,9 @@ for every record reached, and PostgreSQL's walk grows too: the same walk
 took 0.23 s over 40 621 links and 0.83 s over 162 496 on the memory
 engine, 0.09 s and 0.42 s on PostgreSQL, and 0.01 s at both sizes on
 SQLite, on a machine of 12 cores at a load of 17 to 30 (the streaming
-check's long run, its `traverse` line, lakelands#188). The line is
-reported, not held.
+check's long run, its `traverse` line, lakelands#188). The heap is held
+by the suite; the time is reported, and bounding it by what a walk
+reaches on every engine is lakelands#190.
 
 **`lexical`.** Search is ranked retrieval: the view's position decides
 what may be seen, not how the current text ranks. A view answers from
