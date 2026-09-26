@@ -23,10 +23,17 @@
 //! multi-threaded runtime's worker, on a thread of its own on a
 //! single-threaded runtime.
 //!
+//! **Prepared statements.** A connection prepares each statement text
+//! once and keeps it for as long as it lives, so a statement run again
+//! costs one round trip, not a parse and an execute. The texts are the
+//! engine's own, the schema's name and fixed SQL with every value bound as
+//! a parameter, so there are as many as the engine has statements.
+//!
 //! **Session state.** The lease is a session-level lock, so a handle
 //! opened for writing first checks, with [`session_keeping_state`], that
 //! nothing between it and the server hands its session to anyone else.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,7 +41,7 @@ use std::time::Duration;
 use lakelands_api::error::Result;
 use lakelands_api::location::{PgTls, PgTlsMode, PgTuning};
 use postgres::types::ToSql;
-use postgres::{Client, NoTls, Row};
+use postgres::{Client, NoTls, Row, SimpleQueryMessage, Statement};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
@@ -96,8 +103,10 @@ pub(crate) fn driver<R: Send>(f: impl FnOnce() -> R + Send) -> R {
 
 /// One connection, every statement through [`driver`]; closed through it
 /// too, since closing blocks on the driver's runtime as a statement does.
+/// It keeps the statements it prepared, by their text, until it is closed.
 pub(crate) struct Db {
     client: Option<Client>,
+    prepared: HashMap<String, Statement>,
 }
 
 impl Drop for Db {
@@ -116,19 +125,48 @@ impl Db {
         driver(move || client.batch_execute(statements)).map_err(sql)
     }
 
-    pub(crate) fn execute(&mut self, statement: &str, params: Params<'_>) -> Result<u64> {
+    /// Run statements as one simple query, one round trip, and answer the
+    /// first column of every row they return, as text.
+    pub(crate) fn simple(&mut self, statements: &str) -> Result<Vec<Option<String>>> {
         let client = self.client.as_mut().expect("a connection until dropped");
-        driver(move || client.execute(statement, params)).map_err(sql)
+        let messages = driver(move || client.simple_query(statements)).map_err(sql)?;
+        Ok(messages
+            .iter()
+            .filter_map(|m| match m {
+                SimpleQueryMessage::Row(row) => Some(row.get(0).map(str::to_owned)),
+                _ => None,
+            })
+            .collect())
+    }
+
+    /// The connection, and the statement prepared for `text` on it:
+    /// prepared now if it was not yet.
+    fn prepared(&mut self, text: &str) -> Result<(&mut Client, Statement)> {
+        let client = self.client.as_mut().expect("a connection until dropped");
+        let statement = match self.prepared.get(text) {
+            Some(statement) => statement.clone(),
+            None => {
+                let statement = driver(|| client.prepare(text)).map_err(sql)?;
+                self.prepared.insert(text.to_owned(), statement.clone());
+                statement
+            }
+        };
+        Ok((client, statement))
+    }
+
+    pub(crate) fn execute(&mut self, statement: &str, params: Params<'_>) -> Result<u64> {
+        let (client, statement) = self.prepared(statement)?;
+        driver(move || client.execute(&statement, params)).map_err(sql)
     }
 
     pub(crate) fn query(&mut self, statement: &str, params: Params<'_>) -> Result<Vec<Row>> {
-        let client = self.client.as_mut().expect("a connection until dropped");
-        driver(move || client.query(statement, params)).map_err(sql)
+        let (client, statement) = self.prepared(statement)?;
+        driver(move || client.query(&statement, params)).map_err(sql)
     }
 
     pub(crate) fn query_opt(&mut self, statement: &str, params: Params<'_>) -> Result<Option<Row>> {
-        let client = self.client.as_mut().expect("a connection until dropped");
-        driver(move || client.query_opt(statement, params)).map_err(sql)
+        let (client, statement) = self.prepared(statement)?;
+        driver(move || client.query_opt(&statement, params)).map_err(sql)
     }
 
     /// Run a query and hand each row to `f` as it arrives, holding one row
@@ -140,10 +178,10 @@ impl Db {
         mut f: impl FnMut(&Row) -> Result<()> + Send,
     ) -> Result<()> {
         use postgres::fallible_iterator::FallibleIterator;
-        let client = self.client.as_mut().expect("a connection until dropped");
+        let (client, statement) = self.prepared(statement)?;
         driver(move || {
             let mut rows = client
-                .query_raw(statement, params.iter().copied())
+                .query_raw(&statement, params.iter().copied())
                 .map_err(sql)?;
             while let Some(row) = rows.next().map_err(sql)? {
                 f(&row)?;
@@ -153,8 +191,8 @@ impl Db {
     }
 
     pub(crate) fn query_one(&mut self, statement: &str, params: Params<'_>) -> Result<Row> {
-        let client = self.client.as_mut().expect("a connection until dropped");
-        driver(move || client.query_one(statement, params)).map_err(sql)
+        let (client, statement) = self.prepared(statement)?;
+        driver(move || client.query_one(&statement, params)).map_err(sql)
     }
 
     /// Run `f` in one transaction opened by `begin`: committed when it
@@ -279,6 +317,7 @@ pub(crate) fn connect(target: &Target) -> Result<Db> {
     .map_err(sql)?;
     let mut db = Db {
         client: Some(client),
+        prepared: HashMap::new(),
     };
     let version: i32 = db
         .query_one("SELECT current_setting('server_version_num')::int4", &[])?

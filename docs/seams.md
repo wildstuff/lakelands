@@ -158,6 +158,16 @@ and every statement names it; no connection's `search_path` is set.
   the only connection that writes the projection. A view reads in one
   `REPEATABLE READ READ ONLY` transaction, so its statements see one
   committed state.
+- **Statements.** Each connection prepares a statement the first time it
+  runs it and keeps it, by its text, until the connection closes, so a
+  statement run again costs one round trip. A put of a state is one
+  statement: it ends the state it supersedes and inserts or replaces its
+  own in one snapshot. A read of one statement runs alone, one round
+  trip; a longer read's transaction opens with the folded position in
+  the same round trip. The ceiling is latency: an ingest of new records
+  costs about five round trips per record on the fold's connection and
+  about five on the reader, so it runs well below SQLite's rate; writing
+  a window's puts as multi-row statements is lakelands#183.
 - **The log.** It is kept as rows holding each event's canonical bytes
   unchanged, and an append is one transaction that checks the fence
   against the lease row. `lakelands_engine_pg::export` writes the
