@@ -19,6 +19,7 @@
 //! event before it, so it never decreases along the log (`docs/log-format.md`
 //! §1.3).
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -332,6 +333,18 @@ impl Lake {
     /// Seal drafts after the tip, append them durably, fold them. Answers
     /// the sealed events.
     pub fn append(&self, w: &mut Writer, drafts: Vec<Draft>) -> Result<Vec<Event>> {
+        self.append_after(w, drafts, Reads::default())
+    }
+
+    /// [`Self::append`], for drafts decided over the records in `reads`:
+    /// the fold takes each from there instead of reading it again, while
+    /// its view is at the position they were read at.
+    pub fn append_after(
+        &self,
+        w: &mut Writer,
+        drafts: Vec<Draft>,
+        reads: Reads,
+    ) -> Result<Vec<Event>> {
         let Some(lease) = w.lease.clone() else {
             return Err(Error::Unavailable {
                 message: "this lake is open read-only here; another process holds its writer lease"
@@ -379,7 +392,7 @@ impl Lake {
         if let Some(last) = events.last() {
             w.last_known_at = w.last_known_at.max(last.known_at);
         }
-        self.fold_all(w, &events)?;
+        self.fold_all(w, &events, reads)?;
         // Published only once the fold has committed: a position `head()`
         // answers is one a read can be answered at, on every engine.
         self.publish(w);
@@ -387,14 +400,17 @@ impl Lake {
     }
 
     /// Fold events into the projection, in one transaction.
-    fn fold_all(&self, w: &mut Writer, events: &[Event]) -> Result<()> {
+    fn fold_all(&self, w: &mut Writer, events: &[Event], reads: Reads) -> Result<()> {
         let Some(last) = events.last() else {
             return Ok(());
         };
         let projection = self.engine.projection();
         projection.begin()?;
         let due = w.due.len();
-        let mut staged: Staged = Staged::default();
+        let mut staged = Staged {
+            reads,
+            ..Staged::default()
+        };
         let result = (|| {
             let view = self.engine.view(None)?;
             for e in events {
@@ -454,15 +470,17 @@ impl Lake {
         for (ty, m) in &moves {
             let decl = w.ontology.ty(ty)?.clone();
             for (from, to) in m {
-                let r = match staged.get(ty, from) {
-                    Some(r) => r.clone(),
-                    None => view.get(ty, from)?.ok_or_else(|| Error::Unavailable {
-                        message: format!(
-                            "the migration at position {} moves `{ty}` `{from}`, which the lake \
-                             does not hold",
-                            e.position
-                        ),
-                    })?,
+                let r = match staged.record(view, ty, from)? {
+                    Some(r) => r,
+                    None => {
+                        return Err(Error::Unavailable {
+                            message: format!(
+                                "the migration at position {} moves `{ty}` `{from}`, which the \
+                                 lake does not hold",
+                                e.position
+                            ),
+                        });
+                    }
                 };
                 let fields = crate::rekey::rewritten(&decl, &r.fields, &moves);
                 moved.push((
@@ -571,7 +589,7 @@ impl Lake {
     fn fold_from(&self, w: &mut Writer, from: Position) -> Result<()> {
         let folded = (|| {
             for page in self.pages(from) {
-                self.fold_all(w, &page?)?;
+                self.fold_all(w, &page?, Reads::default())?;
             }
             Ok(())
         })();
@@ -777,10 +795,7 @@ impl Lake {
             | EventBody::RecordRetired { ty, key, .. }
             | EventBody::RecordRestricted { ty, key, .. }
             | EventBody::RecordUnrestricted { ty, key, .. } => {
-                let before = match staged.get(ty, key) {
-                    Some(r) => Some(r.clone()),
-                    None => view.get(ty, key)?,
-                };
+                let before = staged.record(view, ty, key)?;
                 let mut outputs = Outputs {
                     view,
                     staged: Some(&staged.outputs),
@@ -858,10 +873,7 @@ impl Lake {
                     .outputs
                     .insert((seam.clone(), input.clone()), output.clone());
                 if let Some((ty, key, name)) = field {
-                    let record = match staged.get(ty, key) {
-                        Some(r) => Some(r.clone()),
-                        None => view.get(ty, key)?,
-                    };
+                    let record = staged.record(view, ty, key)?;
                     let next = match record {
                         Some(r) => {
                             let mut outputs = Outputs {
@@ -1318,10 +1330,43 @@ impl Iterator for Pages<'_> {
     }
 }
 
+/// Records read from the projection, each once: a record's state, or its
+/// absence, by the view's position, its type and its key. A view at one
+/// position always answers the same, so an answer kept is an answer read
+/// again. The writer lock is held from the decision over them to the
+/// fold, so the fold's view is at the same position as the decision's
+/// unless something else was folded in between; then nothing kept is
+/// used, since the position is part of the key.
+#[derive(Default)]
+pub struct Reads(RefCell<BTreeMap<ReadAt, Option<StoredRecord>>>);
+
+/// A read of one record: the view's position, the type, the key.
+type ReadAt = (Option<Position>, TypeName, RecordKey);
+
+impl Reads {
+    /// A record as `view` holds it, read from the view the first time.
+    pub fn get(
+        &self,
+        view: &dyn ProjectionView,
+        ty: &TypeName,
+        key: &RecordKey,
+    ) -> Result<Option<StoredRecord>> {
+        let at = (view.position(), ty.clone(), key.clone());
+        if let Some(r) = self.0.borrow().get(&at) {
+            return Ok(r.clone());
+        }
+        let r = view.get(ty, key)?;
+        self.0.borrow_mut().insert(at, r.clone());
+        Ok(r)
+    }
+}
+
 /// What one append has written so far, read before the projection.
 #[derive(Default)]
 pub struct Staged {
     records: BTreeMap<(TypeName, RecordKey), StoredRecord>,
+    /// What the fold and the decision before it read from the projection.
+    reads: Reads,
     /// Proposals changed in this append.
     pub proposals: BTreeMap<ProposalId, Proposal>,
     /// Outputs recorded in this append, by seam and input.
@@ -1332,6 +1377,21 @@ impl Staged {
     /// A record written earlier in this append.
     pub fn get(&self, ty: &TypeName, key: &RecordKey) -> Option<&StoredRecord> {
         self.records.get(&(ty.clone(), key.clone()))
+    }
+
+    /// A record as this append leaves it so far: written earlier in it,
+    /// or else as the projection holds it. What the append wrote always
+    /// comes first; a read kept from before it never answers over it.
+    pub fn record(
+        &self,
+        view: &dyn ProjectionView,
+        ty: &TypeName,
+        key: &RecordKey,
+    ) -> Result<Option<StoredRecord>> {
+        match self.get(ty, key) {
+            Some(r) => Ok(Some(r.clone())),
+            None => self.reads.get(view, ty, key),
+        }
     }
 
     /// The records of one type written in this append.

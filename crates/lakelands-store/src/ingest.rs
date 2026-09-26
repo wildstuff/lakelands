@@ -154,7 +154,7 @@ pub fn window(
             duplicates,
         });
     }
-    let events = lake.append(&mut w, drafts)?;
+    let events = lake.append_after(&mut w, drafts, pending.into_reads())?;
     Ok(Committed {
         position: events.last().expect("appended").position,
         records: committed,

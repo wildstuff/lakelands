@@ -160,14 +160,17 @@ and every statement names it; no connection's `search_path` is set.
   committed state.
 - **Statements.** Each connection prepares a statement the first time it
   runs it and keeps it, by its text, until the connection closes, so a
-  statement run again costs one round trip. A put of a state is one
-  statement: it ends the state it supersedes and inserts or replaces its
-  own in one snapshot. A read of one statement runs alone, one round
-  trip; a longer read's transaction opens with the folded position in
-  the same round trip. The ceiling is latency: an ingest of new records
-  costs about five round trips per record on the fold's connection and
-  about five on the reader, so it runs well below SQLite's rate; writing
-  a window's puts as multi-row statements is lakelands#183.
+  statement run again costs one round trip. The fold's puts are held
+  until its commit and written then: one statement per history table
+  for the whole transaction, one that deletes the head index rows of
+  the records it changed and one that inserts their new rows; a
+  declaration is put as it comes. An append's events go into the log in
+  one statement. A read of one statement runs alone, one round trip; a
+  longer read's transaction opens with the folded position in the same
+  round trip. The ceiling is latency on the reader: the store reads each
+  record an ingest writes once, and its applied id once, so an ingest
+  costs about two round trips per record there and about fifteen per
+  window on the other two connections.
 - **The log.** It is kept as rows holding each event's canonical bytes
   unchanged, and an append is one transaction that checks the fence
   against the lease row. `lakelands_engine_pg::export` writes the
@@ -203,6 +206,12 @@ what reads answer meanwhile, is under `LakeStore::head` below.
 - The store never nests transactions and never puts outside one.
 - Nothing put in a transaction is visible to any view until it commits;
   a commit makes all of it visible at once, with its `through`.
+- Before the commit, the store reads a state it put in the transaction
+  from what it staged, never through a view. An engine may hold the
+  puts until the commit; whatever it answers about a put itself (the
+  state it supersedes, where it ends, whether it is the head) is
+  answered over what the transaction put and what was committed
+  together, so the commit leaves what committing after each put would.
 - `commit(through)` is `Invalid` when `through` is before
   `folded_through`, or when a put in the transaction is valid from a
   position after `through`.

@@ -156,25 +156,27 @@ pub(crate) fn append(
             prev = event.hash.clone();
         }
         let segment = active(db, names)?;
-        let insert = format!(
-            "INSERT INTO {} (position, segment, fence, id, prev, hash, bytes) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
-            names.t("log")
-        );
+        // The window's events in one statement, from arrays.
+        let (mut positions, mut fences) = (Vec::new(), Vec::new());
+        let (mut ids, mut prevs, mut hashes, mut bytes) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for e in events {
-            db.execute(
-                &insert,
-                &[
-                    &(e.position.0 as i64),
-                    &segment,
-                    &(e.fence as i64),
-                    &e.id.0,
-                    &e.prev.0,
-                    &e.hash.0,
-                    &e.bytes,
-                ],
-            )?;
+            positions.push(e.position.0 as i64);
+            fences.push(e.fence as i64);
+            ids.push(e.id.0.as_str());
+            prevs.push(e.prev.0.as_str());
+            hashes.push(e.hash.0.as_str());
+            bytes.push(e.bytes.as_slice());
         }
+        db.execute(
+            &format!(
+                "INSERT INTO {} (position, segment, fence, id, prev, hash, bytes) \
+                 SELECT p, $2, f, i, v, h, b FROM unnest($1::int8[], $3::int8[], $4::text[], \
+                 $5::text[], $6::text[], $7::bytea[]) AS e(p, f, i, v, h, b)",
+                names.t("log")
+            ),
+            &[&positions, &segment, &fences, &ids, &prevs, &hashes, &bytes],
+        )?;
         Ok(())
     })
 }

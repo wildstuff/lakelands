@@ -96,6 +96,9 @@ pub struct Call<'a> {
 pub struct Pending {
     records: BTreeMap<(TypeName, RecordKey), StoredRecord>,
     members: BTreeMap<(String, TypeName, RecordKey), bool>,
+    /// The records read from the projection, each once; the fold of the
+    /// append takes them over ([`crate::lake::Lake::append_after`]).
+    reads: crate::lake::Reads,
 }
 
 impl Pending {
@@ -108,8 +111,13 @@ impl Pending {
     ) -> Result<Option<StoredRecord>> {
         match self.records.get(&(ty.clone(), key.clone())) {
             Some(r) => Ok(Some(r.clone())),
-            None => view.get(ty, key),
+            None => self.reads.get(view, ty, key),
         }
+    }
+
+    /// The records this append read from the projection, for its fold.
+    pub fn into_reads(self) -> crate::lake::Reads {
+        self.reads
     }
 
     fn member(

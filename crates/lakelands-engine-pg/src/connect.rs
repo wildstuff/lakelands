@@ -27,7 +27,10 @@
 //! once and keeps it for as long as it lives, so a statement run again
 //! costs one round trip, not a parse and an execute. The texts are the
 //! engine's own, the schema's name and fixed SQL with every value bound as
-//! a parameter, so there are as many as the engine has statements.
+//! a parameter, so there are as many as the engine has statements. Each
+//! run is planned for its values (`plan_cache_mode`), set as the
+//! connection starts: a generic plan kept from when a table was small
+//! would go on scanning it whole.
 //!
 //! **Session state.** The lease is a session-level lock, so a handle
 //! opened for writing first checks, with [`session_keeping_state`], that
@@ -303,6 +306,14 @@ pub(crate) fn connect(target: &Target) -> Result<Db> {
     config.connect_timeout(Duration::from_secs(u64::from(
         target.tuning.connect_timeout_secs.max(1),
     )));
+    // Every statement is planned for the values it runs with. A statement
+    // a connection keeps would otherwise settle on a generic plan made
+    // while the lake's tables were small, and scan them whole as they grow.
+    let options = match config.get_options() {
+        Some(o) => format!("{o} -c plan_cache_mode=force_custom_plan"),
+        None => "-c plan_cache_mode=force_custom_plan".to_owned(),
+    };
+    config.options(&options);
     let client = match target.tls.mode {
         PgTlsMode::Disable => {
             config.ssl_mode(postgres::config::SslMode::Disable);

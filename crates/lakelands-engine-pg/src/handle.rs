@@ -25,16 +25,18 @@ use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
 
 use crate::connect::{self, Db, Target};
-use crate::projection::{self, HeadTypes, MEMBERS, Names, OUTPUTS, PROJECTION_TABLES, PROPOSALS};
+use crate::projection::{self, Buffer, HeadTypes, Names, PROJECTION_TABLES};
 use crate::view::PgView;
 use crate::{NAME, invalid, lease, lock, log, unavailable};
 
 /// The open transaction of the fold: the latest position a put in it
-/// names, which the commit must reach, and the head declarations it read.
+/// names, which the commit must reach, the head declarations it read, and
+/// the puts it holds until the commit writes them.
 #[derive(Default)]
 struct Transaction {
     latest: Option<Position>,
     types: HeadTypes,
+    buffer: Buffer,
 }
 
 /// The connections a handle opened for writing keeps.
@@ -109,13 +111,10 @@ impl PgLake {
         })
     }
 
-    /// Run a put on the projection connection, inside the open transaction.
-    fn stage(
-        &self,
-        position: Position,
-        f: impl FnOnce(&mut Db, &mut HeadTypes) -> Result<()>,
-    ) -> Result<()> {
-        let writing = self.writing()?;
+    /// Take a put into the open transaction: `f` holds it in the buffer,
+    /// which the commit writes.
+    fn stage(&self, position: Position, f: impl FnOnce(&mut Buffer)) -> Result<()> {
+        self.writing()?;
         let mut transaction = lock(&self.transaction);
         let Some(t) = transaction.as_mut() else {
             return Err(invalid(
@@ -123,7 +122,8 @@ impl PgLake {
             ));
         };
         t.latest = t.latest.max(Some(position));
-        f(&mut lock(&writing.projection), &mut t.types)
+        f(&mut t.buffer);
+        Ok(())
     }
 }
 
@@ -389,7 +389,16 @@ impl ProjectionStore for PgLake {
                 ),
             );
         }
-        projection::set_folded(&mut db, &self.names, through)?;
+        let Transaction {
+            mut types, buffer, ..
+        } = t;
+        let written = buffer
+            .write(&mut db, &self.names, &mut types)
+            .and_then(|()| projection::set_folded(&mut db, &self.names, through));
+        if let Err(e) = written {
+            let _ = db.batch("ROLLBACK");
+            return Err(e);
+        }
         db.batch("COMMIT")
     }
 
@@ -417,24 +426,29 @@ impl ProjectionStore for PgLake {
             schema_hash: schema_hash.map(str::to_owned),
             since: at,
         };
-        self.stage(at, |db, types| {
-            projection::put_declaration(db, &self.names, types, &d)
-        })
+        let writing = self.writing()?;
+        let mut transaction = lock(&self.transaction);
+        let Some(t) = transaction.as_mut() else {
+            return Err(invalid(
+                "the projection is written inside a transaction: call `begin` first",
+            ));
+        };
+        t.latest = t.latest.max(Some(at));
+        projection::put_declaration(
+            &mut lock(&writing.projection),
+            &self.names,
+            &mut t.types,
+            &d,
+        )
     }
 
     fn put_record(&self, record: &StoredRecord) -> Result<()> {
-        self.stage(record.position, |db, types| {
-            projection::put_record(db, &self.names, types, record)
-        })
+        self.stage(record.position, |b| b.record(record))
     }
 
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
         let state = serde_json::to_string(proposal).expect("a proposal serialises");
-        self.stage(at, |db, _| {
-            PROPOSALS
-                .put(db, &self.names, &[&proposal.id.as_str()], at, &state)
-                .map(|_| ())
-        })
+        self.stage(at, |b| b.proposal(proposal.id.as_str(), at, state))
     }
 
     fn put_membership(
@@ -445,39 +459,16 @@ impl ProjectionStore for PgLake {
         member: bool,
         at: Position,
     ) -> Result<()> {
-        self.stage(at, |db, _| {
-            MEMBERS
-                .put(
-                    db,
-                    &self.names,
-                    &[&set, &ty.as_str(), &key.as_str()],
-                    at,
-                    &member,
-                )
-                .map(|_| ())
-        })
+        self.stage(at, |b| b.member(set, ty.as_str(), key.as_str(), at, member))
     }
 
     fn put_output(&self, seam: &str, input: &Digest, output: &Value, at: Position) -> Result<()> {
         let state = serde_json::to_string(output).expect("a value serialises");
-        self.stage(at, |db, _| {
-            OUTPUTS
-                .put(db, &self.names, &[&seam, &input.0.as_str()], at, &state)
-                .map(|_| ())
-        })
+        self.stage(at, |b| b.output(seam, input.0.as_str(), at, state))
     }
 
     fn mark_applied(&self, id: &EventId, at: Position) -> Result<()> {
-        self.stage(at, |db, _| {
-            db.execute(
-                &format!(
-                    "INSERT INTO {} (id, at) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-                    self.names.t("applied")
-                ),
-                &[&id.0, &(at.0 as i64)],
-            )
-            .map(|_| ())
-        })
+        self.stage(at, |b| b.applied(&id.0, at))
     }
 
     /// Drops the projection, its kept history and the vector index; the
