@@ -347,3 +347,19 @@ Write the result under this heading, in a pull request after the walk:
 - each rift as a finding, with the issue it was filed as.
 
 A walk with no rift says so.
+
+### 2026-09-26, develop `7362d15`, walked by the fleet chief from a fresh clone
+
+No rift. Every command exited 0 and every answer is the page's: `apply`
+at 10 and the rule at 11; the ingests through 15 and 34; the twelve
+`output_recorded` events at 23 to 34 with the page's outputs and seams;
+the links at 36 and 37; `age` through 44, then 45 with `moved 0`;
+`hooks.jsonl` with three lines at 40, 42 and 44; calls 2 to 6 at 47 with
+the three overdue rows, the two link records, the metadata positions 23,
+24 and 39 (and 17 for `gross`), the hybrid scores 0.03306 / 0.01667 /
+0.01613 with a `next_cursor`, no rows pinned at 37, and `pinned: null`
+after the clear. One deviation from the commands as printed, which the
+page allows: `cargo install --root <dir>` into a scratch root, with
+`<dir>/bin` first on `PATH`. The fakes were ended by their process ids,
+since the walk ran as a script. Machine load 22 to 28 during the walk;
+nothing in the walk depends on time.
