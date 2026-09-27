@@ -399,10 +399,11 @@ thread_local! {
     static ROWS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// The rows the field-ordered scans on this thread were handed to order:
-/// the whole type for [`scan`], the rows read from an order index for
-/// [`scan_in_field_order`]. The engine checks count by it that a page
-/// ordered by an indexed field reads its page, not the type.
+/// The rows the scans on this thread were handed to order: the whole
+/// type in the fallback, [`scan`], and the index rows and missing records
+/// in [`scan_in_field_order`]. It exists for the engine checks, which
+/// count by it that a page ordered by an indexed field reads its page,
+/// not the type; it costs one add per call or batch.
 pub fn rows_read() -> u64 {
     ROWS_READ.with(|n| n.get())
 }

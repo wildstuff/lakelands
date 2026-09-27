@@ -252,6 +252,9 @@ pub fn sortable(kind: &crate::ontology::StorageKind) -> bool {
 /// of the names of fields it declares with a [`sortable`] kind. A refusal
 /// names the field it is about (the named field, else `key` or `value`)
 /// and why. Any other setting passes.
+///
+/// It lives in the contract, not in the core, so that the mock, which
+/// depends on this crate alone, refuses the same settings as the store.
 pub fn check_sort_index(
     key: &str,
     value: Option<&Value>,

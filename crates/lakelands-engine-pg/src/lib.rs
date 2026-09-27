@@ -53,7 +53,7 @@ use lakelands_api::error::{Error, Refusal, Result};
 use lakelands_api::location::{EngineConfig, Location};
 
 pub use connect::MIN_SERVER_VERSION;
-pub use handle::{PgLake, export};
+pub use handle::{ANALYZE_AFTER, PgLake, export};
 
 /// The name the engine answers to, in [`LakeEngine::name`] and for
 /// `EngineConfig::Postgres`.

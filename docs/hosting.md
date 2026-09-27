@@ -167,6 +167,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   PostgreSQL, `VACUUM` skips, with a warning, a table the connecting role
   does not own, and the compact reclaims nothing there; connect as the
   role that owns the lake's schema.
+  After a bulk load into PostgreSQL the engine analyses its tables
+  itself, once every 5 000 records a writer puts, so the planner knows
+  their size; a host that loads a lake's schema by another path runs
+  `ANALYZE` on it itself.
 
 **Configuration is not a seam.** Engine configuration, tuning, limits
 and an optional key handle reach a lake through `Location`, and a
