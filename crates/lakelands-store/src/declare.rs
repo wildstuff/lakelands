@@ -554,6 +554,28 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
         }
         Declaration::Trigger(t) => {
             name("trigger", t.name.as_str())?;
+            // A relation carried by a reference field has no link records,
+            // so no link type to watch: its links change with the field.
+            if let Some((owner, relation)) = lakelands_core::links::link_type_parts(&t.on)
+                && let Ok(decl) = o.ty(&owner)
+                && let Some(via) = decl
+                    .relations
+                    .iter()
+                    .find(|r| r.name == relation)
+                    .and_then(|r| r.via.as_ref())
+            {
+                return Err(Error::Refused {
+                    field: Some("on".into()),
+                    reason: Refusal::Invalid {
+                        message: format!(
+                            "trigger `{}` watches `{}`, but `{relation}` is carried by the \
+                             reference field `{via}`, not by link records; watch `{owner}` \
+                             with `changed({via})`",
+                            t.name, t.on
+                        ),
+                    },
+                });
+            }
             o.ty(&t.on).map_err(|_| {
                 invalid(format!(
                     "trigger `{}` watches `{}`, which is not declared",

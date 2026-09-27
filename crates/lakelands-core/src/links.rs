@@ -44,6 +44,13 @@ pub fn is_link_type(name: &TypeName) -> bool {
     name.as_str().starts_with(PREFIX)
 }
 
+/// The type and relation a link type's name spells, whether or not the
+/// relation exists or is carried by link records.
+pub fn link_type_parts(name: &TypeName) -> Option<(TypeName, RelationName)> {
+    let (t, r) = name.as_str().strip_prefix(PREFIX)?.rsplit_once('.')?;
+    (!t.is_empty() && !r.is_empty()).then(|| (TypeName::from(t), RelationName::from(r)))
+}
+
 /// Whether a relation is carried by link records.
 pub fn carried_by_links(r: &RelationDecl) -> bool {
     r.via.is_none()

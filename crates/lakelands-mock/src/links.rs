@@ -14,6 +14,12 @@ pub(crate) fn name(t: &TypeName, r: &RelationName) -> TypeName {
     TypeName::from(format!("sys.link.{t}.{r}"))
 }
 
+/// The type and relation a link type's name spells.
+pub(crate) fn parts(t: &TypeName) -> Option<(TypeName, RelationName)> {
+    let (ty, r) = t.as_str().strip_prefix("sys.link.")?.rsplit_once('.')?;
+    Some((TypeName::from(ty), RelationName::from(r)))
+}
+
 pub(crate) fn is_link_type(t: &TypeName) -> bool {
     t.as_str().starts_with("sys.link.")
 }

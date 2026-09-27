@@ -598,6 +598,27 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
                 Declaration::ObjectSet(s) => Some(&s.of),
                 _ => None,
             };
+            // As the store: the link type of a relation carried by a
+            // reference field does not exist; its links change with it.
+            if let Declaration::Trigger(t) = other
+                && let Some((owner, relation)) = links::parts(&t.on)
+                && let Some(via) = st.types.get(&owner).and_then(|o| {
+                    o.decl
+                        .relations
+                        .iter()
+                        .find(|r| r.name == relation)
+                        .and_then(|r| r.via.clone())
+                })
+            {
+                return Err(Error::Refused {
+                    field: Some("on".into()),
+                    reason: Refusal::Invalid {
+                        message: format!(
+                            "`{relation}` is carried by `{via}`; watch `{owner}` with `changed({via})`"
+                        ),
+                    },
+                });
+            }
             if let Some(ty) = target {
                 // As the store: a declaration that names an undeclared
                 // type is invalid, naming both.
@@ -616,7 +637,9 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
                         _ => format!("`{ty}` is not declared"),
                     }));
                 }
-                if reserved(ty.as_str(), who) {
+                // As the store: a trigger may watch any declared type, the
+                // link types of relations carried by link records among them.
+                if reserved(ty.as_str(), who) && !matches!(other, Declaration::Trigger(_)) {
                     return Err(refused(Refusal::Reserved));
                 }
             }
