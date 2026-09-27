@@ -20,7 +20,9 @@
 //! it puts, and once [`ANALYZE_AFTER`] have gone in since its last
 //! analysis, it runs `ANALYZE` over `records` and the head indexes after
 //! the commit has answered, outside the fold's transaction. A rebuild is
-//! a refold after `clear`, so it is analysed the same way. Analysis
+//! a refold after `clear`, which starts the count again, so it is
+//! analysed as a fresh load is: after its first `ANALYZE_AFTER` records,
+//! and a lake smaller than that is left to PostgreSQL's own. Analysis
 //! changes no answer, only a plan; a failed one leaves the commit as it
 //! is.
 
@@ -505,6 +507,8 @@ impl ProjectionStore for PgLake {
     fn clear(&self) -> Result<()> {
         let writing = self.writing()?;
         *lock(&self.transaction) = None;
+        // The tables start empty again, and so does the count (module doc).
+        writing.unanalysed.store(0, Ordering::Relaxed);
         let mut db = lock(&writing.projection);
         let _ = db.batch("ROLLBACK");
         let statements: String = PROJECTION_TABLES

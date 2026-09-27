@@ -479,10 +479,11 @@ fn one_of(values: impl Iterator<Item = String>) -> Value {
 fn order_by_schema(fields: Value) -> Value {
     json!({"type": "array", "items": {
         "type": "object",
+        "description": "One sort key. `latest` orders by the position of each record's latest change and takes no field; every other `by` names its field.",
         "properties": {"field": fields,
-                       "by": {"enum": ["value", "known_at", "seen_at"]},
+                       "by": {"enum": ["value", "known_at", "seen_at", "latest"]},
                        "dir": {"enum": ["asc", "desc"]}},
-        "required": ["field"], "additionalProperties": false}})
+        "additionalProperties": false}})
 }
 
 fn write_opts(p: &mut Map<String, Value>) {

@@ -131,8 +131,10 @@ URL-encoded like `where` and every other query value, and read at
 `as_of` when given and at the head otherwise. `order_by` is the JSON
 array of sort keys, or the short form: fields separated by commas, `-`
 before a field for descending, and `known_at(field)` or
-`seen_at(field)` to order by a field's provenance —
-`order_by=-due_date,known_at(status)`. `kinds` and `types` are words
+`seen_at(field)` to order by a field's provenance, and `latest()` to
+order by the position of each record's latest change —
+`order_by=-due_date,known_at(status)`, or `order_by=-latest()` for the
+most recently changed first. `kinds` and `types` are words
 separated by commas.
 
 ### Writes

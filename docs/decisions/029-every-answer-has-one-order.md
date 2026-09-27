@@ -15,7 +15,10 @@ the answer and the same on every engine:
   carries one, and `find`'s `after` names one in the open, continuing
   strictly after it at the caller's own read position — the head unless
   `as_of` says otherwise — so a cursor is what pins a page set, and
-  `after` is what resumes one.
+  `after` is what resumes one. A key `latest` orders records by the
+  position of the event that made each one's state at the read's
+  position; no two records share one, so it never needs the key to
+  break a tie.
 - **Walks** order what they reach by depth, then type, then key, and links
   by their ends (`docs/decisions/026-the-store-walks-the-graph.md`).
 - **Ranked search** breaks equal scores by key. Hybrid search fuses its

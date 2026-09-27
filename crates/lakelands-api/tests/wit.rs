@@ -1046,7 +1046,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
     units!("risk", Risk, [Low, Medium, High]);
     units!("origin", Origin, [Source, Authored, Derived, System]);
     units!("direction", Direction, [Asc, Desc]);
-    units!("order_by", OrderBy, [Value, KnownAt, SeenAt]);
+    units!("order_by", OrderBy, [Value, KnownAt, SeenAt, Latest]);
     units!("agg_func", AggFunc, [Count, Sum, Min, Max, Avg]);
     units!(
         "proposal_state",

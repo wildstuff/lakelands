@@ -26,8 +26,8 @@ use lakelands_api::id::{
     Cursor, FieldName, LakeId, Position, RecordKey, TypeName, VerbName, Version,
 };
 use lakelands_api::ontology::{
-    Assignment, Authority, FieldDecl, FieldType, OnInputChange, RelationDecl, Risk, StorageKind,
-    TypeDecl, VerbDecl, VerbEffect,
+    Assignment, Authority, FieldDecl, FieldType, Measure, OnInputChange, RelationDecl, Risk,
+    StorageKind, TypeDecl, VerbDecl, VerbEffect, ViewDecl,
 };
 use lakelands_api::principal::{Access, Grants, Principal, PrincipalKind, TypeGrants};
 use lakelands_api::query::{Pattern, Step, Walk};
@@ -114,7 +114,8 @@ macro_rules! door_checks {
             #[host_ops] an_aging_rule_moves_what_holds_from_once_a_date,
             #[host_ops] a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_record,
             a_value_type_is_loosened_by_declare_and_tightened_by_its_preflight,
-            a_sort_index_setting_names_declared_scalar_fields_and_describe_shows_them);
+            a_sort_index_setting_names_declared_scalar_fields_and_describe_shows_them,
+            an_order_by_latest_takes_no_field_and_no_view);
     };
     (@each $at:ident, $new:expr, $block_on:path;
         $($(#[$mark:ident])? $name:ident),* $(,)?) => {
@@ -3074,5 +3075,84 @@ pub async fn a_sort_index_setting_names_declared_scalar_fields_and_describe_show
     assert!(
         sorted(owner).await.is_empty(),
         "the setting retired, nothing indexed"
+    );
+}
+
+/// `latest` orders by each record's latest change and takes no field;
+/// every other order names its field; a view's records, computed and
+/// without events of their own, are not ordered by `latest`
+/// (`docs/decisions/029-every-answer-has-one-order.md`).
+pub async fn an_order_by_latest_takes_no_field_and_no_view(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let by = |field: &str, by: OrderBy| Find {
+        order_by: vec![Order {
+            field: field.into(),
+            by,
+            dir: Direction::Desc,
+        }],
+        ..Find::default()
+    };
+    f.catalog
+        .find(owner, &ty(INVOICE), by("", OrderBy::Latest))
+        .await
+        .expect("`latest` without a field orders a stored type");
+    for (find, at_fault, what) in [
+        (
+            by("amount", OrderBy::Latest),
+            Some("amount"),
+            "`latest` with a field",
+        ),
+        (by("", OrderBy::KnownAt), None, "`known_at` without a field"),
+    ] {
+        let e = f
+            .catalog
+            .find(owner, &ty(INVOICE), find)
+            .await
+            .expect_err(what);
+        let (field, reason) = refusal(&e);
+        assert!(
+            matches!(reason, Refusal::Invalid { .. }),
+            "{what}: expected invalid, got {reason:?}"
+        );
+        assert_eq!(
+            field.as_ref().map(FieldName::as_str),
+            at_fault,
+            "{what}: the refusal names the field at fault, if any"
+        );
+    }
+    let totals = TypeDecl {
+        name: "partner_totals".into(),
+        key: vec!["partner".into()],
+        fields: vec![text("partner"), text("count")],
+        relations: Vec::new(),
+        view: Some(ViewDecl {
+            source: INVOICE.into(),
+            r#where: None,
+            group_by: vec!["partner".into()],
+            measures: vec![Measure {
+                name: "count".into(),
+                expr: "count()".into(),
+            }],
+        }),
+        valid_from: None,
+        valid_to: None,
+        field_meta: true,
+        language: None,
+        description: None,
+        label: None,
+    };
+    f.catalog
+        .declare(owner, Declaration::Type(totals))
+        .await
+        .expect("the owner declares a view");
+    let e = f
+        .catalog
+        .find(owner, &ty("partner_totals"), by("", OrderBy::Latest))
+        .await
+        .expect_err("a view is not ordered by `latest`");
+    assert!(
+        matches!(refusal(&e).1, Refusal::Invalid { .. }),
+        "a view ordered by `latest`: expected invalid, got {e:?}"
     );
 }
