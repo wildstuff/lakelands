@@ -22,14 +22,16 @@ use std::sync::Arc;
 
 use lakelands_api::error::{Error, Missing, Refusal};
 use lakelands_api::expr::Condition;
-use lakelands_api::id::{FieldName, LakeId, Position, RecordKey, TypeName, VerbName, Version};
+use lakelands_api::id::{
+    Cursor, FieldName, LakeId, Position, RecordKey, TypeName, VerbName, Version,
+};
 use lakelands_api::ontology::{
     Assignment, Authority, FieldDecl, FieldType, OnInputChange, RelationDecl, Risk, StorageKind,
     TypeDecl, VerbDecl, VerbEffect,
 };
 use lakelands_api::principal::{Access, Grants, Principal, PrincipalKind, TypeGrants};
 use lakelands_api::query::{Pattern, Step, Walk};
-use lakelands_api::read::{Find, Found, Get, ReadAt};
+use lakelands_api::read::{After, Direction, Find, Found, Get, Order, OrderBy, ReadAt};
 use lakelands_api::record::{Origin, Patch, Record, SourceRecord, Value};
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::tools::{Door, tools};
@@ -91,6 +93,8 @@ macro_rules! door_checks {
             a_proposer_sees_only_its_own_proposals,
             ingest_is_content_addressed,
             a_cursor_keeps_its_page_set_while_writes_land,
+            after_walks_the_pages_the_cursor_walks,
+            after_is_refused_naming_the_member,
             a_principal_of_another_lake_is_refused,
             the_feed_is_the_log_by_position,
             the_feed_filtered_by_key_answers_those_records_events,
@@ -1334,6 +1338,207 @@ pub async fn a_cursor_keeps_its_page_set_while_writes_land(store: Arc<dyn LakeSt
     let keys: Vec<&str> = rows.iter().chain(&more).map(|r| r.key.as_str()).collect();
     assert_eq!(keys, ["INV-1", "INV-2", "INV-3"]);
     assert!(next_cursor.is_none());
+}
+
+impl Fixture {
+    /// Invoices with ties on `status` and rows missing `status` or
+    /// `verdict`, for the order's edges; each carries a `note`, so no
+    /// write is empty.
+    async fn sortable(&self) {
+        for (k, status, verdict) in [
+            ("INV-1", Some("open"), Some("a")),
+            ("INV-2", Some("open"), None),
+            ("INV-3", None, Some("b")),
+            ("INV-4", Some("paid"), Some("a")),
+            ("INV-5", Some("open"), Some("b")),
+            ("INV-6", None, None),
+            ("INV-7", Some("draft"), Some("a")),
+        ] {
+            let mut pairs = vec![("note", json!(k))];
+            if let Some(s) = status {
+                pairs.push(("status", json!(s)));
+            }
+            if let Some(v) = verdict {
+                pairs.push(("verdict", json!(v)));
+            }
+            self.write(&self.cast.owner, k, &pairs).await;
+        }
+    }
+
+    async fn page(&self, find: Find) -> (Vec<Record>, Option<Cursor>) {
+        match self
+            .catalog
+            .find(&self.cast.owner, &ty(INVOICE), find)
+            .await
+            .expect("the page reads")
+            .data
+        {
+            Found::Records { rows, next_cursor } => (rows, next_cursor),
+            other => panic!("find lists records, got {other:?}"),
+        }
+    }
+}
+
+fn keys_of(rows: &[Record]) -> Vec<String> {
+    rows.iter().map(|r| r.key.as_str().to_owned()).collect()
+}
+
+/// A row's position in `order`: its sort values, `null` where it has
+/// none, and its key.
+fn position_of(order: &[Order], r: &Record) -> After {
+    After {
+        values: order
+            .iter()
+            .map(|o| field(r, o.field.as_str()).cloned().unwrap_or(Value::Null))
+            .collect(),
+        key: r.key.clone(),
+    }
+}
+
+/// `after`, resumed from each page's last row, walks the pages the
+/// cursor walks: over one sort key and two, with ties broken by key and
+/// a missing value last in either direction.
+pub async fn after_walks_the_pages_the_cursor_walks(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    f.sortable().await;
+    let by = |name: &str, dir| Order {
+        field: name.into(),
+        by: OrderBy::Value,
+        dir,
+    };
+    let orders = [
+        (
+            vec![by("status", Direction::Asc)],
+            [
+                "INV-7", "INV-1", "INV-2", "INV-5", "INV-4", "INV-3", "INV-6",
+            ],
+        ),
+        (
+            vec![by("status", Direction::Desc), by("verdict", Direction::Asc)],
+            [
+                "INV-4", "INV-1", "INV-5", "INV-2", "INV-7", "INV-3", "INV-6",
+            ],
+        ),
+    ];
+    for (order, expected) in orders {
+        let first = Find {
+            order_by: order.clone(),
+            limit: Some(2),
+            ..Find::default()
+        };
+        let mut by_cursor = Vec::new();
+        let mut find = first.clone();
+        loop {
+            let (rows, next) = f.page(find.clone()).await;
+            by_cursor.push(keys_of(&rows));
+            let Some(c) = next else { break };
+            find.cursor = Some(c);
+        }
+        let mut by_after = Vec::new();
+        let mut find = first.clone();
+        for _ in 0..expected.len() + 1 {
+            let (rows, _) = f.page(find.clone()).await;
+            let Some(last) = rows.last() else { break };
+            find.after = Some(position_of(&order, last));
+            by_after.push(keys_of(&rows));
+        }
+        assert_eq!(
+            by_after, by_cursor,
+            "under {order:?}, `after` from each page's last row walks the cursor's pages"
+        );
+        assert_eq!(
+            by_cursor.concat(),
+            expected,
+            "the one order under {order:?}"
+        );
+    }
+}
+
+/// `after` is refused as invalid on no field beside a cursor or an
+/// aggregate or with a value count other than `order_by`'s, and on the
+/// sort key's field when a value is one that field cannot hold.
+pub async fn after_is_refused_naming_the_member(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    f.sortable().await;
+    let order = vec![Order {
+        field: "status".into(),
+        by: OrderBy::Value,
+        dir: Direction::Asc,
+    }];
+    let first = Find {
+        order_by: order.clone(),
+        limit: Some(2),
+        ..Find::default()
+    };
+    let (rows, cursor) = f.page(first.clone()).await;
+    let resume = position_of(&order, rows.last().expect("a first page"));
+    let aggregate = serde_json::from_value(json!({"measures": [{"name": "c", "func": "count"}]}))
+        .expect("an aggregate");
+    for (what, find) in [
+        (
+            "`after` beside `cursor`",
+            Find {
+                cursor,
+                after: Some(resume.clone()),
+                ..first.clone()
+            },
+        ),
+        (
+            "`after` beside `aggregate`",
+            Find {
+                order_by: Vec::new(),
+                limit: None,
+                after: Some(After {
+                    values: Vec::new(),
+                    key: key("INV-1"),
+                }),
+                aggregate: Some(aggregate),
+                ..Find::default()
+            },
+        ),
+        (
+            "two `after` values for one `order_by` key",
+            Find {
+                after: Some(After {
+                    values: vec![json!("open"), json!("a")],
+                    key: key("INV-1"),
+                }),
+                ..first.clone()
+            },
+        ),
+    ] {
+        let e = f
+            .catalog
+            .find(&f.cast.owner, &ty(INVOICE), find)
+            .await
+            .expect_err(what);
+        assert!(
+            matches!(refusal(&e), (None, Refusal::Invalid { message }) if message.contains("after")),
+            "{what} is refused as invalid on no field, naming `after`; got {e:?}"
+        );
+    }
+    let unfit = Find {
+        order_by: vec![Order {
+            field: "amount".into(),
+            by: OrderBy::Value,
+            dir: Direction::Asc,
+        }],
+        after: Some(After {
+            values: vec![json!("twelve")],
+            key: key("INV-1"),
+        }),
+        ..first
+    };
+    let e = f
+        .catalog
+        .find(&f.cast.owner, &ty(INVOICE), unfit)
+        .await
+        .expect_err("a value `amount` cannot hold");
+    assert!(
+        matches!(refusal(&e), (Some(field), Refusal::Invalid { message })
+            if field.as_str() == "amount" && message.contains("after")),
+        "a value `amount` cannot hold is refused as invalid on `amount`, naming `after`; got {e:?}"
+    );
 }
 
 /// A principal addresses one lake; any other lake refuses it.

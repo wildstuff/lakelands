@@ -132,7 +132,9 @@ impl Catalog for RemoteCatalog {
     }
 
     /// `where` goes in the query in its text form; the typed form has no
-    /// query form and is refused before anything is sent.
+    /// query form and is refused before anything is sent. `after` and
+    /// `aggregate` go as JSON, and whatever they may be refused for the
+    /// lake refuses.
     async fn find(&self, who: &Principal, ty: &TypeName, find: Find) -> Result<Reply<Found>> {
         if let Some(Condition::Expr(_)) = find.filter {
             return Err(Error::Refused {
