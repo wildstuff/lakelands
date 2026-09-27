@@ -149,6 +149,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     reads::FIRST_APPLIED,
     reads::PROPOSALS,
     reads::LINK_EDGES,
+    reads::EDGES_READ_WHAT_THEY_REACH,
     log::APPENDED_OUTLIVES_ITS_HANDLE,
 ];
 

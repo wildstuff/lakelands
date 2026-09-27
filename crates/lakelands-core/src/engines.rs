@@ -410,6 +410,24 @@ pub fn rows_read() -> u64 {
     ROWS_READ.with(|n| n.get())
 }
 
+thread_local! {
+    static LINKS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The records the edge walks on this thread were handed to find a
+/// record's links: the link records [`crate::links::link_edges`] was
+/// given, and the declaring type's records [`in_links`] was given. It
+/// exists for the engine checks, which count by it that a walk reads
+/// what it reaches at the head, not the link type; it costs one add per
+/// call.
+pub fn links_read() -> u64 {
+    LINKS_READ.with(|n| n.get())
+}
+
+pub(crate) fn count_links(n: usize) {
+    LINKS_READ.with(|c| c.set(c.get() + n as u64));
+}
+
 fn count_read(n: usize) {
     ROWS_READ.with(|c| c.set(c.get() + n as u64));
 }
@@ -644,7 +662,9 @@ pub fn in_links<'a, E>(
         }) {
             continue;
         }
-        for record in records_of(&decl.name)? {
+        let records = records_of(&decl.name)?;
+        count_links(records.len());
+        for record in records {
             edges.extend(
                 links_of(decl, &record, relation)
                     .into_iter()

@@ -164,9 +164,10 @@ fn edge_of(t: &TypeName, r: &RelationDecl, link: &StoredRecord) -> Option<Edge> 
 /// links of `ty`'s relations whose `from` is `key`; in, the links of every
 /// type's relations to `ty` whose `to` is `key`; over `relation` or all.
 /// `links_where(link_type, field, key)` answers the link type's records at
-/// the view's position whose `field` (`from` or `to`) holds `key`; an
-/// engine may find them through an index, and this decides which count:
-/// only live links, each once.
+/// the view's position whose `field` (`from` or `to`) holds `key`, found
+/// through an index, or the link type's records there, whole; this keeps
+/// the ones whose end is `key` and decides which count: only live links,
+/// each once. What it is handed is counted (`engines::links_read`).
 pub fn link_edges<'a, E>(
     ty: &TypeName,
     key: &RecordKey,
@@ -194,7 +195,9 @@ pub fn link_edges<'a, E>(
                 wanted.push(TO);
             }
             for field in wanted {
-                for link in links_where(&lt, field, key)? {
+                let links = links_where(&lt, field, key)?;
+                crate::engines::count_links(links.len());
+                for link in links {
                     let at = link.fields.get(field).and_then(Value::as_str);
                     if link.retired || at != Some(key.as_str()) {
                         continue;
