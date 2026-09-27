@@ -66,7 +66,7 @@ key may hold any character.
 
 | Route | Door | Arguments from |
 |---|---|---|
-| `GET …/types/<type>/records` | find | query: `where`, `order_by`, `limit`, `cursor`, `aggregate`, `with_meta`, `as_of`, `valid_at` |
+| `GET …/types/<type>/records` | find | query: `where`, `order_by`, `limit`, `cursor`, `after`, `aggregate`, `with_meta`, `as_of`, `valid_at` |
 | `GET …/types/<type>/records/<key>` | get | query: `with_meta`, `as_of`, `valid_at` |
 | `PUT …/types/<type>/records/<key>` | upsert | body: the fields to change; `If-Match`, `If-None-Match`, `Idempotency-Key` |
 | `DELETE …/types/<type>/records/<key>` | retire | `If-Match`, `Idempotency-Key` |
@@ -125,7 +125,9 @@ not take is refused.
 A query parameter carries the value the door's argument of that name
 takes. `limit`, `as_of` and `from` are whole numbers; `with_meta` is
 `true`, `false`, or present without a value for `true`; `aggregate` is
-JSON. `order_by` is the JSON array of sort keys, or the short form:
+JSON, and so is `after`, the sort position a page resumes strictly after
+without a cursor: `after={"values":["2026-10-01"],"key":"inv-7"}`,
+read at `as_of` when given and at the head otherwise. `order_by` is the JSON array of sort keys, or the short form:
 fields separated by commas, `-` before a field for descending, and
 `known_at(field)` or `seen_at(field)` to order by a field's provenance —
 `order_by=-due_date,known_at(status)`. `kinds` and `types` are words

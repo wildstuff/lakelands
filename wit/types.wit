@@ -408,9 +408,18 @@ interface types {
         order-by: list<order>,
         limit: option<u32>,
         cursor: option<cursor>,
+        after: option<after-row>,
         aggregate: option<aggregate>,
         with-meta: bool,
         at: read-at,
+    }
+
+    /// A sort position `find` resumes strictly after: the row's values
+    /// for the `order-by` keys, in order (`null` where it has none), and
+    /// its key.
+    record after-row {
+        values: list<json>,
+        key: record-key,
     }
 
     record group {

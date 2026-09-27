@@ -45,7 +45,7 @@ use lakelands_api::write::{
     ValueTypeUse,
 };
 use lakelands_api::{
-    Access, Committed, Cursor, Error, FieldMeta, Find, Found, Get, Grants, Missing, Origin,
+    Access, After, Committed, Cursor, Error, FieldMeta, Find, Found, Get, Grants, Missing, Origin,
     Outcome, Position, Principal, PrincipalKind, ReadAt, Record, Refusal, SourceRecord, Timestamp,
     Verification, Version, WriteContext, WriteOpts, WriteOrigin,
 };
@@ -314,6 +314,13 @@ fn order() -> Order {
         field: "f".into(),
         by: OrderBy::KnownAt,
         dir: Direction::Desc,
+    }
+}
+
+fn after_row() -> After {
+    After {
+        values: vec![json!(1)],
+        key: "k".into(),
     }
 }
 
@@ -621,6 +628,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             }),
         ),
         ("order", members(&order())),
+        ("after_row", members(&after_row())),
         ("agg_measure", members(&agg_measure())),
         ("aggregate", members(&aggregate())),
         (
@@ -631,6 +639,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     order_by: vec![order()],
                     limit: Some(1),
                     cursor: Some(Cursor("c".into())),
+                    after: Some(after_row()),
                     aggregate: Some(aggregate()),
                     with_meta: true,
                     at: read_at(),

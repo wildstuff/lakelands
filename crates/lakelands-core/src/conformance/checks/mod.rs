@@ -6,6 +6,7 @@
 
 use super::Check;
 
+mod after;
 mod aggregates;
 mod aging;
 mod backings;
@@ -275,4 +276,5 @@ pub const ALL: &[Check] = &[
     value_types::CONDITION_NEVER_HOLDS,
     streaming::STREAMS,
     reactive_depth::TOO_DEEP,
+    after::AFTER_RESUMES,
 ];

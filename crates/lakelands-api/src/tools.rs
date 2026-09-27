@@ -548,6 +548,14 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
             ("limit", json!({"type": "integer", "minimum": 1})),
             ("cursor", json!({"type": "string"})),
             (
+                "after",
+                json!({"type": "object",
+                       "description": "Resume strictly after a row: its values for the order_by keys, in order (null where it has none), and its key. Instead of a cursor.",
+                       "properties": {"values": {"type": "array"},
+                                      "key": {"type": "string"}},
+                       "required": ["values", "key"], "additionalProperties": false}),
+            ),
+            (
                 "aggregate",
                 json!({"type": "object", "properties": {
                     "measures": {"type": "array", "items": {
@@ -570,7 +578,7 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
         out.push(ToolSpec {
             name: format!("{base}_find"),
             description: format!(
-                "Find {} records: filter with `where`, sort, page with `cursor`, or aggregate. Every answer carries the position it was read at.",
+                "Find {} records: filter with `where`, sort, page with `cursor` or resume after a row with `after`, or aggregate. Every answer carries the position it was read at.",
                 label(ty)
             ),
             input_schema: obj(p, &[]),

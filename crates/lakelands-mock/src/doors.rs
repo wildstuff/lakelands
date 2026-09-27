@@ -18,7 +18,7 @@ use lakelands_api::id::{
 use lakelands_api::ontology::{Authority, FieldDecl, Risk, VerbDecl, VerbEffect};
 use lakelands_api::principal::{Access, Principal, PrincipalKind, WriteContext};
 use lakelands_api::query::{Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Walk};
-use lakelands_api::read::{Direction, Find, Found, Get, OrderBy, ReadAt, Reply};
+use lakelands_api::read::{After, Direction, Find, Found, Get, Order, OrderBy, ReadAt, Reply};
 use lakelands_api::record::{Origin, Patch, Record, SourceRecord, StoredRecord, Value};
 use lakelands_api::write::{
     Committed, Declaration, FieldConversion, Migration, MigrationReport, Outcome, Proposal,
@@ -132,6 +132,95 @@ fn uncursor(c: &Cursor) -> Result<(Position, usize)> {
     c.0.split_once('.')
         .and_then(|(p, o)| Some((Position(p.parse().ok()?), o.parse().ok()?)))
         .ok_or_else(|| invalid("the cursor was not issued by this lake"))
+}
+
+/// The one order of `find`: sort values in turn, a missing value last in
+/// either direction, then the key ascending.
+fn in_order(
+    order: &[Order],
+    (a, ak): (&[Option<Value>], &RecordKey),
+    (b, bk): (&[Option<Value>], &RecordKey),
+) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    for (o, (x, y)) in order.iter().zip(a.iter().zip(b)) {
+        let ord = match (x, y) {
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) => Ordering::Greater,
+            (Some(_), None) => Ordering::Less,
+            (Some(x), Some(y)) => {
+                let c = expr::compare(x, y).unwrap_or(Ordering::Equal);
+                if o.dir == Direction::Desc {
+                    c.reverse()
+                } else {
+                    c
+                }
+            }
+        };
+        if ord.is_ne() {
+            return ord;
+        }
+    }
+    ak.cmp(bk)
+}
+
+/// The sort position a caller's `after` names, refused as the store
+/// refuses it: beside a cursor or an aggregate, with a value count other
+/// than `order_by`'s, or with a value the key's field cannot hold.
+fn resume_after(
+    st: &State,
+    t: &DeclaredType,
+    find: &Find,
+    a: &After,
+) -> Result<(Vec<Option<Value>>, RecordKey)> {
+    if find.cursor.is_some() {
+        return Err(invalid(
+            "`after` and `cursor` both name where a page starts; give one",
+        ));
+    }
+    if find.aggregate.is_some() {
+        return Err(invalid(
+            "`after` pages records; an `aggregate` has no pages",
+        ));
+    }
+    if a.values.len() != find.order_by.len() {
+        return Err(invalid(format!(
+            "`after.values` holds {} value(s) and `order_by` has {} key(s); give one value per key",
+            a.values.len(),
+            find.order_by.len()
+        )));
+    }
+    let mut values = Vec::with_capacity(a.values.len());
+    for (i, (v, o)) in a.values.iter().zip(&find.order_by).enumerate() {
+        let unfit = |why: String| Error::Refused {
+            field: Some(o.field.clone()),
+            reason: Refusal::Invalid {
+                message: format!("`after.values[{i}]` does not fit `{}`: {why}", o.field),
+            },
+        };
+        let v = match (o.by, v) {
+            (_, Value::Null) => None,
+            (OrderBy::KnownAt | OrderBy::SeenAt, Value::String(s)) => Some(
+                lakelands_api::Timestamp::parse(s)
+                    .map_err(|e| unfit(e.to_string()))?
+                    .to_string()
+                    .into(),
+            ),
+            (OrderBy::KnownAt | OrderBy::SeenAt, _) => {
+                return Err(unfit("an instant is given as text".into()));
+            }
+            (OrderBy::Value, v) => match field(&t.decl, &o.field) {
+                Some(f) => {
+                    if let Some(why) = value::misfit(&f.ty, v, &st.value_types) {
+                        return Err(unfit(why));
+                    }
+                    Some(value::canonical(&f.ty, v))
+                }
+                None => Some(v.clone()),
+            },
+        };
+        values.push(v);
+    }
+    Ok((values, a.key.clone()))
 }
 
 /// A page of `rows` from `offset`, and the cursor after it.
@@ -1470,6 +1559,11 @@ impl Catalog for MockCatalog {
         };
         let (position, st) = self.state_at(&self.log(), pinned)?;
         let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
+        let after = find
+            .after
+            .as_ref()
+            .map(|a| resume_after(&st, t, &find, a))
+            .transpose()?;
         if find.aggregate.is_some() {
             return Err(invalid("the in-memory mock does not aggregate"));
         }
@@ -1478,37 +1572,32 @@ impl Catalog for MockCatalog {
             readable(&st, who, t, &o.field)?;
         }
         let mut rows = candidates(&st, who, t, find.at, e.as_ref())?;
-        rows.sort_by(|a, b| {
-            for o in &find.order_by {
-                let key = |r: &StoredRecord| match o.by {
-                    OrderBy::Value => r.fields.get(&o.field).cloned(),
+        let sort_key = |r: &StoredRecord| -> Vec<Option<Value>> {
+            find.order_by
+                .iter()
+                .map(|o| match o.by {
+                    OrderBy::Value => r.fields.get(&o.field).cloned().filter(|v| !v.is_null()),
                     OrderBy::KnownAt => r.meta.get(&o.field).map(|m| m.known_at.to_string().into()),
                     OrderBy::SeenAt => r
                         .meta
                         .get(&o.field)
                         .and_then(|m| m.seen_at)
                         .map(|s| s.to_string().into()),
-                };
-                // Records without a value sort last in either direction.
-                let ord = match (key(a), key(b)) {
-                    (None, None) => std::cmp::Ordering::Equal,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (Some(x), Some(y)) => {
-                        let o2 = expr::compare(&x, &y).unwrap_or(std::cmp::Ordering::Equal);
-                        if o.dir == Direction::Desc {
-                            o2.reverse()
-                        } else {
-                            o2
-                        }
-                    }
-                };
-                if ord.is_ne() {
-                    return ord;
-                }
-            }
-            a.key.cmp(&b.key)
+                })
+                .collect()
+        };
+        rows.sort_by(|a, b| {
+            in_order(
+                &find.order_by,
+                (&sort_key(a), &a.key),
+                (&sort_key(b), &b.key),
+            )
         });
+        if let Some((values, key)) = &after {
+            rows.retain(|r| {
+                in_order(&find.order_by, (&sort_key(r), &r.key), (values, key)).is_gt()
+            });
+        }
         let rows: Vec<Record> = rows
             .into_iter()
             .map(|r| st.read(who, r, find.with_meta))

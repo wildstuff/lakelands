@@ -11,6 +11,11 @@ the answer and the same on every engine:
   (`lakelands_core::expr::order`): ranked by kind first — numbers (and
   text that reads as one), then instants, then text, then booleans, then
   JSON values — and within a kind as the evaluator compares them.
+  A position in this order is a row's sort values and its key: a cursor
+  carries one, and `find`'s `after` names one in the open, continuing
+  strictly after it at the caller's own read position — the head unless
+  `as_of` says otherwise — so a cursor is what pins a page set, and
+  `after` is what resumes one.
 - **Walks** order what they reach by depth, then type, then key, and links
   by their ends (`docs/decisions/026-the-store-walks-the-graph.md`).
 - **Ranked search** breaks equal scores by key. Hybrid search fuses its

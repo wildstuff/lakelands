@@ -50,7 +50,9 @@ use lakelands_api::ontology::TypeDecl;
 use lakelands_api::query::{
     Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Walk,
 };
-use lakelands_api::read::{Aggregate, Direction, Find, Found, Get, Order, OrderBy, ReadAt};
+use lakelands_api::read::{
+    After as ReadAfter, Aggregate, Direction, Find, Found, Get, Order, OrderBy, ReadAt,
+};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::{Proposal, ProposalFilter};
 use lakelands_api::{
@@ -496,6 +498,11 @@ impl<'a> Reader<'a> {
             }
         }
         rights::check_probe(self.who, &decl, probed.iter())?;
+        let asked = find
+            .after
+            .as_ref()
+            .map(|a| self.resume_after(&decl, find, a))
+            .transpose()?;
         if let Some(a) = &find.aggregate {
             let rows = self.records(&decl, filter.as_ref())?;
             return self.aggregated(&decl, &rows, a);
@@ -503,7 +510,7 @@ impl<'a> Reader<'a> {
         let limit = self.limit(find.limit)?;
         let after = match &find.cursor {
             Some(c) => decode(c)?.after,
-            None => None,
+            None => asked,
         };
         let mut keyed: Vec<((Vec<Value>, RecordKey), StoredRecord)> = if decl.view.is_some() {
             // A view's records are computed from its source, whole.
@@ -541,6 +548,64 @@ impl<'a> Reader<'a> {
             .filter_map(|(_, r)| rights::visible(self.who, &decl, &r, find.with_meta))
             .collect();
         Ok(Found::Records { rows, next_cursor })
+    }
+
+    /// The sort position a caller's `after` names, each value in its
+    /// field's canonical form, so it resumes exactly where a cursor holding
+    /// the same row would. Refused as invalid, naming the member, beside a
+    /// cursor or an aggregate, with a value count other than `order_by`'s,
+    /// or with a value the key's field cannot hold.
+    fn resume_after(&self, decl: &TypeDecl, find: &Find, a: &ReadAfter) -> Result<SortKey> {
+        if find.cursor.is_some() {
+            return Err(invalid(
+                "`after` and `cursor` both name where a page starts; give one",
+            ));
+        }
+        if find.aggregate.is_some() {
+            return Err(invalid(
+                "`after` pages records; an `aggregate` has no pages",
+            ));
+        }
+        if a.values.len() != find.order_by.len() {
+            return Err(invalid(format!(
+                "`after.values` holds {} value(s) and `order_by` has {} key(s); give one value per key",
+                a.values.len(),
+                find.order_by.len()
+            )));
+        }
+        let mut values = Vec::with_capacity(a.values.len());
+        for (i, (v, o)) in a.values.iter().zip(&find.order_by).enumerate() {
+            let unfit = |why: String| Error::Refused {
+                field: Some(o.field.clone()),
+                reason: Refusal::Invalid {
+                    message: format!("`after.values[{i}]` does not fit `{}`: {why}", o.field),
+                },
+            };
+            let v = match (o.by, v) {
+                (_, Value::Null) => Value::Null,
+                (OrderBy::KnownAt | OrderBy::SeenAt, Value::String(t)) => {
+                    let t = Timestamp::parse(t).map_err(|e| unfit(e.to_string()))?;
+                    Value::String(t.to_string())
+                }
+                (OrderBy::KnownAt | OrderBy::SeenAt, _) => {
+                    return Err(unfit("an instant is given as text".into()));
+                }
+                (OrderBy::Value, v) => match decl.fields.iter().find(|f| f.name == o.field) {
+                    Some(f) => {
+                        let vt =
+                            f.ty.value_type
+                                .as_ref()
+                                .and_then(|n| self.ontology.value_types.get(n.as_str()))
+                                .map(|e| &e.decl);
+                        lakelands_core::value::check(v, &f.ty, vt)
+                            .map_err(|e| unfit(e.to_string()))?
+                    }
+                    None => v.clone(),
+                },
+            };
+            values.push(v);
+        }
+        Ok((values, a.key.clone()))
     }
 
     fn aggregated(&self, decl: &TypeDecl, rows: &[StoredRecord], a: &Aggregate) -> Result<Found> {

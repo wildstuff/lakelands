@@ -175,6 +175,12 @@ pub struct Find {
     /// its first page was read at, and the read is pinned to it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<Cursor>,
+    /// Continue strictly after a sort position the caller names: the
+    /// position a cursor carries, said in the open. The read is pinned by
+    /// `at` as any `find` is, so without `as_of` it reads the head. Given
+    /// with `cursor` or `aggregate`, it is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<After>,
     /// Aggregate instead of listing records.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aggregate: Option<Aggregate>,
@@ -184,6 +190,19 @@ pub struct Find {
     /// The time axes.
     #[serde(default, flatten)]
     pub at: ReadAt,
+}
+
+/// A sort position in `find`'s one order: the row that sorts at `values`
+/// under `order_by`, with key `key`
+/// (`docs/decisions/029-every-answer-has-one-order.md`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct After {
+    /// The sort keys' values, in `order_by` order; `null` where the row
+    /// has no value for a key.
+    pub values: Vec<Value>,
+    /// The row's key, which breaks ties.
+    pub key: RecordKey,
 }
 
 /// The answer to `find`.

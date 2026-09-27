@@ -29,7 +29,8 @@ ended. It is bound to the position its first page was read at, so a page
 set stays stable while the lake is written. `find`, pattern rows and
 `proposals` take `limit`, `order_by` and `cursor`; `search` takes `k`
 and `cursor` and no `order_by`, because relevance is its order by
-definition.
+definition. `find` also takes `after` instead of a cursor: a row's sort
+values and key, continued strictly after at the caller's read position.
 
 Two words sit beside them, as per-field provenance
 (`docs/decisions/010-provenance-per-field.md`): **known_at**, when the
