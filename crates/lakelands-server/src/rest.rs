@@ -178,7 +178,7 @@ enum Kind {
     Flag,
     /// JSON.
     Json,
-    /// Sort keys: `due_date,-amount,known_at(status)`, `-` for
+    /// Sort keys: `due_date,-amount,known_at(status),-latest()`, `-` for
     /// descending; or the JSON array the door takes.
     Order,
     /// Comma-separated words.
@@ -227,6 +227,11 @@ fn order(text: &str) -> Option<Value> {
             None => ("asc", k),
         };
         let mut o = Map::new();
+        if k == "latest()" {
+            o.insert("by".into(), json!("latest"));
+            o.insert("dir".into(), json!(dir));
+            return Some(Value::Object(o));
+        }
         let field = ["known_at", "seen_at"].iter().find_map(|by| {
             let f = k.strip_prefix(by)?.strip_prefix('(')?.strip_suffix(')')?;
             o.insert("by".into(), json!(by));
@@ -1170,5 +1175,27 @@ async fn tail(
                 return;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_short_order_form_reads_fields_provenance_and_latest() {
+        assert_eq!(
+            order("-due_date,known_at(status),-latest()"),
+            Some(json!([
+                {"field": "due_date", "dir": "desc"},
+                {"by": "known_at", "field": "status", "dir": "asc"},
+                {"by": "latest", "dir": "desc"},
+            ]))
+        );
+        assert_eq!(
+            order("latest"),
+            Some(json!([{"field": "latest", "dir": "asc"}])),
+            "a field named `latest` keeps its plain spelling"
+        );
     }
 }

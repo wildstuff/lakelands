@@ -200,6 +200,10 @@ fn resume_after(
         };
         let v = match (o.by, v) {
             (_, Value::Null) => None,
+            (OrderBy::Latest, Value::Number(n)) if n.is_u64() => Some(v.clone()),
+            (OrderBy::Latest, _) => {
+                return Err(unfit("a position is a non-negative integer".into()));
+            }
             (OrderBy::KnownAt | OrderBy::SeenAt, Value::String(s)) => Some(
                 lakelands_api::Timestamp::parse(s)
                     .map_err(|e| unfit(e.to_string()))?
@@ -1625,13 +1629,28 @@ impl Catalog for MockCatalog {
         }
         let e = filter(&st, who, t, find.filter.as_ref())?;
         for o in &find.order_by {
-            readable(&st, who, t, &o.field)?;
+            if let Some((field, message)) = o.misfit() {
+                return Err(Error::Refused {
+                    field,
+                    reason: Refusal::Invalid { message },
+                });
+            }
+            if o.by == OrderBy::Latest && t.decl.view.is_some() {
+                return Err(invalid(format!(
+                    "`order_by` `latest` orders records by their latest change, and `{ty}` is a \
+                     view, whose records are computed and have none"
+                )));
+            }
+            if o.by != OrderBy::Latest {
+                readable(&st, who, t, &o.field)?;
+            }
         }
         let mut rows = candidates(&st, who, t, find.at, e.as_ref())?;
         let sort_key = |r: &StoredRecord| -> Vec<Option<Value>> {
             find.order_by
                 .iter()
                 .map(|o| match o.by {
+                    OrderBy::Latest => Some(r.position.0.into()),
                     OrderBy::Value => r.fields.get(&o.field).cloned().filter(|v| !v.is_null()),
                     OrderBy::KnownAt => r.meta.get(&o.field).map(|m| m.known_at.to_string().into()),
                     OrderBy::SeenAt => r

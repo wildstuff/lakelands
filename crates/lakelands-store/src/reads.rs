@@ -439,6 +439,7 @@ impl<'a> Reader<'a> {
         order
             .iter()
             .map(|o| match o.by {
+                OrderBy::Latest => Value::from(r.position.0),
                 OrderBy::Value => r.fields.get(&o.field).cloned().unwrap_or(Value::Null),
                 OrderBy::KnownAt => r
                     .meta
@@ -496,6 +497,22 @@ impl<'a> Reader<'a> {
     /// `find`.
     pub fn find(&self, ty: &TypeName, find: &Find) -> Result<Found> {
         let decl = self.visible_type(ty)?.clone();
+        for o in &find.order_by {
+            if let Some((field, message)) = o.misfit() {
+                return Err(Error::Refused {
+                    field,
+                    reason: Refusal::Invalid { message },
+                });
+            }
+            // A view's records are computed at the read's position; none
+            // has an event of its own to order by.
+            if o.by == OrderBy::Latest && decl.view.is_some() {
+                return Err(invalid(format!(
+                    "`order_by` `latest` orders records by their latest change, and `{ty}` is a \
+                     view, whose records are computed and have none"
+                )));
+            }
+        }
         let filter = find
             .filter
             .as_ref()
@@ -505,7 +522,12 @@ impl<'a> Reader<'a> {
             .as_ref()
             .map(|e| core_derive::reads(e).into_iter().collect())
             .unwrap_or_default();
-        probed.extend(find.order_by.iter().map(|o| o.field.clone()));
+        probed.extend(
+            find.order_by
+                .iter()
+                .filter(|o| o.by != OrderBy::Latest)
+                .map(|o| o.field.clone()),
+        );
         if let Some(a) = &find.aggregate {
             probed.extend(a.measures.iter().filter_map(|m| m.field.clone()));
             // A field key probes its field; a named key, every field its
@@ -604,6 +626,10 @@ impl<'a> Reader<'a> {
             };
             let v = match (o.by, v) {
                 (_, Value::Null) => Value::Null,
+                (OrderBy::Latest, Value::Number(n)) if n.is_u64() => v.clone(),
+                (OrderBy::Latest, _) => {
+                    return Err(unfit("a position is a non-negative integer".into()));
+                }
                 (OrderBy::KnownAt | OrderBy::SeenAt, Value::String(t)) => {
                     let t = Timestamp::parse(t).map_err(|e| unfit(e.to_string()))?;
                     Value::String(t.to_string())
@@ -1044,6 +1070,12 @@ impl<'a> Reader<'a> {
                 aggregate::aggregate(&refs, a, self.now).map_err(|e| invalid(e.to_string()))?;
             return Ok(QueryResult::Groups { rows: groups });
         }
+        if p.order_by.iter().any(|o| o.by == OrderBy::Latest) {
+            return Err(invalid(
+                "`order_by` `latest` orders records by their latest change, and a query's rows \
+                 are projections of a walk, not records",
+            ));
+        }
         let order: Vec<Order> = p.order_by.clone();
         let mut keyed: Vec<(SortKey, BTreeMap<String, Value>)> = rows
             .into_iter()
@@ -1188,9 +1220,11 @@ fn ordered_proposals(proposals: Vec<Proposal>, order_by: &[Order]) -> Result<Vec
     for o in order_by {
         if o.by != OrderBy::Value || !PROPOSAL_MEMBERS.contains(&o.field.as_str()) {
             return Err(invalid(format!(
-                "proposals are ordered by their members ({}), and `{}` is not one",
+                "`order_by` orders proposals by their members ({}) and their values, and `{}` \
+                 by `{}` is not one",
                 PROPOSAL_MEMBERS.join(", "),
-                o.field
+                o.field,
+                serde_json::to_value(o.by).unwrap_or_default()
             )));
         }
     }

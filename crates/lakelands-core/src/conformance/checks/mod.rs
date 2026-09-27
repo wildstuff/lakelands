@@ -24,6 +24,7 @@ mod fields;
 mod filters;
 mod ingest;
 mod keys;
+mod latest;
 mod links;
 mod masking;
 mod migrate;
@@ -69,6 +70,7 @@ pub const ALL: &[Check] = &[
     versions::IDEMPOTENT_RETRY,
     paging::EVERY_RECORD_ONCE,
     paging::MISSING_SORT_VALUES_LAST,
+    latest::LATEST_ORDER,
     decimals::AS_WRITTEN,
     decimals::EXACT_SUM,
     decimals::SCALE_KEPT,

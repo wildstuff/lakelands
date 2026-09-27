@@ -46,8 +46,10 @@ pub enum Direction {
     Desc,
 }
 
-/// What of a field a sort key orders by: its value, or when it was
-/// learned or observed (`docs/decisions/010-provenance-per-field.md`).
+/// What a sort key orders by: a field's value, or when it was learned or
+/// observed (`docs/decisions/010-provenance-per-field.md`), or, with no
+/// field, the position of the event that made each record's state
+/// (`docs/decisions/029-every-answer-has-one-order.md`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OrderBy {
@@ -58,13 +60,17 @@ pub enum OrderBy {
     KnownAt,
     /// The field's `seen_at`.
     SeenAt,
+    /// The position of the record's latest change at the read's position;
+    /// takes no field.
+    Latest,
 }
 
 /// One sort key. Records without a value for it sort last in either
 /// direction; the record key breaks ties.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Order {
-    /// The field sorted on.
+    /// The field sorted on; empty, and absent on the wire, for `latest`.
+    #[serde(default = "no_field", skip_serializing_if = "is_no_field")]
     pub field: FieldName,
     /// What of the field orders: its value unless stated.
     #[serde(default, skip_serializing_if = "is_value")]
@@ -76,6 +82,36 @@ pub struct Order {
 
 fn is_value(by: &OrderBy) -> bool {
     *by == OrderBy::Value
+}
+
+fn no_field() -> FieldName {
+    FieldName::new("")
+}
+
+fn is_no_field(field: &FieldName) -> bool {
+    field.as_str().is_empty()
+}
+
+impl Order {
+    /// Whether a key names its field as its `by` asks: `latest` none,
+    /// every other a field. The fault, with the field it names if any.
+    pub fn misfit(&self) -> Option<(Option<FieldName>, String)> {
+        match (self.by, self.field.as_str().is_empty()) {
+            (OrderBy::Latest, false) => Some((
+                Some(self.field.clone()),
+                format!(
+                    "`latest` orders by the position of each record's latest change and takes \
+                     no field, and `{}` was given",
+                    self.field
+                ),
+            )),
+            (OrderBy::Latest, true) | (_, false) => None,
+            (_, true) => Some((
+                None,
+                "an order by a value, `known_at` or `seen_at` names its field".into(),
+            )),
+        }
+    }
 }
 
 /// An aggregate function over a set of records.
@@ -273,5 +309,34 @@ mod group_key_tests {
         let extra =
             serde_json::from_str::<GroupKey>(r#"{"name": "m", "expr": "x", "unit": "day"}"#);
         assert!(extra.is_err(), "an unknown member is refused: {extra:?}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_latest_key_carries_no_field_on_the_wire_and_every_other_names_one() {
+        let latest: Order =
+            serde_json::from_value(serde_json::json!({"by": "latest", "dir": "desc"}))
+                .expect("a latest key reads without a field");
+        assert!(latest.field.as_str().is_empty());
+        assert_eq!(latest.misfit(), None);
+        assert_eq!(
+            serde_json::to_value(&latest).unwrap(),
+            serde_json::json!({"by": "latest", "dir": "desc"}),
+            "echoed back, a latest key names no field"
+        );
+        let named = Order {
+            field: "amount".into(),
+            ..latest.clone()
+        };
+        assert_eq!(named.misfit().map(|m| m.0), Some(Some("amount".into())));
+        let unnamed = Order {
+            by: OrderBy::KnownAt,
+            ..latest
+        };
+        assert_eq!(unnamed.misfit().map(|m| m.0), Some(None));
     }
 }

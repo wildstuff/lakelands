@@ -369,7 +369,7 @@ interface types {
 
     enum direction { asc, desc }
 
-    enum order-by { value, known-at, seen-at }
+    enum order-by { value, known-at, seen-at, latest }
 
     record order {
         field: field-name,

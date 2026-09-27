@@ -128,9 +128,11 @@ pub fn exact_text_term(filter: &Expr) -> Option<(FieldName, String)> {
 }
 
 /// The value a sort key reads from a record: the field's value, or when
-/// it was learned or observed. `None` when absent.
+/// it was learned or observed, or for `latest` the position of the event
+/// that made the state. `None` when absent.
 pub fn sort_value(record: &StoredRecord, order: &Order) -> Option<Value> {
     match order.by {
+        OrderBy::Latest => Some(Value::from(record.position.0)),
         OrderBy::Value => record
             .fields
             .get(&order.field)

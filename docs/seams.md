@@ -282,7 +282,10 @@ masking are the store's.
   it evaluates any other filter itself.
 
 The qualifying records come ordered by `scan.order_by` — each key the
-field's value, or its `known_at` or `seen_at`; a record without a value
+field's value, or its `known_at` or `seen_at`, or, with no field,
+`latest`: the position of the event that made the record's state at the
+view (a link record moves itself, not the records it joins; a
+reference field moves its record); a record without a value
 for a key after every record with one, in either direction; the record
 key ascending to break ties; values ranked and compared by
 `lakelands_core::expr::order::cmp_values`, the one sort order
@@ -323,13 +326,18 @@ field's index orders runs of equal values and each run is read whole and
 sorted, so a first field with few values reads most of the type (a
 boolean first: about 0.3 s in memory, 0.45 s on SQLite and 1.3 s on
 PostgreSQL at 100 000 records). A field the lake did not ask an index
-for, an earlier position, an order by `known_at` or `seen_at`, and a
-view type read the type at the position and sort it by `sort_key`,
+for, an earlier position, an order by `known_at`, `seen_at` or `latest`,
+and a view type read the type at the position and sort it by `sort_key`,
 holding it only for that answer: about 0.2 s in memory, 0.5 s on SQLite
 and 0.6 s on PostgreSQL for a page of 50 over 100 000 records. Because
 each such engine page sorts the type again, a filter only the store
 evaluates asks for twice as many rows each time it reads on: a page
-costs a few sorts of the type, never one per `limit` rows. **What an
+costs a few sorts of the type, never one per `limit` rows. `latest` asks
+for no grant beyond the type's: that a record changed, and when, a
+reader already learns from its `version`, which moves on every change,
+including one to a field it cannot see. It is refused on a view type,
+whose records are computed and have no event of their own, on a
+pattern query's rows and on proposals. **What an
 index costs:** a lake that asks for none writes as before; each indexed
 field costs every write of the type a row in two ordered indexes, and
 the setting's write one pass over the type. On PostgreSQL, the ingest
