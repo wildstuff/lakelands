@@ -444,6 +444,10 @@ pub fn scan_in_field_order<E>(
     let limit = scan.limit as usize;
     let multi = scan.order_by.len() > 1;
     let batch = key_batch(scan);
+    // After the first batch, what the page still lacks and one more: a
+    // page continued inside a run read the rows up to `after` again, and a
+    // whole further batch would hold twice the page.
+    let rest = |have: usize| (limit.saturating_sub(have) + 1).min(batch as usize) as u32;
     let after = scan
         .after
         .as_ref()
@@ -482,13 +486,11 @@ pub fn scan_in_field_order<E>(
         };
         let mut run: Vec<StoredRecord> = Vec::new();
         let mut run_key: Option<Vec<u8>> = None;
+        let mut n = batch;
         loop {
-            let rows = sorted(
-                from.as_ref().map(|(k, r)| (k.as_slice(), r.as_str())),
-                batch,
-            )?;
+            let rows = sorted(from.as_ref().map(|(k, r)| (k.as_slice(), r.as_str())), n)?;
             count_read(rows.len());
-            let read_all = rows.len() < batch as usize;
+            let read_all = rows.len() < n as usize;
             for (k, r) in rows {
                 from = Some((k.clone(), r.key.to_string()));
                 if !is_run(&k) {
@@ -521,6 +523,7 @@ pub fn scan_in_field_order<E>(
                 }
                 break;
             }
+            n = rest(out.len());
         }
     }
     // The records without a value for the first field, last.
@@ -529,10 +532,11 @@ pub fn scan_in_field_order<E>(
         _ => None,
     };
     let mut run = Vec::new();
+    let mut n = batch;
     loop {
-        let rows = missing(from.as_deref(), batch)?;
+        let rows = missing(from.as_deref(), n)?;
         count_read(rows.len());
-        let read_all = rows.len() < batch as usize;
+        let read_all = rows.len() < n as usize;
         for r in rows {
             from = Some(r.key.to_string());
             if multi {
@@ -546,6 +550,9 @@ pub fn scan_in_field_order<E>(
         }
         if read_all {
             break;
+        }
+        if !multi {
+            n = rest(out.len());
         }
     }
     if multi {

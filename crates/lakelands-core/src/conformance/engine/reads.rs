@@ -50,7 +50,7 @@ engine_check!(
 engine_check!(
     /// A page ordered by an indexed field reads its page.
     SORTED_PAGE = a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it,
-    "041 and lakelands#137: a page of 10 ordered by a field the `sort_index.<type>` setting names reads about its page, not the type; the setting's write switches the same page from sorting the type to the index and back, and the answer stays what one scan over every state answers"
+    "041 and lakelands#137: a page of 10 ordered by a field the `sort_index.<type>` setting names reads its page and at most three rows more, not the type, the first page and one continued after a value longer than the index keeps alike; the setting's write switches the same page from sorting the type to the index and back, and the answer stays what one scan over every state answers"
 );
 
 engine_check!(
@@ -1308,13 +1308,15 @@ fn a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it
     let Declaration::Type(t) = &decl else {
         unreachable!("the check declares a type")
     };
-    // Every record holds its own `v`, so a page is never a run.
+    // Every record holds its own `v`, told apart in its first bytes but
+    // longer than the index keeps, so each is a run of one that a page
+    // continued after it starts from.
     let states: Vec<StoredRecord> = (0..N)
         .map(|i| {
             record(
                 "t",
                 &format!("k{i:04}"),
-                json!({"v": format!("v{:04}", (i * 7919) % N)}),
+                json!({"v": format!("v{:04} {}", (i * 7919) % N, "past the cut ".repeat(3))}),
                 1,
             )
         })
@@ -1332,9 +1334,10 @@ fn a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it
         states.iter().try_for_each(|r| p.put_record(r))
     })?;
     let ty = TypeName::from("t");
-    // The rows the engine handed the rulebook for one page, and the page.
-    let page = |dir| -> Result<(u64, bool), Failure> {
-        let scan = Scan {
+    // The rows the engine handed the rulebook for one page, and the page:
+    // the first page, or the one after the first's last row.
+    let page = |dir, continued: bool| -> Result<(u64, bool), Failure> {
+        let mut scan = Scan {
             order_by: vec![Order {
                 field: "v".into(),
                 by: OrderBy::Value,
@@ -1343,6 +1346,14 @@ fn a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it
             limit: LIMIT,
             ..Scan::default()
         };
+        if continued {
+            let first = crate::engines::scan(Some(t), &states, &scan);
+            let last = first.last().expect("a first page");
+            scan.after = Some(After {
+                values: vec![last.fields.get("v").cloned().unwrap_or(Value::Null)],
+                key: last.key.clone(),
+            });
+        }
         let view = view(engine, None)?;
         let before = crate::engines::rows_read();
         let rows = view
@@ -1372,28 +1383,40 @@ fn a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it
             }
             fold(engine, at, |p| p.put_record(&state))?;
         }
-        for dir in [Direction::Asc, Direction::Desc] {
-            let (read, right) = page(dir)?;
+        for (dir, continued) in [
+            (Direction::Asc, false),
+            (Direction::Desc, false),
+            (Direction::Asc, true),
+            (Direction::Desc, true),
+        ] {
+            let (read, right) = page(dir, continued)?;
             let asked = match &asked {
                 None => "no setting".to_owned(),
                 Some(Value::Null) => "the setting retired".to_owned(),
                 Some(f) => format!("the setting {f}"),
             };
+            let which = if continued {
+                "the second page"
+            } else {
+                "a page"
+            };
             ensure!(
                 right,
-                "with {asked}, a page of {LIMIT} ordered by `v` {dir:?} is not what one scan \
+                "with {asked}, {which} of {LIMIT} ordered by `v` {dir:?} is not what one scan \
                  over every state answers"
             );
             if index {
+                // The row `after` names, read again as the start of its
+                // run, and the rows that close the page's last run.
                 ensure!(
-                    read <= 2 * u64::from(LIMIT),
-                    "with {asked}, a page of {LIMIT} ordered by `v` {dir:?} read {read} of the \
-                     type's {N} records; the order index reads about its page"
+                    read <= u64::from(LIMIT) + 3,
+                    "with {asked}, {which} of {LIMIT} ordered by `v` {dir:?} read {read} of the \
+                     type's {N} records; the order index reads its page and at most three more"
                 );
             } else {
                 ensure!(
                     read >= N,
-                    "with {asked}, a page of {LIMIT} ordered by `v` {dir:?} read {read} rows; \
+                    "with {asked}, {which} of {LIMIT} ordered by `v` {dir:?} read {read} rows; \
                      with no index on `v` it sorts all {N} records, so the index answered \
                      what the lake did not ask it for"
                 );

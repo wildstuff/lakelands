@@ -803,7 +803,8 @@ impl Size<'_> {
     /// every record holds with its own value, first as a lake without an
     /// order index sorts them (reported: a page holds the type,
     /// lakelands#193), then after the setting `sort_index.reading` asks for
-    /// the index on `note` (held: a page holds its rows, lakelands#137).
+    /// the index on `note` (held: a page holds its rows, lakelands#137);
+    /// then retire the setting.
     async fn sorted_walks(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
         self.sorted_walk(
             store,
@@ -827,7 +828,18 @@ impl Size<'_> {
             .await
             .must("asking for the order index on `note`")?;
         self.sorted_walk(store, records, "find-sorted", Claim::Held)
+            .await?;
+        // Retired, so the next size's first walk sorts again.
+        doors(store)
+            .retire(
+                &self.own,
+                &TypeName::from(lakelands_api::seam::SETTING_TYPE),
+                &RecordKey::from("sort_index.reading"),
+                lakelands_api::WriteOpts::default(),
+            )
             .await
+            .must("retiring the order index on `note`")?;
+        Ok(())
     }
 
     /// Walk the first pages of `reading` ordered by its `note`, a page of
