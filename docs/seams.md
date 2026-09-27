@@ -332,7 +332,12 @@ evaluates asks for twice as many rows each time it reads on: a page
 costs a few sorts of the type, never one per `limit` rows. **What an
 index costs:** a lake that asks for none writes as before; each indexed
 field costs every write of the type a row in two ordered indexes, and
-the setting's write one pass over the type: @@COST@@. A view type's page
+the setting's write one pass over the type. On PostgreSQL, the ingest
+line of the streaming check at 25 000 records (three interleaved runs,
+`synchronous_commit` off, because durable commits on the test machine
+spread too widely to compare) read 369 events/s before the index, 349
+with no setting (within the spread of the runs) and 327 with the index
+on one text field. A view type's page
 is computed from its source's records, whole, as before.
 
 **The ceiling of a walk.** A pattern query asks the engine for the edges
