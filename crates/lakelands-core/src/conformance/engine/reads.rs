@@ -1102,6 +1102,11 @@ fn order_value(i: u64) -> Value {
         json!([1, 2]),
         json!(0),
         json!("-0.00"),
+        // Four texts that part only after the order index's cut.
+        json!("a text long enough to pass the cut, then z"),
+        json!("a text long enough to pass the cut, then b"),
+        json!("a text long enough to pass the cut, then m"),
+        json!("a text long enough to pass the cut, then a"),
     ];
     values[(i as usize * 7) % values.len()].clone()
 }

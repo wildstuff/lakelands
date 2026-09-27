@@ -296,29 +296,61 @@ pub fn scan<'a>(
         .collect()
 }
 
+/// The longest key the order index keeps: a [`sort_key`] is cut to it
+/// ([`order_key`]). A kept key this long may have been cut, so the rows
+/// sharing it are a run that [`cmp_places`] orders from the values.
+pub const ORDER_KEY_BYTES: usize = 32;
+
+/// A value's key in the order index: its [`sort_key`], cut to
+/// [`ORDER_KEY_BYTES`]. Cutting keeps the order between keys that differ
+/// before the cut; values that share the first bytes share a key.
+pub fn order_key(value: &Value) -> Vec<u8> {
+    let mut key = sort_key(value);
+    key.truncate(ORDER_KEY_BYTES);
+    key
+}
+
+/// Whether the order index keeps rows for a field: one of a scalar kind.
+/// JSON values, vectors, geometries and bytes are ordered by sorting.
+pub fn in_order_index(field: &lakelands_api::ontology::FieldDecl) -> bool {
+    use lakelands_api::ontology::StorageKind as K;
+    matches!(
+        field.ty.kind,
+        K::Text | K::Number | K::Decimal | K::Boolean | K::DateTime | K::Reference
+    )
+}
+
 /// The order index rows of a record's state: one per field `decl`
-/// declares that the state holds with a value, with its [`sort_key`].
-/// Retired and restricted states have rows too: [`admits`] decides on
-/// them when a page is read.
+/// declares, of a kind the index keeps ([`in_order_index`]), that the
+/// state holds with a value, with its [`order_key`]. Retired and
+/// restricted states have rows too: [`admits`] decides on them when a
+/// page is read.
 pub fn order_rows<'a>(decl: &'a TypeDecl, record: &StoredRecord) -> Vec<(&'a FieldName, Vec<u8>)> {
     decl.fields
         .iter()
+        .filter(|f| in_order_index(f))
         .filter_map(|f| {
             let v = record.fields.get(&f.name).filter(|v| !v.is_null())?;
-            Some((&f.name, sort_key(v)))
+            Some((&f.name, order_key(v)))
         })
         .collect()
 }
 
 /// Whether an order index kept by [`order_rows`] can answer `scan`: it
-/// is ordered, first by the value of a field the type declares. What it
-/// cannot answer (an order by `known_at` or `seen_at`, a field the
-/// declaration does not name, a view type) is sorted whole by [`scan`].
+/// is ordered, first by the value of a field the type declares with a
+/// kind the index keeps. The declaration decides, never which rows
+/// exist. What the index cannot answer (an order by `known_at` or
+/// `seen_at`, a field the declaration does not name or does not index, a
+/// view type) is sorted whole by [`scan`].
 pub fn by_order_index<'a>(decl: Option<&TypeDecl>, scan: &'a Scan) -> Option<&'a Order> {
     let decl = decl.filter(|d| d.view.is_none())?;
     let first = scan.order_by.first()?;
-    (first.by == OrderBy::Value && decl.fields.iter().any(|f| f.name == first.field))
-        .then_some(first)
+    (first.by == OrderBy::Value
+        && decl
+            .fields
+            .iter()
+            .any(|f| f.name == first.field && in_order_index(f)))
+    .then_some(first)
 }
 
 /// A scan answered from an order index, in the order [`scan`] gives, by
@@ -332,11 +364,15 @@ pub fn by_order_index<'a>(decl: Option<&TypeDecl>, scan: &'a Scan) -> Option<&'a
 /// n)` answers at most `n` of the type's records that have no row for the
 /// field, in key order after `after`.
 ///
-/// For one sort field the index's order is the rulebook's, so rows are
-/// taken as they come. For several, each run of rows sharing the first
-/// field's key is read whole and ordered by [`cmp_places`], and so are the
-/// records missing the first field, which come last; the index orders the
-/// runs and never decides inside one.
+/// For one sort field and a key shorter than [`ORDER_KEY_BYTES`], the
+/// index's order is the rulebook's, so rows are taken as they come. Rows
+/// sharing a key that long, which may have been cut, and for several sort
+/// fields every run of rows sharing the first field's key, are read whole
+/// and ordered by [`cmp_places`], and so are the records missing the
+/// first field, which come last: the index orders the runs and never
+/// decides inside one. A page that continues inside a run reads the run
+/// from its start and keeps what lies strictly after `after`, since the
+/// record keys inside a run are not in the values' order.
 pub fn scan_in_field_order<E>(
     decl: Option<&TypeDecl>,
     scan: &Scan,
@@ -376,9 +412,14 @@ pub fn scan_in_field_order<E>(
     };
     // The indexed rows, unless the page continues among the missing.
     if !matches!(first_after, Some((None, _))) {
+        let is_run = |k: &[u8]| multi || k.len() >= ORDER_KEY_BYTES;
         let mut from: Option<(Vec<u8>, String)> = match first_after {
-            // Several fields: from the start of the run `after` is in.
-            Some((Some(v), key)) => Some((sort_key(v), if multi { "" } else { key }.to_owned())),
+            // Inside a run: from the start of the run `after` is in.
+            Some((Some(v), key)) => {
+                let k = order_key(v);
+                let key = if is_run(&k) { "" } else { key };
+                Some((k, key.to_owned()))
+            }
             _ => None,
         };
         let mut run: Vec<StoredRecord> = Vec::new();
@@ -391,7 +432,12 @@ pub fn scan_in_field_order<E>(
             let read_all = rows.len() < batch as usize;
             for (k, r) in rows {
                 from = Some((k.clone(), r.key.to_string()));
-                if !multi {
+                if !is_run(&k) {
+                    take_run(&mut run, &mut out);
+                    run_key = None;
+                    if out.len() >= limit {
+                        return Ok(out);
+                    }
                     if admits(decl, &r, scan) {
                         out.push(r);
                         if out.len() >= limit {
@@ -708,6 +754,10 @@ mod tests {
             json!(""),
             json!(" "),
             json!("1e3"),
+            json!(format!("{}b", "long prefix ".repeat(4))),
+            json!(format!("{}a", "long prefix ".repeat(4))),
+            json!(format!("{}c", "long prefix ".repeat(4))),
+            json!(format!("{}", "long prefix ".repeat(4))),
             json!(false),
             json!(true),
             json!({"a": 1}),

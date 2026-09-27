@@ -303,18 +303,33 @@ read one after another, so its cost is the rows read to fill the page:
 bounded in memory, linear in time. A page ordered by key reads about
 `limit` rows, not the type; every engine reads it in key order from
 `after` and stops when it is full (`lakelands_core::engines::
-scan_in_key_order`). A page ordered by a field reads the type at the
-position and sorts it, and holds it only for that answer, because the
-one order across kinds has no SQL `ORDER BY`. The sort encodes each
-value once as bytes whose order is that order
-(`lakelands_core::engines::sort_key`) and compares the bytes. A page of
-50 ordered by a text field over 100 000 records takes about 0.2 s in
-memory, 0.5 s on SQLite and 0.6 s on PostgreSQL, read and sort together.
-Because each such engine page sorts the type again, a filter only the
-store evaluates asks for twice as many rows each time it reads on: a page
-costs a few sorts of the type, never one per `limit` rows. An index that
-lets a field-ordered page read about `limit` rows is lakelands#137's
-next step. A view type's page is computed from its source's records,
+scan_in_key_order`). A page ordered by a field the type declares reads
+about `limit` rows at the head, too: every engine keeps an order index of
+the head, each field a record holds that its type declares with a
+scalar kind (text, number, decimal, boolean, date-time, reference) as
+the first 32 bytes of its `sort_key` (`lakelands_core::engines::
+sort_key`, bytes whose order is the one order across kinds), and reads
+the page in the index's order from `after`; values that share the first
+32 bytes are read as a run and ordered from the values
+(`scan_in_field_order`; `docs/decisions/041-a-sorted-page-reads-its-page.md`).
+A page of 50 ordered by one field over 100 000 records takes about
+0.1 ms in memory, 0.3 ms on SQLite and 2 ms on PostgreSQL. The index is
+used only while it describes the head; a lake whose index a writer did
+not keep sorts as below until a writer's open rebuilds it. **Its
+ceilings:** with several sort fields, the first field's index orders
+runs of equal values and each run is read whole and sorted, so a first
+field with few values reads most of the type (a boolean first: about
+0.3 s in memory, 0.45 s on SQLite and 1.3 s on PostgreSQL at 100 000
+records). An earlier position, an order by `known_at` or `seen_at`, a
+field the declaration does not name or declares as JSON, vector,
+geometry or bytes, and a view type read the type at
+the position and sort it by `sort_key`, holding it only for that answer:
+about 0.2 s in memory, 0.5 s on SQLite and 0.6 s on PostgreSQL for a
+page of 50 over 100 000 records. Because each such engine page sorts the
+type again, a filter only the store evaluates asks for twice as many
+rows each time it reads on: a page costs a few sorts of the type, never
+one per `limit` rows. The index costs a row per declared field a record
+holds: @@COST@@. A view type's page is computed from its source's records,
 whole, as before.
 
 **The ceiling of a walk.** A pattern query asks the engine for the edges
