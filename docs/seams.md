@@ -290,7 +290,9 @@ key ascending to break ties; values ranked and compared by
 strictly after `scan.after` in that order, then at most `scan.limit`
 (literal: 0 answers nothing). `find` pages through this contract: the
 store asks for the page it answers, in its order, after the cursor's
-row, and one row more than it answers. An engine's paging is an
+row — or after the row a caller's `after` names, the same position said
+in the open, which reaches the engine as the same `scan.after` — and
+one row more than it answers. An engine's paging is an
 optimisation that may never change an answer
 (`docs/decisions/029-every-answer-has-one-order.md`).
 
