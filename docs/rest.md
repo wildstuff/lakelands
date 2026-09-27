@@ -127,9 +127,11 @@ takes. `limit`, `as_of` and `from` are whole numbers; `with_meta` is
 `true`, `false`, or present without a value for `true`; `aggregate` is
 JSON, and so is `after`, the sort position a page resumes strictly after
 without a cursor: `after={"values":["2026-10-01"],"key":"inv-7"}`,
-read at `as_of` when given and at the head otherwise. `order_by` is the JSON array of sort keys, or the short form:
-fields separated by commas, `-` before a field for descending, and
-`known_at(field)` or `seen_at(field)` to order by a field's provenance —
+URL-encoded like `where` and every other query value, and read at
+`as_of` when given and at the head otherwise. `order_by` is the JSON
+array of sort keys, or the short form: fields separated by commas, `-`
+before a field for descending, and `known_at(field)` or
+`seen_at(field)` to order by a field's provenance —
 `order_by=-due_date,known_at(status)`. `kinds` and `types` are words
 separated by commas.
 
