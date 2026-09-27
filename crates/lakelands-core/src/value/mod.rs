@@ -365,9 +365,11 @@ fn check_vector(value: &Value, ty: &FieldType) -> Result<Value, ValueError> {
 }
 
 /// A GeoJSON geometry (RFC 7946 §3.1): an object whose `type` names one
-/// of the seven geometry types, with `coordinates` as an array, or for a
-/// collection `geometries` as an array of geometries. A `Feature` is not a
-/// geometry. Coordinates are not checked position by position.
+/// of the seven geometry types, with `coordinates` of that type's shape,
+/// or for a collection `geometries` as an array of geometries. A
+/// `Feature` is not a geometry. A position is two or three numbers, a
+/// line string at least two positions, and a polygon's every ring a
+/// closed one: at least four positions, the last equal to the first.
 fn check_geo(value: &Value) -> Result<(), ValueError> {
     let obj = value
         .as_object()
@@ -376,23 +378,57 @@ fn check_geo(value: &Value) -> Result<(), ValueError> {
         .get("type")
         .and_then(Value::as_str)
         .ok_or_else(|| ValueError::Geo("no string member `type`".into()))?;
-    match ty {
-        "Point" | "MultiPoint" | "LineString" | "MultiLineString" | "Polygon" | "MultiPolygon" => {
-            match obj.get("coordinates") {
-                Some(Value::Array(_)) => Ok(()),
-                _ => Err(ValueError::Geo(format!(
-                    "a {ty} needs a `coordinates` array"
-                ))),
-            }
-        }
-        "GeometryCollection" => match obj.get("geometries") {
+    if ty == "GeometryCollection" {
+        return match obj.get("geometries") {
             Some(Value::Array(parts)) => parts.iter().try_for_each(check_geo),
             _ => Err(ValueError::Geo(
                 "a GeometryCollection needs a `geometries` array".into(),
             )),
-        },
-        other => Err(ValueError::Geo(format!("{other:?} is not a geometry type"))),
+        };
     }
+    let shape: fn(&Value) -> bool = match ty {
+        "Point" => is_position,
+        "MultiPoint" => |c| each(c, is_position),
+        "LineString" => is_line,
+        "MultiLineString" => |c| each(c, is_line),
+        "Polygon" => is_polygon,
+        "MultiPolygon" => |c| each(c, is_polygon),
+        other => return Err(ValueError::Geo(format!("{other:?} is not a geometry type"))),
+    };
+    match obj.get("coordinates") {
+        Some(c) if shape(c) => Ok(()),
+        Some(_) => Err(ValueError::Geo(format!(
+            "the `coordinates` are not those of a {ty}"
+        ))),
+        None => Err(ValueError::Geo(format!("a {ty} needs `coordinates`"))),
+    }
+}
+
+fn each(v: &Value, f: fn(&Value) -> bool) -> bool {
+    v.as_array().is_some_and(|a| a.iter().all(f))
+}
+
+fn is_position(v: &Value) -> bool {
+    v.as_array()
+        .is_some_and(|a| (a.len() == 2 || a.len() == 3) && a.iter().all(Value::is_number))
+}
+
+fn is_line(v: &Value) -> bool {
+    v.as_array()
+        .is_some_and(|a| a.len() >= 2 && a.iter().all(is_position))
+}
+
+/// Linear rings, each closed: four positions or more, the last equal to
+/// the first.
+fn is_polygon(v: &Value) -> bool {
+    v.as_array().is_some_and(|rings| {
+        !rings.is_empty()
+            && rings.iter().all(|ring| {
+                ring.as_array().is_some_and(|ps| {
+                    ps.len() >= 4 && ps.first() == ps.last() && ps.iter().all(is_position)
+                })
+            })
+    })
 }
 
 fn check_one_of(value: &Value, vt: &ValueTypeDecl) -> Result<(), ValueError> {
@@ -638,6 +674,13 @@ mod tests {
             json!({"type": "Point"}),
             json!({"type": "Feature", "geometry": polygon}),
             json!({"type": "GeometryCollection", "geometries": [{"type": "Circle"}]}),
+            json!({"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1]]]}),
+            json!({"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [0, 0]]]}),
+            json!({"type": "Polygon", "coordinates": []}),
+            json!({"type": "Point", "coordinates": [7]}),
+            json!({"type": "Point", "coordinates": [7, "50"]}),
+            json!({"type": "LineString", "coordinates": [[0, 0]]}),
+            json!({"type": "MultiPoint", "coordinates": [0, 0]}),
         ] {
             assert!(check(&bad, &ty, None).is_err(), "{bad}");
         }

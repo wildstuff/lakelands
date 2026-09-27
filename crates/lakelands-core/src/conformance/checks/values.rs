@@ -2,17 +2,21 @@
 //! (`docs/decisions/011-storage-kind-and-value-type.md`, `docs/log-format.md`
 //! §5).
 
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, ValueTypeDecl};
+use lakelands_api::read::{Direction, Order, OrderBy};
 use lakelands_api::write::Declaration;
-use lakelands_api::{Error, LakeStore, Refusal, TypeName, WriteOpts};
+use lakelands_api::{Error, FieldName, Find, LakeStore, Record, Refusal, TypeName, WriteOpts};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, declare, doors, field, head_unmoved, owner, patch, read, type_decl, upsert, value,
+    Must, all_found, declare, doors, field, head_unmoved, owner, patch, read, type_decl, upsert,
+    value,
 };
+use crate::expr::order::cmp_values;
 
 check!(
     /// An instant reads back in its one written form.
@@ -316,4 +320,254 @@ async fn a_decimal_written_as_a_json_number_is_refused(
     refused(store.as_ref(), json!(12.5), "a decimal as a JSON number").await?;
     refused(store.as_ref(), json!(12), "a decimal as a JSON integer").await?;
     refused(store.as_ref(), json!("12,50"), "a decimal with a comma").await
+}
+
+check!(
+    /// A geometry reads back in one form; a malformed one is refused.
+    GEO_VALUES = a_geo_value_reads_back_in_its_one_form_and_a_malformed_one_is_refused,
+    "011, extended, and the log format §5: a geo value is a GeoJSON geometry whose numbers take their one JSON form, the same through get and find, live and after a rebuild; an open ring, a missing `type` or a GeoJSON object that is not a geometry is refused naming the field; null clears it"
+);
+
+check!(
+    /// A JSON value reads back in one form, and null clears it.
+    JSON_VALUES = a_json_value_reads_back_in_its_one_form_and_null_clears_it,
+    "011, extended, and the log format §5: a json value is kept as written but for its numbers, which take their one JSON form (`1`, never `1.0`), the same through get and find, live and after a rebuild; null clears it like any field"
+);
+
+check!(
+    /// A page ordered by a geo or json field takes the fallback order.
+    GEO_JSON_ORDER = a_page_ordered_by_a_geo_or_json_field_takes_the_rulebooks_fallback_order,
+    "029: a geo or json value has no order of its own, so a find ordered by one ranks it as `cmp_values` does, a JSON value by its canonical bytes, a missing value last either way, ties by key; paging walks the same order"
+);
+
+/// Every `thing` record's fields as `get` and as `find` answer them, as
+/// JSON text by key.
+async fn texts(store: &dyn LakeStore, keys: &[&str]) -> Result<Vec<(String, String)>, Failure> {
+    let cat = doors(store);
+    let own = owner(store);
+    let found = all_found(cat.as_ref(), &own, "thing", Find::default()).await?;
+    let mut out = Vec::new();
+    for key in keys {
+        let got = read(cat.as_ref(), &own, "thing", key).await?;
+        let in_find = found
+            .iter()
+            .find(|r| r.key.as_str() == *key)
+            .ok_or_else(|| Failure::new(format!("find did not answer `thing` `{key}`")))?;
+        let text = |r: &Record| serde_json::to_string(&r.fields).unwrap_or_default();
+        out.push((text(&got), text(in_find)));
+    }
+    Ok(out)
+}
+
+/// Writes each value to its own `thing` record, then reads every record
+/// through `get` and `find`, live and after a rebuild, and holds each to
+/// its one form.
+async fn one_form(store: Arc<dyn LakeStore>, cases: &[(&str, Value, &str)]) -> Result<(), Failure> {
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    for (key, written, _) in cases {
+        upsert(cat.as_ref(), &own, "thing", key, json!({ "v": written })).await?;
+    }
+    let keys: Vec<&str> = cases.iter().map(|(k, _, _)| *k).collect();
+    let live = texts(store.as_ref(), &keys).await?;
+    store.rebuild().await.must("rebuilding the projection")?;
+    let rebuilt = texts(store.as_ref(), &keys).await?;
+    for (((key, written, form), live), rebuilt) in cases.iter().zip(live).zip(rebuilt) {
+        let want = format!(r#"{{"v":{form}}}"#);
+        for (when, (got, found)) in [("live", live), ("after a rebuild", rebuilt)] {
+            ensure!(
+                got == want && found == want,
+                "`{key}`, written as {written}, must read {want} (numbers in their one \
+                 form) through get and find {when}; get read {got} and find {found}"
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn a_geo_value_reads_back_in_its_one_form_and_a_malformed_one_is_refused(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    one_field(store.as_ref(), "thing", FieldType::kind(StorageKind::Geo)).await?;
+    one_form(
+        store.clone(),
+        &[
+            (
+                "point",
+                json!({"type": "Point", "coordinates": [7.0, 50.70]}),
+                r#"{"coordinates":[7,50.7],"type":"Point"}"#,
+            ),
+            (
+                "polygon",
+                json!({"type": "Polygon", "coordinates": [
+                    [[0.0, 0.0], [4.0, 0.0], [4.0, 3.50], [0.0, 0.0]],
+                    [[1, 1], [2, 1], [2, 2.0], [1, 1]]
+                ]}),
+                r#"{"coordinates":[[[0,0],[4,0],[4,3.5],[0,0]],[[1,1],[2,1],[2,2],[1,1]]],"type":"Polygon"}"#,
+            ),
+            (
+                "collection",
+                json!({"type": "GeometryCollection", "geometries": [
+                    {"type": "Point", "coordinates": [1.0, 2.0, 3.25]},
+                    {"type": "LineString", "coordinates": [[0, 0], [1e1, 1.5]]}
+                ]}),
+                r#"{"geometries":[{"coordinates":[1,2,3.25],"type":"Point"},{"coordinates":[[0,0],[10,1.5]],"type":"LineString"}],"type":"GeometryCollection"}"#,
+            ),
+        ],
+    )
+    .await?;
+    for (bad, why) in [
+        (
+            json!({"type": "Polygon", "coordinates": [[[0, 0], [4, 0], [4, 3], [0, 1]]]}),
+            "an open ring",
+        ),
+        (
+            json!({"type": "Polygon", "coordinates": [[[0, 0], [4, 0], [0, 0]]]}),
+            "a ring of three positions",
+        ),
+        (json!({"coordinates": [7, 50]}), "no `type`"),
+        (
+            json!({"type": "Feature", "geometry": {"type": "Point", "coordinates": [7, 50]}, "properties": {}}),
+            "a Feature, not a geometry",
+        ),
+        (
+            json!({"type": "GeometryCollection", "geometries": [{"type": "Point", "coordinates": [7]}]}),
+            "a collection holding a point of one number",
+        ),
+        (json!("POINT(7 50)"), "well-known text, not GeoJSON"),
+    ] {
+        refused_in(store.as_ref(), "thing", bad, why).await?;
+    }
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    upsert(cat.as_ref(), &own, "thing", "point", json!({"v": null})).await?;
+    let r = read(cat.as_ref(), &own, "thing", "point").await?;
+    ensure!(
+        value(&r, "v").is_none(),
+        "`null` must clear the geo field `v`; it reads {:?}",
+        value(&r, "v")
+    );
+    Ok(())
+}
+
+async fn a_json_value_reads_back_in_its_one_form_and_null_clears_it(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    one_field(store.as_ref(), "thing", FieldType::kind(StorageKind::Json)).await?;
+    one_form(
+        store.clone(),
+        &[
+            (
+                "object",
+                json!({"s": "x", "one": 1, "one_again": 1.0, "list": [1, 1.0, 2.50, [0.0, {"deep": 1e2}]]}),
+                r#"{"list":[1,1,2.5,[0,{"deep":100}]],"one":1,"one_again":1,"s":"x"}"#,
+            ),
+            ("number", json!(1.0), "1"),
+            ("text", json!("1.0"), r#""1.0""#),
+        ],
+    )
+    .await?;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    upsert(cat.as_ref(), &own, "thing", "object", json!({"v": null})).await?;
+    let r = read(cat.as_ref(), &own, "thing", "object").await?;
+    ensure!(
+        value(&r, "v").is_none(),
+        "`null` must clear the json field `v`, not be kept as a JSON value; it reads {:?}",
+        value(&r, "v")
+    );
+    Ok(())
+}
+
+async fn a_page_ordered_by_a_geo_or_json_field_takes_the_rulebooks_fallback_order(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    declare(
+        cat.as_ref(),
+        &own,
+        type_decl(
+            "thing",
+            vec![field("g", StorageKind::Geo), field("j", StorageKind::Json)],
+        ),
+    )
+    .await?;
+    let point = |x: f64, y: f64| json!({"type": "Point", "coordinates": [x, y]});
+    // Keys interleave the values, so no order passes by following the
+    // keys; two records share each field's value to show ties go by key.
+    let rows = [
+        ("r01", point(10.0, 0.0), json!({"b": 1})),
+        (
+            "r02",
+            json!({"type": "LineString", "coordinates": [[0, 0], [1, 1]]}),
+            json!([10]),
+        ),
+        ("r03", point(9.0, 0.0), json!("abc")),
+        ("r04", Value::Null, json!(3)),
+        ("r05", point(-1.0, 2.5), json!(true)),
+        ("r06", point(10.0, 0.0), json!({"a": [1, 2]})),
+        (
+            "r07",
+            json!({"type": "GeometryCollection", "geometries": []}),
+            Value::Null,
+        ),
+        ("r08", point(9.0, 0.0), json!("2026-09-27")),
+        (
+            "r09",
+            json!({"type": "MultiPoint", "coordinates": [[0, 0]]}),
+            json!([2]),
+        ),
+        ("r10", Value::Null, json!({"b": 1})),
+        ("r11", point(1.5, 0.0), json!(false)),
+        ("r12", point(0.0, 0.0), json!({"a": 1})),
+    ];
+    for (key, g, j) in &rows {
+        upsert(cat.as_ref(), &own, "thing", key, json!({"g": g, "j": j})).await?;
+    }
+    for (name, at) in [("g", 1), ("j", 2)] {
+        for dir in [Direction::Asc, Direction::Desc] {
+            // The rulebook's order: by `cmp_values`, a missing value last
+            // in either direction, ties by key.
+            let mut want: Vec<(&str, &Value)> = rows
+                .iter()
+                .map(|r| (r.0, if at == 1 { &r.1 } else { &r.2 }))
+                .collect();
+            want.sort_by(|(ka, a), (kb, b)| {
+                let by_value = match (a.is_null(), b.is_null()) {
+                    (true, true) => Ordering::Equal,
+                    (true, false) => Ordering::Greater,
+                    (false, true) => Ordering::Less,
+                    (false, false) if dir == Direction::Asc => cmp_values(a, b),
+                    (false, false) => cmp_values(b, a),
+                };
+                by_value.then(ka.cmp(kb))
+            });
+            let want: Vec<&str> = want.into_iter().map(|(k, _)| k).collect();
+            for limit in [50, 3, 1] {
+                let find = Find {
+                    order_by: vec![Order {
+                        field: FieldName::from(name),
+                        by: OrderBy::Value,
+                        dir,
+                    }],
+                    limit: Some(limit),
+                    ..Find::default()
+                };
+                let walked: Vec<String> = all_found(cat.as_ref(), &own, "thing", find)
+                    .await?
+                    .iter()
+                    .map(|r| r.key.as_str().to_owned())
+                    .collect();
+                ensure!(
+                    walked == want,
+                    "a find ordered by the {} field `{name}` {dir:?}, {limit} to a page, must \
+                     walk the rulebook's order {want:?} (a JSON value by its canonical bytes, \
+                     a missing value last, ties by key); it walked {walked:?}",
+                    if at == 1 { "geo" } else { "json" }
+                );
+            }
+        }
+    }
+    Ok(())
 }
