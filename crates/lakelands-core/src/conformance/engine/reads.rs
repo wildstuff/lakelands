@@ -115,6 +115,12 @@ engine_check!(
 );
 
 engine_check!(
+    /// A record's edges read what they reach at the head.
+    EDGES_READ_WHAT_THEY_REACH = a_records_edges_at_the_head_read_its_links_not_the_type,
+    "seams §edges and lakelands#190: at the head, the edges into or out of a record over a relation carried by link records, and the edges into it over one carried by a reference field, are found without reading the link type or the declaring type: the records an engine hands the rulebook to find them are about the edges it returns"
+);
+
+engine_check!(
     /// Kept states read at an earlier position.
     EARLIER_STATES = declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position,
     "seams §ProjectionView: declarations, membership, recorded outputs and applied ids are kept states too, read at a view's own position"
@@ -1422,6 +1428,74 @@ fn a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it
                 );
             }
         }
+    }
+    Ok(())
+}
+
+fn a_records_edges_at_the_head_read_its_links_not_the_type(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    use lakelands_api::query::Walk;
+    const N: u64 = 1000;
+    let partner = declare(json!({"declare": "type", "name": "partner", "fields": []}));
+    // `approved_by` is carried by link records, `billed_by` by the
+    // reference field `billed`.
+    let invoice = declare(json!({
+        "declare": "type", "name": "invoice",
+        "fields": [{"name": "billed", "type": {"kind": "reference", "target": "partner"}}],
+        "relations": [
+            {"name": "approved_by", "target": "partner"},
+            {"name": "billed_by", "target": "partner", "via": "billed"}
+        ]
+    }));
+    let Declaration::Type(t) = &invoice else {
+        unreachable!("declared as a type")
+    };
+    let lt = crate::links::link_types_of(t).remove(0);
+    let partner_of = |i: u64| format!("p{:03}", i % 250);
+    fold(engine, 1, |p| {
+        p.put_declaration(&partner, 1, None, Position(0))?;
+        p.put_declaration(&invoice, 1, None, Position(1))?;
+        p.put_declaration(&Declaration::Type(lt.clone()), 1, None, Position(1))?;
+        (0..N).try_for_each(|i| {
+            let (inv, to) = (format!("i{i:04}"), partner_of(i));
+            p.put_record(&record("invoice", &inv, json!({"billed": to}), 1))?;
+            let key = crate::links::link_key(&inv.as_str().into(), &to.as_str().into());
+            p.put_record(&record(
+                lt.name.as_str(),
+                key.as_str(),
+                json!({"from": inv, "to": to}),
+                1,
+            ))
+        })
+    })?;
+    let view = view(engine, None)?;
+    for (ty, key, relation, walk, want) in [
+        ("partner", "p007", "approved_by", Walk::In, 4),
+        ("invoice", "i0007", "approved_by", Walk::Out, 1),
+        ("partner", "p007", "billed_by", Walk::In, 4),
+    ] {
+        let before = crate::engines::links_read();
+        let edges = view
+            .edges(
+                &TypeName::from(ty),
+                &RecordKey::from(key),
+                Some(&relation.into()),
+                walk,
+            )
+            .must("reading edges")?;
+        let read = crate::engines::links_read() - before;
+        ensure!(
+            edges.len() == want,
+            "{walk:?} over `{relation}` at `{ty}` `{key}` answered {} edges, not {want}",
+            edges.len()
+        );
+        ensure!(
+            read <= want as u64 + 2,
+            "{walk:?} over `{relation}` at `{ty}` `{key}` returned {want} edges and handed the \
+             rulebook {read} records of the {N} in the type: at the head a record's edges are \
+             found from the record, not by reading the type"
+        );
     }
     Ok(())
 }

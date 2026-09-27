@@ -349,18 +349,23 @@ on one text field. A view type's page
 is computed from its source's records, whole, as before.
 
 **The ceiling of a walk.** A pattern query asks the engine for the edges
-of each record it reaches (`edges`), so what a walk holds follows what
-it reaches, not the lake: three hops walking link records backwards
-from one start, 48 rows, held 0.1 MiB of heap at 25 000 records and at
-100 000 on every engine. Its time does not yet follow only what it
-reaches. The memory engine reads a link type's records at the position
-for every record reached, and PostgreSQL's walk grows too: the same walk
-took 0.23 s over 40 621 links and 0.83 s over 162 496 on the memory
-engine, 0.09 s and 0.42 s on PostgreSQL, and 0.01 s at both sizes on
-SQLite, on a machine of 12 cores at a load of 17 to 30 (the streaming
-check's long run, its `traverse` line, lakelands#188). The heap is held
-by the suite; the time is reported, and bounding it by what a walk
-reaches on every engine is lakelands#190.
+of each record it reaches (`edges`), so what a walk holds and how long
+it takes follow what it reaches, not the lake. At the head every engine
+finds a record's edges from the record itself: the edges out of it from
+its own reference fields; the edges into it over a relation carried by a
+reference field from an index of the head's edges (SQLite's and
+PostgreSQL's `edges` table, the memory engine's `in_edges`); and the
+link records whose end it is from an index of their ends (SQLite's and
+PostgreSQL's exact-text index, the memory engine's `link_ends`). The
+streaming check's `traverse` line walks link records three hops
+backwards from one start, 48 rows: it holds 0.1 MiB of heap and takes
+0.00 to 0.01 s on the memory engine, 0.01 s on SQLite and 0.10 to 0.11 s
+on PostgreSQL, at 25 000 records over 40 621 links and at 100 000 over
+162 496 alike (its long run, a machine of 12 cores at a load of 14 to
+33; lakelands#190). **Its ceiling:** at an earlier position an engine
+reads the declaring types and link types there whole, for every record
+the walk reaches, so a walk into the past costs the relation's records
+per hop. The heap is held by the suite; the time is reported.
 
 **`lexical`.** Search is ranked retrieval: the view's position decides
 what may be seen, not how the current text ranks. A view answers from

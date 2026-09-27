@@ -505,7 +505,7 @@ belongs in the suite, not beside one engine:
 
 - `after_resumes_where_the_cursor_would` — 029: `after` names the position a cursor carries — a row's sort values and key — and continues strictly after it in the one order, at the caller's read position; it is refused beside a cursor or an aggregate, with a value count other than `order_by`'s, or with a value its key's field cannot hold
 
-### Through the engine seam (47 checks)
+### Through the engine seam (48 checks)
 
 **log**
 
@@ -562,5 +562,6 @@ belongs in the suite, not beside one engine:
 - `the_first_applied_position_is_kept` — seams §ProjectionStore: marking an id applied twice keeps the first position, so a redelivery is recognised where the event first took effect
 - `proposals_filter_by_state_and_type_newest_first` — seams §ProjectionView: proposals match the filter's state and type, a call's type being its verb's `on`, newest first by their latest state, then by id
 - `edges_over_a_link_relation_come_from_the_live_link_records_at_the_views_position` — 035 and seams §edges: an engine answers a relation without via from its live link records at the view's position, out and in, each edge carrying the link's own fields
+- `a_records_edges_at_the_head_read_its_links_not_the_type` — seams §edges and lakelands#190: at the head, the edges into or out of a record over a relation carried by link records, and the edges into it over one carried by a reference field, are found without reading the link type or the declaring type: the records an engine hands the rulebook to find them are about the edges it returns
 
 <!-- End of the generated list. -->

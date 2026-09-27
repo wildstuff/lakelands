@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use lakelands_api::engine::{Declared, ProjectionView, Scan};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
-use lakelands_api::id::{Position, RecordKey, RelationName, TypeName, VerbName};
+use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName, VerbName};
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Proposal, ProposalFilter};
@@ -153,11 +153,26 @@ impl ProjectionView for MemView {
                     edges.extend(engines::links_of(decl, record, relation));
                 }
             }
+            // At the head the edges into a record, and the link records
+            // whose end it is, are kept by it (`projection::index`); at an
+            // earlier position the declaring types and link types are read.
+            let head = at.is_some() && at == p.folded;
             if matches!(walk, Walk::In | Walk::Both) {
-                let into = engines::in_links(ty, key, relation, p.types_at(at), |name| {
-                    Ok::<_, std::convert::Infallible>(p.records_at(name, at).cloned().collect())
-                });
-                edges.extend(into.unwrap_or_else(|never| match never {}));
+                if head {
+                    edges.extend(
+                        p.in_edges
+                            .get(&(ty.clone(), key.clone()))
+                            .into_iter()
+                            .flat_map(|into| into.values())
+                            .filter(|e| relation.is_none_or(|want| *want == e.relation))
+                            .cloned(),
+                    );
+                } else {
+                    let into = engines::in_links(ty, key, relation, p.types_at(at), |name| {
+                        Ok::<_, std::convert::Infallible>(p.records_at(name, at).cloned().collect())
+                    });
+                    edges.extend(into.unwrap_or_else(|never| match never {}));
+                }
             }
             // Relations carried by link records: the links at the view's
             // position whose end is this record.
@@ -168,14 +183,23 @@ impl ProjectionView for MemView {
                 walk,
                 p.types_at(at),
                 |lt, field, k| {
-                    Ok::<_, std::convert::Infallible>(
-                        p.records_at(lt, at)
-                            .filter(|r| {
-                                r.fields.get(field).and_then(|v| v.as_str()) == Some(k.as_str())
+                    Ok::<_, std::convert::Infallible>(if head {
+                        p.link_ends
+                            .get(&(lt.clone(), FieldName::from(field), k.to_string()))
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|lk| {
+                                p.records
+                                    .get(&(lt.clone(), lk.clone()))
+                                    .and_then(|h| h.at(at))
                             })
                             .cloned()
-                            .collect(),
-                    )
+                            .collect()
+                    } else {
+                        // The link type at the position, whole: the
+                        // rulebook keeps the links whose end this record is.
+                        p.records_at(lt, at).cloned().collect()
+                    })
                 },
             );
             edges.extend(linked.unwrap_or_else(|never| match never {}));

@@ -429,12 +429,9 @@ impl ProjectionView for SqliteView<'_> {
                         )?;
                         r.records_by_key(lt, keys)
                     } else {
-                        Ok(r.records(lt)?
-                            .into_iter()
-                            .filter(|l| {
-                                l.fields.get(field).and_then(|v| v.as_str()) == Some(k.as_str())
-                            })
-                            .collect())
+                        // The link type at the position, whole: the rulebook
+                        // keeps the links whose end this record is.
+                        r.records(lt)
                     }
                 },
             )?);
