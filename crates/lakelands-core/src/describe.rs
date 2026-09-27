@@ -164,6 +164,7 @@ fn type_description(
         lifecycle: TypeLifecycle {
             version: d.version,
             schema_hash: d.schema_hash.clone().unwrap_or_default(),
+            sorted: vec![],
         },
         fields,
     })

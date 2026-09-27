@@ -303,34 +303,37 @@ read one after another, so its cost is the rows read to fill the page:
 bounded in memory, linear in time. A page ordered by key reads about
 `limit` rows, not the type; every engine reads it in key order from
 `after` and stops when it is full (`lakelands_core::engines::
-scan_in_key_order`). A page ordered by a field the type declares reads
-about `limit` rows at the head, too: every engine keeps an order index of
-the head, each field a record holds that its type declares with a
-scalar kind (text, number, decimal, boolean, date-time, reference) as
+scan_in_key_order`). **A page ordered by a field reads its page when the
+lake asks for it:** the setting `sort_index.<type>` (below, §`SystemVocabulary`)
+names the fields of a type to keep an order index for, and a page at the
+head ordered first by one of them reads about `limit` rows too. Every
+engine keeps the index of the head, each named field a record holds as
 the first 32 bytes of its `sort_key` (`lakelands_core::engines::
 sort_key`, bytes whose order is the one order across kinds), and reads
 the page in the index's order from `after`; values that share the first
 32 bytes are read as a run and ordered from the values
 (`scan_in_field_order`; `docs/decisions/041-a-sorted-page-reads-its-page.md`).
-A page of 50 ordered by one field over 100 000 records takes about
-0.1 ms in memory, 0.3 ms on SQLite and 2 ms on PostgreSQL. The index is
-used only while it describes the head; a lake whose index a writer did
-not keep sorts as below until a writer's open rebuilds it. **Its
-ceilings:** with several sort fields, the first field's index orders
-runs of equal values and each run is read whole and sorted, so a first
-field with few values reads most of the type (a boolean first: about
-0.3 s in memory, 0.45 s on SQLite and 1.3 s on PostgreSQL at 100 000
-records). An earlier position, an order by `known_at` or `seen_at`, a
-field the declaration does not name or declares as JSON, vector,
-geometry or bytes, and a view type read the type at
-the position and sort it by `sort_key`, holding it only for that answer:
-about 0.2 s in memory, 0.5 s on SQLite and 0.6 s on PostgreSQL for a
-page of 50 over 100 000 records. Because each such engine page sorts the
-type again, a filter only the store evaluates asks for twice as many
-rows each time it reads on: a page costs a few sorts of the type, never
-one per `limit` rows. The index costs a row per declared field a record
-holds: @@COST@@. A view type's page is computed from its source's records,
-whole, as before.
+A page of 50 ordered by one indexed field over 100 000 records takes
+about 0.1 ms in memory, 0.3 ms on SQLite and 2 ms on PostgreSQL.
+`describe_type` names a type's indexed fields in its lifecycle
+(`sorted`). The index is used only while it describes the head; a lake
+whose index a writer did not keep sorts as below until a writer's open
+rebuilds it. **Its ceilings:** with several sort fields, the first
+field's index orders runs of equal values and each run is read whole and
+sorted, so a first field with few values reads most of the type (a
+boolean first: about 0.3 s in memory, 0.45 s on SQLite and 1.3 s on
+PostgreSQL at 100 000 records). A field the lake did not ask an index
+for, an earlier position, an order by `known_at` or `seen_at`, and a
+view type read the type at the position and sort it by `sort_key`,
+holding it only for that answer: about 0.2 s in memory, 0.5 s on SQLite
+and 0.6 s on PostgreSQL for a page of 50 over 100 000 records. Because
+each such engine page sorts the type again, a filter only the store
+evaluates asks for twice as many rows each time it reads on: a page
+costs a few sorts of the type, never one per `limit` rows. **What an
+index costs:** a lake that asks for none writes as before; each indexed
+field costs every write of the type a row in two ordered indexes, and
+the setting's write one pass over the type: @@COST@@. A view type's page
+is computed from its source's records, whole, as before.
 
 **The ceiling of a walk.** A pattern query asks the engine for the edges
 of each record it reaches (`edges`), so what a walk holds follows what
@@ -985,6 +988,20 @@ the setting's key, and it has two fields: `key` (text, the same key) and
 expression reads the `value` of the `sys.setting` record with key
 `vat_rate` as of the position being read or folded, so a replay reads the
 setting as it then stood.
+
+One setting is read by the store itself: **`sort_index.<type>`** holds a
+JSON array of field names of `<type>` and asks every engine to keep an
+order index on them, so that a `find` ordered first by one of them reads
+its page, not the type (§`find`'s ceiling above;
+`docs/decisions/041-a-sorted-page-reads-its-page.md`). A write of it is
+refused as invalid, naming the field, when it names a field the type
+does not declare or declares with a kind other than text, number,
+decimal, boolean, date-time or reference, or when `<type>` is no
+declared stored type (the field named is then `key`), or its value is
+not an array of names (`value`). The fold that puts it rebuilds that
+type's index in the same transaction; retiring it, or an empty array,
+drops the index. It changes no answer, only the price of an ordered
+page.
 
 A `sys.aging_rule` record is one **aging rule**: on a date, move a field
 of every record of a type from one value to another when a condition

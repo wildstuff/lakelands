@@ -1,8 +1,9 @@
-//! The order index is used only while it describes the head
+//! The order index keeps the fields a lake's `sort_index.<type>` setting
+//! names, and is used only while it describes the head
 //! (`docs/decisions/041-a-sorted-page-reads-its-page.md`). A lake whose
-//! index a writer did not keep, one made before it or written by a binary
-//! without it, answers field-ordered pages by sorting until a writer's
-//! open has rebuilt the index, and the same afterwards.
+//! index a writer did not keep, one written by a binary without it,
+//! answers field-ordered pages by sorting until a writer's open has
+//! rebuilt the index, and the same afterwards.
 
 mod common;
 
@@ -32,45 +33,108 @@ fn a_stale_order_index_is_not_read_and_a_writers_open_rebuilds_it() {
     let Some(url) = common::url_or_skip("the pg order-index test") else {
         return;
     };
-    let schema = common::fresh_schema();
-    let location = common::location(&url, "sorted", &schema);
-    fill(PgOpener.open(&location, OpenMode::Create).unwrap().as_ref());
     // What a writer without the index leaves: rows gone or wrong, and the
-    // marker behind the fold.
-    exec(
-        &url,
-        format!(
-            "WITH gone AS (DELETE FROM \"{schema}\".sort_index WHERE key < 'k100') \
-             UPDATE \"{schema}\".sort_index SET sort_key = '\\x00'"
-        ),
-    );
-    exec(
-        &url,
-        format!("UPDATE \"{schema}\".meta SET n = 0 WHERE k = 'sorted'"),
-    );
-    let reader = PgOpener.open(&location, OpenMode::Read).unwrap();
-    walks_as_one_scan(reader.as_ref(), "read-only, the index behind the fold");
-    let writer = PgOpener.open(&location, OpenMode::Write).unwrap();
-    let row = exec(
-        &url,
-        format!(
-            "SELECT (SELECT n FROM \"{schema}\".meta WHERE k = 'sorted'), \
-             (SELECT count(*) FROM \"{schema}\".sort_index)"
-        ),
-    );
-    let (sorted, rows): (i64, i64) = (row[0].get(0), row[0].get(1));
-    let held = states()
-        .iter()
-        .filter(|r| r.fields.contains_key("v"))
-        .count() as i64;
+    // type's mark behind the fold (it folded on) or gone (it wrote the
+    // setting).
+    for (mark, left) in [
+        ("n = 0", "the mark behind the fold"),
+        ("n = NULL", "no mark"),
+    ] {
+        let schema = common::fresh_schema();
+        let location = common::location(&url, "sorted", &schema);
+        fill(PgOpener.open(&location, OpenMode::Create).unwrap().as_ref());
+        exec(
+            &url,
+            format!(
+                "WITH gone AS (DELETE FROM \"{schema}\".sort_index WHERE key < 'k100') \
+                 UPDATE \"{schema}\".sort_index SET sort_key = '\\x00'"
+            ),
+        );
+        let tamper = if mark == "n = NULL" {
+            format!("DELETE FROM \"{schema}\".meta WHERE k = 'sorted.t'")
+        } else {
+            format!("UPDATE \"{schema}\".meta SET {mark} WHERE k = 'sorted.t'")
+        };
+        exec(&url, tamper);
+        let reader = PgOpener.open(&location, OpenMode::Read).unwrap();
+        walks_as_one_scan(reader.as_ref(), &format!("read-only, {left}"));
+        let writer = PgOpener.open(&location, OpenMode::Write).unwrap();
+        let row = exec(
+            &url,
+            format!(
+                "SELECT (SELECT n FROM \"{schema}\".meta WHERE k = 'sorted.t'), \
+                 (SELECT count(*) FROM \"{schema}\".sort_index)"
+            ),
+        );
+        let (sorted, rows): (Option<i64>, i64) = (row[0].get(0), row[0].get(1));
+        assert_eq!(
+            (sorted, rows),
+            (Some(1), holding("v") + holding("w")),
+            "{left}: a writer's open rebuilds the index from the head and marks it kept \
+             through the fold"
+        );
+        walks_as_one_scan(writer.as_ref(), &format!("{left}, after the writer's open"));
+        walks_as_one_scan(
+            reader.as_ref(),
+            &format!("{left}, read-only, the index rebuilt"),
+        );
+        drop((reader, writer));
+        common::drop_schema(&url, &schema);
+    }
+}
+
+#[test]
+fn the_setting_keeps_the_rows_of_the_fields_it_names_and_no_others() {
+    let Some(url) = common::url_or_skip("the pg order-index test") else {
+        return;
+    };
+    let schema = common::fresh_schema();
+    let engine = PgOpener
+        .open(&common::location(&url, "sorted", &schema), OpenMode::Create)
+        .unwrap();
+    fill(engine.as_ref());
+    let rows = || {
+        let row = exec(
+            &url,
+            format!(
+                "SELECT (SELECT n FROM \"{schema}\".meta WHERE k = 'sorted.t'), \
+                 (SELECT count(*) FROM \"{schema}\".sort_index WHERE field = 'v'), \
+                 (SELECT count(*) FROM \"{schema}\".sort_index WHERE field = 'w')"
+            ),
+        );
+        (
+            row[0].get::<_, Option<i64>>(0),
+            row[0].get::<_, i64>(1),
+            row[0].get::<_, i64>(2),
+        )
+    };
     assert_eq!(
-        (sorted, rows),
-        (1, held),
-        "a writer's open rebuilds the index from the head and marks it kept through the fold"
+        rows(),
+        (Some(1), holding("v"), holding("w")),
+        "the setting on `v` and `w`"
     );
-    walks_as_one_scan(writer.as_ref(), "after the writer's open");
-    walks_as_one_scan(reader.as_ref(), "read-only, the index rebuilt");
-    drop((reader, writer));
+    ask(engine.as_ref(), json!(["v"]), 2);
+    assert_eq!(
+        rows(),
+        (Some(2), holding("v"), 0),
+        "the setting's write without `w` drops the rows of `w`"
+    );
+    walks_as_one_scan(engine.as_ref(), "the setting on `v` alone");
+    let p = engine.projection();
+    p.begin().unwrap();
+    p.put_record(&StoredRecord {
+        retired: true,
+        ..setting(json!(["v"]), 3)
+    })
+    .unwrap();
+    p.commit(Position(3)).unwrap();
+    assert_eq!(
+        rows(),
+        (None, 0, 0),
+        "the setting retired drops every row and the type's mark"
+    );
+    walks_as_one_scan(engine.as_ref(), "the setting retired");
+    drop(engine);
     common::drop_schema(&url, &schema);
 }
 
@@ -99,7 +163,7 @@ fn a_field_ordered_page_reads_its_page_not_the_type() {
 }
 
 /// The records the lake holds: a declared `v` of every kind the rulebook
-/// ranks, missing from every seventh.
+/// ranks, missing from every seventh, and a declared `w` of three values.
 fn states() -> Vec<StoredRecord> {
     let values = [
         json!(3),
@@ -113,11 +177,12 @@ fn states() -> Vec<StoredRecord> {
     ];
     (0..200u64)
         .map(|i| {
-            let fields = if i % 7 == 0 {
+            let mut fields = if i % 7 == 0 {
                 json!({})
             } else {
                 json!({"v": values[(i as usize * 5) % values.len()]})
             };
+            fields["w"] = json!(format!("w{}", i % 3));
             StoredRecord {
                 ty: TypeName::from("t"),
                 key: RecordKey::from(format!("k{:03}", (i * 37) % 211)),
@@ -135,12 +200,16 @@ fn states() -> Vec<StoredRecord> {
 fn declaration() -> Declaration {
     serde_json::from_value(json!({
         "declare": "type", "name": "t",
-        "fields": [{"name": "v", "type": {"kind": "text"}}]
+        "fields": [
+            {"name": "v", "type": {"kind": "text"}},
+            {"name": "w", "type": {"kind": "text"}}
+        ]
     }))
     .unwrap()
 }
 
-/// Fold the records into a fresh lake.
+/// Fold the records into a fresh lake, then the setting that asks for the
+/// order index on `v` and `w`.
 fn fill(engine: &dyn LakeEngine) {
     let p = engine.projection();
     p.begin().unwrap();
@@ -149,7 +218,38 @@ fn fill(engine: &dyn LakeEngine) {
     for r in states() {
         p.put_record(&r).unwrap();
     }
+    p.put_record(&setting(json!(["v", "w"]), 1)).unwrap();
     p.commit(Position(1)).unwrap();
+}
+
+/// The state of the setting `sort_index.t` asking for `fields`, at `at`.
+fn setting(fields: Value, at: u64) -> StoredRecord {
+    StoredRecord {
+        ty: TypeName::from(lakelands_api::seam::SETTING_TYPE),
+        key: RecordKey::from("sort_index.t"),
+        version: Version(at),
+        fields: serde_json::from_value(json!({"key": "sort_index.t", "value": fields})).unwrap(),
+        meta: Default::default(),
+        position: Position(at),
+        retired: false,
+        restricted: false,
+    }
+}
+
+/// Fold one write of the setting, at `at`.
+fn ask(engine: &dyn LakeEngine, fields: Value, at: u64) {
+    let p = engine.projection();
+    p.begin().unwrap();
+    p.put_record(&setting(fields, at)).unwrap();
+    p.commit(Position(at)).unwrap();
+}
+
+/// How many records hold `field` with a value.
+fn holding(field: &str) -> i64 {
+    states()
+        .iter()
+        .filter(|r| r.fields.contains_key(field))
+        .count() as i64
 }
 
 /// Every field-ordered walk of `v`, in pages of 7, against one sort of

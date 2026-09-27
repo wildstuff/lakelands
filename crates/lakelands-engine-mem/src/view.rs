@@ -82,12 +82,14 @@ impl ProjectionView for MemView {
                     });
                 return page.unwrap_or_else(|never| match never {});
             }
-            // Ordered by a declared field at the head: read in the order
-            // index's order, stop when full.
-            if at.is_some()
-                && at == p.folded
-                && let Some(first) = engines::by_order_index(decl, scan)
-            {
+            // Ordered by a field the lake indexes, at the head: read in the
+            // order index's order, stop when full.
+            let sorted = if at.is_some() && at == p.folded {
+                p.sorted_fields(ty)
+            } else {
+                Vec::new()
+            };
+            if let Some(first) = engines::by_order_index(decl, &sorted, scan) {
                 let head = |key: &RecordKey| {
                     p.records
                         .get(&(ty.clone(), key.clone()))

@@ -38,8 +38,6 @@ struct Read<'c> {
     conn: &'c Connection,
     at: Position,
     head: bool,
-    /// The view is at the head and the order index describes it.
-    sorted: bool,
 }
 
 fn decode<T: serde::de::DeserializeOwned>(state: &str) -> Result<T> {
@@ -57,12 +55,10 @@ impl SqliteView<'_> {
         let conn = self.lake.reader()?;
         conn.execute_batch("BEGIN").map_err(sql)?;
         let result = projection::folded(&conn).and_then(|folded| {
-            let head = folded == Some(at);
             f(&Read {
                 conn: &conn,
                 at,
-                head,
-                sorted: head && projection::sorted(&conn)? == folded,
+                head: folded == Some(at),
             })
         });
         let _ = conn.execute_batch("COMMIT");
@@ -139,6 +135,15 @@ impl Read<'_> {
         }
         .map_err(sql)?;
         rows.iter().map(|r| decode_record(r)).collect()
+    }
+
+    /// The fields of `ty` whose order index answers this read: none but at
+    /// the head, and only while the index is kept through it.
+    fn sorted_fields(&self, ty: &TypeName, decl: Option<&TypeDecl>) -> Result<Vec<FieldName>> {
+        if !self.head || projection::sorted(self.conn, ty)? != Some(self.at) {
+            return Ok(Vec::new());
+        }
+        projection::sorted_fields(self.conn, ty, decl)
     }
 
     /// At most `n` head records of a type with a row in the order index for
@@ -343,20 +348,23 @@ impl ProjectionView for SqliteView<'_> {
                         r.records_after(ty, after, n)
                     });
                 }
-                // Ordered by a declared field at the head, the page is read
-                // in the order index's order and stops when it is full.
-                None if r.sorted => match engines::by_order_index(decl.as_ref(), scan) {
-                    Some(first) => {
-                        return engines::scan_in_field_order(
-                            decl.as_ref(),
-                            scan,
-                            |from, n| r.sorted_after(ty, first, from, n),
-                            |after, n| r.unsorted_after(ty, &first.field, after, n),
-                        );
+                // Ordered by a field the lake indexes, at the head, the page
+                // is read in the order index's order and stops when it is
+                // full.
+                None => {
+                    let sorted = r.sorted_fields(ty, decl.as_ref())?;
+                    match engines::by_order_index(decl.as_ref(), &sorted, scan) {
+                        Some(first) => {
+                            return engines::scan_in_field_order(
+                                decl.as_ref(),
+                                scan,
+                                |from, n| r.sorted_after(ty, first, from, n),
+                                |after, n| r.unsorted_after(ty, &first.field, after, n),
+                            );
+                        }
+                        None => r.records(ty)?,
                     }
-                    None => r.records(ty)?,
-                },
-                None => r.records(ty)?,
+                }
             };
             Ok(engines::scan(decl.as_ref(), &records, scan))
         })

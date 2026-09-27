@@ -446,6 +446,7 @@ fn type_description() -> TypeDescription {
         lifecycle: TypeLifecycle {
             version: 1,
             schema_hash: "h".into(),
+            sorted: vec!["amount".into()],
         },
     }
 }

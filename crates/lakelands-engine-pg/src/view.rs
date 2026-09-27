@@ -41,8 +41,6 @@ struct Read<'c> {
     names: &'c Names,
     at: Position,
     head: bool,
-    /// The view is at the head and the order index describes it.
-    sorted: bool,
 }
 
 impl PgView<'_> {
@@ -54,25 +52,20 @@ impl PgView<'_> {
         };
         let mut db = self.lake.reader();
         let names = self.lake.names();
-        // The transaction opens and reads the folded and sorted markers in
-        // one round trip, so the flags are of the state every query in it
-        // sees.
-        let markers = db.simple(&format!(
+        // The transaction opens and reads the folded marker in one round
+        // trip, so the head flag is of the state every query in it sees.
+        let folded = db.simple(&format!(
             "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; \
-             SELECT concat((SELECT n FROM {m} WHERE k = 'folded'), ' ', \
-             (SELECT n FROM {m} WHERE k = 'sorted'))",
-            m = names.t("meta")
+             SELECT n FROM {} WHERE k = 'folded'",
+            names.t("meta")
         ));
-        let answer = markers.and_then(|markers| {
-            let markers = markers.into_iter().flatten().next().unwrap_or_default();
-            let (folded, sorted) = markers.split_once(' ').unwrap_or((&markers, ""));
-            let head = folded == at.0.to_string();
+        let answer = folded.and_then(|folded| {
+            let folded = folded.into_iter().flatten().next();
             f(&mut Read {
                 db: &mut db,
                 names,
                 at,
-                head,
-                sorted: head && sorted == folded,
+                head: folded == Some(at.0.to_string()),
             })
         });
         match answer {
@@ -101,7 +94,6 @@ impl PgView<'_> {
             names: self.lake.names(),
             at,
             head: false,
-            sorted: false,
         })
     }
 }
@@ -179,6 +171,39 @@ impl Read<'_> {
         rows.iter()
             .map(|r| decode_record(&r.get::<_, String>(0)))
             .collect()
+    }
+
+    /// The fields of `ty` whose order index answers this read, in one round
+    /// trip: none but at the head, and only while the index is kept
+    /// through it.
+    fn sorted_fields(&mut self, ty: &TypeName, decl: Option<&TypeDecl>) -> Result<Vec<FieldName>> {
+        let Some(decl) = decl.filter(|_| self.head) else {
+            return Ok(Vec::new());
+        };
+        let row = self.db.query_one(
+            &format!(
+                "SELECT (SELECT n FROM {m} WHERE k = $1), \
+                 (SELECT state FROM {r} WHERE ty = $2 AND key = $3 AND until IS NULL)",
+                m = self.names.t("meta"),
+                r = self.names.t("records"),
+            ),
+            &[
+                &crate::projection::sorted_mark(ty),
+                &lakelands_api::seam::SETTING_TYPE,
+                &engines::sort_index_key(ty),
+            ],
+        )?;
+        if row.get::<_, Option<i64>>(0) != Some(self.at.0 as i64) {
+            return Ok(Vec::new());
+        }
+        let setting = row
+            .get::<_, Option<String>>(1)
+            .map(|state| decode_record(&state))
+            .transpose()?;
+        Ok(engines::sorted_fields(
+            decl,
+            setting.as_ref().and_then(engines::setting_value),
+        ))
     }
 
     /// At most `n` head records of a type with a row in the order index for
@@ -406,21 +431,26 @@ impl ProjectionView for PgView<'_> {
                         r.records_after(ty, after, n)
                     });
                 }
-                // Ordered by a declared field at the head, the page is read
-                // in the order index's order and stops when it is full.
-                None if r.sorted && engines::by_order_index(decl.as_ref(), scan).is_some() => {
-                    let first = engines::by_order_index(decl.as_ref(), scan)
-                        .expect("checked above")
-                        .clone();
-                    let r = std::cell::RefCell::new(r);
-                    return engines::scan_in_field_order(
-                        decl.as_ref(),
-                        scan,
-                        |from, n| r.borrow_mut().sorted_after(ty, &first, from, n),
-                        |after, n| r.borrow_mut().unsorted_after(ty, &first.field, after, n),
-                    );
+                // Ordered by a field the lake indexes, at the head, the page
+                // is read in the order index's order and stops when it is
+                // full.
+                None => {
+                    let sorted = r.sorted_fields(ty, decl.as_ref())?;
+                    match engines::by_order_index(decl.as_ref(), &sorted, scan) {
+                        Some(first) => {
+                            let r = std::cell::RefCell::new(r);
+                            return engines::scan_in_field_order(
+                                decl.as_ref(),
+                                scan,
+                                |from, n| r.borrow_mut().sorted_after(ty, first, from, n),
+                                |after, n| {
+                                    r.borrow_mut().unsorted_after(ty, &first.field, after, n)
+                                },
+                            );
+                        }
+                        None => r.records(ty)?,
+                    }
                 }
-                None => r.records(ty)?,
             };
             Ok(engines::scan(decl.as_ref(), &records, scan))
         })

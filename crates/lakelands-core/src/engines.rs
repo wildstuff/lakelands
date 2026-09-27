@@ -271,8 +271,10 @@ pub fn scan<'a>(
     // Each row's place is encoded once (`sort_key`), and the sort compares
     // bytes: the order `cmp_places` gives, without ranking and parsing
     // every value again on every comparison.
+    let mut handed = 0;
     let mut rows: Vec<(PlaceKey, &StoredRecord)> = records
         .into_iter()
+        .inspect(|_| handed += 1)
         .filter(|r| admits(decl, r, scan))
         .map(|r| {
             (
@@ -281,6 +283,7 @@ pub fn scan<'a>(
             )
         })
         .collect();
+    count_read(handed);
     rows.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     let from = match &scan.after {
         Some(after) => {
@@ -310,47 +313,102 @@ pub fn order_key(value: &Value) -> Vec<u8> {
     key
 }
 
-/// Whether the order index keeps rows for a field: one of a scalar kind.
-/// JSON values, vectors, geometries and bytes are ordered by sorting.
-pub fn in_order_index(field: &lakelands_api::ontology::FieldDecl) -> bool {
-    use lakelands_api::ontology::StorageKind as K;
-    matches!(
-        field.ty.kind,
-        K::Text | K::Number | K::Decimal | K::Boolean | K::DateTime | K::Reference
-    )
+/// The fields of `decl` whose order index a lake keeps, by `setting`, the
+/// value of its `sort_index.<type>` setting at the head: those it names
+/// that the type declares with a kind the index keeps
+/// ([`lakelands_api::seam::sortable`]), once each, in the setting's order.
+/// A setting the store would refuse keeps what it can; none keeps none.
+pub fn sorted_fields(decl: &TypeDecl, setting: Option<&Value>) -> Vec<FieldName> {
+    let mut out: Vec<FieldName> = Vec::new();
+    if decl.view.is_some() {
+        return out;
+    }
+    for name in setting
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if !out.iter().any(|f| f.as_str() == name)
+            && decl
+                .fields
+                .iter()
+                .any(|f| f.name.as_str() == name && lakelands_api::seam::sortable(&f.ty.kind))
+        {
+            out.push(FieldName::from(name));
+        }
+    }
+    out
 }
 
-/// The order index rows of a record's state: one per field `decl`
-/// declares, of a kind the index keeps ([`in_order_index`]), that the
-/// state holds with a value, with its [`order_key`]. Retired and
-/// restricted states have rows too: [`admits`] decides on them when a
-/// page is read.
-pub fn order_rows<'a>(decl: &'a TypeDecl, record: &StoredRecord) -> Vec<(&'a FieldName, Vec<u8>)> {
-    decl.fields
+/// The type a record asks an order index for, when it is a state of the
+/// setting `sort_index.<type>`.
+pub fn sort_index_type(r: &StoredRecord) -> Option<TypeName> {
+    (r.ty.as_str() == lakelands_api::seam::SETTING_TYPE)
+        .then(|| {
+            r.key
+                .as_str()
+                .strip_prefix(lakelands_api::seam::SORT_INDEX_SETTING)
+        })
+        .flatten()
+        .map(TypeName::from)
+}
+
+/// The key of the setting that asks for `ty`'s order index.
+pub fn sort_index_key(ty: &TypeName) -> String {
+    format!("{}{ty}", lakelands_api::seam::SORT_INDEX_SETTING)
+}
+
+/// The value a head state of a setting holds: none when it is retired.
+pub fn setting_value(r: &StoredRecord) -> Option<&Value> {
+    (!r.retired).then(|| r.fields.get("value")).flatten()
+}
+
+/// The order index rows of a record's state: one per field of `fields`
+/// (the type's [`sorted_fields`]) that the state holds with a value, with
+/// its [`order_key`]. Retired and restricted states have rows too:
+/// [`admits`] decides on them when a page is read.
+pub fn order_rows<'a>(
+    fields: &'a [FieldName],
+    record: &StoredRecord,
+) -> Vec<(&'a FieldName, Vec<u8>)> {
+    fields
         .iter()
-        .filter(|f| in_order_index(f))
         .filter_map(|f| {
-            let v = record.fields.get(&f.name).filter(|v| !v.is_null())?;
-            Some((&f.name, order_key(v)))
+            let v = record.fields.get(f).filter(|v| !v.is_null())?;
+            Some((f, order_key(v)))
         })
         .collect()
 }
 
-/// Whether an order index kept by [`order_rows`] can answer `scan`: it
-/// is ordered, first by the value of a field the type declares with a
-/// kind the index keeps. The declaration decides, never which rows
-/// exist. What the index cannot answer (an order by `known_at` or
-/// `seen_at`, a field the declaration does not name or does not index, a
-/// view type) is sorted whole by [`scan`].
-pub fn by_order_index<'a>(decl: Option<&TypeDecl>, scan: &'a Scan) -> Option<&'a Order> {
-    let decl = decl.filter(|d| d.view.is_none())?;
+/// Whether an order index kept by [`order_rows`] for `fields` can answer
+/// `scan`: it is ordered, first by the value of one of them. What the
+/// index cannot answer (an order by `known_at` or `seen_at`, a field the
+/// lake does not index, a view type) is sorted whole by [`scan`].
+pub fn by_order_index<'a>(
+    decl: Option<&TypeDecl>,
+    fields: &[FieldName],
+    scan: &'a Scan,
+) -> Option<&'a Order> {
+    decl.filter(|d| d.view.is_none())?;
     let first = scan.order_by.first()?;
-    (first.by == OrderBy::Value
-        && decl
-            .fields
-            .iter()
-            .any(|f| f.name == first.field && in_order_index(f)))
-    .then_some(first)
+    (first.by == OrderBy::Value && fields.contains(&first.field)).then_some(first)
+}
+
+thread_local! {
+    static ROWS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The rows the field-ordered scans on this thread were handed to order:
+/// the whole type for [`scan`], the rows read from an order index for
+/// [`scan_in_field_order`]. The engine checks count by it that a page
+/// ordered by an indexed field reads its page, not the type.
+pub fn rows_read() -> u64 {
+    ROWS_READ.with(|n| n.get())
+}
+
+fn count_read(n: usize) {
+    ROWS_READ.with(|c| c.set(c.get() + n as u64));
 }
 
 /// A scan answered from an order index, in the order [`scan`] gives, by
@@ -429,6 +487,7 @@ pub fn scan_in_field_order<E>(
                 from.as_ref().map(|(k, r)| (k.as_slice(), r.as_str())),
                 batch,
             )?;
+            count_read(rows.len());
             let read_all = rows.len() < batch as usize;
             for (k, r) in rows {
                 from = Some((k.clone(), r.key.to_string()));
@@ -472,6 +531,7 @@ pub fn scan_in_field_order<E>(
     let mut run = Vec::new();
     loop {
         let rows = missing(from.as_deref(), batch)?;
+        count_read(rows.len());
         let read_all = rows.len() < batch as usize;
         for r in rows {
             from = Some(r.key.to_string());
@@ -757,7 +817,7 @@ mod tests {
             json!(format!("{}b", "long prefix ".repeat(4))),
             json!(format!("{}a", "long prefix ".repeat(4))),
             json!(format!("{}c", "long prefix ".repeat(4))),
-            json!(format!("{}", "long prefix ".repeat(4))),
+            json!("long prefix ".repeat(4)),
             json!(false),
             json!(true),
             json!({"a": 1}),
@@ -855,7 +915,7 @@ mod tests {
         let mut index: Vec<(Vec<u8>, &StoredRecord)> = records
             .iter()
             .filter_map(|r| {
-                order_rows(decl, r)
+                order_rows(&sorted_fields(decl, Some(&json!(["v", "w"]))), r)
                     .into_iter()
                     .find(|(f, _)| **f == first.field)
                     .map(|(_, k)| (k, r))

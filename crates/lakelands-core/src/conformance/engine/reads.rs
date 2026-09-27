@@ -44,7 +44,13 @@ engine_check!(
 engine_check!(
     /// A field-ordered scan walks page by page as one scan.
     FIELD_ORDER_WALK = a_field_ordered_scan_walks_page_by_page_as_one_scan,
-    "seams §scan and lakelands#137: a scan ordered by fields, walked page by page from `after`, answers what one scan over every state answers, whatever its directions, its filter and its flags, after later puts and a redeclaration, at the head and at an earlier position"
+    "seams §scan and lakelands#137: a scan ordered by fields, walked page by page from `after`, answers what one scan over every state answers, whatever its directions, its filter and its flags, after later puts, a redeclaration and a change of the `sort_index.<type>` setting, at the head and at an earlier position"
+);
+
+engine_check!(
+    /// A page ordered by an indexed field reads its page.
+    SORTED_PAGE = a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it,
+    "041 and lakelands#137: a page of 10 ordered by a field the `sort_index.<type>` setting names reads about its page, not the type; the setting's write switches the same page from sorting the type to the index and back, and the answer stays what one scan over every state answers"
 );
 
 engine_check!(
@@ -1151,12 +1157,23 @@ fn a_field_ordered_scan_walks_page_by_page_as_one_scan(
     };
     let two = declare(&["v", "w"])?;
     let three = declare(&["v", "w", "x"])?;
+    // The lake asks for the order index on `v`, `w` and `x` after the
+    // records are in, before any declaration names `x`; later it drops
+    // `v`, so an order by `v` sorts again.
+    let setting = |fields: Value, at: u64| {
+        record(
+            lakelands_api::seam::SETTING_TYPE,
+            "sort_index.t",
+            json!({"key": "sort_index.t", "value": fields}),
+            at,
+        )
+    };
     fold(engine, 1, |p| {
         p.put_declaration(&two, 1, None, Position(0))?;
         (0..N).try_for_each(|i| p.put_record(&state(i, 1)))
     })?;
     // Every fourth moves, and every tenth loses or gains `v`, some twice
-    // in the transaction.
+    // in the transaction; then the setting.
     fold(engine, 2, |p| {
         (0..N)
             .filter(|i| i.is_multiple_of(4) || i.is_multiple_of(10))
@@ -1165,11 +1182,45 @@ fn a_field_ordered_scan_walks_page_by_page_as_one_scan(
                 again.position = Position(2);
                 p.put_record(&again)?;
                 p.put_record(&state(i, 2))
-            })
+            })?;
+        p.put_record(&setting(json!(["v", "w", "x"]), 2))
     })?;
     fold(engine, 3, |p| {
         p.put_declaration(&three, 2, None, Position(3))
     })?;
+    walk_field_orders(
+        engine,
+        Some(Position(1)),
+        &two,
+        1,
+        N,
+        &state,
+        "at position 1",
+    )?;
+    walk_field_orders(engine, None, &three, 2, N, &state, "at the head")?;
+    fold(engine, 4, |p| p.put_record(&setting(json!(["w", "x"]), 4)))?;
+    walk_field_orders(
+        engine,
+        None,
+        &three,
+        2,
+        N,
+        &state,
+        "at the head, the setting without `v`",
+    )
+}
+
+/// Walk every field order of the check's type `t` page by page at `at`,
+/// against one scan over the states `state(i, pos)` under `decl`.
+fn walk_field_orders(
+    engine: &dyn LakeEngine,
+    at: Option<Position>,
+    decl: &Declaration,
+    pos: u64,
+    n: u64,
+    state: &dyn Fn(u64, u64) -> StoredRecord,
+    when: &str,
+) -> Result<(), Failure> {
     let ty = TypeName::from("t");
     let by = |field: &str, dir| Order {
         field: field.into(),
@@ -1177,71 +1228,175 @@ fn a_field_ordered_scan_walks_page_by_page_as_one_scan(
         dir,
     };
     let filter = crate::expr::parse("w != 'b'").expect("the check's filter parses");
-    for (at, decl, pos) in [(Some(Position(1)), &two, 1), (None, &three, 2)] {
-        let Declaration::Type(decl) = decl else {
-            unreachable!("the check declares types")
-        };
-        let states: Vec<StoredRecord> = (0..N).map(|i| state(i, pos)).collect();
-        let view_at = view(engine, at)?;
-        for order_by in [
-            vec![by("v", Direction::Asc)],
-            vec![by("v", Direction::Desc)],
-            vec![by("w", Direction::Asc), by("v", Direction::Desc)],
-            vec![by("x", Direction::Desc), by("w", Direction::Asc)],
-            vec![by("x", Direction::Asc)],
-        ] {
-            for filtered in [false, true] {
-                for flags in [false, true] {
-                    for limit in [1, 7, 50] {
-                        let scan = Scan {
-                            filter: filtered.then(|| filter.clone()),
-                            order_by: order_by.clone(),
-                            limit,
-                            retired: flags,
-                            restricted: flags,
-                            ..Scan::default()
-                        };
-                        let expected = keys(&crate::engines::scan(
-                            Some(decl),
-                            &states,
-                            &Scan {
-                                limit: u32::MAX,
-                                ..scan.clone()
-                            },
-                        ));
-                        let mut got = Vec::new();
-                        let mut page = scan.clone();
-                        for _ in 0..=N {
-                            let rows = view_at.scan(&ty, &page).must("scanning a page")?;
-                            let Some(last) = rows.last() else { break };
-                            page.after = Some(After {
-                                values: order_by
-                                    .iter()
-                                    .map(|o| {
-                                        last.fields.get(&o.field).cloned().unwrap_or(Value::Null)
-                                    })
-                                    .collect(),
-                                key: last.key.clone(),
-                            });
-                            got.extend(keys(&rows));
-                        }
-                        let first_wrong = got
-                            .iter()
-                            .zip(&expected)
-                            .position(|(g, e)| g != e)
-                            .unwrap_or(got.len().min(expected.len()));
-                        ensure!(
-                            got == expected,
-                            "walking {order_by:?} at position {pos} (filter {filtered}, flags \
-                             {flags}) in pages of {limit} answered {} rows, one scan over every \
-                             state {}; they part at row {first_wrong}: {:?} against {:?}",
-                            got.len(),
-                            expected.len(),
-                            got.get(first_wrong),
-                            expected.get(first_wrong)
-                        );
+    let Declaration::Type(decl) = decl else {
+        unreachable!("the check declares types")
+    };
+    let states: Vec<StoredRecord> = (0..n).map(|i| state(i, pos)).collect();
+    let view_at = view(engine, at)?;
+    for order_by in [
+        vec![by("v", Direction::Asc)],
+        vec![by("v", Direction::Desc)],
+        vec![by("w", Direction::Asc), by("v", Direction::Desc)],
+        vec![by("x", Direction::Desc), by("w", Direction::Asc)],
+        vec![by("x", Direction::Asc)],
+    ] {
+        for filtered in [false, true] {
+            for flags in [false, true] {
+                for limit in [1, 7, 50] {
+                    let scan = Scan {
+                        filter: filtered.then(|| filter.clone()),
+                        order_by: order_by.clone(),
+                        limit,
+                        retired: flags,
+                        restricted: flags,
+                        ..Scan::default()
+                    };
+                    let expected = keys(&crate::engines::scan(
+                        Some(decl),
+                        &states,
+                        &Scan {
+                            limit: u32::MAX,
+                            ..scan.clone()
+                        },
+                    ));
+                    let mut got = Vec::new();
+                    let mut page = scan.clone();
+                    for _ in 0..=n {
+                        let rows = view_at.scan(&ty, &page).must("scanning a page")?;
+                        let Some(last) = rows.last() else { break };
+                        page.after = Some(After {
+                            values: order_by
+                                .iter()
+                                .map(|o| last.fields.get(&o.field).cloned().unwrap_or(Value::Null))
+                                .collect(),
+                            key: last.key.clone(),
+                        });
+                        got.extend(keys(&rows));
                     }
+                    let first_wrong = got
+                        .iter()
+                        .zip(&expected)
+                        .position(|(g, e)| g != e)
+                        .unwrap_or(got.len().min(expected.len()));
+                    ensure!(
+                        got == expected,
+                        "walking {order_by:?} {when} (filter {filtered}, flags {flags}) in \
+                         pages of {limit} answered {} rows, one scan over every state {}; they \
+                         part at row {first_wrong}: {:?} against {:?}",
+                        got.len(),
+                        expected.len(),
+                        got.get(first_wrong),
+                        expected.get(first_wrong)
+                    );
                 }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    const N: u64 = 1000;
+    const LIMIT: u32 = 10;
+    let decl: Declaration = serde_json::from_value(json!({
+        "declare": "type", "name": "t",
+        "fields": [{"name": "v", "type": {"kind": "text"}}]
+    }))
+    .map_err(|e| Failure::new(format!("the check's declaration does not read: {e}")))?;
+    let Declaration::Type(t) = &decl else {
+        unreachable!("the check declares a type")
+    };
+    // Every record holds its own `v`, so a page is never a run.
+    let states: Vec<StoredRecord> = (0..N)
+        .map(|i| {
+            record(
+                "t",
+                &format!("k{i:04}"),
+                json!({"v": format!("v{:04}", (i * 7919) % N)}),
+                1,
+            )
+        })
+        .collect();
+    let setting = |fields: Value, at: u64| {
+        record(
+            lakelands_api::seam::SETTING_TYPE,
+            "sort_index.t",
+            json!({"key": "sort_index.t", "value": fields}),
+            at,
+        )
+    };
+    fold(engine, 1, |p| {
+        p.put_declaration(&decl, 1, None, Position(0))?;
+        states.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    let ty = TypeName::from("t");
+    // The rows the engine handed the rulebook for one page, and the page.
+    let page = |dir| -> Result<(u64, bool), Failure> {
+        let scan = Scan {
+            order_by: vec![Order {
+                field: "v".into(),
+                by: OrderBy::Value,
+                dir,
+            }],
+            limit: LIMIT,
+            ..Scan::default()
+        };
+        let view = view(engine, None)?;
+        let before = crate::engines::rows_read();
+        let rows = view
+            .scan(&ty, &scan)
+            .must("scanning a page ordered by `v`")?;
+        let read = crate::engines::rows_read() - before;
+        Ok((
+            read,
+            keys(&rows) == keys(&crate::engines::scan(Some(t), &states, &scan)),
+        ))
+    };
+    // No setting; the setting on `v`; retired; on `v` again; on nothing.
+    let mut at = 1;
+    for (asked, index) in [
+        (None, false),
+        (Some(json!(["v"])), true),
+        (Some(Value::Null), false),
+        (Some(json!(["v"])), true),
+        (Some(json!([])), false),
+    ] {
+        if let Some(fields) = &asked {
+            at += 1;
+            let mut state = setting(fields.clone(), at);
+            if fields.is_null() {
+                state.fields = setting(json!(["v"]), at).fields;
+                state.retired = true;
+            }
+            fold(engine, at, |p| p.put_record(&state))?;
+        }
+        for dir in [Direction::Asc, Direction::Desc] {
+            let (read, right) = page(dir)?;
+            let asked = match &asked {
+                None => "no setting".to_owned(),
+                Some(Value::Null) => "the setting retired".to_owned(),
+                Some(f) => format!("the setting {f}"),
+            };
+            ensure!(
+                right,
+                "with {asked}, a page of {LIMIT} ordered by `v` {dir:?} is not what one scan \
+                 over every state answers"
+            );
+            if index {
+                ensure!(
+                    read <= 2 * u64::from(LIMIT),
+                    "with {asked}, a page of {LIMIT} ordered by `v` {dir:?} read {read} of the \
+                     type's {N} records; the order index reads about its page"
+                );
+            } else {
+                ensure!(
+                    read >= N,
+                    "with {asked}, a page of {LIMIT} ordered by `v` {dir:?} read {read} rows; \
+                     with no index on `v` it sorts all {N} records, so the index answered \
+                     what the lake did not ask it for"
+                );
             }
         }
     }

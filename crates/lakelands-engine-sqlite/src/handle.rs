@@ -121,10 +121,10 @@ impl SqliteLake {
             OpenMode::Write | OpenMode::Create => {
                 let conn = connect(&path, &tuning, true)?;
                 conn.execute_batch(projection::SCHEMA).map_err(sql)?;
-                // A lake whose order index a writer did not keep (one made
-                // before it, or written by a binary that lacks it) has it
-                // rebuilt from the head, once.
-                projection::rebuild_sorted(&conn)?;
+                // An order index a writer did not keep (a binary that lacks
+                // it folded past its mark or wrote its setting) is rebuilt
+                // from the head, once.
+                projection::catch_up_sorted(&conn)?;
                 Some(conn)
             }
         };

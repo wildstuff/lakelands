@@ -673,6 +673,10 @@ interface types {
     record type-lifecycle {
         version: u32,
         schema-hash: string,
+        /// The fields the lake keeps an order index for (its
+        /// `sort_index.<type>` setting): a `find` ordered first by one of
+        /// them reads its page, not the type.
+        sorted: list<field-name>,
     }
 
     record field-description {

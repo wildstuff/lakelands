@@ -173,6 +173,10 @@ impl Projection {
             match &put {
                 Put::Record(r) => {
                     records.insert((r.ty.clone(), r.key.clone()));
+                    // The setting's write rebuilds the index it asks for.
+                    if let Some(ty) = lakelands_core::engines::sort_index_type(r) {
+                        types.insert(ty);
+                    }
                 }
                 Put::Declaration(d) => {
                     if let Declaration::Type(t) = &d.declaration {
@@ -185,7 +189,7 @@ impl Projection {
         }
         // The order index follows the head: every record whose latest
         // state the transaction put, and every record of a type it
-        // declared again.
+        // declared again or whose `sort_index.<type>` setting it put.
         for ty in &types {
             let keys: Vec<RecordKey> = self
                 .records
@@ -202,8 +206,28 @@ impl Projection {
         Ok(())
     }
 
+    /// The fields of `ty` whose order index the lake keeps: those its
+    /// `sort_index.<type>` setting at the head names that its declaration
+    /// at the head declares with a kind the index keeps.
+    pub(crate) fn sorted_fields(&self, ty: &TypeName) -> Vec<FieldName> {
+        let Some(decl) = self.type_at(ty, Some(Position(u64::MAX))) else {
+            return Vec::new();
+        };
+        let setting = self
+            .records
+            .get(&(
+                TypeName::from(lakelands_api::seam::SETTING_TYPE),
+                RecordKey::from(lakelands_core::engines::sort_index_key(ty)),
+            ))
+            .and_then(History::latest);
+        lakelands_core::engines::sorted_fields(
+            decl,
+            setting.and_then(lakelands_core::engines::setting_value),
+        )
+    }
+
     /// Rewrite one record's rows in the order index from its latest state,
-    /// under its type's declaration at the head.
+    /// under its type's setting and declaration at the head.
     fn index(&mut self, ty: &TypeName, key: &RecordKey) {
         for (field, sort_key) in self
             .sorted_rows
@@ -218,11 +242,11 @@ impl Projection {
             .records
             .get(&(ty.clone(), key.clone()))
             .and_then(History::latest);
-        // The declaration in force after every state put: the head's.
-        let (Some(record), Some(decl)) = (head, self.type_at(ty, Some(Position(u64::MAX)))) else {
+        let Some(record) = head else {
             return;
         };
-        let rows: RecordRows = lakelands_core::engines::order_rows(decl, record)
+        let fields = self.sorted_fields(ty);
+        let rows: RecordRows = lakelands_core::engines::order_rows(&fields, record)
             .into_iter()
             .map(|(f, k)| (f.clone(), k))
             .collect();
@@ -232,7 +256,9 @@ impl Projection {
                 .or_default()
                 .insert((sort_key.clone(), key.clone()));
         }
-        self.sorted_rows.insert((ty.clone(), key.clone()), rows);
+        if !rows.is_empty() {
+            self.sorted_rows.insert((ty.clone(), key.clone()), rows);
+        }
     }
 
     /// At most `n` rows of the order index for `field` of `ty`, in the
@@ -459,6 +485,73 @@ mod tests {
         assert_eq!(h.at(None), None, "an empty projection shows nothing");
         h.put(Position(5), "five again");
         assert_eq!(h.at(Some(Position(5))), Some(&"five again"));
+    }
+
+    #[test]
+    fn the_setting_keeps_the_rows_of_the_fields_it_names_and_no_others() {
+        let mut p = Projection::default();
+        let decl: Declaration = serde_json::from_value(json!({
+            "declare": "type", "name": "t",
+            "fields": [
+                {"name": "n", "type": {"kind": "number"}},
+                {"name": "m", "type": {"kind": "number"}}
+            ]
+        }))
+        .unwrap();
+        let setting = |fields, at, retired| StoredRecord {
+            ty: TypeName::from(lakelands_api::seam::SETTING_TYPE),
+            key: RecordKey::from("sort_index.t"),
+            version: Version(at),
+            fields: [
+                ("key".into(), json!("sort_index.t")),
+                ("value".into(), fields),
+            ]
+            .into_iter()
+            .collect(),
+            meta: BTreeMap::new(),
+            position: Position(at),
+            retired,
+            restricted: false,
+        };
+        let mut puts = vec![Put::Declaration(Declared {
+            declaration: decl,
+            version: 1,
+            schema_hash: None,
+            since: Position(1),
+        })];
+        puts.extend((0..10).map(|i| {
+            let mut r = record(&format!("k{i}"), i, 1);
+            r.fields.insert("m".into(), json!(-i));
+            Put::Record(r)
+        }));
+        puts.push(Put::Record(setting(json!(["n", "m"]), 1, false)));
+        p.commit(puts, Position(1)).unwrap();
+        let rows = |p: &Projection, field: &str| {
+            p.sorted
+                .get(&(TypeName::from("t"), FieldName::from(field)))
+                .map_or(0, BTreeSet::len)
+        };
+        assert_eq!((rows(&p, "n"), rows(&p, "m")), (10, 10));
+        p.commit(
+            vec![Put::Record(setting(json!(["n"]), 2, false))],
+            Position(2),
+        )
+        .unwrap();
+        assert_eq!(
+            (rows(&p, "n"), rows(&p, "m")),
+            (10, 0),
+            "the setting's write without `m` drops the rows of `m`"
+        );
+        p.commit(
+            vec![Put::Record(setting(json!(["n"]), 3, true))],
+            Position(3),
+        )
+        .unwrap();
+        assert_eq!(
+            (rows(&p, "n"), rows(&p, "m")),
+            (0, 0),
+            "the setting retired drops every row"
+        );
     }
 
     #[test]
