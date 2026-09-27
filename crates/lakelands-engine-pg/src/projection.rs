@@ -466,6 +466,16 @@ pub(crate) fn set_folded(db: &mut Db, names: &Names, through: Position) -> Resul
 /// The records an order index's rebuild reads at a time.
 const REBUILD_PAGE: i64 = 1024;
 
+/// `ANALYZE` over the tables a view plans from: `records` and the head
+/// indexes. One statement, run outside any transaction.
+pub(crate) fn analyze(db: &mut Db, names: &Names) -> Result<()> {
+    let tables: Vec<String> = ["records", "text_index", "edges", "full_text", "sort_index"]
+        .iter()
+        .map(|t| names.t(t))
+        .collect();
+    db.batch(&format!("ANALYZE {}", tables.join(", ")))
+}
+
 /// The meta row marking the position `ty`'s order index was last kept
 /// through.
 pub(crate) fn sorted_mark(ty: &TypeName) -> String {
@@ -812,6 +822,11 @@ pub(crate) struct Buffer {
 }
 
 impl Buffer {
+    /// The record states the transaction put.
+    pub(crate) fn records_put(&self) -> usize {
+        self.records.len()
+    }
+
     pub(crate) fn record(&mut self, r: &StoredRecord) {
         let ident = vec![r.ty.as_str().to_owned(), r.key.as_str().to_owned()];
         self.records.insert((ident, r.position.0 as i64), r.clone());

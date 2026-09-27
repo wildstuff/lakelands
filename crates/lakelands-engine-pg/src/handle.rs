@@ -11,7 +11,20 @@
 //! It gives up the lease it took when it is dropped. A handle opened
 //! read-only refuses the lease, every append, every seal and every write
 //! of the projection.
+//!
+//! **Statistics after a load.** The planner plans a view's statements
+//! from the tables' statistics, and PostgreSQL's own analysis of freshly
+//! loaded tables runs only some time after the load: until then a page
+//! read through an index can be planned as a walk over the type, hundreds
+//! of milliseconds instead of one or two. So the writer counts the records
+//! it puts, and once [`ANALYZE_AFTER`] have gone in since its last
+//! analysis, it runs `ANALYZE` over `records` and the head indexes after
+//! the commit has answered, outside the fold's transaction. A rebuild is
+//! a refold after `clear`, so it is analysed the same way. Analysis
+//! changes no answer, only a plan; a failed one leaves the commit as it
+//! is.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use lakelands_api::engine::{
@@ -39,10 +52,15 @@ struct Transaction {
     buffer: Buffer,
 }
 
-/// The connections a handle opened for writing keeps.
+/// The records a writer puts between two analyses of its tables.
+pub const ANALYZE_AFTER: u64 = 5_000;
+
+/// The connections a handle opened for writing keeps, and the records
+/// put since the tables were last analysed.
 struct Writing {
     lease: Mutex<Db>,
     projection: Mutex<Db>,
+    unanalysed: AtomicU64,
 }
 
 /// One handle onto a lake kept by the PostgreSQL engine.
@@ -77,6 +95,7 @@ impl PgLake {
                 Some(Writing {
                     lease: Mutex::new(lease),
                     projection: Mutex::new(projection),
+                    unanalysed: AtomicU64::new(0),
                 })
             }
         };
@@ -393,6 +412,7 @@ impl ProjectionStore for PgLake {
         let Transaction {
             mut types, buffer, ..
         } = t;
+        let put = buffer.records_put() as u64;
         let written = buffer
             .write(&mut db, &self.names, &mut types)
             .and_then(|()| projection::set_folded(&mut db, &self.names, through));
@@ -400,7 +420,14 @@ impl ProjectionStore for PgLake {
             let _ = db.batch("ROLLBACK");
             return Err(e);
         }
-        db.batch("COMMIT")
+        db.batch("COMMIT")?;
+        // Once enough records went in since the last analysis, the planner
+        // learns of them, after the commit and outside it (module doc).
+        if writing.unanalysed.fetch_add(put, Ordering::Relaxed) + put >= ANALYZE_AFTER {
+            writing.unanalysed.store(0, Ordering::Relaxed);
+            let _ = projection::analyze(&mut db, &self.names);
+        }
+        Ok(())
     }
 
     fn rollback(&self) {
