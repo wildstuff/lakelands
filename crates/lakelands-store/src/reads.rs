@@ -202,14 +202,35 @@ impl<'a> Reader<'a> {
 
     /// `describe`.
     pub fn describe(&self) -> LakeDescription {
-        describe::lake(&self.lake.id, &self.declared(), self.who)
+        let mut lake = describe::lake(&self.lake.id, &self.declared(), self.who);
+        for t in &mut lake.types {
+            self.name_sorted(t);
+        }
+        lake
     }
 
     /// `describe_type`.
     pub fn describe_type(&self, ty: &TypeName) -> Result<TypeDescription> {
-        describe::one_type(ty, &self.declared(), self.who).ok_or_else(|| Error::NotFound {
-            missing: Missing::Type { name: ty.clone() },
-        })
+        let mut t =
+            describe::one_type(ty, &self.declared(), self.who).ok_or_else(|| Error::NotFound {
+                missing: Missing::Type { name: ty.clone() },
+            })?;
+        self.name_sorted(&mut t);
+        Ok(t)
+    }
+
+    /// Name in a type's lifecycle the fields the lake keeps an order index
+    /// for, as its `sort_index.<type>` setting asks, of those the principal
+    /// sees.
+    fn name_sorted(&self, t: &mut TypeDescription) {
+        let Ok(decl) = self.ontology.ty(&t.name) else {
+            return;
+        };
+        let setting = self.settings.get(&core_engines::sort_index_key(&t.name));
+        t.lifecycle.sorted = core_engines::sorted_fields(decl, setting)
+            .into_iter()
+            .filter(|f| t.fields.iter().any(|d| d.name == *f))
+            .collect();
     }
 
     fn holds(

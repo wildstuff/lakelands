@@ -16,9 +16,10 @@ use std::collections::BTreeSet;
 use lakelands_api::engine::{Declared, ProjectionView, Scan};
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId};
-use lakelands_api::id::{Position, RecordKey, RelationName, TypeName, VerbName};
+use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName, VerbName};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::query::{Edge, Walk};
+use lakelands_api::read::{Direction, Order};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter};
 use lakelands_core::engines;
@@ -172,6 +173,125 @@ impl Read<'_> {
             .collect()
     }
 
+    /// The fields of `ty` whose order index answers this read, in one round
+    /// trip: none but at the head, and only while the index is kept
+    /// through it.
+    fn sorted_fields(&mut self, ty: &TypeName, decl: Option<&TypeDecl>) -> Result<Vec<FieldName>> {
+        let Some(decl) = decl.filter(|_| self.head) else {
+            return Ok(Vec::new());
+        };
+        let row = self.db.query_one(
+            &format!(
+                "SELECT (SELECT n FROM {m} WHERE k = $1), \
+                 (SELECT state FROM {r} WHERE ty = $2 AND key = $3 AND until IS NULL)",
+                m = self.names.t("meta"),
+                r = self.names.t("records"),
+            ),
+            &[
+                &crate::projection::sorted_mark(ty),
+                &lakelands_api::seam::SETTING_TYPE,
+                &engines::sort_index_key(ty),
+            ],
+        )?;
+        if row.get::<_, Option<i64>>(0) != Some(self.at.0 as i64) {
+            return Ok(Vec::new());
+        }
+        let setting = row
+            .get::<_, Option<String>>(1)
+            .map(|state| decode_record(&state))
+            .transpose()?;
+        Ok(engines::sorted_fields(
+            decl,
+            setting.as_ref().and_then(engines::setting_value),
+        ))
+    }
+
+    /// At most `n` head records of a type with a row in the order index for
+    /// `order`'s field, with their sort keys, in the index's order for its
+    /// direction, strictly after `from`: a seek into `sort_index_asc` or
+    /// `sort_index_desc`.
+    fn sorted_after(
+        &mut self,
+        ty: &TypeName,
+        order: &Order,
+        from: Option<(&[u8], &str)>,
+        n: u32,
+    ) -> Result<Vec<(Vec<u8>, StoredRecord)>> {
+        let limit = i64::from(n);
+        let (seek, by) = match order.dir {
+            Direction::Asc => (
+                "AND (s.sort_key, s.key COLLATE \"C\") > ($4, $5 COLLATE \"C\")",
+                "s.sort_key, s.key COLLATE \"C\"",
+            ),
+            Direction::Desc => (
+                "AND (s.sort_key < $4 OR (s.sort_key = $4 AND s.key COLLATE \"C\" > $5))",
+                "s.sort_key DESC, s.key COLLATE \"C\"",
+            ),
+        };
+        let seek = if from.is_some() { seek } else { "" };
+        // The index's rows first, in its order and cut at the limit, then
+        // their records: every row is a head record's, so the join keeps
+        // them all, and the page follows the index whatever the planner
+        // knows of the tables.
+        let query = format!(
+            "SELECT s.sort_key, r.state FROM \
+             (SELECT s.sort_key, s.key FROM {sorted} s \
+              WHERE s.ty = $1 AND s.field = $2 {seek} ORDER BY {by} LIMIT $3) s \
+             JOIN {records} r ON r.ty = $1 AND r.key = s.key AND r.until IS NULL \
+             ORDER BY {by}",
+            sorted = self.names.t("sort_index"),
+            records = self.names.t("records"),
+        );
+        let rows = match from {
+            Some((k, key)) => self.db.query(
+                &query,
+                &[&ty.as_str(), &order.field.as_str(), &limit, &k, &key],
+            )?,
+            None => self
+                .db
+                .query(&query, &[&ty.as_str(), &order.field.as_str(), &limit])?,
+        };
+        rows.iter()
+            .map(|r| Ok((r.get(0), decode_record(&r.get::<_, String>(1))?)))
+            .collect()
+    }
+
+    /// At most `n` head records of a type without a row in the order index
+    /// for `field`, in key order after `after`.
+    fn unsorted_after(
+        &mut self,
+        ty: &TypeName,
+        field: &FieldName,
+        after: Option<&str>,
+        n: u32,
+    ) -> Result<Vec<StoredRecord>> {
+        let limit = i64::from(n);
+        let from = if after.is_some() {
+            "AND r.key COLLATE \"C\" > $4"
+        } else {
+            ""
+        };
+        let query = format!(
+            "SELECT r.state FROM {records} r WHERE r.ty = $1 AND r.until IS NULL {from} \
+             AND NOT EXISTS (SELECT 1 FROM {sorted} s \
+             WHERE s.ty = r.ty AND s.field = $2 AND s.key = r.key) \
+             ORDER BY r.key COLLATE \"C\" LIMIT $3",
+            sorted = self.names.t("sort_index"),
+            records = self.names.t("records"),
+        );
+        let rows = match after {
+            Some(after) => self
+                .db
+                .query(&query, &[&ty.as_str(), &field.as_str(), &limit, &after])?,
+            None => self
+                .db
+                .query(&query, &[&ty.as_str(), &field.as_str(), &limit])?,
+        };
+        rows.iter()
+            .map(|r| decode_record(&r.get::<_, String>(0)))
+            .collect()
+    }
+
     /// Records of a type by their keys, at the view's position.
     fn records_by_key(
         &mut self,
@@ -311,7 +431,26 @@ impl ProjectionView for PgView<'_> {
                         r.records_after(ty, after, n)
                     });
                 }
-                None => r.records(ty)?,
+                // Ordered by a field the lake indexes, at the head, the page
+                // is read in the order index's order and stops when it is
+                // full.
+                None => {
+                    let sorted = r.sorted_fields(ty, decl.as_ref())?;
+                    match engines::by_order_index(decl.as_ref(), &sorted, scan) {
+                        Some(first) => {
+                            let r = std::cell::RefCell::new(r);
+                            return engines::scan_in_field_order(
+                                decl.as_ref(),
+                                scan,
+                                |from, n| r.borrow_mut().sorted_after(ty, first, from, n),
+                                |after, n| {
+                                    r.borrow_mut().unsorted_after(ty, &first.field, after, n)
+                                },
+                            );
+                        }
+                        None => r.records(ty)?,
+                    }
+                }
             };
             Ok(engines::scan(decl.as_ref(), &records, scan))
         })

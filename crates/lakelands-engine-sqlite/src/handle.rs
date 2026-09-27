@@ -121,6 +121,10 @@ impl SqliteLake {
             OpenMode::Write | OpenMode::Create => {
                 let conn = connect(&path, &tuning, true)?;
                 conn.execute_batch(projection::SCHEMA).map_err(sql)?;
+                // An order index a writer did not keep (a binary that lacks
+                // it folded past its mark or wrote its setting) is rebuilt
+                // from the head, once.
+                projection::catch_up_sorted(&conn)?;
                 Some(conn)
             }
         };
@@ -373,6 +377,7 @@ impl ProjectionStore for SqliteLake {
                 ));
             }
             projection::set_folded(conn, through)?;
+            projection::mark_sorted(conn, through)?;
             conn.execute_batch("COMMIT").map_err(sql)
         })
     }

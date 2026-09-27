@@ -113,7 +113,8 @@ macro_rules! door_checks {
             a_relation_declared_again_with_another_target_reshapes_its_links,
             #[host_ops] an_aging_rule_moves_what_holds_from_once_a_date,
             #[host_ops] a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_record,
-            a_value_type_is_loosened_by_declare_and_tightened_by_its_preflight);
+            a_value_type_is_loosened_by_declare_and_tightened_by_its_preflight,
+            a_sort_index_setting_names_declared_scalar_fields_and_describe_shows_them);
     };
     (@each $at:ident, $new:expr, $block_on:path;
         $($(#[$mark:ident])? $name:ident),* $(,)?) => {
@@ -2959,5 +2960,119 @@ pub async fn a_value_type_is_loosened_by_declare_and_tightened_by_its_preflight(
             })
         ),
         "{written:?}"
+    );
+}
+
+/// A `sort_index.<type>` setting asks for the order index on fields its
+/// type declares with a scalar kind, and is refused naming anything else;
+/// `describe_type` names the fields indexed, of those the principal sees
+/// (`docs/decisions/041-a-sorted-page-reads-its-page.md`).
+pub async fn a_sort_index_setting_names_declared_scalar_fields_and_describe_shows_them(
+    store: Arc<dyn LakeStore>,
+) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let reading = TypeDecl {
+        name: "reading".into(),
+        key: Vec::new(),
+        fields: vec![
+            text("label"),
+            FieldDecl {
+                ty: FieldType::kind(StorageKind::Json),
+                ..text("payload")
+            },
+        ],
+        relations: Vec::new(),
+        view: None,
+        valid_from: None,
+        valid_to: None,
+        field_meta: true,
+        language: None,
+        description: None,
+        label: None,
+    };
+    f.catalog
+        .declare(owner, Declaration::Type(reading))
+        .await
+        .expect("the owner declares `reading`");
+    let set = |k: &'static str, value: Value| {
+        let catalog = f.catalog.clone();
+        async move {
+            catalog
+                .upsert(
+                    owner,
+                    &ty("sys.setting"),
+                    &key(k),
+                    patch(&[("key", json!(k)), ("value", value)]),
+                    WriteOpts::default(),
+                )
+                .await
+        }
+    };
+    for (k, value, at_fault) in [
+        ("sort_index.reading", json!(["payload"]), "payload"),
+        ("sort_index.reading", json!(["label", "weight"]), "weight"),
+        ("sort_index.gauge", json!(["label"]), "key"),
+        ("sort_index.reading", json!("label"), "value"),
+    ] {
+        let e = set(k, value.clone())
+            .await
+            .expect_err("a setting naming what no order index keeps is refused");
+        let (field, reason) = refusal(&e);
+        assert!(
+            matches!(reason, Refusal::Invalid { .. }),
+            "`{k}` = {value}: expected invalid, got {reason:?}"
+        );
+        assert_eq!(
+            field.as_ref().map(FieldName::as_str),
+            Some(at_fault),
+            "`{k}` = {value}: the refusal names the field at fault"
+        );
+    }
+    let sorted = |who: &Principal| {
+        let catalog = f.catalog.clone();
+        let who = who.clone();
+        async move {
+            catalog
+                .describe_type(&who, &ty(INVOICE), ReadAt::default())
+                .await
+                .expect("the type is described")
+                .data
+                .lifecycle
+                .sorted
+        }
+    };
+    assert!(
+        sorted(owner).await.is_empty(),
+        "no setting, nothing indexed"
+    );
+    set("sort_index.invoice", json!(["amount", "status"]))
+        .await
+        .expect("a setting naming declared scalar fields applies");
+    assert_eq!(
+        sorted(owner).await,
+        vec![FieldName::from("amount"), FieldName::from("status")]
+    );
+    assert_eq!(
+        sorted(&f.cast.stranger).await,
+        vec![FieldName::from("status")],
+        "a principal is told of the indexed fields it sees"
+    );
+    set("sort_index.invoice", json!(["status"]))
+        .await
+        .expect("a setting naming fewer fields applies");
+    assert_eq!(sorted(owner).await, vec![FieldName::from("status")]);
+    f.catalog
+        .retire(
+            owner,
+            &ty("sys.setting"),
+            &key("sort_index.invoice"),
+            WriteOpts::default(),
+        )
+        .await
+        .expect("the setting retires");
+    assert!(
+        sorted(owner).await.is_empty(),
+        "the setting retired, nothing indexed"
     );
 }

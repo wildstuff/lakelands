@@ -1119,6 +1119,7 @@ mod tests {
             lifecycle: TypeLifecycle {
                 version: 1,
                 schema_hash: "h".into(),
+                sorted: vec![],
             },
         }
     }

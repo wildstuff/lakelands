@@ -501,7 +501,7 @@ belongs in the suite, not beside one engine:
 
 - `after_resumes_where_the_cursor_would` — 029: `after` names the position a cursor carries — a row's sort values and key — and continues strictly after it in the one order, at the caller's read position; it is refused beside a cursor or an aggregate, with a value count other than `order_by`'s, or with a value its key's field cannot hold
 
-### Through the engine seam (45 checks)
+### Through the engine seam (47 checks)
 
 **log**
 
@@ -542,6 +542,8 @@ belongs in the suite, not beside one engine:
 - `mixed_kinds_sort_the_same_on_every_engine` — 029: a scan orders numbers, then instants, then text, then booleans, then JSON, a missing value last in either direction, ties by key, so every engine puts the same records in the same places
 - `a_scan_continues_strictly_after_its_keyset_position` — seams §scan: a scan answers only what sorts strictly after `after`, and at most `limit` of it, 0 answering nothing, so an engine that pages natively gives the store's pages
 - `a_key_ordered_scan_answers_across_its_batches_as_one_scan` — seams §scan and lakelands#134: a scan ordered by the key alone, read in batches from `after`, answers what one scan over every state answers, whatever its limit, its `after`, its flags and its filter, at the head and at an earlier position, however many rows each batch passes over
+- `a_field_ordered_scan_walks_page_by_page_as_one_scan` — seams §scan and lakelands#137: a scan ordered by fields, walked page by page from `after`, answers what one scan over every state answers, whatever its directions, its filter and its flags, after later puts, a redeclaration and a change of the `sort_index.<type>` setting, at the head and at an earlier position
+- `a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it` — 041 and lakelands#137: a page of 10 ordered by a field the `sort_index.<type>` setting names reads its page and at most three rows more, not the type, the first page and one continued after a value longer than the index keeps alike; the setting's write switches the same page from sorting the type to the index and back, and the answer stays what one scan over every state answers
 - `scan_filters_exactly_as_the_evaluator_including_mixed_kinds_and_errors` — seams §scan: an engine selects exactly the records the one evaluator selects, comparisons across kinds included, and a filter that errors for a record does not select it
 - `scan_honours_retired_restricted_and_valid_at` — seams §scan: retired and restricted records come only when asked for, and a valid-timed type's records only when valid at `valid_at`
 - `lexical_hits_are_the_pipelines_over_searchable_live_records` — 025 and seams §lexical: a hit holds a token the one pipeline makes of the query in a searchable field of a live record, restricted ones included (the store applies grants); the hit set is the same on every engine, ties by key, at most k

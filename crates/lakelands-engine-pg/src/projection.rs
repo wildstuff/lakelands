@@ -37,9 +37,10 @@ use std::collections::{BTreeMap, HashMap};
 
 use lakelands_api::engine::Declared;
 use lakelands_api::error::Result;
-use lakelands_api::id::{Position, RecordKey, TypeName};
+use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::record::StoredRecord;
+use lakelands_api::seam::{SETTING_TYPE, SORT_INDEX_SETTING};
 use lakelands_api::write::Declaration;
 use lakelands_core::engines;
 use postgres::types::ToSql;
@@ -128,6 +129,13 @@ CREATE TABLE IF NOT EXISTS {s}.full_text (
     PRIMARY KEY (ty, token, key)
 );
 CREATE INDEX IF NOT EXISTS full_text_key ON {s}.full_text (ty, key);
+CREATE TABLE IF NOT EXISTS {s}.sort_index (
+    ty TEXT NOT NULL, field TEXT NOT NULL, key TEXT NOT NULL, sort_key BYTEA NOT NULL,
+    PRIMARY KEY (ty, key, field)
+);
+CREATE INDEX IF NOT EXISTS sort_index_asc ON {s}.sort_index (ty, field, sort_key, key COLLATE \"C\");
+CREATE INDEX IF NOT EXISTS sort_index_desc
+    ON {s}.sort_index (ty, field, sort_key DESC, key COLLATE \"C\");
 CREATE TABLE IF NOT EXISTS {s}.vectors (
     ty TEXT NOT NULL, field TEXT NOT NULL, key TEXT NOT NULL, data BYTEA NOT NULL,
     PRIMARY KEY (ty, field, key)
@@ -138,7 +146,7 @@ CREATE TABLE IF NOT EXISTS {s}.vectors (
 }
 
 /// Every table of a lake's schema.
-pub(crate) const LAKE_TABLES: [&str; 14] = [
+pub(crate) const LAKE_TABLES: [&str; 15] = [
     "meta",
     "lease",
     "segments",
@@ -152,12 +160,13 @@ pub(crate) const LAKE_TABLES: [&str; 14] = [
     "text_index",
     "edges",
     "full_text",
+    "sort_index",
     "vectors",
 ];
 
 /// The projection's tables, cleared by a rebuild; the log, its segments,
 /// the lease and the lake's name stay.
-pub(crate) const PROJECTION_TABLES: [&str; 10] = [
+pub(crate) const PROJECTION_TABLES: [&str; 11] = [
     "declarations",
     "records",
     "proposals",
@@ -167,6 +176,7 @@ pub(crate) const PROJECTION_TABLES: [&str; 10] = [
     "text_index",
     "edges",
     "full_text",
+    "sort_index",
     "vectors",
 ];
 
@@ -361,21 +371,65 @@ fn prefixed(alias: &str, columns: &[&str]) -> String {
 }
 
 /// The declarations of types in force at the head, as read in the fold's
-/// open transaction: each type's read once, and all forgotten when a
-/// declaration is put, since it may change one. Dropped with the
-/// transaction.
+/// open transaction, each with the fields its order index keeps: each
+/// type's read once, with its `sort_index.<type>` setting in the same
+/// round trip, and all forgotten when a declaration is put, since it may
+/// change one. A type whose setting the transaction puts is forgotten
+/// when its buffer is written. Dropped with the transaction.
 #[derive(Default)]
-pub(crate) struct HeadTypes(HashMap<TypeName, Option<TypeDecl>>);
+pub(crate) struct HeadTypes(HashMap<TypeName, HeadType>);
+
+/// A type's declaration at the head and the fields its order index keeps.
+#[derive(Clone, Default)]
+pub(crate) struct HeadType {
+    pub(crate) decl: Option<TypeDecl>,
+    pub(crate) sorted: Vec<FieldName>,
+}
 
 impl HeadTypes {
-    fn get(&mut self, db: &mut Db, names: &Names, ty: &TypeName) -> Result<Option<TypeDecl>> {
-        if let Some(decl) = self.0.get(ty) {
-            return Ok(decl.clone());
+    fn get(&mut self, db: &mut Db, names: &Names, ty: &TypeName) -> Result<HeadType> {
+        if let Some(head) = self.0.get(ty) {
+            return Ok(head.clone());
         }
-        let decl = type_at(db, names, ty, None)?;
-        self.0.insert(ty.clone(), decl.clone());
-        Ok(decl)
+        let head = head_type(db, names, ty)?;
+        self.0.insert(ty.clone(), head.clone());
+        Ok(head)
     }
+}
+
+/// `ty`'s declaration at the head and the fields its order index keeps:
+/// those its `sort_index.<type>` setting at the head names that the
+/// declaration declares with a kind the index keeps. One round trip.
+pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<HeadType> {
+    let row = db.query_one(
+        &format!(
+            "SELECT (SELECT state FROM {d} WHERE ident = $1 AND until IS NULL), \
+             (SELECT state FROM {r} WHERE ty = $2 AND key = $3 AND until IS NULL)",
+            d = names.t("declarations"),
+            r = names.t("records"),
+        ),
+        &[
+            &format!("type {ty}"),
+            &SETTING_TYPE,
+            &engines::sort_index_key(ty),
+        ],
+    )?;
+    let decl = match row.get::<_, Option<String>>(0) {
+        Some(state) => match decode::<Declared>(&state, "a declaration")?.declaration {
+            Declaration::Type(t) => Some(t),
+            _ => None,
+        },
+        None => None,
+    };
+    let setting = row
+        .get::<_, Option<String>>(1)
+        .map(|state| decode::<StoredRecord>(&state, "a record"))
+        .transpose()?;
+    let sorted = match &decl {
+        Some(d) => engines::sorted_fields(d, setting.as_ref().and_then(engines::setting_value)),
+        None => Vec::new(),
+    };
+    Ok(HeadType { decl, sorted })
 }
 
 /// The condition that a history row holds at the position bound as `$n`.
@@ -394,15 +448,123 @@ pub(crate) fn folded(db: &mut Db, names: &Names) -> Result<Option<Position>> {
         .map(|v| Position(v as u64)))
 }
 
+/// Record the position folded through, and that every order index the
+/// lake keeps (a `sorted.<type>` mark each) is kept through it too, in one
+/// statement.
 pub(crate) fn set_folded(db: &mut Db, names: &Names, through: Position) -> Result<()> {
     db.execute(
         &format!(
-            "INSERT INTO {} (k, n) VALUES ('folded', $1) ON CONFLICT (k) DO UPDATE SET n = $1",
-            names.t("meta")
+            "WITH s AS (UPDATE {m} SET n = $1 WHERE k LIKE 'sorted.%') \
+             INSERT INTO {m} (k, n) VALUES ('folded', $1) ON CONFLICT (k) DO UPDATE SET n = $1",
+            m = names.t("meta")
         ),
         &[&(through.0 as i64)],
     )?;
     Ok(())
+}
+
+/// The records an order index's rebuild reads at a time.
+const REBUILD_PAGE: i64 = 1024;
+
+/// The meta row marking the position `ty`'s order index was last kept
+/// through.
+pub(crate) fn sorted_mark(ty: &TypeName) -> String {
+    format!("sorted.{ty}")
+}
+
+/// Rewrite `ty`'s order index from its head records, under its setting and
+/// declaration at the head, and mark it kept through `through`; with no
+/// field to keep, drop its rows and its mark. The fold does this when it
+/// writes the setting's head state, and a writer's open when the mark is
+/// behind.
+pub(crate) fn rebuild_sorted(
+    db: &mut Db,
+    names: &Names,
+    ty: &TypeName,
+    through: Position,
+) -> Result<()> {
+    db.execute(
+        &format!("DELETE FROM {} WHERE ty = $1", names.t("sort_index")),
+        &[&ty.as_str()],
+    )?;
+    let head = head_type(db, names, ty)?;
+    if head.sorted.is_empty() {
+        db.execute(
+            &format!("DELETE FROM {} WHERE k = $1", names.t("meta")),
+            &[&sorted_mark(ty)],
+        )?;
+        return Ok(());
+    }
+    // A page of the type at a time, so the pass holds a page, not the type.
+    let mut after = String::new();
+    loop {
+        let page = head_records_after(db, names, ty, &after, REBUILD_PAGE)?;
+        let Some(last) = page.last() else { break };
+        after = last.key.to_string();
+        let (mut fields, mut keys, mut sort_keys) = (Vec::new(), Vec::new(), Vec::new());
+        for r in &page {
+            for (field, sort_key) in engines::order_rows(&head.sorted, r) {
+                fields.push(field.as_str().to_owned());
+                keys.push(r.key.as_str().to_owned());
+                sort_keys.push(sort_key);
+            }
+        }
+        db.execute(
+            &format!(
+                "INSERT INTO {} (ty, field, key, sort_key) \
+                 SELECT $1, * FROM unnest($2::text[], $3::text[], $4::bytea[])",
+                names.t("sort_index"),
+            ),
+            &[&ty.as_str(), &fields, &keys, &sort_keys],
+        )?;
+        if (page.len() as i64) < REBUILD_PAGE {
+            break;
+        }
+    }
+    db.execute(
+        &format!(
+            "INSERT INTO {} (k, n) VALUES ($1, $2) ON CONFLICT (k) DO UPDATE SET n = $2",
+            names.t("meta"),
+        ),
+        &[&sorted_mark(ty), &(through.0 as i64)],
+    )?;
+    Ok(())
+}
+
+/// At a writer's open: rebuild, in one transaction, every order index
+/// that does not describe the head, because a writer that does not keep
+/// it (a binary before it) folded past its mark or wrote its setting, and
+/// drop the index of a type whose setting such a writer removed.
+pub(crate) fn catch_up_sorted(db: &mut Db, names: &Names) -> Result<()> {
+    db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED", |db| {
+        let Some(folded) = folded(db, names)? else {
+            return Ok(());
+        };
+        let behind: Vec<String> = db
+            .query(
+                &format!(
+                    "SELECT substr(r.key, $1) FROM {r} r WHERE r.ty = $2 AND left(r.key, $1 - 1) = $3 \
+                       AND r.until IS NULL AND NOT EXISTS (SELECT 1 FROM {m} m \
+                       WHERE m.k = 'sorted.' || substr(r.key, $1) AND m.n = $4) \
+                     UNION SELECT substr(k, 8) FROM {m} WHERE k LIKE 'sorted.%' AND n <> $4",
+                    r = names.t("records"),
+                    m = names.t("meta"),
+                ),
+                &[
+                    &(SORT_INDEX_SETTING.len() as i32 + 1),
+                    &SETTING_TYPE,
+                    &SORT_INDEX_SETTING,
+                    &(folded.0 as i64),
+                ],
+            )?
+            .iter()
+            .map(|r| r.get(0))
+            .collect();
+        for ty in behind {
+            rebuild_sorted(db, names, &TypeName::from(ty), folded)?;
+        }
+        Ok(())
+    })
 }
 
 pub(crate) fn decode<T: serde::de::DeserializeOwned>(state: &str, what: &str) -> Result<T> {
@@ -445,6 +607,28 @@ pub(crate) fn type_at(
 }
 
 /// The latest states of one type's records, in key order.
+/// At most `n` latest states of one type's records, in key order after
+/// `after`: a page of the type, so a pass over it holds a page at a time.
+pub(crate) fn head_records_after(
+    db: &mut Db,
+    names: &Names,
+    ty: &TypeName,
+    after: &str,
+    n: i64,
+) -> Result<Vec<StoredRecord>> {
+    db.query(
+        &format!(
+            "SELECT state FROM {} WHERE ty = $1 AND until IS NULL AND key COLLATE \"C\" > $2 \
+             ORDER BY key COLLATE \"C\" LIMIT $3",
+            names.t("records")
+        ),
+        &[&ty.as_str(), &after, &n],
+    )?
+    .iter()
+    .map(|r| decode_record(&r.get::<_, String>(0)))
+    .collect()
+}
+
 pub(crate) fn head_records(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Vec<StoredRecord>> {
     db.query(
         &format!(
@@ -482,7 +666,12 @@ struct IndexRows<'r> {
     text: [Vec<&'r str>; 4],
     tokens: [Vec<String>; 3],
     edges: [Vec<String>; 5],
+    sorted: SortRows<'r>,
 }
+
+/// The order index rows of records, as arrays: types, fields, keys and
+/// sort keys.
+type SortRows<'r> = (Vec<&'r str>, Vec<String>, Vec<&'r str>, Vec<Vec<u8>>);
 
 /// Rewrite the head indexes of records from their latest states, each
 /// under the declaration of its type at the head, in two statements: the
@@ -492,16 +681,28 @@ struct IndexRows<'r> {
 pub(crate) fn index_records(
     db: &mut Db,
     names: &Names,
-    records: &[(Option<&TypeDecl>, &StoredRecord)],
+    records: &[(&HeadType, &StoredRecord)],
     stale: &[(&str, &str)],
 ) -> Result<()> {
+    // Only a type the lake keeps an order index for has rows in it; the
+    // setting's rebuild drops a type's rows with its last field. So the
+    // statements name `sort_index` only when a record's type has one.
+    let sorted = records.iter().any(|(head, _)| !head.sorted.is_empty());
     if !stale.is_empty() {
         let (tys, keys): (Vec<&str>, Vec<&str>) = stale.iter().copied().unzip();
+        let z = if sorted {
+            format!(
+                ", z AS (DELETE FROM {} t USING d WHERE t.ty = d.ty AND t.key = d.key)",
+                names.t("sort_index")
+            )
+        } else {
+            String::new()
+        };
         db.execute(
             &format!(
                 "WITH d AS (SELECT * FROM unnest($1::text[], $2::text[]) AS d(ty, key)), \
                  x AS (DELETE FROM {text} t USING d WHERE t.ty = d.ty AND t.key = d.key), \
-                 y AS (DELETE FROM {full} t USING d WHERE t.ty = d.ty AND t.key = d.key) \
+                 y AS (DELETE FROM {full} t USING d WHERE t.ty = d.ty AND t.key = d.key){z} \
                  DELETE FROM {edges} t USING d WHERE t.src_ty = d.ty AND t.src_key = d.key",
                 text = names.t("text_index"),
                 full = names.t("full_text"),
@@ -511,7 +712,8 @@ pub(crate) fn index_records(
         )?;
     }
     let mut rows = IndexRows::default();
-    for (decl, r) in records {
+    for (head, r) in records {
+        let decl = head.decl.as_ref();
         let (ty, key) = (r.ty.as_str(), r.key.as_str());
         for (field, value) in &r.fields {
             if let Some(value) = value.as_str() {
@@ -519,6 +721,12 @@ pub(crate) fn index_records(
                     column.push(v);
                 }
             }
+        }
+        for (field, sort_key) in engines::order_rows(&head.sorted, r) {
+            rows.sorted.0.push(ty);
+            rows.sorted.1.push(field.as_str().to_owned());
+            rows.sorted.2.push(key);
+            rows.sorted.3.push(sort_key);
         }
         let Some(decl) = decl else { continue };
         for e in engines::links_of(decl, r, None) {
@@ -541,26 +749,42 @@ pub(crate) fn index_records(
             rows.tokens[2].push(key.to_owned());
         }
     }
-    if rows.text[0].is_empty() && rows.tokens[0].is_empty() && rows.edges[0].is_empty() {
+    if rows.text[0].is_empty()
+        && rows.tokens[0].is_empty()
+        && rows.edges[0].is_empty()
+        && rows.sorted.0.is_empty()
+    {
         return Ok(());
     }
     let [t1, t2, t3, t4] = &rows.text;
     let [f1, f2, f3] = &rows.tokens;
     let [e1, e2, e3, e4, e5] = &rows.edges;
+    let (s1, s2, s3, s4) = &rows.sorted;
+    let mut params: Vec<&(dyn ToSql + Sync)> = vec![t1, t2, t3, t4, f1, f2, f3, e1, e2, e3, e4, e5];
+    let z = if rows.sorted.0.is_empty() {
+        String::new()
+    } else {
+        params.extend([s1 as &(dyn ToSql + Sync), s2, s3, s4]);
+        format!(
+            ", z AS (INSERT INTO {} (ty, field, key, sort_key) \
+               SELECT * FROM unnest($13::text[], $14::text[], $15::text[], $16::bytea[]))",
+            names.t("sort_index")
+        )
+    };
     db.execute(
         &format!(
             "WITH x AS (INSERT INTO {text} (ty, field, value, key) \
                SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[]) \
                ON CONFLICT DO NOTHING), \
              y AS (INSERT INTO {full} (ty, token, key) \
-               SELECT * FROM unnest($5::text[], $6::text[], $7::text[])) \
+               SELECT * FROM unnest($5::text[], $6::text[], $7::text[])){z} \
              INSERT INTO {edges} (src_ty, src_key, relation, dst_ty, dst_key) \
              SELECT * FROM unnest($8::text[], $9::text[], $10::text[], $11::text[], $12::text[])",
             text = names.t("text_index"),
             full = names.t("full_text"),
             edges = names.t("edges"),
         ),
-        &[t1, t2, t3, t4, f1, f2, f3, e1, e2, e3, e4, e5],
+        &params,
     )?;
     Ok(())
 }
@@ -630,6 +854,22 @@ impl Buffer {
         PROPOSALS.put_many(db, names, &self.proposals)?;
         OUTPUTS.put_many(db, names, &self.outputs)?;
         MEMBERS.put_many(db, names, &self.members)?;
+        // A `sort_index.<type>` setting whose head state the buffer holds
+        // changes which fields of its type are indexed: read again.
+        let settings: Vec<(TypeName, Position)> = heads
+            .iter()
+            .filter_map(|(ident, _)| {
+                let r = self
+                    .records
+                    .range((ident.clone(), i64::MIN)..=(ident.clone(), i64::MAX))
+                    .next_back()?
+                    .1;
+                Some((engines::sort_index_type(r)?, r.position))
+            })
+            .collect();
+        for (ty, _) in &settings {
+            types.0.remove(ty);
+        }
         let mut indexed = Vec::with_capacity(heads.len());
         let mut stale = Vec::new();
         for (ident, had) in &heads {
@@ -644,9 +884,14 @@ impl Buffer {
                 stale.push((ident[0].as_str(), ident[1].as_str()));
             }
         }
-        let indexed: Vec<(Option<&TypeDecl>, &StoredRecord)> =
-            indexed.iter().map(|(d, r)| (d.as_ref(), *r)).collect();
+        let indexed: Vec<(&HeadType, &StoredRecord)> =
+            indexed.iter().map(|(h, r)| (h, *r)).collect();
         index_records(db, names, &indexed, &stale)?;
+        // The setting's write rebuilds the index it asks for, so the index
+        // describes the head from the next read on.
+        for (ty, at) in settings {
+            rebuild_sorted(db, names, &ty, at)?;
+        }
         if !self.applied.is_empty() {
             let (ids, at): (Vec<&str>, Vec<i64>) = self
                 .applied
@@ -683,10 +928,16 @@ pub(crate) fn put_declaration(
     DECLARATIONS.put(db, names, &[&ident], d.since, &state)?;
     if let Declaration::Type(t) = &d.declaration {
         let head = types.get(db, names, &t.name)?;
-        if head.as_ref() == Some(t) {
+        if head.decl.as_ref() == Some(t) {
+            // The rows go whole: the declaration may have dropped a field
+            // the index kept.
+            db.execute(
+                &format!("DELETE FROM {} WHERE ty = $1", names.t("sort_index")),
+                &[&t.name.as_str()],
+            )?;
             let records = head_records(db, names, &t.name)?;
-            let indexed: Vec<(Option<&TypeDecl>, &StoredRecord)> =
-                records.iter().map(|r| (head.as_ref(), r)).collect();
+            let indexed: Vec<(&HeadType, &StoredRecord)> =
+                records.iter().map(|r| (&head, r)).collect();
             let stale: Vec<(&str, &str)> = records
                 .iter()
                 .map(|r| (r.ty.as_str(), r.key.as_str()))

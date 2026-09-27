@@ -38,8 +38,10 @@
 //! Ingest, the feed, the export and its verification are held to this,
 //! and so are the walk through `find`, which measures each page on its
 //! own, as its largest page: a page holds its rows, not the type
-//! (lakelands#134), and the rebuild, which folds the log a page at a time
-//! (lakelands#130), and the reopen, which reads the log a page at a time
+//! (lakelands#134), and the first pages ordered by a field the lake's
+//! `sort_index.<type>` setting names, which read the order index and not
+//! the type (lakelands#137), and the rebuild, which folds the log a page
+//! at a time (lakelands#130), and the reopen, which reads the log a page at a time
 //! and on SQLite keeps a mark per 256 events of its index, not the index
 //! (lakelands#133), and a walk over link records: a pattern query of
 //! three steps walking a relation carried by link records backwards from
@@ -52,12 +54,15 @@
 //! without a meter runs everything else the check claims and reports the
 //! heap as not measured.
 //!
-//! **A reported line.** One more operation is measured against the same
-//! bound and reported, but never fails the check, until the index that
-//! earns the claim turns its line held (lakelands#188): one hybrid search
-//! per size, k = 10, for a fixed text through the suite's embedding
-//! backend. Every record holds a vector, so the vector side ranks the
-//! whole field: the engines search it by brute force.
+//! **Reported lines.** Two more operations are measured against the same
+//! bound and reported, but never fail the check. One hybrid search per
+//! size, k = 10, for a fixed text through the suite's embedding backend,
+//! until the index that earns the claim turns its line held
+//! (lakelands#188): every record holds a vector, so the vector side ranks
+//! the whole field, and the engines search it by brute force. And the
+//! same first pages ordered by a field, before the setting asks for its
+//! index: a page then sorts the type, which is that order's stated
+//! ceiling (lakelands#193).
 //!
 //! **What a green run does not show.** Two limits of the measurement:
 //!
@@ -98,6 +103,7 @@ use lakelands_api::ontology::{
     Authority, Cardinality, EmbedDecl, FieldDecl, FieldType, RelationDecl, StorageKind, TypeDecl,
 };
 use lakelands_api::query::{Depth, Pattern, QueryResult, Search, SearchMode, Step, Walk};
+use lakelands_api::read::{Direction, Order, OrderBy};
 use lakelands_api::seam::{FeedFilter, Seams};
 use lakelands_api::{
     Find, Found, LakeStore, Position, Principal, ReadAt, RecordKey, SourceId, SourceRecord,
@@ -793,6 +799,120 @@ impl Size<'_> {
         Ok(())
     }
 
+    /// Walk the first pages of `reading` ordered by its `note`, a text field
+    /// every record holds with its own value, first as a lake without an
+    /// order index sorts them (reported: a page holds the type,
+    /// lakelands#193), then after the setting `sort_index.reading` asks for
+    /// the index on `note` (held: a page holds its rows, lakelands#137);
+    /// then retire the setting.
+    async fn sorted_walks(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+        self.sorted_walk(
+            store,
+            records,
+            "find-sorted-fallback",
+            Claim::Reported("lakelands#193"),
+        )
+        .await?;
+        doors(store)
+            .upsert(
+                &self.own,
+                &TypeName::from(lakelands_api::seam::SETTING_TYPE),
+                &RecordKey::from("sort_index.reading"),
+                [
+                    ("key".into(), json!("sort_index.reading")),
+                    ("value".into(), json!(["note"])),
+                ]
+                .into(),
+                lakelands_api::WriteOpts::default(),
+            )
+            .await
+            .must("asking for the order index on `note`")?;
+        self.sorted_walk(store, records, "find-sorted", Claim::Held)
+            .await?;
+        // Retired, so the next size's first walk sorts again.
+        doors(store)
+            .retire(
+                &self.own,
+                &TypeName::from(lakelands_api::seam::SETTING_TYPE),
+                &RecordKey::from("sort_index.reading"),
+                lakelands_api::WriteOpts::default(),
+            )
+            .await
+            .must("retiring the order index on `note`")?;
+        Ok(())
+    }
+
+    /// Walk the first pages of `reading` ordered by its `note`, a page of
+    /// `max_limit` at a time with the cursor, measuring each page on its
+    /// own, as `phase`.
+    async fn sorted_walk(
+        &mut self,
+        store: &dyn LakeStore,
+        records: u64,
+        phase: &'static str,
+        claim: Claim,
+    ) -> Result<(), Failure> {
+        const PAGES: u64 = 5;
+        let cat = doors(store);
+        let head = store.head().await.must("reading the head")?;
+        let limit = limits().max_limit;
+        let mut find = Find {
+            limit: Some(limit),
+            order_by: vec![Order {
+                field: "note".into(),
+                by: OrderBy::Value,
+                dir: Direction::Asc,
+            }],
+            ..Find::default()
+        };
+        let mut previous: Option<String> = None;
+        let mut worst: Option<Heap> = None;
+        let started = Instant::now();
+        for page in 1..=PAGES {
+            let m = Measure::start(&self.given.meter, false);
+            let reply = cat
+                .find(&self.own, &TypeName::from(TY), find.clone())
+                .await
+                .must(&format!("finding page {page} of `reading` by `note`"))?;
+            let (heap, _) = m.stop();
+            if let Some(h) = heap
+                && worst.is_none_or(|w| h.held() > w.held())
+            {
+                worst = Some(h);
+            }
+            let Found::Records { rows, next_cursor } = reply.data else {
+                return Err(Failure::new(
+                    "finding `reading` records without an aggregate answered groups",
+                ));
+            };
+            for r in &rows {
+                let note = r
+                    .fields
+                    .get("note")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned);
+                ensure!(
+                    previous <= note,
+                    "walking `reading` by `note` answered {note:?} after {previous:?}"
+                );
+                previous = note;
+            }
+            match next_cursor {
+                Some(c) => find.cursor = Some(c),
+                None => break,
+            }
+        }
+        self.row(
+            phase,
+            claim,
+            records,
+            head.0 + 1,
+            format!("{PAGES} pages of at most {limit} by `note`; the largest page"),
+            (worst, started.elapsed()),
+        );
+        Ok(())
+    }
+
     /// Link every record delivered from `from` to `size` to the two it
     /// [`follows`], through a source; not measured.
     async fn link(&mut self, store: &dyn LakeStore, from: u64, size: u64) -> Result<(), Failure> {
@@ -1047,6 +1167,7 @@ async fn a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_doe
         let dir = given.scratch.join(format!("export-{records}"));
         size.export(store.as_ref(), records, &log, &dir).await?;
         size.find_walk(store.as_ref(), records).await?;
+        size.sorted_walks(store.as_ref(), records).await?;
         size.search(store.as_ref(), records).await?;
         size.traverse(store.as_ref(), records).await?;
         size.rebuild(store.as_ref(), records).await?;

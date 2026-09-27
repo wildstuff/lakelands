@@ -230,6 +230,82 @@ pub fn setting_type() -> TypeDecl {
     }
 }
 
+/// The key prefix of the setting that asks for a type's order index: the
+/// setting `sort_index.<type>`, whose value is a JSON array of the type's
+/// field names (`docs/decisions/041-a-sorted-page-reads-its-page.md`).
+pub const SORT_INDEX_SETTING: &str = "sort_index.";
+
+/// Whether an order index can keep a field of this kind: the scalar
+/// kinds. JSON values, vectors, geometries and bytes are ordered by
+/// sorting.
+pub fn sortable(kind: &crate::ontology::StorageKind) -> bool {
+    use crate::ontology::StorageKind as K;
+    matches!(
+        kind,
+        K::Text | K::Number | K::Decimal | K::Boolean | K::DateTime | K::Reference
+    )
+}
+
+/// Check a write of the setting `key` that leaves `value` (`None` or
+/// `null` asks for no index): a `sort_index.<type>` setting must name a
+/// declared type (`decl`, its declaration at the head) and hold an array
+/// of the names of fields it declares with a [`sortable`] kind. A refusal
+/// names the field it is about (the named field, else `key` or `value`)
+/// and why. Any other setting passes.
+pub fn check_sort_index(
+    key: &str,
+    value: Option<&Value>,
+    decl: Option<&TypeDecl>,
+) -> std::result::Result<(), (crate::id::FieldName, String)> {
+    let Some(ty) = key.strip_prefix(SORT_INDEX_SETTING) else {
+        return Ok(());
+    };
+    let Some(decl) = decl.filter(|d| d.view.is_none()) else {
+        return Err((
+            "key".into(),
+            format!("`{key}` asks for an order index of `{ty}`, which is no declared stored type"),
+        ));
+    };
+    let names = match value {
+        None | Some(Value::Null) => return Ok(()),
+        Some(Value::Array(names)) => names,
+        Some(_) => {
+            return Err((
+                "value".into(),
+                format!("`{key}` holds an array of field names of `{ty}`, or null for no index"),
+            ));
+        }
+    };
+    for name in names {
+        let Some(name) = name.as_str() else {
+            return Err((
+                "value".into(),
+                format!("`{key}` holds field names, and {name} is not one"),
+            ));
+        };
+        match decl.fields.iter().find(|f| f.name.as_str() == name) {
+            None => {
+                return Err((
+                    name.into(),
+                    format!("`{key}` names `{name}`, which `{ty}` does not declare"),
+                ));
+            }
+            Some(f) if !sortable(&f.ty.kind) => {
+                return Err((
+                    name.into(),
+                    format!(
+                        "`{key}` names `{name}`, of kind {}; an order index keeps text, \
+                         number, decimal, boolean, date-time and reference fields",
+                        serde_json::to_value(f.ty.kind).unwrap_or_default()
+                    ),
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
 /// The system type whose records are a lake's aging rules
 /// (`docs/decisions/036-aging-runs-by-date-once.md`).
 pub const AGING_RULE_TYPE: &str = "sys.aging_rule";

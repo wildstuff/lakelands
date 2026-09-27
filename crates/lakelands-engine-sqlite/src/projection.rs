@@ -23,11 +23,14 @@
 //! position folded through in the same transaction. A crash or a rollback
 //! leaves the projection at a whole append.
 
+use std::collections::BTreeSet;
+
 use lakelands_api::engine::Declared;
 use lakelands_api::error::Result;
-use lakelands_api::id::{Position, RecordKey, TypeName};
+use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::record::StoredRecord;
+use lakelands_api::seam::{SETTING_TYPE, SORT_INDEX_SETTING};
 use lakelands_api::write::Declaration;
 use lakelands_core::engines;
 use rusqlite::{Connection, OptionalExtension, ToSql, params};
@@ -82,6 +85,12 @@ CREATE TABLE IF NOT EXISTS edges (
 );
 CREATE INDEX IF NOT EXISTS edges_src ON edges (src_ty, src_key);
 CREATE INDEX IF NOT EXISTS edges_dst ON edges (dst_ty, dst_key);
+CREATE TABLE IF NOT EXISTS sort_index (
+    ty TEXT NOT NULL, field TEXT NOT NULL, key TEXT NOT NULL, sort_key BLOB NOT NULL,
+    PRIMARY KEY (ty, key, field)
+);
+CREATE INDEX IF NOT EXISTS sort_index_asc ON sort_index (ty, field, sort_key, key);
+CREATE INDEX IF NOT EXISTS sort_index_desc ON sort_index (ty, field, sort_key DESC, key);
 CREATE TABLE IF NOT EXISTS search_rows (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ty TEXT NOT NULL, key TEXT NOT NULL,
@@ -98,7 +107,7 @@ CREATE TABLE IF NOT EXISTS vectors (
 ";
 
 /// Every table the projection holds, cleared by a rebuild.
-pub(crate) const TABLES: [&str; 12] = [
+pub(crate) const TABLES: [&str; 13] = [
     "meta",
     "declarations",
     "records",
@@ -108,6 +117,7 @@ pub(crate) const TABLES: [&str; 12] = [
     "applied",
     "text_index",
     "edges",
+    "sort_index",
     "search_rows",
     "full_text",
     "vectors",
@@ -230,6 +240,171 @@ pub(crate) fn folded(conn: &Connection) -> Result<Option<Position>> {
         .map_err(sql)
 }
 
+/// The meta row marking the position `ty`'s order index was last kept
+/// through.
+fn sorted_mark(ty: &TypeName) -> String {
+    format!("sorted.{ty}")
+}
+
+/// The position `ty`'s order index was last kept through, if the lake
+/// keeps one. It describes the head only when it is the position folded
+/// through: a writer that does not keep the index leaves it behind.
+pub(crate) fn sorted(conn: &Connection, ty: &TypeName) -> Result<Option<Position>> {
+    conn.prepare_cached("SELECT v FROM meta WHERE k = ?1")
+        .and_then(|mut s| {
+            s.query_row([sorted_mark(ty)], |r| r.get::<_, i64>(0))
+                .optional()
+        })
+        .map(|v| v.map(|v| Position(v as u64)))
+        .map_err(sql)
+}
+
+/// The fields of `ty` whose order index the lake keeps: those its
+/// `sort_index.<type>` setting at the head names that `decl` declares
+/// with a kind the index keeps.
+pub(crate) fn sorted_fields(
+    conn: &Connection,
+    ty: &TypeName,
+    decl: Option<&TypeDecl>,
+) -> Result<Vec<FieldName>> {
+    let Some(decl) = decl else {
+        return Ok(Vec::new());
+    };
+    let setting = head_record(
+        conn,
+        &TypeName::from(SETTING_TYPE),
+        &RecordKey::from(engines::sort_index_key(ty)),
+    )?;
+    Ok(engines::sorted_fields(
+        decl,
+        setting.as_ref().and_then(engines::setting_value),
+    ))
+}
+
+/// Rewrite `ty`'s order index from its head records, under its setting and
+/// declaration at the head, and mark it kept through `through`; with no
+/// field to keep, drop its rows and its mark. The fold does this when it
+/// puts the setting's head state, and a writer's open when the mark is
+/// behind.
+pub(crate) fn rebuild_sorted(conn: &Connection, ty: &TypeName, through: Position) -> Result<()> {
+    conn.prepare_cached("DELETE FROM sort_index WHERE ty = ?1")
+        .and_then(|mut s| s.execute([ty.as_str()]))
+        .map_err(sql)?;
+    let decl = type_at(conn, ty, None)?;
+    let fields = sorted_fields(conn, ty, decl.as_ref())?;
+    if fields.is_empty() {
+        conn.prepare_cached("DELETE FROM meta WHERE k = ?1")
+            .and_then(|mut s| s.execute([sorted_mark(ty)]))
+            .map_err(sql)?;
+        return Ok(());
+    }
+    // A page of the type at a time, so the pass holds a page, not the type.
+    let mut after = String::new();
+    loop {
+        let page: Vec<String> = conn
+            .prepare_cached(
+                "SELECT state FROM records WHERE ty = ?1 AND until IS NULL AND key > ?2 \
+                 ORDER BY key LIMIT 1024",
+            )
+            .and_then(|mut s| {
+                s.query_map(params![ty.as_str(), after], |r| r.get(0))?
+                    .collect()
+            })
+            .map_err(sql)?;
+        for state in &page {
+            let r = decode_record(state)?;
+            for (field, sort_key) in engines::order_rows(&fields, &r) {
+                conn.prepare_cached(
+                    "INSERT INTO sort_index (ty, field, key, sort_key) VALUES (?1, ?2, ?3, ?4)",
+                )
+                .and_then(|mut s| {
+                    s.execute(params![
+                        ty.as_str(),
+                        field.as_str(),
+                        r.key.as_str(),
+                        sort_key
+                    ])
+                })
+                .map_err(sql)?;
+            }
+            after = r.key.to_string();
+        }
+        if page.len() < 1024 {
+            break;
+        }
+    }
+    conn.prepare_cached(
+        "INSERT INTO meta (k, v) VALUES (?1, ?2) ON CONFLICT (k) DO UPDATE SET v = ?2",
+    )
+    .and_then(|mut s| s.execute(params![sorted_mark(ty), through.0 as i64]))
+    .map(|_| ())
+    .map_err(sql)
+}
+
+/// At a writer's open: rebuild, in one transaction, every order index
+/// that does not describe the head, because a writer that does not keep
+/// it (a binary before it) folded past its mark or wrote its setting, and
+/// drop the index of a type whose setting such a writer removed.
+pub(crate) fn catch_up_sorted(conn: &Connection) -> Result<()> {
+    let Some(folded) = folded(conn)? else {
+        return Ok(());
+    };
+    let marks: Vec<(String, i64)> = conn
+        .prepare("SELECT substr(k, 8), v FROM meta WHERE k LIKE 'sorted.%'")
+        .and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
+        .map_err(sql)?;
+    let asked: Vec<String> = conn
+        .prepare(
+            "SELECT substr(key, ?1) FROM records \
+             WHERE ty = ?2 AND substr(key, 1, ?1 - 1) = ?3 AND until IS NULL",
+        )
+        .and_then(|mut s| {
+            s.query_map(
+                params![
+                    SORT_INDEX_SETTING.len() as i64 + 1,
+                    SETTING_TYPE,
+                    SORT_INDEX_SETTING
+                ],
+                |r| r.get(0),
+            )?
+            .collect()
+        })
+        .map_err(sql)?;
+    let behind: BTreeSet<String> = asked
+        .into_iter()
+        .filter(|ty| !marks.iter().any(|(t, v)| t == ty && *v as u64 == folded.0))
+        .chain(
+            marks
+                .iter()
+                .filter(|(_, v)| *v as u64 != folded.0)
+                .map(|(t, _)| t.clone()),
+        )
+        .collect();
+    if behind.is_empty() {
+        return Ok(());
+    }
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(sql)?;
+    let rebuilt = behind
+        .iter()
+        .try_for_each(|ty| rebuild_sorted(conn, &TypeName::from(ty.as_str()), folded));
+    match rebuilt {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(sql),
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+/// Record that every order index the lake keeps is kept through
+/// `through`: the fold kept each with the head.
+pub(crate) fn mark_sorted(conn: &Connection, through: Position) -> Result<()> {
+    conn.prepare_cached("UPDATE meta SET v = ?1 WHERE k LIKE 'sorted.%'")
+        .and_then(|mut s| s.execute(params![through.0 as i64]))
+        .map(|_| ())
+        .map_err(sql)
+}
+
 pub(crate) fn set_folded(conn: &Connection, through: Position) -> Result<()> {
     conn.execute(
         "INSERT INTO meta (k, v) VALUES ('folded', ?1) ON CONFLICT (k) DO UPDATE SET v = ?1",
@@ -320,6 +495,7 @@ fn is_head(conn: &Connection, ty: &TypeName, key: &RecordKey, position: Position
 pub(crate) fn index_record(
     conn: &Connection,
     decl: Option<&TypeDecl>,
+    sorted: &[FieldName],
     r: &StoredRecord,
 ) -> Result<()> {
     let (ty, key) = (r.ty.as_str(), r.key.as_str());
@@ -329,6 +505,13 @@ pub(crate) fn index_record(
     conn.prepare_cached("DELETE FROM edges WHERE src_ty = ?1 AND src_key = ?2")
         .and_then(|mut s| s.execute(params![ty, key]))
         .map_err(sql)?;
+    // Only a type the lake keeps an order index for has rows in it: the
+    // setting's rebuild and a redeclaration drop a type's rows whole.
+    if !sorted.is_empty() {
+        conn.prepare_cached("DELETE FROM sort_index WHERE ty = ?1 AND key = ?2")
+            .and_then(|mut s| s.execute(params![ty, key]))
+            .map_err(sql)?;
+    }
     for (field, value) in &r.fields {
         if let Some(text) = value.as_str() {
             conn.prepare_cached(
@@ -352,6 +535,13 @@ pub(crate) fn index_record(
     let Some(decl) = decl else {
         return Ok(());
     };
+    for (field, sort_key) in engines::order_rows(sorted, r) {
+        conn.prepare_cached(
+            "INSERT INTO sort_index (ty, field, key, sort_key) VALUES (?1, ?2, ?3, ?4)",
+        )
+        .and_then(|mut s| s.execute(params![ty, field.as_str(), key, sort_key]))
+        .map_err(sql)?;
+    }
     for e in engines::links_of(decl, r, None) {
         conn.prepare_cached(
             "INSERT INTO edges (src_ty, src_key, relation, dst_ty, dst_key) \
@@ -399,7 +589,13 @@ pub(crate) fn put_record(conn: &Connection, r: &StoredRecord) -> Result<()> {
     RECORDS.put(conn, &[&r.ty.as_str(), &r.key.as_str()], r.position, &state)?;
     if is_head(conn, &r.ty, &r.key, r.position)? {
         let decl = type_at(conn, &r.ty, None)?;
-        index_record(conn, decl.as_ref(), r)?;
+        let sorted = sorted_fields(conn, &r.ty, decl.as_ref())?;
+        index_record(conn, decl.as_ref(), &sorted, r)?;
+        // The setting's write rebuilds the index it asks for, so the index
+        // describes the head from the next read on.
+        if let Some(ty) = engines::sort_index_type(r) {
+            rebuild_sorted(conn, &ty, r.position)?;
+        }
     }
     Ok(())
 }
@@ -413,8 +609,14 @@ pub(crate) fn put_declaration(conn: &Connection, d: &Declared) -> Result<()> {
     if let Declaration::Type(t) = &d.declaration {
         let head = type_at(conn, &t.name, None)?;
         if head.as_ref() == Some(t) {
+            // The rows go whole: the declaration may have dropped a field
+            // the index kept.
+            conn.prepare_cached("DELETE FROM sort_index WHERE ty = ?1")
+                .and_then(|mut s| s.execute([t.name.as_str()]))
+                .map_err(sql)?;
+            let sorted = sorted_fields(conn, &t.name, head.as_ref())?;
             for r in head_records(conn, &t.name)? {
-                index_record(conn, head.as_ref(), &r)?;
+                index_record(conn, head.as_ref(), &sorted, &r)?;
             }
         }
     }

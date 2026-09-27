@@ -15,11 +15,12 @@ use lakelands_api::id::{
     Cursor, FieldName, LakeId, Position, ProposalId, RecordKey, RelationName, SourceId, TypeName,
     VerbName, Version,
 };
-use lakelands_api::ontology::{Authority, FieldDecl, Risk, VerbDecl, VerbEffect};
+use lakelands_api::ontology::{Authority, FieldDecl, Risk, TypeDecl, VerbDecl, VerbEffect};
 use lakelands_api::principal::{Access, Principal, PrincipalKind, WriteContext};
 use lakelands_api::query::{Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Walk};
 use lakelands_api::read::{After, Direction, Find, Found, Get, Order, OrderBy, ReadAt, Reply};
 use lakelands_api::record::{Origin, Patch, Record, SourceRecord, StoredRecord, Value};
+use lakelands_api::seam::{SETTING_TYPE, SORT_INDEX_SETTING, sortable};
 use lakelands_api::write::{
     Committed, Declaration, FieldConversion, Migration, MigrationReport, Outcome, Proposal,
     ProposalFilter, ProposalState, ProposedWrite, WriteOpts,
@@ -696,6 +697,10 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
             a => Some(FieldDescription::of(f, a)),
         })
         .collect();
+    let sorted = sorted_fields(st, d)
+        .into_iter()
+        .filter(|f| fields.iter().any(|d| d.name == *f))
+        .collect();
     TypeDescription {
         name: d.name.clone(),
         description: d.description.clone(),
@@ -751,6 +756,7 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
         lifecycle: TypeLifecycle {
             version: t.version,
             schema_hash: t.schema_hash.clone(),
+            sorted,
         },
     }
 }
@@ -1149,6 +1155,53 @@ fn check_rule(st: &State, who: &Principal, key: &RecordKey, patch: &Patch) -> Re
     Ok(())
 }
 
+/// Refuse a `sort_index.<type>` setting the write would leave naming what
+/// an order index cannot keep, naming the field at fault.
+fn check_sort_index(st: &State, key: &RecordKey, patch: &Patch) -> Result<()> {
+    let value = match patch.get("value") {
+        Some(v) => Some(v.clone()),
+        None => st
+            .live(&TypeName::from(SETTING_TYPE), key)
+            .and_then(|r| r.fields.get("value").cloned()),
+    };
+    let decl = key
+        .as_str()
+        .strip_prefix(SORT_INDEX_SETTING)
+        .and_then(|t| st.types.get(&TypeName::from(t)))
+        .map(|t| &t.decl);
+    lakelands_api::seam::check_sort_index(key.as_str(), value.as_ref(), decl)
+        .map_err(|(field, message)| on(&field, Refusal::Invalid { message }))
+}
+
+/// The fields of `t` the lake keeps an order index for: those its
+/// `sort_index.<type>` setting names that it declares with a kind the
+/// index keeps.
+fn sorted_fields(st: &State, t: &TypeDecl) -> Vec<FieldName> {
+    let key = RecordKey::from(format!("{SORT_INDEX_SETTING}{}", t.name));
+    let Some(setting) = st.live(&TypeName::from(SETTING_TYPE), &key) else {
+        return Vec::new();
+    };
+    let mut out: Vec<FieldName> = Vec::new();
+    if t.view.is_some() {
+        return out;
+    }
+    for name in setting
+        .fields
+        .get("value")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if !out.iter().any(|f| f.as_str() == name)
+            && field(t, &FieldName::from(name)).is_some_and(|f| sortable(&f.ty.kind))
+        {
+            out.push(FieldName::from(name));
+        }
+    }
+    out
+}
+
 fn check_version(st: &State, ty: &TypeName, key: &RecordKey, opts: &WriteOpts) -> Result<Version> {
     let actual = st.version(ty, key);
     match opts.expected_version {
@@ -1182,6 +1235,9 @@ fn plan_upsert(
     // `upsert`, a verb's write and an accepted proposal alike.
     if ty.as_str() == crate::aging::RULE_TYPE {
         check_rule(st, who, key, &patch)?;
+    }
+    if ty.as_str() == SETTING_TYPE {
+        check_sort_index(st, key, &patch)?;
     }
     let t = check_patch(st, who, ty, &patch, Origin::Authored)?;
     let actual = check_version(st, ty, key, opts)?;
