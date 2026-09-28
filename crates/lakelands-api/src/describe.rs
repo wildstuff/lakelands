@@ -251,6 +251,12 @@ pub struct TypeLifecycle {
     /// (`docs/decisions/041-a-sorted-page-reads-its-page.md`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sorted: Vec<FieldName>,
+    /// The vector fields the lake asks an index for, by its
+    /// `vector_index.<type>` setting: a search over one of them answers
+    /// the index's set and says `ranked_by: index`; on an engine that keeps
+    /// no such index that set is the exact ranking.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub indexed: Vec<FieldName>,
 }
 
 /// One verb, as a caller sees it.

@@ -48,6 +48,7 @@ mod settings;
 mod streaming;
 mod value_types;
 mod values;
+mod vector_index;
 mod versions;
 mod views;
 mod vocabulary;
@@ -186,6 +187,7 @@ pub const ALL: &[Check] = &[
     search::WITHHELD_NEVER_HITS,
     search::VECTOR_LEAVES_THE_NEIGHBOURS,
     search::VECTOR_TOP_K,
+    vector_index::VECTOR_INDEX_RECALL,
     search::HYBRID_WITHOUT_BACKEND,
     search::HYBRID_THROUGH_BACKEND,
     embeddings::EMBED_WRITE,

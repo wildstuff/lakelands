@@ -459,13 +459,32 @@ had held 1.6 → 6.4 MiB on the memory engine.
 An index that answers faster than a scan picks candidates, and the one
 cosine ranks them, so an answer never depends on its arithmetic.
 
-**Exactness.** Every index in `0.1.0` is exact: `nearest` answers the true
-top `k` by cosine, and the checks require it. An approximate index (HNSW
-in PostgreSQL, after `0.1.0`) will say so through an additive method
-whose default answer is "exact"; it answers its candidate set, the store
-re-ranks those candidates by the same cosine, and the search's
-`ranked_by` says the ranking was approximate. That door needs no change
-to the rest of the contract.
+**An index asked for** (`docs/decisions/043-an-index-asked-for-answers-its-set.md`).
+The `sys.setting` `vector_index.<type>` names vector fields of a type. A
+search over one of them answers the index's set, ranked by the one
+cosine, ties by key, and says `ranked_by: index` (or `hybrid (index)`);
+`describe_type` names them as `indexed`. On PostgreSQL the index is
+pgvector's HNSW (`m = 16`, `ef_construction = 64`, `ef_search = max(k,
+200)` up to 1 000, iterative scans past it) over each vector's unit
+vector, used while its mark equals `folded`; SQLite and memory keep none
+and answer the exact ranking. Every other field answers the exact
+ranking on every engine. The suite holds the index's recall against the
+reference at each engine's floor (suite:
+`an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_floor`):
+0.95 at k = 1 and 10 and 0.98 at k = 100 on PostgreSQL, 1 on SQLite and
+memory. On its corpus (4 000 vectors of 32 dimensions around 40 centres,
+50 queries near a centre or between two) PostgreSQL measured 0.98 at
+k = 1, 0.97 to 0.98 at k = 10 (an HNSW build draws its own levels, so
+two builds differ a little) and 1.00 at k = 100, at the head and at an earlier position,
+and at least 0.996 with a filter. With `ef_search = max(k, 64)` it
+measured 0.90 at k = 10 (0.86 at an earlier position): the queries
+between two centres are where a narrow search stays in one cluster. Recall
+is measured on this corpus; a lake's own vectors may be easier or harder. The
+streaming check's long run holds its `search-indexed` line (the same
+hybrid search with the index asked for on `vec`): on PostgreSQL with
+pgvector it took 0.03 s at 22 500 and at 90 000 vectors, against 0.13
+and 0.26 s for the scan, holding 0.1 MiB at both; on SQLite and memory,
+which scan, it measured as the scan (12 cores, load 24 to 38).
 
 ### Where each promise is checked
 

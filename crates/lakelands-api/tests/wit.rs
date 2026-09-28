@@ -483,6 +483,7 @@ fn type_description() -> TypeDescription {
             version: 1,
             schema_hash: "h".into(),
             sorted: vec!["amount".into()],
+            indexed: vec!["embedding".into()],
         },
     }
 }

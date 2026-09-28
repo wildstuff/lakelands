@@ -22,7 +22,9 @@ use lakelands_api::principal::{Access, Principal, PrincipalKind, WriteContext};
 use lakelands_api::query::{Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Walk};
 use lakelands_api::read::{After, Direction, Find, Found, Get, Order, OrderBy, ReadAt, Reply};
 use lakelands_api::record::{Origin, Patch, Record, SourceRecord, StoredRecord, Value};
-use lakelands_api::seam::{SETTING_TYPE, SORT_INDEX_SETTING, sortable};
+use lakelands_api::seam::{
+    SETTING_TYPE, SORT_INDEX_SETTING, VECTOR_INDEX_SETTING, indexable, sortable,
+};
 use lakelands_api::write::{
     Committed, Declaration, FieldConversion, FunctionDecl, Migration, MigrationReport, Outcome,
     Proposal, ProposalFilter, ProposalState, ProposedWrite, WriteOpts,
@@ -726,10 +728,14 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
             a => Some(FieldDescription::of(f, a)),
         })
         .collect();
-    let sorted = sorted_fields(st, d)
-        .into_iter()
-        .filter(|f| fields.iter().any(|d| d.name == *f))
-        .collect();
+    let visible = |names: Vec<FieldName>| -> Vec<FieldName> {
+        names
+            .into_iter()
+            .filter(|f| fields.iter().any(|d| d.name == *f))
+            .collect()
+    };
+    let sorted = visible(index_fields(st, d, SORT_INDEX_SETTING, sortable));
+    let indexed = visible(index_fields(st, d, VECTOR_INDEX_SETTING, indexable));
     TypeDescription {
         name: d.name.clone(),
         description: d.description.clone(),
@@ -789,6 +795,7 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
             version: t.version,
             schema_hash: t.schema_hash.clone(),
             sorted,
+            indexed,
         },
     }
 }
@@ -1297,29 +1304,33 @@ fn check_rule(st: &State, who: &Principal, key: &RecordKey, patch: &Patch) -> Re
     Ok(())
 }
 
-/// Refuse a `sort_index.<type>` setting the write would leave naming what
-/// an order index cannot keep, naming the field at fault.
-fn check_sort_index(st: &State, key: &RecordKey, patch: &Patch) -> Result<()> {
+/// Refuse a `sort_index.<type>` or `vector_index.<type>` setting the write
+/// would leave naming what that index cannot keep, naming the field at
+/// fault.
+fn check_index_setting(st: &State, key: &RecordKey, patch: &Patch) -> Result<()> {
     let value = match patch.get("value") {
         Some(v) => Some(v.clone()),
         None => st
             .live(&TypeName::from(SETTING_TYPE), key)
             .and_then(|r| r.fields.get("value").cloned()),
     };
-    let decl = key
-        .as_str()
-        .strip_prefix(SORT_INDEX_SETTING)
+    let decl = lakelands_api::seam::index_setting_type(key.as_str())
         .and_then(|t| st.types.get(&TypeName::from(t)))
         .map(|t| &t.decl);
-    lakelands_api::seam::check_sort_index(key.as_str(), value.as_ref(), decl)
+    lakelands_api::seam::check_index_setting(key.as_str(), value.as_ref(), decl)
         .map_err(|(field, message)| on(&field, Refusal::Invalid { message }))
 }
 
-/// The fields of `t` the lake keeps an order index for: those its
-/// `sort_index.<type>` setting names that it declares with a kind the
-/// index keeps.
-fn sorted_fields(st: &State, t: &TypeDecl) -> Vec<FieldName> {
-    let key = RecordKey::from(format!("{SORT_INDEX_SETTING}{}", t.name));
+/// The fields of `t` the lake keeps an index for: those its
+/// `<prefix><type>` setting (`sort_index.` or `vector_index.`) names that
+/// it declares with a kind that index keeps.
+fn index_fields(
+    st: &State,
+    t: &TypeDecl,
+    prefix: &str,
+    keeps: fn(&lakelands_api::ontology::StorageKind) -> bool,
+) -> Vec<FieldName> {
+    let key = RecordKey::from(format!("{prefix}{}", t.name));
     let Some(setting) = st.live(&TypeName::from(SETTING_TYPE), &key) else {
         return Vec::new();
     };
@@ -1336,7 +1347,7 @@ fn sorted_fields(st: &State, t: &TypeDecl) -> Vec<FieldName> {
         .filter_map(Value::as_str)
     {
         if !out.iter().any(|f| f.as_str() == name)
-            && field(t, &FieldName::from(name)).is_some_and(|f| sortable(&f.ty.kind))
+            && field(t, &FieldName::from(name)).is_some_and(|f| keeps(&f.ty.kind))
         {
             out.push(FieldName::from(name));
         }
@@ -1379,7 +1390,7 @@ fn plan_upsert(
         check_rule(st, who, key, &patch)?;
     }
     if ty.as_str() == SETTING_TYPE {
-        check_sort_index(st, key, &patch)?;
+        check_index_setting(st, key, &patch)?;
     }
     let t = check_patch(st, who, ty, &patch, Origin::Authored)?;
     let actual = check_version(st, ty, key, opts)?;
@@ -2216,6 +2227,29 @@ impl Catalog for MockCatalog {
             .ok_or_else(|| no_type(&search.ty))?;
         let e = filter(&st, who, t, search.filter.as_ref())?;
         let rows = candidates(&st, who, t, search.at, e.as_ref())?;
+        // A field the lake asks an index for at the head answers the
+        // index's set, and says so; the mock's set is the exact ranking.
+        let indexed = match &search.mode {
+            SearchMode::Vector { field, .. }
+            | SearchMode::Hybrid {
+                field,
+                vector: Some(_),
+                ..
+            } => {
+                let later;
+                let head = match pinned {
+                    Some(_) => {
+                        later = self.state_at(&self.log(), None)?.1;
+                        &later
+                    }
+                    None => &st,
+                };
+                head.types.get(&search.ty).is_some_and(|h| {
+                    index_fields(head, &h.decl, VECTOR_INDEX_SETTING, indexable).contains(field)
+                })
+            }
+            SearchMode::Lexical { .. } | SearchMode::Hybrid { .. } => false,
+        };
         let (scored, ranked_by): (Vec<(f64, &StoredRecord)>, &str) = match &search.mode {
             SearchMode::Vector { field: f, vector }
             | SearchMode::Hybrid {
@@ -2236,7 +2270,12 @@ impl Catalog for MockCatalog {
                     .into_iter()
                     .filter_map(|r| Some((cos(r.fields.get(f)?)?, r)))
                     .collect();
-                (s, "vector")
+                let by = match (&search.mode, indexed) {
+                    (SearchMode::Vector { .. }, true) => "index",
+                    (SearchMode::Hybrid { .. }, true) => "hybrid (index)",
+                    _ => "vector",
+                };
+                (s, by)
             }
             SearchMode::Lexical { text } | SearchMode::Hybrid { text, .. } => {
                 let words: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();

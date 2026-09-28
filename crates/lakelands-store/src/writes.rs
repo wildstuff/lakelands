@@ -43,7 +43,6 @@ use lakelands_api::ontology::{
 };
 use lakelands_api::principal::{Grants, WriteContext};
 use lakelands_api::record::{Origin, StoredRecord};
-use lakelands_api::seam::SORT_INDEX_SETTING;
 use lakelands_api::write::{
     Declaration, Migration, MigrationReport, Misfit, Outcome, ProposalState, ProposedWrite,
     ValueTypeReport, ValueTypeUse, WriteOpts,
@@ -642,11 +641,9 @@ impl Call<'_> {
             crate::aging::check_authority(who, &w.ontology, &rule)?;
         }
         if ty.as_str() == SETTING_TYPE {
-            let decl = key
-                .as_str()
-                .strip_prefix(SORT_INDEX_SETTING)
+            let decl = lakelands_api::seam::index_setting_type(key.as_str())
                 .and_then(|t| w.ontology.ty(&TypeName::from(t)).ok());
-            lakelands_api::seam::check_sort_index(key.as_str(), after.fields.get("value"), decl)
+            lakelands_api::seam::check_index_setting(key.as_str(), after.fields.get("value"), decl)
                 .map_err(|(field, message)| Error::Refused {
                     field: Some(field),
                     reason: Refusal::Invalid { message },

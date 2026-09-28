@@ -34,13 +34,13 @@ of the contract rather than an engine's choice: every engine scores by
 the cosine of the angle between the query and a stored vector, a vector
 of zeros scores 0, and equal scores are ordered by key
 (`docs/seams.md`, `VectorIndex`). The answer is best first by that
-score and then by key. Every index in `0.1.0` is exact. An approximate
-index, when one comes, says so; the store re-ranks its candidates by the
-same cosine and the answer says its ranking was approximate, so a caller
-always knows which kind of answer it holds. Every engine ranks exactly, by one
-bounded selection (`lakelands_core::engines::TopK`): a search keeps its
-best `k` while it scans the field, never the field, and answers the
-reference ranking's keys, order and scores to the bit (lakelands#197).
+score and then by key. Every engine ranks exactly, by one bounded
+selection (`lakelands_core::engines::TopK`): a search keeps its best `k`
+while it scans the field, never the field, and answers the reference
+ranking's keys, order and scores to the bit (lakelands#197). A field the
+lake asks an index for answers the index's set instead, ranked by the
+same cosine, and says `ranked_by: index`; everything else answers the
+reference (`docs/decisions/043-an-index-asked-for-answers-its-set.md`).
 
 ## Extended: a search at an earlier position ranks by the head
 

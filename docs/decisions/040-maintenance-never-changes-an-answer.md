@@ -73,6 +73,12 @@ feed and the export are compared byte for byte, on every engine.
   compaction would be a later option with its own configuration.
 - **Not `VACUUM FULL`.** It takes an exclusive lock and would lock every
   reader of the lake out while it rewrote.
+- **Not a promise for a pgvector index.** A vector field the lake asks an
+  index for answers the index's set, and PostgreSQL's `VACUUM` repairs
+  pgvector's graph after deletes, so a compact, and autovacuum, may move
+  that set. Its recall against the reference holds through it. This is
+  the one exception, and it covers pgvector-indexed fields only
+  (`docs/decisions/043-an-index-asked-for-answers-its-set.md`).
 - **Not a door.** It is the host's act, beside `rebuild`, `checkpoint`,
   `age` and `purge_source`, with no MCP tool and no REST route. A
   `lakelands-client` answers it as unbound, naming it.

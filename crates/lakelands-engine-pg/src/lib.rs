@@ -44,6 +44,7 @@ mod handle;
 mod lease;
 mod log;
 mod projection;
+mod vector_index;
 mod view;
 
 use std::sync::{Mutex, MutexGuard};

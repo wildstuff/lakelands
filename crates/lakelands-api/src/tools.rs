@@ -1124,6 +1124,7 @@ mod tests {
                 version: 1,
                 schema_hash: "h".into(),
                 sorted: vec![],
+                indexed: vec![],
             },
         }
     }

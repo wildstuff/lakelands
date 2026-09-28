@@ -48,4 +48,6 @@ keeps every engine's pages identical.
 - It is not a promise that relevance scores are identical across engines;
   equal scores are ordered the same way.
 - It does not forbid an engine from using its own indexes, as long as the
-  answer comes out in this order.
+  answer comes out in this order. A vector field the lake asks an index
+  for answers the index's set, still in this order; which records are in
+  it is the index's (`docs/decisions/043-an-index-asked-for-answers-its-set.md`).

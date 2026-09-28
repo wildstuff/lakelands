@@ -41,6 +41,7 @@ use lakelands_api::write::{Declaration, Proposal};
 
 use crate::connect::{self, Db, Target};
 use crate::projection::{self, Buffer, HeadTypes, Names, PROJECTION_TABLES};
+use crate::vector_index::{self, Pgvector};
 use crate::view::PgView;
 use crate::{NAME, invalid, lease, lock, log, unavailable};
 
@@ -74,6 +75,9 @@ pub struct PgLake {
     writing: Option<Writing>,
     held: Mutex<Option<Lease>>,
     transaction: Mutex<Option<Transaction>>,
+    /// pgvector, when the server has it: the vector index a lake asks for
+    /// lives there (`crate::vector_index`).
+    pgvector: Option<Pgvector>,
 }
 
 impl PgLake {
@@ -94,12 +98,29 @@ impl PgLake {
                 let mut projection = connect::connect(&target)?;
                 prepare(&mut projection, &names, &target.schema, &lake, mode)?;
                 projection::catch_up_sorted(&mut projection, &names)?;
-                Some(Writing {
-                    lease: Mutex::new(lease),
-                    projection: Mutex::new(projection),
-                    unanalysed: AtomicU64::new(0),
-                })
+                let found = vector_index::find(&mut projection, true);
+                if let Ok(v) = &found {
+                    vector_index::prepare(&mut projection, &names, v)?;
+                }
+                vector_index::catch_up(
+                    &mut projection,
+                    &names,
+                    found.as_ref().map_err(String::as_str),
+                    lake.as_str(),
+                )?;
+                Some((
+                    Writing {
+                        lease: Mutex::new(lease),
+                        projection: Mutex::new(projection),
+                        unanalysed: AtomicU64::new(0),
+                    },
+                    found.ok(),
+                ))
             }
+        };
+        let (writing, pgvector) = match writing {
+            Some((w, found)) => (Some(w), found),
+            None => (None, vector_index::find(&mut reader, false).ok()),
         };
         check_name(&mut reader, &names, &target.schema, &lake)?;
         Ok(PgLake {
@@ -110,6 +131,7 @@ impl PgLake {
             writing,
             held: Mutex::new(None),
             transaction: Mutex::new(None),
+            pgvector,
         })
     }
 
@@ -416,7 +438,7 @@ impl ProjectionStore for PgLake {
         } = t;
         let put = buffer.records_put() as u64;
         let written = buffer
-            .write(&mut db, &self.names, &mut types)
+            .write(&mut db, &self.names, &mut types, self.pgvector.as_ref())
             .and_then(|()| projection::set_folded(&mut db, &self.names, through));
         if let Err(e) = written {
             let _ = db.batch("ROLLBACK");
@@ -464,12 +486,14 @@ impl ProjectionStore for PgLake {
             ));
         };
         t.latest = t.latest.max(Some(at));
-        projection::put_declaration(
-            &mut lock(&writing.projection),
-            &self.names,
-            &mut t.types,
-            &d,
-        )
+        let mut db = lock(&writing.projection);
+        projection::put_declaration(&mut db, &self.names, &mut t.types, &d)?;
+        // A redeclaration may change a field's dimensions or drop it: the
+        // type's vector indexes are built again under it.
+        if let Declaration::Type(ty) = declaration {
+            vector_index::redeclared(&mut db, &self.names, self.pgvector.as_ref(), &ty.name, at)?;
+        }
+        Ok(())
     }
 
     fn put_record(&self, record: &StoredRecord) -> Result<()> {
@@ -516,8 +540,9 @@ impl ProjectionStore for PgLake {
             .map(|t| format!("DELETE FROM {};", self.names.t(t)))
             .collect();
         db.batch(&format!(
-            "BEGIN; {statements} DELETE FROM {} WHERE k = 'folded'; COMMIT;",
-            self.names.t("meta")
+            "BEGIN; {statements} DELETE FROM {m} WHERE k = 'folded' OR k LIKE 'vindex.%'; \
+             COMMIT;",
+            m = self.names.t("meta")
         ))
     }
 
@@ -568,7 +593,7 @@ fn vector_bytes(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 
-fn vector_of(bytes: &[u8]) -> Vec<f32> {
+pub(crate) fn vector_of(bytes: &[u8]) -> Vec<f32> {
     bytes
         .as_chunks::<4>()
         .0
@@ -590,14 +615,30 @@ fn vector_of(bytes: &[u8]) -> Vec<f32> {
 impl VectorIndex for PgLake {
     fn put(&self, ty: &TypeName, key: &RecordKey, field: &str, vector: &[f32]) -> Result<()> {
         let writing = self.writing()?;
-        lock(&writing.projection).execute(
-            &format!(
-                "INSERT INTO {} (ty, field, key, data) VALUES ($1, $2, $3, $4) \
-                 ON CONFLICT (ty, field, key) DO UPDATE SET data = $4",
-                self.names.t("vectors")
-            ),
-            &[&ty.as_str(), &field, &key.as_str(), &vector_bytes(vector)],
-        )?;
+        let mut db = lock(&writing.projection);
+        match &self.pgvector {
+            // The unit vector goes in with the vector when the lake asks
+            // for the field's index (`crate::vector_index`).
+            Some(v) => db.execute(
+                &vector_index::put_sql(&self.names, v),
+                &[
+                    &ty.as_str(),
+                    &field,
+                    &key.as_str(),
+                    &vector_bytes(vector),
+                    &vector_index::mark(ty, field),
+                    &vector_index::unit_text(vector),
+                ],
+            )?,
+            None => db.execute(
+                &format!(
+                    "INSERT INTO {} (ty, field, key, data) VALUES ($1, $2, $3, $4) \
+                     ON CONFLICT (ty, field, key) DO UPDATE SET data = $4",
+                    self.names.t("vectors")
+                ),
+                &[&ty.as_str(), &field, &key.as_str(), &vector_bytes(vector)],
+            )?,
+        };
         Ok(())
     }
 
@@ -621,7 +662,30 @@ impl VectorIndex for PgLake {
         k: u32,
     ) -> Result<Vec<(RecordKey, f64)>> {
         let mut top = lakelands_core::engines::TopK::new(k);
-        self.reader().query_each(
+        let mut db = self.reader();
+        // A field the lake asks an index for, whose index describes the
+        // head, answers the index's `k` candidates, ranked by the one
+        // cosine (`crate::vector_index`); every other search scans.
+        if let (Some(v), Some(unit)) = (&self.pgvector, vector_index::unit_text(query))
+            && let Some(n) = vector_index::usable(&mut db, &self.names, ty, field)?
+            && n as usize == query.len()
+        {
+            let sql = vector_index::candidates_sql(&self.names, v, ty, field, n);
+            db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED READ ONLY", |db| {
+                db.batch(&vector_index::search_settings(k))?;
+                db.query_each(&sql, &[&unit, &i64::from(k)], |row| {
+                    let key: String = row.get(0);
+                    let v = vector_of(&row.get::<_, Vec<u8>>(1));
+                    top.push(
+                        &RecordKey::from(key),
+                        lakelands_core::engines::cosine(query, &v),
+                    );
+                    Ok(())
+                })
+            })?;
+            return Ok(top.into_ranked());
+        }
+        db.query_each(
             &format!(
                 "SELECT key, data FROM {} WHERE ty = $1 AND field = $2 ORDER BY key COLLATE \"C\"",
                 self.names.t("vectors")

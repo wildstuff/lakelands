@@ -329,7 +329,9 @@ pub struct Hits {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
     /// The mode that actually ranked them (a hybrid search without a
-    /// vector or a backend is lexical, and says so here).
+    /// vector or a backend is lexical, and says so here): `lexical`,
+    /// `vector`, `hybrid`, or `index` and `hybrid (index)` when the vector
+    /// field is one the lake asks an index for, whose set the hits are.
     pub ranked_by: String,
 }
 

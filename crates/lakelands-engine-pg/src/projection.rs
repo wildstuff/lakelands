@@ -448,13 +448,13 @@ pub(crate) fn folded(db: &mut Db, names: &Names) -> Result<Option<Position>> {
         .map(|v| Position(v as u64)))
 }
 
-/// Record the position folded through, and that every order index the
-/// lake keeps (a `sorted.<type>` mark each) is kept through it too, in one
-/// statement.
+/// Record the position folded through, and that every order index and
+/// vector index the lake keeps (a `sorted.<type>` or `vindex.<type>.<field>`
+/// mark each) is kept through it too, in one statement.
 pub(crate) fn set_folded(db: &mut Db, names: &Names, through: Position) -> Result<()> {
     db.execute(
         &format!(
-            "WITH s AS (UPDATE {m} SET n = $1 WHERE k LIKE 'sorted.%') \
+            "WITH s AS (UPDATE {m} SET n = $1 WHERE k LIKE 'sorted.%' OR k LIKE 'vindex.%') \
              INSERT INTO {m} (k, n) VALUES ('folded', $1) ON CONFLICT (k) DO UPDATE SET n = $1",
             m = names.t("meta")
         ),
@@ -856,7 +856,13 @@ impl Buffer {
     /// one, under their types' declarations at the head as `types` reads
     /// them after every declaration the transaction put, and the applied
     /// ids. That leaves what putting them one by one leaves.
-    pub(crate) fn write(self, db: &mut Db, names: &Names, types: &mut HeadTypes) -> Result<()> {
+    pub(crate) fn write(
+        self,
+        db: &mut Db,
+        names: &Names,
+        types: &mut HeadTypes,
+        pgvector: Option<&crate::vector_index::Pgvector>,
+    ) -> Result<()> {
         let records: BTreeMap<(Vec<String>, i64), String> = self
             .records
             .iter()
@@ -885,6 +891,19 @@ impl Buffer {
         for (ty, _) in &settings {
             types.0.remove(ty);
         }
+        // A `vector_index.<type>` setting whose head state the buffer holds
+        // rebuilds its type's vector indexes, after the records are in.
+        let vector_settings: Vec<(TypeName, Position)> = heads
+            .iter()
+            .filter_map(|(ident, _)| {
+                let r = self
+                    .records
+                    .range((ident.clone(), i64::MIN)..=(ident.clone(), i64::MAX))
+                    .next_back()?
+                    .1;
+                Some((engines::vector_index_type(r)?, r.position))
+            })
+            .collect();
         let mut indexed = Vec::with_capacity(heads.len());
         let mut stale = Vec::new();
         for (ident, had) in &heads {
@@ -906,6 +925,9 @@ impl Buffer {
         // describes the head from the next read on.
         for (ty, at) in settings {
             rebuild_sorted(db, names, &ty, at)?;
+        }
+        for (ty, at) in vector_settings {
+            crate::vector_index::rebuild(db, names, pgvector, &ty, at)?;
         }
         if !self.applied.is_empty() {
             let (ids, at): (Vec<&str>, Vec<i64>) = self

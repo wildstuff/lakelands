@@ -321,6 +321,21 @@ pub fn order_key(value: &Value) -> Vec<u8> {
 /// ([`lakelands_api::seam::sortable`]), once each, in the setting's order.
 /// A setting the store would refuse keeps what it can; none keeps none.
 pub fn sorted_fields(decl: &TypeDecl, setting: Option<&Value>) -> Vec<FieldName> {
+    index_fields(decl, setting, lakelands_api::seam::sortable)
+}
+
+/// The vector fields of `decl` a lake asks an index for, by `setting`, the
+/// value of its `vector_index.<type>` setting: those it names that the
+/// type declares as vectors, once each, in the setting's order.
+pub fn indexed_fields(decl: &TypeDecl, setting: Option<&Value>) -> Vec<FieldName> {
+    index_fields(decl, setting, lakelands_api::seam::indexable)
+}
+
+fn index_fields(
+    decl: &TypeDecl,
+    setting: Option<&Value>,
+    keeps: fn(&lakelands_api::ontology::StorageKind) -> bool,
+) -> Vec<FieldName> {
     let mut out: Vec<FieldName> = Vec::new();
     if decl.view.is_some() {
         return out;
@@ -335,7 +350,7 @@ pub fn sorted_fields(decl: &TypeDecl, setting: Option<&Value>) -> Vec<FieldName>
             && decl
                 .fields
                 .iter()
-                .any(|f| f.name.as_str() == name && lakelands_api::seam::sortable(&f.ty.kind))
+                .any(|f| f.name.as_str() == name && keeps(&f.ty.kind))
         {
             out.push(FieldName::from(name));
         }
@@ -343,15 +358,21 @@ pub fn sorted_fields(decl: &TypeDecl, setting: Option<&Value>) -> Vec<FieldName>
     out
 }
 
-/// The type a record asks an order index for, when it is a state of the
-/// setting `sort_index.<type>`.
+/// The type whose order index a setting's state asks for, if it is a
+/// `sort_index.<type>` setting.
 pub fn sort_index_type(r: &StoredRecord) -> Option<TypeName> {
+    setting_for(r, lakelands_api::seam::SORT_INDEX_SETTING)
+}
+
+/// The type whose vector index a setting's state asks for, if it is a
+/// `vector_index.<type>` setting.
+pub fn vector_index_type(r: &StoredRecord) -> Option<TypeName> {
+    setting_for(r, lakelands_api::seam::VECTOR_INDEX_SETTING)
+}
+
+fn setting_for(r: &StoredRecord, prefix: &str) -> Option<TypeName> {
     (r.ty.as_str() == lakelands_api::seam::SETTING_TYPE)
-        .then(|| {
-            r.key
-                .as_str()
-                .strip_prefix(lakelands_api::seam::SORT_INDEX_SETTING)
-        })
+        .then(|| r.key.as_str().strip_prefix(prefix))
         .flatten()
         .map(TypeName::from)
 }
@@ -359,6 +380,11 @@ pub fn sort_index_type(r: &StoredRecord) -> Option<TypeName> {
 /// The key of the setting that asks for `ty`'s order index.
 pub fn sort_index_key(ty: &TypeName) -> String {
     format!("{}{ty}", lakelands_api::seam::SORT_INDEX_SETTING)
+}
+
+/// The key of the setting that asks for `ty`'s vector index.
+pub fn vector_index_key(ty: &TypeName) -> String {
+    format!("{}{ty}", lakelands_api::seam::VECTOR_INDEX_SETTING)
 }
 
 /// The value a head state of a setting holds: none when it is retired.

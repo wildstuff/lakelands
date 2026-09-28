@@ -99,12 +99,20 @@ jobs:
       fail-fast: false
       matrix:
         engine: ${{ fromJSON(needs.roster.outputs.engines || '[]') }}
+        # Every engine runs against a plain server; pg runs once more
+        # against a server with pgvector, where a vector field the lake
+        # asks an index for is searched through it (decision 043). The
+        # plain pg job keeps the lake without the extension under test.
+        server: [plain]
+        include:
+          - engine: pg
+            server: pgvector
     # A throwaway PostgreSQL for the `pg` engine only: an empty image
     # starts no container for the other engines. Its password guards
     # nothing but this job's own database, so it is not a secret.
     services:
       postgres:
-        image: ${{ matrix.engine == 'pg' && 'postgres:16' || '' }}
+        image: ${{ matrix.engine == 'pg' && (matrix.server == 'pgvector' && 'pgvector/pgvector:pg16' || 'postgres:16') || '' }}
         env:
           POSTGRES_USER: lakelands
           POSTGRES_PASSWORD: lakelands
