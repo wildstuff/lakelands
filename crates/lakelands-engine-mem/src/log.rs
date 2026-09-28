@@ -36,6 +36,9 @@ pub(crate) struct Log {
     lease: Option<Lease>,
     /// The greatest fence ever handed out; 0 before the first take.
     last_fence: u64,
+    /// The last position `import` appended, while every event in the log
+    /// came through it.
+    imported: Option<Position>,
 }
 
 impl Log {
@@ -90,23 +93,44 @@ impl Log {
     /// Appends `events` under `lease`, all or none.
     pub(crate) fn append(&mut self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
         self.check_lease(lease)?;
+        self.add(Some(lease.fence), events)
+    }
+
+    /// Appends events carried over from another lake's log under `lease`,
+    /// all or none, while the log holds nothing but imported events; each
+    /// keeps its own fence, which never falls. Later leases are greater
+    /// than every fence imported.
+    pub(crate) fn import(&mut self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
+        self.check_lease(lease)?;
+        if let Some((tip, _)) = self.tip()
+            && self.imported != Some(tip)
+        {
+            return Err(invalid(format!(
+                "the lake's log holds events up to position {tip} that were not imported; an \
+                 import goes only into a lake that holds nothing else, and nothing was \
+                 appended"
+            )));
+        }
+        self.add(None, events)?;
+        if let Some(last) = events.last() {
+            self.imported = Some(last.position);
+            self.last_fence = self.last_fence.max(last.fence);
+        }
+        Ok(())
+    }
+
+    /// Adds `events` after the tip, all or none. Each carries `fence`, or,
+    /// with none, a fence no lower than the event's before it; the event at
+    /// position 0 carries fence 0.
+    fn add(&mut self, fence: Option<u64>, events: &[CanonicalEvent]) -> Result<()> {
         let mut expected = Position(self.events.len() as u64);
         let mut prev = self.tip().map_or_else(Digest::zero, |(_, hash)| hash);
+        let mut floor = self.events.last().map_or(0, |e| e.fence);
         for event in events {
-            // The event at position 0 is written before any lease exists
-            // in the lake, under fence 0 (`docs/log-format.md` §4.1).
-            let wanted = if event.position.0 == 0 {
-                0
-            } else {
-                lease.fence
-            };
-            if event.fence != wanted {
-                return Err(invalid(format!(
-                    "the event at position {} carries fence {}, and it must carry fence {}; \
-                     nothing was appended",
-                    event.position, event.fence, wanted
-                )));
+            if let Some(why) = lakelands_core::engines::fence_fault(event, fence, floor) {
+                return Err(invalid(why));
             }
+            floor = event.fence;
             if event.position != expected {
                 return Err(invalid(format!(
                     "the event at position {} does not continue the log, whose next position \

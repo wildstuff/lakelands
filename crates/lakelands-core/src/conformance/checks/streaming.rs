@@ -4,8 +4,11 @@
 //! `docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`).
 //!
 //! The work that reads or writes a whole lake has to work in pages. That
-//! is ingest from a source, the feed read from the start, an export and
-//! its verification, a walk of a type through `find` page by page, a
+//! is ingest from a source, the feed read from the start, an export, its
+//! verification and its import as a new lake (lakelands#215; on the
+//! memory engine the imported lake stays on the heap, so, as for ingest,
+//! what the import held beyond what it leaves), a walk of a type through
+//! `find` page by page, a
 //! rebuild of the projection, and a reopen. Each may hold a window, a
 //! page or a segment's worth of memory, set by the
 //! lake's limits or by constants, but not more as the lake grows. One
@@ -131,7 +134,7 @@ use crate::links::{link_key, link_type_name};
 check!(
     /// A large lake goes through ingest, the feed and export in bounded memory.
     STREAMS = a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it,
-    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification, each page of a walk of a type through find, a rebuild, a reopen, a three-hop walk over link records, a hybrid search with k = 10 over every record's vector, without and with a vector index asked for, the ten records of highest degree over the whole type, and components refused at the lake's max_graph_nodes, hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB, and the search answers what it must",
+    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification and its import into a new lake, each page of a walk of a type through find, a rebuild, a reopen, a three-hop walk over link records, a hybrid search with k = 10 over every record's vector, without and with a vector index asked for, the ten records of highest degree over the whole type, and components refused at the lake's max_graph_nodes, hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB, and the search answers what it must",
     given,
     embedding
 );
@@ -769,9 +772,34 @@ impl Size<'_> {
             Claim::Held,
             records,
             log.events,
-            what,
+            what.clone(),
             checked,
         );
+        // The export imported as a new lake of the engine (lakelands#215):
+        // on the memory engine the imported lake stays on the heap by
+        // design, so, as for ingest, what it held beyond what it leaves.
+        let seams = lakelands_api::seam::Seams {
+            backings: crate::conformance::backing::backings(),
+            embed: Some(crate::conformance::backing::embedder()),
+            executors: crate::conformance::backing::executors(),
+            ..lakelands_api::seam::Seams::default()
+        };
+        let m = Measure::start(&self.given.meter, true);
+        let imported = (self.given.import)(dir.to_path_buf(), store.lake().clone(), None, seams)
+            .await
+            .map_err(|e| Failure::new(format!("importing {}: {e}", dir.display())))?
+            .store;
+        let measured = m.stop();
+        let head = imported
+            .head()
+            .await
+            .must("reading the imported lake's head")?;
+        ensure!(
+            head == through,
+            "the lake imported from the export has its head at {head}; the export's is {through}"
+        );
+        imported.close().await.must("closing the imported lake")?;
+        self.row("import", Claim::Held, records, log.events, what, measured);
         let _ = fs::remove_dir_all(dir);
         Ok(())
     }

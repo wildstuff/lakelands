@@ -107,6 +107,9 @@ impl LakeEngine for Counting {
     fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
         self.inner.append(lease, events)
     }
+    fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
+        self.inner.import(lease, events)
+    }
     fn read(&self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>> {
         self.inner.read(from, limit)
     }

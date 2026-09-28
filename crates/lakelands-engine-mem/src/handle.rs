@@ -105,6 +105,11 @@ impl LakeEngine for MemoryLake {
         lock(&self.shared).log.append(lease, events)
     }
 
+    fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
+        self.writable()?;
+        lock(&self.shared).log.import(lease, events)
+    }
+
     fn read(&self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>> {
         Ok(lock(&self.shared).log.read(from, limit))
     }

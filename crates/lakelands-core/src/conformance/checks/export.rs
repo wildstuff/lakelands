@@ -65,6 +65,20 @@ check!(
     scratch
 );
 
+check!(
+    /// An imported export is the lake it came from.
+    IMPORT_IS_THE_LAKE = an_export_imported_into_a_fresh_lake_answers_as_the_lake_it_came_from,
+    "030 and log-format §4: an export imported into a fresh lake of the engine holds every event unchanged at its position, so the lake answers as the one exported (the head, verify, the feed from position 0, every type's records with provenance at the head and at an earlier position, describe) and exports the same files byte for byte; its next writer takes a lease greater than every fence in the log and continues it",
+    given
+);
+
+check!(
+    /// An import refuses what is not a birth of the exported lake.
+    IMPORT_REFUSED = an_import_is_refused_for_a_damaged_export_another_lake_or_a_lake_holding_events,
+    "030: an import verifies the whole export before it writes: a changed byte in a segment is refused naming its position, and an export of another lake (naming both lakes) and a lake that holds events (naming its head) are refused as failed preconditions; nothing is written into the lake it refuses",
+    given
+);
+
 /// The check's scratch directory, cleared of anything an earlier run
 /// left, and removed again when the check ends, however it ends.
 struct Scratch(PathBuf);
@@ -569,5 +583,269 @@ async fn a_damaged_export_is_refused_naming_the_position(
         sealed_at.next(),
         "the two lines after the checkpoint swapped",
     )?;
+    Ok(())
+}
+
+/// The seams an imported lake is opened with: the suite's backings, as
+/// the fresh lake of every check has them.
+fn import_seams() -> lakelands_api::seam::Seams {
+    lakelands_api::seam::Seams {
+        backings: crate::conformance::backing::backings(),
+        executors: crate::conformance::backing::executors(),
+        ..lakelands_api::seam::Seams::default()
+    }
+}
+
+/// A lake with two writers, two sealed segments and both format
+/// versions: invoices, a checkpoint, the lake opened again by a second
+/// writer (a second lease, a greater fence), a re-key, a restricted and a
+/// retired invoice, a second checkpoint and more invoices. Answers the
+/// second writer's handle and a position before the second checkpoint.
+async fn exported_lake(
+    store: Arc<dyn LakeStore>,
+    reopen: &crate::conformance::Reopen,
+) -> Result<(Arc<dyn LakeStore>, Position), Failure> {
+    invoices(store.as_ref(), 0, 3).await?;
+    store.checkpoint().await.must("checkpointing")?;
+    let writer = reopen(store, import_seams())
+        .await
+        .map_err(|e| Failure::new(format!("opening the lake for a second writer: {e}")))?;
+    let store = writer.as_ref();
+    rekey::lake(store, rekey::IBANS).await?;
+    rekey::apply(store).await?;
+    let own = owner(store);
+    let cat = doors(store);
+    let invoice = lakelands_api::TypeName::from("invoice");
+    store
+        .restrict(&invoice, &"i1".into(), "held".into())
+        .await
+        .must("restricting `i1`")?;
+    cat.retire(
+        &own,
+        &invoice,
+        &"i2".into(),
+        lakelands_api::WriteOpts::default(),
+    )
+    .await
+    .must("retiring `i2`")?;
+    let earlier = store.head().await.must("reading the head")?;
+    store.checkpoint().await.must("checkpointing")?;
+    invoices(store, 3, 2).await?;
+    Ok((writer, earlier))
+}
+
+/// What a lake answers, for comparing two: its head, `verify`, the feed
+/// from position 0, `describe`, and every type's records with provenance
+/// at the head and at `earlier`.
+async fn answers(store: &dyn LakeStore, earlier: Position) -> Result<Value, Failure> {
+    use lakelands_api::{Find, ReadAt};
+    let own = owner(store);
+    let cat = doors(store);
+    let head = store.head().await.must("reading the head")?;
+    let verified = store.verify(None, None).await.must("verifying")?;
+    let feed: Vec<Value> = events(store)
+        .await?
+        .iter()
+        .map(|e| serde_json::to_value(e).expect("an event serialises"))
+        .collect();
+    let described = cat
+        .describe(&own, ReadAt::default())
+        .await
+        .must("describing the lake")?
+        .data;
+    let mut records = serde_json::Map::new();
+    for t in &described.types {
+        for (at, label) in [(None, "head"), (Some(earlier), "earlier")] {
+            let found = cat
+                .find(
+                    &own,
+                    &t.name,
+                    Find {
+                        limit: Some(1_000),
+                        with_meta: true,
+                        at: ReadAt {
+                            as_of: at,
+                            valid_at: None,
+                        },
+                        ..Find::default()
+                    },
+                )
+                .await;
+            let found = match found {
+                Ok(r) => serde_json::to_value(&r.data).expect("an answer serialises"),
+                Err(e) => json!(format!("refused: {e}")),
+            };
+            records.insert(format!("{} at {label}", t.name), found);
+        }
+    }
+    Ok(json!({
+        "head": head.0,
+        "verify": [verified.through.0, verified.hash.0],
+        "feed": feed,
+        "describe": serde_json::to_value(&described).expect("a description serialises"),
+        "records": records,
+    }))
+}
+
+async fn an_export_imported_into_a_fresh_lake_answers_as_the_lake_it_came_from(
+    store: Arc<dyn LakeStore>,
+    given: crate::conformance::Given,
+) -> Result<(), Failure> {
+    let scratch = Scratch::new(given.scratch.clone());
+    let (store, earlier) = exported_lake(store, &given.reopen).await?;
+    let from = scratch.dir("from");
+    write(store.as_ref(), &from).await?;
+    let lake = store.lake().clone();
+    let crate::conformance::ImportedLake {
+        store: imported,
+        writer,
+    } = (given.import)(from.clone(), lake.clone(), None, import_seams())
+        .await
+        .map_err(|e| Failure::new(format!("importing the export into a fresh lake: {e}")))?;
+    let (want, got) = (
+        answers(store.as_ref(), earlier).await?,
+        answers(imported.as_ref(), earlier).await?,
+    );
+    if let (Some(w), Some(g)) = (want["records"].as_object(), got["records"].as_object()) {
+        for (what, answer) in w {
+            ensure!(
+                g.get(what) == Some(answer),
+                "the imported lake must find `{what}` as the lake it came from; it answered {}, \
+                 and the lake {answer}",
+                g.get(what).unwrap_or(&Value::Null)
+            );
+        }
+    }
+    for part in ["head", "verify", "feed", "describe", "records"] {
+        ensure!(
+            want[part] == got[part],
+            "the imported lake must answer `{part}` as the lake it came from; it answered \
+             {}, and the lake {}",
+            got[part],
+            want[part]
+        );
+    }
+    let again = scratch.dir("again");
+    write(imported.as_ref(), &again).await?;
+    let (files_from, files_again) = (files(&from)?, files(&again)?);
+    ensure!(
+        files_from == files_again,
+        "the imported lake must export the same files; it exported {files_again:?}, and the \
+         lake {files_from:?}"
+    );
+    for f in &files_from {
+        ensure!(
+            read(&from, f)? == read(&again, f)?,
+            "the imported lake's {f} must hold the same bytes as the lake's"
+        );
+    }
+    // The next writer continues the lake above every fence in it.
+    let highest = events(imported.as_ref())
+        .await?
+        .iter()
+        .map(|e| e.fence)
+        .max()
+        .unwrap_or(0);
+    let writer = writer(imported, import_seams())
+        .await
+        .map_err(|e| Failure::new(format!("opening the imported lake for writing: {e}")))?;
+    invoices(writer.as_ref(), 5, 1).await?;
+    let log = events(writer.as_ref()).await?;
+    let taken = log.iter().rev().find_map(|e| match &e.body {
+        EventBody::LeaseTaken { fence, .. } => Some(*fence),
+        _ => None,
+    });
+    ensure!(
+        taken.is_some_and(|f| f > highest),
+        "the imported lake's next writer must take a lease greater than every fence in the \
+         log ({highest}); it took {taken:?}"
+    );
+    writer
+        .verify(None, None)
+        .await
+        .must("verifying the imported lake after a write")?;
+    Ok(())
+}
+
+async fn an_import_is_refused_for_a_damaged_export_another_lake_or_a_lake_holding_events(
+    store: Arc<dyn LakeStore>,
+    given: crate::conformance::Given,
+) -> Result<(), Failure> {
+    let scratch = Scratch::new(given.scratch.clone());
+    let (store, _) = exported_lake(store, &given.reopen).await?;
+    let from = scratch.dir("from");
+    write(store.as_ref(), &from).await?;
+    let lake = store.lake().clone();
+    let refused = |e: Result<crate::conformance::ImportedLake, Error>, what: &str| match e {
+        Ok(_) => Err(Failure::new(format!(
+            "{what} must be refused; it was imported"
+        ))),
+        Err(e) => Ok(e),
+    };
+    // Refused as asked: the caller's precondition, not a lake that may
+    // answer later.
+    let precondition = |e: &Error, what: &str| {
+        ensure!(
+            matches!(
+                e,
+                Error::Refused {
+                    reason: Refusal::Precondition { .. },
+                    ..
+                }
+            ),
+            "{what} must be refused as a failed precondition; it was refused as {e:?}"
+        );
+        Ok(())
+    };
+    // One byte changed in the first segment's third line.
+    let damaged = scratch.dir("damaged");
+    fs::create_dir_all(damaged.join("log"))
+        .map_err(|e| Failure::new(format!("making the damaged export: {e}")))?;
+    for f in files(&from)? {
+        fs::copy(from.join(&f), damaged.join(&f))
+            .map_err(|e| Failure::new(format!("copying {f}: {e}")))?;
+    }
+    let first = files(&damaged)?.remove(0);
+    let mut lines = lines_of(&damaged, &first)?;
+    let at = lines[2]
+        .iter()
+        .position(|b| *b == b'1')
+        .ok_or_else(|| Failure::new("the third line holds no digit 1 to change"))?;
+    lines[2][at] = b'2';
+    rewrite(&damaged, &first, &lines)?;
+    let why = refused(
+        (given.import)(damaged, lake.clone(), None, import_seams()).await,
+        "an export with a byte changed at position 2",
+    )?
+    .to_string();
+    ensure!(
+        why.contains("position 2"),
+        "an export with a byte changed at position 2 must be refused naming that position; it \
+         was refused with: {why}"
+    );
+    let other = lakelands_api::LakeId::from("another-lake");
+    let e = refused(
+        (given.import)(from.clone(), other, None, import_seams()).await,
+        "the export imported as another lake",
+    )?;
+    precondition(&e, "the export imported as another lake")?;
+    let why = e.to_string();
+    ensure!(
+        why.contains(lake.as_str()) && why.contains("another-lake"),
+        "an export imported as another lake must be refused naming both lakes; it was refused \
+         with: {why}"
+    );
+    let head = store.head().await.must("reading the head")?;
+    let e = refused(
+        (given.import)(from, lake.clone(), Some(store), import_seams()).await,
+        "an import into the lake the export came from, which holds events",
+    )?;
+    precondition(&e, "an import into a lake that holds events")?;
+    let why = e.to_string();
+    ensure!(
+        why.contains(&format!("position {head}")),
+        "an import into a lake holding events through {head} must be refused naming its head; \
+         it was refused with: {why}"
+    );
     Ok(())
 }

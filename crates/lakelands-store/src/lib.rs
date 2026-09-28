@@ -15,6 +15,7 @@ pub mod backing;
 pub mod declare;
 pub mod doors;
 pub mod exec;
+pub mod import;
 pub mod ingest;
 pub mod lake;
 pub mod log;
@@ -26,5 +27,5 @@ pub mod rekey;
 pub mod writes;
 
 pub use backing::ExprBacking;
-pub use doors::open;
+pub use doors::{import, open};
 pub use lakelands_core::export;

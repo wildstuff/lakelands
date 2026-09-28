@@ -112,6 +112,17 @@ pub trait LakeEngine: Send + Sync {
     /// engine stores each event's bytes unchanged.
     fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()>;
 
+    /// Append events carried over from another lake's log, unchanged, as
+    /// an import does (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`):
+    /// as [`append`](Self::append), except that an event's `fence` is the
+    /// one it was written under in its own lake, never below the fence of
+    /// the event before it and 0 at position 0, rather than `lease`'s.
+    /// Refused unless the log holds nothing but imported events (it is
+    /// empty, or every event in it came through `import`), so a lake that
+    /// was ever appended to is never imported into. Afterwards the lease a
+    /// later `take_lease` answers is greater than every fence imported.
+    fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()>;
+
     /// Events from `from` on, at most `limit`, exactly as appended: the
     /// same members, the same bytes.
     fn read(&self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>>;

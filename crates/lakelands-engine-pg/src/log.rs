@@ -102,12 +102,17 @@ fn fenced(db: &mut Db, names: &Names, lease: &Lease, what: &str) -> Result<()> {
 }
 
 /// Append `events` under `lease`, in one transaction that checks the
-/// lease row holds its fence.
+/// lease row holds its fence. With `imported`, as an import does: the log
+/// must hold nothing but imported events, each event keeps its own fence,
+/// never below the one before it, and the `meta` rows `imported` (the last
+/// position imported) and `import_fence` (the greatest fence imported,
+/// which the next lease exceeds) follow in the same transaction.
 pub(crate) fn append(
     db: &mut Db,
     names: &Names,
     lease: &Lease,
     events: &[CanonicalEvent],
+    imported: bool,
 ) -> Result<()> {
     if events.is_empty() {
         return Ok(());
@@ -116,22 +121,33 @@ pub(crate) fn append(
         fenced(db, names, lease, "appended")?;
         let tip = tip(db, names)?;
         let first = tip.as_ref().map_or(0, |(p, _)| p.0 + 1);
-        let mut prev = tip.map_or_else(Digest::zero, |(_, h)| h);
-        for (expected, event) in (first..).zip(events) {
-            // The event at position 0 is written before any lease exists in
-            // the lake, under fence 0 (`docs/log-format.md` §4.1).
-            let wanted = if event.position.0 == 0 {
-                0
-            } else {
-                lease.fence
-            };
-            if event.fence != wanted {
+        let mut floor = 0;
+        if imported && let Some((at, _)) = &tip {
+            let row = db.query_one(
+                &format!(
+                    "SELECT (SELECT n FROM {m} WHERE k = 'imported'), \
+                     (SELECT fence FROM {l} WHERE position = $1)",
+                    m = names.t("meta"),
+                    l = names.t("log"),
+                ),
+                &[&(at.0 as i64)],
+            )?;
+            if row.get::<_, Option<i64>>(0) != Some(at.0 as i64) {
                 return Err(invalid(format!(
-                    "the event at position {} carries fence {}, and it must carry fence \
-                     {wanted}; nothing was appended",
-                    event.position, event.fence
+                    "the lake's log holds events up to position {at} that were not imported; \
+                     an import goes only into a lake that holds nothing else, and nothing was \
+                     appended"
                 )));
             }
+            floor = row.get::<_, Option<i64>>(1).unwrap_or(0) as u64;
+        }
+        let fence = (!imported).then_some(lease.fence);
+        let mut prev = tip.map_or_else(Digest::zero, |(_, h)| h);
+        for (expected, event) in (first..).zip(events) {
+            if let Some(why) = lakelands_core::engines::fence_fault(event, fence, floor) {
+                return Err(invalid(why));
+            }
+            floor = event.fence;
             if event.position.0 != expected {
                 return Err(invalid(format!(
                     "the event at position {} does not continue the log, whose next position \
@@ -177,6 +193,16 @@ pub(crate) fn append(
             ),
             &[&positions, &segment, &fences, &ids, &prevs, &hashes, &bytes],
         )?;
+        if imported && let Some(last) = events.last() {
+            db.execute(
+                &format!(
+                    "INSERT INTO {m} (k, n) VALUES ('imported', $1), ('import_fence', $2) \
+                     ON CONFLICT (k) DO UPDATE SET n = greatest({m}.n, EXCLUDED.n)",
+                    m = names.t("meta")
+                ),
+                &[&(last.position.0 as i64), &(last.fence as i64)],
+            )?;
+        }
         Ok(())
     })
 }

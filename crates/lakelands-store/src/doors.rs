@@ -42,6 +42,18 @@ pub async fn open(location: Location, seams: Seams, mode: OpenMode) -> Result<Ar
     }))
 }
 
+/// Import the export in `dir` as a new lake at `location`, on any engine
+/// (`crate::import`): the lake holds the exported log, event for event,
+/// with its projection folded, and is closed again; the host opens it as
+/// any other lake.
+pub async fn import(
+    location: Location,
+    seams: Seams,
+    dir: std::path::PathBuf,
+) -> Result<crate::import::Imported> {
+    exec::run(move || crate::import::import(&location, seams, &dir)).await
+}
+
 fn same_lake(lake: &Lake, who: &Principal) -> Result<()> {
     if who.lake != lake.id {
         return Err(Error::Refused {

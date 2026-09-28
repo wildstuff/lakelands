@@ -91,7 +91,23 @@ file's contents; the operating system's lock does not.
 - It is not a requirement on other engines. An engine that keeps events
   elsewhere keeps their bytes unchanged and can export these files.
 - An export is not a backup of the projection, which folds again from
-  the log; not an import, which would verify an export and fold it into
-  a new lake and is a later change of its own; and not a replication
-  scheme: it is a prefix read once, and nothing follows the lake
-  afterwards (the change feed does that).
+  the log; and not a replication scheme: it is a prefix read once, and
+  nothing follows the lake afterwards (the change feed does that).
+
+## Extended: an export opens as the lake it came from
+
+`lakelands_store::import` opens a new lake from an export, on any engine
+(lakelands#215). It verifies the whole export first, then checks what
+only an import needs: every event belongs to the lake it makes, and
+every fence is the one its writer held. Nothing is written before both
+pass. It then appends every event unchanged, position for position,
+through the engine's `import`, which keeps each event's own fence. It
+seals a segment before each checkpoint and compares the digest with the
+file's. Last it folds the projection as a rebuild does, and appends
+nothing. The lake's head is the export's, and an export of it writes the
+same files. The host then opens it as any other lake, and that writer's
+lease is greater than every fence in the log. An import goes only into
+a lake that holds nothing, so it is a lake's birth and never a merge.
+One that fails after it began writing names the position it reached and
+leaves a true prefix of the export, which is not the source and refuses
+another import. The host removes it and imports again.

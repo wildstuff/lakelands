@@ -763,6 +763,41 @@ pub fn searchable(state: Option<&StoredRecord>) -> bool {
     state.is_some_and(|r| !r.retired)
 }
 
+/// Why an event may not be added to a log, as far as its fence goes
+/// (`docs/log-format.md` §4.1): with `lease`, every event carries that
+/// lease's fence, as an append requires; with none, as an import requires,
+/// each keeps the fence it was written under, never below `floor`, the
+/// fence of the event before it. Either way the event at position 0
+/// carries fence 0, written before any lease existed.
+pub fn fence_fault(
+    event: &lakelands_api::engine::CanonicalEvent,
+    lease: Option<u64>,
+    floor: u64,
+) -> Option<String> {
+    let fence = event.fence;
+    let at = event.position;
+    match lease {
+        _ if at.0 == 0 => (fence != 0).then(|| {
+            format!(
+                "the event at position 0 carries fence {fence}, and it must carry fence 0; \
+                 nothing was appended"
+            )
+        }),
+        Some(wanted) => (fence != wanted).then(|| {
+            format!(
+                "the event at position {at} carries fence {fence}, and it must carry fence \
+                 {wanted}; nothing was appended"
+            )
+        }),
+        None => (fence < floor).then(|| {
+            format!(
+                "the event at position {at} carries fence {fence}, below the fence {floor} of \
+                 the event before it; fences never fall, and nothing was appended"
+            )
+        }),
+    }
+}
+
 /// Best first by score, ties by key, at most `k`.
 pub fn rank(hits: &mut Vec<(RecordKey, f64)>, k: u32) {
     hits.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));

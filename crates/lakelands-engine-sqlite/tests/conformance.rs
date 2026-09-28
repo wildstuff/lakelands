@@ -14,7 +14,7 @@ use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, Location};
 use lakelands_core::conformance::checks::ALL;
 use lakelands_core::conformance::{
-    FreshLake, Harness, LARGE_LAKE, Meter, Relimit, Reopen, run_all, run_one,
+    FreshLake, Harness, Import, ImportedLake, LARGE_LAKE, Meter, Relimit, Reopen, run_all, run_one,
 };
 use lakelands_engine_sqlite::SqliteOpener;
 use peak_alloc::PeakAlloc;
@@ -89,6 +89,44 @@ impl Harness for Sqlite {
 
     fn scratch(&self) -> PathBuf {
         self.root.join("scratch")
+    }
+
+    fn importer(&self) -> Import {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let root = self.root.clone();
+        Arc::new(move |from, lake, into, host| {
+            let root = root.clone();
+            Box::pin(async move {
+                // Into a lake handed out already, in its directory; a
+                // brand-new one in a directory of its own.
+                let dir = match into {
+                    Some(store) => {
+                        store.close().await?;
+                        root.join(lake.as_str())
+                    }
+                    None => root.join(format!("imported-{}", NEXT.fetch_add(1, Ordering::Relaxed))),
+                };
+                let location = Location::sqlite(lake.to_string(), dir);
+                let seams = Seams {
+                    engines: vec![Arc::new(SqliteOpener)],
+                    ..host
+                };
+                lakelands_store::import(location.clone(), seams.clone(), from).await?;
+                let store = lakelands_store::open(location.clone(), seams, OpenMode::Read).await?;
+                let writer: Reopen = Arc::new(move |store, host| {
+                    let location = location.clone();
+                    Box::pin(async move {
+                        store.close().await?;
+                        let seams = Seams {
+                            engines: vec![Arc::new(SqliteOpener)],
+                            ..host
+                        };
+                        lakelands_store::open(location, seams, OpenMode::Write).await
+                    })
+                });
+                Ok(ImportedLake { store, writer })
+            })
+        })
     }
 
     fn meter(&self) -> Option<Arc<dyn Meter>> {

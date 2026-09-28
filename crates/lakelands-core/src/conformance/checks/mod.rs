@@ -258,6 +258,8 @@ pub const ALL: &[Check] = &[
     export::PREFIX,
     export::NOT_EMPTY,
     export::DAMAGE,
+    export::IMPORT_IS_THE_LAKE,
+    export::IMPORT_REFUSED,
     compact::ANSWERS_AS_BEFORE,
     compact::APPENDS_NOTHING,
     compact::AGAIN_AND_ON,

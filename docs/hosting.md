@@ -203,6 +203,24 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   index and answer every search exactly; a SQLite lake that needs one
   moves to PostgreSQL by export and import (lakelands#215).
 
+**Moving a lake to another engine.** An installation runs one engine,
+and a lake is not bound to the one it was created on: `lakelands export`
+writes its log as files, and `lakelands_store::import` opens those files
+as the same lake on any engine
+(`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`):
+every event unchanged at its position, the projection folded, nothing
+appended. A SQLite lake that needs PostgreSQL's multi-row commits or its
+vector index moves so. The import verifies the whole export before it
+writes. An import that fails after it began writing names the position
+it reached and the file; the target then holds a true prefix of the
+export, which is not the lake that was exported, and it refuses another
+import, naming its head. Remove it (its directory, or its schema) and
+import again. An import takes about as long as a rebuild of the lake,
+since it verifies the files and then folds them: the streaming check's
+long run imported 257 606 events (100 000 records) in 40 s on the memory
+engine, 136 s on SQLite and 335 s on PostgreSQL, holding at most 23 MiB
+of heap, on a 12-core machine at a load of 17 to 31.
+
 **Configuration is not a seam.** Engine configuration, tuning, limits
 and an optional key handle reach a lake through `Location`, and a
 server through its server configuration; Lakelands never reads the

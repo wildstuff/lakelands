@@ -46,7 +46,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use lakelands_api::engine::{CanonicalEvent, Lease};
+use lakelands_api::engine::CanonicalEvent;
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::id::Position;
@@ -347,26 +347,22 @@ impl Log {
             .find_map(|s| Some((Position(s.last()?), Digest(s.last_hash.clone()?))))
     }
 
-    /// Append `events` under `lease`, whose currency the caller checked.
-    pub(crate) fn append(&mut self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
+    /// Append `events`, whose lease the caller checked: each carrying
+    /// `fence`, the lease's, or, with none, as an import does, each keeping
+    /// its own fence, never below the one before it.
+    pub(crate) fn append(&mut self, fence: Option<u64>, events: &[CanonicalEvent]) -> Result<()> {
         self.refresh()?;
         let first = self.tip().map_or(0, |(p, _)| p.0 + 1);
         let mut prev = self.tip().map_or_else(Digest::zero, |(_, h)| h);
+        let mut floor = match (fence, first) {
+            (None, 1..) => self.fence_at(first - 1)?,
+            _ => 0,
+        };
         for (expected, event) in (first..).zip(events) {
-            // The event at position 0 is written before any lease exists
-            // in the lake, under fence 0 (`docs/log-format.md` §4.1).
-            let wanted = if event.position.0 == 0 {
-                0
-            } else {
-                lease.fence
-            };
-            if event.fence != wanted {
-                return Err(invalid(format!(
-                    "the event at position {} carries fence {}, and it must carry fence {}; \
-                     nothing was appended",
-                    event.position, event.fence, wanted
-                )));
+            if let Some(why) = lakelands_core::engines::fence_fault(event, fence, floor) {
+                return Err(invalid(why));
             }
+            floor = event.fence;
             if event.position.0 != expected {
                 return Err(invalid(format!(
                     "the event at position {} does not continue the log, whose next position \
@@ -452,6 +448,14 @@ impl Log {
     }
 
     /// At most `limit` events from `from` on, as appended.
+    /// The fence of the event at `position`.
+    fn fence_at(&mut self, position: u64) -> Result<u64> {
+        self.read(Position(position), 1)?
+            .first()
+            .map(|e| e.fence)
+            .ok_or_else(|| unavailable(format!("the log holds no event at position {position}")))
+    }
+
     pub(crate) fn read(&mut self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>> {
         self.refresh()?;
         let mut out = Vec::new();

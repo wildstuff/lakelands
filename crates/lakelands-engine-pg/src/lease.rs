@@ -67,9 +67,11 @@ pub(crate) fn take(db: &mut Db, names: &Names, schema: &str, holder: &str) -> Re
         let row = db.query_one(
             &format!(
                 "INSERT INTO {t} (one, fence, holder) VALUES (1, 1, $1) \
-                 ON CONFLICT (one) DO UPDATE SET fence = {t}.fence + 1, holder = $1 \
+                 ON CONFLICT (one) DO UPDATE SET fence = greatest({t}.fence, \
+                 (SELECT n FROM {m} WHERE k = 'import_fence')) + 1, holder = $1 \
                  RETURNING fence",
-                t = names.t("lease")
+                t = names.t("lease"),
+                m = names.t("meta")
             ),
             &[&holder],
         )?;

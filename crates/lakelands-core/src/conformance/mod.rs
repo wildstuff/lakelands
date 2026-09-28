@@ -151,6 +151,19 @@ pub trait Harness: Send + Sync {
         None
     }
 
+    /// How this harness imports an export (`lakelands_store::import`) as
+    /// a lake of its engine: the [`Import`] a check of the import is
+    /// given. A harness that imports nothing answers `unbound`.
+    fn importer(&self) -> Import {
+        Arc::new(|_, _, _, _| {
+            Box::pin(async {
+                Err(lakelands_api::Error::Unbound {
+                    seam: "import (this harness imports no export)".into(),
+                })
+            })
+        })
+    }
+
     /// How many records the suite's large lake holds at its first size;
     /// it grows to four times this. [`LARGE_LAKE`] unless the engine's
     /// test asks for more, as a long run does.
@@ -194,6 +207,8 @@ pub struct Given {
     pub large_lake: u32,
     /// The harness's name, for a check that reports figures.
     pub harness: String,
+    /// How the harness imports an export as a lake of its engine.
+    pub import: Import,
 }
 
 /// Closes a lake the harness opened and opens it again for writing with
@@ -208,6 +223,31 @@ pub type Relimit = Arc<
         + Send
         + Sync,
 >;
+
+/// Import the export in a directory as the lake named, of the harness's
+/// engine: into a brand-new lake, or, given a store, into the lake that
+/// store holds, which is closed first (an import must refuse it when it
+/// holds events).
+pub type Import = Arc<
+    dyn Fn(PathBuf, lakelands_api::LakeId, Option<Arc<dyn LakeStore>>, Seams) -> ImportFuture
+        + Send
+        + Sync,
+>;
+
+/// The future an [`Import`] answers.
+pub type ImportFuture =
+    Pin<Box<dyn Future<Output = lakelands_api::Result<ImportedLake>> + Send + 'static>>;
+
+/// A lake an [`Import`] made: opened read-only, so that nothing is
+/// appended to it, and how to open that lake for writing. It has the name
+/// of the lake it came from, so a [`Reopen`], which finds a lake by name,
+/// would find that one; `writer` finds this one.
+pub struct ImportedLake {
+    /// The imported lake, opened read-only.
+    pub store: Arc<dyn LakeStore>,
+    /// Closes a handle onto the imported lake and opens it for writing.
+    pub writer: Reopen,
+}
 
 /// The future [`Harness::fresh`] answers: a new, empty lake, or why none
 /// could be opened.
@@ -354,6 +394,7 @@ async fn run_check(harness: &dyn Harness, check: &Check) -> Result<(), Failure> 
         meter: harness.meter(),
         large_lake: harness.large_lake(),
         harness: harness.name().to_owned(),
+        import: harness.importer(),
     };
     match caught((check.run)(store, given)).await {
         Ok(outcome) => outcome,

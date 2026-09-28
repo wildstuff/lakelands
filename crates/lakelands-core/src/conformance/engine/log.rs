@@ -30,6 +30,18 @@ engine_check!(
 );
 
 engine_check!(
+    /// An import keeps each event's fence; the next lease is greater.
+    IMPORT_KEEPS_FENCES = an_import_keeps_each_events_fence_and_the_next_lease_is_greater,
+    "030 and log format §4.1: `import` stores events carried over from another lake with the fences they were written under, which never fall, refuses a fence below the one before it, and the next lease taken is greater than every fence imported"
+);
+
+engine_check!(
+    /// An import goes only into a log of imported events.
+    IMPORT_ONLY_INTO_IMPORTED = an_import_is_refused_once_the_log_holds_an_appended_event,
+    "030: `import` continues only a log that holds nothing but imported events; once anything was appended, an import is refused and nothing of it is written"
+);
+
+engine_check!(
     /// A stale lease cannot append.
     STALE_LEASE = a_stale_lease_cannot_append,
     "008: every append is checked against the current fencing token, so a writer that lost the lease cannot fork the chain"
@@ -616,6 +628,89 @@ fn a_read_only_open_creates_and_changes_nothing(
         tip.as_ref().map(|t| t.0) == Some(Position(1)) && folded == Some(Position(1)),
         "after a read-only handle opened, the log ends at {tip:?} and the projection is folded \
          through {folded:?}; both must be as the writer left them, at 1"
+    );
+    Ok(())
+}
+
+/// The events of another lake's log: fence 0 at position 0, then two
+/// writers' events under fences 5 and 9.
+fn another_lakes_log() -> Vec<CanonicalEvent> {
+    let mut out: Vec<CanonicalEvent> = Vec::new();
+    for (position, fence) in [(0, 0), (1, 5), (2, 5), (3, 9), (4, 9)] {
+        let prev = out.last().map_or_else(Digest::zero, |e| e.hash.clone());
+        out.push(event(
+            position,
+            &prev,
+            fence,
+            json!({"kind": "note", "n": position}),
+        ));
+    }
+    out
+}
+
+fn an_import_keeps_each_events_fence_and_the_next_lease_is_greater(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    let lease = engine
+        .take_lease("conformance import")
+        .must("taking the lease")?;
+    let log = another_lakes_log();
+    engine
+        .import(&lease, &log[..3])
+        .must("importing the first three events")?;
+    let falling = event(3, &log[2].hash, 4, json!({"kind": "note", "n": 3}));
+    let refused = engine
+        .import(&lease, &[falling])
+        .must_fail("importing an event whose fence falls below the one before it")?;
+    ensure!(
+        matches!(refused, lakelands_api::Error::Refused { .. }),
+        "an imported event whose fence falls was refused as {refused:?}; it must be invalid"
+    );
+    engine
+        .import(&lease, &log[3..])
+        .must("importing the rest")?;
+    let read = engine.read(Position(0), 10).must("reading the log")?;
+    ensure!(
+        read == log,
+        "the imported log reads back as {:?}; it must be the events imported, fences and bytes \
+         unchanged: {:?}",
+        render(&read),
+        render(&log)
+    );
+    engine.release_lease(&lease).must("releasing the lease")?;
+    let next = engine
+        .take_lease("conformance")
+        .must("taking the lease again")?;
+    ensure!(
+        next.fence > 9,
+        "the lease taken after an import of fences up to 9 has fence {}; it must be greater",
+        next.fence
+    );
+    Ok(())
+}
+
+fn an_import_is_refused_once_the_log_holds_an_appended_event(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    let lease = engine.take_lease("conformance").must("taking the lease")?;
+    let first = event(0, &Digest::zero(), 0, json!({"kind": "note", "n": 0}));
+    engine
+        .append(&lease, std::slice::from_ref(&first))
+        .must("appending position 0")?;
+    let carried = event(1, &first.hash, 5, json!({"kind": "note", "n": 1}));
+    let refused = engine
+        .import(&lease, &[carried])
+        .must_fail("importing into a log that holds an appended event")?;
+    ensure!(
+        matches!(refused, lakelands_api::Error::Refused { .. }),
+        "an import into a log that holds an appended event was refused as {refused:?}; it \
+         must be invalid"
+    );
+    let log = engine.read(Position(0), 10).must("reading the log")?;
+    ensure!(
+        log == [first],
+        "the log holds {} events after the refused import; it must hold the one appended",
+        log.len()
     );
     Ok(())
 }
