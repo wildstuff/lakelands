@@ -579,6 +579,10 @@ interface types {
         rows(list<string>),
         graph,
         aggregate(aggregate),
+        /// Each start record's links over the steps' relations.
+        degree,
+        /// The weak components the start records are in.
+        components,
     }
 
     record pattern {
@@ -809,6 +813,7 @@ interface types {
         constraint(string),
         precondition(string),
         too-deep(u32),
+        too-large(u32),
         migration(migration-report),
         decided,
         out-of-range(position),
@@ -899,6 +904,7 @@ interface types {
         max-depth: u32,
         max-reactive-depth: u32,
         commit-window-events: u32,
+        max-graph-nodes: u32,
     }
 
     record feed-filter {

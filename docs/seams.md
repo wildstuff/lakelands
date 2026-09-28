@@ -367,6 +367,20 @@ reads the declaring types and link types there whole, for every record
 the walk reaches, so a walk into the past costs the relation's records
 per hop. The heap is held by the suite; the time is reported.
 
+**The whole-graph measures.** A pattern query projected as `degree` or
+`components` asks nothing new of an engine: the store asks `edges` of
+every record it measures, as a walk does
+(`docs/decisions/026-the-store-walks-the-graph.md`). A degree reads the
+start's records a page at a time and keeps the best rows asked for, so
+the streaming check's `degree` line, the ten records of highest degree
+over the whole type, holds the same heap at every size of the lake.
+Components hold every record they reach, so their `components` line
+grows with the graph and is reported; the lake's `max_graph_nodes`, a
+limit of its `Location` (100 000 unless it says otherwise), bounds them,
+and past it they are refused `too_large` naming the ceiling. The
+`components-capped` line holds that bound: with the ceiling at half the
+lake's first size, the walk is refused at the ceiling at every size.
+
 **`lexical`.** Search is ranked retrieval: the view's position decides
 what may be seen, not how the current text ranks. A view answers from
 the engine's full-text index as it stands at the head, and keeps only

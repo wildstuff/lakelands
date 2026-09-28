@@ -60,3 +60,19 @@ declares for it. A group with no member has no record. Keeping a view's
 records materialised is an engine's optimisation, never a rule: it may
 make a read faster and may never change its answer, and the conformance
 checks on views bind it.
+
+## Extended: a whole-graph measure is a projection
+
+Degree centrality and connected components are two more projections of
+the one query, `degree` and `components`, not doors of their own. The
+start picks the records measured; each step names a relation and a
+direction. The answer is rows with fixed columns (`type`, `key`,
+`degree`; or `component`, `size`, `type`, `key`), paged like any rows,
+so a caller learns no new result shape. A measure refuses a step
+`depth` or `where`, `to` and `order_by`, and `components` refuses a
+step that does not walk `both`: each would be ignored otherwise, and an
+answer that ignored what it was asked would look like more than it is.
+Components hold every record they reach, so the lake bounds them by its
+`max_graph_nodes`; past it they are refused `too_large`, naming the
+ceiling, for the reason a step too deep is refused: a partition of part
+of the graph would look like the whole of it.

@@ -121,6 +121,7 @@ async fn every_error_comes_back_as_the_error_the_server_answered() {
             refused(None, Refusal::Precondition { message: message() }),
         ),
         (422, refused(None, Refusal::TooDeep { max: 4 })),
+        (422, refused(None, Refusal::TooLarge { max: 5 })),
         (
             422,
             refused(

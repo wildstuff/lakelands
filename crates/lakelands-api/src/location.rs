@@ -241,6 +241,9 @@ pub struct Limits {
     pub max_reactive_depth: u32,
     /// The most events one group-commit window holds.
     pub commit_window_events: u32,
+    /// The most records a whole-graph measure may reach; past it the
+    /// measure is refused `too_large`, never cut.
+    pub max_graph_nodes: u32,
 }
 
 impl Default for Limits {
@@ -251,6 +254,7 @@ impl Default for Limits {
             max_depth: 16,
             max_reactive_depth: 8,
             commit_window_events: 32,
+            max_graph_nodes: 100_000,
         }
     }
 }

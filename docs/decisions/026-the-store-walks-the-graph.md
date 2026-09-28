@@ -30,3 +30,16 @@ A graph projection always includes the start node, the root a viewer
 draws from, whatever the `min` of its steps. A rows projection holds a
 start only when a step reaches it. Either way the answer keeps the one
 order: depth, then type, then key.
+
+## Extended: the whole-graph measures are walks
+
+Degree centrality and connected components are computed once, in the
+store's core, over the same two questions every walk asks, so an engine
+answers them without knowing they exist. They count what a walk would
+follow: link records and via references live at the read's position, a
+far end that exists and is not retired and is of a type the caller may
+see, a restricted link only for a caller with the grant. A degree reads
+one record's links at a time and the start's records a page at a time,
+so measuring a whole type holds a page and the best rows asked for, not
+the type. Components hold every record they reach, up to the lake's
+`max_graph_nodes`, and are refused `too_large` past it, never cut.

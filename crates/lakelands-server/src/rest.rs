@@ -94,6 +94,7 @@ fn status_of(e: &Error) -> StatusCode {
             | Refusal::Constraint { .. }
             | Refusal::Precondition { .. }
             | Refusal::TooDeep { .. }
+            | Refusal::TooLarge { .. }
             | Refusal::Migration { .. }
             | Refusal::OutOfRange { .. } => StatusCode::UNPROCESSABLE_ENTITY,
         },

@@ -2,11 +2,13 @@
 //!
 //! A pattern starts somewhere (a type, a key, a filter or a search),
 //! walks declared relations step by step, and projects the result as
-//! rows or as a graph. `neighbors`, `traverse`, `path` and `subgraph`
-//! are named special cases of it, not doors of their own; a later
-//! query-language translator compiles into it. The planner knows the
-//! ontology: a step over a relation its type does not declare is refused,
-//! not empty, and grants apply per step because every step has a type.
+//! rows, as a graph, as aggregates, or as a whole-graph measure (degree
+//! centrality, connected components). `neighbors`, `traverse`, `path`
+//! and `subgraph` are named special cases of it, not doors of their own;
+//! a later query-language translator compiles into it. The planner knows
+//! the ontology: a step over a relation its type does not declare is
+//! refused, not empty, and grants apply per step because every step has a
+//! type.
 
 use std::collections::BTreeMap;
 
@@ -101,6 +103,20 @@ pub enum Projection {
     Graph,
     /// Aggregates over the matches.
     Aggregate(Aggregate),
+    /// Degree centrality: one row per start record, `type`, `key` and
+    /// `degree`, the number of its links over the steps' relations, each
+    /// in its step's direction, to a record the principal may see.
+    /// Ordered by degree, highest first, then by key.
+    Degree,
+    /// Connected components: one row per record, `component`, `size`,
+    /// `type` and `key`, for every record reached from the start records
+    /// over the steps' relations taken both ways. Components are ordered
+    /// by size, largest first, then by their least `(type, key)`, and
+    /// numbered from 0 in that order; a component's records by
+    /// `(type, key)`. A walk that would reach more than the lake's
+    /// `max_graph_nodes` is refused `too_large`, never cut
+    /// (`docs/decisions/026-the-store-walks-the-graph.md`).
+    Components,
 }
 
 impl Default for Projection {

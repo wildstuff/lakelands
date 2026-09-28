@@ -23,6 +23,7 @@ mod export;
 mod feed;
 mod fields;
 mod filters;
+mod graph_measures;
 mod ingest;
 mod keys;
 mod latest;
@@ -183,6 +184,11 @@ pub const ALL: &[Check] = &[
     date_bucket::NOT_DECLARED,
     filters::CLEARED_FIELD,
     walks::CYCLE_TERMINATES,
+    graph_measures::DEGREE_COUNTS,
+    graph_measures::COMPONENTS_PARTITION,
+    graph_measures::MEASURES_AT_THEIR_POSITION,
+    graph_measures::GRAPH_TOO_LARGE,
+    graph_measures::MEASURE_REFUSALS,
     search::SEARCH_FOLLOWS_TEXT,
     search::WITHHELD_NEVER_HITS,
     search::VECTOR_LEAVES_THE_NEIGHBOURS,

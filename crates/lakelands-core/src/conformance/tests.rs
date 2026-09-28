@@ -24,7 +24,8 @@ use lakelands_api::{
 };
 
 use super::{
-    Check, Failure, FreshLake, Harness, Reopen, Report, checks, run_all, run_checks, run_one,
+    Check, Failure, FreshLake, Harness, Relimit, Reopen, Report, checks, run_all, run_checks,
+    run_one,
 };
 
 /// Drives a future to completion on this thread. Everything the tests
@@ -193,6 +194,9 @@ impl Harness for DownHarness {
     fn reopener(&self) -> Reopen {
         Arc::new(|_, _| Box::pin(async { Err(down()) }))
     }
+    fn relimiter(&self) -> Relimit {
+        Arc::new(|_, _, _| Box::pin(async { Err(down()) }))
+    }
     fn scratch(&self) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("lakelands-conformance-{}", std::process::id()))
     }
@@ -210,6 +214,9 @@ impl Harness for NoLakes {
     }
     fn reopener(&self) -> Reopen {
         Arc::new(|_, _| Box::pin(async { Err(down()) }))
+    }
+    fn relimiter(&self) -> Relimit {
+        Arc::new(|_, _, _| Box::pin(async { Err(down()) }))
     }
     fn scratch(&self) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("lakelands-conformance-{}", std::process::id()))

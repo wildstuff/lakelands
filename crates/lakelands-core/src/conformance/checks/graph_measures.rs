@@ -1,0 +1,540 @@
+//! The whole-graph measures of the pattern query: degree centrality and
+//! connected components, over the links a walk would follow, in one order,
+//! bounded by the lake's `max_graph_nodes`
+//! (`docs/decisions/018-one-pattern-query.md`,
+//! `docs/decisions/026-the-store-walks-the-graph.md`,
+//! `docs/decisions/029-every-answer-has-one-order.md`).
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use lakelands_api::location::Limits;
+use lakelands_api::ontology::{
+    Cardinality, FieldDecl, FieldType, RelationDecl, StorageKind, TypeDecl,
+};
+use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Start, Step, Walk};
+use lakelands_api::read::{Order, ReadAt};
+use lakelands_api::seam::Seams;
+use lakelands_api::write::WriteOpts;
+use lakelands_api::{
+    Access, Catalog, Error, Grants, LakeStore, Position, Principal, PrincipalKind, Refusal, Value,
+};
+use serde_json::json;
+
+use crate::conformance::fixture::{
+    Must, declare, doors, field, owner, patch, principal, type_decl, upsert,
+};
+use crate::conformance::{Failure, Given};
+
+check!(
+    /// Degree counts what a walk would follow.
+    DEGREE_COUNTS = degree_counts_each_records_links_to_ends_it_may_see_highest_first,
+    "026, 029 and 035: `degree` counts each start record's links over the steps' relations in each step's direction, a via reference and a link record alike, but not a link to a retired end or, without the grant, a restricted link; highest first, ties by key, paged by limit"
+);
+
+check!(
+    /// Components partition what the start records reach.
+    COMPONENTS_PARTITION = components_partition_what_the_start_reaches_largest_first,
+    "026 and 029: `components` puts every record reached from the start over the steps' relations, both ways, in exactly one component, across types; components largest first, ties by their least (type, key), members by (type, key)"
+);
+
+check!(
+    /// A measure reads the graph at its position.
+    MEASURES_AT_THEIR_POSITION = a_measure_reads_the_graph_at_the_position_it_is_asked_at,
+    "009 and 026: a measure `as_of` an earlier position counts the links live there, not a link written later"
+);
+
+check!(
+    /// Past the cap, components are refused, not cut.
+    GRAPH_TOO_LARGE = components_past_the_lakes_max_graph_nodes_are_refused_too_large,
+    "018 and the location's limits: `components` whose records, over all components, would number more than `max_graph_nodes` are refused as too_large naming the ceiling, and nothing partial is answered",
+    given
+);
+
+check!(
+    /// A measure refuses what it would otherwise ignore.
+    MEASURE_REFUSALS = a_measure_refuses_depth_where_to_order_by_and_one_way_components,
+    "018: a measure refuses a step `depth` or `where`, `to`, `order_by`, and a `components` step that does not walk `both`, each as invalid, rather than answer less than it seems to"
+);
+
+/// Partners p1..p3; invoices i0..i5 (i0 linked to nothing); `billed_to` by the reference field
+/// `partner`, and `approved_by` carried by link records.
+///
+/// - billed_to: i1→p1, i2→p1, i3→p2, i5→p3 (p3 retired);
+/// - approved_by: i2→p1, i4→p1 (restricted), then i1→p2, written last.
+///
+/// Answers the position before the last link.
+async fn lake(store: &dyn LakeStore) -> Result<Position, Failure> {
+    let cat = doors(store);
+    let own = owner(store);
+    declare(
+        cat.as_ref(),
+        &own,
+        type_decl("partner", vec![field("name", StorageKind::Text)]),
+    )
+    .await?;
+    let mut invoice: TypeDecl = type_decl(
+        "invoice",
+        vec![
+            field("note", StorageKind::Text),
+            FieldDecl {
+                ty: FieldType {
+                    target: Some("partner".into()),
+                    ..FieldType::kind(StorageKind::Reference)
+                },
+                ..field("partner", StorageKind::Text)
+            },
+        ],
+    );
+    invoice.relations = vec![
+        RelationDecl {
+            name: "billed_to".into(),
+            target: "partner".into(),
+            cardinality: Cardinality::ManyToOne,
+            inverse: None,
+            via: Some("partner".into()),
+            fields: Vec::new(),
+            authority: Default::default(),
+            description: None,
+        },
+        RelationDecl {
+            name: "approved_by".into(),
+            target: "partner".into(),
+            cardinality: Cardinality::ManyToMany,
+            inverse: None,
+            via: None,
+            fields: Vec::new(),
+            authority: Default::default(),
+            description: None,
+        },
+    ];
+    declare(cat.as_ref(), &own, invoice).await?;
+    for p in ["p1", "p2", "p3"] {
+        upsert(cat.as_ref(), &own, "partner", p, json!({"name": p})).await?;
+    }
+    for (i, p) in [
+        ("i0", None),
+        ("i1", Some("p1")),
+        ("i2", Some("p1")),
+        ("i3", Some("p2")),
+        ("i4", None),
+        ("i5", Some("p3")),
+    ] {
+        let fields = p.map_or_else(|| json!({"note": i}), |p| json!({"note": i, "partner": p}));
+        upsert(cat.as_ref(), &own, "invoice", i, fields).await?;
+    }
+    cat.retire(&own, &"partner".into(), &"p3".into(), WriteOpts::default())
+        .await
+        .must("retiring p3")?;
+    for (from, to) in [("i2", "p1"), ("i4", "p1")] {
+        link(cat.as_ref(), &own, from, to).await?;
+    }
+    store
+        .restrict(
+            &"sys.link.invoice.approved_by".into(),
+            &lakelands_api::key::link_key(&"i4".into(), &"p1".into()),
+            "hold".into(),
+        )
+        .await
+        .must("restricting the link i4 → p1")?;
+    let before = store.head().await.must("reading the head")?;
+    link(cat.as_ref(), &own, "i1", "p2").await?;
+    Ok(before)
+}
+
+async fn link(cat: &dyn Catalog, who: &Principal, from: &str, to: &str) -> Result<(), Failure> {
+    cat.link(
+        who,
+        &"invoice".into(),
+        &from.into(),
+        &"approved_by".into(),
+        &to.into(),
+        patch(json!({})),
+        WriteOpts::default(),
+    )
+    .await
+    .must(&format!("linking {from} to {to}"))?;
+    Ok(())
+}
+
+/// A reader of everything, without the `restricted` grant.
+fn reader(store: &dyn LakeStore) -> Principal {
+    principal(
+        store,
+        PrincipalKind::Agent,
+        "reader",
+        Grants {
+            default: Access::Read,
+            ..Grants::default()
+        },
+    )
+}
+
+fn step(relation: &str, walk: Walk) -> Step {
+    Step {
+        relation: relation.into(),
+        walk,
+        ty: None,
+        filter: None,
+        depth: Depth::default(),
+    }
+}
+
+fn measure(ty: &str, steps: Vec<Step>, project: Projection) -> Pattern {
+    Pattern {
+        start: Start {
+            ty: ty.into(),
+            key: None,
+            filter: None,
+            search: None,
+        },
+        steps,
+        to: None,
+        project,
+        order_by: Vec::new(),
+        limit: None,
+        cursor: None,
+        at: ReadAt::default(),
+    }
+}
+
+fn both() -> Vec<Step> {
+    vec![
+        step("billed_to", Walk::Both),
+        step("approved_by", Walk::Both),
+    ]
+}
+
+/// The rows a measure answers, each as `column=value` joined by spaces.
+async fn rows(
+    cat: &dyn Catalog,
+    who: &Principal,
+    p: Pattern,
+    what: &str,
+) -> Result<(Vec<String>, bool), Failure> {
+    let reply = cat.query(who, p).await.must(what)?;
+    let QueryResult::Rows { rows, next_cursor } = reply.data else {
+        return Err(Failure::new(format!(
+            "{what} answered something other than rows"
+        )));
+    };
+    Ok((rows.iter().map(show).collect(), next_cursor.is_some()))
+}
+
+fn show(row: &BTreeMap<String, Value>) -> String {
+    let cell = |c: &str| match row.get(c) {
+        Some(Value::String(s)) => s.clone(),
+        Some(v) => v.to_string(),
+        None => "-".to_owned(),
+    };
+    if row.contains_key("degree") {
+        format!("{}:{}={}", cell("type"), cell("key"), cell("degree"))
+    } else {
+        format!(
+            "{}/{} {}:{}",
+            cell("component"),
+            cell("size"),
+            cell("type"),
+            cell("key")
+        )
+    }
+}
+
+async fn degree_counts_each_records_links_to_ends_it_may_see_highest_first(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    lake(store.as_ref()).await?;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let out = || {
+        measure(
+            "invoice",
+            vec![step("billed_to", Walk::Out), step("approved_by", Walk::Out)],
+            Projection::Degree,
+        )
+    };
+    let (got, _) = rows(cat.as_ref(), &own, out(), "the invoices' out-degree").await?;
+    ensure!(
+        got == [
+            "invoice:i1=2",
+            "invoice:i2=2",
+            "invoice:i3=1",
+            "invoice:i4=1",
+            "invoice:i0=0",
+            "invoice:i5=0"
+        ],
+        "the owner's out-degree over `billed_to` and `approved_by` is i1 2 (p1, p2), i2 2 \
+         (p1 by each relation), i3 1, i4 1 (the restricted link), i5 0 (its partner is \
+         retired) and i0 0, highest first and ties by key; it answered {got:?}"
+    );
+    let (got, _) = rows(
+        cat.as_ref(),
+        &reader(store.as_ref()),
+        out(),
+        "a reader's out-degree",
+    )
+    .await?;
+    ensure!(
+        got == [
+            "invoice:i1=2",
+            "invoice:i2=2",
+            "invoice:i3=1",
+            "invoice:i0=0",
+            "invoice:i4=0",
+            "invoice:i5=0"
+        ],
+        "without the `restricted` grant the link i4 → p1 is not counted; it answered {got:?}"
+    );
+    let inn = measure(
+        "partner",
+        vec![step("billed_to", Walk::In)],
+        Projection::Degree,
+    );
+    let (got, _) = rows(cat.as_ref(), &own, inn, "the partners' in-degree").await?;
+    ensure!(
+        got == ["partner:p1=2", "partner:p2=1"],
+        "the partners' in-degree over `billed_to` is p1 2, p2 1, and the retired p3 is no \
+         start; it answered {got:?}"
+    );
+    let mut first = out();
+    first.limit = Some(2);
+    let reply = cat
+        .query(&own, first)
+        .await
+        .must("the first page of degrees")?;
+    let QueryResult::Rows {
+        rows: page,
+        next_cursor,
+    } = reply.data
+    else {
+        return Err(Failure::new(
+            "a degree page answered something other than rows",
+        ));
+    };
+    let page: Vec<String> = page.iter().map(show).collect();
+    ensure!(
+        page == ["invoice:i1=2", "invoice:i2=2"] && next_cursor.is_some(),
+        "a first page of two holds i1 and i2 and a cursor; it answered {page:?}"
+    );
+    let mut next = out();
+    next.limit = Some(2);
+    next.cursor = next_cursor;
+    let (got, _) = rows(cat.as_ref(), &own, next, "the second page of degrees").await?;
+    ensure!(
+        got == ["invoice:i3=1", "invoice:i4=1"],
+        "the second page holds i3 and i4; it answered {got:?}"
+    );
+    Ok(())
+}
+
+async fn components_partition_what_the_start_reaches_largest_first(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    lake(store.as_ref()).await?;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let all = || measure("invoice", both(), Projection::Components);
+    let (got, _) = rows(cat.as_ref(), &own, all(), "the invoices' components").await?;
+    let want = [
+        "0/6 invoice:i1",
+        "0/6 invoice:i2",
+        "0/6 invoice:i3",
+        "0/6 invoice:i4",
+        "0/6 partner:p1",
+        "0/6 partner:p2",
+        "1/1 invoice:i0",
+        "2/1 invoice:i5",
+    ];
+    ensure!(
+        got == want,
+        "the invoices and the partners they reach form one component of six (i3 joins \
+         through p2 and the link i1 → p2); i0 and i5 (p3 is retired) stand alone and \
+         come after it, though i0 sorts first; it answered {got:?}"
+    );
+    let (got, _) = rows(
+        cat.as_ref(),
+        &reader(store.as_ref()),
+        all(),
+        "a reader's components",
+    )
+    .await?;
+    let want = [
+        "0/5 invoice:i1",
+        "0/5 invoice:i2",
+        "0/5 invoice:i3",
+        "0/5 partner:p1",
+        "0/5 partner:p2",
+        "1/1 invoice:i0",
+        "2/1 invoice:i4",
+        "3/1 invoice:i5",
+    ];
+    ensure!(
+        got == want,
+        "without the `restricted` grant i4 is alone, and the two single components come \
+         by their least member; it answered {got:?}"
+    );
+    Ok(())
+}
+
+async fn a_measure_reads_the_graph_at_the_position_it_is_asked_at(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let before = lake(store.as_ref()).await?;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let mut then = measure("invoice", both(), Projection::Components);
+    then.at.as_of = Some(before);
+    let (got, _) = rows(
+        cat.as_ref(),
+        &own,
+        then,
+        "the components before the last link",
+    )
+    .await?;
+    let want = [
+        "0/4 invoice:i1",
+        "0/4 invoice:i2",
+        "0/4 invoice:i4",
+        "0/4 partner:p1",
+        "1/2 invoice:i3",
+        "1/2 partner:p2",
+        "2/1 invoice:i0",
+        "3/1 invoice:i5",
+    ];
+    ensure!(
+        got == want,
+        "at position {before}, before the link i1 → p2, i3 and p2 are a component of \
+         their own; it answered {got:?}"
+    );
+    let mut then = measure(
+        "invoice",
+        vec![step("approved_by", Walk::Out)],
+        Projection::Degree,
+    );
+    then.at.as_of = Some(before);
+    let (got, _) = rows(cat.as_ref(), &own, then, "the degrees before the last link").await?;
+    ensure!(
+        got.first().map(String::as_str) == Some("invoice:i2=1")
+            && got.contains(&"invoice:i1=0".to_owned()),
+        "at position {before} i1 has no `approved_by` link yet; it answered {got:?}"
+    );
+    Ok(())
+}
+
+async fn components_past_the_lakes_max_graph_nodes_are_refused_too_large(
+    store: Arc<dyn LakeStore>,
+    given: Given,
+) -> Result<(), Failure> {
+    lake(store.as_ref()).await?;
+    let limits = |max_graph_nodes| Limits {
+        max_graph_nodes,
+        ..crate::conformance::fixture::limits()
+    };
+    let store = (given.relimit)(store, Seams::default(), limits(8))
+        .await
+        .map_err(|e| {
+            Failure::new(format!(
+                "opening the lake again with max_graph_nodes 7 failed: {e}"
+            ))
+        })?;
+    let all = || measure("invoice", both(), Projection::Components);
+    let (got, _) = rows(
+        doors(store.as_ref()).as_ref(),
+        &owner(store.as_ref()),
+        all(),
+        "components of eight records under a cap of 8",
+    )
+    .await
+    .map(|r| (r.0.len(), r.1))
+    .map_err(|e| Failure::new(format!("{e}: the eight records fit a cap of 8")))?;
+    ensure!(
+        got == 8,
+        "under a cap of 8 the components answer eight rows; they answered {got}"
+    );
+    let store = (given.relimit)(store, Seams::default(), limits(7))
+        .await
+        .map_err(|e| {
+            Failure::new(format!(
+                "opening the lake again with max_graph_nodes 6 failed: {e}"
+            ))
+        })?;
+    let before = store.head().await.must("reading the head")?;
+    let err = doors(store.as_ref())
+        .query(&owner(store.as_ref()), all())
+        .await
+        .must_fail("components past a cap of 7")?;
+    ensure!(
+        matches!(
+            err,
+            Error::Refused {
+                reason: Refusal::TooLarge { max: 7 },
+                ..
+            }
+        ),
+        "components that reach eight records past a cap of 7 are refused as too_large \
+         naming 7; it failed with {err:?}"
+    );
+    crate::conformance::fixture::head_unmoved(store.as_ref(), before, "a measure past the cap")
+        .await
+}
+
+async fn a_measure_refuses_depth_where_to_order_by_and_one_way_components(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    lake(store.as_ref()).await?;
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let degree = || {
+        measure(
+            "invoice",
+            vec![step("billed_to", Walk::Out)],
+            Projection::Degree,
+        )
+    };
+    let mut cases: Vec<(&str, Pattern)> = Vec::new();
+    let mut p = degree();
+    p.steps[0].depth = Depth { min: 1, max: 2 };
+    cases.push(("a step depth", p));
+    let mut p = degree();
+    p.steps[0].filter = Some("name = 'p1'".into());
+    cases.push(("a step where", p));
+    let mut p = degree();
+    p.to = Some(("partner".into(), "p1".into()));
+    cases.push(("`to`", p));
+    let mut p = degree();
+    p.order_by = vec![Order {
+        field: "degree".into(),
+        by: Default::default(),
+        dir: Default::default(),
+    }];
+    cases.push(("`order_by`", p));
+    cases.push((
+        "components walking one way",
+        measure(
+            "invoice",
+            vec![step("billed_to", Walk::Out)],
+            Projection::Components,
+        ),
+    ));
+    cases.push((
+        "a measure with no step",
+        measure("invoice", Vec::new(), Projection::Degree),
+    ));
+    for (what, p) in cases {
+        let err = cat
+            .query(&own, p)
+            .await
+            .must_fail(&format!("a measure with {what}"))?;
+        ensure!(
+            matches!(
+                err,
+                Error::Refused {
+                    reason: Refusal::Invalid { .. },
+                    ..
+                }
+            ),
+            "a measure with {what} must be refused as invalid; it failed with {err:?}"
+        );
+    }
+    Ok(())
+}

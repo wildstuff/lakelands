@@ -21,6 +21,9 @@ the answer and the same on every engine:
   break a tie.
 - **Walks** order what they reach by depth, then type, then key, and links
   by their ends (`docs/decisions/026-the-store-walks-the-graph.md`).
+- **Graph measures** order degrees highest first, ties by type and key;
+  components largest first, ties by their least type and key, numbered
+  from 0 in that order, and a component's records by type and key.
 - **Ranked search** breaks equal scores by key. Hybrid search fuses its
   lexical and vector rankings by reciprocal rank (each ranking adds
   `1 / (60 + rank)` per record, rank from 0), then breaks ties by key.

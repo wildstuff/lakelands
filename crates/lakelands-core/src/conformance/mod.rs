@@ -132,6 +132,11 @@ pub trait Harness: Send + Sync {
     /// a check that meets the lake's next writer is given.
     fn reopener(&self) -> Reopen;
 
+    /// How this harness opens a lake it handed out again with other
+    /// [`Limits`](lakelands_api::location::Limits): the [`Relimit`] a check
+    /// that needs a lake past one of its ceilings is given.
+    fn relimiter(&self) -> Relimit;
+
     /// A directory of the harness's own, which a check that writes files
     /// (an export) writes under: each such check is given the
     /// subdirectory named after it, and removes what it wrote. The suite
@@ -179,6 +184,8 @@ pub trait Meter: Send + Sync {
 pub struct Given {
     /// How the harness opens the check's lake again.
     pub reopen: Reopen,
+    /// How the harness opens the check's lake again with other limits.
+    pub relimit: Relimit,
     /// A directory for the check alone; it may not exist yet.
     pub scratch: PathBuf,
     /// The harness's [`Meter`], if it has one.
@@ -193,6 +200,14 @@ pub struct Given {
 /// `seams` and the harness's engine, as a host's next process opens it:
 /// the same lake, a new writer.
 pub type Reopen = Arc<dyn Fn(Arc<dyn LakeStore>, Seams) -> FreshLake<'static> + Send + Sync>;
+
+/// Closes a lake the harness opened and opens it again for writing, as
+/// [`Reopen`] does, with its location's limits replaced by these.
+pub type Relimit = Arc<
+    dyn Fn(Arc<dyn LakeStore>, Seams, lakelands_api::location::Limits) -> FreshLake<'static>
+        + Send
+        + Sync,
+>;
 
 /// The future [`Harness::fresh`] answers: a new, empty lake, or why none
 /// could be opened.
@@ -334,6 +349,7 @@ async fn run_check(harness: &dyn Harness, check: &Check) -> Result<(), Failure> 
     fixture::default_limits(store.as_ref())?;
     let given = Given {
         reopen: harness.reopener(),
+        relimit: harness.relimiter(),
         scratch: harness.scratch().join(check.name),
         meter: harness.meter(),
         large_lake: harness.large_lake(),

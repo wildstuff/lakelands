@@ -912,7 +912,8 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             (
                 "project",
                 json!({"type": "object", "properties": {
-                "as": {"enum": ["rows", "graph", "aggregate"]},
+                "as": {"enum": ["rows", "graph", "aggregate", "degree", "components"],
+                       "description": "`degree` answers rows of `type`, `key` and `degree` (links over the steps' relations), highest first; `components` answers rows of `component`, `size`, `type` and `key`, largest component first. Both take steps without `depth` or `where`; `components` walks each step `both`."},
                 "fields": {"type": "array", "items": {"type": "string"}}}}),
             ),
             ("order_by", order_by_schema(json!({"type": "string"}))),
@@ -922,7 +923,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
         time_axes(&mut p);
         out.push(ToolSpec {
             name: QUERY.into(),
-            description: "Walk declared relations from a start (a record, a filter or a search) and return rows or a graph. Covers neighbours, traversal, paths and subgraphs.".into(),
+            description: "Walk declared relations from a start (a record, a filter or a search) and return rows or a graph. Covers neighbours, traversal, paths and subgraphs, and two whole-graph measures: degree centrality and connected components.".into(),
             input_schema: obj(p, &["start"]),
             output_schema: reply_schema(json!({"type": "object"})),
             door: Door::Query,

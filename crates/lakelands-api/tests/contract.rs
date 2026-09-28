@@ -19,6 +19,7 @@ fn intent(e: &Error) -> &'static str {
             Refusal::Constraint { .. } => "a value breaks a declared constraint",
             Refusal::Precondition { .. } => "a verb's `requires` does not hold",
             Refusal::TooDeep { .. } => "a chain of reactions passed the lake's ceiling",
+            Refusal::TooLarge { .. } => "a graph measure would reach past the lake's ceiling",
             Refusal::Migration { .. } => "a migration would lose information",
             Refusal::Decided => "the proposal is already decided",
             Refusal::OutOfRange { .. } => "the position is past the head",
