@@ -541,10 +541,12 @@ fn vector_of(bytes: &[u8]) -> Vec<f32> {
 /// The vector index: each field's vectors in one table, searched by
 /// brute force with the one cosine every engine uses
 /// (`lakelands_core::engines::cosine`), so its answers are those of every
-/// other engine to the last bit. A query reads every vector of the field,
-/// so its cost grows linearly with them: the ceiling `docs/seams.md`
-/// states. Vectors are indexed at the head only; filtering the candidates
-/// by what an earlier view could see is the store's.
+/// other engine to the last bit. A query steps through every vector of
+/// the field and keeps only the best `k`
+/// (`lakelands_core::engines::TopK`), so its cost grows linearly with them
+/// and what it holds does not: the ceiling `docs/seams.md` states.
+/// Vectors are indexed at the head only; filtering the candidates by what
+/// an earlier view could see is the store's.
 impl VectorIndex for SqliteLake {
     fn put(&self, ty: &TypeName, key: &RecordKey, field: &str, vector: &[f32]) -> Result<()> {
         self.write(|conn| {
@@ -592,7 +594,7 @@ impl VectorIndex for SqliteLake {
                 Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
             })
             .map_err(sql)?;
-        let mut hits = Vec::new();
+        let mut top = lakelands_core::engines::TopK::new(k);
         for row in rows {
             let (key, data) = row.map_err(sql)?;
             let v = vector_of(&data);
@@ -604,13 +606,12 @@ impl VectorIndex for SqliteLake {
                     v.len()
                 )));
             }
-            hits.push((
-                RecordKey::from(key),
+            top.push(
+                &RecordKey::from(key),
                 lakelands_core::engines::cosine(query, &v),
-            ));
+            );
         }
-        lakelands_core::engines::rank(&mut hits, k);
-        Ok(hits)
+        Ok(top.into_ranked())
     }
 
     fn count(&self, ty: &TypeName, field: &str) -> Result<u64> {

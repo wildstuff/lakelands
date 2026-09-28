@@ -1,5 +1,5 @@
 //! The vector index: every vector of one field of one type, searched by
-//! brute force.
+//! brute force, keeping only the best `k` as it goes.
 //!
 //! Similarity is the cosine of the angle between the query and a stored
 //! vector, so a higher score is closer and the length of a vector does
@@ -47,7 +47,7 @@ impl Vectors {
         let Some(vectors) = self.0.get(&(ty.clone(), field.to_owned())) else {
             return Ok(Vec::new());
         };
-        let mut hits = Vec::with_capacity(vectors.len());
+        let mut top = lakelands_core::engines::TopK::new(k);
         for (key, v) in vectors {
             if v.len() != query.len() {
                 return Err(invalid(format!(
@@ -57,10 +57,9 @@ impl Vectors {
                     v.len()
                 )));
             }
-            hits.push((key.clone(), lakelands_core::engines::cosine(query, v)));
+            top.push(key, lakelands_core::engines::cosine(query, v));
         }
-        lakelands_core::engines::rank(&mut hits, k);
-        Ok(hits)
+        Ok(top.into_ranked())
     }
 
     /// How many vectors one field holds.

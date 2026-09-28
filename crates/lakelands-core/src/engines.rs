@@ -34,7 +34,7 @@
 //!   ties by key.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use lakelands_api::engine::{After, Scan};
 use lakelands_api::expr::Expr;
@@ -743,6 +743,84 @@ pub fn rank(hits: &mut Vec<(RecordKey, f64)>, k: u32) {
     hits.truncate(k as usize);
 }
 
+/// The best `k` of a stream of scored keys, holding at most `k` of them
+/// at any time: what `rank` answers over the whole stream, without
+/// keeping it. `rank`'s order is total, so its first `k` are one set in
+/// one order however the stream arrives, and a bounded heap ordered by it
+/// keeps exactly them. An engine's vector scan feeds every vector's score
+/// here, so a search holds `k` entries, not the field.
+#[derive(Debug)]
+pub struct TopK {
+    k: usize,
+    /// The kept entries, the one ranking last on top.
+    heap: BinaryHeap<Kept>,
+}
+
+/// A kept entry, ordered as `rank` orders: greater ranks later.
+#[derive(Debug)]
+struct Kept(RecordKey, f64);
+
+impl PartialEq for Kept {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for Kept {}
+
+impl PartialOrd for Kept {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Kept {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .1
+            .total_cmp(&self.1)
+            .then_with(|| self.0.cmp(&other.0))
+    }
+}
+
+impl TopK {
+    /// Keeps the best `k`; `k` may exceed what the stream holds.
+    pub fn new(k: u32) -> Self {
+        Self {
+            k: k as usize,
+            heap: BinaryHeap::new(),
+        }
+    }
+
+    /// Offers one scored key; the key is cloned only when it is kept.
+    pub fn push(&mut self, key: &RecordKey, score: f64) {
+        if self.heap.len() < self.k {
+            self.heap.push(Kept(key.clone(), score));
+            return;
+        }
+        let Some(mut last) = self.heap.peek_mut() else {
+            return;
+        };
+        let before = match score.total_cmp(&last.1) {
+            Ordering::Greater => true,
+            Ordering::Less => false,
+            Ordering::Equal => *key < last.0,
+        };
+        if before {
+            *last = Kept(key.clone(), score);
+        }
+    }
+
+    /// The kept entries, best first, ties by key.
+    pub fn into_ranked(self) -> Vec<(RecordKey, f64)> {
+        self.heap
+            .into_sorted_vec()
+            .into_iter()
+            .map(|Kept(key, score)| (key, score))
+            .collect()
+    }
+}
+
 /// Proposals as a view answers them: those in `filter`'s state and of its
 /// type (`verb_on` says which type a verb acts on, as declared at the
 /// view's position), newest first, ties by id, at most `filter.limit`.
@@ -1153,5 +1231,53 @@ mod tests {
             .map(|(k, _): &(RecordKey, f64)| k.as_str())
             .collect();
         assert_eq!(keys, ["c", "a"]);
+    }
+
+    /// `TopK` answers what `rank` answers over the whole stream, to the
+    /// bit: random corpora with few distinct scores (so ties straddle the
+    /// cut), both zeros, keys offered in any order, every `k` from none
+    /// to more than the corpus, and `u32::MAX`.
+    #[test]
+    fn top_k_answers_what_rank_answers() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            // splitmix64
+            seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = seed;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        };
+        for _ in 0..500 {
+            let n = (next() % 60) as usize;
+            let distinct = 1 + next() % 6;
+            let scores = [-1.0, -0.0, 0.0, 0.25, 0.5, 1.0 / 3.0, 1.0];
+            let corpus: Vec<(RecordKey, f64)> = (0..n)
+                .map(|i| {
+                    let score = if next().is_multiple_of(4) {
+                        f64::from_bits(next() >> 2)
+                    } else {
+                        scores[(next() % distinct) as usize]
+                    };
+                    (RecordKey::from(format!("{:02x}-{i}", next() % 16)), score)
+                })
+                .collect();
+            let ks = [0, 1, 2, (n / 2) as u32, n as u32, n as u32 + 3, u32::MAX];
+            for k in ks.into_iter().chain([(next() % 64) as u32]) {
+                let mut reference = corpus.clone();
+                rank(&mut reference, k);
+                let mut top = TopK::new(k);
+                for (key, score) in &corpus {
+                    top.push(key, *score);
+                }
+                let got = top.into_ranked();
+                let bits = |v: &[(RecordKey, f64)]| {
+                    v.iter()
+                        .map(|(key, s)| (key.clone(), s.to_bits()))
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(bits(&got), bits(&reference), "k = {k} over {corpus:?}");
+            }
+        }
     }
 }

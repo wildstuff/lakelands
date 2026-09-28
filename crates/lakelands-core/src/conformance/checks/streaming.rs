@@ -50,19 +50,17 @@
 //! and the walk answers the same rows at every size: what it holds
 //! depends on what it reaches, not on the lake. Its time is reported
 //! only; on the memory engine and on PostgreSQL it still grows with the
-//! links (lakelands#190). A harness
-//! without a meter runs everything else the check claims and reports the
-//! heap as not measured.
+//! links (lakelands#190). And one hybrid search per size, k = 10, for a
+//! fixed text through the suite's embedding backend: every record holds a
+//! vector, so the vector side scans the whole field, and each engine keeps
+//! only the best candidates as it goes, not the field (lakelands#197). A
+//! harness without a meter runs everything else the check claims and
+//! reports the heap as not measured.
 //!
-//! **Reported lines.** Two more operations are measured against the same
-//! bound and reported, but never fail the check. One hybrid search per
-//! size, k = 10, for a fixed text through the suite's embedding backend,
-//! until the index that earns the claim turns its line held
-//! (lakelands#188): every record holds a vector, so the vector side ranks
-//! the whole field, and the engines search it by brute force. And the
-//! same first pages ordered by a field, before the setting asks for its
-//! index: a page then sorts the type, which is that order's stated
-//! ceiling (lakelands#193).
+//! **A reported line.** One more operation is measured against the same
+//! bound and reported, but never fails the check: the same first pages
+//! ordered by a field, before the setting asks for its index: a page then
+//! sorts the type, which is that order's stated ceiling (lakelands#193).
 //!
 //! **What a green run does not show.** Two limits of the measurement:
 //!
@@ -121,7 +119,7 @@ use crate::links::{link_key, link_type_name};
 check!(
     /// A large lake goes through ingest, the feed and export in bounded memory.
     STREAMS = a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it,
-    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification, each page of a walk of a type through find, a rebuild, a reopen and a three-hop walk over link records hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB; a hybrid search answers what it must and is measured against the same bound, reported only",
+    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification, each page of a walk of a type through find, a rebuild, a reopen, a three-hop walk over link records and a hybrid search with k = 10 over every record's vector hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB, and the search answers what it must",
     given,
     embedding
 );
@@ -984,7 +982,7 @@ impl Size<'_> {
         );
         self.row(
             "search",
-            Claim::Reported("lakelands#188"),
+            Claim::Held,
             records,
             head.0 + 1,
             format!("hybrid, k = {K}, over {} vectors", self.live),
