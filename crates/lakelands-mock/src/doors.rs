@@ -10,20 +10,22 @@ use lakelands_api::describe::{
 };
 use lakelands_api::error::{Error, Missing, Refusal, Result};
 use lakelands_api::event::{EventBody, EventId};
-use lakelands_api::expr::Expr;
+use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::id::{
     Cursor, FieldName, LakeId, Position, ProposalId, RecordKey, RelationName, SourceId, TypeName,
     VerbName, Version,
 };
-use lakelands_api::ontology::{Authority, FieldDecl, Risk, TypeDecl, VerbDecl, VerbEffect};
+use lakelands_api::ontology::{
+    Authority, FieldDecl, Risk, TypeDecl, VerbDecl, VerbEffect, ViewDecl,
+};
 use lakelands_api::principal::{Access, Principal, PrincipalKind, WriteContext};
 use lakelands_api::query::{Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Walk};
 use lakelands_api::read::{After, Direction, Find, Found, Get, Order, OrderBy, ReadAt, Reply};
 use lakelands_api::record::{Origin, Patch, Record, SourceRecord, StoredRecord, Value};
 use lakelands_api::seam::{SETTING_TYPE, SORT_INDEX_SETTING, sortable};
 use lakelands_api::write::{
-    Committed, Declaration, FieldConversion, Migration, MigrationReport, Outcome, Proposal,
-    ProposalFilter, ProposalState, ProposedWrite, WriteOpts,
+    Committed, Declaration, FieldConversion, FunctionDecl, Migration, MigrationReport, Outcome,
+    Proposal, ProposalFilter, ProposalState, ProposedWrite, WriteOpts,
 };
 use lakelands_api::{Catalog, CommitStream, SourceStream};
 
@@ -731,6 +733,9 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
     TypeDescription {
         name: d.name.clone(),
         description: d.description.clone(),
+        label: d.label.clone(),
+        language: d.language.clone(),
+        view: d.view.clone().filter(|v| view_visible(st, who, v)),
         fields,
         relations: d
             .relations
@@ -788,6 +793,90 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
     }
 }
 
+/// Declarations listed in name order, as the store lists them.
+fn by_name<T>(items: impl Iterator<Item = T>, name: impl Fn(&T) -> String) -> Vec<T> {
+    let mut v: Vec<T> = items.collect();
+    v.sort_by_key(|x| name(x));
+    v
+}
+
+/// Whether `who` reads every one of `names` on type `ty`.
+fn reads_all<'a>(
+    st: &State,
+    who: &Principal,
+    ty: &TypeName,
+    names: impl IntoIterator<Item = &'a FieldName>,
+) -> bool {
+    let Some(t) = st.types.get(ty) else {
+        return false;
+    };
+    names
+        .into_iter()
+        .all(|n| field(&t.decl, n).is_some_and(|f| access(who, ty, f).reads()))
+}
+
+/// The fields a condition names: the first segment of each path.
+fn named(c: &Condition) -> Option<BTreeSet<FieldName>> {
+    let e = expr::typed(c).ok()?;
+    let mut paths = vec![];
+    expr::paths(&e, &mut paths);
+    Some(
+        paths
+            .into_iter()
+            .filter_map(|p| p.first().cloned())
+            .collect(),
+    )
+}
+
+/// A trigger's guard or an object set's condition is shown to a principal
+/// who reads every field it names, or holds the `schema` grant.
+fn condition_visible(st: &State, who: &Principal, ty: &TypeName, c: Option<&Condition>) -> bool {
+    who.grants.schema || c.is_none_or(|c| named(c).is_some_and(|n| reads_all(st, who, ty, &n)))
+}
+
+/// A view is shown whole on the same rule, over its source's fields.
+fn view_visible(st: &State, who: &Principal, v: &ViewDecl) -> bool {
+    if who.grants.schema {
+        return true;
+    }
+    let mut names: BTreeSet<FieldName> = v.group_by.iter().cloned().collect();
+    for c in v.r#where.iter().chain(v.measures.iter().map(|m| &m.expr)) {
+        match named(c) {
+            Some(n) => names.extend(n),
+            None => return false,
+        }
+    }
+    reads_all(st, who, &v.source, &names)
+}
+
+/// A function is shown when it computes some field and, on every type
+/// where it does, the principal reads that field and every input.
+fn function_visible(st: &State, who: &Principal, f: &FunctionDecl) -> bool {
+    if who.grants.schema {
+        return true;
+    }
+    let uses: Vec<(&TypeName, &FieldName)> = st
+        .types
+        .values()
+        .flat_map(|t| {
+            t.decl
+                .fields
+                .iter()
+                .filter(|x| x.function.as_deref() == Some(f.name.as_str()))
+                .map(move |x| (&t.decl.name, &x.name))
+        })
+        .collect();
+    !uses.is_empty()
+        && uses.iter().all(|(ty, x)| {
+            reads_all(
+                st,
+                who,
+                ty,
+                std::iter::once(*x).chain(f.inputs.iter().map(|i| &i.name)),
+            )
+        })
+}
+
 fn describe_lake(lake: &LakeId, st: &State, who: &Principal) -> LakeDescription {
     LakeDescription {
         lake: lake.clone(),
@@ -815,7 +904,33 @@ fn describe_lake(lake: &LakeId, st: &State, who: &Principal) -> LakeDescription 
             })
             .collect(),
         value_types: st.value_types.clone(),
-        triggers: st.triggers.iter().map(|t| t.name.clone()).collect(),
+        functions: by_name(
+            st.functions
+                .iter()
+                .filter(|f| function_visible(st, who, f))
+                .cloned(),
+            |f| f.name.clone(),
+        ),
+        triggers: by_name(
+            st.triggers
+                .iter()
+                .filter(|t| {
+                    st.visible(who, &t.on).is_some()
+                        && condition_visible(st, who, &t.on, t.when.as_ref())
+                })
+                .cloned(),
+            |t| t.name.to_string(),
+        ),
+        object_sets: by_name(
+            st.object_sets
+                .iter()
+                .filter(|s| {
+                    st.visible(who, &s.of).is_some()
+                        && condition_visible(st, who, &s.of, Some(&s.filter))
+                })
+                .cloned(),
+            |s| s.name.clone(),
+        ),
         may: LakeRights {
             review: who.grants.review,
             schema: who.grants.schema,

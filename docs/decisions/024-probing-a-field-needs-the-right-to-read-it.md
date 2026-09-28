@@ -7,6 +7,13 @@ searches it is refused when the principal may not read that field —
 also when the field would have been masked in the answer. The refusal
 names the field.
 
+`describe` holds to the same line: a masked field is described by its
+shape only — its name, type, access, whether it is required and
+sensitive, its authority and what an input change does to it — never by
+what it is computed from or what it means, and a function, trigger,
+object set or view that names a field the principal may not read is not
+described to it. This tightened in 0.4.0 (lakelands#206).
+
 ## Why
 
 Masking the answer does not protect a value the question already

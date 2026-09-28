@@ -17,6 +17,7 @@ mod cursors;
 mod date_bucket;
 mod decimals;
 mod derived_fields;
+mod describe;
 mod embeddings;
 mod export;
 mod feed;
@@ -282,4 +283,5 @@ pub const ALL: &[Check] = &[
     streaming::STREAMS,
     reactive_depth::TOO_DEEP,
     after::AFTER_RESUMES,
+    describe::DESCRIBE_IS_THE_DECLARATION,
 ];

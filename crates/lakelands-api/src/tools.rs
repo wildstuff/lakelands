@@ -794,7 +794,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
     time_axes(&mut p);
     out.push(ToolSpec {
         name: DESCRIBE.into(),
-        description: "Describe the lake, or one type on six axes: structure, access, rights, actions, lineage, lifecycle.".into(),
+        description: "Describe the lake: its types, verbs, value types, functions, triggers and object sets as declared; or one type on six axes: structure, access, rights, actions, lineage, lifecycle.".into(),
         input_schema: obj(p, &[]),
         output_schema: reply_schema(json!({"type": "object"})),
         door: Door::Describe,
@@ -1102,6 +1102,9 @@ mod tests {
         TypeDescription {
             name: name.into(),
             description: None,
+            label: None,
+            language: None,
+            view: None,
             fields,
             relations: vec![],
             access: TypeAccess {
@@ -1150,7 +1153,9 @@ mod tests {
             types,
             verbs,
             value_types: vec![],
+            functions: vec![],
             triggers: vec![],
+            object_sets: vec![],
             may,
         }
     }

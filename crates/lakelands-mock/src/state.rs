@@ -15,7 +15,9 @@ use lakelands_api::ontology::{
 };
 use lakelands_api::principal::{Access, Principal};
 use lakelands_api::record::{FieldMeta, Origin, Record, StoredRecord};
-use lakelands_api::write::{Declaration, ObjectSetDecl, Outcome, Proposal, ProposalState};
+use lakelands_api::write::{
+    Declaration, FunctionDecl, ObjectSetDecl, Outcome, Proposal, ProposalState,
+};
 
 /// One declared type, with its declaration's version and shape hash.
 #[derive(Clone, Debug)]
@@ -33,8 +35,8 @@ pub(crate) struct State {
     pub value_types: Vec<ValueTypeDecl>,
     pub triggers: Vec<TriggerDecl>,
     pub object_sets: Vec<ObjectSetDecl>,
-    /// Declarations the mock keeps but gives no meaning.
-    pub other_declarations: Vec<Declaration>,
+    /// Functions, kept for `describe`; the mock computes none of them.
+    pub functions: Vec<FunctionDecl>,
     /// The version of every declaration but a type's, by kind and name.
     pub decl_versions: BTreeMap<String, u32>,
     pub records: BTreeMap<(TypeName, RecordKey), StoredRecord>,
@@ -253,8 +255,10 @@ impl State {
                 self.object_sets.retain(|x| x.name != s.name);
                 self.object_sets.push(s.clone());
             }
-            #[allow(unreachable_patterns)]
-            other => self.other_declarations.push(other.clone()),
+            Declaration::Function(f) => {
+                self.functions.retain(|x| x.name != f.name);
+                self.functions.push(f.clone());
+            }
         }
     }
 
