@@ -1,7 +1,7 @@
 //! The text form of the one expression grammar: parsing into
 //! [`Expr`] and printing back.
 //!
-//! A recursive-descent parser over the grammar in `lakelands_api::expr`,
+//! A recursive-descent parser over the grammar in [`crate::expr`],
 //! with left-associative binary operators and the precedence, loosest
 //! first: `or`, `and`, `not`, comparisons (`=`, `!=`, `<`, `<=`, `>`,
 //! `>=`, `in`, `is [not] null`), `+ -`, `* /`, unary `-`. `and` and `or`
@@ -16,8 +16,8 @@
 
 use std::fmt;
 
-use lakelands_api::FieldName;
-use lakelands_api::expr::{ArithOp, CmpOp, Expr, Func, Literal};
+use super::{ArithOp, CmpOp, Expr, Func, Literal};
+use crate::FieldName;
 
 /// Why a text expression does not parse.
 #[derive(Clone, Debug, PartialEq, Eq)]

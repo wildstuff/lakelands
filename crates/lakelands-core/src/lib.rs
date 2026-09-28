@@ -9,7 +9,7 @@
 
 #![forbid(unsafe_code)]
 
-pub mod canonical;
+pub use lakelands_api::canonical;
 
 pub mod bundle;
 pub mod conformance;

@@ -158,7 +158,9 @@ impl MockLake {
             lakelands_api::seam::aging_rule_type(),
         ] {
             batch.push(Draft::system(EventBody::Declared {
-                schema_hash: Some(value::schema_hash(&t)),
+                schema_hash: Some(
+                    lakelands_api::shape::schema_hash(&t).expect("a system type has no view"),
+                ),
                 declaration: lakelands_api::write::Declaration::Type(t),
                 version: 1,
             }));

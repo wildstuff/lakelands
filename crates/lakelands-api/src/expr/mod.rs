@@ -83,6 +83,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::id::FieldName;
 
+mod parse;
+
+pub use parse::{ParseError, arity, func_name, parse, print};
+
 /// An expression in the one grammar, typed. A member this form does not
 /// know is refused, never ignored.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

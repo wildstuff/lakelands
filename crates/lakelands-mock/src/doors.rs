@@ -437,7 +437,7 @@ fn identity(d: &Declaration) -> String {
 fn identity_version(st: &State, d: &Declaration) -> (Option<String>, u32) {
     match d {
         Declaration::Type(t) => (
-            Some(value::schema_hash(t)),
+            lakelands_api::shape::schema_hash(t).ok(),
             st.types.get(&t.name).map_or(1, |old| old.version + 1),
         ),
         other => {
@@ -513,6 +513,9 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
             if reserved(t.name.as_str(), who) {
                 return Err(refused(Refusal::Reserved));
             }
+            // A view is hashed over its conditions' typed form, so one that
+            // does not parse has no schema hash and is not declared.
+            lakelands_api::shape::schema_hash(t).map_err(|e| invalid(e.to_string()))?;
             if let Some(old) = st.types.get(&t.name) {
                 if reshapes(&old.decl, t) {
                     return Err(invalid(format!(
@@ -1134,18 +1137,6 @@ fn check_references(
     Ok(())
 }
 
-/// One key field's value as a component of a record's key: its string
-/// form, `%` written `%25` and `:` written `%3A`.
-fn key_component(v: &Value) -> Option<String> {
-    let text = match v {
-        Value::String(s) => s.clone(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => n.to_string(),
-        _ => return None,
-    };
-    Some(text.replace('%', "%25").replace(':', "%3A"))
-}
-
 /// The key rule (`docs/log-format.md` §2.3): on a create, the key fields a
 /// patch leaves out are read from the key's components; and a key must
 /// agree with the key fields the record then holds.
@@ -1163,11 +1154,7 @@ fn with_key_fields(
         return Ok(());
     }
     if live.is_none() && !fields.iter().all(|f| patch.contains_key(f)) {
-        let parts: Vec<String> = key
-            .as_str()
-            .split(':')
-            .map(|c| c.replace("%3A", ":").replace("%25", "%"))
-            .collect();
+        let parts = lakelands_api::key::key_components(key);
         if parts.len() != fields.len() {
             return Err(invalid(format!(
                 "`{}` is keyed by {} field(s), and the key `{key}` has {} component(s)",
@@ -1216,7 +1203,7 @@ fn with_key_fields(
             patch
                 .get(f)
                 .or_else(|| live.and_then(|r| r.fields.get(f)))
-                .and_then(key_component)
+                .and_then(lakelands_api::key::key_component)
         })
         .collect();
     match derived.map(|d| d.join(":")) {
@@ -1685,7 +1672,8 @@ fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationRepor
     let mut report = MigrationReport {
         ty: ty.clone(),
         from_schema_hash: t.schema_hash.clone(),
-        to_schema_hash: value::schema_hash(&m.to),
+        to_schema_hash: lakelands_api::shape::schema_hash(&m.to)
+            .map_err(|e| invalid(e.to_string()))?,
         records_scanned: live.len() as u64,
         lossless: fields.iter().all(|f| f.not_convertible == 0),
         fields,
@@ -1955,7 +1943,14 @@ impl Catalog for MockCatalog {
             who,
             cause: None,
         };
-        let version = plan_upsert(&by, &mut batch, &lt, &links::key(key, to), patch, &opts)?;
+        let version = plan_upsert(
+            &by,
+            &mut batch,
+            &lt,
+            &lakelands_api::key::link_key(key, to),
+            patch,
+            &opts,
+        )?;
         let position = batch.peek().0 - 1;
         self.commit(&mut log, batch);
         Ok(Outcome::Applied {
@@ -1988,7 +1983,13 @@ impl Catalog for MockCatalog {
             who,
             cause: None,
         };
-        let version = plan_retire(&by, &mut batch, &lt, &links::key(key, to), &opts)?;
+        let version = plan_retire(
+            &by,
+            &mut batch,
+            &lt,
+            &lakelands_api::key::link_key(key, to),
+            &opts,
+        )?;
         let position = Position(batch.peek().0 - 1);
         self.commit(&mut log, batch);
         Ok(Outcome::Applied {
@@ -2151,7 +2152,8 @@ impl Catalog for MockCatalog {
             }
             // A relation without `via` is walked over its live link records.
             let linked_by = |from: &RecordKey, to: &RecordKey| {
-                st.live(&link_type, &links::key(from, to)).is_some()
+                st.live(&link_type, &lakelands_api::key::link_key(from, to))
+                    .is_some()
             };
             let next = st.visible(who, &target).ok_or_else(|| no_type(&target))?;
             if let Some(ty) = &step.ty
@@ -2602,7 +2604,9 @@ impl Catalog for MockCatalog {
             who,
             Origin::System,
             EventBody::Declared {
-                schema_hash: Some(value::schema_hash(&decl)),
+                schema_hash: Some(
+                    lakelands_api::shape::schema_hash(&decl).map_err(|e| invalid(e.to_string()))?,
+                ),
                 version: t.version + 1,
                 declaration: Declaration::Type(decl),
             },

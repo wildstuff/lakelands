@@ -158,6 +158,6 @@ pub(crate) fn preflight(st: &State, head: Position, to: &ValueTypeDecl) -> Resul
         "to": serde_json::to_value(to).unwrap_or_default(),
         "head": head.0,
     });
-    report.report_id = value::sha256_hex(&value::canonical_bytes(&id));
+    report.report_id = lakelands_api::canonical::sha256_hex(&id);
     Ok(report)
 }

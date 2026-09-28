@@ -32,10 +32,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use lakelands_api::ontology::{Cardinality, FieldDecl, FieldType, RelationDecl, TypeDecl};
+use lakelands_api::shape::view_shape;
 use lakelands_api::{FieldName, RelationName, TypeName};
 use serde::Serialize;
-
-use super::hash::view_shape;
 
 /// What a revision of a type needs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

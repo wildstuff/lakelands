@@ -2274,7 +2274,8 @@ pub async fn key_components_and_source_ids_use_each_values_one_form(store: Arc<d
 
 /// A schema hash is 64 lower-case hex digits and a proposal id 32, and
 /// both are the values the log format derives (`docs/log-format.md`):
-/// the fixture's invoice type hashes to one digest, and a proposal is
+/// the fixture's invoice type hashes to one digest, a view over it
+/// written as text to another (its conditions are hashed parsed), and a proposal is
 /// named by its lake and position, or by its writer and idempotency key
 /// (the first 16 bytes of SHA-256 over the parts, joined by a zero byte).
 pub async fn schema_hashes_and_proposal_ids_have_the_stores_form(store: Arc<dyn LakeStore>) {
@@ -2297,6 +2298,59 @@ pub async fn schema_hashes_and_proposal_ids_have_the_stores_form(store: Arc<dyn 
     assert_eq!(
         hash, "b63567bce0ec4046d82237cc2fab92986b6a01b1a58afeb0a7b5beb29b0a4693",
         "the fixture's invoice type hashes to the same digest everywhere"
+    );
+    // A view is hashed over its conditions' typed form, so a view written
+    // as text hashes to the one digest too.
+    let open_by_partner = TypeDecl {
+        name: "open_by_partner".into(),
+        key: vec!["partner".into()],
+        fields: vec![
+            text("partner"),
+            FieldDecl {
+                ty: FieldType::kind(StorageKind::Decimal),
+                ..text("total")
+            },
+            FieldDecl {
+                ty: FieldType::kind(StorageKind::Number),
+                ..text("late")
+            },
+        ],
+        relations: Vec::new(),
+        view: Some(ViewDecl {
+            source: INVOICE.into(),
+            r#where: Some("status != 'paid'  and not (amount is null)".into()),
+            group_by: vec!["partner".into()],
+            measures: vec![
+                Measure {
+                    name: "total".into(),
+                    expr: "sum(amount)".into(),
+                },
+                Measure {
+                    name: "late".into(),
+                    expr: "count() * -1.50".into(),
+                },
+            ],
+        }),
+        valid_from: None,
+        valid_to: None,
+        field_meta: true,
+        language: None,
+        description: None,
+        label: None,
+    };
+    f.catalog
+        .declare(&f.cast.owner, Declaration::Type(open_by_partner))
+        .await
+        .expect("the owner declares a view");
+    let described = f
+        .catalog
+        .describe_type(&f.cast.owner, &ty("open_by_partner"), ReadAt::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&described.data).unwrap()["lifecycle"]["schema_hash"],
+        "9d89b4ed75c087e803c3e7e8265443c00af7af43a32ad629b02e0f6da7414032",
+        "a view type hashes over its conditions' typed form, to the same digest everywhere"
     );
 
     f.write(&f.cast.owner, "INV-1", &[("status", json!("approved"))])

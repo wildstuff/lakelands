@@ -17,6 +17,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod canonical;
 pub mod catalog;
 pub mod describe;
 pub mod engine;
@@ -24,6 +25,7 @@ pub mod error;
 pub mod event;
 pub mod expr;
 pub mod id;
+pub mod key;
 pub mod location;
 pub mod ontology;
 pub mod principal;
@@ -31,6 +33,7 @@ pub mod query;
 pub mod read;
 pub mod record;
 pub mod seam;
+pub mod shape;
 pub mod time;
 pub mod tools;
 pub mod write;

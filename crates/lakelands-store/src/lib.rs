@@ -27,3 +27,4 @@ pub mod writes;
 
 pub use backing::ExprBacking;
 pub use doors::open;
+pub use lakelands_core::export;
