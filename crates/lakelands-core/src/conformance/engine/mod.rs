@@ -112,6 +112,8 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     log::RELEASE_STALE,
     log::READ_BOUNDS,
     log::FENCE_AT_ZERO,
+    log::IMPORT_KEEPS_FENCES,
+    log::IMPORT_ONLY_INTO_IMPORTED,
     log::SEALS,
     log::OPENING,
     log::READ_ONLY_OPEN,

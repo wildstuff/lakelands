@@ -68,6 +68,9 @@ impl LakeEngine for Failing {
     fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
         self.inner.append(lease, events)
     }
+    fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
+        self.inner.import(lease, events)
+    }
     fn read(&self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>> {
         if from.0 >= self.read_fail_from.load(Ordering::SeqCst) {
             return Err(Error::Unavailable {

@@ -296,7 +296,34 @@ impl LakeEngine for SqliteLake {
     fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
         self.writable()?;
         self.check_lease(lease)?;
-        lock(&self.log).append(lease, events)
+        lock(&self.log).append(Some(lease.fence), events)
+    }
+
+    fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
+        self.writable()?;
+        self.check_lease(lease)?;
+        let mut held = lock(&self.held);
+        let held = held
+            .as_mut()
+            .ok_or_else(|| unavailable("the lease is not held by this handle"))?;
+        let mut log = lock(&self.log);
+        log.refresh()?;
+        if let Some((tip, _)) = log.tip()
+            && self.lease_file.imported(held)? != Some(tip.0)
+        {
+            return Err(invalid(format!(
+                "the lake's log holds events up to position {tip} that were not imported; an \
+                 import goes only into a lake that holds nothing else, and nothing was \
+                 appended"
+            )));
+        }
+        log.append(None, events)?;
+        match events.last() {
+            Some(last) => self
+                .lease_file
+                .record_import(held, last.position.0, last.fence),
+            None => Ok(()),
+        }
     }
 
     fn read(&self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>> {

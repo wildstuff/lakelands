@@ -33,6 +33,15 @@ struct Recorded {
     fence: u64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     holder: String,
+    /// The last position an import appended, while every event in the
+    /// log came through one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    imported: Option<u64>,
+    /// The greatest fence an import carried over; the next lease is
+    /// greater. Kept apart from `fence`, which the lease held while
+    /// importing must go on matching.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    import_fence: Option<u64>,
 }
 
 /// The lease a handle holds, with the locked file that makes it so.
@@ -109,7 +118,7 @@ impl LeaseFile {
         }
         let before = read(&mut file, &self.path)?;
         let lease = Lease {
-            fence: before.fence + 1,
+            fence: before.fence.max(before.import_fence.unwrap_or(0)) + 1,
             holder: holder.to_owned(),
         };
         write(
@@ -118,23 +127,52 @@ impl LeaseFile {
             &Recorded {
                 fence: lease.fence,
                 holder: lease.holder.clone(),
+                imported: before.imported,
+                import_fence: before.import_fence,
             },
         )?;
         Ok(Held { lease, file })
+    }
+
+    /// The last position an import appended, while the log holds nothing
+    /// else.
+    pub(crate) fn imported(&self, held: &mut Held) -> Result<Option<u64>> {
+        Ok(read(&mut held.file, &self.path)?.imported)
+    }
+
+    /// Record that an import appended through `last`, with fences up to
+    /// `fence`: a later lease is greater than all of them.
+    pub(crate) fn record_import(&self, held: &mut Held, last: u64, fence: u64) -> Result<()> {
+        let before = read(&mut held.file, &self.path)?;
+        write(
+            &mut held.file,
+            &self.path,
+            &Recorded {
+                fence: before.fence,
+                holder: held.lease.holder.clone(),
+                imported: Some(last),
+                import_fence: Some(before.import_fence.unwrap_or(0).max(fence)),
+            },
+        )
     }
 
     /// Give a held lease up: the file keeps its token and names no holder,
     /// and the lock is released. The lock is released whatever happens; a
     /// failure to clear the holder is reported after it.
     pub(crate) fn release(&self, mut held: Held) -> Result<()> {
-        let cleared = write(
-            &mut held.file,
-            &self.path,
-            &Recorded {
-                fence: held.lease.fence,
-                holder: String::new(),
-            },
-        );
+        // The file keeps the greatest token and what an import recorded.
+        let cleared = read(&mut held.file, &self.path).and_then(|before| {
+            write(
+                &mut held.file,
+                &self.path,
+                &Recorded {
+                    fence: before.fence.max(held.lease.fence),
+                    holder: String::new(),
+                    imported: before.imported,
+                    import_fence: before.import_fence,
+                },
+            )
+        });
         let unlocked =
             FileExt::unlock(&held.file).map_err(|e| io_error("unlocking", &self.path, e));
         drop(held);

@@ -341,7 +341,18 @@ impl LakeEngine for PgLake {
                 lease.fence
             )));
         }
-        log::append(&mut lock(&writing.lease), &self.names, lease, events)
+        log::append(&mut lock(&writing.lease), &self.names, lease, events, false)
+    }
+
+    fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
+        let writing = self.writing()?;
+        if lock(&self.held).as_ref() != Some(lease) {
+            return Err(unavailable(format!(
+                "the lease with fence {} is not held by this handle; nothing was appended",
+                lease.fence
+            )));
+        }
+        log::append(&mut lock(&writing.lease), &self.names, lease, events, true)
     }
 
     fn read(&self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>> {

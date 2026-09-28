@@ -89,6 +89,22 @@ pub struct Lake {
     holds_lease: AtomicBool,
 }
 
+/// The opener `seams` passes for the engine `location` names.
+pub(crate) fn opener(
+    location: &Location,
+    seams: &Seams,
+) -> Result<Arc<dyn lakelands_api::engine::EngineOpener>> {
+    let name = engine_name(&location.engine);
+    seams
+        .engines
+        .iter()
+        .find(|e| e.name() == name)
+        .cloned()
+        .ok_or_else(|| Error::Unbound {
+            seam: format!("the engine `{name}` (no opener for it was passed in)"),
+        })
+}
+
 fn engine_name(config: &EngineConfig) -> String {
     match config {
         EngineConfig::Sqlite { .. } => "sqlite".into(),
@@ -134,15 +150,7 @@ impl Lake {
     /// take the lease unless opening read-only, create the lake if asked
     /// and absent, and fold whatever the log holds beyond the projection.
     pub fn open(location: &Location, seams: Seams, mode: OpenMode) -> Result<Lake> {
-        let name = engine_name(&location.engine);
-        let opener = seams
-            .engines
-            .iter()
-            .find(|e| e.name() == name)
-            .cloned()
-            .ok_or_else(|| Error::Unbound {
-                seam: format!("the engine `{name}` (no opener for it was passed in)"),
-            })?;
+        let opener = opener(location, &seams)?;
         let engine: Arc<dyn LakeEngine> = Arc::from(opener.open(location, mode)?);
         let lease = match mode {
             OpenMode::Read => None,
@@ -150,26 +158,7 @@ impl Lake {
                 Some(engine.take_lease(&format!("lakelands process {}", std::process::id()))?)
             }
         };
-        let lake = Lake {
-            id: location.lake.clone(),
-            engine,
-            seams,
-            limits: location.limits,
-            calls: tokio::sync::Mutex::new(()),
-            drains: AtomicU64::new(0),
-            writer: Mutex::new(Writer {
-                lease: lease.clone(),
-                tip: None,
-                last_known_at: Timestamp(i64::MIN),
-                ontology: Ontology::default(),
-                settings: BTreeMap::new(),
-                due: Vec::new(),
-                behind: false,
-                format: LOG_FORMAT_BASE,
-            }),
-            head: AtomicU64::new(0),
-            holds_lease: AtomicBool::new(false),
-        };
+        let lake = Lake::assemble(location, seams, engine, lease.clone());
         lake.catch_up()?;
         if let Some(lease) = lease {
             let mut w = lake.writer();
@@ -236,6 +225,36 @@ impl Lake {
         Ok(lake)
     }
 
+    /// A lake over `engine`, holding `lease` if one was taken, before
+    /// anything is read from its log.
+    pub(crate) fn assemble(
+        location: &Location,
+        seams: Seams,
+        engine: Arc<dyn LakeEngine>,
+        lease: Option<Lease>,
+    ) -> Lake {
+        Lake {
+            id: location.lake.clone(),
+            engine,
+            seams,
+            limits: location.limits,
+            calls: tokio::sync::Mutex::new(()),
+            drains: AtomicU64::new(0),
+            writer: Mutex::new(Writer {
+                lease,
+                tip: None,
+                last_known_at: Timestamp(i64::MIN),
+                ontology: Ontology::default(),
+                settings: BTreeMap::new(),
+                due: Vec::new(),
+                behind: false,
+                format: LOG_FORMAT_BASE,
+            }),
+            head: AtomicU64::new(0),
+            holds_lease: AtomicBool::new(false),
+        }
+    }
+
     /// Make the writer's tip and lease readable without its lock.
     fn publish(&self, w: &Writer) {
         self.head
@@ -259,7 +278,7 @@ impl Lake {
 
     /// Fold the log's events the projection does not reflect yet, and load
     /// the head's ontology and settings.
-    fn catch_up(&self) -> Result<()> {
+    pub(crate) fn catch_up(&self) -> Result<()> {
         let mut w = self.writer();
         w.tip = self.engine.tip()?;
         let folded = self.engine.projection().folded_through()?;
@@ -1347,8 +1366,8 @@ impl Reads {
 
 /// Every record of `ty` as the fold leaves it so far, retired and
 /// restricted ones included: the view's, with what this append wrote
-/// earlier over it. A fold of many events in one page (a rebuild) writes
-/// records the view it opened does not show yet.
+/// earlier over it. A fold of many events in one page (a rebuild, an
+/// import) writes records the view it opened does not show yet.
 fn staged_scan(
     view: &dyn ProjectionView,
     staged: &Staged,
