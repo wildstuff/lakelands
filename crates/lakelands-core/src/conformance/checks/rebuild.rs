@@ -22,7 +22,7 @@ use crate::conformance::fixture::{
 check!(
     /// A rebuilt projection answers every read as before.
     REBUILD_ANSWERS_AS_BEFORE = a_rebuilt_projection_answers_every_read_as_the_live_one_did,
-    "001 and the engine seam: a projection rebuilt from the log is the one it replaces, byte for byte, at the head and as of every earlier position"
+    "001, 040 and the engine seam: a projection rebuilt from the log is the one it replaces, byte for byte, at the head and as of every earlier position, a type migration that converts records and a re-key that rewrites references to moved keys included"
 );
 
 check!(
@@ -141,15 +141,21 @@ async fn a_rebuilt_projection_answers_every_read_as_the_live_one_did(
         .must("retiring `i2`")?;
     positions.push(retired.position());
 
+    // A type migration that converts every record, and a re-key that moves
+    // records and rewrites the references to them: a rebuild folds them in
+    // the same page as the records they change.
+    let migrated = migrations(store.as_ref()).await?;
     let head = store.head().await.must("reading the head")?;
-    let live = snapshot(store.as_ref(), &own, &positions).await?;
+    let mut live = snapshot(store.as_ref(), &own, &positions).await?;
+    live.extend(migrated_snapshot(store.as_ref(), &own, &migrated).await?);
     let through = store.rebuild().await.must("rebuilding the projection")?;
     ensure!(
         through == head,
         "the lake's head is {head}, but the projection was rebuilt through {through}; a \
          rebuild folds the whole log"
     );
-    let rebuilt = snapshot(store.as_ref(), &own, &positions).await?;
+    let mut rebuilt = snapshot(store.as_ref(), &own, &positions).await?;
+    rebuilt.extend(migrated_snapshot(store.as_ref(), &own, &migrated).await?);
 
     for ((label, before), (_, after)) in live.iter().zip(&rebuilt) {
         ensure!(
@@ -160,6 +166,83 @@ async fn a_rebuilt_projection_answers_every_read_as_the_live_one_did(
         );
     }
     Ok(())
+}
+
+/// A `memo` type whose `pages` a migration turns from number to text,
+/// then the re-key fixture (`account` re-keyed by its IBAN, `payment`
+/// referencing it). Answers the positions of both migrations and the head.
+async fn migrations(store: &dyn LakeStore) -> Result<Vec<Position>, Failure> {
+    use lakelands_api::ontology::FieldType;
+    use lakelands_api::write::Migration;
+    let cat = doors(store);
+    let own = owner(store);
+    let memo = type_decl(
+        "memo",
+        vec![
+            field("title", StorageKind::Text),
+            field("pages", StorageKind::Number),
+        ],
+    );
+    declare(cat.as_ref(), &own, memo.clone()).await?;
+    for (k, pages) in [("a", 3), ("b", 12)] {
+        upsert(cat.as_ref(), &own, "memo", k, json!({"pages": pages})).await?;
+    }
+    let mut to = memo;
+    for f in &mut to.fields {
+        if f.name.as_str() == "pages" {
+            f.ty = FieldType::kind(StorageKind::Text);
+        }
+    }
+    let m = Migration {
+        to,
+        renames: Vec::new(),
+    };
+    let report = cat
+        .migrate(&own, m.clone())
+        .await
+        .must("the preflight of retyping `pages`")?
+        .data;
+    let retyped = cat
+        .migrate_apply(&own, m, &report.report_id)
+        .await
+        .must("retyping `pages` from number to text")?
+        .position();
+    super::rekey::lake(store, super::rekey::IBANS).await?;
+    let rekeyed = super::rekey::apply(store).await?;
+    let head = store.head().await.must("reading the head")?;
+    Ok(vec![retyped, rekeyed, head])
+}
+
+/// Every record of the migrated types, with provenance, as of each of
+/// `positions` (those [`migrations`] answers).
+async fn migrated_snapshot(
+    store: &dyn LakeStore,
+    who: &Principal,
+    positions: &[Position],
+) -> Result<Vec<(String, Vec<Record>)>, Failure> {
+    let cat = doors(store);
+    let mut out = Vec::new();
+    for (i, at) in positions.iter().enumerate() {
+        // `account` and `payment` exist from the re-key's fixture on.
+        let types: &[&str] = if i == 0 {
+            &["memo"]
+        } else {
+            &["memo", "account", "payment"]
+        };
+        for ty in types {
+            let find = Find {
+                with_meta: true,
+                at: ReadAt {
+                    as_of: Some(*at),
+                    valid_at: None,
+                },
+                ..Find::default()
+            };
+            let label = format!("{ty} as of {at}");
+            out.push((label, all_found(cat.as_ref(), who, ty, find).await?));
+        }
+    }
+    Ok(out)
 }
 
 async fn a_rebuild_reproduces_the_chain(store: Arc<dyn LakeStore>) -> Result<(), Failure> {

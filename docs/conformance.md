@@ -230,7 +230,7 @@ belongs in the suite, not beside one engine:
 
 **rebuild**
 
-- `a_rebuilt_projection_answers_every_read_as_the_live_one_did` — 001 and the engine seam: a projection rebuilt from the log is the one it replaces, byte for byte, at the head and as of every earlier position
+- `a_rebuilt_projection_answers_every_read_as_the_live_one_did` — 001, 040 and the engine seam: a projection rebuilt from the log is the one it replaces, byte for byte, at the head and as of every earlier position, a type migration that converts records and a re-key that rewrites references to moved keys included
 - `a_rebuild_reproduces_the_chain` — 001 and 020: the log is the truth and a rebuild only re-derives the projection, so verifying the chain answers the same range and hash before and after
 - `after_a_rebuild_every_index_answers_as_before` — 001 and the engine seam: the projection and its indexes are derived from the log, so after a rebuild a find by a field, a lexical and a vector search and a walk over a relation answer as they did
 - `a_number_and_a_vector_read_back_in_their_one_json_form_before_and_after_a_rebuild` — the log format §1.2 and 001: every value a door answers is in its canonical JSON form (`1`, never `1.0`), so a read answers the same text live and after a rebuild
