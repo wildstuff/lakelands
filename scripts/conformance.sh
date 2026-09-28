@@ -16,8 +16,10 @@ required() { awk '!/^[[:space:]]*(#|$)/ && $2 == "required" { print $1 }' confor
 needs_server() { [ "$1" = pg ]; }
 
 # Whether an entry point calls the suite's runner: `run_all(` outside a
-# `//` comment. A mention in a comment is not a call.
-runs_suite() { sed 's|//.*||' "$1" | grep -q 'run_all[[:space:]]*('; }
+# `//` comment. A mention in a comment is not a call. grep reads to the
+# end (no -q): stopping at the first match would cut sed off, and under
+# pipefail its broken pipe would fail the pipeline.
+runs_suite() { sed 's|//.*||' "$1" | grep 'run_all[[:space:]]*(' >/dev/null; }
 
 if [ "${1:-}" = "--list" ]; then
     required

@@ -49,9 +49,11 @@ for engine in "${!status[@]}"; do
     entry="crates/lakelands-engine-$engine/tests/conformance.rs"
     code="$(git ls-files -z -- "crates/lakelands-engine-$engine/src" | xargs -0 -r cat \
         | { grep -v -E '^[[:space:]]*(//|$)' || true; } | wc -l | tr -d ' ')"
-    # A call, not a mention: `run_all(` outside a `//` comment.
+    # A call, not a mention: `run_all(` outside a `//` comment. grep reads
+    # to the end (no -q): stopping at the first match would cut sed off,
+    # and under pipefail its broken pipe would fail the pipeline.
     if [ "$code" -gt 0 ] && [ -f "$entry" ] \
-        && ! sed 's|//.*||' "$entry" | grep -q 'run_all[[:space:]]*('; then
+        && ! sed 's|//.*||' "$entry" | grep 'run_all[[:space:]]*(' >/dev/null; then
         fail "required engine \`$engine\` has $code line(s) of source, and $entry does not run the suite"
     fi
 done

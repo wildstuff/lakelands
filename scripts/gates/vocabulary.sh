@@ -40,7 +40,8 @@ done < <(git ls-files | grep -i -E -- "$REPO_WORDS" || true)
 
 range="$(gate_range)"
 while IFS= read -r commit; do
-    if git log -1 --format='%B' "$commit" | grep -q -i -E -- "$REPO_WORDS"; then
+    # grep reads to the end (no -q), so git is never cut off mid-write.
+    if git log -1 --format='%B' "$commit" | grep -i -E -- "$REPO_WORDS" >/dev/null; then
         fail "commit $(git log -1 --format='%h %s' "$commit"): message contains a refused word"
     fi
 done < <(git rev-list "$range")
