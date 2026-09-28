@@ -580,9 +580,11 @@ fn vector_of(bytes: &[u8]) -> Vec<f32> {
 /// The vector index: each field's vectors in one table, searched by brute
 /// force with the one cosine every engine uses
 /// (`lakelands_core::engines::cosine`), so its answers are those of every
-/// other engine to the last bit. A query reads every vector of the field,
-/// so its cost grows linearly with them: the ceiling `docs/seams.md`
-/// states. Vectors are indexed at the head only, in the fold's
+/// other engine to the last bit. A query streams every vector of the
+/// field from the server a row at a time and keeps only the best `k`
+/// (`lakelands_core::engines::TopK`), so its cost grows linearly with them
+/// and what it holds does not: the ceiling `docs/seams.md` states.
+/// Vectors are indexed at the head only, in the fold's
 /// transaction; filtering the candidates by what an earlier view could see
 /// is the store's.
 impl VectorIndex for PgLake {
@@ -618,32 +620,32 @@ impl VectorIndex for PgLake {
         query: &[f32],
         k: u32,
     ) -> Result<Vec<(RecordKey, f64)>> {
-        let rows = self.reader().query(
+        let mut top = lakelands_core::engines::TopK::new(k);
+        self.reader().query_each(
             &format!(
                 "SELECT key, data FROM {} WHERE ty = $1 AND field = $2 ORDER BY key COLLATE \"C\"",
                 self.names.t("vectors")
             ),
             &[&ty.as_str(), &field],
+            |row| {
+                let key: String = row.get(0);
+                let v = vector_of(&row.get::<_, Vec<u8>>(1));
+                if v.len() != query.len() {
+                    return Err(invalid(format!(
+                        "the query vector has {} dimensions, but `{ty}.{field}` holds vectors \
+                         of {} (record `{key}`)",
+                        query.len(),
+                        v.len()
+                    )));
+                }
+                top.push(
+                    &RecordKey::from(key),
+                    lakelands_core::engines::cosine(query, &v),
+                );
+                Ok(())
+            },
         )?;
-        let mut hits = Vec::with_capacity(rows.len());
-        for row in rows {
-            let key: String = row.get(0);
-            let v = vector_of(&row.get::<_, Vec<u8>>(1));
-            if v.len() != query.len() {
-                return Err(invalid(format!(
-                    "the query vector has {} dimensions, but `{ty}.{field}` holds vectors of {} \
-                     (record `{key}`)",
-                    query.len(),
-                    v.len()
-                )));
-            }
-            hits.push((
-                RecordKey::from(key),
-                lakelands_core::engines::cosine(query, &v),
-            ));
-        }
-        lakelands_core::engines::rank(&mut hits, k);
-        Ok(hits)
+        Ok(top.into_ranked())
     }
 
     fn count(&self, ty: &TypeName, field: &str) -> Result<u64> {

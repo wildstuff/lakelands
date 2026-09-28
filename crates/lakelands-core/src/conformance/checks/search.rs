@@ -218,6 +218,12 @@ check!(
     "the engine seam's vector index: it follows the projection, so a retired record or a cleared vector field is no longer among the nearest"
 );
 
+check!(
+    /// A vector search answers the reference ranking to the bit.
+    VECTOR_TOP_K = a_vector_search_answers_the_brute_force_ranking_to_the_bit,
+    "025 and 029, the engine seam's vector index: for k = 1, 10 and 100, with and without a filter, at the head and at an earlier position, after records were retired, vectors cleared and rewritten and records added, a vector search answers the keys, order and scores of the brute-force reference: the one cosine over every vector at the head, best first, ties by key, kept where the read sees the record"
+);
+
 async fn a_search_finds_a_record_by_its_current_text_and_nothing_by_none(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
@@ -373,6 +379,218 @@ async fn a_retired_record_or_a_cleared_vector_is_no_longer_a_nearest_neighbour(
         "after `east` was retired and `near`'s vector cleared, neither may be a \
          neighbour; the nearest were {after:?}"
     );
+    Ok(())
+}
+
+/// The query of [`a_vector_search_answers_the_brute_force_ranking_to_the_bit`],
+/// and the first of the directions its tied records point in.
+const QUERY: [f32; 3] = [3.0, -1.0, 2.0];
+const DIRECTIONS: [[f32; 3]; 5] = [
+    QUERY,
+    [1.0, 1.0, 1.0],
+    [-2.0, 0.0, 1.0],
+    [0.0, 0.0, 1.0],
+    [-3.0, 1.0, -2.0],
+];
+/// How many `point` records the corpus starts with, and how many it gains
+/// after the earlier position.
+const POINTS: usize = 240;
+const ADDED: usize = 20;
+
+/// One `point` of the corpus as the check wrote it.
+#[derive(Clone)]
+struct Point {
+    key: String,
+    /// Its vector and group at the head; `None` once cleared.
+    vector: Option<[f32; 3]>,
+    group: u32,
+    retired: bool,
+    /// Its group at the earlier position, when it existed then.
+    then: Option<u32>,
+}
+
+/// The `i`th vector of the corpus. Every third record points in one of
+/// [`DIRECTIONS`], scaled by a power of two, which leaves its cosine
+/// unchanged to the bit, so each direction is a group of equal scores;
+/// the rest hold small whole numbers, and `p007` is all zeros. Every
+/// component is exact in `f32`.
+fn corpus_vector(i: usize) -> [f32; 3] {
+    if i == 7 {
+        return [0.0; 3];
+    }
+    if i.is_multiple_of(3) {
+        let d = DIRECTIONS[(i / 3) % DIRECTIONS.len()];
+        let m = [1.0, 2.0, 4.0][(i / 15) % 3];
+        return d.map(|x| x * m);
+    }
+    let mut z = (i as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    [0, 1, 2].map(|_| {
+        z = (z ^ (z >> 29)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        ((z >> 40) % 13) as f32 - 6.0
+    })
+}
+
+/// What a vector search must answer, by the reference: every vector the
+/// index holds at the head, scored by the one cosine, ranked by
+/// [`crate::engines::rank`] over the records the read sees (live at the
+/// head with a vector there, existing at `then` when the read is earlier,
+/// in `group` when it filters), at most `k`.
+fn reference(points: &[Point], earlier: bool, group: Option<u32>, k: u32) -> Vec<(String, f64)> {
+    let mut all: Vec<(lakelands_api::RecordKey, f64)> = points
+        .iter()
+        .filter(|p| !p.retired)
+        .filter_map(|p| Some((p, p.vector?)))
+        .filter(|(p, _)| {
+            let seen = if earlier { p.then } else { Some(p.group) };
+            seen.is_some_and(|g| group.is_none_or(|want| g == want))
+        })
+        .map(|(p, v)| (p.key.as_str().into(), crate::engines::cosine(&QUERY, &v)))
+        .collect();
+    crate::engines::rank(&mut all, k);
+    all.into_iter().map(|(key, score)| (key.0, score)).collect()
+}
+
+async fn a_vector_search_answers_the_brute_force_ranking_to_the_bit(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use lakelands_api::ontology::FieldType;
+    use lakelands_api::{Position, WriteOpts};
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let v = FieldDecl {
+        ty: FieldType {
+            dimensions: Some(3),
+            ..FieldType::kind(StorageKind::Vector)
+        },
+        ..field("v", StorageKind::Text)
+    };
+    let group = field("group", StorageKind::Number);
+    declare(cat.as_ref(), &own, type_decl("point", vec![v, group])).await?;
+    let mut points: Vec<Point> = (0..POINTS)
+        .map(|i| Point {
+            key: format!("p{i:03}"),
+            vector: Some(corpus_vector(i)),
+            group: (i % 4) as u32,
+            retired: false,
+            then: None,
+        })
+        .collect();
+    for p in &points {
+        upsert(
+            cat.as_ref(),
+            &own,
+            "point",
+            &p.key,
+            json!({"v": p.vector, "group": p.group}),
+        )
+        .await?;
+    }
+    let then = store.head().await.must("reading the head")?;
+    for p in &mut points {
+        p.then = Some(p.group);
+    }
+    // After the earlier position: vectors rewritten into the top group and
+    // groups moved, vectors cleared, records retired, records added.
+    let point = TypeName::from("point");
+    for (i, p) in points.iter_mut().enumerate() {
+        if i % 17 == 8 {
+            p.vector = Some(QUERY.map(|x| x * 8.0));
+            p.group = (p.group + 1) % 4;
+            upsert(
+                cat.as_ref(),
+                &own,
+                "point",
+                &p.key,
+                json!({"v": p.vector, "group": p.group}),
+            )
+            .await?;
+        }
+        if i % 13 == 6 {
+            p.vector = None;
+            upsert(cat.as_ref(), &own, "point", &p.key, json!({"v": null})).await?;
+        }
+        if i % 11 == 5 {
+            p.retired = true;
+            cat.retire(&own, &point, &p.key.as_str().into(), WriteOpts::default())
+                .await
+                .must(&format!("retiring `{}`", p.key))?;
+        }
+    }
+    for i in POINTS..POINTS + ADDED {
+        let p = Point {
+            key: format!("p{i:03}"),
+            vector: Some(if i % 2 == 0 { QUERY } else { corpus_vector(i) }),
+            group: (i % 4) as u32,
+            retired: false,
+            then: None,
+        };
+        upsert(
+            cat.as_ref(),
+            &own,
+            "point",
+            &p.key,
+            json!({"v": p.vector, "group": p.group}),
+        )
+        .await?;
+        points.push(p);
+    }
+    // The fixture must put equal scores across a cut, or the check would
+    // not test ties.
+    let whole = reference(&points, false, None, u32::MAX);
+    ensure!(
+        whole.len() > 100 && whole[9].1 == whole[10].1 && whole[0].1 == whole[1].1,
+        "the corpus must hold over 100 neighbours with equal scores across the cut at k = 1 \
+         and k = 10; its reference ranks {:?}",
+        &whole[..whole.len().min(12)]
+    );
+    for earlier in [false, true] {
+        for group in [None, Some(1)] {
+            for k in [1, 10, 100] {
+                let s = Search {
+                    ty: point.clone(),
+                    mode: SearchMode::Vector {
+                        field: "v".into(),
+                        vector: QUERY.to_vec(),
+                    },
+                    k,
+                    cursor: None,
+                    filter: group.map(|g| format!("group = {g}").as_str().into()),
+                    with_meta: false,
+                    at: ReadAt {
+                        as_of: earlier.then_some(Position(then.0)),
+                        valid_at: None,
+                    },
+                };
+                let what = format!(
+                    "a vector search for {QUERY:?} with k = {k}{}{}",
+                    group.map_or(String::new(), |g| format!(", where group = {g}")),
+                    if earlier {
+                        format!(", as of {}", then.0)
+                    } else {
+                        String::new()
+                    }
+                );
+                let got: Vec<(String, u64)> = cat
+                    .search(&own, s)
+                    .await
+                    .must(&what)?
+                    .data
+                    .hits
+                    .into_iter()
+                    .map(|h| (h.record.key.0, h.score.to_bits()))
+                    .collect();
+                let want: Vec<(String, u64)> = reference(&points, earlier, group, k)
+                    .into_iter()
+                    .map(|(key, score)| (key, score.to_bits()))
+                    .collect();
+                ensure!(
+                    got == want,
+                    "{what} must answer the brute-force reference, keys, order and the scores' \
+                     bits; it answered {got:?}, the reference {want:?}"
+                );
+            }
+        }
+    }
     Ok(())
 }
 

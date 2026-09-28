@@ -37,7 +37,10 @@ of zeros scores 0, and equal scores are ordered by key
 score and then by key. Every index in `0.1.0` is exact. An approximate
 index, when one comes, says so; the store re-ranks its candidates by the
 same cosine and the answer says its ranking was approximate, so a caller
-always knows which kind of answer it holds.
+always knows which kind of answer it holds. Every engine ranks exactly, by one
+bounded selection (`lakelands_core::engines::TopK`): a search keeps its
+best `k` while it scans the field, never the field, and answers the
+reference ranking's keys, order and scores to the bit (lakelands#197).
 
 ## Extended: a search at an earlier position ranks by the head
 

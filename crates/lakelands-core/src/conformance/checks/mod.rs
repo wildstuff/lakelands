@@ -185,6 +185,7 @@ pub const ALL: &[Check] = &[
     search::SEARCH_FOLLOWS_TEXT,
     search::WITHHELD_NEVER_HITS,
     search::VECTOR_LEAVES_THE_NEIGHBOURS,
+    search::VECTOR_TOP_K,
     search::HYBRID_WITHOUT_BACKEND,
     search::HYBRID_THROUGH_BACKEND,
     embeddings::EMBED_WRITE,

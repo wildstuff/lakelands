@@ -438,23 +438,26 @@ Vectors are indexed at the head only. As for `lexical`, a read at an
 earlier position ranks by the index at the head and keeps only the
 candidates visible at that position.
 
-**The ceiling.** Both engines of `0.1.0` search by brute force with the
-one cosine (`lakelands_core::engines::cosine`): `nearest` reads every
-vector of the field, so its cost grows linearly with the vectors a field
-holds, and with their length. At 1,536 dimensions that is about 6 KiB
-read and one dot product per vector per query; a field of a hundred
-thousand vectors is a scan of some 600 MiB. Measured by the streaming
-check's long run (its `search` line, lakelands#188): one hybrid search,
-k = 10, over a field of 90 000 vectors of two dimensions took 0.77 s on
-the memory engine, 0.07 s on SQLite and 0.30 s on PostgreSQL, and held
-6.4, 7.6 and 18.7 MiB of heap, against 1.6, 1.9 and 4.7 MiB at 22 500
-vectors, on a machine of 12 cores at a load of 17 to 30. The ranking
-holds something per vector, about 75 to 210 bytes, so both time and heap
-grow with the field, and the line stays reported until an index earns
-the claim. An index that answers faster
-than a scan, sqlite-vec among them, is an implementation of this seam
-after `0.1.0`: it picks candidates, and the one cosine ranks them, so an
-answer never depends on its arithmetic.
+**The ceiling.** Every engine searches by brute force with the one
+cosine (`lakelands_core::engines::cosine`) and keeps the best `k` as it
+goes (`lakelands_core::engines::TopK`), whose answer is what ranking
+every vector and cutting at `k` answers, to the bit. So what a search
+holds is `k` entries, whatever the field holds; SQLite steps its
+statement, and PostgreSQL streams the field from the server a row at a
+time without buffering it. What a search costs is a scan: `nearest`
+reads every vector of the field, so its time grows linearly with the
+vectors a field holds, and with their length. At 1,536 dimensions that
+is about 6 KiB read and one dot product per vector per query; a field
+of a hundred thousand vectors is a scan of some 600 MiB. The streaming
+check holds its `search` line (one hybrid search, k = 10, over every
+record's vector) to the heap bound on every engine (lakelands#197). Its
+long run, over 22 500 and 90 000 vectors of two dimensions, held
+0.1 MiB of heap at both sizes on the memory engine, SQLite and
+PostgreSQL, and took 0.18 → 0.68 s, 0.02 → 0.13 s and 0.09 → 0.26 s, on
+a machine of 12 cores at a load of 20 to 32; ranking the whole field
+had held 1.6 → 6.4 MiB on the memory engine.
+An index that answers faster than a scan picks candidates, and the one
+cosine ranks them, so an answer never depends on its arithmetic.
 
 **Exactness.** Every index in `0.1.0` is exact: `nearest` answers the true
 top `k` by cosine, and the checks require it. An approximate index (HNSW
