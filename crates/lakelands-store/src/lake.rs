@@ -544,16 +544,10 @@ impl Lake {
             {
                 continue;
             }
-            let records = view.scan(
-                name,
-                &lakelands_api::engine::Scan {
-                    limit: u32::MAX,
-                    retired: true,
-                    restricted: true,
-                    ..Default::default()
-                },
-            )?;
-            for r in records.into_iter().filter(|r| !r.is_ended()) {
+            for r in staged_scan(view, staged, name)?
+                .into_iter()
+                .filter(|r| !r.is_ended())
+            {
                 let touched = |k: &RecordKey| {
                     arrivals.contains(&(name.clone(), k.clone()))
                         || moves.get(name).is_some_and(|m| m.contains_key(k))
@@ -561,7 +555,6 @@ impl Lake {
                 if touched(&r.key) {
                     continue;
                 }
-                let r = staged.get(&r.ty, &r.key).cloned().unwrap_or(r);
                 let fields = crate::rekey::rewritten(decl, &r.fields, &moves);
                 if fields != r.fields {
                     let next = StoredRecord {
@@ -738,15 +731,7 @@ impl Lake {
                 ..
             } => {
                 let before = w.ontology.ty(&migration.to.name)?.clone();
-                let records = view.scan(
-                    &migration.to.name,
-                    &lakelands_api::engine::Scan {
-                        limit: u32::MAX,
-                        retired: true,
-                        restricted: true,
-                        ..Default::default()
-                    },
-                )?;
+                let records = staged_scan(view, staged, &migration.to.name)?;
                 w.ontology.put(
                     Declaration::Type(migration.to.clone()),
                     *version,
@@ -755,7 +740,6 @@ impl Lake {
                 let decl = Declaration::Type(migration.to.clone());
                 projection.put_declaration(&decl, *version, Some(schema_hash), e.position)?;
                 for r in records.into_iter().filter(|r| !r.is_ended()) {
-                    let r = staged.get(&r.ty, &r.key).cloned().unwrap_or(r);
                     let converted = shape::migrate_record(&before, migration, &r.fields)
                         .map_err(|err| Error::Unavailable {
                             message: err.to_string(),
@@ -1359,6 +1343,30 @@ impl Reads {
         self.0.borrow_mut().insert(at, r.clone());
         Ok(r)
     }
+}
+
+/// Every record of `ty` as the fold leaves it so far, retired and
+/// restricted ones included: the view's, with what this append wrote
+/// earlier over it. A fold of many events in one page (a rebuild) writes
+/// records the view it opened does not show yet.
+fn staged_scan(
+    view: &dyn ProjectionView,
+    staged: &Staged,
+    ty: &TypeName,
+) -> Result<Vec<StoredRecord>> {
+    let records = view.scan(
+        ty,
+        &lakelands_api::engine::Scan {
+            limit: u32::MAX,
+            retired: true,
+            restricted: true,
+            ..Default::default()
+        },
+    )?;
+    let mut all: BTreeMap<RecordKey, StoredRecord> =
+        records.into_iter().map(|r| (r.key.clone(), r)).collect();
+    all.extend(staged.of_type(ty).map(|r| (r.key.clone(), r.clone())));
+    Ok(all.into_values().collect())
 }
 
 /// What one append has written so far, read before the projection.
