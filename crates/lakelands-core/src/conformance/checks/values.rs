@@ -325,7 +325,7 @@ async fn a_decimal_written_as_a_json_number_is_refused(
 check!(
     /// A geometry reads back in one form; a malformed one is refused.
     GEO_VALUES = a_geo_value_reads_back_in_its_one_form_and_a_malformed_one_is_refused,
-    "011, extended, and the log format §5: a geo value is a GeoJSON geometry whose numbers take their one JSON form, the same through get and find, live and after a rebuild; an open ring, a missing `type` or a GeoJSON object that is not a geometry is refused naming the field; null clears it"
+    "011, extended, and the log format §5: a geo value is a GeoJSON geometry whose numbers take their one JSON form, the same through get and find, live and after a rebuild; empty `coordinates` are the empty geometry of every type alike, while an empty part inside one is refused; an open ring, a missing `type` or a GeoJSON object that is not a geometry is refused naming the field; null clears it"
 );
 
 check!(
@@ -353,8 +353,11 @@ async fn texts(store: &dyn LakeStore, keys: &[&str]) -> Result<Vec<(String, Stri
             .iter()
             .find(|r| r.key.as_str() == *key)
             .ok_or_else(|| Failure::new(format!("find did not answer `thing` `{key}`")))?;
-        let text = |r: &Record| serde_json::to_string(&r.fields).unwrap_or_default();
-        out.push((text(&got), text(in_find)));
+        let text = |r: &Record| {
+            serde_json::to_string(&r.fields)
+                .map_err(|e| Failure::new(format!("`thing` `{key}` does not print: {e}")))
+        };
+        out.push((text(&got)?, text(in_find)?));
     }
     Ok(out)
 }
@@ -413,6 +416,26 @@ async fn a_geo_value_reads_back_in_its_one_form_and_a_malformed_one_is_refused(
                 ]}),
                 r#"{"geometries":[{"coordinates":[1,2,3.25],"type":"Point"},{"coordinates":[[0,0],[10,1.5]],"type":"LineString"}],"type":"GeometryCollection"}"#,
             ),
+            (
+                "empty-point",
+                json!({"type": "Point", "coordinates": []}),
+                r#"{"coordinates":[],"type":"Point"}"#,
+            ),
+            (
+                "empty-line",
+                json!({"type": "LineString", "coordinates": []}),
+                r#"{"coordinates":[],"type":"LineString"}"#,
+            ),
+            (
+                "empty-polygon",
+                json!({"type": "Polygon", "coordinates": []}),
+                r#"{"coordinates":[],"type":"Polygon"}"#,
+            ),
+            (
+                "empty-multipolygon",
+                json!({"type": "MultiPolygon", "coordinates": []}),
+                r#"{"coordinates":[],"type":"MultiPolygon"}"#,
+            ),
         ],
     )
     .await?;
@@ -424,6 +447,14 @@ async fn a_geo_value_reads_back_in_its_one_form_and_a_malformed_one_is_refused(
         (
             json!({"type": "Polygon", "coordinates": [[[0, 0], [4, 0], [0, 0]]]}),
             "a ring of three positions",
+        ),
+        (
+            json!({"type": "MultiPolygon", "coordinates": [[]]}),
+            "a multi-polygon holding an empty polygon",
+        ),
+        (
+            json!({"type": "Polygon", "coordinates": [[]]}),
+            "a polygon holding an empty ring",
         ),
         (json!({"coordinates": [7, 50]}), "no `type`"),
         (

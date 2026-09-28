@@ -525,6 +525,13 @@ Every storage kind has one JSON form in a patch
 
 `null` in a patch clears the field.
 
+A `geo` value may be empty, the same way for every geometry type: empty
+`coordinates` are the empty geometry of that type, and a
+`GeometryCollection` may hold no `geometries`. Emptiness stops at the
+top. A part that is present keeps its type's shape: a position has two
+or three numbers, a line string at least two positions, and a ring is
+closed, with four positions or more.
+
 Base64 is canonical: the pad bits of the last character before padding
 are zero, so one byte string has one spelling. `aGk=` is the only form
 of the bytes `hi`; `aGl=` decodes to the same bytes in lenient decoders

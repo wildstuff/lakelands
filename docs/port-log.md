@@ -54,6 +54,21 @@ touches a root, and each root still holds the files it held at the
 freeze. The row below is still the only one. **The list is closed for
 `0.2.0` as of `ca9364c420`.**
 
+**Checked on 2026-09-28, after the `0.3.0` tag**, against the source's
+mainline at `035c01a349`: the 209 commits after `ca9364c420` (540 after
+the freeze in all), checked the same way. Four of them touch a root, all
+four in `{engine}`, and only its test fixture: the helper that places a
+test's store in a temporary directory (`src/data_engine/tests/helpers.rs`,
+never imported) and one unix-only development dependency in the crate's
+manifest. They are the four rows after the first. None of them is a bug
+fix in storage behaviour, and none applies: Lakelands took neither that
+fixture nor the manifest. Every root, `{engine}` included, still holds
+the files it held at the freeze. **The list is closed for `0.3.0` as of `035c01a349`.**
+
 | Source commit | Behaviour, in one line | Ported in, or not applicable and why |
 |---|---|---|
 | `5914084de9` | One German user-interface sentence in the capabilities module changes its form of address from formal to informal. | Not applicable: the capabilities module was not carried (cut in O2: there is no capability negotiation; see `docs/import-ledger.md`), and no storage behaviour changes: no event, no fold rule, no signature, no stored byte. |
+| `c5fae3e073` | The engine's test fixture puts each test store on `/dev/shm` when the machine has it, so two long property tests stop waiting on a shared disk's fsyncs; the store still calls `sync_all`, and no test's coverage changes. | Not applicable: the fixture (`{engine}/src/data_engine/tests/helpers.rs`) was never imported, and no storage behaviour changes. Lakelands' engine tests make their own temporary directories. |
+| `7971832d97` | The same fixture uses `/dev/shm` only when at least 256 MiB are free there, and names each store directory after the test process, so leftovers can be found by their owner; `nix` becomes a unix-only development dependency. | Not applicable: the same fixture, and a development dependency of a manifest that was not carried; no storage behaviour changes. |
+| `afdc3fed00` | The fixture's free-room arithmetic widens to `u128`, so it is right where the platform's block counts are 32-bit and no linter reports a no-op conversion. | Not applicable: the same fixture; no storage behaviour changes. |
+| `c9f8a0ad6e` | A new store on `/dev/shm` first removes the directories left by test processes that were killed by a signal. | Not applicable: the same fixture; no storage behaviour changes. |
