@@ -43,13 +43,25 @@ pub type Component = Vec<Node>;
 
 /// The weak components of the records added to it, grown over the given
 /// relations with every link taken both ways.
+///
+/// What it holds is bounded by `max_nodes` for the records reached, plus
+/// one entry per hidden far end of those records (retired, missing or not
+/// visible to the caller), each asked about once: a record is reached when
+/// it is first seen, so the frontier holds each record once and only
+/// records already counted against the cap; visibility is asked only of a
+/// record not yet reached, and only a hidden one is remembered; and the
+/// records reached are the one map, grouped into components when the walk
+/// is done.
 pub struct Components<'a, S: EdgeSource + ?Sized> {
-    links: Links<'a, S>,
+    source: &'a S,
     relations: Vec<RelationName>,
     max_nodes: u32,
     /// Every record reached, with the component it belongs to.
     member_of: BTreeMap<Node, usize>,
-    found: Vec<BTreeSet<Node>>,
+    /// Far ends asked about that may not appear.
+    hidden: BTreeSet<Node>,
+    /// How many components have been started.
+    started: usize,
 }
 
 impl<'a, S: EdgeSource + ?Sized> Components<'a, S> {
@@ -57,56 +69,73 @@ impl<'a, S: EdgeSource + ?Sized> Components<'a, S> {
     /// `max_nodes` records.
     pub fn new(source: &'a S, relations: Vec<RelationName>, max_nodes: u32) -> Self {
         Components {
-            links: Links::new(source),
+            source,
             relations,
             max_nodes,
             member_of: BTreeMap::new(),
-            found: Vec::new(),
+            hidden: BTreeSet::new(),
+            started: 0,
         }
+    }
+
+    /// Counts `node` as reached in component `index`; refused `too_large`
+    /// once more than `max_nodes` records are reached.
+    fn reach(&mut self, node: Node, index: usize) -> Result<()> {
+        self.member_of.insert(node, index);
+        if self.member_of.len() > self.max_nodes as usize {
+            return Err(Error::Refused {
+                field: None,
+                reason: Refusal::TooLarge {
+                    max: self.max_nodes,
+                },
+            });
+        }
+        Ok(())
     }
 
     /// Adds a record and everything linked to it. A record already reached
     /// adds nothing. Refused `too_large` as soon as more than `max_nodes`
-    /// records are held.
+    /// records are reached.
     pub fn add(&mut self, seed: Node) -> Result<()> {
         if self.member_of.contains_key(&seed) {
             return Ok(());
         }
-        let index = self.found.len();
-        let mut component = BTreeSet::new();
+        let index = self.started;
+        self.started += 1;
+        self.reach(seed.clone(), index)?;
         let mut frontier = vec![seed];
         while let Some(near) = frontier.pop() {
-            if self.member_of.contains_key(&near) {
-                continue;
-            }
-            self.member_of.insert(near.clone(), index);
-            if self.member_of.len() > self.max_nodes as usize {
-                return Err(Error::Refused {
-                    field: None,
-                    reason: Refusal::TooLarge {
-                        max: self.max_nodes,
-                    },
-                });
-            }
-            for (other, _) in self.links.around(&near, &self.relations, Walk::Both)? {
-                if !self.member_of.contains_key(&other) {
-                    frontier.push(other);
+            for r in 0..self.relations.len() {
+                let relation = self.relations[r].clone();
+                for edge in self
+                    .source
+                    .edges(&near.0, &near.1, Some(&relation), Walk::Both)?
+                {
+                    let other = super::far(&edge, &near);
+                    if self.member_of.contains_key(&other) || self.hidden.contains(&other) {
+                        continue;
+                    }
+                    if self.source.is_visible(&other.0, &other.1)? {
+                        self.reach(other.clone(), index)?;
+                        frontier.push(other);
+                    } else {
+                        self.hidden.insert(other);
+                    }
                 }
             }
-            component.insert(near);
         }
-        self.found.push(component);
         Ok(())
     }
 
     /// The components, largest first, then by their least `(type, key)`;
     /// each one's records by `(type, key)`.
     pub fn finish(self) -> Vec<Component> {
-        let mut all: Vec<Component> = self
-            .found
-            .into_iter()
-            .map(|c| c.into_iter().collect())
-            .collect();
+        let mut all: Vec<Component> = vec![Vec::new(); self.started];
+        // The map is ordered by `(type, key)`, so each component's records
+        // come out in that order.
+        for (node, index) in self.member_of {
+            all[index].push(node);
+        }
         all.sort_by(|a, b| {
             b.len()
                 .cmp(&a.len())
@@ -195,6 +224,30 @@ mod tests {
         let all = c.finish();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0], vec![n("i1"), n("i2"), partner]);
+    }
+
+    /// Every record is asked about once and counted when first seen, so
+    /// the walk holds each record once, however many links lead to it
+    /// before it is expanded: on a complete graph of 12 records, 11
+    /// questions (the start is not asked), and a cap of 12 is enough.
+    #[test]
+    fn each_record_is_asked_about_once_and_held_once() {
+        let names: Vec<String> = (0..12).map(|i| format!("k{i:02}")).collect();
+        let mut links = Vec::new();
+        for (i, a) in names.iter().enumerate() {
+            for b in &names[i + 1..] {
+                links.push(e(a, "r", b));
+            }
+        }
+        let g = Graph::new(links).retire("k11");
+        let mut c = Components::new(&g, vec![rel("r")], 11);
+        c.add(n("k00")).unwrap();
+        assert_eq!(
+            g.visibility_asked.get(),
+            11,
+            "each far end is asked about once, the retired one included"
+        );
+        assert_eq!(c.finish()[0].len(), 11);
     }
 
     #[test]
