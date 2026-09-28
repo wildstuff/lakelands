@@ -27,7 +27,7 @@ use lakelands_api::id::{
 };
 use lakelands_api::ontology::{
     Assignment, Authority, FieldDecl, FieldType, Measure, OnInputChange, RelationDecl, Risk,
-    StorageKind, TypeDecl, VerbDecl, VerbEffect, ViewDecl,
+    StorageKind, TriggerDecl, TypeDecl, VerbDecl, VerbEffect, ViewDecl,
 };
 use lakelands_api::principal::{Access, Grants, Principal, PrincipalKind, TypeGrants};
 use lakelands_api::query::{Pattern, Step, Walk};
@@ -115,7 +115,8 @@ macro_rules! door_checks {
             #[host_ops] a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_record,
             a_value_type_is_loosened_by_declare_and_tightened_by_its_preflight,
             a_sort_index_setting_names_declared_scalar_fields_and_describe_shows_them,
-            an_order_by_latest_takes_no_field_and_no_view);
+            an_order_by_latest_takes_no_field_and_no_view,
+            a_trigger_watches_a_link_type_and_not_a_reference_relations);
     };
     (@each $at:ident, $new:expr, $block_on:path;
         $($(#[$mark:ident])? $name:ident),* $(,)?) => {
@@ -3155,4 +3156,64 @@ pub async fn an_order_by_latest_takes_no_field_and_no_view(store: Arc<dyn LakeSt
         matches!(refusal(&e).1, Refusal::Invalid { .. }),
         "a view ordered by `latest`: expected invalid, got {e:?}"
     );
+}
+
+/// A trigger may watch the link type of a relation carried by link
+/// records; the link type of a relation carried by a reference field does
+/// not exist, and a trigger naming it is refused on `on`
+/// (`docs/decisions/035-a-link-is-a-record.md`).
+pub async fn a_trigger_watches_a_link_type_and_not_a_reference_relations(
+    store: Arc<dyn LakeStore>,
+) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let doc = TypeDecl {
+        name: "doc".into(),
+        key: Vec::new(),
+        fields: vec![text("title")],
+        relations: vec![RelationDecl {
+            name: "signed_by".into(),
+            target: PARTNER.into(),
+            cardinality: Default::default(),
+            inverse: None,
+            via: None,
+            fields: Vec::new(),
+            authority: Default::default(),
+            description: None,
+        }],
+        view: None,
+        valid_from: None,
+        valid_to: None,
+        field_meta: true,
+        language: None,
+        description: None,
+        label: None,
+    };
+    f.catalog
+        .declare(owner, Declaration::Type(doc))
+        .await
+        .expect("the owner declares a type with a relation carried by link records");
+    let trigger = |name: &str, on: &str| {
+        Declaration::Trigger(TriggerDecl {
+            name: name.into(),
+            on: on.into(),
+            when: None,
+            description: None,
+        })
+    };
+    f.catalog
+        .declare(owner, trigger("signed", "sys.link.doc.signed_by"))
+        .await
+        .expect("a trigger watches the link type of a relation carried by link records");
+    let e = f
+        .catalog
+        .declare(owner, trigger("billed", "sys.link.invoice.billed_by"))
+        .await
+        .expect_err("a trigger on the link type of a reference relation is refused");
+    let (field, reason) = refusal(&e);
+    assert!(
+        matches!(reason, Refusal::Invalid { .. }),
+        "expected invalid, got {reason:?}"
+    );
+    assert_eq!(field.as_ref().map(FieldName::as_str), Some("on"));
 }

@@ -118,6 +118,20 @@ through the doors that check the relation's authority and cardinality.
   generator makes `<type>_<relation>_link` and `_unlink` for them, and
   checks their names for collisions with every other tool. A link type's
   own description offers `find` and `get`, never `upsert` or `retire`.
+- **A trigger on a relation** watches its link type: `on` names
+  `sys.link.<type>.<relation>`. It fires on every write of a link, as a
+  trigger on a type fires on every write of a record: `link`, a link
+  written again, `unlink`, and each link a source ingests, per window.
+  Its guard reads the link's fields (`from`, `to` and the relation's
+  own), and `changed(f)` holds on a write that changes `f`. On `unlink`
+  the guard reads the link's fields as they were, and none reads as
+  changed. A host tells a link from an unlink by the write the
+  `trigger_fired` event's `cause` names: `record_upserted` or
+  `record_ingested` against `record_retired`. A relation carried by a
+  reference field has no link type, since its links change with the
+  field: a trigger naming one is refused on `on`, pointing at
+  `changed(<field>)` on the type. The trigger declaration gains no
+  member, so the log format does not change.
 - **The WIT package** gains the two doors, `relation-decl.authority` and
   `type-rights.link`, and stays at `lakelands:data@0.2.0`, which is not
   released yet.

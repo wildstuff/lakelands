@@ -25,6 +25,7 @@ mod filters;
 mod ingest;
 mod keys;
 mod latest;
+mod link_triggers;
 mod links;
 mod masking;
 mod migrate;
@@ -159,6 +160,8 @@ pub const ALL: &[Check] = &[
     keys::KEY_FIELDS_FROM_THE_KEY,
     restriction::HOLD_WITHHOLDS_AND_KEEPS,
     reactions::VERB_WRITE_REACTS,
+    link_triggers::LINK_TRIGGER_FIRES,
+    link_triggers::VIA_LINK_TYPE_REFUSED,
     bundles::BUNDLE_WHOLE,
     versions::CAS_ACROSS_RETIREMENT,
     references::REFERENCE_MUST_RESOLVE,

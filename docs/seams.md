@@ -821,7 +821,10 @@ once, possibly empty, never waiting for new events:
   whose kind is one of `filter.kinds` and whose type is one of
   `filter.types`; an empty list in the filter admits every kind or every
   type. An event has a type when it is a `record_*`, `trigger_fired` or
-  `object_set_changed` event, a `declared` type or a `migrated` one; an
+  `object_set_changed` event, a `declared` type or a `migrated` one (a
+  trigger on a relation carried by link records watches its link type,
+  `sys.link.<type>.<relation>`, so its `trigger_fired` events carry that
+  type and the link's key; `docs/decisions/035-a-link-is-a-record.md`); an
   event without one passes only a filter with no types. The kinds are
   free strings, so a relay may name one a newer format adds;
   `lakelands_api::event::KINDS` lists the kinds of this format version.
