@@ -14,8 +14,9 @@ n=0
 while IFS= read -r commit; do
     n=$((n + 1))
     author="$(git log -1 --format='%an <%ae>' "$commit")"
+    # grep reads to the end (no -q), so git is never cut off mid-write.
     if ! git log -1 --format='%(trailers:key=Signed-off-by,valueonly)' "$commit" \
-            | grep -q -i -x -F -- "$author"; then
+            | grep -i -x -F -- "$author" >/dev/null; then
         fail "commit $(git log -1 --format='%h %s' "$commit"): no Signed-off-by: $author"
     fi
 done < <(git rev-list --no-merges "$range")

@@ -35,8 +35,9 @@ if [ "$(git cat-file -t "refs/tags/$tag")" != tag ]; then
     fail "lightweight tag; make an annotated tag whose message ends with a Signed-off-by line"
 else
     tagger="$(git for-each-ref --format='%(taggername) %(taggeremail)' "refs/tags/$tag")"
+    # grep reads to the end (no -q), so sed is never cut off mid-write.
     if ! git for-each-ref --format='%(contents)' "refs/tags/$tag" \
-            | sed -n 's/^Signed-off-by: *//p' | grep -q -i -x -F -- "$tagger"; then
+            | sed -n 's/^Signed-off-by: *//p' | grep -i -x -F -- "$tagger" >/dev/null; then
         fail "no Signed-off-by: $tagger in the tag message"
     fi
 fi
