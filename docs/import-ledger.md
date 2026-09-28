@@ -65,7 +65,10 @@ gate allows. The roots above held 135,643 lines at the freeze.
 
 Since the PostgreSQL engine was imported, `core-size` counts
 `lakelands-engine-pg` too (the in-memory engine, written here, stays
-out): **35,356** lines on develop after it.
+out): **35,356** lines on develop after it. Since lakelands#216 moved the
+schema hash, the key rule, the canonical bytes and the expression parser
+from `lakelands-core` into `lakelands-api`, it counts `lakelands-api`
+too, so a move between the contract and the core is not read as a cut.
 
 ## Where the tree corrects the steps
 

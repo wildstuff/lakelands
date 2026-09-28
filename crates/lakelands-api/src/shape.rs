@@ -14,25 +14,53 @@
 //! key. A view's `group_by` and `measures` keep their declared order too:
 //! the grouping order is the order of the view key, and a measure may use
 //! an earlier one.
+//!
+//! A host that keeps declarations in force computes this hash of its own
+//! declaration and compares it with the one `describe_type` reports
+//! before it declares again, since declaring again is a new version. The
+//! store computes the hash with this same function, so the two agree.
 
-use lakelands_api::expr::Condition;
-use lakelands_api::ontology::{FieldDecl, RelationDecl, TypeDecl, ViewDecl};
+use std::fmt;
+
 use serde_json::{Value, json};
 
-use super::ShapeError;
 use crate::canonical;
+use crate::expr::{Condition, ParseError};
+use crate::ontology::{FieldDecl, RelationDecl, TypeDecl, ViewDecl};
+
+/// A condition inside a view that does not parse, so its typed form (the
+/// form the schema hash covers) does not exist.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ViewConditionError {
+    /// Where the condition sits: `view.where` or `view.measures.<name>`.
+    pub at: String,
+    /// Why it does not parse.
+    pub error: ParseError,
+}
+
+impl fmt::Display for ViewConditionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "the condition at `{}` does not parse: {}",
+            self.at, self.error
+        )
+    }
+}
+
+impl std::error::Error for ViewConditionError {}
 
 /// The schema hash of a type: SHA-256 over the canonical bytes of its
 /// shape object, as 64 lower-case hex digits.
 ///
 /// Fails only when a condition inside the type's view does not parse,
 /// because a view is hashed in its typed form.
-pub fn schema_hash(ty: &TypeDecl) -> Result<String, ShapeError> {
+pub fn schema_hash(ty: &TypeDecl) -> Result<String, ViewConditionError> {
     Ok(canonical::sha256_hex(&shape(ty)?))
 }
 
 /// The object the schema hash is taken over.
-pub(super) fn shape(ty: &TypeDecl) -> Result<Value, ShapeError> {
+pub fn shape(ty: &TypeDecl) -> Result<Value, ViewConditionError> {
     let view = match &ty.view {
         Some(view) => view_shape(view)?,
         None => Value::Null,
@@ -47,7 +75,7 @@ pub(super) fn shape(ty: &TypeDecl) -> Result<Value, ShapeError> {
 
 /// A view's shape: its source, its conditions in typed form, its
 /// grouping and its measures.
-pub(super) fn view_shape(view: &ViewDecl) -> Result<Value, ShapeError> {
+pub fn view_shape(view: &ViewDecl) -> Result<Value, ViewConditionError> {
     let filter = match &view.r#where {
         Some(c) => typed(c, || "view.where".to_owned())?,
         None => Value::Null,
@@ -59,7 +87,7 @@ pub(super) fn view_shape(view: &ViewDecl) -> Result<Value, ShapeError> {
             let expr = typed(&m.expr, || format!("view.measures.{}", m.name))?;
             Ok(json!({ "name": m.name, "expr": expr }))
         })
-        .collect::<Result<Vec<_>, ShapeError>>()?;
+        .collect::<Result<Vec<_>, ViewConditionError>>()?;
     Ok(json!({
         "source": view.source,
         "where": filter,
@@ -95,13 +123,13 @@ fn relations(list: &[RelationDecl]) -> Vec<Value> {
 
 /// A condition in its typed form, so that the same expression written as
 /// text or as a typed tree hashes the same.
-fn typed(c: &Condition, at: impl FnOnce() -> String) -> Result<Value, ShapeError> {
+fn typed(c: &Condition, at: impl FnOnce() -> String) -> Result<Value, ViewConditionError> {
     let parsed;
     let expr = match c {
         Condition::Expr(e) => e,
         Condition::Text(text) => {
-            parsed = crate::expr::parse(text)
-                .map_err(|error| ShapeError::Condition { at: at(), error })?;
+            parsed =
+                crate::expr::parse(text).map_err(|error| ViewConditionError { at: at(), error })?;
             &parsed
         }
     };
@@ -111,7 +139,7 @@ fn typed(c: &Condition, at: impl FnOnce() -> String) -> Result<Value, ShapeError
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lakelands_api::ontology::{Authority, Cardinality, FieldType, OnInputChange, StorageKind};
+    use crate::ontology::{Authority, Cardinality, FieldType, OnInputChange, StorageKind};
 
     /// A small type written the way a bundle would declare it.
     fn invoice() -> TypeDecl {
@@ -347,12 +375,12 @@ mod tests {
     fn a_view_that_does_not_parse_has_no_hash() {
         let broken = a_view("amount >".into(), "sum(amount)".into());
         match schema_hash(&broken) {
-            Err(ShapeError::Condition { at, .. }) => assert_eq!(at, "view.where"),
+            Err(ViewConditionError { at, .. }) => assert_eq!(at, "view.where"),
             other => panic!("expected a condition error, got {other:?}"),
         }
         let broken = a_view("amount > 0".into(), "sum(".into());
         match schema_hash(&broken) {
-            Err(ShapeError::Condition { at, .. }) => assert_eq!(at, "view.measures.total"),
+            Err(ViewConditionError { at, .. }) => assert_eq!(at, "view.measures.total"),
             other => panic!("expected a condition error, got {other:?}"),
         }
     }

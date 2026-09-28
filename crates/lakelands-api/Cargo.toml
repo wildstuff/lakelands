@@ -11,8 +11,12 @@ publish.workspace = true
 [dependencies]
 async-trait.workspace = true
 futures-core.workspace = true
+# The shortest round-trip digits of a double, for the canonical number form.
+ryu.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# The schema hash and every other digest over canonical bytes.
+sha2.workspace = true
 
 [dev-dependencies]
 # Parses the WIT package in `wit/` for the drift check (tests/wit.rs).

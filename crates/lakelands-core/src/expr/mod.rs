@@ -1,12 +1,12 @@
-//! The one expression grammar: its text form (`parse`, `print`) and what an
-//! expression means (`eval`). The typed form is `lakelands_api::expr::Expr`;
-//! text and typed forms reach the same evaluator.
+//! The one expression grammar: what an expression means (`eval`). The
+//! typed form and its text form (`parse`, `print`) live in
+//! `lakelands_api::expr`, so a host parses a condition exactly as the
+//! store does; text and typed forms reach the same evaluator.
 
 pub mod aggregate;
 pub mod eval;
 pub mod iregexp;
 pub mod order;
-mod parse;
 
 pub use eval::{EvalError, Place, RecordScope, Scope, Val, WriteScope, check, eval, holds};
-pub use parse::{ParseError, arity, func_name, parse, print};
+pub use lakelands_api::expr::{ParseError, arity, func_name, parse, print};

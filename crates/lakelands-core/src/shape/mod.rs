@@ -32,17 +32,17 @@
 
 use std::fmt;
 
+use lakelands_api::shape::ViewConditionError;
 use lakelands_api::{FieldName, TypeName};
 
 use crate::expr::ParseError;
 
 mod compat;
 mod convert;
-mod hash;
 
 pub use compat::{Change, Reason, classify};
 pub use convert::{Conversion, convert, fits, migrate_record, preflight};
-pub use hash::schema_hash;
+pub use lakelands_api::shape::schema_hash;
 
 /// Why a shape question has no answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -116,3 +116,9 @@ impl fmt::Display for ShapeError {
 }
 
 impl std::error::Error for ShapeError {}
+
+impl From<ViewConditionError> for ShapeError {
+    fn from(ViewConditionError { at, error }: ViewConditionError) -> Self {
+        ShapeError::Condition { at, error }
+    }
+}

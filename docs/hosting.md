@@ -155,7 +155,7 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   every record it brought in is retired in one append, and a record
   another hand also wrote refuses the purge
   (`docs/decisions/039-a-source-is-retracted-as-one.md`).
-  A lake's log is exported with `lakelands_core::export::write(store,
+  A lake's log is exported with `lakelands_store::export::write(store,
   dir)` (`lakelands export --to <dir>`) as files that verify without
   Lakelands (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`);
   an export is the whole log, unmasked, so it is handed over as the
@@ -187,7 +187,12 @@ A host that already has a store of its own moves in four steps.
    switch.
 2. **Implement the seams against a tagged `lakelands-api`** while the
    old store still serves. Each seam implementation gets a test that
-   fails before it and passes after.
+   fails before it and passes after. The pure helpers a host needs
+   beside the seams are there too: `schema_hash` in
+   `lakelands_api::shape`, the key rule with `link_key` and
+   `key_components` in `lakelands_api::key`, and the canonical bytes in
+   `lakelands_api::canonical`; `lakelands-core` is not a surface a host
+   builds on.
 3. **Cut over in one step.** Consumers re-point to Lakelands, pinned by
    tag, never by bare revision. Any contract the host exposes to its own
    plugins is adapted onto `lakelands-api`. The old store and the

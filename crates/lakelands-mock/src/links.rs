@@ -1,14 +1,14 @@
 //! Link records, as the mock keeps them: a relation declared without
 //! `via` is carried by records of its link type `sys.link.<type>.<relation>`,
 //! keyed by the pair (`docs/decisions/035-a-link-is-a-record.md`). The mock
-//! derives the link type itself, from the page, as it keeps its own key
-//! rule: it shares no code with the store.
+//! derives the link type itself, from the page; a link's key and its end
+//! fields come from the one key rule in `lakelands_api::key`, which the
+//! store calls too.
 
-use lakelands_api::id::{RecordKey, RelationName, TypeName};
+use lakelands_api::id::{RelationName, TypeName};
 use lakelands_api::ontology::{FieldDecl, FieldType, RelationDecl, StorageKind, TypeDecl};
 
-pub(crate) const FROM: &str = "from";
-pub(crate) const TO: &str = "to";
+pub(crate) use lakelands_api::key::{FROM, TO};
 
 pub(crate) fn name(t: &TypeName, r: &RelationName) -> TypeName {
     TypeName::from(format!("sys.link.{t}.{r}"))
@@ -74,10 +74,4 @@ pub(crate) fn of(t: &TypeDecl) -> Vec<TypeDecl> {
         .filter(|r| r.via.is_none())
         .map(|r| link_type(&t.name, r))
         .collect()
-}
-
-/// The key of the link from `from` to `to`, by the key rule.
-pub(crate) fn key(from: &RecordKey, to: &RecordKey) -> RecordKey {
-    let c = |k: &RecordKey| k.as_str().replace('%', "%25").replace(':', "%3A");
-    RecordKey::from(format!("{}:{}", c(from), c(to)))
 }

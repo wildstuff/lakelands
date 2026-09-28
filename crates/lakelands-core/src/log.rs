@@ -3,16 +3,16 @@
 //!
 //! These are pure functions of the values they name, so a writer, a
 //! verifier and the published vectors compute them the same way; the
-//! store calls them, and so does the vector test.
+//! store calls them, and so does the vector test. The key rule itself
+//! lives in `lakelands_api::key`, where a host reaches it too.
 
 use lakelands_api::event::EventId;
-use lakelands_api::ontology::TypeDecl;
-use lakelands_api::{
-    FieldName, IdempotencyKey, LakeId, Patch, Position, RecordKey, SourceId, TypeName, Value,
-};
+use lakelands_api::{IdempotencyKey, LakeId, Patch, Position, RecordKey, SourceId, TypeName};
 use sha2::{Digest as _, Sha256};
 
 use crate::canonical;
+
+pub use lakelands_api::key::{key_component, key_components, keyable, record_key};
 
 /// SHA-256 over the parts joined by `0x00`, as an event id: the first 16
 /// bytes, in lower-case hex.
@@ -86,87 +86,10 @@ pub fn positional_id(lake: &LakeId, position: Position) -> EventId {
     ])
 }
 
-/// One key field's value as a component of a record's key: its JSON
-/// string form — text as it is, a number in its canonical form, `true` or
-/// `false` — with `%` written `%25` and `:` written `%3A`. `None` for a
-/// value that cannot be part of a key (null, an array, an object).
-pub fn key_component(value: &Value) -> Option<String> {
-    let text = match value {
-        Value::String(s) => s.clone(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(_) => {
-            String::from_utf8(canonical::to_vec(value)).expect("canonical JSON is UTF-8")
-        }
-        _ => return None,
-    };
-    Some(text.replace('%', "%25").replace(':', "%3A"))
-}
-
-/// The key a record of `ty` has, from its key fields' values: the
-/// components joined by `:`. `None` when the type declares no key fields
-/// or one of them has no value.
-pub fn record_key(
-    ty: &TypeDecl,
-    fields: &std::collections::BTreeMap<FieldName, Value>,
-) -> Option<RecordKey> {
-    if ty.key.is_empty() {
-        return None;
-    }
-    let parts: Option<Vec<String>> = ty
-        .key
-        .iter()
-        .map(|k| fields.get(k).and_then(key_component))
-        .collect();
-    parts.map(|p| RecordKey::from(p.join(":")))
-}
-
-/// A key string's components, decoded: split on `:`, then `%3A` and `%25`
-/// read back. Only those two upper-case escapes are the key's encoding; any
-/// other `%` sequence is kept as it stands.
-pub fn key_components(key: &RecordKey) -> Vec<String> {
-    key.as_str()
-        .split(':')
-        .map(|c| c.replace("%3A", ":").replace("%25", "%"))
-        .collect()
-}
-
-/// Whether a field of this kind can be part of a record's key: the kinds
-/// whose values have a JSON string form (`docs/log-format.md` §2.3).
-pub fn keyable(kind: lakelands_api::ontology::StorageKind) -> bool {
-    use lakelands_api::ontology::StorageKind as K;
-    matches!(
-        kind,
-        K::Text | K::Reference | K::Decimal | K::Number | K::Boolean | K::DateTime
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn a_key_is_its_fields_joined_and_encoded() {
-        let ty: TypeDecl =
-            serde_json::from_value(json!({"name": "t", "key": ["a", "b", "c"]})).unwrap();
-        let f = |v: Value| serde_json::from_value(v).unwrap();
-        assert_eq!(
-            record_key(&ty, &f(json!({"a": "x:y%z", "b": 12, "c": true})))
-                .unwrap()
-                .as_str(),
-            "x%3Ay%25z:12:true"
-        );
-        assert!(record_key(&ty, &f(json!({"a": "x", "b": 1}))).is_none());
-        assert_eq!(
-            key_components(&"x%3Ay%25z:12:true".into()),
-            ["x:y%z", "12", "true"]
-        );
-        assert_eq!(
-            key_components(&"a%3ab".into()),
-            ["a%3ab"],
-            "only `%3A` is `:`"
-        );
-    }
 
     #[test]
     fn ids_depend_on_what_they_name() {

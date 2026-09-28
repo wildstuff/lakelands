@@ -73,7 +73,7 @@ pub(crate) fn check(
         Ok(crate::value::canonical(&f.ty, v))
     };
     let (from, to) = (value("from")?, value("to")?);
-    if crate::value::canonical_bytes(&from) == crate::value::canonical_bytes(&to) {
+    if lakelands_api::canonical::to_vec(&from) == lakelands_api::canonical::to_vec(&to) {
         return Err(("to".into(), "`to` equals `from`".into()));
     }
     let when = expr::typed(&Condition::Text(text("when")?))
@@ -177,7 +177,7 @@ pub(crate) fn run(shared: &Shared, log: &mut Log, today: Timestamp) -> Result<Ag
                 continue;
             }
         };
-        let from = crate::value::canonical_bytes(&rule.from);
+        let from = lakelands_api::canonical::to_vec(&rule.from);
         let mut batch = Batch::at(log);
         for rec in st
             .records
@@ -187,7 +187,7 @@ pub(crate) fn run(shared: &Shared, log: &mut Log, today: Timestamp) -> Result<Ag
             if rec
                 .fields
                 .get(&rule.field)
-                .map(crate::value::canonical_bytes)
+                .map(lakelands_api::canonical::to_vec)
                 != Some(from.clone())
             {
                 continue;

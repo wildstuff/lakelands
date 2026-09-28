@@ -4,6 +4,8 @@
 # The core stays small enough to read, and it only ever gets smaller
 # than the ceiling it has reached. The count is every line of every
 # tracked `src/**/*.rs` in CRATES; `tests/` directories are not counted.
+# The contract crate is counted with the core, so code moved between
+# them is not read as code cut.
 # Red when
 #   - the count exceeds the ratchet base (BASE_FILE);
 #   - the ratchet base exceeds CEILING;
@@ -12,7 +14,7 @@
 . "$(dirname "$0")/lib.sh"
 
 CEILING=70000
-CRATES=(lakelands-core lakelands-store lakelands-engine-sqlite lakelands-engine-pg)
+CRATES=(lakelands-api lakelands-core lakelands-store lakelands-engine-sqlite lakelands-engine-pg)
 BASE_FILE=scripts/gates/core-size.base
 
 [ -f "$BASE_FILE" ] || die "$BASE_FILE is missing"

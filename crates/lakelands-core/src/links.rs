@@ -17,9 +17,9 @@
 //! edges over such relations: from the live link records at the view's
 //! position, each an [`Edge`] carrying the link's own fields.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
-use lakelands_api::id::{FieldName, RecordKey, RelationName, TypeName};
+use lakelands_api::id::{RecordKey, RelationName, TypeName};
 use lakelands_api::ontology::{
     Authority, FieldDecl, FieldType, RelationDecl, StorageKind, TypeDecl,
 };
@@ -29,10 +29,7 @@ use lakelands_api::record::{StoredRecord, Value};
 /// The prefix of every link type's name.
 pub const PREFIX: &str = "sys.link.";
 
-/// The link records' own key fields.
-pub const FROM: &str = "from";
-/// See [`FROM`].
-pub const TO: &str = "to";
+pub use lakelands_api::key::{FROM, TO, link_key};
 
 /// The name of the link type of relation `r` on type `t`.
 pub fn link_type_name(t: &TypeName, r: &RelationName) -> TypeName {
@@ -126,29 +123,6 @@ pub fn relation_of<'a>(
     })
 }
 
-/// The key of the link from `from` to `to`: the key rule over the pair.
-pub fn link_key(from: &RecordKey, to: &RecordKey) -> RecordKey {
-    let fields: BTreeMap<FieldName, Value> = [
-        (FieldName::from(FROM), Value::String(from.to_string())),
-        (FieldName::from(TO), Value::String(to.to_string())),
-    ]
-    .into();
-    let decl = TypeDecl {
-        name: TypeName::from(""),
-        key: vec![FROM.into(), TO.into()],
-        fields: vec![],
-        relations: vec![],
-        view: None,
-        valid_from: None,
-        valid_to: None,
-        field_meta: true,
-        language: None,
-        description: None,
-        label: None,
-    };
-    crate::log::record_key(&decl, &fields).expect("both components are text")
-}
-
 /// The edge a live link record stands for.
 fn edge_of(t: &TypeName, r: &RelationDecl, link: &StoredRecord) -> Option<Edge> {
     let from = link.fields.get(FROM)?.as_str()?;
@@ -224,6 +198,7 @@ pub fn link_edges<'a, E>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lakelands_api::FieldName;
     use serde_json::json;
 
     fn relation() -> RelationDecl {
@@ -244,10 +219,6 @@ mod tests {
         assert_eq!(t.fields[0].ty.target.as_ref().unwrap().as_str(), "invoice");
         assert_eq!(t.fields[1].ty.target.as_ref().unwrap().as_str(), "partner");
         assert!(t.fields[0].required && t.fields[1].required);
-        assert_eq!(
-            link_key(&"INV:1".into(), &"P-1".into()).as_str(),
-            "INV%3A1:P-1"
-        );
     }
 
     #[test]
