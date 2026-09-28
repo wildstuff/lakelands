@@ -75,24 +75,19 @@ of changes without polling, `propose`, `proposals`, `accept` and
 `add_field` and `migrate` for the schema. Served over MCP (stdio and
 HTTP) and REST from one catalog. Agents never write a query language.
 
-> **Status: `0.2.0`.** Lakelands `0.2.0` is the `lakelands` CLI, its
+> **Status: `0.3.0`.** Lakelands `0.3.0` is the `lakelands` CLI, its
 > MCP server (stdio and streamable HTTP) and its REST door over the
 > SQLite, in-memory and PostgreSQL engines, all three passing the whole
-> conformance suite, installable from the release. Beside what `0.1.0`
-> held it has the OpenAI-compatible embedding client and embedding on
-> write, the `http` and `exec` function backings, the webhook deliverer
-> and the ticker in `serve`, relations with fields of their own carried
-> by link records, aging by date (`lakelands age`), retracting a source
-> as one act (`lakelands purge`), value-type and key migrations,
-> exporting a lake's log as files that verify without Lakelands
-> (`lakelands export`), giving a projection's unused storage back
-> without changing an answer (`lakelands compact`), MCP notifications of
-> the changes a session may see, `lakelands-client`, which holds a lake
-> another process serves over the REST door as the same `LakeStore` the
-> store is, the position the log had at an instant, bucketed
-> aggregation on reads, a record's history through the feed, and vector
-> coverage per field. Views over more than one source, the mirror
-> between lakes and multi-row PostgreSQL commits come after.
+> conformance suite (228 checks through the doors and 48 through the
+> engine seam), with 41 decision records, installable from the release.
+> Beside what `0.2.0` held it has multi-row PostgreSQL commits,
+> field-ordered pages that read their page when the lake asks for the
+> index (`sort_index.<type>`), `find` resumed with `after` and ordered by
+> `latest`, a trigger on a relation carried by link records, a walk that
+> reads what it reaches at the head on every engine, the PostgreSQL
+> writer analysing its tables after a load, and geo values held to their
+> RFC shape. Views over more than one source, the mirror between lakes
+> and a vector index behind the seam come after.
 
 ## Try it
 
