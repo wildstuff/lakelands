@@ -50,6 +50,9 @@ for engine in ${engines[@]+"${engines[@]}"}; do
     # engine that has it, so both are in the conformance job.
     tests=(--test conformance)
     [ -f "$crate/tests/engine_seam.rs" ] && tests+=(--test engine_seam)
+    # The pg engine's vector index needs the server the job runs against:
+    # with pgvector it is built and read, without it every search scans.
+    [ -f "$crate/tests/vector_index.rs" ] && tests+=(--test vector_index)
     cargo nextest run --locked ${flags[@]+"${flags[@]}"} \
         -p "lakelands-engine-$engine" "${tests[@]}"
 done

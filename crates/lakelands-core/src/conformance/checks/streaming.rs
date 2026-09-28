@@ -53,7 +53,10 @@
 //! links (lakelands#190). And one hybrid search per size, k = 10, for a
 //! fixed text through the suite's embedding backend: every record holds a
 //! vector, so the vector side scans the whole field, and each engine keeps
-//! only the best candidates as it goes, not the field (lakelands#197). A
+//! only the best candidates as it goes, not the field (lakelands#197); then
+//! the same search with the lake asking for an index on the field, which
+//! PostgreSQL answers from pgvector's index and the other engines by the
+//! same scan (`docs/decisions/043-an-index-asked-for-answers-its-set.md`). A
 //! harness without a meter runs everything else the check claims and
 //! reports the heap as not measured.
 //!
@@ -119,7 +122,7 @@ use crate::links::{link_key, link_type_name};
 check!(
     /// A large lake goes through ingest, the feed and export in bounded memory.
     STREAMS = a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it,
-    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification, each page of a walk of a type through find, a rebuild, a reopen, a three-hop walk over link records and a hybrid search with k = 10 over every record's vector hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB, and the search answers what it must",
+    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification, each page of a walk of a type through find, a rebuild, a reopen, a three-hop walk over link records and a hybrid search with k = 10 over every record's vector, without and with a vector index asked for, hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB, and the search answers what it must",
     given,
     embedding
 );
@@ -944,8 +947,53 @@ impl Size<'_> {
 
     /// One hybrid search for the note of [`SOUGHT`]: the backend embeds
     /// the text, the lexical side finds the one record holding it, and
-    /// the vector side ranks every vector of `vec`.
-    async fn search(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+    /// the vector side ranks every vector of `vec`. Then the same search
+    /// once the setting `vector_index.reading` asks for an index on `vec`,
+    /// through the index where the engine keeps one (lakelands#197); the
+    /// setting is retired again, so the lake grows without the index.
+    async fn searches(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+        self.search(store, records, "search", "hybrid").await?;
+        self.ask_vector_index(store, json!(["vec"]))
+            .await
+            .must("asking for the vector index on `vec`")?;
+        self.search(store, records, "search-indexed", "hybrid (index)")
+            .await?;
+        self.ask_vector_index(store, json!([]))
+            .await
+            .must("asking for no vector index again")?;
+        Ok(())
+    }
+
+    /// Write the setting `vector_index.reading` with `value`.
+    async fn ask_vector_index(
+        &self,
+        store: &dyn LakeStore,
+        value: serde_json::Value,
+    ) -> lakelands_api::Result<lakelands_api::Outcome> {
+        doors(store)
+            .upsert(
+                &self.own,
+                &TypeName::from(lakelands_api::seam::SETTING_TYPE),
+                &RecordKey::from("vector_index.reading"),
+                [
+                    ("key".into(), json!("vector_index.reading")),
+                    ("value".into(), value),
+                ]
+                .into(),
+                lakelands_api::WriteOpts::default(),
+            )
+            .await
+    }
+
+    /// One hybrid search for the note of [`SOUGHT`], reported as `phase`;
+    /// it must say it ranked by `ranked_by`.
+    async fn search(
+        &mut self,
+        store: &dyn LakeStore,
+        records: u64,
+        phase: &'static str,
+        ranked_by: &str,
+    ) -> Result<(), Failure> {
         let head = store.head().await.must("reading the head")?;
         let sought = key(SOUGHT);
         let m = Measure::start(&self.given.meter, false);
@@ -972,20 +1020,26 @@ impl Size<'_> {
         let measured = m.stop();
         let keys: Vec<&str> = got.hits.iter().map(|h| h.record.key.as_str()).collect();
         ensure!(
-            got.ranked_by == "hybrid"
+            got.ranked_by == ranked_by
                 && got.hits.len() == K as usize
-                && keys.first() == Some(&sought.as_str()),
+                && keys.contains(&sought.as_str()),
             "a hybrid search with k = {K} for the note only `{sought}` holds, with the suite's \
-             backend bound, must rank by both lists, answer {K} hits and put `{sought}` first; \
-             it ranked by {:?} and answered {keys:?}",
+             backend bound, must say it ranked by {ranked_by:?}, answer {K} hits and find \
+             `{sought}`; it ranked by {:?} and answered {keys:?}",
             got.ranked_by
         );
+        if ranked_by == "hybrid" {
+            ensure!(
+                keys.first() == Some(&sought.as_str()),
+                "the exact hybrid search must put `{sought}` first; it answered {keys:?}"
+            );
+        }
         self.row(
-            "search",
+            phase,
             Claim::Held,
             records,
             head.0 + 1,
-            format!("hybrid, k = {K}, over {} vectors", self.live),
+            format!("{ranked_by}, k = {K}, over {} vectors", self.live),
             measured,
         );
         Ok(())
@@ -1166,7 +1220,7 @@ async fn a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_doe
         size.export(store.as_ref(), records, &log, &dir).await?;
         size.find_walk(store.as_ref(), records).await?;
         size.sorted_walks(store.as_ref(), records).await?;
-        size.search(store.as_ref(), records).await?;
+        size.searches(store.as_ref(), records).await?;
         size.traverse(store.as_ref(), records).await?;
         size.rebuild(store.as_ref(), records).await?;
         store = size.reopen(store, records).await?;

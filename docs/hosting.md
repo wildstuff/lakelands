@@ -171,6 +171,34 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   itself, once every 5 000 records a writer puts, so the planner knows
   their size; a host that loads a lake's schema by another path runs
   `ANALYZE` on it itself.
+  A vector field the lake asks an index for (`vector_index.<type>`,
+  `docs/decisions/043-an-index-asked-for-answers-its-set.md`) is indexed on
+  PostgreSQL by **pgvector 0.8 or later** (the PostgreSQL License), a
+  server extension the host installs. A writer's open runs `CREATE
+  EXTENSION IF NOT EXISTS vector`, which needs a role allowed to create
+  it; where it cannot, the lake opens as always, its searches read every
+  vector and answer exactly, and the open says so once on standard
+  error. An indexed field costs, beside
+  its vectors, a unit vector and an index entry per vector: measured at
+  100 000 vectors of 1 536 dimensions, about 8.3 KiB for the unit vector
+  (kept out of line) and 8 KiB for the index, one page per vector. The
+  index is built in the transaction of the setting's write, which holds
+  the lake's writer until it is done: 7 minutes for that field at
+  PostgreSQL's default `maintenance_work_mem` of 64 MiB on a loaded
+  12-core machine, since the graph stops fitting in memory after about
+  9 000 vectors; a host that indexes a large field raises
+  `maintenance_work_mem` for the lake's role first. PostgreSQL builds a
+  large index with parallel workers in shared memory: a server in a
+  container needs a `/dev/shm` larger than Docker's default 64 MiB
+  (`--shm-size`), or `max_parallel_maintenance_workers = 0`. Otherwise
+  the build fails as unavailable ("could not resize shared memory
+  segment") after the setting's event is already in the log: the writer
+  is behind and appends nothing, and every writer's open folds that event
+  again and fails the same way. Reads answer as before; writes do not,
+  until the host raises `/dev/shm` or `maintenance_work_mem`, or sets
+  `max_parallel_maintenance_workers = 0`, and opens the writer again. SQLite and in-memory lakes keep no such
+  index and answer every search exactly; a SQLite lake that needs one
+  moves to PostgreSQL by export and import (lakelands#215).
 
 **Configuration is not a seam.** Engine configuration, tuning, limits
 and an optional key handle reach a lake through `Location`, and a

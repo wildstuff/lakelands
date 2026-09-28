@@ -98,6 +98,8 @@ pub struct Reader<'a> {
     pub ontology: Ontology,
     /// The settings then.
     pub settings: BTreeMap<String, Value>,
+    /// Whether the read is at the head: it asked for no earlier position.
+    pub at_head: bool,
     /// The position read at.
     pub position: Position,
     /// Business time, if the read asked for it.
@@ -179,6 +181,7 @@ impl<'a> Reader<'a> {
             view,
             ontology,
             settings,
+            at_head: at.as_of.is_none(),
             position,
             valid_at: at.valid_at,
             now: now(),
@@ -220,14 +223,20 @@ impl<'a> Reader<'a> {
     }
 
     /// Name in a type's lifecycle the fields the lake keeps an order index
-    /// for, as its `sort_index.<type>` setting asks, of those the principal
-    /// sees.
+    /// for and the vector fields it asks an index for, as its
+    /// `sort_index.<type>` and `vector_index.<type>` settings ask, of those
+    /// the principal sees.
     fn name_sorted(&self, t: &mut TypeDescription) {
         let Ok(decl) = self.ontology.ty(&t.name) else {
             return;
         };
         let setting = self.settings.get(&core_engines::sort_index_key(&t.name));
         t.lifecycle.sorted = core_engines::sorted_fields(decl, setting)
+            .into_iter()
+            .filter(|f| t.fields.iter().any(|d| d.name == *f))
+            .collect();
+        let setting = self.settings.get(&core_engines::vector_index_key(&t.name));
+        t.lifecycle.indexed = core_engines::indexed_fields(decl, setting)
             .into_iter()
             .filter(|f| t.fields.iter().any(|d| d.name == *f))
             .collect();
@@ -810,7 +819,13 @@ impl<'a> Reader<'a> {
         };
         let ranked_by = match &s.mode {
             SearchMode::Lexical { .. } => "lexical",
+            SearchMode::Vector { field, .. } if self.indexed(&decl, field)? => "index",
             SearchMode::Vector { .. } => "vector",
+            SearchMode::Hybrid {
+                field,
+                vector: Some(_),
+                ..
+            } if self.indexed(&decl, field)? => "hybrid (index)",
             SearchMode::Hybrid {
                 vector: Some(_), ..
             } => "hybrid",
@@ -845,6 +860,26 @@ impl<'a> Reader<'a> {
             ranked_by,
             next_cursor,
         })
+    }
+
+    /// Whether the lake asks an index for `field` of `decl`'s type at the
+    /// head, where the engines keep their vector indexes: a search over it
+    /// answers the index's set, at any position.
+    fn indexed(&self, decl: &TypeDecl, field: &FieldName) -> Result<bool> {
+        let key = core_engines::vector_index_key(&decl.name);
+        let setting = if self.at_head {
+            self.settings.get(&key).cloned()
+        } else {
+            self.lake
+                .engine
+                .view(None)?
+                .get(
+                    &TypeName::from(lakelands_api::seam::SETTING_TYPE),
+                    &RecordKey::from(key),
+                )?
+                .and_then(|r| core_engines::setting_value(&r).cloned())
+        };
+        Ok(core_engines::indexed_fields(decl, setting.as_ref()).contains(field))
     }
 
     /// The ranked candidates this read may see, as hits, in rank order.

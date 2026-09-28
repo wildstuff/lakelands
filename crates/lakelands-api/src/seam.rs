@@ -246,27 +246,56 @@ pub fn sortable(kind: &crate::ontology::StorageKind) -> bool {
     )
 }
 
+/// The key prefix of the setting that asks for a type's vector index: the
+/// setting `vector_index.<type>`, whose value is a JSON array of the
+/// type's vector fields. An indexed field's search answers the index's
+/// set; on an engine that keeps no such index it is the exact ranking.
+pub const VECTOR_INDEX_SETTING: &str = "vector_index.";
+
+/// Whether a vector index can keep a field of this kind: vectors only.
+pub fn indexable(kind: &crate::ontology::StorageKind) -> bool {
+    matches!(kind, crate::ontology::StorageKind::Vector)
+}
+
+/// The type an index setting's key names, and which index it asks for:
+/// `sort_index.<type>` or `vector_index.<type>`; `None` for any other key.
+pub fn index_setting_type(key: &str) -> Option<&str> {
+    key.strip_prefix(SORT_INDEX_SETTING)
+        .or_else(|| key.strip_prefix(VECTOR_INDEX_SETTING))
+}
+
 /// Check a write of the setting `key` that leaves `value` (`None` or
-/// `null` asks for no index): a `sort_index.<type>` setting must name a
-/// declared type (`decl`, its declaration at the head) and hold an array
-/// of the names of fields it declares with a [`sortable`] kind. A refusal
-/// names the field it is about (the named field, else `key` or `value`)
-/// and why. Any other setting passes.
+/// `null` asks for no index): a `sort_index.<type>` or
+/// `vector_index.<type>` setting must name a declared type (`decl`, its
+/// declaration at the head) and hold an array of the names of fields it
+/// declares with a kind that index keeps ([`sortable`], [`indexable`]). A
+/// refusal names the field it is about (the named field, else `key` or
+/// `value`) and why. Any other setting passes.
 ///
 /// It lives in the contract, not in the core, so that the mock, which
 /// depends on this crate alone, refuses the same settings as the store.
-pub fn check_sort_index(
+pub fn check_index_setting(
     key: &str,
     value: Option<&Value>,
     decl: Option<&TypeDecl>,
 ) -> std::result::Result<(), (crate::id::FieldName, String)> {
-    let Some(ty) = key.strip_prefix(SORT_INDEX_SETTING) else {
-        return Ok(());
-    };
+    let (ty, index, keeps, kinds): (_, _, fn(&crate::ontology::StorageKind) -> bool, _) =
+        if let Some(ty) = key.strip_prefix(SORT_INDEX_SETTING) {
+            (
+                ty,
+                "an order index",
+                sortable,
+                "text, number, decimal, boolean, date-time and reference fields",
+            )
+        } else if let Some(ty) = key.strip_prefix(VECTOR_INDEX_SETTING) {
+            (ty, "a vector index", indexable, "vector fields")
+        } else {
+            return Ok(());
+        };
     let Some(decl) = decl.filter(|d| d.view.is_none()) else {
         return Err((
             "key".into(),
-            format!("`{key}` asks for an order index of `{ty}`, which is no declared stored type"),
+            format!("`{key}` asks for {index} of `{ty}`, which is no declared stored type"),
         ));
     };
     let names = match value {
@@ -293,12 +322,11 @@ pub fn check_sort_index(
                     format!("`{key}` names `{name}`, which `{ty}` does not declare"),
                 ));
             }
-            Some(f) if !sortable(&f.ty.kind) => {
+            Some(f) if !keeps(&f.ty.kind) => {
                 return Err((
                     name.into(),
                     format!(
-                        "`{key}` names `{name}`, of kind {}; an order index keeps text, \
-                         number, decimal, boolean, date-time and reference fields",
+                        "`{key}` names `{name}`, of kind {}; {index} keeps {kinds}",
                         serde_json::to_value(f.ty.kind).unwrap_or_default()
                     ),
                 ));

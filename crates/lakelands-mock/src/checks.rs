@@ -30,7 +30,7 @@ use lakelands_api::ontology::{
     StorageKind, TriggerDecl, TypeDecl, VerbDecl, VerbEffect, ViewDecl,
 };
 use lakelands_api::principal::{Access, Grants, Principal, PrincipalKind, TypeGrants};
-use lakelands_api::query::{Pattern, Step, Walk};
+use lakelands_api::query::{Pattern, Search, SearchMode, Step, Walk};
 use lakelands_api::read::{After, Direction, Find, Found, Get, Order, OrderBy, ReadAt};
 use lakelands_api::record::{Origin, Patch, Record, SourceRecord, Value};
 use lakelands_api::seam::FeedFilter;
@@ -118,6 +118,7 @@ macro_rules! door_checks {
             #[host_ops] a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_record,
             a_value_type_is_loosened_by_declare_and_tightened_by_its_preflight,
             a_sort_index_setting_names_declared_scalar_fields_and_describe_shows_them,
+            a_vector_index_setting_names_vector_fields_and_search_says_it_ranked_by_the_index,
             an_order_by_latest_takes_no_field_and_no_view,
             a_trigger_watches_a_link_type_and_not_a_reference_relations);
     };
@@ -3233,6 +3234,196 @@ pub async fn a_sort_index_setting_names_declared_scalar_fields_and_describe_show
         sorted(owner).await.is_empty(),
         "the setting retired, nothing indexed"
     );
+}
+
+/// A `vector_index.<type>` setting asks for an index on vector fields its
+/// type declares, and is refused naming anything else; `describe_type`
+/// names the fields asked for, and a search over one says it ranked by the
+/// index, `index` or `hybrid (index)`, at the head and at an earlier
+/// position alike, since the index is the head's; every other field is
+/// ranked by `vector`
+/// (`docs/decisions/043-an-index-asked-for-answers-its-set.md`).
+pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranked_by_the_index(
+    store: Arc<dyn LakeStore>,
+) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let vector = |name: &str| FieldDecl {
+        ty: FieldType {
+            dimensions: Some(2),
+            ..FieldType::kind(StorageKind::Vector)
+        },
+        ..text(name)
+    };
+    let doc = TypeDecl {
+        name: "doc".into(),
+        key: Vec::new(),
+        fields: vec![
+            FieldDecl {
+                searchable: true,
+                ..text("label")
+            },
+            vector("v"),
+            vector("w"),
+        ],
+        relations: Vec::new(),
+        view: None,
+        valid_from: None,
+        valid_to: None,
+        field_meta: true,
+        language: None,
+        description: None,
+        label: None,
+    };
+    f.catalog
+        .declare(owner, Declaration::Type(doc))
+        .await
+        .expect("the owner declares `doc`");
+    f.catalog
+        .upsert(
+            owner,
+            &ty("doc"),
+            &key("a"),
+            patch(&[
+                ("label", json!("quay")),
+                ("v", json!([1.0, 0.0])),
+                ("w", json!([0.0, 1.0])),
+            ]),
+            WriteOpts::default(),
+        )
+        .await
+        .expect("a doc is written");
+    let before = f.head().await;
+    let set = |value: Value| {
+        let catalog = f.catalog.clone();
+        async move {
+            catalog
+                .upsert(
+                    owner,
+                    &ty("sys.setting"),
+                    &key("vector_index.doc"),
+                    patch(&[("key", json!("vector_index.doc")), ("value", value)]),
+                    WriteOpts::default(),
+                )
+                .await
+        }
+    };
+    for (value, at_fault) in [
+        (json!(["label"]), "label"),
+        (json!(["v", "nope"]), "nope"),
+        (json!("v"), "value"),
+    ] {
+        let e = set(value.clone())
+            .await
+            .expect_err("a setting naming what no vector index keeps is refused");
+        let (field, reason) = refusal(&e);
+        assert!(
+            matches!(reason, Refusal::Invalid { .. }),
+            "`vector_index.doc` = {value}: expected invalid, got {reason:?}"
+        );
+        assert_eq!(
+            field.as_ref().map(FieldName::as_str),
+            Some(at_fault),
+            "`vector_index.doc` = {value}: the refusal names the field at fault"
+        );
+    }
+    let e = f
+        .catalog
+        .upsert(
+            owner,
+            &ty("sys.setting"),
+            &key("vector_index.gauge"),
+            patch(&[
+                ("key", json!("vector_index.gauge")),
+                ("value", json!(["v"])),
+            ]),
+            WriteOpts::default(),
+        )
+        .await
+        .expect_err("a setting for an undeclared type is refused");
+    assert_eq!(
+        refusal(&e).0.as_ref().map(FieldName::as_str),
+        Some("key"),
+        "the refusal names the key"
+    );
+    let indexed = || {
+        let catalog = f.catalog.clone();
+        async move {
+            catalog
+                .describe_type(owner, &ty("doc"), ReadAt::default())
+                .await
+                .expect("the type is described")
+                .data
+                .lifecycle
+                .indexed
+        }
+    };
+    let ranked_by = |mode: SearchMode, as_of: Option<Position>| {
+        let catalog = f.catalog.clone();
+        async move {
+            catalog
+                .search(
+                    owner,
+                    Search {
+                        ty: ty("doc"),
+                        mode,
+                        k: 5,
+                        cursor: None,
+                        filter: None,
+                        with_meta: false,
+                        at: ReadAt {
+                            as_of,
+                            valid_at: None,
+                        },
+                    },
+                )
+                .await
+                .expect("the search answers")
+                .data
+                .ranked_by
+        }
+    };
+    let by_vector = |field: &str| SearchMode::Vector {
+        field: field.into(),
+        vector: vec![1.0, 0.0],
+    };
+    let hybrid = || SearchMode::Hybrid {
+        text: "quay".into(),
+        field: "v".into(),
+        vector: Some(vec![1.0, 0.0]),
+    };
+    assert!(indexed().await.is_empty(), "no setting, nothing indexed");
+    assert_eq!(ranked_by(by_vector("v"), None).await, "vector");
+    set(json!(["v"]))
+        .await
+        .expect("a setting naming a declared vector field applies");
+    assert_eq!(indexed().await, vec![FieldName::from("v")]);
+    assert_eq!(ranked_by(by_vector("v"), None).await, "index");
+    assert_eq!(
+        ranked_by(by_vector("v"), Some(before)).await,
+        "index",
+        "an earlier position is ranked by the head's index, and says so"
+    );
+    assert_eq!(ranked_by(hybrid(), None).await, "hybrid (index)");
+    assert_eq!(
+        ranked_by(by_vector("w"), None).await,
+        "vector",
+        "a field the setting does not name is ranked by `vector`"
+    );
+    f.catalog
+        .retire(
+            owner,
+            &ty("sys.setting"),
+            &key("vector_index.doc"),
+            WriteOpts::default(),
+        )
+        .await
+        .expect("the setting retires");
+    assert!(
+        indexed().await.is_empty(),
+        "the setting retired, nothing indexed"
+    );
+    assert_eq!(ranked_by(by_vector("v"), None).await, "vector");
 }
 
 /// `latest` orders by each record's latest change and takes no field;
