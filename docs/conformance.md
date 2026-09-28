@@ -96,8 +96,11 @@ roster names `pg` required, so the job runs on every pull request.
 Without the variable, the
 pg tests say so and stand down, so a workspace test run on a machine
 without PostgreSQL stays green; `scripts/conformance.sh pg` refuses to
-run without it, so the suite is never skipped there. To run the same
-suite locally:
+run without it, so the suite is never skipped there. The workspace job
+starts no server, since only the pg engine needs one and its job already
+has it, so `scripts/conformance.sh pg` runs every test file in
+`crates/lakelands-engine-pg/tests/`, by that one rule, not only the
+suite. To run the same tests locally:
 
 ```sh
 docker run --rm -d --name lakelands-pg -p 5432:5432 \
