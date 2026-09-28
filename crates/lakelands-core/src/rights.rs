@@ -308,6 +308,7 @@ mod tests {
 
     fn stored() -> StoredRecord {
         let meta = FieldMeta {
+            upstream: None,
             origin: Origin::Source,
             known_at: Timestamp(0),
             seen_at: None,

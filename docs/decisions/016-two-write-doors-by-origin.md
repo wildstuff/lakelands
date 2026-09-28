@@ -59,3 +59,12 @@ with a refused record appends nothing; the refusal is the stream's next
 item and the stream ends there, and the caller's own offset says where to
 resume. An authored `upsert` is different on purpose: a write is a write,
 even with the same values.
+
+## Extended: where a source read its values
+
+A source record may name `upstream`, the other lake and position its
+values were read from (`docs/decisions/010-provenance-per-field.md`,
+extended). The ingest door takes it from the ingesting principal as it
+takes `seen_at`, and no grant decides it. It is not in the event's id,
+so a window delivered again stays one event whatever it names, and no
+duplicate rule changes (lakelands#174).

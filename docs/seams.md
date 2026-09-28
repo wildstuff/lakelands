@@ -417,10 +417,10 @@ read every field its expression reads (024). A value the expression
 cannot compute for a record is null, so that record falls in the null
 group, which sorts last. `date_bucket(x, unit)` answers the instant in
 UTC at which the bucket holding `x` starts, for `day`, `week` (ISO, from
-Monday), `month`, `quarter` and `year`; it belongs to reads, and a
-declaration calling it is refused (`docs/decisions/017-one-expression-grammar.md`,
-extended). **The ceiling:** buckets are UTC only, and there is no number
-bucket (lakelands#174).
+Monday), `month`, `quarter` and `year`. A declaration may call it too,
+from log format version 3 on, so a derived field can hold the bucket
+(`docs/decisions/017-one-expression-grammar.md`, extended). **The
+ceiling:** buckets are UTC only, and there is no number bucket.
 
 ### `VectorIndex`
 

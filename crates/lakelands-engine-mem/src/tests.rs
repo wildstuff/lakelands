@@ -490,6 +490,7 @@ fn a_scan_continues_after_a_keyset_position_and_stops_at_its_limit() {
 fn a_scan_orders_by_when_a_field_was_learned() {
     let e = fresh();
     let meta = |t: i64| FieldMeta {
+        upstream: None,
         origin: Origin::Authored,
         known_at: Timestamp(t),
         seen_at: None,

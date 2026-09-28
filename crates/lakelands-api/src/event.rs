@@ -21,9 +21,10 @@ use crate::write::{Declaration, Migration, ProposedWrite};
 /// The newest log format version this contract reads and writes. Every
 /// event carries the version it was written under; a reader refuses a
 /// version newer than the one it knows, by name and with a message, never
-/// by guessing. Version 2 adds `migrated.rekeyed` (`docs/log-format.md`
+/// by guessing. Version 2 adds `migrated.rekeyed`; version 3 the member
+/// `upstream` and `date_bucket` in a declaration (`docs/log-format.md`
 /// §6).
-pub const LOG_FORMAT_VERSION: u32 = 2;
+pub const LOG_FORMAT_VERSION: u32 = 3;
 
 /// The version a lake is created with and writes until it needs a newer
 /// one: a lake that never re-keys a type stays at version 1, byte for
@@ -88,6 +89,10 @@ pub struct Event {
     /// When the source observed the values, for an event from a source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seen_at: Option<Timestamp>,
+    /// For values read from another lake's log: that lake and position
+    /// (format version 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<crate::record::Upstream>,
     /// The procedure that produced the values, if one did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub procedure: Option<Procedure>,

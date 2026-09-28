@@ -47,6 +47,6 @@ pub use id::{
 pub use location::{EngineConfig, Location, SqliteTuning};
 pub use principal::{Access, Grants, Principal, PrincipalKind, WriteContext, WriteOrigin};
 pub use read::{After, Find, Found, Get, ReadAt, Reply};
-pub use record::{FieldMeta, Origin, Patch, Record, SourceRecord, Value};
+pub use record::{FieldMeta, Origin, Patch, Record, SourceRecord, Upstream, Value};
 pub use time::Timestamp;
 pub use write::{Committed, Outcome, WriteOpts};

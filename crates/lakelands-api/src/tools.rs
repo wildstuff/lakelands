@@ -459,7 +459,7 @@ fn record_schema(ty: &TypeDescription, lake: &LakeDescription) -> Value {
             "fields": {"type": "object", "properties": fields},
             "masked": {"type": "array", "items": {"type": "string"}},
             "meta": {"type": "object",
-                     "description": "Per field: origin, known_at, seen_at, position, writer, source, procedure_version; and error, for a computed field whose function failed, which then holds no value."},
+                     "description": "Per field: origin, known_at, seen_at, position, writer, source, procedure_version, upstream (the lake and position a value read from another lake came from); and error, for a computed field whose function failed, which then holds no value."},
         },
         "required": ["type", "key", "version", "fields"],
     })

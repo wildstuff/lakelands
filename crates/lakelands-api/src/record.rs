@@ -49,6 +49,10 @@ pub struct FieldMeta {
     /// For a value a procedure produced: which version of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub procedure_version: Option<String>,
+    /// For a value read from another lake's log (a mirror's): that lake
+    /// and the position of the state it reflects (log format version 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<Upstream>,
     /// For a field a function computes that holds no value because its
     /// backing failed: why (`docs/decisions/010-provenance-per-field.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -144,4 +148,19 @@ pub struct SourceRecord {
     /// When the source observed these values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seen_at: Option<Timestamp>,
+    /// When the values were read from another lake's log (a mirror's):
+    /// that lake and the position of the state they reflect. Provenance
+    /// the ingesting principal states, as `seen_at` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<Upstream>,
+}
+
+/// Where values read from another lake's log came from: that lake, and
+/// the position of the event there whose state they are.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Upstream {
+    /// The lake the values were read from.
+    pub lake: crate::id::LakeId,
+    /// The position of the event there whose state they are.
+    pub position: crate::id::Position,
 }

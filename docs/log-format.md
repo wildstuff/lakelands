@@ -32,7 +32,7 @@ every kind, and `body`, which holds the kind and its payload.
 
 | Member | Type | Presence | Meaning |
 |---|---|---|---|
-| `v` | integer | always | The format version the event was written under: `1`, or `2` from a lake's first re-keying `migrated` event on (§6). |
+| `v` | integer | always | The format version the event was written under: `1`, `2` from a lake's first re-keying `migrated` event on, `3` from its first event carrying `upstream` or declaring a call of `date_bucket` on (§6). |
 | `lake` | string | always | The lake the event belongs to. |
 | `position` | integer | always | The event's coordinate: `0` for the lake's first event, then consecutive, with no gaps. |
 | `id` | string | always | The event's identifier: 32 lower-case hex digits (§3). |
@@ -42,6 +42,7 @@ every kind, and `body`, which holds the kind and its payload.
 | `origin` | string | always | Which authority wrote it: `source`, `authored`, `derived` or `system`. |
 | `source` | string | source events | The source a `source` event came from. |
 | `seen_at` | string | when known | When the source observed the values (§1.3). |
+| `upstream` | object | when read from another lake | `{ "lake", "position" }`: the lake whose log the values were read from (its lake id) and the position of the event there whose state they are (an integer). Only on `record_ingested`, from version 3 on (§6). The ingesting principal states it, as it states `seen_at`. |
 | `procedure` | object | when one did | `{ "name", "version" }`, both strings, of the procedure that produced the values: for a verb, its name and its declaration's `version` in decimal digits; for a function backing, the function's name and its declaration's `version`; for an embedding, the model as the backend names it and the version it reports. |
 | `context` | object | always | The host's context for the write: `{ "origin": "direct" \| "reactive" \| "scheduled", "depth": n }`, `depth` an integer ≥ 0. |
 | `cause` | integer | consequences | The position of the event this one follows from: a verb's write names its `verb_called`, an accepted proposal's write names its `write_accepted`, a fired trigger names the write that fired it. |
@@ -286,6 +287,7 @@ clears, the fold records the field's provenance from the envelope
 | `writer` | `writer` |
 | `source` | `source` |
 | `procedure_version` | `procedure.version` |
+| `upstream` | `upstream` |
 
 In the same event, the fold recomputes derived fields and applies
 `on_input_change: clear` to every field one of whose `depends_on` inputs
@@ -399,7 +401,7 @@ So the separators are unambiguous.
   (a record carrying any other field is refused whole, never trimmed,
   per `docs/decisions/012-writes-touch-only-their-fields.md`) and has
   normalised every `date_time` value to the one form of §1.3. The
-  envelope's `seen_at` and `writer` are not in the preimage: a record
+  envelope's `seen_at`, `upstream` and `writer` are not in the preimage: a record
   delivered twice by the same source with the same values against the
   same state of the record has the same id whoever relayed it and
   whenever the source captured it, and the second delivery appends
@@ -559,6 +561,7 @@ carries a lower `v` than the event before it.
 |---|---|
 | 1 | Everything above except what later versions add. |
 | 2 | `migrated.rekeyed` (§2.2, §2.3). A lake writes version 1 until its first re-keying `migrated` event, which carries `v` 2, as does every event after it; a version-1 event that carries `rekeyed` is refused. A version-1 reader refuses the version-2 events rather than misreading a re-key. |
+| 3 | The envelope member `upstream` (§1.1, §2.3) and a call of `date_bucket` in a declaration's expressions (Appendix B). A lake writes the version it had until its first event that carries `upstream`, or that declares (in a `declared` or `migrated` event) an expression calling `date_bucket`; that event carries `v` 3, as does every event after it. A version-2 (or 1) event that carries either is refused, naming it. A version-2 reader refuses the version-3 events rather than misreading them. |
 
 ## Appendix A. Encodings
 
@@ -673,7 +676,12 @@ A literal is `{ "type": "null" }`, `{ "type": "bool", "value": true }`,
 `setting`, `changed`, `coalesce`, `if`, `lower`, `upper`, `trim`, `len`,
 `concat`, `substr`, `contains`, `replace`, `starts_with`, `matches`,
 `abs`, `round`, `count`, `sum`, `min`, `max`, `avg`, spelled in the text
-form exactly as here.
+form exactly as here; and, from version 3 on, `date_bucket`, whose two
+arguments are the value and its unit as a string literal (`day`, `week`,
+`month`, `quarter` or `year`), answering the instant at which the UTC
+bucket holding the value starts (the week from Monday, as ISO counts
+weeks). A read may call `date_bucket` in any version; a declaration from
+version 3 on (§6).
 
 **From text to typed form.**
 

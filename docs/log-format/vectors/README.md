@@ -22,6 +22,10 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
+- `v3.json`: two version-3 events after `rekey.json`'s: a
+  `record_ingested` carrying `upstream`, whose id leaves the member out,
+  and a `declared` whose derived field calls `date_bucket`; and
+  `negative`, the first written as version 2, which a reader refuses.
 - `rekey.json`: one version-2 event after position 7, a `migrated`
   event whose `rekeyed` moves key `7` of `account` to `DE%3A01`: its
   line, which is canonical, and its hash.

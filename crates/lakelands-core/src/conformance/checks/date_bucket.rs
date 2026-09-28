@@ -20,7 +20,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, dec, decimal, declare, doors, field, head_unmoved, owner, type_decl, upsert,
+    Must, dec, decimal, declare, doors, field, owner, type_decl, upsert,
 };
 
 check!(
@@ -36,9 +36,9 @@ check!(
 );
 
 check!(
-    /// A declaration refuses it.
-    NOT_DECLARED = a_declaration_calling_date_bucket_is_refused_and_nothing_is_appended,
-    "017, extended, and log-format §6: date_bucket is a read's function; a declaration calling it (a derived field, declared alone or in a bundle through apply) is refused as invalid, naming the function, and nothing is appended"
+    /// A declaration may call it, from format 3 on.
+    DECLARED = a_declaration_may_call_date_bucket_and_from_it_the_lake_writes_format_3,
+    "017, extended, and log-format §6: a declaration may call date_bucket (a derived field, a view's where, an object set's filter); the event that first declares such a call is written in format version 3, as is every event after it, and a derived bucket answers finds by it"
 );
 
 /// The days of the lake, as `YYYY-MM-DD`.
@@ -258,38 +258,89 @@ async fn a_where_selects_the_records_of_one_date_bucket(
     Ok(())
 }
 
-async fn a_declaration_calling_date_bucket_is_refused_and_nothing_is_appended(
+async fn a_declaration_may_call_date_bucket_and_from_it_the_lake_writes_format_3(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let cat = doors(store.as_ref());
     let own = owner(store.as_ref());
-    let with_bucket = || -> Declaration {
-        serde_json::from_value(json!({
-            "declare": "type", "name": "entry",
-            "fields": [
-                {"name": "on", "type": {"kind": "date_time"}},
-                {"name": "month", "type": {"kind": "date_time"}, "authority": "derived",
-                 "derived": "date_bucket(on, 'month')"}
-            ]
-        }))
-        .expect("a declaration")
-    };
     let before = store.head().await.must("reading the head")?;
-    for (door, answer) in [
-        (
-            "declare",
-            cat.declare(&own, with_bucket()).await.map(|_| ()),
-        ),
-        (
-            "apply",
-            cat.apply(&own, vec![with_bucket()]).await.map(|_| ()),
-        ),
+    let entry: Declaration = serde_json::from_value(json!({
+        "declare": "type", "name": "entry",
+        "fields": [
+            {"name": "on", "type": {"kind": "date_time"}},
+            {"name": "month", "type": {"kind": "date_time"}, "authority": "derived",
+             "derived": "date_bucket(on, 'month')", "depends_on": ["on"]}
+        ]
+    }))
+    .expect("a declaration");
+    let declared_at = cat
+        .declare(&own, entry)
+        .await
+        .must("declaring a derived field calling date_bucket")?
+        .position();
+    for (k, on) in [
+        ("a", "2028-01-05T10:00:00Z"),
+        ("b", "2028-01-30T23:59:59Z"),
+        ("c", "2028-02-01T00:00:00Z"),
     ] {
+        upsert(cat.as_ref(), &own, "entry", k, json!({ "on": on })).await?;
+    }
+    let january = cat
+        .find(
+            &own,
+            &TypeName::from("entry"),
+            Find {
+                filter: Some(Condition::Text("month = '2028-01-01T00:00:00Z'".into())),
+                ..Find::default()
+            },
+        )
+        .await
+        .must("finding January's entries by their derived month")?
+        .data;
+    let Found::Records { rows, .. } = january else {
+        return Err(Failure::new("a find without an aggregate answers rows"));
+    };
+    let mut keys: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
+    keys.sort();
+    ensure!(
+        keys == ["a", "b"],
+        "the entries whose derived month is January must be `a` and `b`; the find answered \
+         {keys:?}"
+    );
+    // A view's where and an object set's filter may call it too.
+    let more: Vec<Declaration> = serde_json::from_value(json!([
+        {"declare": "type", "name": "january_totals", "key": ["month"],
+         "fields": [{"name": "month", "type": {"kind": "date_time"}},
+                    {"name": "n", "type": {"kind": "number"}}],
+         "view": {"source": "entry", "group_by": ["month"],
+                  "where": "date_bucket(on, 'year') = '2028-01-01T00:00:00Z'",
+                  "measures": [{"name": "n", "expr": "count(on)"}]}},
+        {"declare": "object_set", "name": "early", "of": "entry",
+         "where": "date_bucket(on, 'day') < '2028-01-10T00:00:00Z'"}
+    ]))
+    .expect("declarations");
+    cat.apply(&own, more)
+        .await
+        .must("applying a view and an object set calling date_bucket")?;
+    let events = store
+        .feed()
+        .poll(
+            lakelands_api::Position::GENESIS,
+            &lakelands_api::seam::FeedFilter::default(),
+            10_000,
+        )
+        .await
+        .must("reading the log")?
+        .events;
+    for e in &events {
+        let want_v3 = e.position >= declared_at;
         ensure!(
-            matches!(&answer, Err(Error::Refused { reason: Refusal::Invalid { message }, .. }) if message.contains("date_bucket")),
-            "{door} of a derived field calling date_bucket is refused as invalid, naming the \
-             function; it answered {answer:?}"
+            (e.v == 3) == want_v3 && (want_v3 || e.position <= before),
+            "the event at {} carries format {}; the declaration at {declared_at} first calls \
+             date_bucket, so it and every event after it carry 3, and none before it does",
+            e.position,
+            e.v
         );
     }
-    head_unmoved(store.as_ref(), before, "a declaration calling date_bucket").await
+    Ok(())
 }

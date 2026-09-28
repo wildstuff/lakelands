@@ -235,6 +235,7 @@ async fn ingest_answers_each_window_and_ends_on_a_refused_record() {
     assert_ne!(remote.limits(), store.limits());
     let f = setup(remote.clone()).await;
     let record = |ty: &str, k: &str, amount: &str| SourceRecord {
+        upstream: None,
         ty: ty.into(),
         key: k.into(),
         fields: patch(&[("amount", json!(amount))]),

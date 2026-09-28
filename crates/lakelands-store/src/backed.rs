@@ -295,6 +295,7 @@ fn backed_fields<'o>(
 /// The metadata of a value an output filled, or of a field it cleared.
 fn meta(event: &Event, version: String, error: Option<String>) -> FieldMeta {
     FieldMeta {
+        upstream: None,
         origin: Origin::Derived,
         known_at: event.known_at,
         seen_at: event.seen_at,

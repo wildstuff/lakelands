@@ -32,7 +32,7 @@
 //!   value type's `one_of`, `constraint`, `scale` and `format` constrain
 //!   stored values, so changing them is not a declaration either.
 
-use lakelands_api::expr::{Condition, Expr, Func};
+use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::ontology::{
     Authority, FieldDecl, StorageKind, TypeDecl, ValueTypeDecl, VerbEffect,
 };
@@ -69,31 +69,11 @@ fn name(what: &str, n: &str) -> Result<()> {
 }
 
 /// A condition a declaration carries, which the log keeps: checked as
-/// [`condition`] checks it, and refused if it calls a function no logged
-/// expression may call yet. `date_bucket` belongs to reads until a format
-/// version admits it (`docs/log-format.md` §6, Appendix B).
+/// [`condition`] checks it. A declaration may call `date_bucket` from log
+/// format version 3 on; the event that declares it is written at 3
+/// (`lakelands_core::versions`, `docs/log-format.md` §6).
 fn declared(c: &Condition, place: Place, at: &str) -> Result<Expr> {
-    let e = condition(c, place, at)?;
-    if calls(&e, Func::DateBucket) {
-        return Err(invalid(format!(
-            "{at}: date_bucket() is a read's function and may not stand in a declaration: \
-             the log keeps a declaration's expressions, and a logged expression calling it \
-             would need a new log format version"
-        )));
-    }
-    Ok(e)
-}
-
-/// Whether an expression calls `f` anywhere.
-fn calls(e: &Expr, f: Func) -> bool {
-    match e {
-        Expr::Lit { .. } | Expr::Path { .. } => false,
-        Expr::Cmp { lhs, rhs, .. } | Expr::Arith { lhs, rhs, .. } => calls(lhs, f) || calls(rhs, f),
-        Expr::Neg { arg } | Expr::Not { arg } | Expr::IsNull { arg } => calls(arg, f),
-        Expr::And { args } | Expr::Or { args } => args.iter().any(|a| calls(a, f)),
-        Expr::In { arg, list } => calls(arg, f) || list.iter().any(|a| calls(a, f)),
-        Expr::Call { func, args } => *func == f || args.iter().any(|a| calls(a, f)),
-    }
+    condition(c, place, at)
 }
 
 /// A condition in its typed form, checked for its place.

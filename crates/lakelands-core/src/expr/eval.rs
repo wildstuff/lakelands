@@ -1182,6 +1182,7 @@ mod tests {
         let meta: BTreeMap<FieldName, FieldMeta> = [(
             FieldName::from("amount"),
             FieldMeta {
+                upstream: None,
                 origin: lakelands_api::Origin::Source,
                 known_at: Timestamp::parse("2026-09-01").unwrap(),
                 seen_at: None,

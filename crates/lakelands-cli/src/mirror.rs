@@ -938,6 +938,7 @@ impl Mirror {
                     records.push((
                         s.clone(),
                         SourceRecord {
+                            upstream: None,
                             ty: mapped.target.clone(),
                             key: row.key,
                             fields: patch,
@@ -1037,6 +1038,7 @@ impl Mirror {
             records.push((
                 s.clone(),
                 SourceRecord {
+                    upstream: None,
                     ty: mapped.target.clone(),
                     key: key.clone(),
                     fields: patch,

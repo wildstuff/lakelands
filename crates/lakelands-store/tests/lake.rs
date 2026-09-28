@@ -406,6 +406,7 @@ async fn ingest_skips_redeliveries_and_unchanged_records_but_writes_a_revert() {
         .await
         .unwrap();
     let rec = |v: &str| SourceRecord {
+        upstream: None,
         ty: "tx".into(),
         key: "t1".into(),
         fields: patch(json!({"amount": v})),
@@ -458,6 +459,7 @@ async fn a_second_write_to_a_record_in_one_window_is_folded_over_the_first() {
         .await
         .unwrap();
     let rec = |fields: serde_json::Value| SourceRecord {
+        upstream: None,
         ty: "acct".into(),
         key: "a1".into(),
         fields: patch(fields),
@@ -876,6 +878,7 @@ async fn an_ingest_that_carries_an_authored_field_is_refused_even_unchanged() {
     .unwrap();
     let s: lakelands_api::SourceStream = Box::pin(Stream(
         vec![SourceRecord {
+            upstream: None,
             ty: "tx".into(),
             key: "t1".into(),
             fields: patch(json!({"note": "x"})),
@@ -1645,12 +1648,14 @@ async fn a_reference_must_name_a_live_record_or_one_earlier_in_the_window() {
     assert_eq!(store.head().await.unwrap(), head);
     let records = vec![
         SourceRecord {
+            upstream: None,
             ty: "partner".into(),
             key: "acme".into(),
             fields: patch(json!({"name": "Acme"})),
             seen_at: None,
         },
         SourceRecord {
+            upstream: None,
             ty: "invoice".into(),
             key: "i".into(),
             fields: patch(json!({"partner": "acme"})),

@@ -127,6 +127,7 @@ pub fn window(
         plan.draft.id = Some(id.clone());
         plan.draft.source = Some(source.clone());
         plan.draft.seen_at = r.seen_at;
+        plan.draft.upstream = r.upstream.clone();
         let cause =
             lakelands_api::Position(w.tip.as_ref().map_or(0, |t| t.0.0 + 1) + drafts.len() as u64);
         drafts.push(plan.draft);
