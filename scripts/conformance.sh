@@ -11,6 +11,10 @@ cd "$(git rev-parse --show-toplevel)"
 
 required() { awk '!/^[[:space:]]*(#|$)/ && $2 == "required" { print $1 }' conformance/roster; }
 
+# Whether an engine's tests need a server the run hands them. Only pg's
+# do: its harness reads LAKELANDS_TEST_PG_URL.
+needs_server() { [ "$1" = pg ]; }
+
 # Whether an entry point calls the suite's runner: `run_all(` outside a
 # `//` comment. A mention in a comment is not a call.
 runs_suite() { sed 's|//.*||' "$1" | grep -q 'run_all[[:space:]]*('; }
@@ -40,7 +44,7 @@ for engine in ${engines[@]+"${engines[@]}"}; do
     # The pg engine's tests stand down without a server, so that a
     # workspace run on a machine without PostgreSQL stays green; the
     # conformance run for pg must never stand down.
-    if [ "$engine" = pg ] && [ -z "${LAKELANDS_TEST_PG_URL:-}" ]; then
+    if needs_server "$engine" && [ -z "${LAKELANDS_TEST_PG_URL:-}" ]; then
         echo "conformance: pg needs LAKELANDS_TEST_PG_URL, the PostgreSQL to run against" >&2
         exit 1
     fi
@@ -50,9 +54,17 @@ for engine in ${engines[@]+"${engines[@]}"}; do
     # engine that has it, so both are in the conformance job.
     tests=(--test conformance)
     [ -f "$crate/tests/engine_seam.rs" ] && tests+=(--test engine_seam)
-    # The pg engine's vector index needs the server the job runs against:
-    # with pgvector it is built and read, without it every search scans.
-    [ -f "$crate/tests/vector_index.rs" ] && tests+=(--test vector_index)
+    # An engine that needs a server has no other place its tests run: the
+    # workspace job has no server, and there they stand down. So every
+    # test file of its crate runs here, by that rule and not by a list, and
+    # a new test file cannot stand down unseen.
+    if needs_server "$engine"; then
+        tests=()
+        for file in "$crate"/tests/*.rs; do
+            tests+=(--test "$(basename "$file" .rs)")
+        done
+    fi
+    echo "conformance: $engine runs ${tests[*]}"
     cargo nextest run --locked ${flags[@]+"${flags[@]}"} \
         -p "lakelands-engine-$engine" "${tests[@]}"
 done
