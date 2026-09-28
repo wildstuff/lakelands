@@ -370,7 +370,10 @@ fn check_vector(value: &Value, ty: &FieldType) -> Result<Value, ValueError> {
 /// `Feature` is not a geometry. A position is two or three numbers, a
 /// line string at least two positions, and a polygon's every ring a
 /// closed one: at least four positions, the last equal to the first.
-fn check_geo(value: &Value) -> Result<(), ValueError> {
+/// Empty is allowed at the top only, the same for every type: empty
+/// `coordinates` are the empty geometry of that type, and a collection
+/// may hold no geometries, but a part that is present keeps its shape.
+pub(crate) fn check_geo(value: &Value) -> Result<(), ValueError> {
     let obj = value
         .as_object()
         .ok_or_else(|| ValueError::Geo("not an object".into()))?;
@@ -396,6 +399,7 @@ fn check_geo(value: &Value) -> Result<(), ValueError> {
         other => return Err(ValueError::Geo(format!("{other:?} is not a geometry type"))),
     };
     match obj.get("coordinates") {
+        Some(Value::Array(c)) if c.is_empty() => Ok(()),
         Some(c) if shape(c) => Ok(()),
         Some(_) => Err(ValueError::Geo(format!(
             "the `coordinates` are not those of a {ty}"
@@ -669,6 +673,18 @@ mod tests {
         let collection = json!({"type": "GeometryCollection", "geometries": [polygon.clone()]});
         assert!(check(&polygon, &ty, None).is_ok());
         assert!(check(&collection, &ty, None).is_ok());
+        for empty in [
+            "Point",
+            "LineString",
+            "Polygon",
+            "MultiPoint",
+            "MultiPolygon",
+        ] {
+            let e = json!({"type": empty, "coordinates": []});
+            assert!(check(&e, &ty, None).is_ok(), "{e}");
+        }
+        let none = json!({"type": "GeometryCollection", "geometries": []});
+        assert!(check(&none, &ty, None).is_ok());
         for bad in [
             json!({"coordinates": [0, 0]}),
             json!({"type": "Point"}),
@@ -676,7 +692,9 @@ mod tests {
             json!({"type": "GeometryCollection", "geometries": [{"type": "Circle"}]}),
             json!({"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1]]]}),
             json!({"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [0, 0]]]}),
-            json!({"type": "Polygon", "coordinates": []}),
+            json!({"type": "Polygon", "coordinates": [[]]}),
+            json!({"type": "MultiPolygon", "coordinates": [[]]}),
+            json!({"type": "MultiPoint", "coordinates": [[]]}),
             json!({"type": "Point", "coordinates": [7]}),
             json!({"type": "Point", "coordinates": [7, "50"]}),
             json!({"type": "LineString", "coordinates": [[0, 0]]}),

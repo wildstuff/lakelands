@@ -369,54 +369,9 @@ fn is_base64(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || *c == b'+' || *c == b'/')
 }
 
-/// A GeoJSON geometry object (RFC 7946 §3.1).
+/// A GeoJSON geometry object, by the rule a patch is checked with.
 fn is_geometry(v: &Value) -> bool {
-    let Some(kind) = v.get("type").and_then(Value::as_str) else {
-        return false;
-    };
-    if kind == "GeometryCollection" {
-        return v
-            .get("geometries")
-            .and_then(Value::as_array)
-            .is_some_and(|gs| gs.iter().all(is_geometry));
-    }
-    let Some(c) = v.get("coordinates") else {
-        return false;
-    };
-    let each =
-        |c: &Value, f: &dyn Fn(&Value) -> bool| c.as_array().is_some_and(|a| a.iter().all(f));
-    match kind {
-        "Point" => is_position(c),
-        "MultiPoint" => each(c, &is_position),
-        "LineString" => is_line(c),
-        "MultiLineString" => each(c, &is_line),
-        "Polygon" => is_polygon(c),
-        "MultiPolygon" => each(c, &is_polygon),
-        _ => false,
-    }
-}
-
-fn is_position(v: &Value) -> bool {
-    v.as_array()
-        .is_some_and(|a| (a.len() == 2 || a.len() == 3) && a.iter().all(Value::is_number))
-}
-
-fn is_line(v: &Value) -> bool {
-    v.as_array()
-        .is_some_and(|a| a.len() >= 2 && a.iter().all(is_position))
-}
-
-/// Linear rings: at least four positions each, the last equal to the
-/// first.
-fn is_polygon(v: &Value) -> bool {
-    v.as_array().is_some_and(|rings| {
-        !rings.is_empty()
-            && rings.iter().all(|ring| {
-                ring.as_array().is_some_and(|ps| {
-                    ps.len() >= 4 && ps.first() == ps.last() && ps.iter().all(is_position)
-                })
-            })
-    })
+    crate::value::check_geo(v).is_ok()
 }
 
 // ---- the conversions -----------------------------------------------------
