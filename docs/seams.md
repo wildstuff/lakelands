@@ -883,12 +883,12 @@ on the store's feed, `ack` is neither backpressure nor a release, and a
 consumer that never calls it loses nothing. The dedup key of a change is its lake and its
 position.
 
-Lakelands has two consumers of its own: the MCP session's pump, which
+Lakelands has three consumers of its own: the MCP session's pump, which
 tells a session of the changes its principal may see
 (`lakelands-server`'s `watch`; `docs/hosting.md`), and the webhook
-deliverer below. How they are built, not a promise a test holds: both
-read the feed as the host does, not through a door, and keep their state
-on the host's side. The pump then decides what a session may be told
+deliverer and the mirror below. How they are built, not a promise a test
+holds: they read the feed as the host does, not through a door, and keep
+their state on the host's side. The pump then decides what a session may be told
 through the contract's reads as that session's principal (`get`,
 `describe_type`), so a session learns nothing its principal could not
 read.
@@ -982,6 +982,105 @@ writer.
     are not empty and are among the two it sends;
   - `retry_first_secs` is not longer than `retry_max_secs`;
   - no number is zero.
+
+**The mirror** is the third, in `lakelands-cli`: it copies types of one
+lake of the root into another, the only way water crosses between lakes.
+There is no query across lakes and no reference into another lake. A
+root that shares a common lake's types with many lakes mirrors those
+types into each of them. `lakelands serve` runs one mirror per
+connection of the `mirror` section whose target lake it holds, and
+refuses to start when it holds that lake but not as its writer.
+
+```json
+"mirror": {
+  "connections": [
+    { "name": "crm", "source": "crm", "target": "main", "principal": "mirror",
+      "types": { "customer": "crm_customer", "partner": "partner" },
+      "start": "snapshot" }
+  ],
+  "poll_millis": 1000, "batch": 100
+}
+```
+
+- **What crosses.** `types` maps each source type to the target type it
+  lands in. The target type's declaration is the list of what crosses:
+  every field it declares, and the links of every relation carried by
+  link records it declares. Everything else stays home: a source field
+  the target does not declare, a field the `principal` may not read in
+  the source, and a field the source marks `sensitive`. The feed is the
+  log unmasked, so the mirror never takes a value from it. The feed says
+  which record changed at which position, and the mirror reads that
+  record `as_of` the position through `get`, as the principal. A record
+  the principal cannot see there, withheld or not granted, does not
+  cross, and its copy keeps its last state.
+- **How it lands.** Each source type is one source of the target,
+  `mirror:<source lake>:<source type>`, written through `ingest` with
+  the source's `known_at` as `seen_at`. The copy's fields are `source`
+  fields that nobody in the target can author, and `purge_source` of
+  the connection's source removes the copies whole
+  (`docs/decisions/039-a-source-is-retracted-as-one.md`). A window
+  carries only the fields that differ from the copy. Consecutive changes
+  of one type are read once per key, at the key's last position, and
+  ordered so that a record lands after the records it refers to. **The
+  target's history therefore steps once per window, not once per source
+  event.** In return, a window delivered again reads what the copies
+  already hold and appends nothing, and a trigger on a mirrored type
+  fires once per copy and window.
+- **Retirements and holds.** A retirement crosses through `retire` (a
+  link's through `unlink`), with an idempotency key naming the source
+  position; a later write to the source key brings the copy back. A
+  hold crosses through the host's `restrict` and `unrestrict` only when
+  the principal holds the `restricted` grant. Each keeps its place in
+  feed order.
+- **It fails closed, by type.** At every declaration or migration of a
+  mapped source type the mirror asks whether the target's declaration
+  still admits the source's: the same key rule, and every field it
+  declares present in the source with the same type, readable and not
+  `sensitive`. If not, that type stops, and so do the types that refer
+  to it. A type also stops when the target refuses its window, and when
+  the source re-keys it while the target keeps the old key rule; the
+  target's own migration to the same key rule moves the copies and every
+  reference to them together. A stopped type keeps its position and the
+  reason, said on standard error and in the position file, and the
+  connection's other types go on. A restart asks again from where it
+  stopped. A new source field crosses once the target declares it, for
+  the records that change after.
+- **Where it starts.** A type with no position is copied as the source
+  holds it at its head, then followed from there (`start: snapshot`, the
+  default), or only followed from the head (`start: head`). History is
+  never replayed: that would walk every copy through every past state
+  and fire its triggers on the way. Deleting a type from the position
+  file copies it again, and every unchanged field appends nothing.
+- **The principal** is one of the root's `principals`, resolved in each
+  lake: in the source it needs to read what crosses, and `restricted`
+  for holds to cross; in the target it needs `ingest` and write access
+  to every field of the mirrored types.
+- **Its files**, under `mirrors/<target lake>/` in the root, are interim:
+  the target lake's own record of each connection replaces them.
+  - `<connection>.json` holds, per source type, the next position to
+    read and, when it stopped, where and why:
+    `{"types": {"customer": {"next": 120, "stopped": {"at": 118, "why": "…"}}}}`.
+    It is written after each window or action is durable, so delivery is
+    at least once, in order.
+  - `<connection>.lock` is held while the mirror runs, so a second
+    process refuses to start.
+  - `<connection>.ndjson` is the journal, one line per window, per
+    retirement or hold, and per stop.
+- **The source is a lake of the same root.** A source served elsewhere
+  is not offered: the feed at a network door opens only to a principal
+  that reads everything (`docs/decisions/037-the-feed-over-a-network-door.md`),
+  and the mirror's reads must be the connection's principal.
+- **Checked when the root opens:** every lake a connection names is one
+  the root holds, and its principal one the root lists; every connection
+  has a name of letters, digits, `-` and `_`, used once, and maps at
+  least one type; no lake is mirrored into itself; no `sys.` type is
+  mapped; no target type has two sources; no type is mirrored into a
+  lake and back out of it; no number is zero. **Checked when `serve`
+  starts a mirror:** the target is held as its writer; every field of a
+  target type is written by the `source` authority and writable by the
+  principal, and every reference and link leads to a type the connection
+  mirrors; and, for a type with no position yet, the target admits the
+  source's declaration.
 
 ## `SystemVocabulary`
 

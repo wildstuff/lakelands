@@ -10,6 +10,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use lakelands_api::engine::OpenMode;
 use lakelands_api::id::LakeId;
 use lakelands_api::location::{EngineConfig, Location};
 use lakelands_api::principal::{Grants, Principal, PrincipalKind};
@@ -59,6 +60,11 @@ pub struct Config {
     /// `lakelands age --today` or the host's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aging: Option<crate::ticker::AgingConfig>,
+    /// The mirrors: which types of which lake `serve` copies into which
+    /// other lake of this root, read as which principal. Absent, nothing
+    /// is mirrored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mirror: Option<crate::mirror::MirrorConfig>,
 }
 
 /// An opened root.
@@ -97,6 +103,7 @@ pub fn init(dir: &Path, owner: &str) -> Result<(), Failure> {
         embed: None,
         deliver: None,
         aging: None,
+        mirror: None,
     };
     fs::create_dir_all(dir.join("lakes")).map_err(|e| io(dir, e))?;
     write_new(&file, &config)
@@ -155,6 +162,7 @@ impl Root {
     pub fn open(dir: &Path) -> Result<Root, Failure> {
         let root = Root::open_to_add_a_lake(dir)?;
         root.deliver_to_held_lakes()?;
+        root.mirror_held_lakes()?;
         Ok(root)
     }
 
@@ -194,6 +202,14 @@ impl Root {
                 Failure::new(
                     format!("{}: {why}", show(&file)),
                     "fix the aging section of the configuration",
+                )
+            })?;
+        }
+        if let Some(mirror) = &config.mirror {
+            mirror.check().map_err(|why| {
+                Failure::new(
+                    format!("{}: {why}", show(&file)),
+                    "fix the mirror section of the configuration",
                 )
             })?;
         }
@@ -286,6 +302,101 @@ impl Root {
                      `lakelands lake new`",
                 ));
             }
+        }
+        Ok(())
+    }
+
+    /// Refuse a mirror connection naming a lake the root does not hold or
+    /// a principal it does not list: either would mirror nothing without a
+    /// word.
+    fn mirror_held_lakes(&self) -> Result<(), Failure> {
+        let Some(mirror) = &self.config.mirror else {
+            return Ok(());
+        };
+        let held = self.lakes();
+        let fix = "fix the mirror section of the configuration, or create the lake with \
+                   `lakelands lake new`";
+        for c in &mirror.connections {
+            for lake in [&c.source, &c.target] {
+                if !held.contains(lake) {
+                    return Err(Failure::new(
+                        format!(
+                            "{}: the connection `{}` names the lake `{lake}`, which this root \
+                             does not hold",
+                            show(&self.dir.join(CONFIG)),
+                            c.name
+                        ),
+                        fix,
+                    ));
+                }
+            }
+            if !self.config.principals.iter().any(|p| p.name == c.principal) {
+                return Err(Failure::new(
+                    format!(
+                        "{}: the connection `{}` reads as `{}`, which is not one of the root's \
+                         principals",
+                        show(&self.dir.join(CONFIG)),
+                        c.name,
+                        c.principal
+                    ),
+                    "add the principal to the configuration, with the grants the mirror needs \
+                     in both lakes",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Start a mirror for every connection whose target lake is among
+    /// `lakes`, opening its source lake to read when this process does not
+    /// hold it yet. Each runs until the process ends. A connection whose
+    /// target is held here but not as its writer, or that cannot start
+    /// (see `Mirror::new`), stops the command before it serves anything.
+    pub async fn mirror(
+        &self,
+        lakes: &[Arc<dyn lakelands_api::LakeStore>],
+        open: &crate::Opener<'_>,
+    ) -> Result<(), Failure> {
+        let Some(config) = &self.config.mirror else {
+            return Ok(());
+        };
+        let fix = "fix the mirror section of the configuration, the principal's grants or the \
+                   target type's declaration, or stop the other process";
+        for c in &config.connections {
+            let Some(target) = lakes.iter().find(|s| s.lake().as_str() == c.target) else {
+                continue;
+            };
+            let source = match lakes.iter().find(|s| s.lake().as_str() == c.source) {
+                Some(s) => s.clone(),
+                None => {
+                    let location = self.location(Some(&c.source))?;
+                    open(location, OpenMode::Read, self.seams())
+                        .await
+                        .map_err(|e| {
+                            Failure::new(
+                                format!(
+                                    "the connection `{}` cannot open its source lake `{}`: {e}",
+                                    c.name, c.source
+                                ),
+                                "check the lake's location",
+                            )
+                        })?
+                }
+            };
+            let reader = self.principal(source.lake(), Some(&c.principal)).await?;
+            let writer = self.principal(target.lake(), Some(&c.principal)).await?;
+            let mirror = crate::mirror::Mirror::new(
+                config,
+                c,
+                &self.dir,
+                source,
+                target.clone(),
+                reader,
+                writer,
+            )
+            .await
+            .map_err(|why| Failure::new(format!("{}: {why}", show(&self.dir.join(CONFIG))), fix))?;
+            tokio::spawn(mirror.run());
         }
         Ok(())
     }
