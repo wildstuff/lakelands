@@ -948,6 +948,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "clap",
+ "fs4",
  "futures-core",
  "http-body-util",
  "hyper",

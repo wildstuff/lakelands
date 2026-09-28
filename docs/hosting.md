@@ -107,7 +107,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   endpoints, and the process that writes a lake posts its fired triggers
   and object-set changes to them, in order, signed and retried, keeping
   its position and journal under `deliveries/` in the root (`docs/seams.md`
-  §`ChangeFeed`). An agent on MCP is told of changes without polling:
+  §`ChangeFeed`). The `mirror` section names connections that copy types
+  of one lake of the root into another; the process that writes the
+  target lake follows the source's feed and ingests what its principal
+  may read, one source per type (`docs/seams.md`, the mirror). An agent on MCP is told of changes without polling:
   every session receives `notifications/tools/list_changed` when the
   lake's declarations change. After the `subscribe` tool, it also
   receives `notifications/lakelands/changed` for each change of a record
@@ -244,7 +247,9 @@ A host that already has a store of its own moves in four steps.
   held by a lease; one process may write many lakes. See
   `docs/decisions/008-one-writer-per-lake.md`.
 - **No query across lakes.** A lake is one world with one truth; a host
-  that needs data from two lakes reads each of them.
+  that needs data from two lakes reads each of them, or mirrors the types
+  one lake needs from the other. A mirror carries its provenance, and a
+  lake whose types many lakes share is mirrored into each of them.
 - **Every answer carries its position.** A host that records what an
   agent saw records the position, and reads `as_of` it later. See
   `docs/decisions/009-every-response-carries-its-position.md`.
