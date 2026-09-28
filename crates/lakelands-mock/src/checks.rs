@@ -35,7 +35,9 @@ use lakelands_api::read::{After, Direction, Find, Found, Get, Order, OrderBy, Re
 use lakelands_api::record::{Origin, Patch, Record, SourceRecord, Value};
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::tools::{Door, tools};
-use lakelands_api::write::{Declaration, Outcome, ProposalFilter, ProposalState, WriteOpts};
+use lakelands_api::write::{
+    Declaration, FunctionDecl, ObjectSetDecl, Outcome, ProposalFilter, ProposalState, WriteOpts,
+};
 use lakelands_api::{Catalog, LakeStore, WriteContext};
 use serde_json::json;
 
@@ -79,6 +81,7 @@ macro_rules! door_checks {
             a_read_as_of_an_earlier_position_sees_the_earlier_state,
             a_position_past_the_head_is_out_of_range,
             describe_shows_only_what_the_principal_may_see,
+            describe_answers_the_declaration_whole,
             a_masked_field_is_named_but_its_value_is_absent,
             the_tools_follow_the_grants,
             a_low_risk_verb_runs_at_once,
@@ -717,6 +720,159 @@ pub async fn describe_shows_only_what_the_principal_may_see(store: Arc<dyn LakeS
         .unwrap();
     assert_eq!(note.access, Access::Masked);
     assert!(inv.fields.iter().all(|x| x.name.as_str() != "secret"));
+}
+
+/// A described field, read back as the declaration it describes.
+fn as_declared(f: &lakelands_api::describe::FieldDescription) -> FieldDecl {
+    FieldDecl {
+        name: f.name.clone(),
+        ty: f.ty.clone(),
+        required: f.required,
+        authority: f.authority,
+        derived: f.derived.clone(),
+        function: f.function.clone(),
+        depends_on: f.depends_on.clone(),
+        on_input_change: f.on_input_change,
+        sensitive: f.sensitive,
+        searchable: f.searchable,
+        description: f.description.clone(),
+        label: f.label.clone(),
+        embed: f.embed.clone(),
+    }
+}
+
+/// `describe` answers each field's declaration whole to a principal who
+/// reads it and a masked field's shape only; functions, triggers and
+/// object sets are answered as declared, to a principal who reads every
+/// field they name or holds the `schema` grant.
+pub async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let function = |name: &str, input: &str, expr: &str| FunctionDecl {
+        name: name.into(),
+        backing: "expr".into(),
+        inputs: vec![text(input)],
+        expr: Some(Condition::from(expr)),
+        config: Value::Null,
+        description: Some(format!("{name} of {input}")),
+    };
+    let described = |name: &str| FieldDecl {
+        label: Some(name.to_uppercase()),
+        description: Some(format!("the invoice's {name}")),
+        ..text(name)
+    };
+    let derived = |name: &str, by: &str| FieldDecl {
+        authority: Authority::Derived,
+        function: Some(by.into()),
+        ..described(name)
+    };
+    // The fixture's invoice, labelled and described throughout, with a
+    // field computed from the status and one from the masked note.
+    let Some(Declaration::Type(mut invoice)) = fixture()
+        .into_iter()
+        .find(|d| matches!(d, Declaration::Type(t) if t.name.as_str() == INVOICE))
+    else {
+        unreachable!("the fixture declares the invoice")
+    };
+    for x in &mut invoice.fields {
+        x.label = Some(x.name.as_str().to_uppercase());
+        x.description = Some(format!("the invoice's {}", x.name));
+    }
+    invoice.fields.push(derived("loud", "shout"));
+    invoice.fields.push(derived("quiet", "hush"));
+    invoice.language = Some("en".into());
+    invoice.label = Some("Invoice".into());
+    let trigger = |name: &str, when: &str| TriggerDecl {
+        name: name.into(),
+        on: INVOICE.into(),
+        when: Some(Condition::from(when)),
+        description: None,
+    };
+    let set = |name: &str, filter: &str| ObjectSetDecl {
+        name: name.into(),
+        of: INVOICE.into(),
+        filter: Condition::from(filter),
+        description: Some(filter.into()),
+    };
+    let (shout, hush) = (
+        function("shout", "status", "upper(status)"),
+        function("hush", "note", "lower(note)"),
+    );
+    let (opened, noted) = (
+        trigger("opened", "status = 'open'"),
+        trigger("noted", "note = 'b'"),
+    );
+    let (open_set, noted_set) = (set("open", "status = 'open'"), set("with_b", "note = 'b'"));
+    for d in [
+        Declaration::Function(shout.clone()),
+        Declaration::Function(hush.clone()),
+        Declaration::Type(invoice.clone()),
+        Declaration::Trigger(opened.clone()),
+        Declaration::Trigger(noted.clone()),
+        Declaration::ObjectSet(open_set.clone()),
+        Declaration::ObjectSet(noted_set.clone()),
+    ] {
+        f.catalog.declare(owner, d).await.unwrap();
+    }
+
+    let t = f
+        .catalog
+        .describe_type(owner, &ty(INVOICE), ReadAt::default())
+        .await
+        .unwrap()
+        .data;
+    let fields: Vec<FieldDecl> = t.fields.iter().map(as_declared).collect();
+    assert_eq!(fields, invoice.fields, "the owner reads every field whole");
+    assert_eq!(
+        (&t.label, &t.language, &t.description, &t.view),
+        (
+            &invoice.label,
+            &invoice.language,
+            &invoice.description,
+            &invoice.view
+        )
+    );
+    let d = f
+        .catalog
+        .describe(owner, ReadAt::default())
+        .await
+        .unwrap()
+        .data;
+    assert_eq!(d.functions, [hush.clone(), shout.clone()]);
+    assert_eq!(d.triggers, [noted.clone(), opened.clone()]);
+    assert_eq!(d.object_sets, [open_set.clone(), noted_set.clone()]);
+
+    // The clerk: the note masked, `secret` absent.
+    let d = f
+        .catalog
+        .describe(&f.cast.clerk, ReadAt::default())
+        .await
+        .unwrap()
+        .data;
+    let t = d.types.iter().find(|t| t.name.as_str() == INVOICE).unwrap();
+    let note = t.fields.iter().find(|x| x.name.as_str() == "note").unwrap();
+    assert_eq!(
+        as_declared(note),
+        FieldDecl {
+            sensitive: true,
+            ..text("note")
+        },
+        "a masked field shows its shape only"
+    );
+    assert_eq!((note.access, note.filterable), (Access::Masked, false));
+    let quiet = t
+        .fields
+        .iter()
+        .find(|x| x.name.as_str() == "quiet")
+        .unwrap();
+    assert_eq!(
+        quiet.function.as_deref(),
+        Some("hush"),
+        "a field names its function"
+    );
+    assert_eq!(d.functions, [shout], "`hush` reads the note");
+    assert_eq!(d.triggers, [opened], "`noted` names the note");
+    assert_eq!(d.object_sets, [open_set], "`with_b` names the note");
 }
 
 /// A masked field is named in the answer; its value is not in it, and

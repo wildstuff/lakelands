@@ -405,6 +405,35 @@ fn migration_report() -> MigrationReport {
     }
 }
 
+fn trigger_decl() -> TriggerDecl {
+    TriggerDecl {
+        name: "t".into(),
+        on: "invoice".into(),
+        when: Some(cond()),
+        description: Some("d".into()),
+    }
+}
+
+fn object_set_decl() -> ObjectSetDecl {
+    ObjectSetDecl {
+        name: "s".into(),
+        of: "invoice".into(),
+        filter: cond(),
+        description: Some("d".into()),
+    }
+}
+
+fn function_decl() -> FunctionDecl {
+    FunctionDecl {
+        name: "g".into(),
+        backing: "expr".into(),
+        inputs: vec![field_decl()],
+        expr: Some(cond()),
+        config: json!({"a": 1}),
+        description: Some("d".into()),
+    }
+}
+
 fn field_description() -> FieldDescription {
     FieldDescription {
         name: "f".into(),
@@ -413,10 +442,14 @@ fn field_description() -> FieldDescription {
         authority: Authority::Source,
         access: Access::Read,
         derived: Some(cond()),
+        function: Some("g".into()),
         depends_on: vec!["e".into()],
         on_input_change: OnInputChange::Keep,
         filterable: true,
+        searchable: true,
+        sensitive: true,
         description: Some("d".into()),
+        label: Some("l".into()),
         embed: Some(embed_decl()),
     }
 }
@@ -425,6 +458,9 @@ fn type_description() -> TypeDescription {
     TypeDescription {
         name: "invoice".into(),
         description: Some("d".into()),
+        label: Some("l".into()),
+        language: Some("de".into()),
+        view: Some(view_decl()),
         fields: vec![field_description()],
         relations: vec![relation_decl()],
         access: TypeAccess {
@@ -576,35 +612,9 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 &[],
             ),
         ),
-        (
-            "trigger_decl",
-            members(&TriggerDecl {
-                name: "t".into(),
-                on: "invoice".into(),
-                when: Some(cond()),
-                description: Some("d".into()),
-            }),
-        ),
-        (
-            "object_set_decl",
-            members(&ObjectSetDecl {
-                name: "s".into(),
-                of: "invoice".into(),
-                filter: cond(),
-                description: Some("d".into()),
-            }),
-        ),
-        (
-            "function_decl",
-            members(&FunctionDecl {
-                name: "g".into(),
-                backing: "expr".into(),
-                inputs: vec![field_decl()],
-                expr: Some(cond()),
-                config: json!({"a": 1}),
-                description: Some("d".into()),
-            }),
-        ),
+        ("trigger_decl", members(&trigger_decl())),
+        ("object_set_decl", members(&object_set_decl())),
+        ("function_decl", members(&function_decl())),
         (
             "migration",
             members(&Migration {
@@ -845,7 +855,9 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     scale: Some(2),
                     description: None,
                 }],
-                triggers: vec!["t".into()],
+                functions: vec![function_decl()],
+                triggers: vec![trigger_decl()],
+                object_sets: vec![object_set_decl()],
                 may: LakeRights::default(),
             }),
         ),

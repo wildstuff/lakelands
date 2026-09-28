@@ -695,7 +695,10 @@ async fn a_trigger_or_set_on_a_value_the_type_no_longer_admits_never_holds(
         .must("describing the lake after the tightening")?
         .data;
     ensure!(
-        described.triggers.iter().any(|t| t.as_str() == "went_late"),
+        described
+            .triggers
+            .iter()
+            .any(|t| t.name.as_str() == "went_late"),
         "the tightening left the trigger on `late` declared; describe lists {:?}",
         described.triggers
     );

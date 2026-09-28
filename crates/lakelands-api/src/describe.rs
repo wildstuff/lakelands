@@ -6,15 +6,21 @@
 use serde::{Deserialize, Serialize};
 
 use crate::expr::Condition;
-use crate::id::{FieldName, LakeId, RelationName, TriggerName, TypeName, VerbName};
+use crate::id::{FieldName, LakeId, RelationName, TypeName, VerbName};
 use crate::ontology::{
-    Authority, EmbedDecl, FieldDecl, FieldType, OnInputChange, RelationDecl, Risk, ValueTypeDecl,
+    Authority, EmbedDecl, FieldDecl, FieldType, OnInputChange, RelationDecl, Risk, TriggerDecl,
+    ValueTypeDecl, ViewDecl,
 };
 use crate::principal::Access;
+use crate::write::{FunctionDecl, ObjectSetDecl};
 
 /// What a lake holds, as one principal may see it. Types, fields and
 /// verbs the principal holds no grant for are absent, not listed as
-/// forbidden.
+/// forbidden. Functions, triggers and object sets are answered as
+/// declared, each listed only to a principal who reads every field its
+/// declaration names or holds the `schema` grant: a condition or an
+/// input list says what the fields it names are compared with, which is
+/// no business of a principal who may not read them.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LakeDescription {
     /// The lake.
@@ -27,9 +33,15 @@ pub struct LakeDescription {
     /// The value types in use.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub value_types: Vec<ValueTypeDecl>,
-    /// The triggers declared.
+    /// The functions in force.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub triggers: Vec<TriggerName>,
+    pub functions: Vec<FunctionDecl>,
+    /// The triggers in force, on types the principal sees.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub triggers: Vec<TriggerDecl>,
+    /// The object sets in force, of types the principal sees.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub object_sets: Vec<ObjectSetDecl>,
     /// What the principal may do beyond the per-type doors.
     pub may: LakeRights,
 }
@@ -53,6 +65,16 @@ pub struct TypeDescription {
     /// What it means.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// A short label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The language of its searchable text, as a BCP-47 tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// For a view type: the view as declared, to a principal who reads
+    /// every source field it names or holds the `schema` grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<ViewDecl>,
     /// Structure: the fields this principal may see, and the relations.
     pub fields: Vec<FieldDescription>,
     /// Structure: relations to other types.
@@ -72,7 +94,8 @@ pub struct TypeDescription {
     pub lifecycle: TypeLifecycle,
 }
 
-/// One field, as the principal may see it.
+/// One field, as the principal may see it: the declaration whole for a
+/// field it reads, the shape only for a masked one.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FieldDescription {
     /// The field's name.
@@ -89,6 +112,9 @@ pub struct FieldDescription {
     /// For a derived field: its expression.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derived: Option<Condition>,
+    /// For a derived field: the declared function that computes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function: Option<String>,
     /// The fields it depends on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<FieldName>,
@@ -96,9 +122,17 @@ pub struct FieldDescription {
     pub on_input_change: OnInputChange,
     /// Whether `where` and `order_by` may use it.
     pub filterable: bool,
+    /// Whether full-text search covers it.
+    pub searchable: bool,
+    /// Whether its value is masked, not dropped, for a principal who may
+    /// not read it.
+    pub sensitive: bool,
     /// What it means.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// A short label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// For an embedding: the text fields it is made from, and the model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embed: Option<EmbedDecl>,
@@ -106,8 +140,31 @@ pub struct FieldDescription {
 
 impl FieldDescription {
     /// The description of a declared field for a principal with `access`.
+    /// A masked field answers its shape only — name, type, whether it is
+    /// required and sensitive, its authority and what an input change does
+    /// to it — never what it is computed from or what it means
+    /// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
     pub fn of(decl: &FieldDecl, access: Access) -> FieldDescription {
         use crate::ontology::StorageKind::{Bytes, Json, Vector};
+        if !access.reads() {
+            return FieldDescription {
+                name: decl.name.clone(),
+                ty: decl.ty.clone(),
+                required: decl.required,
+                authority: decl.authority,
+                access,
+                derived: None,
+                function: None,
+                depends_on: vec![],
+                on_input_change: decl.on_input_change,
+                filterable: false,
+                searchable: false,
+                sensitive: decl.sensitive,
+                description: None,
+                label: None,
+                embed: None,
+            };
+        }
         FieldDescription {
             name: decl.name.clone(),
             ty: decl.ty.clone(),
@@ -115,10 +172,14 @@ impl FieldDescription {
             authority: decl.authority,
             access,
             derived: decl.derived.clone(),
+            function: decl.function.clone(),
             depends_on: decl.depends_on.clone(),
             on_input_change: decl.on_input_change,
-            filterable: access.reads() && !matches!(decl.ty.kind, Bytes | Json | Vector),
+            filterable: !matches!(decl.ty.kind, Bytes | Json | Vector),
+            searchable: decl.searchable,
+            sensitive: decl.sensitive,
             description: decl.description.clone(),
+            label: decl.label.clone(),
             embed: decl.embed.clone(),
         }
     }

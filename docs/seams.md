@@ -978,8 +978,8 @@ after open, on the writer, through `declare` or `apply`. Neither is
 idempotent: declaring again is a new version and has meaning (a
 recorded failure is retried once; 022), so the
 host first compares what it would apply with what the lake holds
-(`describe` and `describe_type` answer each declaration's version, and a
-type's schema hash) and applies only what differs. The vocabulary's
+(`describe` answers each declaration whole, and each type's version
+and schema hash) and applies only what differs. The vocabulary's
 types are declared by the open; everything else is the host's apply.
 
 The vocabulary is consulted every time a lake is opened for writing:
@@ -1156,6 +1156,37 @@ hold, not what hosts implement:
   (`vector_coverage`, under `VectorIndex`), lake maintenance (`verify`, `rebuild`,
   `checkpoint`, `compact`; the export, below, is a function over it), restriction (`restrict`, `unrestrict`), `age` (above,
   under `SystemVocabulary`), and `purge_source` (below).
+
+`describe` and `describe_type` answer the ontology in force at the read
+position, as the principal may see it, each declaration whole (suite:
+`describe_answers_the_declaration_whole`; door check of the same name):
+
+- A field the principal reads carries every member of its declaration —
+  `type`, `required`, `authority`, `derived` or `function`, `depends_on`,
+  `on_input_change`, `searchable`, `sensitive`, `label`, `description`,
+  `embed` — beside its `access` and whether it is `filterable`. A type
+  carries its `description`, `label`, `language` and `view`, and on its
+  access axis `key`, `valid_from`, `valid_to` and `field_meta`. For a
+  principal who reads every field, a type's description projected back
+  is its declaration byte for byte, so a host redeclares a type from
+  `describe` without replaying the feed.
+- A masked field shows its shape only: `name`, `type`, `access`,
+  `sensitive`, `required`, `authority` and `on_input_change`, neither
+  `filterable` nor `searchable`, and no `derived`, `function`,
+  `depends_on`, `embed`, `label` or `description`
+  (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
+  Until 0.4.0 a masked field also showed `derived`, `depends_on`,
+  `description` and `embed`.
+- The lake lists its value types and verbs, and its `functions`,
+  `triggers` and `object_sets` as declared; `triggers` were names until
+  0.4.0. A function, a trigger, an object set and a type's `view` are
+  answered to a principal who holds the `schema` grant or reads every
+  field the declaration names — a trigger's guard and an object set's
+  condition on their type; a view's `where`, `group_by` and measures on
+  its source; a function's inputs, and the field it computes, on every
+  type that uses it — and are absent otherwise. A function no field uses
+  is answered to the `schema` grant only. A field's `function` names its
+  function either way, and a view type names `view_of` either way.
 
 A host writes a reaction through a `Catalog` bound to a reactive
 `WriteContext` one deeper than the write it reacts to, and the log keeps

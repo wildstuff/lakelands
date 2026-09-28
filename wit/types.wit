@@ -686,16 +686,26 @@ interface types {
         authority: authority,
         access: access,
         derived: option<condition>,
+        /// The declared function that computes it.
+        function: option<string>,
         depends-on: list<field-name>,
         on-input-change: on-input-change,
         filterable: bool,
+        searchable: bool,
+        sensitive: bool,
         description: option<string>,
+        label: option<string>,
         embed: option<embed-decl>,
     }
 
     record type-description {
         name: type-name,
         description: option<string>,
+        label: option<string>,
+        language: option<string>,
+        /// The view as declared, to a principal who reads every source
+        /// field it names or holds the schema grant.
+        view: option<view-decl>,
         fields: list<field-description>,
         relations: list<relation-decl>,
         access: type-access,
@@ -719,7 +729,12 @@ interface types {
         types: list<type-description>,
         verbs: list<verb-description>,
         value-types: list<value-type-decl>,
-        triggers: list<trigger-name>,
+        /// Functions, triggers and object sets in force, each listed to a
+        /// principal who reads every field it names or holds the schema
+        /// grant.
+        functions: list<function-decl>,
+        triggers: list<trigger-decl>,
+        object-sets: list<object-set-decl>,
         may: lake-rights,
     }
 
