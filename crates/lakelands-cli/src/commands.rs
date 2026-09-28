@@ -1,6 +1,7 @@
 //! The commands that open a lake: `apply`, `ingest`, `feed`, `age`,
 //! `purge`, `rebuild`, `compact`, `export` and `serve`. Each calls the library
 //! in-process and prints the position of every answer that has one.
+//! `import` makes a lake instead of opening one.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -572,6 +573,63 @@ pub async fn export(out: Out<'_>, store: &Arc<dyn LakeStore>, to: &Path) -> Resu
             manifest.lake,
             manifest.through,
             to.display()
+        ),
+    )
+}
+
+/// The lake an export holds, as its first event names it: the manifest is
+/// never trusted. `None` when the first event cannot be read; the import's
+/// own verification then says why.
+pub fn exported_lake(dir: &Path) -> Option<String> {
+    let first = dir.join(export::file_name(lakelands_api::Position::GENESIS));
+    let file = std::fs::File::open(first).ok()?;
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(file), &mut line).ok()?;
+    let event: serde_json::Value = serde_json::from_str(&line).ok()?;
+    event["lake"].as_str().map(str::to_owned)
+}
+
+/// `import`: the export in `dir` becomes the lake at `location`, which
+/// must hold nothing. A lake kept in memory is refused before anything is
+/// read: this process ends when the command answers, and the lake with it.
+pub async fn import(
+    out: Out<'_>,
+    location: lakelands_api::Location,
+    seams: lakelands_api::seam::Seams,
+    dir: &Path,
+) -> Result<(), Failure> {
+    if location.engine == lakelands_api::EngineConfig::Memory {
+        return Err(Failure::new(
+            format!(
+                "the lake `{}` is kept in memory, which lives only as long as its process",
+                location.lake
+            ),
+            "import into a lake kept on disk: SQLite (`lakelands lake new <id>`), or PostgreSQL",
+        ));
+    }
+    let imported = lakelands_store::import(location, seams, dir.to_owned())
+        .await
+        .map_err(|e| {
+            let todo = match &e {
+                lakelands_api::Error::Refused { .. } => {
+                    "an export opens only as the lake it came from, into a lake that holds \
+                     nothing: write that lake's location (`lakelands lake new <id>`, or by hand \
+                     for PostgreSQL), remove a lake there that holds events (its file or \
+                     schema), and import again"
+                }
+                _ => {
+                    "a damaged export imports nothing: export the lake again; a failure of the \
+                     target's storage leaves what it wrote, so remove that lake (its file or \
+                     schema) and import again"
+                }
+            };
+            Failure::new(e.to_string(), todo)
+        })?;
+    put(
+        out,
+        format!(
+            "imported lake `{}`: {} event(s) from {} file(s), head {}, hash {}",
+            imported.lake, imported.events, imported.files, imported.through, imported.hash.0
         ),
     )
 }

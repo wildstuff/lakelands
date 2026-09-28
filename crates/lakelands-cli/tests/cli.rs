@@ -1209,3 +1209,222 @@ fn help_is_plain_and_a_wrong_command_line_exits_2() {
         assert!(s.err.contains("--source"), "{}", s.err);
     }
 }
+
+/// Customers linked to partners by `source` links, for `import`.
+const LINKED: [(&str, &str); 2] = [
+    (
+        "types/partner.yaml",
+        "name: partner\nkey: name\nfields:\n  name: { type: text, authority: source, required: true }\n",
+    ),
+    (
+        "types/customer.yaml",
+        "name: customer
+key: code
+fields:
+  code: { type: text, authority: source, required: true }
+  name: { type: text, authority: source }
+  note: text
+relations:
+  knows: { target: partner, cardinality: many_to_many, authority: source }
+",
+    ),
+];
+
+/// A SQLite lake with records, links, a retirement and an authored write,
+/// exported into `<root>/export`.
+fn exported(sh: &Shell) -> String {
+    sh.lake();
+    assert_eq!(sh.run(&["apply", &sh.bundle("linked", &LINKED)]).code, 0);
+    let rows = sh.file(
+        "crm.ndjson",
+        "{\"type\": \"partner\", \"key\": \"acme\", \"fields\": {\"name\": \"acme\"}}\n\
+         {\"type\": \"customer\", \"key\": \"c1\", \"fields\": {\"code\": \"c1\", \"name\": \"Ada\"}}\n\
+         {\"type\": \"sys.link.customer.knows\", \"key\": \"c1:acme\", \"fields\": {\"from\": \"c1\", \"to\": \"acme\"}}\n",
+    );
+    assert_eq!(sh.run(&["ingest", &rows, "--source", "crm"]).code, 0);
+    let old = sh.file(
+        "old.ndjson",
+        "{\"type\": \"customer\", \"key\": \"c9\", \"fields\": {\"code\": \"c9\"}}\n",
+    );
+    assert_eq!(sh.run(&["ingest", &old, "--source", "old"]).code, 0);
+    assert_eq!(sh.run(&["purge", "--source", "old"]).code, 0);
+    let store = sh.lakes.lock().unwrap()["finance"].clone();
+    let owner = lakelands_api::Principal {
+        kind: lakelands_api::PrincipalKind::Human,
+        id: "owner".into(),
+        lake: store.lake().clone(),
+        grants: lakelands_api::Grants::owner(),
+    };
+    block_on(
+        store
+            .catalog(lakelands_api::WriteContext::default())
+            .upsert(
+                &owner,
+                &"customer".into(),
+                &"c1".into(),
+                [("note".into(), serde_json::json!("vip"))].into(),
+                lakelands_api::WriteOpts::default(),
+            ),
+    )
+    .unwrap();
+    let dir = sh.root.join("export").display().to_string();
+    assert_eq!(sh.run(&["export", "--to", &dir]).code, 0);
+    dir
+}
+
+/// The last event's position and hash, as `feed` prints it.
+fn last_event(feed: &str) -> (u64, String) {
+    let last: serde_json::Value = serde_json::from_str(feed.lines().last().unwrap()).unwrap();
+    (
+        last["position"].as_u64().unwrap(),
+        last["hash"].as_str().unwrap().to_owned(),
+    )
+}
+
+/// `import` goes through the store over the binary's own engines, so it
+/// is checked on the real store only: the mock keeps no files to import
+/// into.
+#[test]
+fn import_makes_the_exported_lake_in_an_empty_lake_of_its_name() {
+    let from = Shell::on("import-from", Backend::Store);
+    let dir = exported(&from);
+    let source = from.run(&["feed"]).out;
+    let (head, hash) = last_event(&source);
+    // The manifest is never trusted: the lake is the first event's.
+    let manifest = PathBuf::from(&dir).join("export.json");
+    let text = fs::read_to_string(&manifest).unwrap();
+    fs::write(&manifest, text.replace("\"finance\"", "\"elsewhere\"")).unwrap();
+
+    let to = Shell::on("import-to", Backend::Store);
+    to.lake();
+    let events = head + 1;
+    ok(
+        &to.run(&["import", &dir]),
+        &format!(
+            "imported lake `finance`: {events} event(s) from 1 file(s), head {head}, hash {hash}\n"
+        ),
+    );
+    assert_eq!(
+        to.run(&["feed"]).out,
+        source,
+        "the same log, event for event"
+    );
+    // Exported again, the files begin with the same bytes: the lake's
+    // first writer appends its own lease after them.
+    let again = to.root.join("again").display().to_string();
+    assert_eq!(to.run(&["export", "--to", &again]).code, 0);
+    let first = "log/00000000000000000000.jsonl";
+    let was = fs::read(PathBuf::from(&dir).join(first)).unwrap();
+    let now = fs::read(PathBuf::from(&again).join(first)).unwrap();
+    assert!(
+        now.starts_with(&was),
+        "the imported lake exports the source's bytes"
+    );
+}
+
+#[test]
+fn import_refuses_a_lake_that_holds_events_another_lake_memory_and_a_damaged_export() {
+    let from = Shell::on("import-refusals-from", Backend::Store);
+    let dir = exported(&from);
+    let (head, _) = last_event(&from.run(&["feed"]).out);
+
+    let to = Shell::on("import-refusals-to", Backend::Store);
+    to.lake();
+    assert_eq!(to.run(&["import", &dir]).code, 0);
+    let again = to.run(&["import", &dir]);
+    assert_eq!((again.code, again.out.as_str()), (1, ""));
+    assert!(
+        again
+            .err
+            .contains(&format!("already holds events through position {head}")),
+        "{}",
+        again.err
+    );
+    assert!(again.err.contains("  what to do: "), "{}", again.err);
+
+    assert_eq!(to.run(&["lake", "new", "other"]).code, 0);
+    let other = to.run(&["import", &dir, "--lake", "other"]);
+    assert_eq!((other.code, other.out.as_str()), (1, ""));
+    assert!(
+        other.err.contains("`finance`") && other.err.contains("`other`"),
+        "{}",
+        other.err
+    );
+
+    let memory = Shell::on("import-refusals-memory", Backend::Store);
+    let root = memory.root.display().to_string();
+    assert_eq!(memory.raw(&["lakelands", "init", &root]).code, 0);
+    assert_eq!(
+        memory
+            .run(&["lake", "new", "finance", "--engine", "memory"])
+            .code,
+        0
+    );
+    let kept = memory.run(&["import", &dir]);
+    assert_eq!((kept.code, kept.out.as_str()), (1, ""));
+    assert!(kept.err.contains("kept in memory"), "{}", kept.err);
+
+    let damaged = from.root.join("damaged");
+    fs::create_dir_all(damaged.join("log")).unwrap();
+    let segment = "log/00000000000000000000.jsonl";
+    let mut bytes = fs::read(PathBuf::from(&dir).join(segment)).unwrap();
+    let at = bytes.len() / 2;
+    bytes[at] = if bytes[at] == b'a' { b'b' } else { b'a' };
+    fs::write(damaged.join(segment), bytes).unwrap();
+    let fresh = Shell::on("import-refusals-damaged", Backend::Store);
+    fresh.lake();
+    let s = fresh.run(&[
+        "import",
+        &damaged.display().to_string(),
+        "--lake",
+        "finance",
+    ]);
+    assert_eq!((s.code, s.out.as_str()), (1, ""));
+    assert!(s.err.contains("the export is damaged"), "{}", s.err);
+    assert!(
+        fresh.run(&["import", &dir]).code == 0,
+        "a damaged export imported nothing"
+    );
+}
+
+/// The built binary moves a lake between two roots, each command in a
+/// process of its own, as the walk types it: the command's engines are the
+/// binary's, not a test's opener.
+#[test]
+fn the_built_binary_moves_a_lake_by_export_and_import() {
+    use std::process::Command;
+
+    let lakelands = env!("CARGO_BIN_EXE_lakelands");
+    let run = |root: &PathBuf, args: &[&str]| -> String {
+        let out = Command::new(lakelands)
+            .arg("--root")
+            .arg(root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let from = Shell::on("import-binary-from", Backend::Store);
+    let to = Shell::on("import-binary-to", Backend::Store);
+    run(&from.root, &["init"]);
+    run(&from.root, &["lake", "new", "finance"]);
+    run(&from.root, &["apply", &from.bundle("linked", &LINKED)]);
+    let rows = from.file(
+        "crm.ndjson",
+        "{\"type\": \"partner\", \"key\": \"acme\", \"fields\": {\"name\": \"acme\"}}\n",
+    );
+    run(&from.root, &["ingest", &rows, "--source", "crm"]);
+    let dir = from.root.join("export").display().to_string();
+    run(&from.root, &["export", "--to", &dir]);
+    let source = run(&from.root, &["feed"]);
+    run(&to.root, &["init"]);
+    run(&to.root, &["lake", "new", "finance"]);
+    let said = run(&to.root, &["import", &dir]);
+    assert!(said.starts_with("imported lake `finance`: "), "{said}");
+    assert_eq!(run(&to.root, &["feed"]), source);
+}
