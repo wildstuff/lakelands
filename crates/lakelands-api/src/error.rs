@@ -87,6 +87,12 @@ pub enum Refusal {
         /// The lake's ceiling.
         max: u32,
     },
+    /// A whole-graph measure would reach more records than the lake
+    /// allows; nothing partial is answered.
+    TooLarge {
+        /// The lake's `max_graph_nodes`.
+        max: u32,
+    },
     /// A migration would lose information; the report says where.
     Migration {
         /// The preflight report.
@@ -147,6 +153,9 @@ impl fmt::Display for Error {
                     | Refusal::Precondition { message } => write!(f, ": {message}"),
                     Refusal::TooDeep { max } => {
                         write!(f, ": reactions may go {max} levels deep, no deeper")
+                    }
+                    Refusal::TooLarge { max } => {
+                        write!(f, ": a graph measure may reach {max} records, no more")
                     }
                     Refusal::Migration { report } => write!(
                         f,

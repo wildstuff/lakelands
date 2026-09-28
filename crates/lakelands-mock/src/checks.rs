@@ -120,7 +120,8 @@ macro_rules! door_checks {
             a_sort_index_setting_names_declared_scalar_fields_and_describe_shows_them,
             a_vector_index_setting_names_vector_fields_and_search_says_it_ranked_by_the_index,
             an_order_by_latest_takes_no_field_and_no_view,
-            a_trigger_watches_a_link_type_and_not_a_reference_relations);
+            a_trigger_watches_a_link_type_and_not_a_reference_relations,
+            degree_and_components_answer_the_graph_in_one_order);
     };
     (@each $at:ident, $new:expr, $block_on:path;
         $($(#[$mark:ident])? $name:ident),* $(,)?) => {
@@ -3617,4 +3618,159 @@ pub async fn a_trigger_watches_a_link_type_and_not_a_reference_relations(
         "expected invalid, got {reason:?}"
     );
     assert_eq!(field.as_ref().map(FieldName::as_str), Some("on"));
+}
+
+/// The whole-graph measures of the pattern query
+/// (`docs/decisions/026-the-store-walks-the-graph.md`): `degree` counts a
+/// record's links over a via relation and a link relation to ends that
+/// are live, highest first and ties by key; `components` partitions what
+/// the start reaches, both ways, largest first, across types; and
+/// components walking one way are refused.
+pub async fn degree_and_components_answer_the_graph_in_one_order(store: Arc<dyn LakeStore>) {
+    let c = store.catalog(WriteContext::default());
+    let cast = Cast::of(store.lake());
+    let own = &cast.owner;
+    let decl = |v: Value| serde_json::from_value::<Declaration>(v).unwrap();
+    c.declare(
+        own,
+        decl(json!({"declare": "type", "name": "person", "fields": [
+            {"name": "name", "type": {"kind": "text"}}]})),
+    )
+    .await
+    .unwrap();
+    c.declare(
+        own,
+        decl(json!({"declare": "type", "name": "doc", "fields": [
+            {"name": "title", "type": {"kind": "text"}},
+            {"name": "author", "type": {"kind": "reference", "target": "person"}}],
+            "relations": [
+                {"name": "written_by", "target": "person", "cardinality": "many_to_one",
+                 "via": "author"},
+                {"name": "signed_by", "target": "person", "cardinality": "many_to_many"}]})),
+    )
+    .await
+    .unwrap();
+    let put = |t: &str, k: &str, pairs: &[(&str, Value)]| {
+        let (c, own, t, k, p) = (c.clone(), own.clone(), ty(t), key(k), patch(pairs));
+        async move {
+            c.upsert(&own, &t, &k, p, WriteOpts::default())
+                .await
+                .unwrap()
+        }
+    };
+    for p in ["p1", "p2", "p3"] {
+        put("person", p, &[("name", json!(p))]).await;
+    }
+    put(
+        "doc",
+        "d1",
+        &[("title", json!("d1")), ("author", json!("p1"))],
+    )
+    .await;
+    put(
+        "doc",
+        "d2",
+        &[("title", json!("d2")), ("author", json!("p1"))],
+    )
+    .await;
+    put("doc", "d3", &[("title", json!("d3"))]).await;
+    for (d, p) in [("d1", "p2"), ("d2", "p1"), ("d2", "p3"), ("d3", "p2")] {
+        c.link(
+            own,
+            &ty("doc"),
+            &key(d),
+            &"signed_by".into(),
+            &key(p),
+            Patch::new(),
+            WriteOpts::default(),
+        )
+        .await
+        .unwrap();
+    }
+    c.retire(own, &ty("person"), &key("p3"), WriteOpts::default())
+        .await
+        .unwrap();
+    let measure = |steps: Vec<Step>, project: lakelands_api::query::Projection| {
+        let mut p = Pattern::traverse(ty("doc"), key("unused"), steps);
+        p.start.key = None;
+        p.project = project;
+        p
+    };
+    let step = |r: &str, walk: Walk| Step {
+        relation: r.into(),
+        walk,
+        ty: None,
+        filter: None,
+        depth: Default::default(),
+    };
+    let rows = |p: Pattern| {
+        let (c, own) = (c.clone(), own.clone());
+        async move {
+            let reply = c.query(&own, p).await.expect("a measure answers");
+            let lakelands_api::query::QueryResult::Rows { rows, .. } = reply.data else {
+                panic!("a measure answers rows");
+            };
+            rows.iter()
+                .map(|r| {
+                    let s = |k: &str| match r.get(k) {
+                        Some(Value::String(s)) => s.clone(),
+                        Some(v) => v.to_string(),
+                        None => "-".into(),
+                    };
+                    if r.contains_key("degree") {
+                        format!("{}:{}={}", s("type"), s("key"), s("degree"))
+                    } else {
+                        format!(
+                            "{}/{} {}:{}",
+                            s("component"),
+                            s("size"),
+                            s("type"),
+                            s("key")
+                        )
+                    }
+                })
+                .collect::<Vec<_>>()
+        }
+    };
+    use lakelands_api::query::Projection;
+    let degree = rows(measure(
+        vec![step("written_by", Walk::Out), step("signed_by", Walk::Out)],
+        Projection::Degree,
+    ))
+    .await;
+    assert_eq!(
+        degree,
+        ["doc:d1=2", "doc:d2=2", "doc:d3=1"],
+        "d2's link to the retired p3 is not counted; ties by key"
+    );
+    let components = rows(measure(
+        vec![
+            step("written_by", Walk::Both),
+            step("signed_by", Walk::Both),
+        ],
+        Projection::Components,
+    ))
+    .await;
+    assert_eq!(
+        components,
+        [
+            "0/5 doc:d1",
+            "0/5 doc:d2",
+            "0/5 doc:d3",
+            "0/5 person:p1",
+            "0/5 person:p2",
+        ],
+        "the docs and the people they reach are one component, across types"
+    );
+    let e = c
+        .query(
+            own,
+            measure(vec![step("signed_by", Walk::Out)], Projection::Components),
+        )
+        .await
+        .expect_err("components walking one way are refused");
+    assert!(
+        matches!(refusal(&e).1, Refusal::Invalid { .. }),
+        "expected invalid, got {e:?}"
+    );
 }

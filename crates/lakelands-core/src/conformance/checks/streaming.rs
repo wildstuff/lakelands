@@ -56,7 +56,14 @@
 //! only the best candidates as it goes, not the field (lakelands#197); then
 //! the same search with the lake asking for an index on the field, which
 //! PostgreSQL answers from pgvector's index and the other engines by the
-//! same scan (`docs/decisions/043-an-index-asked-for-answers-its-set.md`). A
+//! same scan (`docs/decisions/043-an-index-asked-for-answers-its-set.md`).
+//! And the whole-graph measures over `follows` (lakelands#149): the ten
+//! records of highest degree over the whole type, which read the seeds a
+//! page at a time and keep the best rows, held; the components of the
+//! whole type, which hold every record they reach and so grow with the
+//! graph, reported; and the same components with the lake's
+//! `max_graph_nodes` at half the first size, refused at the cap at every
+//! size, so held by the cap. A
 //! harness without a meter runs everything else the check claims and
 //! reports the heap as not measured.
 //!
@@ -103,7 +110,9 @@ use lakelands_api::event::{Digest, EventBody};
 use lakelands_api::ontology::{
     Authority, Cardinality, EmbedDecl, FieldDecl, FieldType, RelationDecl, StorageKind, TypeDecl,
 };
-use lakelands_api::query::{Depth, Pattern, QueryResult, Search, SearchMode, Step, Walk};
+use lakelands_api::query::{
+    Depth, Pattern, Projection, QueryResult, Search, SearchMode, Step, Walk,
+};
 use lakelands_api::read::{Direction, Order, OrderBy};
 use lakelands_api::seam::{FeedFilter, Seams};
 use lakelands_api::{
@@ -122,7 +131,7 @@ use crate::links::{link_key, link_type_name};
 check!(
     /// A large lake goes through ingest, the feed and export in bounded memory.
     STREAMS = a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it,
-    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification, each page of a walk of a type through find, a rebuild, a reopen, a three-hop walk over link records and a hybrid search with k = 10 over every record's vector, without and with a vector index asked for, hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB, and the search answers what it must",
+    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification, each page of a walk of a type through find, a rebuild, a reopen, a three-hop walk over link records, a hybrid search with k = 10 over every record's vector, without and with a vector index asked for, the ten records of highest degree over the whole type, and components refused at the lake's max_graph_nodes, hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB, and the search answers what it must",
     given,
     embedding
 );
@@ -286,6 +295,48 @@ fn follows(i: u64, first: u64) -> impl Iterator<Item = u64> {
         Vec::new()
     };
     targets.into_iter().filter(move |t| delivered(*t, first))
+}
+
+/// A whole-graph measure of every record over `follows`, both ways.
+fn measure(project: Projection) -> Pattern {
+    let mut p = Pattern::traverse(
+        TypeName::from(TY),
+        key(0),
+        vec![Step {
+            relation: FOLLOWS.into(),
+            walk: Walk::Both,
+            ty: None,
+            filter: None,
+            depth: Depth::default(),
+        }],
+    );
+    p.start.key = None;
+    p.project = project;
+    p
+}
+
+/// The records of the largest component over `follows` in a lake of
+/// `size` records, by a union-find over the rule.
+fn largest_component(size: u64, first: u64) -> u64 {
+    fn root(parent: &mut [u64], mut i: u64) -> u64 {
+        while parent[i as usize] != i {
+            parent[i as usize] = parent[parent[i as usize] as usize];
+            i = parent[i as usize];
+        }
+        i
+    }
+    let mut parent: Vec<u64> = (0..size).collect();
+    for i in 0..size {
+        for t in follows(i, first) {
+            let (a, b) = (root(&mut parent, i), root(&mut parent, t));
+            parent[a as usize] = b;
+        }
+    }
+    let mut count = std::collections::BTreeMap::<u64, u64>::new();
+    for i in (0..size).filter(|i| delivered(*i, first)) {
+        *count.entry(root(&mut parent, i)).or_default() += 1;
+    }
+    count.into_values().max().unwrap_or(0)
 }
 
 /// The link records of `follows` from records `from` to `end`, computed
@@ -1107,6 +1158,145 @@ impl Size<'_> {
         Ok(())
     }
 
+    /// The ten records of highest degree over `follows`, both ways, over
+    /// the whole type: the seeds are read a page at a time and the best
+    /// rows kept, so the measure holds a page, not the type.
+    async fn degree(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+        let head = store.head().await.must("reading the head")?;
+        let first = u64::from(self.given.large_lake.max(20));
+        let mut degree: std::collections::BTreeMap<u64, u64> = (0..records)
+            .filter(|i| delivered(*i, first))
+            .map(|i| (i, 0))
+            .collect();
+        for i in 0..records {
+            for t in follows(i, first) {
+                *degree.entry(i).or_default() += 1;
+                *degree.entry(t).or_default() += 1;
+            }
+        }
+        let mut ranked: Vec<(u64, u64)> = degree.into_iter().map(|(i, d)| (d, i)).collect();
+        ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        let want: Vec<String> = ranked
+            .iter()
+            .take(10)
+            .map(|(d, i)| format!("{}={d}", key(*i)))
+            .collect();
+        let mut pattern = measure(Projection::Degree);
+        pattern.limit = Some(10);
+        let m = Measure::start(&self.given.meter, false);
+        let reply = doors(store)
+            .query(&self.own, pattern)
+            .await
+            .must(&format!("the degree of every `{TY}` over `{FOLLOWS}`"))?;
+        let measured = m.stop();
+        let QueryResult::Rows { rows, .. } = reply.data else {
+            return Err(Failure::new("a degree answered something other than rows"));
+        };
+        let got: Vec<String> = rows
+            .iter()
+            .map(|r| format!("{}={}", r["key"].as_str().unwrap_or_default(), r["degree"]))
+            .collect();
+        ensure!(
+            got == want,
+            "the ten records of highest degree over `{FOLLOWS}` are {want:?}; the measure \
+             answered {got:?}"
+        );
+        self.row(
+            "degree",
+            Claim::Held,
+            records,
+            head.0 + 1,
+            format!("top 10 of {} records, over {} links", self.live, self.links),
+            measured,
+        );
+        Ok(())
+    }
+
+    /// The components of the whole type over `follows`: they hold every
+    /// record they reach, so they grow with the graph by definition, and
+    /// are reported; their bound is the lake's `max_graph_nodes`, which
+    /// the next line holds.
+    async fn components(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+        let head = store.head().await.must("reading the head")?;
+        let largest = largest_component(records, u64::from(self.given.large_lake.max(20)));
+        let mut pattern = measure(Projection::Components);
+        pattern.limit = Some(1);
+        let m = Measure::start(&self.given.meter, false);
+        let reply = doors(store)
+            .query(&self.own, pattern)
+            .await
+            .must(&format!("the components of every `{TY}` over `{FOLLOWS}`"))?;
+        let measured = m.stop();
+        let QueryResult::Rows { rows, .. } = reply.data else {
+            return Err(Failure::new(
+                "components answered something other than rows",
+            ));
+        };
+        let size = rows.first().and_then(|r| r["size"].as_u64());
+        ensure!(
+            size == Some(largest),
+            "the largest component over `{FOLLOWS}` holds {largest} records; the measure \
+             answered {size:?}"
+        );
+        self.row(
+            "components",
+            Claim::Reported("lakelands#149"),
+            records,
+            head.0 + 1,
+            format!("largest {largest} of {} records", self.live),
+            measured,
+        );
+        Ok(())
+    }
+
+    /// The same components with the lake's `max_graph_nodes` at half the
+    /// first size: refused as soon as the walk holds one record more than
+    /// the cap, at every size, so what it holds is bounded by the cap and
+    /// not by the lake. Answers the lake opened with that cap.
+    async fn components_capped(
+        &mut self,
+        store: Arc<dyn LakeStore>,
+        records: u64,
+    ) -> Result<Arc<dyn LakeStore>, Failure> {
+        let cap = self.given.large_lake.max(20) / 2;
+        let capped = lakelands_api::location::Limits {
+            max_graph_nodes: cap,
+            ..limits()
+        };
+        let store = (self.given.relimit)(store, Seams::default(), capped)
+            .await
+            .map_err(|e| {
+                Failure::new(format!("opening the lake with a cap of {cap} failed: {e}"))
+            })?;
+        let head = store.head().await.must("reading the head")?;
+        let m = Measure::start(&self.given.meter, false);
+        let answer = doors(store.as_ref())
+            .query(&self.own, measure(Projection::Components))
+            .await;
+        let measured = m.stop();
+        ensure!(
+            matches!(
+                answer,
+                Err(lakelands_api::Error::Refused {
+                    reason: lakelands_api::Refusal::TooLarge { max },
+                    ..
+                }) if max == cap
+            ),
+            "the components of {} records under a cap of {cap} are refused as too_large; \
+             the measure answered {answer:?}",
+            self.live
+        );
+        self.row(
+            "components-capped",
+            Claim::Held,
+            records,
+            head.0 + 1,
+            format!("refused at a cap of {cap}"),
+            measured,
+        );
+        Ok(store)
+    }
+
     /// Rebuild the projection; every answer stays as it was.
     async fn rebuild(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
         let head = store.head().await.must("reading the head")?;
@@ -1222,6 +1412,9 @@ async fn a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_doe
         size.sorted_walks(store.as_ref(), records).await?;
         size.searches(store.as_ref(), records).await?;
         size.traverse(store.as_ref(), records).await?;
+        size.degree(store.as_ref(), records).await?;
+        size.components(store.as_ref(), records).await?;
+        store = size.components_capped(store, records).await?;
         size.rebuild(store.as_ref(), records).await?;
         store = size.reopen(store, records).await?;
         from = records;

@@ -16,7 +16,7 @@ use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, Location};
 use lakelands_core::conformance::checks::ALL;
 use lakelands_core::conformance::{
-    FreshLake, Harness, LARGE_LAKE, Meter, Reopen, run_all, run_one,
+    FreshLake, Harness, LARGE_LAKE, Meter, Relimit, Reopen, run_all, run_one,
 };
 use lakelands_engine_mem::MemoryOpener;
 use peak_alloc::PeakAlloc;
@@ -59,6 +59,28 @@ impl Harness for Memory {
                 };
                 let store: Arc<dyn LakeStore> =
                     lakelands_store::open(Location::memory(lake), seams, OpenMode::Write).await?;
+                Ok(store)
+            })
+        })
+    }
+
+    fn relimiter(&self) -> Relimit {
+        let opener = self.opener.clone();
+        Arc::new(move |store, host, limits| {
+            let opener = opener.clone();
+            Box::pin(async move {
+                let lake = store.lake().to_string();
+                store.close().await?;
+                let seams = Seams {
+                    engines: vec![Arc::new(opener)],
+                    ..host
+                };
+                let location = Location {
+                    limits,
+                    ..Location::memory(lake)
+                };
+                let store: Arc<dyn LakeStore> =
+                    lakelands_store::open(location, seams, OpenMode::Write).await?;
                 Ok(store)
             })
         })

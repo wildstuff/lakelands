@@ -108,6 +108,8 @@ pub struct Reader<'a> {
     pub now: Timestamp,
 }
 
+mod measures;
+
 /// A row's sort values and its tiebreak.
 type SortKey = (Vec<Value>, RecordKey);
 
@@ -919,16 +921,26 @@ impl<'a> Reader<'a> {
         let start_decl = self.visible_type(&p.start.ty)?.clone();
         let limit = self.limit(p.limit)?;
         let max_depth = self.lake.limits.max_depth;
+        if measures::is_measure(&p.project) {
+            measures::check(p)?;
+        }
         // The type each step reaches, checked against the declarations.
         let mut types = vec![start_decl.name.clone()];
         let mut filters = Vec::new();
+        let measure = measures::is_measure(&p.project);
         for (i, step) in p.steps.iter().enumerate() {
-            let here = types.last().expect("the start is in").clone();
+            // A measure's steps are the relations around its records, each
+            // read from the start, not a chain.
+            let here = if measure {
+                start_decl.name.clone()
+            } else {
+                types.last().expect("the start is in").clone()
+            };
             let reached = self.step_target(
                 &here,
                 &step.relation,
                 step.walk,
-                p.project == Projection::Graph,
+                matches!(p.project, Projection::Graph | Projection::Components),
             )?;
             if let (Some(t), Some(r)) = (&step.ty, &reached)
                 && t != r
@@ -951,6 +963,9 @@ impl<'a> Reader<'a> {
             }
             filters.push(f);
             types.push(reached);
+        }
+        if measure {
+            return self.measure(p, limit);
         }
         let hidden = Visible { reader: self };
         // The start.

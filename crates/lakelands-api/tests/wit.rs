@@ -982,6 +982,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 max_depth: 3,
                 max_reactive_depth: 4,
                 commit_window_events: 5,
+                max_graph_nodes: 6,
             }),
         ),
         (
@@ -1144,6 +1145,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | Refusal::Constraint { .. }
             | Refusal::Precondition { .. }
             | Refusal::TooDeep { .. }
+            | Refusal::TooLarge { .. }
             | Refusal::Migration { .. }
             | Refusal::Decided
             | Refusal::OutOfRange { .. } => {}
@@ -1162,6 +1164,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 Refusal::Constraint { message: message() },
                 Refusal::Precondition { message: message() },
                 Refusal::TooDeep { max: 1 },
+                Refusal::TooLarge { max: 1 },
                 Refusal::Migration {
                     report: Box::new(migration_report()),
                 },
@@ -1278,7 +1281,11 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
 
     fn projections(p: &Projection) {
         match p {
-            Projection::Rows { .. } | Projection::Graph | Projection::Aggregate(_) => {}
+            Projection::Rows { .. }
+            | Projection::Graph
+            | Projection::Aggregate(_)
+            | Projection::Degree
+            | Projection::Components => {}
         }
     }
     let _ = projections;
@@ -1289,6 +1296,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 Projection::Rows { fields: vec![] },
                 Projection::Graph,
                 Projection::Aggregate(aggregate()),
+                Projection::Degree,
+                Projection::Components,
             ],
             Some("as"),
         ),

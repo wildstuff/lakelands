@@ -10,11 +10,11 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use lakelands_api::LakeStore;
 use lakelands_api::engine::OpenMode;
 use lakelands_api::seam::Seams;
+use lakelands_api::{LakeStore, Location};
 use lakelands_core::conformance::checks::ALL;
-use lakelands_core::conformance::{FreshLake, Harness, Meter, Reopen, run_all, run_one};
+use lakelands_core::conformance::{FreshLake, Harness, Meter, Relimit, Reopen, run_all, run_one};
 use lakelands_engine_pg::PgOpener;
 use peak_alloc::PeakAlloc;
 
@@ -55,6 +55,28 @@ impl Harness for Pg {
                     ..host
                 };
                 let location = common::location(&url, &schema, &schema);
+                let store: Arc<dyn LakeStore> =
+                    lakelands_store::open(location, seams, OpenMode::Write).await?;
+                Ok(store)
+            })
+        })
+    }
+
+    fn relimiter(&self) -> Relimit {
+        let url = self.url.clone();
+        Arc::new(move |store, host, limits| {
+            let url = url.clone();
+            Box::pin(async move {
+                let schema = store.lake().to_string();
+                store.close().await?;
+                let seams = Seams {
+                    engines: vec![Arc::new(PgOpener)],
+                    ..host
+                };
+                let location = Location {
+                    limits,
+                    ..common::location(&url, &schema, &schema)
+                };
                 let store: Arc<dyn LakeStore> =
                     lakelands_store::open(location, seams, OpenMode::Write).await?;
                 Ok(store)

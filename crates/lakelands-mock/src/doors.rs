@@ -32,6 +32,8 @@ use lakelands_api::write::{
 use lakelands_api::{Catalog, CommitStream, SourceStream};
 
 use crate::expr::{self, Scope};
+
+mod measures;
 use crate::links;
 use crate::state::{DeclaredType, State, access, door_writes, field};
 use crate::{Batch, Draft, Log, Shared, refused, stream, value};
@@ -2080,6 +2082,45 @@ impl Catalog for MockCatalog {
             return Err(invalid(
                 "the in-memory mock starts a pattern from a key or a filter only",
             ));
+        }
+        if matches!(pattern.project, Projection::Degree | Projection::Components) {
+            measures::check(&pattern)?;
+            for step in &pattern.steps {
+                let declared = st.types.values().any(|o| {
+                    o.decl.relations.iter().any(|r| {
+                        r.name == step.relation
+                            && (pattern.project == Projection::Components
+                                || (step.walk != Walk::In && o.decl.name == t.decl.name)
+                                || (step.walk != Walk::Out && r.target == t.decl.name))
+                    })
+                });
+                if !declared {
+                    return Err(invalid(format!(
+                        "`{}` has no relation `{}` to walk",
+                        t.decl.name, step.relation
+                    )));
+                }
+            }
+            let e = filter(&st, who, t, start.filter.as_ref())?;
+            let mut seeds: Vec<(TypeName, RecordKey)> =
+                candidates(&st, who, t, pattern.at, e.as_ref())?
+                    .into_iter()
+                    .filter(|r| start.key.as_ref().is_none_or(|k| &r.key == k))
+                    .map(|r| (r.ty.clone(), r.key.clone()))
+                    .collect();
+            seeds.sort();
+            let rows = measures::rows(
+                &st,
+                who,
+                &pattern,
+                seeds,
+                self.shared.limits.max_graph_nodes,
+            )?;
+            let (rows, next_cursor) = page(rows, position, offset, self.limit(pattern.limit));
+            return Ok(Reply {
+                position,
+                data: QueryResult::Rows { rows, next_cursor },
+            });
         }
         let Projection::Rows { fields } = &pattern.project else {
             return Err(invalid("the in-memory mock projects patterns as rows only"));

@@ -61,6 +61,10 @@ impl From<Error> for Failure {
                 Refusal::TooDeep { .. } => {
                     "break the chain of reactions, or raise the lake's limit in its location".to_owned()
                 }
+                Refusal::TooLarge { .. } => {
+                    "start from fewer records, or raise the lake's `max_graph_nodes` in its location"
+                        .to_owned()
+                }
                 Refusal::Migration { .. } => {
                     "fix the records the report names, then run the migration again".to_owned()
                 }
