@@ -61,3 +61,16 @@ two releases join the one package version the next release ships,
 without a version of their own. `lakelands:data@0.2.0` stays `0.2.0`
 until `v0.2.0` ships. A field's declaration gained `embed` (022,
 extended), and `field-decl` carries it at `0.2.0`.
+
+## Extended: the package at `0.4.0`
+
+`v0.3.0` shipped a WIT a caller could tell from `0.2.0` (`find` resumed
+with `after` and ordered by `latest`, a type's `sorted` fields) under the
+same `lakelands:data@0.2.0`. That broke the rule above. `v0.4.0` adds
+more: `upstream` on a record and an ingest, `declare` and `migrate`
+proposals with their `proposal-kind`, `degree` and `components`, and a
+describe that answers the declaration whole. The package moves once,
+from `0.2.0` to `0.4.0`, and gathers both releases' changes. It takes
+the number of the release that first ships it, so a caller who reads a
+package version knows which release it came with. A `0.3.0` package
+never existed, and none is made after the fact.

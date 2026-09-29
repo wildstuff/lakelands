@@ -1,4 +1,4 @@
-package lakelands:data@0.2.0;
+package lakelands:data@0.4.0;
 
 /// One open lake and its data doors: the store facade (`LakeStore`),
 /// the per-type doors, proposals and ingest of the catalog (`Catalog`),

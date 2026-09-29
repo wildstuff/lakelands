@@ -75,19 +75,22 @@ of changes without polling, `propose`, `proposals`, `accept` and
 `add_field` and `migrate` for the schema. Served over MCP (stdio and
 HTTP) and REST from one catalog. Agents never write a query language.
 
-> **Status: `0.3.0`.** Lakelands `0.3.0` is the `lakelands` CLI, its
-> MCP server (stdio and streamable HTTP) and its REST door over the
-> SQLite, in-memory and PostgreSQL engines, all three passing the whole
+> **Status: `0.4.0`.** Lakelands `0.4.0` is the `lakelands` CLI, its MCP
+> server (stdio and streamable HTTP) and its REST door over the SQLite,
+> in-memory and PostgreSQL engines, all three passing the whole
 > conformance suite (243 checks through the doors and 50 through the
-> engine seam), with 41 decision records, installable from the release.
-> Beside what `0.2.0` held it has multi-row PostgreSQL commits,
-> field-ordered pages that read their page when the lake asks for the
-> index (`sort_index.<type>`), `find` resumed with `after` and ordered by
-> `latest`, a trigger on a relation carried by link records, a walk that
-> reads what it reaches at the head on every engine, the PostgreSQL
-> writer analysing its tables after a load, and geo values held to their
-> RFC shape. Views over more than one source, the mirror between lakes
-> and a vector index behind the seam come after.
+> engine seam), with 43 decision records and the event log at format
+> version 4, installable from the release. Its budgets: the store facade
+> and engine traits hold 52 of 110 methods, the core crates 67 371 of
+> 70 000 lines, and 2 of 20 `cfg(feature)` sites. Beside what `0.3.0`
+> held it has a vector search that keeps its best `k` and a vector index
+> behind the seam (HNSW on PostgreSQL with pgvector), a lake moved by
+> export and import, a mirror between two lakes that names the source's
+> position (`upstream`), degree and connected components over links,
+> capped by the lake's ceiling, a rebuild that folds a migration over
+> the records its own page wrote, and a declaration or a migration that
+> can be proposed and accepted like any other write. Views over more
+> than one source come after.
 
 ## Try it
 
