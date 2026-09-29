@@ -216,7 +216,8 @@ as the same lake on any engine
 (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`):
 every event unchanged at its position, the projection folded, nothing
 appended. A SQLite lake that needs PostgreSQL's multi-row commits or its
-vector index moves so. From the CLI:
+vector index moves so. Walk 3 (`docs/walks/walk-3.md`) moves a lake
+into a second root and compares the two feeds. From the CLI:
 
 ```sh
 lakelands --root old export --to /tmp/finance
