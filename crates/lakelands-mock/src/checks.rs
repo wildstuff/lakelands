@@ -124,7 +124,8 @@ macro_rules! door_checks {
             an_order_by_latest_takes_no_field_and_no_view,
             a_trigger_watches_a_link_type_and_not_a_reference_relations,
             degree_and_components_answer_the_graph_in_one_order,
-            a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_mode);
+            a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_mode,
+            a_search_limited_to_named_fields_matches_and_probes_only_those);
     };
     (@each $at:ident, $new:expr, $block_on:path;
         $($(#[$mark:ident])? $name:ident),* $(,)?) => {
@@ -3623,6 +3624,7 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
         text: "quay".into(),
         field: "v".into(),
         vector: Some(vec![1.0, 0.0]),
+        fields: None,
     };
     assert!(indexed().await.is_empty(), "no setting, nothing indexed");
     assert_eq!(ranked_by(by_vector("v"), None).await, "vector");
@@ -4020,6 +4022,7 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
                 "lexical",
                 SearchMode::Lexical {
                     text: "quayside".into(),
+                    fields: None,
                 },
             ),
             (
@@ -4028,6 +4031,7 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
                     text: "quayside".into(),
                     field: "v".into(),
                     vector: None,
+                    fields: None,
                 },
             ),
             (
@@ -4036,6 +4040,7 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
                     text: "quayside".into(),
                     field: "v".into(),
                     vector: Some(vec![0.0, 1.0]),
+                    fields: None,
                 },
             ),
         ]
@@ -4075,6 +4080,161 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
                     .iter()
                     .map(|h| h.record.key.as_str())
                     .collect::<Vec<_>>()
+            ),
+        }
+    }
+}
+
+/// A lexical or hybrid search that names `fields` matches in those
+/// fields only and probes only them (024, 025): the clerk, who sees the
+/// searchable `body` only masked, is answered when it names `title`. A
+/// named field it may not read is not granted, one that is not
+/// searchable or not declared is invalid, and naming none is invalid.
+pub async fn a_search_limited_to_named_fields_matches_and_probes_only_those(
+    store: Arc<dyn LakeStore>,
+) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let clerk = &f.cast.clerk;
+    let doc = TypeDecl {
+        name: "doc".into(),
+        key: Vec::new(),
+        fields: vec![
+            FieldDecl {
+                searchable: true,
+                ..text("title")
+            },
+            FieldDecl {
+                searchable: true,
+                ..text("body")
+            },
+            text("label"),
+        ],
+        relations: Vec::new(),
+        view: None,
+        valid_from: None,
+        valid_to: None,
+        field_meta: true,
+        language: None,
+        description: None,
+        label: None,
+        annotations: Default::default(),
+    };
+    f.catalog
+        .declare(owner, Declaration::Type(doc))
+        .await
+        .expect("the owner declares `doc`");
+    for (k, fields) in [
+        ("a", [("title", "quayside"), ("body", "harbour")]),
+        ("b", [("body", "quayside"), ("label", "quayside")]),
+    ] {
+        let fields: Vec<(&str, Value)> = fields.iter().map(|(n, v)| (*n, json!(v))).collect();
+        f.catalog
+            .upsert(
+                owner,
+                &ty("doc"),
+                &key(k),
+                patch(&fields),
+                WriteOpts::default(),
+            )
+            .await
+            .expect("a doc is written");
+    }
+    let named = |names: &[&str]| Some(names.iter().map(|&n| FieldName::from(n)).collect());
+    let lexical = |names: Option<Vec<FieldName>>| Search {
+        ty: ty("doc"),
+        mode: SearchMode::Lexical {
+            text: "quayside".into(),
+            fields: names,
+        },
+        k: 5,
+        cursor: None,
+        filter: None,
+        with_meta: false,
+        at: ReadAt::default(),
+    };
+    let found = |hits: &lakelands_api::query::Hits| {
+        hits.hits
+            .iter()
+            .map(|h| h.record.key.as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let every = f
+        .catalog
+        .search(owner, lexical(None))
+        .await
+        .expect("the owner searches every searchable field")
+        .data;
+    assert_eq!(found(&every), ["a", "b"], "the owner finds both docs");
+    let title = f
+        .catalog
+        .search(owner, lexical(named(&["title"])))
+        .await
+        .expect("the owner searches `title`")
+        .data;
+    assert_eq!(found(&title), ["a"], "only `a` holds the word in `title`");
+    let theirs = f
+        .catalog
+        .search(clerk, lexical(named(&["title"])))
+        .await
+        .expect("the clerk searches `title` beside the masked `body`")
+        .data;
+    assert_eq!(found(&theirs), ["a"], "the clerk finds `a` by its title");
+    assert!(
+        theirs.hits[0]
+            .record
+            .masked
+            .iter()
+            .any(|f| f.as_str() == "body"),
+        "the clerk sees `body` masked in the hit"
+    );
+    for (who, names, field, granted, what) in [
+        (
+            clerk,
+            named(&["body"]),
+            Some("body"),
+            false,
+            "`body`, which the clerk sees masked",
+        ),
+        (
+            clerk,
+            named(&["title", "body"]),
+            Some("body"),
+            false,
+            "`title` and `body`",
+        ),
+        (
+            owner,
+            named(&["label"]),
+            Some("label"),
+            true,
+            "`label`, which is not searchable",
+        ),
+        (
+            owner,
+            named(&["nope"]),
+            Some("nope"),
+            true,
+            "`nope`, which `doc` does not declare",
+        ),
+        (owner, named(&[]), None, true, "no field"),
+    ] {
+        match f.catalog.search(who, lexical(names)).await {
+            Err(e) => {
+                let (named, reason) = refusal(&e);
+                assert!(
+                    named.as_ref().map(FieldName::as_str) == field
+                        && if granted {
+                            matches!(reason, Refusal::Invalid { .. })
+                        } else {
+                            matches!(reason, Refusal::NotGranted)
+                        },
+                    "a search in {what} is refused naming {field:?}; got {e:?}"
+                );
+            }
+            Ok(r) => panic!(
+                "a search in {what} is refused naming {field:?}; it answered {:?}",
+                found(&r.data)
             ),
         }
     }

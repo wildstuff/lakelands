@@ -933,6 +933,11 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             ("type", names(|t| t.may.find)),
             ("mode", json!({"enum": ["lexical", "vector", "hybrid"]})),
             ("text", json!({"type": "string"})),
+            (
+                "fields",
+                json!({"type": "array", "items": {"type": "string"}, "minItems": 1,
+                "description": "lexical and hybrid: match the text only in these searchable fields."}),
+            ),
             ("field", json!({"type": "string"})),
             (
                 "vector",

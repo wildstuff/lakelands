@@ -84,6 +84,12 @@ engine_check!(
 );
 
 engine_check!(
+    /// Lexical search limited to named fields matches in those only.
+    LEXICAL_NAMED_FIELDS = lexical_over_named_fields_is_the_pipelines_over_those_fields,
+    "025 and seams §lexical: a search limited to named fields matches, scores and ties over the head text of the named searchable fields only, and no engine cuts its candidates at k before it narrows them: a record matching in a named field is a hit however many others match only in fields not named"
+);
+
+engine_check!(
     /// A record put after its type is declared again in the same
     /// transaction is indexed under the new declaration.
     LEXICAL_REDECLARED_MID_FOLD = a_record_put_after_a_redeclaration_in_the_same_transaction_is_indexed_under_it,
@@ -531,7 +537,7 @@ fn lexical_hits_are_the_pipelines_over_searchable_live_records(
     })?;
     let at = view(engine, None)?;
     let ty = TypeName::from("doc");
-    let hits = at.lexical(&ty, "run rivers", 10).must("searching")?;
+    let hits = at.lexical(&ty, "run rivers", None, 10).must("searching")?;
     ensure!(
         hit_keys(&hits) == ["two", "held", "one-a", "one-b"],
         "searching `run rivers` answered {:?}; the English pipeline makes `run` and `river` of \
@@ -543,13 +549,17 @@ fn lexical_hits_are_the_pipelines_over_searchable_live_records(
         hits[0].1 > hits[1].1 && hits[1].1 == hits[2].1 && hits[2].1 == hits[3].1,
         "the scores {hits:?} must rank the better match higher and tie the equal ones"
     );
-    let one = at.lexical(&ty, "run rivers", 1).must("searching for one")?;
+    let one = at
+        .lexical(&ty, "run rivers", None, 1)
+        .must("searching for one")?;
     ensure!(
         hit_keys(&one) == ["two"],
         "searching with k = 1 answered {:?}",
         hit_keys(&one)
     );
-    let none = at.lexical(&ty, "ocean", 10).must("searching for nothing")?;
+    let none = at
+        .lexical(&ty, "ocean", None, 10)
+        .must("searching for nothing")?;
     ensure!(none.is_empty(), "searching `ocean` answered {none:?}");
     Ok(())
 }
@@ -571,14 +581,18 @@ fn lexical_at_an_earlier_position_ranks_by_the_head_and_keeps_what_was_visible_t
     })?;
     let ty = TypeName::from("doc");
     let then = view(engine, Some(Position(1)))?;
-    let river = then.lexical(&ty, "river", 10).must("searching at 1")?;
+    let river = then
+        .lexical(&ty, "river", None, 10)
+        .must("searching at 1")?;
     ensure!(
         hit_keys(&river) == ["kept", "later-retired"],
         "at position 1, `river` answered {:?}; the head's text holds `river` in `kept`, \
          `later-retired` and `new`, and at 1 only the first two were live",
         hit_keys(&river)
     );
-    let ocean = then.lexical(&ty, "ocean", 10).must("searching at 1")?;
+    let ocean = then
+        .lexical(&ty, "ocean", None, 10)
+        .must("searching at 1")?;
     ensure!(
         ocean.is_empty(),
         "at position 1, `ocean` answered {:?}; ranking is by the text at the head, which no \
@@ -587,12 +601,98 @@ fn lexical_at_an_earlier_position_ranks_by_the_head_and_keeps_what_was_visible_t
     );
     let now = view(engine, None)?;
     let head = now
-        .lexical(&ty, "river", 10)
+        .lexical(&ty, "river", None, 10)
         .must("searching at the head")?;
     ensure!(
         hit_keys(&head) == ["kept", "new"],
         "at the head, `river` answered {:?}; `later-retired` is retired there",
         hit_keys(&head)
+    );
+    Ok(())
+}
+
+fn lexical_over_named_fields_is_the_pipelines_over_those_fields(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    fold(engine, 1, |p| {
+        p.put_declaration(&documents(), 1, None, Position(0))?;
+        p.put_record(&record(
+            "doc",
+            "both",
+            json!({"title": "rivers running", "body": "run"}),
+            1,
+        ))?;
+        p.put_record(&record("doc", "t-only", json!({"title": "river"}), 1))?;
+        // More records match only in `body` than a search limited to
+        // `title` asks for, and every one sorts before `t-only`.
+        for key in ["b-1", "b-2", "b-3"] {
+            p.put_record(&record("doc", key, json!({"body": "river"}), 1))?;
+        }
+        p.put_record(&record("doc", "note", json!({"note": "river"}), 1))
+    })?;
+    fold(engine, 2, |p| {
+        p.put_record(&record("doc", "late", json!({"title": "river"}), 2))
+    })?;
+    let ty = TypeName::from("doc");
+    let title = [lakelands_api::id::FieldName::from("title")];
+    let body = [lakelands_api::id::FieldName::from("body")];
+    let now = view(engine, None)?;
+    let all = now
+        .lexical(&ty, "river run", None, 10)
+        .must("searching every field")?;
+    ensure!(
+        hit_keys(&all) == ["both", "b-1", "b-2", "b-3", "late", "t-only"],
+        "searching `river run` in every searchable field answered {:?}",
+        hit_keys(&all)
+    );
+    let titled = now
+        .lexical(&ty, "river run", Some(&title), 3)
+        .must("searching `title`")?;
+    ensure!(
+        titled
+            == [
+                ("both".into(), 2.0),
+                ("late".into(), 1.0),
+                ("t-only".into(), 1.0)
+            ],
+        "searching `river run` in `title` with k = 3 answered {titled:?}; `both` holds both \
+         tokens in its title, `late` and `t-only` one each, and `b-1` to `b-3` match only in \
+         `body`, which was not named: a hit set cut at k before it was narrowed loses them"
+    );
+    let bodied = now
+        .lexical(&ty, "river run", Some(&body), 10)
+        .must("searching `body`")?;
+    ensure!(
+        bodied
+            == [
+                ("b-1".into(), 1.0),
+                ("b-2".into(), 1.0),
+                ("b-3".into(), 1.0),
+                ("both".into(), 1.0)
+            ],
+        "searching `river run` in `body` answered {bodied:?}; `both` holds only `run` there"
+    );
+    let noted = now
+        .lexical(
+            &ty,
+            "river",
+            Some(&[lakelands_api::id::FieldName::from("note")]),
+            10,
+        )
+        .must("searching `note`")?;
+    ensure!(
+        noted.is_empty(),
+        "searching `river` in `note`, which is not searchable, answered {:?}",
+        hit_keys(&noted)
+    );
+    let then = view(engine, Some(Position(1)))?
+        .lexical(&ty, "river run", Some(&title), 10)
+        .must("searching `title` at 1")?;
+    ensure!(
+        hit_keys(&then) == ["both", "t-only"],
+        "at position 1, searching `river run` in `title` answered {:?}; `late` was not yet \
+         live",
+        hit_keys(&then)
     );
     Ok(())
 }
@@ -614,7 +714,7 @@ fn a_record_put_after_a_redeclaration_in_the_same_transaction_is_indexed_under_i
         p.put_record(&record("doc", "late", json!({"body": "river"}), 4))
     })?;
     let hits = view(engine, None)?
-        .lexical(&TypeName::from("doc"), "river", 10)
+        .lexical(&TypeName::from("doc"), "river", None, 10)
         .must("searching")?;
     ensure!(
         hit_keys(&hits) == ["early", "late"],
@@ -973,7 +1073,7 @@ fn lexical_finds_every_token_the_pipeline_makes_beyond_ascii(
         ("hello мир ωμέγα", vec!["ascii", "cyrillic", "greek"]),
     ] {
         let hits = at
-            .lexical(&ty, query, 10)
+            .lexical(&ty, query, None, 10)
             .must(&format!("searching `{query}`"))?;
         ensure!(
             hit_keys(&hits) == expected,

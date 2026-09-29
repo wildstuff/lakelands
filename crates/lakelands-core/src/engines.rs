@@ -722,10 +722,21 @@ pub fn tokens(text: &str, tag: &str) -> BTreeSet<String> {
 /// The distinct tokens a record's searchable text fields hold under its
 /// type's declaration.
 pub fn record_tokens(decl: &TypeDecl, record: &StoredRecord) -> BTreeSet<String> {
+    field_tokens(decl, record, None)
+}
+
+/// The distinct tokens a record's searchable text fields hold, only those
+/// `fields` names when it names any: the text a search limited to named
+/// fields matches in.
+fn field_tokens(
+    decl: &TypeDecl,
+    record: &StoredRecord,
+    fields: Option<&[FieldName]>,
+) -> BTreeSet<String> {
     let tag = decl.language.as_deref().unwrap_or("");
     decl.fields
         .iter()
-        .filter(|f| f.searchable)
+        .filter(|f| f.searchable && fields.is_none_or(|named| named.contains(&f.name)))
         .filter_map(|f| record.fields.get(&f.name)?.as_str())
         .flat_map(|s| tokens(s, tag))
         .collect()
@@ -734,21 +745,27 @@ pub fn record_tokens(decl: &TypeDecl, record: &StoredRecord) -> BTreeSet<String>
 /// Full-text hits, as `docs/seams.md` §`lexical` defines them: the
 /// records of one type as they stand at the head, `decl` the type's
 /// declaration there, are hits when their searchable text holds a query
-/// token; `visible` keeps those live at the view's own
+/// token — the text of the searchable fields `fields` names, when it
+/// names any; `visible` keeps those live at the view's own
 /// position. A hit scores the distinct query tokens its head text holds;
 /// best first, ties by key, at most `k`.
+///
+/// An engine may hand in any superset of the hits as `head`: a record
+/// whose named fields hold no query token scores nothing and is dropped
+/// here, before the ranking is cut at `k`.
 pub fn lexical<'a>(
     decl: &TypeDecl,
     head: impl IntoIterator<Item = &'a StoredRecord>,
     visible: impl Fn(&RecordKey) -> bool,
     text: &str,
+    fields: Option<&[FieldName]>,
     k: u32,
 ) -> Vec<(RecordKey, f64)> {
     let query = tokens(text, decl.language.as_deref().unwrap_or(""));
     let mut hits: Vec<(RecordKey, f64)> = head
         .into_iter()
         .filter_map(|r| {
-            let score = query.intersection(&record_tokens(decl, r)).count();
+            let score = query.intersection(&field_tokens(decl, r, fields)).count();
             (score > 0 && visible(&r.key)).then(|| (r.key.clone(), score as f64))
         })
         .collect();

@@ -440,7 +440,13 @@ impl ProjectionView for SqliteView<'_> {
         })
     }
 
-    fn lexical(&self, ty: &TypeName, text: &str, k: u32) -> Result<Vec<(RecordKey, f64)>> {
+    fn lexical(
+        &self,
+        ty: &TypeName,
+        text: &str,
+        fields: Option<&[FieldName]>,
+        k: u32,
+    ) -> Result<Vec<(RecordKey, f64)>> {
         self.read(Vec::new(), |r| {
             // The full-text index describes the head; a view keeps the hits
             // live at its own position (`docs/seams.md`).
@@ -452,7 +458,10 @@ impl ProjectionView for SqliteView<'_> {
                 return Ok(Vec::new());
             }
             // Every pipeline token is one term of the table (its hex), so
-            // this finds exactly the records the shared scoring counts.
+            // this finds exactly the records the shared scoring counts. A
+            // row holds every searchable field's tokens: limited to named
+            // fields, these are a superset, and the shared scoring keeps
+            // the records whose named fields match before it cuts at `k`.
             let matching = query
                 .iter()
                 .map(|t| projection::fts_term(t))
@@ -484,6 +493,7 @@ impl ProjectionView for SqliteView<'_> {
                 &head,
                 |key| visible.contains(key),
                 text,
+                fields,
                 k,
             ))
         })

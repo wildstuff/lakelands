@@ -61,3 +61,16 @@ An engine's full-text and vector candidates include restricted records
 to the hits, as it does for `find` and `get`. A principal holding the
 `restricted` grant finds a restricted record by search; one without it
 never sees it.
+
+## Extended: a search limited to named fields
+
+A lexical or hybrid search that names `fields` matches, scores and ties
+over the text of those searchable fields only, and that set and order
+are the same on every engine. An engine's full-text index need not know
+which field a token came from: the SQLite and PostgreSQL engines draw
+their candidates from their whole-record index, a superset of the hits,
+and the one reference ranking (`lakelands_core::engines::lexical`)
+keeps the records whose named fields match before it cuts the ranking
+at `k`. An index per field would narrow earlier, at the price of a
+different projection on both engines; it is a later, additive change if
+a workload ever asks for it (lakelands#236).

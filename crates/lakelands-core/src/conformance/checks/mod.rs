@@ -47,6 +47,7 @@ mod retire;
 mod schema;
 mod schema_proposals;
 mod search;
+mod search_fields;
 mod settings;
 mod streaming;
 mod value_types;
@@ -149,6 +150,10 @@ pub const ALL: &[Check] = &[
     search::HYBRID_PROBE_REFUSED,
     search::VECTOR_PROBE_REFUSED,
     search::EMBED_PROBE_REFUSED,
+    search_fields::FIELDS_NARROW_THE_MATCH,
+    search_fields::FIELDS_LIFT_THE_PROBE,
+    search_fields::FIELDS_REFUSED,
+    search_fields::FIELDS_KEEP_THE_EMBED_PROBE,
     proposals::VERB_BY_RISK,
     proposals::EXTERNAL_UNBOUND,
     proposals::ACCEPT_APPLIES,

@@ -52,7 +52,10 @@ async fn articles(store: &dyn LakeStore) -> Result<(), Failure> {
 fn lexical(text: &str) -> Search {
     Search {
         ty: TypeName::from("article"),
-        mode: SearchMode::Lexical { text: text.into() },
+        mode: SearchMode::Lexical {
+            text: text.into(),
+            fields: None,
+        },
         k: 20,
         cursor: None,
         filter: None,
@@ -69,7 +72,7 @@ async fn hits(store: &dyn LakeStore, text: &str) -> Result<Hits, Failure> {
         .data)
 }
 
-fn keys(h: &Hits) -> Vec<&str> {
+pub(super) fn keys(h: &Hits) -> Vec<&str> {
     h.hits.iter().map(|h| h.record.key.as_str()).collect()
 }
 
@@ -201,7 +204,7 @@ check!(
 
 /// `reader` of `doc`, reading everything but `masked`, which it sees
 /// only masked.
-fn masking(store: &dyn LakeStore, masked: &str) -> lakelands_api::Principal {
+pub(super) fn masking(store: &dyn LakeStore, masked: &str) -> lakelands_api::Principal {
     let mut reader = field_writer(store, "reader", "doc", &[]);
     reader
         .grants
@@ -214,7 +217,7 @@ fn masking(store: &dyn LakeStore, masked: &str) -> lakelands_api::Principal {
 }
 
 /// `search` by `who` must be refused as not granted, naming `field`.
-async fn refused(
+pub(super) async fn refused(
     store: &dyn LakeStore,
     who: &lakelands_api::Principal,
     search: Search,
@@ -396,6 +399,7 @@ async fn a_search_over_a_vector_embedded_from_an_unreadable_field_is_refused(
             text: "harbour".into(),
             field: "vec".into(),
             vector: Some(vec![1.0, 0.0]),
+            fields: None,
         }),
         "body",
         "a hybrid search over `vec`, embedded from `title` and `body`, by a reader who \
@@ -848,7 +852,7 @@ async fn two_docs(store: &dyn LakeStore) -> Result<(), Failure> {
     Ok(())
 }
 
-fn doc_search(mode: SearchMode) -> Search {
+pub(super) fn doc_search(mode: SearchMode) -> Search {
     Search {
         ty: TypeName::from("doc"),
         mode,
@@ -865,6 +869,7 @@ fn hybrid(text: &str, vector: Option<Vec<f32>>) -> SearchMode {
         text: text.into(),
         field: "v".into(),
         vector,
+        fields: None,
     }
 }
 
@@ -981,6 +986,7 @@ async fn every_hit_is_the_record_get_answers_in_its_declared_shape(
                 "lexical",
                 SearchMode::Lexical {
                     text: "quayside harbour".into(),
+                    fields: None,
                 },
             ),
             (

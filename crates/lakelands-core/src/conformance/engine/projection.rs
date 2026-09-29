@@ -615,8 +615,8 @@ fn a_put_before_a_later_state_ends_where_that_state_begins(
         );
     }
     let head = view(engine, None)?;
-    let five = head.lexical(&ty, "five", 10).must("searching")?;
-    let three = head.lexical(&ty, "three", 10).must("searching")?;
+    let five = head.lexical(&ty, "five", None, 10).must("searching")?;
+    let three = head.lexical(&ty, "three", None, 10).must("searching")?;
     ensure!(
         five.len() == 1 && three.is_empty(),
         "at the head, `five` answered {five:?} and `three` {three:?}; the state put at 3 is \
@@ -670,7 +670,7 @@ fn several_puts_of_one_thing_in_one_transaction_leave_what_they_leave_one_by_one
     let mut hits = BTreeMap::new();
     for word in ["one", "four", "ten", "six", "zero", "three", "five"] {
         let found: Vec<String> = head
-            .lexical(&ty, word, 10)
+            .lexical(&ty, word, None, 10)
             .must("searching")?
             .into_iter()
             .map(|(k, _)| k.to_string())

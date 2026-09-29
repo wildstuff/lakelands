@@ -765,7 +765,13 @@ impl<'a> Reader<'a> {
             }
             SearchMode::Lexical { .. } => None,
         };
-        rights::check_search(self.who, &decl, vector_field.as_ref())?;
+        let text_fields = match &s.mode {
+            SearchMode::Lexical { fields, .. } | SearchMode::Hybrid { fields, .. } => {
+                fields.as_deref()
+            }
+            SearchMode::Vector { .. } => None,
+        };
+        rights::check_search(self.who, &decl, text_fields, vector_field.as_ref())?;
         let filter = s
             .filter
             .as_ref()
@@ -781,7 +787,7 @@ impl<'a> Reader<'a> {
         let k = s.k.max(1) as usize;
         // One more than the page, to know whether a next page exists.
         let want = offset + k + 1;
-        let lexical = |text: &str, pull: u32| self.view.lexical(&s.ty, text, pull);
+        let lexical = |text: &str, pull: u32| self.view.lexical(&s.ty, text, text_fields, pull);
         let vector = |field: &FieldName, v: &[f32], pull: u32| -> Result<Vec<(RecordKey, f64)>> {
             match self.lake.engine.vectors() {
                 Some(index) => index.nearest(&s.ty, field.as_str(), v, pull),
@@ -795,7 +801,7 @@ impl<'a> Reader<'a> {
         let rank = |pull: u32| -> Result<(Vec<(RecordKey, f64)>, bool)> {
             let short = |l: &Vec<(RecordKey, f64)>| l.len() < pull as usize;
             Ok(match &s.mode {
-                SearchMode::Lexical { text }
+                SearchMode::Lexical { text, .. }
                 | SearchMode::Hybrid {
                     text, vector: None, ..
                 } => {
@@ -812,6 +818,7 @@ impl<'a> Reader<'a> {
                     text,
                     field,
                     vector: Some(v),
+                    ..
                 } => {
                     let (a, b) = (lexical(text, pull)?, vector(field, v, pull)?);
                     let done = short(&a) && short(&b);

@@ -22,7 +22,7 @@
 //!   principal; one field that fails refuses the whole write
 //!   (`docs/decisions/012-writes-touch-only-their-fields.md`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::ontology::{Authority, FieldDecl, TypeDecl};
 use lakelands_api::record::StoredRecord;
@@ -154,22 +154,55 @@ pub fn check_probe<'a>(
     Ok(())
 }
 
-/// Refuse a search the principal may not make: lexical search probes
+/// Refuse a search the principal may not make: a lexical search probes
 /// every searchable field of the type at once, so each must be readable;
 /// a vector search probes the vector field it names and, since a vector
 /// embedded from text encodes that text, every field it is embedded from.
+///
+/// A lexical or hybrid search that names `text_fields` probes those
+/// instead of every searchable field, in name order; the vector half of a
+/// hybrid search is not narrowed. A named field must be declared, readable
+/// and searchable, judged in that order: an unreadable field is refused as
+/// not granted before its searchability is looked at, so the refusal never
+/// tells a principal whether a field it may not read is searchable.
 pub fn check_search(
     who: &Principal,
     decl: &TypeDecl,
+    text_fields: Option<&[FieldName]>,
     vector_field: Option<&FieldName>,
 ) -> Result<(), Error> {
-    let searched = decl.fields.iter().filter(|f| f.searchable).map(|f| &f.name);
     let embedded_from = vector_field
         .and_then(|v| decl.fields.iter().find(|f| &f.name == v))
         .and_then(|f| f.embed.as_ref())
         .into_iter()
         .flat_map(|e| e.from.iter());
-    check_probe(who, decl, searched.chain(vector_field).chain(embedded_from))
+    let Some(named) = text_fields else {
+        let searched = decl.fields.iter().filter(|f| f.searchable).map(|f| &f.name);
+        return check_probe(who, decl, searched.chain(vector_field).chain(embedded_from));
+    };
+    if named.is_empty() {
+        return Err(Error::Refused {
+            field: None,
+            reason: Refusal::Invalid {
+                message: "`fields` names no field; leave it out to search every searchable \
+                          field"
+                    .into(),
+            },
+        });
+    }
+    let named: BTreeSet<&FieldName> = named.iter().collect();
+    for name in named {
+        check_probe(who, decl, [name])?;
+        if !decl.fields.iter().any(|f| &f.name == name && f.searchable) {
+            return Err(Error::Refused {
+                field: Some(name.clone()),
+                reason: Refusal::Invalid {
+                    message: format!("`{name}` of `{}` is not searchable", decl.name),
+                },
+            });
+        }
+    }
+    check_probe(who, decl, vector_field.into_iter().chain(embedded_from))
 }
 
 /// The door a write comes through.
@@ -404,15 +437,67 @@ mod tests {
         decl.fields[2].searchable = true; // iban, sensitive
         let reader = principal(Access::Read, &[("iban", Access::Masked)]);
         assert_eq!(
-            check_search(&reader, &decl, None),
+            check_search(&reader, &decl, None, None),
             Err(Error::Refused {
                 field: Some("iban".into()),
                 reason: Refusal::NotGranted
             })
         );
         let granted = principal(Access::Read, &[]);
-        assert!(check_search(&granted, &decl, None).is_ok());
-        assert!(check_search(&granted, &decl, Some(&"nope".into())).is_err());
+        assert!(check_search(&granted, &decl, None, None).is_ok());
+        assert!(check_search(&granted, &decl, None, Some(&"nope".into())).is_err());
+    }
+
+    #[test]
+    fn a_search_limited_to_named_fields_probes_those_and_judges_reading_first() {
+        let mut decl = invoice();
+        decl.fields[2].searchable = true; // iban, sensitive
+        decl.fields[3].searchable = true; // note
+        let reader = principal(Access::Read, &[("iban", Access::Masked)]);
+        let refused = |field: &str, invalid: bool| {
+            Err(Error::Refused {
+                field: Some(field.into()),
+                reason: if invalid {
+                    Refusal::Invalid {
+                        message: String::new(),
+                    }
+                } else {
+                    Refusal::NotGranted
+                },
+            })
+        };
+        let search = |decl: &TypeDecl, named: &[&str]| {
+            let named: Vec<FieldName> = named.iter().map(|&n| n.into()).collect();
+            check_search(&reader, decl, Some(&named), None).map_err(|e| match e {
+                Error::Refused {
+                    field,
+                    reason: Refusal::Invalid { .. },
+                } => Error::Refused {
+                    field,
+                    reason: Refusal::Invalid {
+                        message: String::new(),
+                    },
+                },
+                e => e,
+            })
+        };
+        assert!(search(&decl, &["note"]).is_ok(), "`iban` is not named");
+        assert_eq!(search(&decl, &["note", "iban"]), refused("iban", false));
+        assert_eq!(search(&decl, &["verdict"]), refused("verdict", true));
+        assert_eq!(search(&decl, &["nope"]), refused("nope", true));
+        assert!(matches!(
+            search(&decl, &[]),
+            Err(Error::Refused {
+                field: None,
+                reason: Refusal::Invalid { .. }
+            })
+        ));
+        decl.fields[2].searchable = false;
+        assert_eq!(
+            search(&decl, &["iban"]),
+            refused("iban", false),
+            "an unreadable field is not granted, whether it is searchable or not"
+        );
     }
 
     #[test]
@@ -428,7 +513,7 @@ mod tests {
         let vec = FieldName::from("vec");
         let reader = principal(Access::Read, &[("note", Access::Masked)]);
         assert_eq!(
-            check_search(&reader, &decl, Some(&vec)),
+            check_search(&reader, &decl, None, Some(&vec)),
             Err(Error::Refused {
                 field: Some("note".into()),
                 reason: Refusal::NotGranted
@@ -436,10 +521,10 @@ mod tests {
             "the vector is readable, but it encodes `note`"
         );
         assert!(
-            check_search(&reader, &decl, None).is_ok(),
+            check_search(&reader, &decl, None, None).is_ok(),
             "no field is searchable"
         );
-        assert!(check_search(&principal(Access::Read, &[]), &decl, Some(&vec)).is_ok());
+        assert!(check_search(&principal(Access::Read, &[]), &decl, None, Some(&vec)).is_ok());
     }
 
     #[test]

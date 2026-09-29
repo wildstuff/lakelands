@@ -343,6 +343,7 @@ impl Catalog for Doors {
                 text,
                 field,
                 vector: vector @ None,
+                ..
             },
             Some(embed),
         ) = (&mut search.mode, &self.lake.seams.embed)

@@ -534,7 +534,13 @@ impl ProjectionView for PgView<'_> {
         })
     }
 
-    fn lexical(&self, ty: &TypeName, text: &str, k: u32) -> Result<Vec<(RecordKey, f64)>> {
+    fn lexical(
+        &self,
+        ty: &TypeName,
+        text: &str,
+        fields: Option<&[FieldName]>,
+        k: u32,
+    ) -> Result<Vec<(RecordKey, f64)>> {
         self.read(Vec::new(), |r| {
             // The full-text rows describe the head; a view keeps the hits
             // live at its own position (`docs/seams.md`).
@@ -548,7 +554,10 @@ impl ProjectionView for PgView<'_> {
                 return Ok(Vec::new());
             }
             // The candidates are the records holding any query token: the
-            // set the shared scoring counts.
+            // set the shared scoring counts. The rows do not say which
+            // field a token came from: limited to named fields, these are
+            // a superset, and the shared scoring keeps the records whose
+            // named fields match before it cuts at `k`.
             let sql = format!(
                 "SELECT DISTINCT key FROM {} WHERE ty = $1 AND token = ANY($2::text[])",
                 r.names.t("full_text")
@@ -575,6 +584,7 @@ impl ProjectionView for PgView<'_> {
                 &head,
                 |key| visible.contains(key),
                 text,
+                fields,
                 k,
             ))
         })

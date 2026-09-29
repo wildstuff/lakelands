@@ -14,6 +14,16 @@ is embedded from, even when the principal may read the vector itself.
 A hybrid search that one of these refuses is refused whole, never
 answered from its other half. This tightened in 0.5.0 (lakelands#242).
 
+A lexical or hybrid search may name the searchable fields it matches in
+(`fields`). It then probes those fields instead of every searchable one,
+so a searchable field the principal may not read no longer refuses a
+search that does not name it. Only the text half narrows: the vector of
+a hybrid search still encodes every field it is embedded from, and is
+probed as above. A named field the principal may not read is refused as
+not granted before its searchability is judged, so the refusal never
+tells whether a field it may not read is searchable; a named field that
+is not declared or not searchable is invalid (lakelands#236).
+
 `describe` holds to the same line: a masked field is described by its
 shape only — its name, type, access, whether it is required and
 sensitive, its authority and what an input change does to it — never by

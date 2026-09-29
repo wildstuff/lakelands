@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::Result;
 use crate::event::{Digest, EventId, SegmentDigest};
 use crate::expr::Expr;
-use crate::id::{LakeId, Position, RecordKey, RelationName, TypeName};
+use crate::id::{FieldName, LakeId, Position, RecordKey, RelationName, TypeName};
 use crate::location::Location;
 use crate::query::{Edge, Walk};
 use crate::read::Order;
@@ -300,9 +300,15 @@ pub trait ProjectionView {
         walk: Walk,
     ) -> Result<Vec<Edge>>;
 
-    /// Full-text search over a type's searchable fields: keys and scores,
-    /// best first.
-    fn lexical(&self, ty: &TypeName, text: &str, k: u32) -> Result<Vec<(RecordKey, f64)>>;
+    /// Full-text search over a type's searchable fields, or those of them
+    /// `fields` names: keys and scores, best first.
+    fn lexical(
+        &self,
+        ty: &TypeName,
+        text: &str,
+        fields: Option<&[FieldName]>,
+        k: u32,
+    ) -> Result<Vec<(RecordKey, f64)>>;
 
     /// Proposals.
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>>;

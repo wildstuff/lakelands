@@ -2378,10 +2378,17 @@ impl Catalog for MockCatalog {
         let t = st
             .visible(who, &search.ty)
             .ok_or_else(|| no_type(&search.ty))?;
-        // A search probes every searchable field, the vector field it
-        // names and the fields that vector is embedded from; one the
-        // caller may not read refuses the search whole (024), in the
-        // store's order.
+        // A search probes every searchable field, or the ones it names,
+        // then the vector field it names and the fields that vector is
+        // embedded from; one the caller may not read refuses the search
+        // whole (024), in the store's order. A named field is judged
+        // readable before searchable.
+        let text_fields = match &search.mode {
+            SearchMode::Lexical { fields, .. } | SearchMode::Hybrid { fields, .. } => {
+                fields.as_deref()
+            }
+            SearchMode::Vector { .. } => None,
+        };
         let vector_field = match &search.mode {
             SearchMode::Vector { field, .. } | SearchMode::Hybrid { field, .. } => Some(field),
             SearchMode::Lexical { .. } => None,
@@ -2391,12 +2398,34 @@ impl Catalog for MockCatalog {
             .and_then(|f| f.embed.as_ref())
             .into_iter()
             .flat_map(|e| e.from.iter());
-        for name in t
-            .decl
-            .fields
+        let searched: Vec<&FieldName> = match text_fields {
+            None => t
+                .decl
+                .fields
+                .iter()
+                .filter(|f| f.searchable)
+                .map(|f| &f.name)
+                .collect(),
+            Some([]) => return Err(invalid("`fields` names no field")),
+            Some(named) => {
+                let named: BTreeSet<&FieldName> = named.iter().collect();
+                for name in &named {
+                    readable(&st, who, t, name)?;
+                    if !field(&t.decl, name).is_some_and(|f| f.searchable) {
+                        return Err(on(
+                            name,
+                            Refusal::Invalid {
+                                message: format!("`{name}` of `{}` is not searchable", t.decl.name),
+                            },
+                        ));
+                    }
+                }
+                named.into_iter().collect()
+            }
+        };
+        for name in searched
             .iter()
-            .filter(|f| f.searchable)
-            .map(|f| &f.name)
+            .copied()
             .chain(vector_field)
             .chain(embedded_from)
         {
@@ -2454,16 +2483,14 @@ impl Catalog for MockCatalog {
                 };
                 (s, by)
             }
-            SearchMode::Lexical { text } | SearchMode::Hybrid { text, .. } => {
+            SearchMode::Lexical { text, .. } | SearchMode::Hybrid { text, .. } => {
                 let words: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
-                let searchable: Vec<&FieldDecl> =
-                    t.decl.fields.iter().filter(|f| f.searchable).collect();
                 let s = rows
                     .into_iter()
                     .filter_map(|r| {
-                        let hay: String = searchable
+                        let hay: String = searched
                             .iter()
-                            .filter_map(|f| r.fields.get(&f.name)?.as_str())
+                            .filter_map(|f| r.fields.get(*f)?.as_str())
                             .collect::<Vec<_>>()
                             .join(" ")
                             .to_lowercase();
