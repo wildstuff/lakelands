@@ -68,3 +68,10 @@ expression parser and the canonical bytes beside it in `lakelands-api`:
 a host that keeps declarations in force computes the hash of its own
 declaration with the function the store uses, and the mock calls it too,
 so no second copy of the allowlist can drift from it.
+
+## Extended: a proposed shape
+
+A declaration or a migration that is proposed moves no schema hash: the
+hash a type answers changes at the acceptance, where the declaration is
+logged, and a rejected proposal leaves it as it was
+(`docs/decisions/013-verbs-run-by-declared-risk.md`, extended).

@@ -288,10 +288,10 @@ mod tests {
     fn a_newer_format_is_refused_by_name() {
         let (_, mut stored) = created();
         let mut v: serde_json::Value = serde_json::from_slice(&stored.bytes).unwrap();
-        v["v"] = json!(4);
+        v["v"] = json!(5);
         stored.bytes = canonical::to_vec(&v);
         let e = open(&stored).unwrap_err().to_string();
-        assert!(e.contains("format 4") && e.contains("format 3"), "{e}");
+        assert!(e.contains("format 5") && e.contains("format 4"), "{e}");
     }
 
     /// A version-2 event carrying what version 3 added is refused, naming
@@ -375,6 +375,39 @@ mod tests {
         let e = open(&stored).unwrap_err().to_string();
         assert!(e.contains("format 2 added"), "{e}");
         let (_, stored) = seal_at(2, &"finance".into(), Position(0), &Digest::zero(), 0, d);
+        assert!(open(&stored).is_ok());
+    }
+
+    /// A version-3 event proposing a declaration is refused, naming what
+    /// version 4 added; the same event written at 4 opens.
+    #[test]
+    fn a_version_3_event_proposing_a_declaration_is_refused() {
+        let d = Draft::system(
+            Timestamp(0),
+            EventBody::WriteProposed {
+                proposal: "p".into(),
+                write: lakelands_api::write::ProposedWrite::Declare {
+                    declarations: vec![
+                        serde_json::from_value(json!({"declare": "type", "name": "t"})).unwrap(),
+                    ],
+                },
+                why: "w".into(),
+            },
+        );
+        let (_, stored) = seal_at(
+            3,
+            &"finance".into(),
+            Position(1),
+            &Digest::zero(),
+            1,
+            d.clone(),
+        );
+        let e = open(&stored).unwrap_err().to_string();
+        assert!(
+            e.contains("proposes a declaration or a migration") && e.contains("format 4 added"),
+            "{e}"
+        );
+        let (_, stored) = seal_at(4, &"finance".into(), Position(1), &Digest::zero(), 1, d);
         assert!(open(&stored).is_ok());
     }
 

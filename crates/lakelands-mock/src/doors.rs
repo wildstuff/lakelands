@@ -1582,7 +1582,27 @@ fn plan_propose(
         } => {
             check_call(st, who, verb, key, payload)?;
         }
+        // A change of the ontology is checked as its door would check it;
+        // the proposer needs no `schema` grant.
+        ProposedWrite::Declare { declarations } => check_set(st, who, declarations)?,
+        ProposedWrite::Migrate { .. } => {}
     }
+    let write = match write {
+        ProposedWrite::Migrate { migration, .. } => {
+            let head = Position(batch.peek().0.saturating_sub(1));
+            let report = preflight(st, head, &migration)?;
+            if !report.lossless {
+                return Err(refused(Refusal::Migration {
+                    report: Box::new(report),
+                }));
+            }
+            ProposedWrite::Migrate {
+                migration,
+                report: Box::new(report),
+            }
+        }
+        other => other,
+    };
     let id = ProposalId(value::proposal_id(who, key.as_ref(), batch.peek()));
     let mut d = Draft::new(
         who,
@@ -1595,6 +1615,74 @@ fn plan_propose(
     );
     d.key = key;
     Ok((batch.push(d), id))
+}
+
+/// A set of declarations checked as `apply` checks it, whoever applies
+/// it: each against the lake with every other one of the set already in
+/// it, every problem collected into one refusal.
+fn check_set(st: &State, who: &Principal, declarations: &[Declaration]) -> Result<()> {
+    if declarations.is_empty() {
+        return Err(invalid(
+            "nothing to apply: the set holds no declaration".to_owned(),
+        ));
+    }
+    let ids: Vec<String> = declarations.iter().map(identity).collect();
+    let mut problems: Vec<(String, Error)> = Vec::new();
+    for (i, id) in ids.iter().enumerate() {
+        if ids[..i].contains(id) {
+            problems.push((
+                id.clone(),
+                invalid(format!("the set declares {id} more than once")),
+            ));
+        }
+    }
+    for (i, d) in declarations.iter().enumerate() {
+        let mut probe = st.clone();
+        for (j, other) in declarations.iter().enumerate() {
+            if ids[j] != ids[i] {
+                let (hash, version) = identity_version(&probe, other);
+                probe.declare(other, hash, version);
+            }
+        }
+        if let Err(e) = check_declaration(&probe, who, d) {
+            problems.push((ids[i].clone(), e));
+        }
+    }
+    match problems.len() {
+        0 => Ok(()),
+        1 => Err(problems.remove(0).1),
+        n => {
+            let all: Vec<String> = problems
+                .iter()
+                .map(|(id, e)| format!("{id}: {e}"))
+                .collect();
+            Err(invalid(format!(
+                "the set is refused whole, with {n} problems: {}",
+                all.join("; ")
+            )))
+        }
+    }
+}
+
+/// The drafts that declare a checked set, each with the link types it
+/// calls for.
+fn set_drafts(st: &State, who: &Principal, declarations: Vec<Declaration>) -> Vec<Draft> {
+    let mut out = Vec::new();
+    for declaration in declarations {
+        let (schema_hash, version) = identity_version(st, &declaration);
+        let links = link_drafts(st, who, &declaration);
+        out.push(Draft::new(
+            who,
+            Origin::System,
+            EventBody::Declared {
+                declaration,
+                schema_hash,
+                version,
+            },
+        ));
+        out.extend(links);
+    }
+    out
 }
 
 fn risk_word(r: Risk) -> &'static str {
@@ -2389,6 +2477,9 @@ impl Catalog for MockCatalog {
         let mut log = self.log();
         let (_, st) = self.state_at(&log, None)?;
         let p = decidable(&st, who, proposal)?;
+        if p.write.is_schema() && !who.grants.schema {
+            return Err(refused(Refusal::NotGranted));
+        }
         let proposer = log
             .proposers
             .get(proposal)
@@ -2415,9 +2506,9 @@ impl Catalog for MockCatalog {
                 key,
                 patch,
                 opts,
-            } => plan_upsert(&by, &mut batch, &ty, &key, patch, &opts)?,
+            } => Some(plan_upsert(&by, &mut batch, &ty, &key, patch, &opts)?),
             ProposedWrite::Retire { ty, key, opts } => {
-                plan_retire(&by, &mut batch, &ty, &key, &opts)?
+                Some(plan_retire(&by, &mut batch, &ty, &key, &opts)?)
             }
             ProposedWrite::Call {
                 verb,
@@ -2427,14 +2518,51 @@ impl Catalog for MockCatalog {
             } => {
                 let v = check_call(&st, &proposer, &verb, &key, &payload)?.clone();
                 check_version(&st, &v.on, &key, &opts)?;
-                plan_run(&by, &mut batch, &v, &key, payload, &opts)?
+                Some(plan_run(&by, &mut batch, &v, &key, payload, &opts)?)
+            }
+            // Checked again on the head; a refusal leaves the proposal
+            // pending, since nothing is committed.
+            ProposedWrite::Declare { declarations } => {
+                check_set(&st, &proposer, &declarations)?;
+                for mut d in set_drafts(&st, &proposer, declarations) {
+                    d.cause = Some(accepted);
+                    batch.push(d);
+                }
+                None
+            }
+            ProposedWrite::Migrate { migration, .. } => {
+                let head = Position(accepted.0.saturating_sub(1));
+                let report = preflight(&st, head, &migration)?;
+                if !report.lossless {
+                    return Err(refused(Refusal::Migration {
+                        report: Box::new(report),
+                    }));
+                }
+                let version = st
+                    .types
+                    .get(&migration.to.name)
+                    .map_or(1, |t| t.version + 1);
+                let mut d = Draft::new(
+                    &proposer,
+                    Origin::System,
+                    EventBody::Migrated {
+                        schema_hash: report.to_schema_hash.clone(),
+                        migration: *migration,
+                        version,
+                        report_id: report.report_id,
+                        rekeyed: Vec::new(),
+                    },
+                );
+                d.cause = Some(accepted);
+                batch.push(d);
+                None
             }
         };
         let position = Position(batch.peek().0 - 1);
         self.commit(&mut log, batch);
         Ok(Outcome::Applied {
             position,
-            version: Some(version),
+            version,
             output: None,
         })
     }
@@ -2480,9 +2608,17 @@ impl Catalog for MockCatalog {
             None => (filter.at.as_of, 0),
         };
         let (position, st) = self.state_at(&self.log(), pinned)?;
-        let type_of = |w: &ProposedWrite| match w {
-            ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => Some(ty.clone()),
-            ProposedWrite::Call { verb, .. } => st.verbs.get(verb).map(|v| v.on.clone()),
+        let touches = |w: &ProposedWrite, ty: &TypeName| match w {
+            ProposedWrite::Upsert { ty: t, .. } | ProposedWrite::Retire { ty: t, .. } => t == ty,
+            ProposedWrite::Call { verb, .. } => st.verbs.get(verb).is_some_and(|v| &v.on == ty),
+            ProposedWrite::Declare { declarations } => declarations.iter().any(|d| match d {
+                Declaration::Type(t) => &t.name == ty,
+                Declaration::Verb(v) => &v.on == ty,
+                Declaration::Trigger(t) => &t.on == ty,
+                Declaration::ObjectSet(s) => &s.of == ty,
+                Declaration::ValueType(_) | Declaration::Function(_) => false,
+            }),
+            ProposedWrite::Migrate { migration, .. } => &migration.to.name == ty,
         };
         // A reviewer sees every proposal; anyone else sees their own, so
         // that a proposer can follow what became of it.
@@ -2492,7 +2628,8 @@ impl Catalog for MockCatalog {
             .values()
             .filter(|p| who.grants.review || p.proposer == writer)
             .filter(|p| filter.state.is_none_or(|s| p.state == s))
-            .filter(|p| filter.ty.is_none() || type_of(&p.write) == filter.ty)
+            .filter(|p| filter.kind.is_none_or(|k| p.write.kind() == k))
+            .filter(|p| filter.ty.as_ref().is_none_or(|ty| touches(&p.write, ty)))
             .cloned()
             .collect();
         // Proposals are made in log order, so `proposed_at` and
@@ -2534,70 +2671,14 @@ impl Catalog for MockCatalog {
         if !who.grants.schema {
             return Err(refused(Refusal::NotGranted));
         }
-        if declarations.is_empty() {
-            return Err(invalid(
-                "nothing to apply: the set holds no declaration".to_owned(),
-            ));
-        }
         let mut log = self.log();
         let (_, st) = self.state_at(&log, None)?;
-        // The set is checked as one: each declaration against the lake
-        // with every other declaration of the set already in it, so a
-        // reference may point forward, and every problem is collected.
-        let ids: Vec<String> = declarations.iter().map(identity).collect();
-        let mut problems: Vec<(String, Error)> = Vec::new();
-        for (i, id) in ids.iter().enumerate() {
-            if ids[..i].contains(id) {
-                problems.push((
-                    id.clone(),
-                    invalid(format!("the set declares {id} more than once")),
-                ));
-            }
-        }
-        for (i, d) in declarations.iter().enumerate() {
-            let mut probe = st.clone();
-            for (j, other) in declarations.iter().enumerate() {
-                if ids[j] != ids[i] {
-                    let (hash, version) = identity_version(&probe, other);
-                    probe.declare(other, hash, version);
-                }
-            }
-            if let Err(e) = check_declaration(&probe, who, d) {
-                problems.push((ids[i].clone(), e));
-            }
-        }
-        match problems.len() {
-            0 => {}
-            1 => return Err(problems.remove(0).1),
-            n => {
-                let all: Vec<String> = problems
-                    .iter()
-                    .map(|(id, e)| format!("{id}: {e}"))
-                    .collect();
-                return Err(invalid(format!(
-                    "the set is refused whole, with {n} problems: {}",
-                    all.join("; ")
-                )));
-            }
-        }
+        check_set(&st, who, &declarations)?;
         // One append at consecutive positions; the answer names the last.
         let mut batch = Batch::at(&log);
         let mut position = batch.peek();
-        for declaration in declarations {
-            let (schema_hash, version) = identity_version(&st, &declaration);
-            let links = link_drafts(&st, who, &declaration);
-            position = batch.push(Draft::new(
-                who,
-                Origin::System,
-                EventBody::Declared {
-                    declaration,
-                    schema_hash,
-                    version,
-                },
-            ));
-            for d in links {
-                batch.push(d);
-            }
+        for d in set_drafts(&st, who, declarations) {
+            position = batch.push(d);
         }
         self.commit(&mut log, batch);
         Ok(Outcome::Applied {

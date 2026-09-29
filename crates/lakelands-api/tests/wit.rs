@@ -714,6 +714,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 members(&ProposalFilter {
                     state: Some(ProposalState::Pending),
                     ty: Some("invoice".into()),
+                    kind: Some(lakelands_api::write::ProposalKind::Declare),
                     limit: Some(1),
                     order_by: vec![order()],
                     cursor: Some(Cursor("c".into())),
@@ -1214,7 +1215,9 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
         match w {
             ProposedWrite::Upsert { .. }
             | ProposedWrite::Retire { .. }
-            | ProposedWrite::Call { .. } => {}
+            | ProposedWrite::Call { .. }
+            | ProposedWrite::Declare { .. }
+            | ProposedWrite::Migrate { .. } => {}
         }
     }
     let _ = writes;
@@ -1238,6 +1241,16 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     key: "k".into(),
                     payload: Default::default(),
                     opts: WriteOpts::default(),
+                },
+                ProposedWrite::Declare {
+                    declarations: vec![],
+                },
+                ProposedWrite::Migrate {
+                    migration: Box::new(lakelands_api::write::Migration {
+                        to: serde_json::from_value(json!({"name": "t"})).unwrap(),
+                        renames: vec![],
+                    }),
+                    report: Box::new(migration_report()),
                 },
             ],
             Some("write"),

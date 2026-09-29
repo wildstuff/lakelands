@@ -1227,6 +1227,7 @@ impl Call<'_> {
             ProposedWrite::Upsert { opts, .. }
             | ProposedWrite::Retire { opts, .. }
             | ProposedWrite::Call { opts, .. } => opts.idempotency_key.clone(),
+            ProposedWrite::Declare { .. } | ProposedWrite::Migrate { .. } => None,
         };
         if let Some(o) = self.replay(&key_opt, view.as_ref())? {
             return Ok(o);
@@ -1319,6 +1320,28 @@ impl Call<'_> {
                     opts,
                 }
             }
+            // A change of the ontology is checked now as its door would
+            // check it, and nothing changes until it is accepted; the
+            // proposer needs no `schema` grant (013, extended).
+            ProposedWrite::Declare { declarations } => {
+                self.check_bundle(&w.ontology, &declarations)?;
+                ProposedWrite::Declare { declarations }
+            }
+            ProposedWrite::Migrate { migration, .. } => {
+                let (report, _) = self.preflight_plan(&w, view.as_ref(), &migration)?;
+                if !report.lossless {
+                    return Err(Error::Refused {
+                        field: None,
+                        reason: Refusal::Migration {
+                            report: Box::new(report),
+                        },
+                    });
+                }
+                ProposedWrite::Migrate {
+                    migration,
+                    report: Box::new(report),
+                }
+            }
         };
         let position = position_after(&w, 0);
         let id = key_opt.as_ref().map_or_else(
@@ -1356,6 +1379,11 @@ impl Call<'_> {
                 field: None,
                 reason: Refusal::Decided,
             });
+        }
+        // A change of the ontology is the lake's `schema` grant's to make:
+        // the accepter holds it as well as `review` (013, extended).
+        if p.write.is_schema() && !self.who.grants.schema {
+            return Err(not_granted());
         }
         let now = self.lake.clock(&mut w);
         // The write was checked under the proposer's grants when it was
@@ -1507,6 +1535,38 @@ impl Call<'_> {
                 drafts.extend(own.into_iter().map(as_proposer));
                 drafts.extend(reactions);
             }
+            // Checked again on the head, which may have moved: a change it
+            // no longer admits refuses the accept, and the proposal stays
+            // pending. The proposer writes what it declares; the link types
+            // the store derives stay the system's.
+            ProposedWrite::Declare { declarations } => {
+                self.check_bundle(&w.ontology, declarations)?;
+                let own = self.bundle_drafts(&w, declarations.clone(), now)?;
+                drafts.extend(own.into_iter().map(|d| {
+                    if d.origin == Origin::Authored {
+                        as_proposer(d)
+                    } else {
+                        Draft {
+                            cause: d.cause.or(Some(accepted_at)),
+                            ..d
+                        }
+                    }
+                }));
+            }
+            ProposedWrite::Migrate { migration, .. } => {
+                let (report, rekeyed) = self.preflight_plan(&w, view.as_ref(), migration)?;
+                let own = self.migration_drafts(&w, (**migration).clone(), report, rekeyed, now)?;
+                drafts.extend(own.into_iter().map(|d| {
+                    if d.origin == Origin::Authored {
+                        as_proposer(d)
+                    } else {
+                        Draft {
+                            cause: d.cause.or(Some(accepted_at)),
+                            ..d
+                        }
+                    }
+                }));
+            }
         }
         drop(view);
         let events = self.lake.append(&mut w, drafts)?;
@@ -1653,10 +1713,30 @@ impl Call<'_> {
         if !self.who.grants.schema {
             return Err(not_granted());
         }
+        let mut w = self.lake.writer();
+        self.check_bundle(&w.ontology, &declarations)?;
+        let now = self.lake.clock(&mut w);
+        let drafts = self.bundle_drafts(&w, declarations, now)?;
+        let events = self.lake.append(&mut w, drafts)?;
+        Ok(Outcome::Applied {
+            position: events.last().expect("the set is not empty").position,
+            version: None,
+            output: None,
+        })
+    }
+
+    /// Check a set of declarations as `apply` checks it, against
+    /// `ontology`, whoever applies it: each against the ontology with
+    /// every other declaration of the set already in it, every problem
+    /// collected into one refusal.
+    fn check_bundle(
+        &self,
+        ontology: &crate::ontology::Ontology,
+        declarations: &[Declaration],
+    ) -> Result<()> {
         if declarations.is_empty() {
             return Err(invalid("nothing to apply: the set holds no declaration"));
         }
-        let mut w = self.lake.writer();
         let identities: Vec<String> = declarations
             .iter()
             .map(lakelands_core::engines::declaration_key)
@@ -1671,7 +1751,7 @@ impl Call<'_> {
             }
         }
         for (i, d) in declarations.iter().enumerate() {
-            let mut probe = w.ontology.clone();
+            let mut probe = ontology.clone();
             for (j, other) in declarations.iter().enumerate() {
                 if identities[j] != identities[i] {
                     probe.put(other.clone(), 0, None);
@@ -1684,21 +1764,30 @@ impl Call<'_> {
             }
         }
         match problems.len() {
-            0 => {}
-            1 => return Err(problems.remove(0).1),
+            0 => Ok(()),
+            1 => Err(problems.remove(0).1),
             _ => {
                 let all: Vec<String> = problems
                     .iter()
                     .map(|(id, e)| format!("{id}: {e}"))
                     .collect();
-                return Err(invalid(format!(
+                Err(invalid(format!(
                     "the set is refused whole, with {} problems: {}",
                     all.len(),
                     all.join("; ")
-                )));
+                )))
             }
         }
-        let now = self.lake.clock(&mut w);
+    }
+
+    /// The drafts that declare a checked set: each declaration at its next
+    /// version, with the link types its relations need.
+    fn bundle_drafts(
+        &self,
+        w: &Writer,
+        declarations: Vec<Declaration>,
+        now: Timestamp,
+    ) -> Result<Vec<Draft>> {
         let mut drafts = Vec::with_capacity(declarations.len());
         for declaration in declarations {
             let schema_hash = match &declaration {
@@ -1723,12 +1812,7 @@ impl Call<'_> {
             ));
             drafts.extend(links);
         }
-        let events = self.lake.append(&mut w, drafts)?;
-        Ok(Outcome::Applied {
-            position: events.last().expect("the set is not empty").position,
-            version: None,
-            output: None,
-        })
+        Ok(drafts)
     }
 
     /// `add_field`.
@@ -1766,6 +1850,9 @@ impl Call<'_> {
         view: &dyn ProjectionView,
         m: &Migration,
     ) -> Result<MigrationReport> {
+        if !self.who.grants.schema {
+            return Err(not_granted());
+        }
         Ok(self.preflight_plan(w, view, m)?.0)
     }
 
@@ -1776,9 +1863,6 @@ impl Call<'_> {
         view: &dyn ProjectionView,
         m: &Migration,
     ) -> Result<(MigrationReport, Vec<lakelands_api::write::Rekey>)> {
-        if !self.who.grants.schema {
-            return Err(not_granted());
-        }
         let before = w.ontology.ty(&m.to.name)?.clone();
         if !before.key.is_empty() && m.to.key.is_empty() {
             return Err(invalid(format!(
@@ -1976,6 +2060,9 @@ impl Call<'_> {
 
     /// `migrate_apply`.
     pub fn migrate_apply(&self, m: Migration, report_id: &str) -> Result<Outcome> {
+        if !self.who.grants.schema {
+            return Err(not_granted());
+        }
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
         let (report, rekeyed) = self.preflight_plan(&w, view.as_ref(), &m)?;
@@ -1984,6 +2071,28 @@ impl Call<'_> {
                 "the lake moved since that preflight report; run the preflight again",
             ));
         }
+        let now = self.lake.clock(&mut w);
+        let drafts = self.migration_drafts(&w, m, report, rekeyed, now)?;
+        drop(view);
+        let events = self.lake.append(&mut w, drafts)?;
+        Ok(Outcome::Applied {
+            position: events[0].position,
+            version: None,
+            output: None,
+        })
+    }
+
+    /// The drafts that apply a migration its preflight answered `report`
+    /// for, refused with the report when it is not lossless: the
+    /// `migrated` event first, then the link types it changes or adds.
+    fn migration_drafts(
+        &self,
+        w: &Writer,
+        m: Migration,
+        report: MigrationReport,
+        rekeyed: Vec<lakelands_api::write::Rekey>,
+        now: Timestamp,
+    ) -> Result<Vec<Draft>> {
         if !report.lossless {
             return Err(Error::Refused {
                 field: None,
@@ -1993,9 +2102,9 @@ impl Call<'_> {
             });
         }
         self.check_embeddings(&m.to)?;
+        let report_id = report.report_id;
         let schema_hash = shape::schema_hash(&m.to).map_err(|e| invalid(e.to_string()))?;
         let version = w.ontology.next_version(&Declaration::Type(m.to.clone()));
-        let now = self.lake.clock(&mut w);
         let mut drafts = Vec::new();
         for (_, new) in changed_link_types(&w.ontology, &m.to) {
             let hash = shape::schema_hash(&new).map_err(|e| invalid(e.to_string()))?;
@@ -2009,7 +2118,7 @@ impl Call<'_> {
                     },
                     schema_hash: hash,
                     version,
-                    report_id: report_id.to_owned(),
+                    report_id: report_id.clone(),
                     rekeyed: Vec::new(),
                 },
             ));
@@ -2029,18 +2138,12 @@ impl Call<'_> {
                 migration: m,
                 schema_hash,
                 version,
-                report_id: report_id.to_owned(),
+                report_id,
                 rekeyed,
             },
         );
         drafts.insert(0, d);
-        drop(view);
-        let events = self.lake.append(&mut w, drafts)?;
-        Ok(Outcome::Applied {
-            position: events[0].position,
-            version: None,
-            output: None,
-        })
+        Ok(drafts)
     }
 }
 

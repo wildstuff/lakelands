@@ -80,3 +80,27 @@ A principal with the review grant lists every proposal and may accept
 or reject it. Any other principal lists only the proposals it made
 itself, so a proposer can follow what became of its write, and decides
 none.
+
+## Extended: a declaration is proposed like a write
+
+A set of declarations, or a type's migration, can be proposed as a
+write is (lakelands#199). The proposal is checked when it is made as its
+door would check it: the set against the ontology at the head as `apply`
+checks it, the migration by its preflight, and a migration that would
+lose information is refused with its report. A proposed migration keeps
+that report, so a reviewer reads what it would move and what it would
+drop. Nothing about the ontology changes until the proposal is accepted,
+and a proposer needs no `schema` grant: proposing is how a principal
+without it asks.
+
+Accepting one needs `schema` as well as `review`. For a record write,
+the proposer's own grants were the check, and a reviewer only decides
+whether it happens. A change of the ontology is one the proposer usually
+could not make, so the lake's grant for it decides: otherwise any
+proposer and any reviewer together could change the ontology though
+neither holds that grant. The accept checks the set again against the
+head and runs the migration's preflight again, since the lake may have
+moved. A change the head no longer admits refuses the accept, naming
+why, and the proposal stays pending. What the accept declares is logged
+in its append as the proposer's write, caused by the acceptance, and
+takes the next versions and schema hashes there, not at the proposal.

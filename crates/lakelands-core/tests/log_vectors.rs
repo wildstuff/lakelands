@@ -305,6 +305,60 @@ fn the_version_3_events_recompute_and_a_version_2_upstream_is_refused() {
     assert!(why.contains("`record_retired`"), "{why}");
 }
 
+/// Format version 4's addition (`docs/log-format.md` §6): a proposed
+/// declaration and a proposed migration after `v3.json`'s position 10.
+/// Each line is canonical, reads into the contract's event and back byte
+/// for byte, hashes to its hash, follows the one before it and needs
+/// version 4; the negative line, the declaration proposed as version 3,
+/// is refused.
+#[test]
+fn the_version_4_proposals_recompute_and_a_version_3_one_is_refused() {
+    let v4 = read_json("v4.json");
+    let v3 = read_json("v3.json");
+    let mut prev = v3["hashes"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for (line, want) in v4["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(v4["hashes"].as_array().unwrap())
+    {
+        let line = line.as_str().unwrap();
+        let value: Value = serde_json::from_str(line).unwrap();
+        assert_eq!(
+            canonical::to_vec(&value),
+            line.as_bytes(),
+            "the line is canonical"
+        );
+        let event: Event = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(
+            canonical::of(&event),
+            line.as_bytes(),
+            "the contract writes it as the line"
+        );
+        let mut body = value;
+        body.as_object_mut().unwrap().remove("hash");
+        assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
+        assert_eq!(event.hash.0, want.as_str().unwrap());
+        assert_eq!(event.prev.0, prev, "it follows the event before it");
+        assert_eq!(event.v, 4);
+        assert_eq!(lakelands_core::versions::needed(&event.body, false), 4);
+        prev = event.hash.0.clone();
+    }
+    let negative: Event = serde_json::from_str(v4["negative"].as_str().unwrap()).unwrap();
+    let why = lakelands_core::versions::below(&negative).expect("refused");
+    assert!(
+        why.contains("proposes a declaration or a migration") && why.contains("format 4 added"),
+        "{why}"
+    );
+}
+
 /// The negative vector `negative/known-at-goes-back`: the first segment
 /// of the vectors with the last event's `known_at` set before the one
 /// before it, its hash made right. `export::verify` refuses it at that

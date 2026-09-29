@@ -77,8 +77,8 @@ key may hold any character.
 | `POST …/search` | search | body: the search tool's arguments |
 | `GET …/describe` | describe the lake | query: `as_of`, `valid_at` |
 | `GET …/describe/<type>` | describe one type | query: `as_of`, `valid_at` |
-| `GET …/proposals` | proposals | query: `state`, `type`, `limit`, `order_by`, `cursor`, `as_of`, `valid_at` |
-| `POST …/proposals` | propose | body: `write`, `why` |
+| `GET …/proposals` | proposals | query: `state`, `type`, `kind`, `limit`, `order_by`, `cursor`, `as_of`, `valid_at` |
+| `POST …/proposals` | propose | body: `write` (`upsert`, `retire`, `call`, `declare` with `declarations`, or `migrate` with `migration`), `why` |
 | `POST …/proposals/<id>/accept` | accept | — |
 | `POST …/proposals/<id>/reject` | reject | body: `reason` (optional) |
 | `POST …/schema/declare_type` | declare a type | body: `type` |

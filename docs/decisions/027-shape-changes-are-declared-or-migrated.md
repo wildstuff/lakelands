@@ -115,3 +115,11 @@ engine converts the same values the same way.
   applied.
 - It does not convert anything the table does not list. A value that
   would not convert makes the migration not lossless, and it is refused.
+
+## Extended: a shape change may be proposed
+
+A declaration or a migration may also be proposed, and it reaches the
+ontology only through its acceptance, under the same rule: a change that
+reshapes stored records is a migration there too, preflighted when it is
+proposed and again when it is accepted
+(`docs/decisions/013-verbs-run-by-declared-risk.md`, extended).

@@ -956,15 +956,25 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
     }
 
     if lake.types.iter().any(|t| t.may.upsert || t.may.retire) || !lake.verbs.is_empty() {
+        // Beside the record writes it may make, a writer may propose
+        // declarations and migrations, which a reviewer holding the
+        // `schema` grant accepts.
+        let kinds = ["upsert", "retire", "call", "declare", "migrate"];
         out.push(ToolSpec {
             name: PROPOSE.into(),
-            description: "Record a write as a proposal for review instead of applying it.".into(),
+            description: "Record a write as a proposal for review instead of applying it: a \
+                record write, a verb call, declarations (as apply takes them) or a migration \
+                (as migrate takes it); a declaration or migration is accepted by a reviewer \
+                holding the schema grant."
+                .into(),
             input_schema: obj(
                 props([
                     (
                         "write",
                         json!({"type": "object", "properties": {
-                        "write": {"enum": ["upsert", "retire", "call"]}}, "required": ["write"]}),
+                        "write": {"enum": kinds},
+                        "declarations": {"type": "array", "items": {"type": "object"}},
+                        "migration": {"type": "object"}}, "required": ["write"]}),
                     ),
                     ("why", json!({"type": "string"})),
                 ]),
@@ -982,6 +992,10 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                 json!({"enum": ["pending", "accepted", "rejected"]}),
             ),
             ("type", names(|_| true)),
+            (
+                "kind",
+                json!({"enum": ["upsert", "retire", "call", "declare", "migrate"]}),
+            ),
             (
                 "order_by",
                 order_by_schema(one_of(

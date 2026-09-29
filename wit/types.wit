@@ -506,11 +506,26 @@ interface types {
         opts: write-opts,
     }
 
+    /// Declarations proposed together, as `apply` would apply them.
+    record declare-write {
+        declarations: list<declaration>,
+    }
+
+    /// A migration proposed, with the report its preflight answered then.
+    record migrate-write {
+        migration: migration,
+        report: migration-report,
+    }
+
     variant proposed-write {
         upsert(upsert-write),
         retire(retire-write),
         call(call-write),
+        declare(declare-write),
+        migrate(migrate-write),
     }
+
+    enum proposal-kind { upsert, retire, call, declare, migrate }
 
     enum proposal-state { pending, accepted, rejected }
 
@@ -529,6 +544,7 @@ interface types {
     record proposal-filter {
         state: option<proposal-state>,
         %type: option<type-name>,
+        kind: option<proposal-kind>,
         limit: option<u32>,
         order-by: list<order>,
         cursor: option<cursor>,
