@@ -4,7 +4,8 @@
 //! configuration and one location per lake. `apply`, `ingest`, `feed`,
 //! `age`, `purge`, `rebuild`, `compact`, `export` and `serve` open a lake at its location and call the
 //! library in-process: there is no command enum and no layer between the
-//! command and the catalog.
+//! command and the catalog. `import` makes a lake from an export, through
+//! `lakelands_store::import` over the same engines.
 //!
 //! Opening a lake is one function, [`open_store`], and [`run`] takes it
 //! as a parameter so that tests can pass another. `open_store` opens a
@@ -72,6 +73,20 @@ fn memory() -> lakelands_engine_mem::MemoryOpener {
         .clone()
 }
 
+/// The engines this binary carries: SQLite, in-memory and, with the `pg`
+/// feature, PostgreSQL. Opening and importing a lake both take them from
+/// here, so the two cannot differ.
+fn engines() -> Vec<Arc<dyn lakelands_api::engine::EngineOpener>> {
+    #[allow(unused_mut)]
+    let mut engines: Vec<Arc<dyn lakelands_api::engine::EngineOpener>> = vec![
+        Arc::new(lakelands_engine_sqlite::SqliteOpener),
+        Arc::new(memory()),
+    ];
+    #[cfg(feature = "pg")]
+    engines.push(Arc::new(lakelands_engine_pg::PgOpener));
+    engines
+}
+
 /// The one place the CLI opens a lake: through the store, with the SQLite
 /// and in-memory engines, and the PostgreSQL one with the `pg` feature. To write, it creates the lake at its location
 /// the first time and takes the lease (the log records each writer's
@@ -88,14 +103,10 @@ pub fn open_store(location: Location, mode: OpenMode, host: Seams) -> Opening {
         if let Some(store) = lakes.get(&key) {
             return Ok(store.clone());
         }
-        #[allow(unused_mut)]
-        let mut engines: Vec<Arc<dyn lakelands_api::engine::EngineOpener>> = vec![
-            Arc::new(lakelands_engine_sqlite::SqliteOpener),
-            Arc::new(memory()),
-        ];
-        #[cfg(feature = "pg")]
-        engines.push(Arc::new(lakelands_engine_pg::PgOpener));
-        let seams = Seams { engines, ..host };
+        let seams = Seams {
+            engines: engines(),
+            ..host
+        };
         let mode = match mode {
             OpenMode::Read => OpenMode::Read,
             OpenMode::Write | OpenMode::Create => OpenMode::Create,
@@ -241,6 +252,17 @@ fn command() -> Command {
                 ),
         )
         .subcommand(
+            Command::new("import")
+                .about("Make the export's lake from its files, in the root's empty lake of that name")
+                .arg(
+                    Arg::new("dir")
+                        .value_name("DIR")
+                        .required(true)
+                        .value_parser(clap::builder::NonEmptyStringValueParser::new())
+                        .help("A directory `lakelands export` wrote"),
+                ),
+        )
+        .subcommand(
             Command::new("serve")
                 .about("Serve the lake to agents")
                 .arg(Arg::new("mcp").long("mcp").action(ArgAction::SetTrue).help("Serve over the Model Context Protocol")),
@@ -320,6 +342,20 @@ async fn dispatch(
                     Path::new("lakes").join(format!("{id}.json")).display()
                 ),
             );
+        }
+        "import" => {
+            let root = root::Root::open(&root_dir)?;
+            let dir = PathBuf::from(text(sub, "dir").unwrap_or_default());
+            // The export's lake, which is inside every hash and cannot be
+            // renamed; `--lake` names it too, and the store refuses a
+            // mismatch naming both.
+            let lake = text(sub, "lake").or_else(|| commands::exported_lake(&dir));
+            let location = root.location(lake.as_deref())?;
+            let seams = Seams {
+                engines: engines(),
+                ..root.seams()
+            };
+            return commands::import(out, location, seams, &dir).await;
         }
         "serve" if !sub.get_flag("mcp") => {
             return Err(Failure::new(

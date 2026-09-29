@@ -210,7 +210,25 @@ as the same lake on any engine
 (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`):
 every event unchanged at its position, the projection folded, nothing
 appended. A SQLite lake that needs PostgreSQL's multi-row commits or its
-vector index moves so. The import verifies the whole export before it
+vector index moves so. From the CLI:
+
+```sh
+lakelands --root old export --to /tmp/finance
+lakelands init new
+# write new/lakes/finance.json: the PostgreSQL location shown above
+lakelands --root new import /tmp/finance
+```
+
+`lakelands import <dir>` fills the root's lake of the export's own name,
+read from the export's first event: a lake's name is inside every hash,
+so an import cannot rename it, and `--lake`, when given, must name the
+same lake. The lake's location must exist and the lake must hold
+nothing: `lakelands lake new <id>` writes a SQLite location and opens
+nothing, and a PostgreSQL location is written by hand. A lake kept in
+memory is refused, since it would end with the command's process. The
+command prints the lake, how many events and files it imported, the
+head and the head's hash, which is the last line of the old lake's
+`lakelands feed`; a failure exits 1 with the store's reason. The import verifies the whole export before it
 writes. An import that fails after it began writing names the position
 it reached and the file; the target then holds a true prefix of the
 export, which is not the lake that was exported, and it refuses another
