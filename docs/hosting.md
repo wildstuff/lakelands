@@ -110,7 +110,12 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   §`ChangeFeed`). The `mirror` section names connections that copy types
   of one lake of the root into another; the process that writes the
   target lake follows the source's feed and ingests what its principal
-  may read, one source per type (`docs/seams.md`, the mirror). An agent on MCP is told of changes without polling:
+  may read, one source per type, each field carrying the source lake and
+  position it reflects (`upstream`). It keeps each connection's
+  position in the target's `sys.mirror` records, which its principal
+  needs the write grant on; `find sys.mirror` shows where every
+  connection stands and why a type stopped (`docs/seams.md`, the
+  mirror). An agent on MCP is told of changes without polling:
   every session receives `notifications/tools/list_changed` when the
   lake's declarations change. After the `subscribe` tool, it also
   receives `notifications/lakelands/changed` for each change of a record

@@ -154,6 +154,11 @@ impl Root {
                 })
                 .unwrap_or_default(),
             embed: self.embed.clone(),
+            // `sys.mirror`, for the lakes a mirror writes into.
+            vocabulary: self.config.mirror.as_ref().map(|m| {
+                Arc::new(crate::mirror::MirrorVocabulary::of(m))
+                    as Arc<dyn lakelands_api::seam::SystemVocabulary>
+            }),
             ..Seams::default()
         }
     }
@@ -330,7 +335,25 @@ impl Root {
                     ));
                 }
             }
-            if !self.config.principals.iter().any(|p| p.name == c.principal) {
+            let entry = self
+                .config
+                .principals
+                .iter()
+                .find(|p| p.name == c.principal);
+            if let Some(entry) = entry {
+                crate::mirror::may_keep_position(&entry.grants).map_err(|why| {
+                    Failure::new(
+                        format!(
+                            "{}: the connection `{}` reads as `{}`: {why}",
+                            show(&self.dir.join(CONFIG)),
+                            c.name,
+                            c.principal
+                        ),
+                        "grant the principal write on `sys.mirror` in the configuration",
+                    )
+                })?;
+            }
+            if entry.is_none() {
                 return Err(Failure::new(
                     format!(
                         "{}: the connection `{}` reads as `{}`, which is not one of the root's \

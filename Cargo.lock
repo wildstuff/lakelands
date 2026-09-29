@@ -963,6 +963,7 @@ dependencies = [
  "lakelands-mock",
  "lakelands-server",
  "lakelands-store",
+ "postgres",
  "serde",
  "serde_json",
  "tokio",
