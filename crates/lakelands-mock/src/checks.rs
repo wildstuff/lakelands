@@ -120,6 +120,7 @@ macro_rules! door_checks {
             a_sort_index_setting_names_declared_scalar_fields_and_describe_shows_them,
             a_vector_index_setting_names_vector_fields_and_search_says_it_ranked_by_the_index,
             an_ingested_upstream_is_answered_per_field,
+            a_schema_proposal_is_refused_by_kind_at_propose_and_at_accept,
             an_order_by_latest_takes_no_field_and_no_view,
             a_trigger_watches_a_link_type_and_not_a_reference_relations,
             degree_and_components_answer_the_graph_in_one_order);
@@ -1502,6 +1503,116 @@ pub async fn an_ingested_upstream_is_answered_per_field(store: Arc<dyn LakeStore
         Some(from),
         "`amount` names the lake and position it was read from"
     );
+}
+
+/// A declaration or a migration can be proposed by a principal without
+/// the `schema` grant; a lossy migration is refused at the proposal with
+/// its report, a reviewer without `schema` is refused at the accept, and
+/// proposals list by kind (`docs/decisions/013-verbs-run-by-declared-risk.md`,
+/// extended).
+pub async fn a_schema_proposal_is_refused_by_kind_at_propose_and_at_accept(
+    store: Arc<dyn LakeStore>,
+) {
+    use lakelands_api::write::{Migration, ProposalFilter, ProposalKind, ProposedWrite};
+    let f = setup(store).await;
+    let memo: Declaration = serde_json::from_value(json!({
+        "declare": "type", "name": "memo",
+        "fields": [{"name": "pages", "type": {"kind": "text"}}]
+    }))
+    .unwrap();
+    f.catalog
+        .declare(&f.cast.owner, memo.clone())
+        .await
+        .expect("the owner declares `memo`");
+    f.catalog
+        .upsert(
+            &f.cast.owner,
+            &ty("memo"),
+            &key("m1"),
+            patch(&[("pages", json!("many"))]),
+            WriteOpts::default(),
+        )
+        .await
+        .expect("the owner writes `m1`");
+    let Declaration::Type(mut to) = memo else {
+        unreachable!()
+    };
+    to.fields[0].ty = FieldType::kind(StorageKind::Number);
+    let e = f
+        .catalog
+        .propose(
+            &f.cast.clerk,
+            ProposedWrite::Migrate {
+                migration: Box::new(Migration {
+                    to,
+                    renames: vec![],
+                }),
+                report: Default::default(),
+            },
+            "pages are numbers".into(),
+        )
+        .await
+        .expect_err("a lossy migration is refused at the proposal");
+    assert!(
+        matches!(refusal(&e).1, Refusal::Migration { report } if !report.lossless),
+        "refused with its report, not lossless: {e:?}"
+    );
+    let ticket: Declaration = serde_json::from_value(json!({
+        "declare": "type", "name": "ticket",
+        "fields": [{"name": "title", "type": {"kind": "text"}}]
+    }))
+    .unwrap();
+    let proposed = f
+        .catalog
+        .propose(
+            &f.cast.clerk,
+            ProposedWrite::Declare {
+                declarations: vec![ticket],
+            },
+            "tickets".into(),
+        )
+        .await
+        .expect("the clerk, without the schema grant, proposes a type");
+    let Outcome::Proposed { proposal, .. } = proposed else {
+        panic!("a proposal answers proposed: {proposed:?}")
+    };
+    let listed = f
+        .catalog
+        .proposals(
+            &f.cast.owner,
+            ProposalFilter {
+                kind: Some(ProposalKind::Declare),
+                ..ProposalFilter::default()
+            },
+        )
+        .await
+        .expect("the owner lists proposals")
+        .data;
+    assert_eq!(
+        listed.iter().map(|p| &p.id).collect::<Vec<_>>(),
+        [&proposal],
+        "listing by kind `declare` answers the one proposal"
+    );
+    let e = f
+        .catalog
+        .accept(&f.cast.reviewer, &proposal)
+        .await
+        .expect_err("a reviewer without the schema grant may not accept a declaration");
+    assert_eq!(refusal(&e).1, &Refusal::NotGranted);
+    f.catalog
+        .accept(&f.cast.owner, &proposal)
+        .await
+        .expect("the owner, holding review and schema, accepts");
+    f.catalog
+        .upsert(
+            &f.cast.owner,
+            &ty("ticket"),
+            &key("t1"),
+            patch(&[("title", json!("first"))]),
+            WriteOpts::default(),
+        )
+        .await
+        .expect("the accepted type takes records");
 }
 
 /// A cursor is bound to the position of its first page: the page set is

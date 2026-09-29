@@ -44,6 +44,7 @@ mod rekey;
 mod restriction;
 mod retire;
 mod schema;
+mod schema_proposals;
 mod search;
 mod settings;
 mod streaming;
@@ -149,6 +150,10 @@ pub const ALL: &[Check] = &[
     proposals::ACCEPT_APPLIES,
     proposals::REJECT_AND_DECIDED,
     proposals::WHO_DECIDES,
+    schema_proposals::DECLARED_ON_ACCEPT,
+    schema_proposals::SCHEMA_TO_ACCEPT,
+    schema_proposals::MIGRATION_PREFLIGHTED_AGAIN,
+    schema_proposals::REJECTED_UNTOUCHED,
     proposals::VERB_PROCEDURE_VERSION,
     cursors::CURSOR_STAYS,
     feed::FEED_IS_THE_LOG,

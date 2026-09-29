@@ -882,9 +882,34 @@ impl TopK {
     }
 }
 
-/// Proposals as a view answers them: those in `filter`'s state and of its
-/// type (`verb_on` says which type a verb acts on, as declared at the
-/// view's position), newest first, ties by id, at most `filter.limit`.
+/// The types a proposed write touches: a record write's type, the type a
+/// called verb acts on, every type a declaration declares or acts on, and a
+/// migration's type.
+fn touched(
+    write: &ProposedWrite,
+    verb_on: &impl Fn(&VerbName) -> Option<TypeName>,
+) -> Vec<TypeName> {
+    match write {
+        ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => vec![ty.clone()],
+        ProposedWrite::Call { verb, .. } => verb_on(verb).into_iter().collect(),
+        ProposedWrite::Declare { declarations } => declarations
+            .iter()
+            .filter_map(|d| match d {
+                Declaration::Type(t) => Some(t.name.clone()),
+                Declaration::Verb(v) => Some(v.on.clone()),
+                Declaration::Trigger(t) => Some(t.on.clone()),
+                Declaration::ObjectSet(s) => Some(s.of.clone()),
+                Declaration::ValueType(_) | Declaration::Function(_) => None,
+            })
+            .collect(),
+        ProposedWrite::Migrate { migration, .. } => vec![migration.to.name.clone()],
+    }
+}
+
+/// Proposals as a view answers them: those in `filter`'s state, of its
+/// kind and touching its type (`verb_on` says which type a verb acts on,
+/// as declared at the view's position), newest first, ties by id, at most
+/// `filter.limit`.
 pub fn proposals<'a>(
     all: impl IntoIterator<Item = &'a Proposal>,
     filter: &ProposalFilter,
@@ -893,16 +918,12 @@ pub fn proposals<'a>(
     let mut found: Vec<&Proposal> = all
         .into_iter()
         .filter(|p| filter.state.is_none_or(|s| p.state == s))
+        .filter(|p| filter.kind.is_none_or(|k| p.write.kind() == k))
         .filter(|p| {
-            filter.ty.as_ref().is_none_or(|ty| {
-                let touched = match &p.write {
-                    ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => {
-                        Some(ty.clone())
-                    }
-                    ProposedWrite::Call { verb, .. } => verb_on(verb),
-                };
-                touched.as_ref() == Some(ty)
-            })
+            filter
+                .ty
+                .as_ref()
+                .is_none_or(|ty| touched(&p.write, &verb_on).contains(ty))
         })
         .collect();
     found.sort_by(|a, b| b.position.cmp(&a.position).then_with(|| a.id.cmp(&b.id)));

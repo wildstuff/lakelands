@@ -202,9 +202,10 @@ const FIND: [(&str, Kind); 9] = [
     AT[1],
 ];
 const GET: [(&str, Kind); 3] = [("with_meta", Kind::Flag), AT[0], AT[1]];
-const PROPOSALS: [(&str, Kind); 7] = [
+const PROPOSALS: [(&str, Kind); 8] = [
     ("state", Kind::Text),
     ("type", Kind::Text),
+    ("kind", Kind::Text),
     ("limit", Kind::Int),
     ("order_by", Kind::Order),
     ("cursor", Kind::Text),

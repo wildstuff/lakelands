@@ -7,6 +7,8 @@
 //! - **3**: an event carrying `upstream`, the lake and position values
 //!   were read from; and a `declared` or `migrated` event whose
 //!   declaration calls `date_bucket` in any expression it keeps.
+//! - **4**: a `write_proposed` event whose write is a declaration or a
+//!   migration (`declare`, `migrate`).
 //!
 //! The store appends each event at the greatest of the lake's version and
 //! the one [`needed`] answers, and refuses, when it reads the log, an
@@ -20,6 +22,11 @@ use lakelands_api::write::Declaration;
 /// The lowest format version that can carry `body`, with `upstream` or
 /// without it.
 pub fn needed(body: &EventBody, upstream: bool) -> u32 {
+    if let EventBody::WriteProposed { write, .. } = body
+        && write.is_schema()
+    {
+        return 4;
+    }
     let declares_bucket = match body {
         EventBody::Declared { declaration, .. } => calls_date_bucket(declaration),
         EventBody::Migrated { migration, .. } => {
@@ -43,7 +50,9 @@ pub fn below(event: &Event) -> Option<String> {
     if event.v >= need {
         return None;
     }
-    let what = if event.upstream.is_some() {
+    let what = if need == 4 {
+        "proposes a declaration or a migration".to_owned()
+    } else if event.upstream.is_some() {
         "carries `upstream`".to_owned()
     } else if need == 3 {
         "declares a call of `date_bucket`".to_owned()

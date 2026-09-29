@@ -12,8 +12,8 @@ export or a SQLite lake directory holds it instead, reading only
 `<dir>/log/` (log-format §4.2): canonical lines each ending in a line
 feed, positions consecutive from 0 and naming their files in 20 digits,
 the hash chain from 64 zeros, every checkpoint against the position,
-the hash and the files before it, format versions from 1 to 3 that
-never go down, `upstream` only from version 3 on and only on a
+the hash and the files before it, format versions from 1 to 4 that
+never go down, a proposed declaration or migration only from version 4 on, `upstream` only from version 3 on and only on a
 `record_ingested` event, and every `known_at` in its one form and never before
 the `known_at` before it (log-format §1.3). It prints one line
 per file and the last position and hash, or the position where the
@@ -125,7 +125,7 @@ def check(ok, what):
         sys.exit(1)
 
 
-FIRST_FORMAT, NEWEST_FORMAT = 1, 3
+FIRST_FORMAT, NEWEST_FORMAT = 1, 4
 ONE_FORM = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z")
 
 
@@ -160,6 +160,9 @@ def verify_dir(root):
             need(v >= version, f"format {v} is not below the {version} before it")
             version = v
             need("upstream" not in event or v >= 3, f"a format {v} event carries `upstream`, which format 3 added")
+            proposed = event["body"].get("write", {}).get("write") if event["body"].get("kind") == "write_proposed" else None
+            need(proposed not in ("declare", "migrate") or v >= 4,
+                 f"a format {v} event proposes a declaration or a migration, which format 4 added")
             need("upstream" not in event or event["body"].get("kind") == "record_ingested",
                  f"a `{event['body'].get('kind')}` event carries `upstream`, which only a `record_ingested` event carries")
             # known_at in its one form (§1.3), whose text orders as its
@@ -276,6 +279,24 @@ def main():
     negative = json.loads(v3["negative"])
     check(negative["v"] == 2 and "upstream" in negative,
           "v3.json: the negative line is format 2 carrying `upstream`, which a reader refuses")
+    v4 = json.loads((HERE / "v4.json").read_text("utf-8"))
+    prev = v3["hashes"][-1]
+    for line, want in zip(v4["lines"], v4["hashes"]):
+        event = json.loads(line)
+        check(canonical(event) == line.encode("utf-8"), f"v4.json: position {event['position']} is canonical")
+        check(event["v"] == 4 and event["body"]["kind"] == "write_proposed",
+              f"v4.json: position {event['position']} is a format 4 proposal")
+        body = {k: v for k, v in event.items() if k != "hash"}
+        check(sha(canonical(body)) == event["hash"] == want, f"v4.json: hash {want[:12]}…")
+        check(event["prev"] == prev, f"v4.json: position {event['position']} follows the one before it")
+        prev = event["hash"]
+    kinds = [json.loads(l)["body"]["write"]["write"] for l in v4["lines"]]
+    check(kinds == ["declare", "migrate"], "v4.json: a proposed declaration, then a proposed migration")
+    check(json.loads(v4["lines"][1])["body"]["write"]["report"]["lossless"] is True,
+          "v4.json: the proposed migration carries its preflight's report")
+    negative4 = json.loads(v4["negative"])
+    check(negative4["v"] == 3 and negative4["body"]["write"]["write"] == "declare",
+          "v4.json: the negative line proposes a declaration in format 3, which a reader refuses")
     misplaced = json.loads(v3["misplaced"])
     body = {k: v for k, v in misplaced.items() if k != "hash"}
     check(sha(canonical(body)) == misplaced["hash"], "v3.json: the misplaced line's hash is its own")

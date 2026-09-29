@@ -32,7 +32,7 @@ every kind, and `body`, which holds the kind and its payload.
 
 | Member | Type | Presence | Meaning |
 |---|---|---|---|
-| `v` | integer | always | The format version the event was written under: `1`, `2` from a lake's first re-keying `migrated` event on, `3` from its first event carrying `upstream` or declaring a call of `date_bucket` on (§6). |
+| `v` | integer | always | The format version the event was written under: `1`, `2` from a lake's first re-keying `migrated` event on, `3` from its first event carrying `upstream` or declaring a call of `date_bucket` on, `4` from its first proposal of a declaration or a migration on (§6). |
 | `lake` | string | always | The lake the event belongs to. |
 | `position` | integer | always | The event's coordinate: `0` for the lake's first event, then consecutive, with no gaps. |
 | `id` | string | always | The event's identifier: 32 lower-case hex digits (§3). |
@@ -300,8 +300,8 @@ the rules are deterministic, so a replay reproduces them.
 | Kind | Payload | Fold |
 |---|---|---|
 | `verb_called` | `verb`, `key`, `payload` | A verb ran. Its writes follow as `record_upserted` events with `cause` set to this position and `procedure` naming the verb. |
-| `write_proposed` | `proposal`, `write`, `why` | A write was recorded as a proposal instead of being applied (`docs/decisions/013-verbs-run-by-declared-risk.md`). `write.write` is `upsert`, `retire` or `call`, with that write's arguments. |
-| `write_accepted` | `proposal` | The proposal was accepted. Its write follows in the same append, with `cause` set to this position and the proposer as `writer`. |
+| `write_proposed` | `proposal`, `write`, `why` | A write was recorded as a proposal instead of being applied (`docs/decisions/013-verbs-run-by-declared-risk.md`). `write.write` is `upsert`, `retire` or `call`, with that write's arguments; from version 4 on also `declare`, a set of declarations, or `migrate`, a migration with its preflight's report (Appendix A). |
+| `write_accepted` | `proposal` | The proposal was accepted. Its write follows in the same append, with `cause` set to this position and the proposer as `writer`: for `declare` the `declared` events, for `migrate` the `migrated` event (the link types the store derives keep `system:lakelands` as writer). |
 | `write_rejected` | `proposal`, `reason` | The proposal was rejected; nothing else is written. |
 
 ### 2.5 Reactions and recorded outputs
@@ -562,6 +562,7 @@ carries a lower `v` than the event before it.
 | 1 | Everything above except what later versions add. |
 | 2 | `migrated.rekeyed` (§2.2, §2.3). A lake writes version 1 until its first re-keying `migrated` event, which carries `v` 2, as does every event after it; a version-1 event that carries `rekeyed` is refused. A version-1 reader refuses the version-2 events rather than misreading a re-key. |
 | 3 | The envelope member `upstream` (§1.1, §2.3) and a call of `date_bucket` in a declaration's expressions (Appendix B). A lake writes the version it had until its first event that carries `upstream`, or that declares (in a `declared` or `migrated` event) an expression calling `date_bucket`; that event carries `v` 3, as does every event after it. A version-2 (or 1) event that carries either is refused, naming it. A version-2 reader refuses the version-3 events rather than misreading them. |
+| 4 | A proposal of a declaration or a migration: `write_proposed` whose `write` is `declare` or `migrate` (§2.4, Appendix A). A lake writes the version it had until its first such proposal, which carries `v` 4, as does every event after it; a version-3 (or older) event that carries one is refused, naming it. A version-3 reader refuses the version-4 events rather than failing on a write it does not know. |
 
 ## Appendix A. Encodings
 
@@ -614,6 +615,13 @@ declaration, the members of a `type` declaration without `declare`;
 `upsert` carries `type`, `key`, `patch`; `retire` carries `type`, `key`;
 `call` carries `verb`, `key`, `payload`. Each also carries `opts`
 (default `{}`), with `expected_version` and `idempotency_key` when given.
+From version 4 on, `declare` carries `declarations`, a list of
+declarations as `declared` carries one each; `migrate` carries
+`migration`, as `migrated` carries it, and `report`, the preflight's
+report when it was proposed (`type`, `from_schema_hash`,
+`to_schema_hash`, `records_scanned`, `fields`, `dropped`, `rekeyed`,
+`references`, `sample_collisions`, `lossless`, `report_id`, as the
+`migrate` door answers it).
 
 ## Appendix B. Expressions in typed form
 

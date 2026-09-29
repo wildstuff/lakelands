@@ -22,6 +22,10 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
+- `v4.json`: two version-4 events after `v3.json`'s position 10: a
+  `write_proposed` whose write is `declare`, and one whose write is
+  `migrate` with its preflight's report; and `negative`, the first written
+  as version 3, which a reader refuses.
 - `v3.json`: two version-3 events after `rekey.json`'s: a
   `record_ingested` carrying `upstream`, whose id leaves the member out,
   and a `declared` whose derived field calls `date_bucket`; and

@@ -108,6 +108,60 @@ pub enum ProposedWrite {
         #[serde(default)]
         opts: WriteOpts,
     },
+    /// Declarations, applied together as `apply` applies them (log format
+    /// version 4).
+    Declare {
+        /// The declarations.
+        declarations: Vec<Declaration>,
+    },
+    /// A type's migration, as `migrate_apply` applies it, with the report
+    /// its preflight answered when it was proposed (log format version 4).
+    Migrate {
+        /// The migration.
+        migration: Box<Migration>,
+        /// The preflight's report at the proposal, for the reviewer. The
+        /// store answers it; whatever a proposer sends is replaced.
+        #[serde(default)]
+        report: Box<MigrationReport>,
+    },
+}
+
+impl ProposedWrite {
+    /// Which kind of write it is.
+    pub fn kind(&self) -> ProposalKind {
+        match self {
+            ProposedWrite::Upsert { .. } => ProposalKind::Upsert,
+            ProposedWrite::Retire { .. } => ProposalKind::Retire,
+            ProposedWrite::Call { .. } => ProposalKind::Call,
+            ProposedWrite::Declare { .. } => ProposalKind::Declare,
+            ProposedWrite::Migrate { .. } => ProposalKind::Migrate,
+        }
+    }
+
+    /// Whether it changes the ontology: accepting it needs the `schema`
+    /// grant as well as `review`.
+    pub fn is_schema(&self) -> bool {
+        matches!(
+            self,
+            ProposedWrite::Declare { .. } | ProposedWrite::Migrate { .. }
+        )
+    }
+}
+
+/// The kinds of write a proposal carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProposalKind {
+    /// An `upsert`.
+    Upsert,
+    /// A `retire`.
+    Retire,
+    /// A verb call.
+    Call,
+    /// Declarations.
+    Declare,
+    /// A migration.
+    Migrate,
 }
 
 /// Where a proposal stands.
@@ -156,6 +210,9 @@ pub struct ProposalFilter {
     /// Only proposals touching this type.
     #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
     pub ty: Option<TypeName>,
+    /// Only proposals of this kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ProposalKind>,
     /// At most this many.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
@@ -278,6 +335,26 @@ pub struct MigrationReport {
     pub lossless: bool,
     /// Names this report; `migrate_apply` must repeat it.
     pub report_id: String,
+}
+
+/// An empty report: what a proposer sends with a proposed migration,
+/// which the store replaces with the preflight's.
+impl Default for MigrationReport {
+    fn default() -> Self {
+        MigrationReport {
+            ty: TypeName::from(""),
+            from_schema_hash: String::new(),
+            to_schema_hash: String::new(),
+            records_scanned: 0,
+            fields: Vec::new(),
+            dropped: Vec::new(),
+            rekeyed: Vec::new(),
+            references: Vec::new(),
+            sample_collisions: Vec::new(),
+            lossless: false,
+            report_id: String::new(),
+        }
+    }
 }
 
 /// How the values of one field convert to its new type.
