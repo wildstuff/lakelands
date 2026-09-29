@@ -65,6 +65,20 @@ fix in storage behaviour, and none applies: Lakelands took neither that
 fixture nor the manifest. Every root, `{engine}` included, still holds
 the files it held at the freeze. **The list is closed for `0.3.0` as of `035c01a349`.**
 
+**Checked on 2026-09-29, before the `0.4.0` tag**, against the source's
+mainline at `21384bf69f`: the 152 commits after `035c01a349` (692 after
+the freeze in all), checked the same way. Two of them touch a root, and
+they are the last two rows. The first moves 17 files of `{types}` (the
+type definitions, the migration compatibility classes, the schema hash,
+the verb store and its handlers), and three pieces cut from larger
+files, into a new crate of the source's own for its shared type layer.
+It changes only their import paths. `{types}` no longer holds those
+files, so later checks follow them to their new crate. The second is a
+fix in `{store}` and `{engine}`'s tests. Lakelands already holds its
+behaviour and needs no port. Every other root still holds the files it
+held at the freeze, apart from the one test file the second commit adds
+to `{engine}`. **The list is closed for `0.4.0` as of `21384bf69f`.**
+
 | Source commit | Behaviour, in one line | Ported in, or not applicable and why |
 |---|---|---|
 | `5914084de9` | One German user-interface sentence in the capabilities module changes its form of address from formal to informal. | Not applicable: the capabilities module was not carried (cut in O2: there is no capability negotiation; see `docs/import-ledger.md`), and no storage behaviour changes: no event, no fold rule, no signature, no stored byte. |
@@ -72,3 +86,5 @@ the files it held at the freeze. **The list is closed for `0.3.0` as of `035c01a
 | `7971832d97` | The same fixture uses `/dev/shm` only when at least 256 MiB are free there, and names each store directory after the test process, so leftovers can be found by their owner; `nix` becomes a unix-only development dependency. | Not applicable: the same fixture, and a development dependency of a manifest that was not carried; no storage behaviour changes. |
 | `afdc3fed00` | The fixture's free-room arithmetic widens to `u128`, so it is right where the platform's block counts are 32-bit and no linter reports a no-op conversion. | Not applicable: the same fixture; no storage behaviour changes. |
 | `c9f8a0ad6e` | A new store on `/dev/shm` first removes the directories left by test processes that were killed by a signal. | Not applicable: the same fixture; no storage behaviour changes. |
+| `5c9c476b11` | Seventeen files of the contract-and-types module move into a new crate of the source's own for its shared type layer. The old module re-exports them for the time being. Three pieces cut from larger files move with them: the verb and CRUD vocabulary with its mapping onto the write grant, the filter predicate, and the page cursor. Only import paths change. | Not applicable: no behaviour changes. No event, fold rule, signature or stored byte changes; the renamed files differ from their old selves in `use` lines alone. Lakelands' contract types are its own, written new in O1 (`lakelands-api`), and the crate the files now live in is outside the roots. Later checks follow the moved files. |
+| `8a47557f5e` | A lexical search, which matches every searchable field at once, is refused and names the field when the caller may not read one of those fields: otherwise the question probes the field even though the hit masks it. A hybrid search whose lexical half is refused now answers with that refusal instead of falling back to its vector half. | Not needed: Lakelands already refuses. `rights::check_search` refuses a search in every mode, before either half runs, when the principal may not read one of the type's searchable fields or the searched vector field (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`). So a hybrid search never falls back to its vector half. The suite holds the lexical case (`searching_a_type_whose_searchable_field_is_unreadable_is_refused`). |
