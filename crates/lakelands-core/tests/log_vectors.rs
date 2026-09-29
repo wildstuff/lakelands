@@ -243,7 +243,8 @@ fn the_version_2_rekey_event_recomputes() {
 /// a declaration calling `date_bucket`. Each line is canonical, reads into
 /// the contract's event and back byte for byte, hashes to its hash and
 /// follows the one before it, and needs version 3; the negative line, the
-/// ingest written as version 2, is refused for carrying `upstream`.
+/// ingest written as version 2, is refused for carrying `upstream`, and the
+/// misplaced line, a `record_retired` carrying it, for its kind.
 #[test]
 fn the_version_3_events_recompute_and_a_version_2_upstream_is_refused() {
     let v3 = read_json("v3.json");
@@ -294,6 +295,14 @@ fn the_version_3_events_recompute_and_a_version_2_upstream_is_refused() {
         why.contains("`upstream`") && why.contains("format 3 added"),
         "{why}"
     );
+    let misplaced: Event = serde_json::from_str(v3["misplaced"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        lakelands_core::versions::below(&misplaced),
+        None,
+        "its version is right"
+    );
+    let why = lakelands_core::versions::misplaced(&misplaced).expect("refused");
+    assert!(why.contains("`record_retired`"), "{why}");
 }
 
 /// The negative vector `negative/known-at-goes-back`: the first segment

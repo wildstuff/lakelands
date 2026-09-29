@@ -1001,8 +1001,9 @@ writer.
   - no number is zero.
 
 **The mirror** is the third, in `lakelands-cli`: it copies types of one
-lake of the root into another, the only way water crosses between lakes.
-There is no query across lakes and no reference into another lake. A
+lake of the root into another, the only way water crosses between lakes
+(`docs/decisions/042-water-crosses-only-as-a-mirror.md`). There is no
+query across lakes and no reference into another lake. A
 root that shares a common lake's types with many lakes mirrors those
 types into each of them. `lakelands serve` runs one mirror per
 connection of the `mirror` section whose target lake it holds, and
@@ -1108,7 +1109,10 @@ reserves only the system types its own fold reads: `sys.source`,
 (`docs/decisions/003-reservation-by-namespace.md`). Today the fold reads
 `sys.setting` and `age` reads `sys.aging_rule`; the other two are
 reserved ahead of their readers. The default adds none and allows those
-four everywhere.
+four everywhere. Lakelands' own first host of the seam is `lakelands
+serve`, whose vocabulary gives the target lakes of its mirror
+connections the host type `sys.mirror`, the state of each connection and
+source type (`docs/decisions/042-water-crosses-only-as-a-mirror.md`).
 
 `types()` carries type declarations only. A host whose vocabulary also
 needs value types, verbs, triggers or functions applies them itself,

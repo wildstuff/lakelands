@@ -173,7 +173,9 @@ pub fn open(stored: &CanonicalEvent) -> Result<Event> {
         ));
     }
     // A member or a call a version does not have is refused, never read.
-    if let Some(why) = lakelands_core::versions::below(&event) {
+    if let Some(why) = lakelands_core::versions::below(&event)
+        .or_else(|| lakelands_core::versions::misplaced(&event))
+    {
         return Err(corrupt(stored.position, why));
     }
     if hash_without_hash(&event) != event.hash {
@@ -374,6 +376,37 @@ mod tests {
         assert!(e.contains("format 2 added"), "{e}");
         let (_, stored) = seal_at(2, &"finance".into(), Position(0), &Digest::zero(), 0, d);
         assert!(open(&stored).is_ok());
+    }
+
+    /// `upstream` on any kind but `record_ingested` is refused, naming the
+    /// kind, whatever the version.
+    #[test]
+    fn upstream_on_another_kind_is_refused() {
+        let mut retired = Draft::system(
+            Timestamp(0),
+            EventBody::RecordRetired {
+                ty: "t".into(),
+                key: "k".into(),
+                version: lakelands_api::Version(2),
+            },
+        );
+        retired.upstream = Some(lakelands_api::Upstream {
+            lake: "other".into(),
+            position: Position(9),
+        });
+        let (_, stored) = seal_at(
+            3,
+            &"finance".into(),
+            Position(1),
+            &Digest::zero(),
+            1,
+            retired,
+        );
+        let e = open(&stored).unwrap_err().to_string();
+        assert!(
+            e.contains("`record_retired`") && e.contains("only a `record_ingested`"),
+            "{e}"
+        );
     }
 
     #[test]

@@ -56,6 +56,30 @@ pub fn below(event: &Event) -> Option<String> {
     ))
 }
 
+/// Why an event carries a member its kind never carries, if it does:
+/// `upstream` belongs to `record_ingested` alone (`docs/log-format.md`
+/// §1.1), since only a source's record is read from another lake. The
+/// ingest door cannot put it elsewhere; a reader holds the rule for a log
+/// written by something else.
+pub fn misplaced(event: &Event) -> Option<String> {
+    let kind = event_kind(&event.body);
+    (event.upstream.is_some() && !matches!(event.body, EventBody::RecordIngested { .. })).then(
+        || {
+            format!(
+                "a `{kind}` event carries `upstream`, which only a `record_ingested` event carries"
+            )
+        },
+    )
+}
+
+/// An event body's kind, as the log writes it.
+fn event_kind(body: &EventBody) -> String {
+    serde_json::to_value(body)
+        .ok()
+        .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(str::to_owned))
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
 /// Whether a declaration calls `date_bucket` in any expression the log
 /// keeps: a field's derivation, a view's `where` and measures, a value
 /// type's constraint, a verb's `requires` and assignments, a trigger's
@@ -109,6 +133,28 @@ mod tests {
 
     fn declaration(v: serde_json::Value) -> Declaration {
         serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn upstream_belongs_to_record_ingested_alone() {
+        let line = |body: serde_json::Value| -> Event {
+            serde_json::from_value(json!({
+                "v": 3, "lake": "l", "position": 1, "id": "0".repeat(32),
+                "prev": "0".repeat(64), "known_at": "2026-01-01T00:00:00.000000Z",
+                "writer": "system:lakelands", "origin": "system",
+                "context": {"origin": "direct", "depth": 0}, "fence": 1,
+                "upstream": {"lake": "other", "position": 9},
+                "body": body, "hash": "0".repeat(64)
+            }))
+            .unwrap()
+        };
+        let retired =
+            line(json!({"kind": "record_retired", "type": "t", "key": "k", "version": 2}));
+        let why = misplaced(&retired).expect("refused");
+        assert!(why.contains("`record_retired`"), "{why}");
+        let ingested = line(json!({"kind": "record_ingested", "type": "t", "key": "k",
+                                   "version": 1, "patch": {"f": 1}}));
+        assert_eq!(misplaced(&ingested), None);
     }
 
     #[test]
