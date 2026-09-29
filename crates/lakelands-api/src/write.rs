@@ -231,6 +231,7 @@ pub struct ProposalFilter {
 /// write moves a record into or out of the set, the store appends
 /// `ObjectSetChanged` in the same append.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ObjectSetDecl {
     /// The set's name.
     pub name: String,
@@ -244,8 +245,10 @@ pub struct ObjectSetDecl {
     pub description: Option<String>,
 }
 
-/// One declaration of a lake's ontology.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// One declaration of a lake's ontology. It is read strictly: a member it
+/// does not take, at any depth, is refused, naming the member and where it
+/// sits (`docs/decisions/028-authoring-is-strict-and-whole.md`, extended).
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "declare", rename_all = "snake_case")]
 pub enum Declaration {
     /// A type, new or revised without reshaping stored records.
@@ -262,11 +265,90 @@ pub enum Declaration {
     Function(FunctionDecl),
 }
 
+const DECLARATION_KINDS: &[&str] = &[
+    "type",
+    "value_type",
+    "verb",
+    "trigger",
+    "object_set",
+    "function",
+];
+
+// Read by hand, not derived: a derived internally tagged enum buffers the
+// declaration before it reads it, and a member refused inside the buffer
+// cannot say where it sits.
+impl<'de> Deserialize<'de> for Declaration {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Declaration, D::Error> {
+        use serde::de::Error as _;
+        let mut members = serde_json::Map::<String, serde_json::Value>::deserialize(d)?;
+        let kind = match members.remove("declare") {
+            Some(serde_json::Value::String(kind)) => kind,
+            Some(_) => return Err(D::Error::custom("`declare` is not a string")),
+            None => return Err(D::Error::missing_field("declare")),
+        };
+        let name = members
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        let members = serde_json::Value::Object(members);
+        let read = match kind.as_str() {
+            "type" => serde_path_to_error::deserialize(members).map(Declaration::Type),
+            "value_type" => serde_path_to_error::deserialize(members).map(Declaration::ValueType),
+            "verb" => serde_path_to_error::deserialize(members).map(Declaration::Verb),
+            "trigger" => serde_path_to_error::deserialize(members).map(Declaration::Trigger),
+            "object_set" => serde_path_to_error::deserialize(members).map(Declaration::ObjectSet),
+            "function" => serde_path_to_error::deserialize(members).map(Declaration::Function),
+            other => return Err(D::Error::unknown_variant(other, DECLARATION_KINDS)),
+        };
+        read.map_err(|e| D::Error::custom(refusal(&kind, name.as_deref(), &e)))
+    }
+}
+
+/// The sentence a declaration that cannot be read is refused with: the
+/// declaration, then the member it does not take and where it sits, or
+/// what else is wrong and where.
+fn refusal(
+    kind: &str,
+    name: Option<&str>,
+    e: &serde_path_to_error::Error<serde_json::Error>,
+) -> String {
+    let what = match name {
+        Some(name) => format!("the {kind} declaration `{name}`"),
+        None => format!("a {kind} declaration"),
+    };
+    let path = e.path().to_string();
+    let inner = e.inner().to_string();
+    if let Some((member, rest)) = inner
+        .strip_prefix("unknown field `")
+        .and_then(|rest| rest.split_once('`'))
+    {
+        let parent = path
+            .strip_suffix(member)
+            .map_or("", |p| p.trim_end_matches('.'));
+        let at = if parent.is_empty() {
+            String::new()
+        } else {
+            format!(" at `{parent}`")
+        };
+        let takes = rest
+            .strip_prefix(", expected ")
+            .map(|t| format!(" (it takes {t})"))
+            .unwrap_or_default();
+        return format!("{what} has no member `{member}`{at}{takes}");
+    }
+    if path == "." {
+        format!("{what}: {inner}")
+    } else {
+        format!("{what}: at `{path}`: {inner}")
+    }
+}
+
 /// A function: a named computation a [`FunctionBacking`](crate::seam::FunctionBacking)
 /// performs. The backing kind is an open token; `expr` is evaluated in the
 /// store from `expr`, any other kind is called through its seam and its
 /// output recorded (`docs/decisions/002-determinism-is-the-boundary.md`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FunctionDecl {
     /// The function's name.
     pub name: String,
@@ -289,6 +371,7 @@ pub struct FunctionDecl {
 
 /// A change of a type's shape that stored records must follow.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Migration {
     /// The type's new declaration.
     pub to: TypeDecl,

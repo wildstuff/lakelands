@@ -21,6 +21,33 @@ validated as one set, so a declaration may name one the set declares
 later, and appended in one append, so a lake holds all of the bundle or
 none of it.
 
+## Extended: a declaration is strict at every door
+
+A declaration is strict wherever it arrives, as the bundle and the typed
+expression already were:
+- through `declare`, `apply`, `declare_type`, `add_field`, `migrate` and
+  a proposal of a declaration or a migration, over MCP and REST;
+- through the Rust contract itself, from JSON;
+- through the log on replay, and through an export on import.
+
+A member it does not take, at any depth, is refused as `invalid`. The
+refusal names the member, the declaration, and where the member sits
+(`fields[0]`, `relations[1].fields[0]`, `view.measures[2]`). Before this,
+the JSON doors dropped such a member silently and answered as if it had
+been stored, while the bundle refused the same member.
+
+The rule lives on the contract's declaration types, not beside each
+door, so a door added later cannot forget it. It changes no stored lake.
+A reader already refused an event whose bytes did not re-serialise from
+its typed form, so a log holding a member a declaration does not take
+never opened. It now also says which member. No byte a lake writes
+changes.
+
+A client reads the declarations of its own version or older. A client
+older than its server refuses a declaration member it does not know,
+naming it, rather than dropping it, so a client is upgraded with its
+server or before it.
+
 ## Why
 
 A misspelt or retired key that is silently ignored leaves a setting at

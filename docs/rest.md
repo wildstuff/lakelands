@@ -230,3 +230,8 @@ named, and nothing from the environment.
   `position_at`) are no door's, and are `unbound`.
 - Its `limits()` are the ones it was configured with, not the server's:
   the server keeps its own, and its refusals win.
+- It reads the declarations of its own version or older. A declaration
+  in an answer that carries a member the client does not know is
+  refused, naming it, never dropped
+  (`docs/decisions/028-authoring-is-strict-and-whole.md`, extended), so
+  upgrade the client with the server or before it.
