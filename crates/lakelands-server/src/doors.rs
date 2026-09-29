@@ -32,13 +32,52 @@ impl From<Error> for Fault {
     }
 }
 
-/// The arguments, read as `T`; `door` names the door in the refusal.
+/// The arguments, read as `T`; `door` names the door in the refusal, and
+/// the refusal names where among the arguments it failed, such as
+/// `declarations[2]`.
 pub(crate) fn args<T: DeserializeOwned>(door: &str, a: &Map<String, Value>) -> Result<T, Fault> {
-    serde_json::from_value(Value::Object(a.clone())).map_err(|e| {
-        Fault::Arguments(
-            format!("the arguments do not fit `{door}`: {e}"),
-            "correct them against the tool's input schema and call it again".into(),
-        )
+    read(door, a, false)
+}
+
+/// The arguments of a door that declares, read as `T`: a member a
+/// declaration does not take, at any depth, is the caller's to remove.
+fn declaring<T: DeserializeOwned>(door: &str, a: &Map<String, Value>) -> Result<T, Fault> {
+    read(door, a, true)
+}
+
+fn read<T: DeserializeOwned>(
+    door: &str,
+    a: &Map<String, Value>,
+    declares: bool,
+) -> Result<T, Fault> {
+    serde_path_to_error::deserialize(Value::Object(a.clone())).map_err(|e| {
+        let inner = e.inner().to_string();
+        // An unknown member is named by the error; the path says where it
+        // sits, so it ends at the member's parent.
+        let mut path = e.path().to_string();
+        if let Some(member) = inner
+            .strip_prefix("unknown field `")
+            .and_then(|rest| rest.split_once('`'))
+            .map(|(member, _)| member)
+            && let Some(parent) = path.strip_suffix(member)
+        {
+            path = match parent.trim_end_matches('.') {
+                "" => ".".into(),
+                parent => parent.into(),
+            };
+        }
+        let what = if path == "." {
+            format!("the arguments do not fit `{door}`: {inner}")
+        } else {
+            format!("the arguments do not fit `{door}` at `{path}`: {inner}")
+        };
+        let unknown = inner.starts_with("unknown field `") || inner.contains(" has no member `");
+        let todo = if declares && unknown {
+            "remove the member or correct its name, then call again; nothing was declared"
+        } else {
+            "correct them against the tool's input schema and call it again"
+        };
+        Fault::Arguments(what, todo.into())
     })
 }
 
@@ -153,7 +192,7 @@ pub(crate) async fn run(
                 write: ProposedWrite,
                 why: String,
             }
-            let p: P = args(label, &a)?;
+            let p: P = declaring(label, &a)?;
             to_json(&c.propose(who, p.write, p.why).await?)
         }
         Door::Proposals => to_json(&c.proposals(who, args::<ProposalFilter>(label, &a)?).await?),
@@ -177,7 +216,7 @@ pub(crate) async fn run(
                 #[serde(rename = "type")]
                 ty: TypeDecl,
             }
-            let d: D = args(label, &a)?;
+            let d: D = declaring(label, &a)?;
             to_json(&c.declare(who, Declaration::Type(d.ty)).await?)
         }
         Door::Declare => {
@@ -188,7 +227,7 @@ pub(crate) async fn run(
             struct D {
                 declaration: Declaration,
             }
-            let d: D = args(label, &a)?;
+            let d: D = declaring(label, &a)?;
             to_json(&c.declare(who, d.declaration).await?)
         }
         Door::Apply => {
@@ -199,7 +238,7 @@ pub(crate) async fn run(
             struct D {
                 declarations: Vec<Declaration>,
             }
-            let d: D = args(label, &a)?;
+            let d: D = declaring(label, &a)?;
             to_json(&c.apply(who, d.declarations).await?)
         }
         Door::AddField => {
@@ -209,7 +248,7 @@ pub(crate) async fn run(
                 ty: TypeName,
                 field: FieldDecl,
             }
-            let d: D = args(label, &a)?;
+            let d: D = declaring(label, &a)?;
             to_json(&c.add_field(who, &d.ty, d.field).await?)
         }
         Door::Migrate => {
@@ -224,7 +263,7 @@ pub(crate) async fn run(
                 #[serde(default)]
                 report_id: Option<String>,
             }
-            let m: M = args(label, &a)?;
+            let m: M = declaring(label, &a)?;
             let wrong = |field: &str, message: &str| {
                 Fault::Contract(Error::Refused {
                     field: Some(field.into()),
