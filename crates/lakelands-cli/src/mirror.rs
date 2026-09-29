@@ -127,6 +127,7 @@ pub const MIRROR_TYPE: &str = "sys.mirror";
 /// principal.
 pub fn mirror_type() -> TypeDecl {
     let field = |name: &str, kind, required| FieldDecl {
+        annotations: Default::default(),
         name: name.into(),
         ty: FieldType::kind(kind),
         required,
@@ -142,6 +143,7 @@ pub fn mirror_type() -> TypeDecl {
         embed: None,
     };
     TypeDecl {
+        annotations: Default::default(),
         name: MIRROR_TYPE.into(),
         key: vec!["connection".into(), "source_type".into()],
         fields: vec![

@@ -8,7 +8,10 @@ use crate::id::{
     Cursor, FieldName, IdempotencyKey, Position, ProposalId, RecordKey, SourceId, TypeName,
     ValueTypeName, VerbName, Version,
 };
-use crate::ontology::{FieldType, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl};
+use crate::ontology::{
+    ANNOTATION_KEY_MAX_BYTES, ANNOTATIONS_MAX_BYTES, Annotations, FieldDecl, FieldType,
+    RESERVED_ANNOTATION_NAMESPACES, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl,
+};
 
 use crate::record::Patch;
 use crate::time::Timestamp;
@@ -263,6 +266,172 @@ pub enum Declaration {
     ObjectSet(ObjectSetDecl),
     /// A function a backing computes.
     Function(FunctionDecl),
+}
+
+/// Why a declaration's annotations cannot be declared.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AnnotationFault {
+    /// A key in a reserved namespace (`sys.`, `lakelands.`).
+    Reserved {
+        /// The key.
+        key: String,
+        /// Why, for a person: the declaration and where the key sits.
+        message: String,
+    },
+    /// A key without a namespace or too long, a `null` value, an integer
+    /// beyond ±(2^53 − 1), or more than [`ANNOTATIONS_MAX_BYTES`] in all.
+    Invalid {
+        /// Why, for a person: the declaration and where.
+        message: String,
+    },
+}
+
+impl Declaration {
+    /// The declaration's kind and name, for a person
+    /// (`the type declaration \`invoice\``).
+    pub fn what(&self) -> String {
+        let (kind, name) = match self {
+            Declaration::Type(t) => ("type", t.name.as_str()),
+            Declaration::ValueType(v) => ("value_type", v.name.as_str()),
+            Declaration::Verb(v) => ("verb", v.name.as_str()),
+            Declaration::Trigger(t) => ("trigger", t.name.as_str()),
+            Declaration::ObjectSet(o) => ("object_set", o.name.as_str()),
+            Declaration::Function(f) => ("function", f.name.as_str()),
+        };
+        format!("the {kind} declaration `{name}`")
+    }
+
+    /// Every annotation map the declaration holds, with where it sits
+    /// (empty for the declaration's own): a type's, its fields', its
+    /// relations' and their link fields', a verb's payload fields', a
+    /// function's inputs'.
+    pub fn annotation_maps(&self) -> Vec<(String, &Annotations)> {
+        fn fields<'a>(at: &str, fs: &'a [FieldDecl], out: &mut Vec<(String, &'a Annotations)>) {
+            for (i, f) in fs.iter().enumerate() {
+                out.push((format!("{at}[{i}]"), &f.annotations));
+            }
+        }
+        let mut out = Vec::new();
+        match self {
+            Declaration::Type(t) => {
+                out.push((String::new(), &t.annotations));
+                fields("fields", &t.fields, &mut out);
+                for (i, r) in t.relations.iter().enumerate() {
+                    out.push((format!("relations[{i}]"), &r.annotations));
+                    fields(&format!("relations[{i}].fields"), &r.fields, &mut out);
+                }
+            }
+            Declaration::Verb(v) => fields("payload", &v.payload, &mut out),
+            Declaration::Function(f) => fields("inputs", &f.inputs, &mut out),
+            Declaration::ValueType(_) | Declaration::Trigger(_) | Declaration::ObjectSet(_) => {}
+        }
+        out
+    }
+
+    /// Why its annotations cannot be declared, if they cannot: a key is
+    /// two or more ASCII identifiers joined by `.`, at most
+    /// [`ANNOTATION_KEY_MAX_BYTES`], outside the reserved namespaces; a
+    /// value is any JSON but `null`, its integers within ±(2^53 − 1); and
+    /// all the maps together hold at most [`ANNOTATIONS_MAX_BYTES`] of
+    /// canonical bytes.
+    pub fn annotation_fault(&self) -> Option<AnnotationFault> {
+        let what = self.what();
+        let mut bytes = 0;
+        for (at, map) in self.annotation_maps() {
+            if map.is_empty() {
+                continue;
+            }
+            let at = if at.is_empty() {
+                String::new()
+            } else {
+                format!(" at `{at}`")
+            };
+            for (key, value) in map {
+                let segments: Vec<&str> = key.split('.').collect();
+                if RESERVED_ANNOTATION_NAMESPACES.contains(&segments[0]) {
+                    return Some(AnnotationFault::Reserved {
+                        key: key.clone(),
+                        message: format!(
+                            "{what} has the annotation `{key}`{at} in the reserved namespace \
+                             `{}.`",
+                            segments[0]
+                        ),
+                    });
+                }
+                let invalid = |why: String| {
+                    Some(AnnotationFault::Invalid {
+                        message: format!("{what} has the annotation `{key}`{at}: {why}"),
+                    })
+                };
+                if segments.len() < 2 || !segments.iter().all(|s| is_identifier(s)) {
+                    return invalid(
+                        "a key is a namespace and a name, ASCII identifiers joined by `.` \
+                         (`acme.icon`)"
+                            .into(),
+                    );
+                }
+                if key.len() > ANNOTATION_KEY_MAX_BYTES {
+                    return invalid(format!("a key is at most {ANNOTATION_KEY_MAX_BYTES} bytes"));
+                }
+                if value.is_null() {
+                    return invalid(
+                        "a value is not `null`; an annotation is taken away by leaving its key \
+                         out"
+                        .into(),
+                    );
+                }
+                if let Some(n) = too_large(value) {
+                    return invalid(format!(
+                        "{n} is beyond ±(2^53 − 1), the largest integer every reader reads exactly"
+                    ));
+                }
+            }
+            bytes += crate::canonical::of(map).len();
+        }
+        (bytes > ANNOTATIONS_MAX_BYTES).then(|| AnnotationFault::Invalid {
+            message: format!(
+                "{what} holds {bytes} bytes of annotations, over the {ANNOTATIONS_MAX_BYTES} a \
+                 declaration may hold"
+            ),
+        })
+    }
+}
+
+impl From<AnnotationFault> for crate::error::Error {
+    fn from(f: AnnotationFault) -> crate::error::Error {
+        use crate::error::{Error, Refusal};
+        match f {
+            AnnotationFault::Reserved { key, .. } => Error::Refused {
+                field: Some(key.into()),
+                reason: Refusal::Reserved,
+            },
+            AnnotationFault::Invalid { message } => Error::Refused {
+                field: None,
+                reason: Refusal::Invalid { message },
+            },
+        }
+    }
+}
+
+fn is_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// An integer anywhere in a value beyond ±(2^53 − 1), if there is one.
+fn too_large(value: &serde_json::Value) -> Option<String> {
+    const MAX: u64 = (1 << 53) - 1;
+    match value {
+        serde_json::Value::Number(n) => (n.as_u64().is_some_and(|u| u > MAX)
+            || n.as_i64().is_some_and(|i| i.unsigned_abs() > MAX))
+        .then(|| n.to_string()),
+        serde_json::Value::Array(items) => items.iter().find_map(too_large),
+        serde_json::Value::Object(m) => m.values().find_map(too_large),
+        _ => None,
+    }
 }
 
 const DECLARATION_KINDS: &[&str] = &[

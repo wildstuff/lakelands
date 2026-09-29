@@ -123,6 +123,7 @@ async fn lake(store: &dyn LakeStore) -> Result<(), Failure> {
         vec![typed("state", StorageKind::Text, "status_code")],
     );
     ticket.relations = vec![RelationDecl {
+        annotations: Default::default(),
         name: "raised_by".into(),
         target: "invoice".into(),
         cardinality: Cardinality::ManyToOne,

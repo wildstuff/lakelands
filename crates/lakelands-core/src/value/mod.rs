@@ -520,6 +520,7 @@ mod tests {
 
     fn field(name: &str, ty: FieldType) -> FieldDecl {
         FieldDecl {
+            annotations: Default::default(),
             name: name.into(),
             ty,
             required: false,

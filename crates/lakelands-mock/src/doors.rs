@@ -495,6 +495,9 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
     let mut verbs: Vec<VerbName> = st.verbs.keys().cloned().collect();
     let known =
         |ty: &TypeName, own: Option<&TypeName>| own == Some(ty) || st.types.contains_key(ty);
+    if let Some(fault) = d.annotation_fault() {
+        return Err(fault.into());
+    }
     if let Declaration::Type(t) = d {
         embeddings(t)?;
     }
@@ -742,6 +745,7 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
     let sorted = visible(index_fields(st, d, SORT_INDEX_SETTING, sortable));
     let indexed = visible(index_fields(st, d, VECTOR_INDEX_SETTING, indexable));
     TypeDescription {
+        annotations: d.annotations.clone(),
         name: d.name.clone(),
         description: d.description.clone(),
         label: d.label.clone(),
@@ -752,7 +756,25 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
             .relations
             .iter()
             .filter(|r| st.visible(who, &r.target).is_some())
-            .cloned()
+            .map(|r| {
+                // A link field the principal may not read is described by
+                // its shape alone, as a type's own field is.
+                let link = crate::links::name(&d.name, &r.name);
+                let mut r = r.clone();
+                for f in &mut r.fields {
+                    if !access(who, &link, f).reads() {
+                        f.derived = None;
+                        f.function = None;
+                        f.depends_on.clear();
+                        f.searchable = false;
+                        f.description = None;
+                        f.label = None;
+                        f.embed = None;
+                        f.annotations.clear();
+                    }
+                }
+                r
+            })
             .collect(),
         access: TypeAccess {
             key: d.key.clone(),

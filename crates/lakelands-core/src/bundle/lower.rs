@@ -13,7 +13,7 @@ use lakelands_api::ontology::{
     Assignment, EmbedDecl, FieldDecl, FieldType, Measure, RelationDecl, StorageKind, TriggerDecl,
     TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, ViewDecl,
 };
-use lakelands_api::write::{FunctionDecl, ObjectSetDecl};
+use lakelands_api::write::{AnnotationFault, Declaration, FunctionDecl, ObjectSetDecl};
 use lakelands_api::{
     FieldName, Patch, RelationName, TriggerName, TypeName, ValueTypeName, VerbName,
 };
@@ -140,6 +140,7 @@ impl<'a> Lower<'a> {
             StrOr::Str(short) => {
                 let ty = self.field_type(&at, StrOr::Str(short));
                 return FieldDecl {
+                    annotations: Default::default(),
                     name: FieldName::new(name),
                     ty,
                     required: false,
@@ -165,6 +166,7 @@ impl<'a> Lower<'a> {
             model: e.model,
         });
         FieldDecl {
+            annotations: body.annotations,
             name: FieldName::new(name),
             ty,
             required: body.required,
@@ -178,6 +180,18 @@ impl<'a> Lower<'a> {
             description: body.description,
             label: body.label,
             embed,
+        }
+    }
+
+    /// Report a declaration's annotations that cannot be declared: a key
+    /// in a reserved namespace, or one the contract refuses.
+    fn annotated(&mut self, d: &Declaration) {
+        match d.annotation_fault() {
+            Some(AnnotationFault::Reserved { message, .. }) => {
+                self.fail(Problem::ReservedName, message);
+            }
+            Some(AnnotationFault::Invalid { message }) => self.fail(Problem::Malformed, message),
+            None => {}
         }
     }
 
@@ -388,6 +402,7 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
             let target = l.type_ref(&at, &r.target);
             let fields = l.fields(&format!("{at}, field"), r.fields);
             RelationDecl {
+                annotations: r.annotations,
                 name: RelationName::new(name),
                 target,
                 cardinality: r.cardinality,
@@ -423,7 +438,8 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
             measures,
         }
     });
-    TypeDecl {
+    let t = TypeDecl {
+        annotations: doc.annotations,
         name: TypeName::new(doc.name),
         key,
         fields,
@@ -435,7 +451,9 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
         language: doc.language,
         description: doc.description,
         label: doc.label,
-    }
+    };
+    l.annotated(&Declaration::Type(t.clone()));
+    t
 }
 
 /// A verb: a write verb when it has `set`, an external one when it has
@@ -473,7 +491,7 @@ pub(super) fn verb(l: &mut Lower<'_>, doc: VerbDoc) -> VerbDecl {
             VerbEffect::Write { set: Vec::new() }
         }
     };
-    VerbDecl {
+    let v = VerbDecl {
         name: VerbName::new(doc.name),
         on,
         payload,
@@ -481,7 +499,9 @@ pub(super) fn verb(l: &mut Lower<'_>, doc: VerbDoc) -> VerbDecl {
         requires,
         effect,
         description: doc.description,
-    }
+    };
+    l.annotated(&Declaration::Verb(v.clone()));
+    v
 }
 
 /// A trigger.
@@ -553,12 +573,14 @@ pub(super) fn function(l: &mut Lower<'_>, doc: FunctionDoc) -> FunctionDecl {
         ),
         _ => {}
     }
-    FunctionDecl {
+    let f = FunctionDecl {
         name: doc.name,
         backing,
         inputs,
         expr,
         config: doc.config.unwrap_or(serde_json::Value::Null),
         description: doc.description,
-    }
+    };
+    l.annotated(&Declaration::Function(f.clone()));
+    f
 }

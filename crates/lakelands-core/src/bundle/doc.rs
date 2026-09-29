@@ -15,7 +15,9 @@ use serde::de::value::{MapAccessDeserializer, SeqAccessDeserializer};
 use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 
 use lakelands_api::expr::{Condition, Expr};
-use lakelands_api::ontology::{Authority, Cardinality, OnInputChange, Risk, StorageKind};
+use lakelands_api::ontology::{
+    Annotations, Authority, Cardinality, OnInputChange, Risk, StorageKind,
+};
 
 /// `value_types/<name>.yaml`.
 #[derive(Debug, Deserialize)]
@@ -60,6 +62,8 @@ pub(super) struct TypeDoc {
     pub description: Option<String>,
     #[serde(default)]
     pub label: Option<String>,
+    #[serde(default)]
+    pub annotations: Annotations,
 }
 
 fn yes() -> bool {
@@ -97,6 +101,8 @@ pub(super) struct FieldBody {
     pub label: Option<String>,
     #[serde(default)]
     pub embed: Option<EmbedDoc>,
+    #[serde(default)]
+    pub annotations: Annotations,
 }
 
 /// What a vector field is the embedding of.
@@ -142,6 +148,8 @@ pub(super) struct RelationDoc {
     pub authority: Authority,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
+    pub annotations: Annotations,
 }
 
 /// A view type's definition.

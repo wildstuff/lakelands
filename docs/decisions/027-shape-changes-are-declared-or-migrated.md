@@ -123,3 +123,11 @@ ontology only through its acceptance, under the same rule: a change that
 reshapes stored records is a migration there too, preflighted when it is
 proposed and again when it is accepted
 (`docs/decisions/013-verbs-run-by-declared-risk.md`, extended).
+
+## Extended: an annotation is a change of meaning
+
+A revision that changes only a declaration's `annotations` reshapes no
+stored record, so `declare` takes it like a relabel. It never needs a
+migration, and none is offered. A migration whose `to` changes
+annotations together with the shape carries them like any other member
+(`docs/decisions/007-schema-hash-covers-shape.md`, extended).

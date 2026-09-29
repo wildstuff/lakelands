@@ -43,6 +43,7 @@ fn relation(
     fields: Vec<FieldDecl>,
 ) -> RelationDecl {
     RelationDecl {
+        annotations: Default::default(),
         name: name.into(),
         target: "partner".into(),
         cardinality: Cardinality::ManyToMany,

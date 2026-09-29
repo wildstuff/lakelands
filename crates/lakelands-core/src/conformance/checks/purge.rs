@@ -121,6 +121,7 @@ async fn lake(store: &dyn LakeStore) -> Result<(), Failure> {
         vec![sourced("amount", StorageKind::Number), status, gross],
     );
     invoice.relations = vec![RelationDecl {
+        annotations: Default::default(),
         name: "approved_by".into(),
         target: "partner".into(),
         cardinality: Cardinality::ManyToOne,

@@ -75,3 +75,16 @@ A declaration or a migration that is proposed moves no schema hash: the
 hash a type answers changes at the acceptance, where the declaration is
 logged, and a rejected proposal leaves it as it was
 (`docs/decisions/013-verbs-run-by-declared-risk.md`, extended).
+
+## Extended: a host's annotations are meaning
+
+A type, a field and a relation may carry `annotations`, the host's own
+marks by namespaced key (`acme.icon`, `acme.package`): presentation,
+policy flags the host enforces itself, provenance. They are meaning,
+never shape. The hash is an allowlist of shape members, so annotations
+stay out of it without a rule of their own. A suite check holds this
+byte for byte, so that a member added to the allowlist later cannot
+pull them in unnoticed. A type whose annotations alone change keeps its
+schema hash, and its version counts the change like a changed
+description. Carrying annotations in the log is a new member, so it is
+format version 5 (`docs/log-format.md` §6).

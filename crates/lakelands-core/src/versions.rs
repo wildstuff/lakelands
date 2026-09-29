@@ -9,6 +9,9 @@
 //!   declaration calls `date_bucket` in any expression it keeps.
 //! - **4**: a `write_proposed` event whose write is a declaration or a
 //!   migration (`declare`, `migrate`).
+//! - **5**: an event whose declaration carries `annotations` anywhere: a
+//!   `declared` event's declaration, a `migrated` event's `to`, a proposed
+//!   `declare` or `migrate`.
 //!
 //! The store appends each event at the greatest of the lake's version and
 //! the one [`needed`] answers, and refuses, when it reads the log, an
@@ -17,11 +20,14 @@
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::expr::{Condition, Expr, Func};
 use lakelands_api::ontology::VerbEffect;
-use lakelands_api::write::Declaration;
+use lakelands_api::write::{Declaration, ProposedWrite};
 
 /// The lowest format version that can carry `body`, with `upstream` or
 /// without it.
 pub fn needed(body: &EventBody, upstream: bool) -> u32 {
+    if carries_annotations(body) {
+        return 5;
+    }
     if let EventBody::WriteProposed { write, .. } = body
         && write.is_schema()
     {
@@ -43,6 +49,26 @@ pub fn needed(body: &EventBody, upstream: bool) -> u32 {
     }
 }
 
+/// Whether a declaration the event carries holds a non-empty
+/// `annotations` anywhere.
+pub fn carries_annotations(body: &EventBody) -> bool {
+    let annotated = |d: &Declaration| d.annotation_maps().iter().any(|(_, m)| !m.is_empty());
+    match body {
+        EventBody::Declared { declaration, .. } => annotated(declaration),
+        EventBody::Migrated { migration, .. } => {
+            annotated(&Declaration::Type(migration.to.clone()))
+        }
+        EventBody::WriteProposed { write, .. } => match write {
+            ProposedWrite::Declare { declarations } => declarations.iter().any(annotated),
+            ProposedWrite::Migrate { migration, .. } => {
+                annotated(&Declaration::Type(migration.to.clone()))
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Why an event is written below the version it needs, if it is: what it
 /// carries and the version that added it.
 pub fn below(event: &Event) -> Option<String> {
@@ -50,7 +76,9 @@ pub fn below(event: &Event) -> Option<String> {
     if event.v >= need {
         return None;
     }
-    let what = if need == 4 {
+    let what = if need == 5 {
+        "carries `annotations` in a declaration".to_owned()
+    } else if need == 4 {
         "proposes a declaration or a migration".to_owned()
     } else if event.upstream.is_some() {
         "carries `upstream`".to_owned()
@@ -190,5 +218,62 @@ mod tests {
             !calls_date_bucket(&plain),
             "a field named date_bucket is no call of it"
         );
+    }
+
+    #[test]
+    fn annotations_anywhere_in_a_declaration_need_format_5() {
+        let annotated = declaration(json!({
+            "declare": "type", "name": "t",
+            "fields": [{"name": "a", "type": {"kind": "text"}}],
+            "relations": [{"name": "r", "target": "u",
+                           "fields": [{"name": "s", "type": {"kind": "text"},
+                                       "annotations": {"acme.x": 1}}]}]
+        }));
+        let Declaration::Type(to) = annotated.clone() else {
+            unreachable!()
+        };
+        let declared = EventBody::Declared {
+            declaration: annotated.clone(),
+            schema_hash: None,
+            version: 1,
+        };
+        assert_eq!(needed(&declared, false), 5);
+        let migration = lakelands_api::write::Migration {
+            to: to.clone(),
+            renames: vec![],
+        };
+        let migrated = EventBody::Migrated {
+            migration: migration.clone(),
+            schema_hash: String::new(),
+            version: 2,
+            report_id: String::new(),
+            rekeyed: vec![],
+        };
+        assert_eq!(needed(&migrated, false), 5);
+        for write in [
+            ProposedWrite::Declare {
+                declarations: vec![annotated],
+            },
+            ProposedWrite::Migrate {
+                migration: Box::new(migration),
+                report: Box::default(),
+            },
+        ] {
+            let proposed = EventBody::WriteProposed {
+                proposal: "p".into(),
+                write,
+                why: String::new(),
+            };
+            assert_eq!(needed(&proposed, false), 5);
+        }
+        let plain = EventBody::Declared {
+            declaration: declaration(json!({
+                "declare": "type", "name": "t", "annotations": {},
+                "fields": [{"name": "a", "type": {"kind": "text"}, "annotations": {}}]
+            })),
+            schema_hash: None,
+            version: 1,
+        };
+        assert_eq!(needed(&plain, false), 1, "an empty map is no annotation");
     }
 }

@@ -1096,6 +1096,7 @@ mod tests {
         access: Access,
     ) -> FieldDescription {
         let decl = FieldDecl {
+            annotations: Default::default(),
             name: name.into(),
             ty: FieldType::kind(kind),
             required: false,
@@ -1115,6 +1116,7 @@ mod tests {
 
     fn ty(name: &str, may: TypeRights, fields: Vec<FieldDescription>) -> TypeDescription {
         TypeDescription {
+            annotations: Default::default(),
             name: name.into(),
             description: None,
             label: None,
@@ -1388,6 +1390,7 @@ mod tests {
     fn linked_invoice() -> (TypeDescription, TypeDescription) {
         let mut invoice = invoice();
         invoice.relations = vec![crate::ontology::RelationDecl {
+            annotations: Default::default(),
             name: "approved_by".into(),
             target: "partner".into(),
             cardinality: Default::default(),
@@ -1431,6 +1434,7 @@ mod tests {
         for f in &link_type.fields {
             if f.name.as_str() == "since" || f.name.as_str() == "score" {
                 invoice.relations[0].fields.push(FieldDecl {
+                    annotations: Default::default(),
                     name: f.name.clone(),
                     ty: f.ty.clone(),
                     required: false,
@@ -1475,12 +1479,14 @@ mod tests {
     fn a_link_relation_gets_link_and_unlink_tools_named_by_type_and_relation() {
         let mut invoice = invoice();
         invoice.relations = vec![crate::ontology::RelationDecl {
+            annotations: Default::default(),
             name: "approved_by".into(),
             target: "partner".into(),
             cardinality: Default::default(),
             inverse: None,
             via: None,
             fields: vec![FieldDecl {
+                annotations: Default::default(),
                 name: "since".into(),
                 ty: FieldType::kind(StorageKind::DateTime),
                 required: false,
