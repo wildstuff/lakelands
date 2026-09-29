@@ -1,0 +1,9 @@
+name: partner
+label: Partner
+description: >-
+  The CRM's partner, as the ledger holds it: copied by the mirror
+  connection `crm`, never written here.
+key: id
+fields:
+  id: { type: text, required: true, authority: source }
+  name: { type: text, required: true, authority: source }

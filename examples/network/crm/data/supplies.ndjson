@@ -1,0 +1,4 @@
+{"type": "sys.link.partner.supplies", "key": "P-100:P-200", "fields": {"from": "P-100", "to": "P-200"}}
+{"type": "sys.link.partner.supplies", "key": "P-100:P-300", "fields": {"from": "P-100", "to": "P-300"}}
+{"type": "sys.link.partner.supplies", "key": "P-400:P-100", "fields": {"from": "P-400", "to": "P-100"}}
+{"type": "sys.link.partner.supplies", "key": "P-500:P-600", "fields": {"from": "P-500", "to": "P-600"}}

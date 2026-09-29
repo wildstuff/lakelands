@@ -381,6 +381,8 @@ limit of its `Location` (100 000 unless it says otherwise), bounds them,
 and past it they are refused `too_large` naming the ceiling. The
 `components-capped` line holds that bound: with the ceiling at half the
 lake's first size, the walk is refused at the ceiling at every size.
+Walk 3 (`docs/walks/walk-3.md`) asks both measures of a small network,
+and asks components again under a ceiling of five, which refuses them.
 
 **`lexical`.** Search is ranked retrieval: the view's position decides
 what may be seen, not how the current text ranks. A view answers from
@@ -1088,7 +1090,9 @@ refuses to start when it holds that lake but not as its writer.
   window or action it counts is durable, so a crash in between delivers
   that window again, and it appends nothing. An operator reads the
   state as any record: `find sys.mirror`, with `where: "stopped_at is
-  not null"` for the stopped types.
+  not null"` for the stopped types. Walk 3 (`docs/walks/walk-3.md`)
+  mirrors one type and reads both the copy's `upstream` and its
+  `sys.mirror` record.
 - **Its files**, under `mirrors/<target lake>/` in the root:
   `<connection>.lock`, held while the mirror runs, so a second process
   refuses to start, and `<connection>.ndjson`, the journal, one line per

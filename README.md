@@ -131,6 +131,10 @@ walk's page lists every call and the answer it must give.
 - [`docs/walks/walk-2.md`](docs/walks/walk-2.md): the second walk, over
   what `0.2.0` adds: a function run by a program, an embedding on
   write, links with fields, aging by date and the webhook deliverer.
+- [`docs/walks/walk-3.md`](docs/walks/walk-3.md): the third walk, over
+  what `0.4.0` adds: a lake moved by export and import, a mirror between
+  two lakes that names the source's position, and degree and components
+  over links, refused past the lake's ceiling.
 
 ## What it is not
 
