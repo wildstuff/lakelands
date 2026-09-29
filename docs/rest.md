@@ -34,8 +34,9 @@ this page says only how a request reaches it.
 - **Failures.** A failure answers one of the contract's closed set of
   errors, as JSON, with the two sentences a person reads beside it:
   `what` happened and what `todo`. A request the server cannot read (an
-  unknown parameter, a body that is not JSON, no such route) is
-  `refused` as `invalid`; a missing or unknown key is `refused` as
+  unknown parameter, a body that is not JSON, no such route, a
+  declaration member it does not know, at any depth) is `refused` as
+  `invalid`; a missing or unknown key is `refused` as
   `not_granted`.
 
   ```json
