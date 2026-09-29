@@ -1428,3 +1428,80 @@ fn the_built_binary_moves_a_lake_by_export_and_import() {
     assert!(said.starts_with("imported lake `finance`: "), "{said}");
     assert_eq!(run(&to.root, &["feed"]), source);
 }
+
+/// `export` only reads, each command in a process of its own as an
+/// operator runs them: it appends nothing to the lake it exports, and it
+/// runs while a `serve` holds the lake's writer.
+#[test]
+fn the_built_binary_exports_without_a_writer_beside_a_running_serve() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+
+    let sh = Shell::on("export-reads", Backend::Store);
+    let lakelands = env!("CARGO_BIN_EXE_lakelands");
+    let run = |args: &[&str]| {
+        Command::new(lakelands)
+            .arg("--root")
+            .arg(&sh.root)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let ok = |args: &[&str]| {
+        let out = run(args);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    };
+    ok(&["init"]);
+    ok(&["lake", "new", "finance"]);
+    ok(&["apply", &sh.fixture()]);
+    let head = |feed: &str| last_event(feed).0;
+    let before = head(&ok(&["feed"]));
+    let first = sh.root.join("first").display().to_string();
+    let said = ok(&["export", "--to", &first]);
+    assert!(
+        said.ends_with(&format!(
+            "exported finance through position {before} to {first}\n"
+        )),
+        "{said}"
+    );
+    assert_eq!(head(&ok(&["feed"])), before, "the export appended nothing");
+
+    // A `serve` holds the writer while its client is connected.
+    let mut server = Command::new(lakelands)
+        .arg("--root")
+        .arg(&sh.root)
+        .args(["serve", "--mcp"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut to = server.stdin.take().unwrap();
+    writeln!(
+        to,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"2025-11-25","capabilities":{{}},"clientInfo":{{"name":"t","version":"1"}}}}}}"#
+    )
+    .unwrap();
+    let mut answer = String::new();
+    BufReader::new(server.stdout.take().unwrap())
+        .read_line(&mut answer)
+        .unwrap();
+    assert!(answer.contains("serverInfo"), "{answer}");
+    let served = head(&ok(&["feed"]));
+    assert!(served > before, "serve took the writer's lease");
+    let second = sh.root.join("second").display().to_string();
+    let beside = run(&["export", "--to", &second]);
+    assert!(
+        beside.status.success(),
+        "an export runs beside a serve: {}",
+        String::from_utf8_lossy(&beside.stderr)
+    );
+    assert_eq!(head(&ok(&["feed"])), served, "the export appended nothing");
+    drop(to);
+    assert!(server.wait().unwrap().success());
+}
