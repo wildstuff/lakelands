@@ -167,7 +167,8 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   dir)` (`lakelands export --to <dir>`) as files that verify without
   Lakelands (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`);
   an export is the whole log, unmasked, so it is handed over as the
-  lake itself would be.
+  lake itself would be. An export only reads: it needs no writer, appends
+  nothing, and runs beside a `lakelands serve` that holds the lake.
   In a quiet hour the host can call `LakeStore::compact()` (`lakelands
   compact`) to give back the storage the projection no longer uses; it
   changes no answer and appends nothing, and writes wait while it runs

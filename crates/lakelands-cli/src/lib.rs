@@ -241,7 +241,7 @@ fn command() -> Command {
         .subcommand(Command::new("compact").about("Give back the storage the lake's projection no longer uses"))
         .subcommand(
             Command::new("export")
-                .about("Write the lake's log as its segment files and a manifest")
+                .about("Write the lake's log as its segment files and a manifest; it only reads, beside a running serve")
                 .arg(
                     Arg::new("to")
                         .long("to")
@@ -368,9 +368,12 @@ async fn dispatch(
 
     let root = root::Root::open(&root_dir)?;
     let location = root.location(text(sub, "lake").as_deref())?;
-    // `feed` only reads: it takes no lease and appends nothing, unless the
-    // lake was never opened yet, which the first open creates.
-    let store = if name == "feed" {
+    // `feed` and `export` only read: they take no lease and append
+    // nothing, so they run beside a `serve` that holds the writer, and an
+    // export's head is the lake's as it stood
+    // (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`).
+    // A lake never opened yet is created by the first open.
+    let store = if name == "feed" || name == "export" {
         match open(location.clone(), OpenMode::Read, root.seams()).await {
             Ok(store) => store,
             Err(Error::Unavailable { .. }) => {
