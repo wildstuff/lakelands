@@ -2356,6 +2356,30 @@ impl Catalog for MockCatalog {
         let t = st
             .visible(who, &search.ty)
             .ok_or_else(|| no_type(&search.ty))?;
+        // A search probes every searchable field, the vector field it
+        // names and the fields that vector is embedded from; one the
+        // caller may not read refuses the search whole (024), in the
+        // store's order.
+        let vector_field = match &search.mode {
+            SearchMode::Vector { field, .. } | SearchMode::Hybrid { field, .. } => Some(field),
+            SearchMode::Lexical { .. } => None,
+        };
+        let embedded_from = vector_field
+            .and_then(|v| field(&t.decl, v))
+            .and_then(|f| f.embed.as_ref())
+            .into_iter()
+            .flat_map(|e| e.from.iter());
+        for name in t
+            .decl
+            .fields
+            .iter()
+            .filter(|f| f.searchable)
+            .map(|f| &f.name)
+            .chain(vector_field)
+            .chain(embedded_from)
+        {
+            readable(&st, who, t, name)?;
+        }
         let e = filter(&st, who, t, search.filter.as_ref())?;
         let rows = candidates(&st, who, t, search.at, e.as_ref())?;
         // A field the lake asks an index for at the head answers the
@@ -2410,12 +2434,8 @@ impl Catalog for MockCatalog {
             }
             SearchMode::Lexical { text } | SearchMode::Hybrid { text, .. } => {
                 let words: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
-                let searchable: Vec<&FieldDecl> = t
-                    .decl
-                    .fields
-                    .iter()
-                    .filter(|f| f.searchable && access(who, &t.decl.name, f).reads())
-                    .collect();
+                let searchable: Vec<&FieldDecl> =
+                    t.decl.fields.iter().filter(|f| f.searchable).collect();
                 let s = rows
                     .into_iter()
                     .filter_map(|r| {

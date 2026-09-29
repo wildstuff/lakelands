@@ -156,14 +156,20 @@ pub fn check_probe<'a>(
 
 /// Refuse a search the principal may not make: lexical search probes
 /// every searchable field of the type at once, so each must be readable;
-/// a vector search probes the vector field it names.
+/// a vector search probes the vector field it names and, since a vector
+/// embedded from text encodes that text, every field it is embedded from.
 pub fn check_search(
     who: &Principal,
     decl: &TypeDecl,
     vector_field: Option<&FieldName>,
 ) -> Result<(), Error> {
     let searched = decl.fields.iter().filter(|f| f.searchable).map(|f| &f.name);
-    check_probe(who, decl, searched.chain(vector_field))
+    let embedded_from = vector_field
+        .and_then(|v| decl.fields.iter().find(|f| &f.name == v))
+        .and_then(|f| f.embed.as_ref())
+        .into_iter()
+        .flat_map(|e| e.from.iter());
+    check_probe(who, decl, searched.chain(vector_field).chain(embedded_from))
 }
 
 /// The door a write comes through.
@@ -405,6 +411,33 @@ mod tests {
         let granted = principal(Access::Read, &[]);
         assert!(check_search(&granted, &decl, None).is_ok());
         assert!(check_search(&granted, &decl, Some(&"nope".into())).is_err());
+    }
+
+    #[test]
+    fn a_search_over_an_embedded_vector_probes_the_fields_it_is_embedded_from() {
+        let mut decl = invoice();
+        decl.fields.push(FieldDecl {
+            embed: Some(lakelands_api::ontology::EmbedDecl {
+                from: vec!["verdict".into(), "note".into()],
+                model: "m".into(),
+            }),
+            ..field("vec", Authority::Derived, false)
+        });
+        let vec = FieldName::from("vec");
+        let reader = principal(Access::Read, &[("note", Access::Masked)]);
+        assert_eq!(
+            check_search(&reader, &decl, Some(&vec)),
+            Err(Error::Refused {
+                field: Some("note".into()),
+                reason: Refusal::NotGranted
+            }),
+            "the vector is readable, but it encodes `note`"
+        );
+        assert!(
+            check_search(&reader, &decl, None).is_ok(),
+            "no field is searchable"
+        );
+        assert!(check_search(&principal(Access::Read, &[]), &decl, Some(&vec)).is_ok());
     }
 
     #[test]

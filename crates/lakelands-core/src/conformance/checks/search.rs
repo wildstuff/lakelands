@@ -188,6 +188,223 @@ async fn searching_a_type_whose_searchable_field_is_unreadable_is_refused(
 }
 
 check!(
+    /// Hybrid search cannot probe an unreadable text field.
+    HYBRID_PROBE_REFUSED = a_hybrid_search_over_an_unreadable_searchable_field_is_refused_whole,
+    "024: a hybrid search over a type whose searchable field the principal may not read is refused, naming the field, whether it brings a vector or not; it never answers from its vector half"
+);
+
+check!(
+    /// Vector search cannot probe an unreadable vector field.
+    VECTOR_PROBE_REFUSED = a_vector_search_over_an_unreadable_vector_field_is_refused,
+    "024: a vector or hybrid search that names a vector field the principal may not read is refused, naming that field"
+);
+
+/// `reader` of `doc`, reading everything but `masked`, which it sees
+/// only masked.
+fn masking(store: &dyn LakeStore, masked: &str) -> lakelands_api::Principal {
+    let mut reader = field_writer(store, "reader", "doc", &[]);
+    reader
+        .grants
+        .types
+        .get_mut(&TypeName::from("doc"))
+        .expect("field_writer grants the type")
+        .fields
+        .insert(masked.into(), Access::Masked);
+    reader
+}
+
+/// `search` by `who` must be refused as not granted, naming `field`.
+async fn refused(
+    store: &dyn LakeStore,
+    who: &lakelands_api::Principal,
+    search: Search,
+    field: &str,
+    what: &str,
+) -> Result<(), Failure> {
+    match doors(store).search(who, search).await {
+        Err(Error::Refused {
+            field: Some(f),
+            reason: Refusal::NotGranted,
+        }) if f.as_str() == field => Ok(()),
+        Err(e) => Err(Failure::new(format!(
+            "{what} must be refused as not granted, naming `{field}`; it failed with {e:?}"
+        ))),
+        Ok(r) => Err(Failure::new(format!(
+            "{what} must be refused as not granted, naming `{field}`; it answered {:?}, \
+             ranked by {:?}",
+            keys(&r.data),
+            r.data.ranked_by
+        ))),
+    }
+}
+
+async fn a_hybrid_search_over_an_unreadable_searchable_field_is_refused_whole(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    two_docs(store.as_ref()).await?;
+    // The vector [0, 1] points along `a` alone: an answer from the vector
+    // half would find `a` whatever the text says.
+    let own = doors(store.as_ref())
+        .search(
+            &owner(store.as_ref()),
+            doc_search(hybrid("quayside", Some(vec![0.0, 1.0]))),
+        )
+        .await
+        .must("the owner's hybrid search for \"quayside\" along `a`")?
+        .data;
+    ensure!(
+        keys(&own).first() == Some(&"a"),
+        "the owner's hybrid search for \"quayside\" along [0, 1] must rank `a` first; \
+         it found {:?}",
+        keys(&own)
+    );
+    let reader = masking(store.as_ref(), "body");
+    refused(
+        store.as_ref(),
+        &reader,
+        doc_search(hybrid("quayside", Some(vec![0.0, 1.0]))),
+        "body",
+        "a hybrid search bringing a vector, by a reader who sees the searchable `body` \
+         only masked,",
+    )
+    .await?;
+    refused(
+        store.as_ref(),
+        &reader,
+        doc_search(hybrid("quayside", None)),
+        "body",
+        "a hybrid search without a vector, by a reader who sees the searchable `body` \
+         only masked,",
+    )
+    .await
+}
+
+async fn a_vector_search_over_an_unreadable_vector_field_is_refused(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    two_docs(store.as_ref()).await?;
+    let along_a = || SearchMode::Vector {
+        field: "v".into(),
+        vector: vec![0.0, 1.0],
+    };
+    let own = doors(store.as_ref())
+        .search(&owner(store.as_ref()), doc_search(along_a()))
+        .await
+        .must("the owner's vector search along `a`")?
+        .data;
+    ensure!(
+        keys(&own) == ["a", "b"],
+        "the owner's vector search along [0, 1] must find `a`, then `b`; it found {:?}",
+        keys(&own)
+    );
+    let reader = masking(store.as_ref(), "v");
+    refused(
+        store.as_ref(),
+        &reader,
+        doc_search(along_a()),
+        "v",
+        "a vector search over `v`, by a reader who sees `v` only masked,",
+    )
+    .await?;
+    refused(
+        store.as_ref(),
+        &reader,
+        doc_search(hybrid("quayside", Some(vec![0.0, 1.0]))),
+        "v",
+        "a hybrid search over `v`, by a reader who sees `v` only masked,",
+    )
+    .await
+}
+
+check!(
+    /// A vector search cannot probe the text a vector is embedded from.
+    EMBED_PROBE_REFUSED = a_search_over_a_vector_embedded_from_an_unreadable_field_is_refused,
+    "024: a vector embedded from a field encodes that field, so a vector or hybrid search over it is refused, naming the field, when the principal may not read one of the fields it is embedded from, even though it may read the vector",
+    embedding
+);
+
+async fn a_search_over_a_vector_embedded_from_an_unreadable_field_is_refused(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use crate::conformance::backing::EMBED_MODEL;
+    use lakelands_api::ontology::{Authority, EmbedDecl, FieldType};
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    // Neither text is searchable: only the embedding reads `body`.
+    let vec = FieldDecl {
+        ty: FieldType {
+            dimensions: Some(2),
+            ..FieldType::kind(StorageKind::Vector)
+        },
+        authority: Authority::Derived,
+        embed: Some(EmbedDecl {
+            from: vec!["title".into(), "body".into()],
+            model: EMBED_MODEL.into(),
+        }),
+        ..field("vec", StorageKind::Text)
+    };
+    declare(
+        cat.as_ref(),
+        &own,
+        type_decl(
+            "doc",
+            vec![
+                field("title", StorageKind::Text),
+                field("body", StorageKind::Text),
+                vec,
+            ],
+        ),
+    )
+    .await?;
+    upsert(
+        cat.as_ref(),
+        &own,
+        "doc",
+        "a",
+        json!({"title": "Minutes", "body": "the salary of the harbour master"}),
+    )
+    .await?;
+    let along = || SearchMode::Vector {
+        field: "vec".into(),
+        vector: vec![1.0, 0.0],
+    };
+    let mine = cat
+        .search(&own, doc_search(along()))
+        .await
+        .must("the owner's vector search over `vec`")?
+        .data;
+    ensure!(
+        keys(&mine) == ["a"],
+        "the owner's vector search over the embedded `vec` must find `a`; it found {:?}",
+        keys(&mine)
+    );
+    // The reader may read `title` and `vec`, but sees `body` only masked.
+    let reader = masking(store.as_ref(), "body");
+    refused(
+        store.as_ref(),
+        &reader,
+        doc_search(along()),
+        "body",
+        "a vector search over `vec`, embedded from `title` and `body`, by a reader who \
+         sees `body` only masked,",
+    )
+    .await?;
+    refused(
+        store.as_ref(),
+        &reader,
+        doc_search(SearchMode::Hybrid {
+            text: "harbour".into(),
+            field: "vec".into(),
+            vector: Some(vec![1.0, 0.0]),
+        }),
+        "body",
+        "a hybrid search over `vec`, embedded from `title` and `body`, by a reader who \
+         sees `body` only masked,",
+    )
+    .await
+}
+
+check!(
     /// Search follows the text as it now stands.
     SEARCH_FOLLOWS_TEXT = a_search_finds_a_record_by_its_current_text_and_nothing_by_none,
     "025: the index follows every write, so a record is found by its new words and no longer by its old ones, and a query of no words matches nothing"
