@@ -18,7 +18,9 @@
 //!
 //! **How it lands.** Each mapped source type is one source of the target,
 //! `mirror:<source lake>:<source type>`, written through `ingest` with
-//! the source's `known_at` as `seen_at`. A copy's fields are source fields
+//! the source's `known_at` as `seen_at` and, as `upstream`, the source
+//! lake and the position of the state that was read, so a read in the
+//! target can say which state of the source it reflects. A copy's fields are source fields
 //! nobody in the target can author, and `purge_source` of that source
 //! removes the copies whole. A window carries only the fields that differ
 //! from the copy, so a reference the source kept to a record it retired
@@ -57,19 +59,27 @@
 //! type with a field its source does not write (authority other than
 //! `source`), a field the principal may not write, a reference to a type
 //! the connection does not mirror, or, for a new connection, a field the
-//! source does not admit. A second process mirroring the same connection
-//! is refused by the position file's lock.
+//! source does not admit; and a principal without the write grant on
+//! `sys.mirror`. A second process mirroring the same connection is
+//! refused by the connection's lock.
 //!
 //! **Where it starts and where it is.** A new connection copies what the
 //! source holds at its head (`snapshot`, the default) or only what changes
 //! after it (`head`); it never replays history, which would walk every
 //! copy through every past state and fire its triggers on the way. Its
-//! position lives under `<root>/mirrors/<target lake>/`: `<name>.json`,
-//! per source type the next position to read and why it stopped, if it
-//! did; `<name>.lock`; and `<name>.ndjson`, a journal line per window and
-//! per action. The position file is interim: the target lake's own record
-//! of a connection replaces it. Delivery is at least once, in order: the
-//! position is written after each window or action is durable.
+//! position lives in the target lake, one `sys.mirror` record per
+//! connection and source type: the next source position to read, and
+//! where and why the type stopped, if it did. The CLI's system vocabulary
+//! ([`MirrorVocabulary`]) gives that type to the lakes a connection writes
+//! into, the connection's principal writes it, and anyone granted may
+//! `find` it. Each record is written after the window or action it
+//! describes is durable, so delivery is at least once, in order, and a
+//! window delivered again appends nothing. Beside it, under
+//! `<root>/mirrors/<target lake>/`, the mirror keeps `<name>.lock`, held
+//! while it runs, and `<name>.ndjson`, a journal line per window and per
+//! action. A position file an earlier version kept there (`<name>.json`)
+//! seeds the records once, when there are none, and is renamed
+//! `<name>.json.seeded`.
 //!
 //! The source is a lake of the same root; a source served elsewhere is
 //! not offered.
@@ -77,19 +87,19 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use lakelands_api::describe::TypeDescription;
 use lakelands_api::event::{Event, EventBody};
-use lakelands_api::ontology::{Authority, FieldType};
-use lakelands_api::seam::FeedFilter;
+use lakelands_api::ontology::{Authority, FieldDecl, FieldType, StorageKind, TypeDecl};
+use lakelands_api::seam::{FeedFilter, SystemVocabulary};
 use lakelands_api::write::Declaration;
 use lakelands_api::{
-    Error, FieldName, Find, Found, Get, IdempotencyKey, LakeStore, Patch, Position, Principal,
-    ReadAt, Record, RecordKey, RelationName, SourceId, SourceRecord, Timestamp, TypeName, Value,
-    WriteContext, WriteOpts, ingest_all,
+    Error, FieldName, Find, Found, Get, IdempotencyKey, LakeId, LakeStore, Patch, Position,
+    Principal, ReadAt, Record, RecordKey, RelationName, SourceId, SourceRecord, Timestamp,
+    TypeName, Upstream, Value, WriteContext, WriteOpts, ingest_all,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -107,6 +117,102 @@ pub const KINDS: [&str; 7] = [
 
 /// The prefix of a link type's name.
 const LINK: &str = "sys.link.";
+
+/// The host type a mirror keeps each connection's position in, one record
+/// per connection and source type, in the target lake.
+pub const MIRROR_TYPE: &str = "sys.mirror";
+
+/// The declaration of [`MIRROR_TYPE`]: keyed by the connection and the
+/// source type, every field authored, written by the connection's
+/// principal.
+pub fn mirror_type() -> TypeDecl {
+    let field = |name: &str, kind, required| FieldDecl {
+        name: name.into(),
+        ty: FieldType::kind(kind),
+        required,
+        authority: Authority::Authored,
+        derived: None,
+        function: None,
+        depends_on: vec![],
+        on_input_change: Default::default(),
+        sensitive: false,
+        searchable: false,
+        description: None,
+        label: None,
+        embed: None,
+    };
+    TypeDecl {
+        name: MIRROR_TYPE.into(),
+        key: vec!["connection".into(), "source_type".into()],
+        fields: vec![
+            field("connection", StorageKind::Text, true),
+            field("source_type", StorageKind::Text, true),
+            field("source_lake", StorageKind::Text, true),
+            field("target_type", StorageKind::Text, true),
+            field("next", StorageKind::Number, true),
+            field("stopped_at", StorageKind::Number, false),
+            field("stopped_why", StorageKind::Text, false),
+        ],
+        relations: vec![],
+        view: None,
+        valid_from: None,
+        valid_to: None,
+        field_meta: true,
+        language: None,
+        description: Some(
+            "Where one mirror connection stands for one source type: the next source position \
+             to read (0 while the type is still to be copied), and where and why it stopped."
+                .into(),
+        ),
+        label: None,
+    }
+}
+
+/// The mirror's system vocabulary: [`MIRROR_TYPE`], held by the lakes a
+/// connection of the `mirror` section writes into, and by no other.
+#[derive(Clone, Debug, Default)]
+pub struct MirrorVocabulary {
+    targets: BTreeSet<LakeId>,
+}
+
+impl MirrorVocabulary {
+    /// The vocabulary of a `mirror` section.
+    pub fn of(config: &MirrorConfig) -> MirrorVocabulary {
+        MirrorVocabulary {
+            targets: config
+                .connections
+                .iter()
+                .map(|c| LakeId::from(c.target.as_str()))
+                .collect(),
+        }
+    }
+}
+
+impl SystemVocabulary for MirrorVocabulary {
+    fn types(&self) -> Vec<TypeDecl> {
+        vec![mirror_type()]
+    }
+
+    fn may_hold(&self, lake: &LakeId, ty: &TypeName) -> bool {
+        ty.as_str() == MIRROR_TYPE && self.targets.contains(lake)
+    }
+}
+
+/// Refuse a connection's principal that may not write its position: every
+/// field of [`MIRROR_TYPE`].
+pub fn may_keep_position(grants: &lakelands_api::Grants) -> Result<(), String> {
+    let ty = TypeName::from(MIRROR_TYPE);
+    for f in &mirror_type().fields {
+        if !grants.access(&ty, &f.name).writes() {
+            return Err(format!(
+                "the principal lacks the write grant on `{MIRROR_TYPE}` (its field `{}`), where \
+                 the mirror keeps its position",
+                f.name
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// The `mirror` section of a root's `lakelands.json`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -291,10 +397,11 @@ pub struct Mirror {
     writer: Principal,
     map: BTreeMap<TypeName, Mapped>,
     kept: Kept,
+    // What the target's records hold, so a save writes only what moved.
+    persisted: Kept,
     start: Start,
     batch: u32,
     poll: Duration,
-    position_file: PathBuf,
     journal: File,
     // Held for the mirror's life: a second mirror of the same connection
     // is refused at start.
@@ -639,6 +746,7 @@ impl Mirror {
                  writes through the target's one writer"
             ));
         }
+        may_keep_position(&writer.grants).map_err(|why| format!("connection `{name}`: {why}"))?;
         if !writer.grants.ingest {
             return Err(format!(
                 "connection `{name}`: the principal may not ingest into lake `{to}`"
@@ -669,13 +777,6 @@ impl Mirror {
                 return Err(format!("{} cannot be locked: {err}", lock_file.display()));
             }
         }
-        let position_file = home.join(format!("{name}.json"));
-        let kept = match std::fs::read(&position_file) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|e| format!("{} is not a position file: {e}", position_file.display()))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Kept::default(),
-            Err(e) => return Err(format!("{} cannot be read: {e}", position_file.display())),
-        };
         let journal_file = home.join(format!("{name}.ndjson"));
         let journal = OpenOptions::new()
             .create(true)
@@ -695,15 +796,16 @@ impl Mirror {
             reader,
             writer,
             map: BTreeMap::new(),
-            kept,
+            kept: Kept::default(),
+            persisted: Kept::default(),
             start: connection.start,
             batch: config.batch,
             poll: Duration::from_millis(config.poll_millis),
-            position_file,
             journal,
             _lock: lock,
         };
         let refused = |why: String| format!("connection `{name}` from `{from}` into `{to}`: {why}");
+        mirror.load(&home).await.map_err(&refused)?;
         let tcat = mirror.target.catalog(WriteContext::default());
         let mut descriptions = BTreeMap::new();
         for (s, t) in &names {
@@ -783,12 +885,12 @@ impl Mirror {
                         Err(why) => Some(why),
                     };
                     if let Some(why) = why {
-                        mirror.stop(&mirror.owned(s), Position(resume), why)?;
+                        mirror.stop(&mirror.owned(s), Position(resume), why).await?;
                     }
                 }
             }
         }
-        mirror.save()?;
+        mirror.save().await?;
         Ok(mirror)
     }
 
@@ -876,13 +978,13 @@ impl Mirror {
                 _ => {
                     self.flush(&mut run).await?;
                     self.act(e).await?;
-                    self.advance(e.position.next())?;
+                    self.advance(e.position.next()).await?;
                 }
             }
         }
         self.flush(&mut run).await?;
         if batch.next.0 > from {
-            self.advance(batch.next)?;
+            self.advance(batch.next).await?;
         }
         // The store's own feed keeps no consumer state; a relay may.
         let _ = feed.ack(&format!("mirror:{}", self.name), batch.next).await;
@@ -903,7 +1005,7 @@ impl Mirror {
                     },
                 );
             }
-            return self.save();
+            return self.save().await;
         }
         let scat = self.source.catalog(WriteContext::default());
         let mut records = Vec::new();
@@ -938,7 +1040,10 @@ impl Mirror {
                     records.push((
                         s.clone(),
                         SourceRecord {
-                            upstream: None,
+                            upstream: Some(Upstream {
+                                lake: self.source.lake().clone(),
+                                position: head,
+                            }),
                             ty: mapped.target.clone(),
                             key: row.key,
                             fields: patch,
@@ -983,7 +1088,7 @@ impl Mirror {
             self.kept.types.insert(t, state);
         }
         self.journal(json!({ "snapshot": head.0 }));
-        self.save()
+        self.save().await
     }
 
     /// Records in the order they must land, cut into one window per run
@@ -1038,7 +1143,10 @@ impl Mirror {
             records.push((
                 s.clone(),
                 SourceRecord {
-                    upstream: None,
+                    upstream: Some(Upstream {
+                        lake: self.source.lake().clone(),
+                        position,
+                    }),
                     ty: mapped.target.clone(),
                     key: key.clone(),
                     fields: patch,
@@ -1048,10 +1156,10 @@ impl Mirror {
         }
         for (s, window) in self.windows(records) {
             if let Some(why) = self.ingest(&s, window).await? {
-                return self.stop(&[s], first, why);
+                return self.stop(&[s], first, why).await;
             }
         }
-        self.advance(last.next())
+        self.advance(last.next()).await
     }
 
     /// Ingest one window of one source type. A refusal is answered as the
@@ -1137,14 +1245,17 @@ impl Mirror {
             }
             // No copy to retire: the record never crossed.
             Err(Error::NotFound { .. }) => Ok(()),
-            Err(e @ Error::Refused { .. }) => self.stop(
-                std::slice::from_ref(s),
-                p,
-                format!(
-                    "the target refused to retire `{}` `{key}`: {e}",
-                    mapped.target
-                ),
-            ),
+            Err(e @ Error::Refused { .. }) => {
+                self.stop(
+                    std::slice::from_ref(s),
+                    p,
+                    format!(
+                        "the target refused to retire `{}` `{key}`: {e}",
+                        mapped.target
+                    ),
+                )
+                .await
+            }
             Err(e) => Err(format!("the target failed: {e}")),
         }
     }
@@ -1182,11 +1293,14 @@ impl Mirror {
                 Ok(())
             }
             Err(Error::NotFound { .. }) => Ok(()),
-            Err(e @ Error::Refused { .. }) => self.stop(
-                std::slice::from_ref(s),
-                p,
-                format!("the target refused a hold: {e}"),
-            ),
+            Err(e @ Error::Refused { .. }) => {
+                self.stop(
+                    std::slice::from_ref(s),
+                    p,
+                    format!("the target refused a hold: {e}"),
+                )
+                .await
+            }
             Err(e) => Err(format!("the target failed: {e}")),
         }
     }
@@ -1242,6 +1356,7 @@ impl Mirror {
                 mapped.target
             ),
         )
+        .await
     }
 
     /// `s` and its link types.
@@ -1341,7 +1456,7 @@ impl Mirror {
 
     /// Stop `types` at `p` for `why`: each keeps `p` as the position to
     /// read from when it resumes.
-    fn stop(&mut self, types: &[TypeName], p: Position, why: String) -> Result<(), String> {
+    async fn stop(&mut self, types: &[TypeName], p: Position, why: String) -> Result<(), String> {
         for t in types {
             self.kept.types.insert(
                 t.clone(),
@@ -1356,11 +1471,11 @@ impl Mirror {
             self.say(&format!("`{t}` stopped at position {p}: {why}"));
             self.journal(json!({ "stopped": t, "at": p.0, "why": why }));
         }
-        self.save()
+        self.save().await
     }
 
     /// Every running type has been brought across up to `next`.
-    fn advance(&mut self, next: Position) -> Result<(), String> {
+    async fn advance(&mut self, next: Position) -> Result<(), String> {
         let mut moved = false;
         for state in self.kept.types.values_mut() {
             if state.stopped.is_none() && state.next < next.0 {
@@ -1368,21 +1483,125 @@ impl Mirror {
                 moved = true;
             }
         }
-        if moved { self.save() } else { Ok(()) }
+        if moved { self.save().await } else { Ok(()) }
     }
 
-    /// Keep the positions: written beside the file, synced, and renamed
-    /// over it, so a crash leaves the old one or the new one.
-    fn save(&self) -> Result<(), String> {
-        let tmp = self.position_file.with_extension("json.tmp");
-        let bytes = serde_json::to_vec_pretty(&self.kept).expect("positions serialise");
-        File::create(&tmp)
-            .and_then(|mut f| {
-                f.write_all(&bytes)?;
-                f.sync_all()
-            })
-            .and_then(|()| std::fs::rename(&tmp, &self.position_file))
-            .map_err(|e| format!("{} cannot be written: {e}", self.position_file.display()))
+    /// Keep the positions: each source type whose state moved is written
+    /// to its `sys.mirror` record, after what it describes is durable.
+    async fn save(&mut self) -> Result<(), String> {
+        let tcat = self.target.catalog(WriteContext::default());
+        let decl = mirror_type();
+        let ty = TypeName::from(MIRROR_TYPE);
+        let moved: Vec<(TypeName, TypeState)> = self
+            .kept
+            .types
+            .iter()
+            .filter(|(t, state)| self.persisted.types.get(*t) != Some(*state))
+            .map(|(t, state)| (t.clone(), state.clone()))
+            .collect();
+        for (t, state) in moved {
+            let Some(mapped) = self.map.get(&t) else {
+                continue;
+            };
+            let fields: Patch = [
+                ("connection", json!(self.name)),
+                ("source_type", json!(t)),
+                ("source_lake", json!(self.source.lake())),
+                ("target_type", json!(mapped.target)),
+                ("next", json!(state.next)),
+                ("stopped_at", json!(state.stopped.as_ref().map(|s| s.at))),
+                ("stopped_why", json!(state.stopped.as_ref().map(|s| &s.why))),
+            ]
+            .into_iter()
+            .map(|(f, v)| (FieldName::from(f), v))
+            .collect();
+            let key = lakelands_api::key::record_key(&decl, &fields)
+                .expect("a position record has its key fields");
+            tcat.upsert(&self.writer, &ty, &key, fields, WriteOpts::default())
+                .await
+                .map_err(|e| {
+                    format!("the position of `{t}` cannot be kept in `{MIRROR_TYPE}`: {e}")
+                })?;
+            self.persisted.types.insert(t, state);
+        }
+        Ok(())
+    }
+
+    /// Read the connection's positions from the target's `sys.mirror`
+    /// records. With none there yet and a position file of an earlier
+    /// version beside the lock, the file seeds them once and is renamed
+    /// `<connection>.json.seeded`; it is never read again.
+    async fn load(&mut self, home: &Path) -> Result<(), String> {
+        let tcat = self.target.catalog(WriteContext::default());
+        let ty = TypeName::from(MIRROR_TYPE);
+        match tcat
+            .describe_type(&self.writer, &ty, ReadAt::default())
+            .await
+        {
+            Ok(_) => {}
+            Err(Error::NotFound { .. }) => {
+                return Err(format!(
+                    "lake `{}` holds no `{MIRROR_TYPE}`, where a mirror keeps its position: it \
+                     was opened without the mirror's vocabulary",
+                    self.target.lake()
+                ));
+            }
+            Err(e) => return Err(format!("`{MIRROR_TYPE}` cannot be described: {e}")),
+        }
+        let mut cursor = None;
+        loop {
+            let reply = tcat
+                .find(
+                    &self.writer,
+                    &ty,
+                    Find {
+                        limit: Some(self.batch),
+                        cursor: cursor.take(),
+                        ..Find::default()
+                    },
+                )
+                .await
+                .map_err(|e| format!("`{MIRROR_TYPE}` cannot be read: {e}"))?;
+            let Found::Records { rows, next_cursor } = reply.data else {
+                break;
+            };
+            for row in rows {
+                let text = |f: &str| row.fields.get(f).and_then(Value::as_str);
+                let number = |f: &str| row.fields.get(f).and_then(Value::as_u64);
+                if text("connection") != Some(self.name.as_str()) {
+                    continue;
+                }
+                let (Some(t), Some(next)) = (text("source_type"), number("next")) else {
+                    continue;
+                };
+                let stopped = number("stopped_at").map(|at| Stopped {
+                    at,
+                    why: text("stopped_why").unwrap_or_default().to_owned(),
+                });
+                self.kept
+                    .types
+                    .insert(TypeName::from(t), TypeState { next, stopped });
+            }
+            match next_cursor {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        self.persisted = self.kept.clone();
+        let file = home.join(format!("{}.json", self.name));
+        if self.kept.types.is_empty() && file.exists() {
+            let bytes = std::fs::read(&file)
+                .map_err(|e| format!("{} cannot be read: {e}", file.display()))?;
+            let seeded: Kept = serde_json::from_slice(&bytes)
+                .map_err(|e| format!("{} is not a position file: {e}", file.display()))?;
+            self.kept = seeded;
+            self.save().await?;
+            let to = file.with_extension("json.seeded");
+            std::fs::rename(&file, &to)
+                .map_err(|e| format!("{} cannot be renamed: {e}", file.display()))?;
+            self.journal(json!({ "seeded": to.display().to_string() }));
+        }
+        Ok(())
     }
 
     /// Append one line to the journal; a journal that cannot be written is

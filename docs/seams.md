@@ -1033,7 +1033,10 @@ refuses to start when it holds that lake but not as its writer.
   cross, and its copy keeps its last state.
 - **How it lands.** Each source type is one source of the target,
   `mirror:<source lake>:<source type>`, written through `ingest` with
-  the source's `known_at` as `seen_at`. The copy's fields are `source`
+  the source's `known_at` as `seen_at` and, as `upstream`, the source
+  lake and the position of the state that was read: a field read with
+  `with_meta` in the target says which state of the source it reflects
+  (`docs/log-format.md`, format version 3). The copy's fields are `source`
   fields that nobody in the target can author, and `purge_source` of
   the connection's source removes the copies whole
   (`docs/decisions/039-a-source-is-retracted-as-one.md`). A window
@@ -1059,7 +1062,7 @@ refuses to start when it holds that lake but not as its writer.
   the source re-keys it while the target keeps the old key rule; the
   target's own migration to the same key rule moves the copies and every
   reference to them together. A stopped type keeps its position and the
-  reason, said on standard error and in the position file, and the
+  reason, said on standard error and in its `sys.mirror` record, and the
   connection's other types go on. A restart asks again from where it
   stopped. A new source field crosses once the target declares it, for
   the records that change after.
@@ -1067,29 +1070,39 @@ refuses to start when it holds that lake but not as its writer.
   holds it at its head, then followed from there (`start: snapshot`, the
   default), or only followed from the head (`start: head`). History is
   never replayed: that would walk every copy through every past state
-  and fire its triggers on the way. Deleting a type from the position
-  file copies it again, and every unchanged field appends nothing.
+  and fire its triggers on the way. Retiring a type's `sys.mirror`
+  record while the mirror is stopped copies it again at the next start,
+  and every unchanged field appends nothing.
 - **The principal** is one of the root's `principals`, resolved in each
   lake: in the source it needs to read what crosses, and `restricted`
-  for holds to cross; in the target it needs `ingest` and write access
-  to every field of the mirrored types.
-- **Its files**, under `mirrors/<target lake>/` in the root, are interim:
-  the target lake's own record of each connection replaces them.
-  - `<connection>.json` holds, per source type, the next position to
-    read and, when it stopped, where and why:
-    `{"types": {"customer": {"next": 120, "stopped": {"at": 118, "why": "…"}}}}`.
-    It is written after each window or action is durable, so delivery is
-    at least once, in order.
-  - `<connection>.lock` is held while the mirror runs, so a second
-    process refuses to start.
-  - `<connection>.ndjson` is the journal, one line per window, per
-    retirement or hold, and per stop.
+  for holds to cross; in the target it needs `ingest`, write access to
+  every field of the mirrored types, and the write grant on
+  `sys.mirror`, where it keeps its position.
+- **Its position** lives in the target lake, one `sys.mirror` record
+  per connection and source type, link types included: `connection`,
+  `source_type` (together the key), `source_lake`, `target_type`,
+  `next` (the next source position to read; 0 while the type is still
+  to be copied), and `stopped_at` and `stopped_why` when it stopped.
+  The CLI's system vocabulary gives the type to the lakes a connection
+  writes into, and to no other. The mirror writes each record after the
+  window or action it counts is durable, so a crash in between delivers
+  that window again, and it appends nothing. An operator reads the
+  state as any record: `find sys.mirror`, with `where: "stopped_at is
+  not null"` for the stopped types.
+- **Its files**, under `mirrors/<target lake>/` in the root:
+  `<connection>.lock`, held while the mirror runs, so a second process
+  refuses to start, and `<connection>.ndjson`, the journal, one line per
+  window, per retirement or hold, and per stop. A position file an
+  earlier version kept there (`<connection>.json`) seeds the records
+  once, when there are none, and is renamed `<connection>.json.seeded`;
+  it is never read again.
 - **The source is a lake of the same root.** A source served elsewhere
   is not offered: the feed at a network door opens only to a principal
   that reads everything (`docs/decisions/037-the-feed-over-a-network-door.md`),
   and the mirror's reads must be the connection's principal.
 - **Checked when the root opens:** every lake a connection names is one
-  the root holds, and its principal one the root lists; every connection
+  the root holds, and its principal one the root lists, with the write
+  grant on `sys.mirror`; every connection
   has a name of letters, digits, `-` and `_`, used once, and maps at
   least one type; no lake is mirrored into itself; no `sys.` type is
   mapped; no target type has two sources; no type is mirrored into a
