@@ -42,7 +42,7 @@ every kind, and `body`, which holds the kind and its payload.
 | `origin` | string | always | Which authority wrote it: `source`, `authored`, `derived` or `system`. |
 | `source` | string | source events | The source a `source` event came from. |
 | `seen_at` | string | when known | When the source observed the values (§1.3). |
-| `upstream` | object | when read from another lake | `{ "lake", "position" }`: the lake whose log the values were read from (its lake id) and the position of the event there whose state they are (an integer). Only on `record_ingested`, from version 3 on (§6). The ingesting principal states it, as it states `seen_at`. |
+| `upstream` | object | when read from another lake | `{ "lake", "position" }`: the lake whose log the values were read from (its lake id) and the position of the event there whose state they are (an integer). Only on `record_ingested`, from version 3 on (§6); a reader refuses it on any other kind, naming the kind. The ingesting principal states it, as it states `seen_at`. |
 | `procedure` | object | when one did | `{ "name", "version" }`, both strings, of the procedure that produced the values: for a verb, its name and its declaration's `version` in decimal digits; for a function backing, the function's name and its declaration's `version`; for an embedding, the model as the backend names it and the version it reports. |
 | `context` | object | always | The host's context for the write: `{ "origin": "direct" \| "reactive" \| "scheduled", "depth": n }`, `depth` an integer ≥ 0. |
 | `cause` | integer | consequences | The position of the event this one follows from: a verb's write names its `verb_called`, an accepted proposal's write names its `write_accepted`, a fired trigger names the write that fired it. |

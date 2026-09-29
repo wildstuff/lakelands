@@ -25,7 +25,9 @@ The files:
 - `v3.json`: two version-3 events after `rekey.json`'s: a
   `record_ingested` carrying `upstream`, whose id leaves the member out,
   and a `declared` whose derived field calls `date_bucket`; and
-  `negative`, the first written as version 2, which a reader refuses.
+  `negative`, the first written as version 2, which a reader refuses;
+  and `misplaced`, a version-3 `record_retired` carrying `upstream`,
+  which a reader refuses for its kind.
 - `rekey.json`: one version-2 event after position 7, a `migrated`
   event whose `rekeyed` moves key `7` of `account` to `DE%3A01`: its
   line, which is canonical, and its hash.
