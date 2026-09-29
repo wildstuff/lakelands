@@ -119,3 +119,207 @@ fn a_typed_expression_refuses_members_it_does_not_know() {
     let lit = json!({"op": "lit", "value": {"type": "number", "value": "1", "unit": "eur"}});
     assert!(serde_json::from_value::<Expr>(lit).is_err());
 }
+
+/// Reads a declaration that must be refused, and answers the sentence.
+fn refused(declaration: serde_json::Value) -> String {
+    let e = serde_json::from_value::<lakelands_api::write::Declaration>(declaration)
+        .expect_err("a member the declaration does not take is refused");
+    e.to_string()
+}
+
+fn text(name: &str) -> serde_json::Value {
+    json!({"name": name, "type": {"kind": "text"}})
+}
+
+#[test]
+fn a_declaration_refuses_a_member_it_does_not_know_naming_it_and_where() {
+    // (declaration, the member, where it sits; "" for the top)
+    let cases = [
+        (
+            json!({"declare": "type", "name": "t", "fields": [text("a")], "icon": "x"}),
+            "icon",
+            "",
+        ),
+        (
+            json!({"declare": "type", "name": "t",
+                   "fields": [{"name": "a", "type": {"kind": "text"}, "format": "iban"}]}),
+            "format",
+            "fields[0]",
+        ),
+        (
+            json!({"declare": "type", "name": "t",
+                   "fields": [{"name": "a", "type": {"kind": "decimal", "precision": 2}}]}),
+            "precision",
+            "fields[0].type",
+        ),
+        (
+            json!({"declare": "type", "name": "t", "fields": [text("a")],
+                   "relations": [{"name": "r", "target": "u", "colour": "red"}]}),
+            "colour",
+            "relations[0]",
+        ),
+        (
+            json!({"declare": "type", "name": "t", "fields": [text("a")],
+                   "relations": [{"name": "r", "target": "u",
+                                  "fields": [{"name": "share", "type": {"kind": "number"}, "unit": "%"}]}]}),
+            "unit",
+            "relations[0].fields[0]",
+        ),
+        (
+            json!({"declare": "type", "name": "v",
+                   "view": {"source": "t", "measures": [], "having": "x > 1"}}),
+            "having",
+            "view",
+        ),
+        (
+            json!({"declare": "type", "name": "v",
+                   "view": {"source": "t", "measures": [{"name": "n", "expr": "count()", "as": "number"}]}}),
+            "as",
+            "view.measures[0]",
+        ),
+        (
+            json!({"declare": "value_type", "name": "money", "kind": "decimal", "unit": "EUR"}),
+            "unit",
+            "",
+        ),
+        (
+            json!({"declare": "verb", "name": "pay", "on": "t", "risk": "low",
+                   "effect": "write", "set": [], "undo": "unpay"}),
+            "undo",
+            "",
+        ),
+        (
+            json!({"declare": "verb", "name": "pay", "on": "t", "risk": "low", "effect": "write",
+                   "set": [{"field": "a", "value": "'x'", "when": "true"}]}),
+            "when",
+            "set[0]",
+        ),
+        (
+            json!({"declare": "verb", "name": "pay", "on": "t", "risk": "low", "effect": "write",
+                   "set": [], "payload": [{"name": "p", "type": {"kind": "text"}, "hint": "?"}]}),
+            "hint",
+            "payload[0]",
+        ),
+        (
+            json!({"declare": "trigger", "name": "late", "on": "t", "then": "notify"}),
+            "then",
+            "",
+        ),
+        (
+            json!({"declare": "object_set", "name": "open", "of": "t", "where": "true", "limit": 5}),
+            "limit",
+            "",
+        ),
+        (
+            json!({"declare": "function", "name": "f", "backing": "http", "timeout": 5}),
+            "timeout",
+            "",
+        ),
+        (
+            json!({"declare": "function", "name": "f", "backing": "expr", "expr": "x",
+                   "inputs": [{"name": "x", "type": {"kind": "number"}, "unit": "m"}]}),
+            "unit",
+            "inputs[0]",
+        ),
+    ];
+    for (declaration, member, at) in cases {
+        let said = refused(declaration.clone());
+        assert!(
+            said.contains(&format!("has no member `{member}`")),
+            "{declaration}: {said}"
+        );
+        if at.is_empty() {
+            assert!(!said.contains(" at `"), "{declaration}: {said}");
+        } else {
+            assert!(
+                said.contains(&format!(" at `{at}`")),
+                "{declaration}: {said}"
+            );
+        }
+        let name = declaration["name"].as_str().unwrap();
+        assert!(said.contains(&format!("`{name}`")), "{declaration}: {said}");
+    }
+}
+
+#[test]
+fn a_verb_refuses_the_member_of_the_other_effect() {
+    let said = refused(
+        json!({"declare": "verb", "name": "pay", "on": "t", "risk": "low",
+                              "effect": "write", "set": [], "executor": "bank"}),
+    );
+    assert!(said.contains("`executor`"), "{said}");
+    let said = refused(
+        json!({"declare": "verb", "name": "pay", "on": "t", "risk": "high",
+                              "effect": "external", "executor": "bank", "set": []}),
+    );
+    assert!(said.contains("`set`"), "{said}");
+}
+
+#[test]
+fn a_proposed_declaration_or_migration_refuses_a_member_it_does_not_know() {
+    let declare = json!({"write": "declare", "declarations": [
+        {"declare": "type", "name": "t", "fields": [text("a")]},
+        {"declare": "type", "name": "u", "fields": [{"name": "b", "type": {"kind": "text"}, "format": "iban"}]},
+    ]});
+    let said = serde_json::from_value::<ProposedWrite>(declare)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        said.contains("`u` has no member `format` at `fields[0]`"),
+        "{said}"
+    );
+    let migrate = json!({"write": "migrate", "migration": {
+        "to": {"name": "t", "fields": [text("a")]}, "renames": [], "reason": "why"}});
+    let said = serde_json::from_value::<ProposedWrite>(migrate)
+        .unwrap_err()
+        .to_string();
+    assert!(said.contains("`reason`"), "{said}");
+    let migrate = json!({"write": "migrate", "migration": {
+        "to": {"name": "t", "fields": [text("a")], "icon": "x"}}});
+    let said = serde_json::from_value::<ProposedWrite>(migrate)
+        .unwrap_err()
+        .to_string();
+    assert!(said.contains("`icon`"), "{said}");
+}
+
+#[test]
+fn a_strict_declaration_is_read_back_from_what_it_writes() {
+    let declarations = [
+        json!({"declare": "type", "name": "invoice", "key": ["number"],
+               "fields": [
+                   {"name": "number", "type": {"kind": "text"}, "required": true},
+                   {"name": "partner", "type": {"kind": "reference", "target": "partner"}},
+                   {"name": "amount", "type": {"kind": "decimal", "value_type": "money"},
+                    "description": "gross", "label": "Amount"},
+                   {"name": "late", "type": {"kind": "boolean"}, "authority": "derived",
+                    "derived": "due < now()", "depends_on": ["due"]},
+                   {"name": "due", "type": {"kind": "date_time"}},
+               ],
+               "relations": [{"name": "paid_by", "target": "payment", "cardinality": "many_to_many",
+                              "fields": [text("note")]}],
+               "language": "de", "field_meta": false}),
+        json!({"declare": "type", "name": "open_by_partner",
+               "view": {"source": "invoice", "where": "late", "group_by": ["partner"],
+                        "measures": [{"name": "total", "expr": "sum(amount)"}]}}),
+        json!({"declare": "value_type", "name": "money", "kind": "decimal", "scale": 2}),
+        json!({"declare": "verb", "name": "settle", "on": "invoice", "risk": "low",
+               "payload": [text("note")], "effect": "write",
+               "set": [{"field": "late", "value": "false"}]}),
+        json!({"declare": "verb", "name": "remind", "on": "invoice", "risk": "high",
+               "requires": "late", "effect": "external", "executor": "mail"}),
+        json!({"declare": "trigger", "name": "went_late", "on": "invoice", "when": "changed(late)"}),
+        json!({"declare": "object_set", "name": "late_ones", "of": "invoice", "where": "late"}),
+        json!({"declare": "function", "name": "double", "backing": "expr",
+               "inputs": [{"name": "x", "type": {"kind": "number"}}], "expr": "x * 2"}),
+    ];
+    for declaration in declarations {
+        let read: lakelands_api::write::Declaration = serde_json::from_value(declaration.clone())
+            .unwrap_or_else(|e| panic!("{declaration}: {e}"));
+        let written = serde_json::to_value(&read).unwrap();
+        let again: lakelands_api::write::Declaration =
+            serde_json::from_value(written.clone()).unwrap_or_else(|e| panic!("{written}: {e}"));
+        assert_eq!(again, read);
+        assert_eq!(serde_json::to_value(&again).unwrap(), written);
+        assert_eq!(written["declare"], declaration["declare"]);
+    }
+}

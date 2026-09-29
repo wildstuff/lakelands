@@ -58,6 +58,7 @@ impl StorageKind {
 /// in the bundle over a storage kind. The set is open; adding one needs
 /// no engine change.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ValueTypeDecl {
     /// The value type's name (`iban`, `money`, `email`).
     pub name: ValueTypeName,
@@ -90,6 +91,7 @@ pub struct ValueTypeDecl {
 /// `vector` its `dimensions` (greater than zero); neither member may be
 /// given for another kind.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FieldType {
     /// How the value is stored.
     pub kind: StorageKind,
@@ -156,6 +158,7 @@ pub enum OnInputChange {
 
 /// One field of a type or of a relation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FieldDecl {
     /// The field's name.
     pub name: FieldName,
@@ -308,6 +311,7 @@ pub enum Cardinality {
 /// A relation from one type to another. A relation may carry fields of
 /// its own (the date a partner was assigned, the share of a payment).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RelationDecl {
     /// The relation's name, unique within its type.
     pub name: RelationName,
@@ -341,6 +345,7 @@ pub struct RelationDecl {
 /// A view type: records computed from other types, read with `find` like
 /// any other type and never written.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ViewDecl {
     /// The type the view reads.
     pub source: TypeName,
@@ -356,6 +361,7 @@ pub struct ViewDecl {
 
 /// One computed field of a view.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Measure {
     /// The view field it produces.
     pub name: FieldName,
@@ -365,6 +371,7 @@ pub struct Measure {
 
 /// A type: the shape of one kind of record.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TypeDecl {
     /// The type's name. `sys.` names are reserved.
     pub name: TypeName,
@@ -444,6 +451,7 @@ pub enum VerbEffect {
 
 /// One field a verb sets.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Assignment {
     /// The field set.
     pub field: FieldName,
@@ -454,6 +462,7 @@ pub struct Assignment {
 /// A verb: a named action on a record of one type, with a typed payload.
 /// Over MCP each verb is its own tool.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "VerbWire")]
 pub struct VerbDecl {
     /// The verb's name (`pay_invoice`).
     pub name: VerbName,
@@ -475,10 +484,69 @@ pub struct VerbDecl {
     pub description: Option<String>,
 }
 
+/// A verb as it is read: the effect's members beside the verb's own, each
+/// refused where the effect does not take it. serde cannot refuse an
+/// unknown member of a struct that flattens another, so the verb is read
+/// through this and then built.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VerbWire {
+    name: VerbName,
+    on: TypeName,
+    #[serde(default)]
+    payload: Vec<FieldDecl>,
+    risk: Risk,
+    #[serde(default)]
+    requires: Option<Condition>,
+    effect: EffectKind,
+    #[serde(default)]
+    set: Option<Vec<Assignment>>,
+    #[serde(default)]
+    executor: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum EffectKind {
+    Write,
+    External,
+}
+
+impl TryFrom<VerbWire> for VerbDecl {
+    type Error = String;
+
+    fn try_from(w: VerbWire) -> Result<VerbDecl, String> {
+        let effect = match (w.effect, w.set, w.executor) {
+            (EffectKind::Write, Some(set), None) => VerbEffect::Write { set },
+            (EffectKind::External, None, Some(executor)) => VerbEffect::External { executor },
+            (EffectKind::Write, _, Some(_)) => {
+                return Err("a verb whose `effect` is `write` has no member `executor`".into());
+            }
+            (EffectKind::External, Some(_), _) => {
+                return Err("a verb whose `effect` is `external` has no member `set`".into());
+            }
+            (EffectKind::Write, None, None) => return Err("missing field `set`".into()),
+            (EffectKind::External, None, None) => return Err("missing field `executor`".into()),
+        };
+        Ok(VerbDecl {
+            name: w.name,
+            on: w.on,
+            payload: w.payload,
+            risk: w.risk,
+            requires: w.requires,
+            effect,
+            description: w.description,
+        })
+    }
+}
+
 /// A trigger: a condition the store watches. When a write makes it
 /// hold, the store appends `TriggerFired` in the same append. What
 /// reacts to it is the host's business.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TriggerDecl {
     /// The trigger's name.
     pub name: TriggerName,

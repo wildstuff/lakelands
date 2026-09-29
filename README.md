@@ -78,7 +78,7 @@ HTTP) and REST from one catalog. Agents never write a query language.
 > **Status: `0.4.0`.** Lakelands `0.4.0` is the `lakelands` CLI, its MCP
 > server (stdio and streamable HTTP) and its REST door over the SQLite,
 > in-memory and PostgreSQL engines, all three passing the whole
-> conformance suite (243 checks through the doors and 50 through the
+> conformance suite (247 checks through the doors and 50 through the
 > engine seam), with 43 decision records and the event log at format
 > version 4, installable from the release. Its budgets: the store facade
 > and engine traits hold 52 of 110 methods, the core crates 67 371 of

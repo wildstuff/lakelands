@@ -79,6 +79,13 @@ check!(
     given
 );
 
+check!(
+    /// An import refuses a declaration member it does not know.
+    IMPORT_UNKNOWN_MEMBER = an_import_refuses_a_declaration_member_it_does_not_know_naming_it,
+    "028 and log-format §2: an export whose `declared` event carries a member its declaration does not take, its hash made right, is refused on import, naming the member and the declaration",
+    given
+);
+
 /// The check's scratch directory, cleared of anything an earlier run
 /// left, and removed again when the check ends, however it ends.
 struct Scratch(PathBuf);
@@ -875,6 +882,45 @@ async fn an_import_is_refused_for_a_damaged_export_another_lake_or_a_lake_holdin
         why.contains(&format!("position {head}")),
         "an import into a lake holding events through {head} must be refused naming its head; \
          it was refused with: {why}"
+    );
+    Ok(())
+}
+
+async fn an_import_refuses_a_declaration_member_it_does_not_know_naming_it(
+    store: Arc<dyn LakeStore>,
+    given: crate::conformance::Given,
+) -> Result<(), Failure> {
+    let scratch = Scratch::new(given.scratch.clone());
+    invoices(store.as_ref(), 0, 1).await?;
+    let from = scratch.dir("from");
+    write(store.as_ref(), &from).await?;
+    let file = files(&from)?.remove(0);
+    let mut lines = lines_of(&from, &file)?;
+    let at = lines
+        .iter()
+        .position(|l| {
+            serde_json::from_slice::<Value>(l).is_ok_and(|e| {
+                e["body"]["kind"] == "declared" && e["body"]["declaration"]["name"] == "invoice"
+            })
+        })
+        .ok_or_else(|| Failure::new("the export holds no `declared` event of `invoice`"))?;
+    lines[at] = rehashed(&lines[at], |e| {
+        e["body"]["declaration"]["icon"] = json!("receipt");
+    })?;
+    rewrite(&from, &file, &lines)?;
+    let why = match (given.import)(from, store.lake().clone(), None, import_seams()).await {
+        Ok(_) => {
+            return Err(Failure::new(
+                "an export whose declaration of `invoice` carries `icon` must be refused; it \
+                 was imported",
+            ));
+        }
+        Err(e) => e.to_string(),
+    };
+    ensure!(
+        why.contains("`icon`") && why.contains("`invoice`"),
+        "an export whose declaration of `invoice` carries `icon` must be refused naming the \
+         member and the declaration; it was refused with: {why}"
     );
     Ok(())
 }

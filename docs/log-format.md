@@ -133,7 +133,9 @@ kind, or a member, it does not know refuses the event and says so; it
 never skips it. `body.kind` names the kind.
 
 Where a payload holds a declaration or a proposed write, its members and
-their values are the ones Appendix A lists. A member that has a default
+their values are the ones Appendix A lists. A declaration member it does
+not list, at any depth, is refused like any other, naming the member and
+where in the declaration it sits. A member that has a default
 may be written out or left absent; a reader treats the two alike, and
 nothing a reader computes (a schema hash, a fold) depends on which one
 the writer chose.

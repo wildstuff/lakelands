@@ -178,7 +178,7 @@ mod tests {
         }));
         assert!(calls_date_bucket(&derived));
         let trigger = declaration(json!({
-            "declare": "trigger", "name": "g", "on": "t", "verb": "v",
+            "declare": "trigger", "name": "g", "on": "t",
             "when": "date_bucket(at, 'day') > now()"
         }));
         assert!(calls_date_bucket(&trigger));
