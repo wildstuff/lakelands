@@ -123,7 +123,8 @@ macro_rules! door_checks {
             a_schema_proposal_is_refused_by_kind_at_propose_and_at_accept,
             an_order_by_latest_takes_no_field_and_no_view,
             a_trigger_watches_a_link_type_and_not_a_reference_relations,
-            degree_and_components_answer_the_graph_in_one_order);
+            degree_and_components_answer_the_graph_in_one_order,
+            a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_mode);
     };
     (@each $at:ident, $new:expr, $block_on:path;
         $($(#[$mark:ident])? $name:ident),* $(,)?) => {
@@ -294,7 +295,8 @@ pub struct Cast {
     /// Everything, on every type.
     pub owner: Principal,
     /// Reads everything but `secret`, sees `note` masked, writes `status`
-    /// and `partner`.
+    /// and `partner`; of a `doc`, which a check may declare, sees `body`
+    /// masked.
     pub clerk: Principal,
     /// Reads everything, writes `verdict` and `reason`.
     pub auditor: Principal,
@@ -311,22 +313,25 @@ impl Cast {
     pub fn of(lake: &LakeId) -> Cast {
         let mut importer = invoice_grants(Access::None, &[("amount", Access::Write)]);
         importer.ingest = true;
+        let mut clerk = invoice_grants(
+            Access::Read,
+            &[
+                ("status", Access::Write),
+                ("partner", Access::Write),
+                ("secret", Access::None),
+                ("note", Access::Masked),
+            ],
+        );
+        clerk.types.insert(
+            TypeName::from("doc"),
+            TypeGrants {
+                default: None,
+                fields: [(FieldName::from("body"), Access::Masked)].into(),
+            },
+        );
         Cast {
             owner: principal(lake, PrincipalKind::Human, "owner", Grants::owner()),
-            clerk: principal(
-                lake,
-                PrincipalKind::Agent,
-                "clerk",
-                invoice_grants(
-                    Access::Read,
-                    &[
-                        ("status", Access::Write),
-                        ("partner", Access::Write),
-                        ("secret", Access::None),
-                        ("note", Access::Masked),
-                    ],
-                ),
-            ),
+            clerk: principal(lake, PrincipalKind::Agent, "clerk", clerk),
             auditor: principal(
                 lake,
                 PrincipalKind::Human,
@@ -3937,4 +3942,128 @@ pub async fn degree_and_components_answer_the_graph_in_one_order(store: Arc<dyn 
         matches!(refusal(&e).1, Refusal::Invalid { .. }),
         "expected invalid, got {e:?}"
     );
+}
+
+/// A search probes what it searches: every searchable field of the type
+/// and the vector field it names. One the caller may not read refuses the
+/// search whole, naming the field, in every mode; a hybrid search is never
+/// answered from its vector half alone
+/// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
+pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_mode(
+    store: Arc<dyn LakeStore>,
+) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let doc = TypeDecl {
+        name: "doc".into(),
+        key: Vec::new(),
+        fields: vec![
+            FieldDecl {
+                searchable: true,
+                ..text("body")
+            },
+            FieldDecl {
+                ty: FieldType {
+                    dimensions: Some(2),
+                    ..FieldType::kind(StorageKind::Vector)
+                },
+                ..text("v")
+            },
+        ],
+        relations: Vec::new(),
+        view: None,
+        valid_from: None,
+        valid_to: None,
+        field_meta: true,
+        language: None,
+        description: None,
+        label: None,
+    };
+    f.catalog
+        .declare(owner, Declaration::Type(doc))
+        .await
+        .expect("the owner declares `doc`");
+    f.catalog
+        .upsert(
+            owner,
+            &ty("doc"),
+            &key("a"),
+            patch(&[("body", json!("quayside")), ("v", json!([0.0, 1.0]))]),
+            WriteOpts::default(),
+        )
+        .await
+        .expect("a doc is written");
+    let search = |mode: SearchMode| Search {
+        ty: ty("doc"),
+        mode,
+        k: 5,
+        cursor: None,
+        filter: None,
+        with_meta: false,
+        at: ReadAt::default(),
+    };
+    let modes = || {
+        [
+            (
+                "lexical",
+                SearchMode::Lexical {
+                    text: "quayside".into(),
+                },
+            ),
+            (
+                "hybrid without a vector",
+                SearchMode::Hybrid {
+                    text: "quayside".into(),
+                    field: "v".into(),
+                    vector: None,
+                },
+            ),
+            (
+                "hybrid along `a`",
+                SearchMode::Hybrid {
+                    text: "quayside".into(),
+                    field: "v".into(),
+                    vector: Some(vec![0.0, 1.0]),
+                },
+            ),
+        ]
+    };
+    for (what, mode) in modes() {
+        let hits = f
+            .catalog
+            .search(owner, search(mode))
+            .await
+            .unwrap_or_else(|e| panic!("the owner's {what} search answers: {e:?}"))
+            .data
+            .hits;
+        assert_eq!(
+            hits.iter()
+                .map(|h| h.record.key.as_str())
+                .collect::<Vec<_>>(),
+            ["a"],
+            "the owner's {what} search finds `a`"
+        );
+    }
+    // The clerk reads `v` but sees the searchable `body` only masked.
+    for (what, mode) in modes() {
+        match f.catalog.search(&f.cast.clerk, search(mode)).await {
+            Err(e) => {
+                let (field, reason) = refusal(&e);
+                assert!(
+                    matches!(reason, Refusal::NotGranted)
+                        && field.as_ref().map(FieldName::as_str) == Some("body"),
+                    "the clerk's {what} search is refused as not granted, naming `body`; \
+                     got {e:?}"
+                );
+            }
+            Ok(r) => panic!(
+                "the clerk's {what} search is refused, naming `body`; it answered {:?}",
+                r.data
+                    .hits
+                    .iter()
+                    .map(|h| h.record.key.as_str())
+                    .collect::<Vec<_>>()
+            ),
+        }
+    }
 }

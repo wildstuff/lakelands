@@ -7,6 +7,13 @@ searches it is refused when the principal may not read that field —
 also when the field would have been masked in the answer. The refusal
 names the field.
 
+A search probes every searchable field of its type, in every mode, and
+the vector field it names. A vector embedded from text encodes that
+text, so a vector or hybrid search also probes every field its vector
+is embedded from, even when the principal may read the vector itself.
+A hybrid search that one of these refuses is refused whole, never
+answered from its other half. This tightened in 0.5.0 (lakelands#242).
+
 `describe` holds to the same line: a masked field is described by its
 shape only — its name, type, access, whether it is required and
 sensitive, its authority and what an input change does to it — never by
