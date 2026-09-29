@@ -508,7 +508,8 @@ async fn a_damaged_export_is_refused_naming_the_position(
 
     // The last event's format version past the newest, and down from the
     // one before it; each with its hash made right.
-    for (what, v) in [("v3", 3), ("v1", 1)] {
+    let past = lakelands_api::event::LOG_FORMAT_VERSION + 1;
+    for (what, v) in [("past", past), ("v1", 1)] {
         let dir = fresh(what).await?;
         let mut lines = lines_of(&dir, &active)?;
         lines[last] = rehashed(&lines[last], |e| e["v"] = json!(v))?;
@@ -596,10 +597,12 @@ fn import_seams() -> lakelands_api::seam::Seams {
     }
 }
 
-/// A lake with two writers, two sealed segments and both format
+/// A lake with two writers, two sealed segments and three format
 /// versions: invoices, a checkpoint, the lake opened again by a second
-/// writer (a second lease, a greater fence), a re-key, a restricted and a
-/// retired invoice, a second checkpoint and more invoices. Answers the
+/// writer (a second lease, a greater fence), a re-key (version 2), a
+/// restricted and a retired invoice, a derived `date_bucket` field and a
+/// record ingested with an upstream (version 3), a second checkpoint and
+/// more invoices. Answers the
 /// second writer's handle and a position before the second checkpoint.
 async fn exported_lake(
     store: Arc<dyn LakeStore>,
@@ -628,6 +631,32 @@ async fn exported_lake(
     )
     .await
     .must("retiring `i2`")?;
+    // Format version 3: a derived field calling date_bucket, and a record
+    // ingested with the lake and position it was read from.
+    let stamp: lakelands_api::write::Declaration = serde_json::from_value(json!({
+        "declare": "type", "name": "stamp",
+        "fields": [
+            {"name": "at", "type": {"kind": "date_time"}, "authority": "source"},
+            {"name": "month", "type": {"kind": "date_time"}, "authority": "derived",
+             "derived": "date_bucket(at, 'month')", "depends_on": ["at"]}
+        ]
+    }))
+    .expect("a declaration");
+    cat.declare(&own, stamp)
+        .await
+        .must("declaring a derived field calling date_bucket")?;
+    let mut read_from = crate::conformance::fixture::source_record(
+        "stamp",
+        "s1",
+        json!({"at": "2028-02-10T08:00:00Z"}),
+    );
+    read_from.upstream = Some(lakelands_api::Upstream {
+        lake: "upstream-lake".into(),
+        position: Position(42),
+    });
+    crate::conformance::fixture::ingest(cat.as_ref(), &own, "mirror", vec![read_from])
+        .await
+        .must("ingesting `s1` with an upstream")?;
     let earlier = store.head().await.must("reading the head")?;
     store.checkpoint().await.must("checkpointing")?;
     invoices(store, 3, 2).await?;

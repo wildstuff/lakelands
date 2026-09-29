@@ -2949,6 +2949,7 @@ fn plan_window(
         );
         d.source = Some(source.clone());
         d.seen_at = r.seen_at;
+        d.upstream = r.upstream.clone();
         d.id = Some(id);
         w.batch.push(d);
         w.records += 1;

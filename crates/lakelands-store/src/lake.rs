@@ -376,15 +376,12 @@ impl Lake {
         if w.behind {
             self.refold(w)?;
         }
-        // A re-key needs format 2; the lake writes it from then on.
-        let v = if drafts
+        // An event that needs a newer format raises the lake to it, from
+        // this append on (`lakelands_core::versions`).
+        let v = drafts
             .iter()
-            .any(|d| matches!(&d.body, EventBody::Migrated { rekeyed, .. } if !rekeyed.is_empty()))
-        {
-            w.format.max(2)
-        } else {
-            w.format
-        };
+            .map(|d| lakelands_core::versions::needed(&d.body, d.upstream.is_some()))
+            .fold(w.format, u32::max);
         let mut events = Vec::with_capacity(drafts.len());
         let mut stored: Vec<CanonicalEvent> = Vec::with_capacity(drafts.len());
         let (mut prev_pos, mut prev_hash) = match &w.tip {

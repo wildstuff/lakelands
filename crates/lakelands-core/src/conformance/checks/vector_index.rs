@@ -114,6 +114,7 @@ struct Point {
 
 fn source_record(key: &str, vector: Option<&[f32]>, group: u32) -> SourceRecord {
     SourceRecord {
+        upstream: None,
         ty: TypeName::from(TY),
         key: key.into(),
         fields: crate::conformance::fixture::patch(json!({"v": vector, "group": group})),

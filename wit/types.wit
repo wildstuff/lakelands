@@ -314,6 +314,14 @@ interface types {
 
     enum origin { source, authored, derived, system }
 
+    /// Where values read from another lake's log came from: that lake and
+    /// the position of the event there whose state they are (log format
+    /// version 3).
+    record upstream {
+        lake: lake-id,
+        position: position,
+    }
+
     /// A field's provenance (`docs/decisions/010-provenance-per-field.md`).
     record field-meta {
         origin: origin,
@@ -323,6 +331,9 @@ interface types {
         writer: string,
         source: option<source-id>,
         procedure-version: option<string>,
+        /// For a value read from another lake's log: that lake and
+        /// position.
+        upstream: option<upstream>,
         /// For a field a function computes that holds no value because
         /// its backing failed: why.
         error: option<string>,
@@ -361,6 +372,10 @@ interface types {
         key: record-key,
         fields: patch,
         seen-at: option<timestamp>,
+        /// When the values were read from another lake's log (a
+        /// mirror's): that lake and the position of the state they
+        /// reflect.
+        upstream: option<upstream>,
     }
 
     // ------------------------------------------------------------------

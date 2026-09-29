@@ -350,8 +350,16 @@ fn record() -> Record {
     }
 }
 
+fn upstream() -> lakelands_api::Upstream {
+    lakelands_api::Upstream {
+        lake: "other".into(),
+        position: Position(7),
+    }
+}
+
 fn field_meta() -> FieldMeta {
     FieldMeta {
+        upstream: Some(upstream()),
         origin: Origin::Source,
         known_at: t(),
         seen_at: Some(t()),
@@ -628,11 +636,13 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             "field_conversion",
             members(&migration_report().fields[0].clone()),
         ),
+        ("upstream", members(&upstream())),
         ("field_meta", members(&field_meta())),
         ("record", members(&record())),
         (
             "source_record",
             members(&SourceRecord {
+                upstream: Some(upstream()),
                 ty: "invoice".into(),
                 key: "k".into(),
                 fields: [("f".into(), json!(1))].into(),

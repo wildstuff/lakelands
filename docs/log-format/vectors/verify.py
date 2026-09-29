@@ -12,8 +12,8 @@ export or a SQLite lake directory holds it instead, reading only
 `<dir>/log/` (log-format §4.2): canonical lines each ending in a line
 feed, positions consecutive from 0 and naming their files in 20 digits,
 the hash chain from 64 zeros, every checkpoint against the position,
-the hash and the files before it, format versions that are 1 or 2
-and never go down, and every `known_at` in its one form and never before
+the hash and the files before it, format versions from 1 to 3 that
+never go down, `upstream` only from version 3 on, and every `known_at` in its one form and never before
 the `known_at` before it (log-format §1.3). It prints one line
 per file and the last position and hash, or the position where the
 files stop being the log, and exits non-zero there.
@@ -124,7 +124,7 @@ def check(ok, what):
         sys.exit(1)
 
 
-FIRST_FORMAT, NEWEST_FORMAT = 1, 2
+FIRST_FORMAT, NEWEST_FORMAT = 1, 3
 ONE_FORM = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z")
 
 
@@ -158,6 +158,7 @@ def verify_dir(root):
                  f"format {v} is one of {FIRST_FORMAT} to {NEWEST_FORMAT}")
             need(v >= version, f"format {v} is not below the {version} before it")
             version = v
+            need("upstream" not in event or v >= 3, f"a format {v} event carries `upstream`, which format 3 added")
             # known_at in its one form (§1.3), whose text orders as its
             # instant does, and never before the event before it.
             k = event.get("known_at")
@@ -248,6 +249,30 @@ def main():
           "rekey.json: a version-2 `migrated` event with `rekeyed`")
     check(sha(canonical(body)) == event["hash"] == v2["hash"], f"rekey.json: hash {v2['hash'][:12]}…")
     check(event["prev"] == expected["events"][-1]["hash"], "rekey.json: it follows position 7")
+
+    v3 = json.loads((HERE / "v3.json").read_text("utf-8"))
+    prev = v2["hash"]
+    for line, want in zip(v3["lines"], v3["hashes"]):
+        event = json.loads(line)
+        check(canonical(event) == line.encode("utf-8"), f"v3.json: position {event['position']} is canonical")
+        check(event["v"] == 3, f"v3.json: position {event['position']} is format 3")
+        body = {k: v for k, v in event.items() if k != "hash"}
+        check(sha(canonical(body)) == event["hash"] == want, f"v3.json: hash {want[:12]}…")
+        check(event["prev"] == prev, f"v3.json: position {event['position']} follows the one before it")
+        prev = event["hash"]
+    ingested, declared = (json.loads(l) for l in v3["lines"])
+    check(ingested["upstream"] == {"lake": "upstream-lake", "position": 42},
+          "v3.json: the ingested event names its upstream lake and position")
+    b = ingested["body"]
+    preimage = b"\x00".join([b"lakelands:ingest:v1", ingested["source"].encode(), b["type"].encode(),
+                               b["key"].encode(), str(b["version"] - 1).encode(), canonical(b["patch"])])
+    check(hashlib.sha256(preimage).hexdigest()[:32] == ingested["id"],
+          "v3.json: the ingested event's id leaves `upstream` out (§3)")
+    check("date_bucket(" in json.dumps(declared["body"]["declaration"]),
+          "v3.json: the declared event's derived field calls date_bucket")
+    negative = json.loads(v3["negative"])
+    check(negative["v"] == 2 and "upstream" in negative,
+          "v3.json: the negative line is format 2 carrying `upstream`, which a reader refuses")
 
     for n, want in [(1e21, "1e+21"), (1e-7, "1e-7"), (0.000001, "0.000001"), (333333333.3333333, "333333333.3333333"),
                     (-0.0, "0"), (9007199254740992.0, "9007199254740992"), (5e-324, "5e-324")]:

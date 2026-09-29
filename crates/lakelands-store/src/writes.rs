@@ -151,6 +151,7 @@ impl Call<'_> {
 
     fn draft(&self, now: Timestamp, origin: Origin, body: EventBody) -> Draft {
         Draft {
+            upstream: None,
             known_at: now,
             writer: self.writer(),
             origin,

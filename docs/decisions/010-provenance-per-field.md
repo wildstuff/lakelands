@@ -60,3 +60,14 @@ it, with `error` set to the reason. A read with `with_meta` returns
 that metadata for the field even though the field has no value, so a
 caller can tell "not computed yet" (no metadata) from "computed and
 failed" (`error`). A field that holds a value never carries `error`.
+
+## Extended: a value read from another lake
+
+A value a source read from another lake's log carries `upstream`: that
+lake and the position of the event there whose state it is, beside
+`seen_at`. A mirror states it for every field it delivers, so a reader
+can follow a value back to the log it came from. It is provenance the
+writer states, and it has the same standing as `seen_at`: nothing checks
+it against the other lake. A later write of the field without it leaves
+the field without it. It is a log format version 3 member
+(`docs/log-format.md` §1.1, §6; lakelands#174).

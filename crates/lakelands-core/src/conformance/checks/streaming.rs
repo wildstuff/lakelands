@@ -227,6 +227,7 @@ fn note(i: u64) -> String {
 /// Record `i` of the source, as first delivered.
 fn content(i: u64, value: f64) -> SourceRecord {
     SourceRecord {
+        upstream: None,
         ty: TypeName::from(TY),
         key: key(i),
         fields: crate::conformance::fixture::patch(json!({
@@ -362,6 +363,7 @@ impl Stream for Links {
             let first = self.first;
             self.ahead = follows(i, first)
                 .map(|t| SourceRecord {
+                    upstream: None,
                     ty: link.clone(),
                     key: link_key(&key(i), &key(t)),
                     fields: crate::conformance::fixture::patch(json!({

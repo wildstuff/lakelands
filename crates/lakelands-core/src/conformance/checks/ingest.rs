@@ -50,6 +50,12 @@ check!(
     "016 and the log format: an ingest that changes nothing appends nothing, and a record set back to an earlier value is a new change, not a redelivery"
 );
 
+check!(
+    /// An ingested value carries the lake and position it was read from.
+    UPSTREAM_PER_FIELD = an_ingested_record_carries_its_upstream_per_field,
+    "010, 016 and log-format §1.1 and §6: a record ingested with `upstream` names that lake and position on every field it sets, the event is written in format version 3, and the member is not in the event's id; a later write of a field without it leaves that field without it"
+);
+
 /// `feed`: a source's `body` and an author's `verdict`.
 fn feed() -> TypeDecl {
     let mut body = field("body", StorageKind::Text);
@@ -340,6 +346,113 @@ async fn a_record_delivered_twice_in_two_windows_is_written_once(
     ensure!(
         twice == 1,
         "the feed must hold one event for `twice`; it holds {twice}"
+    );
+    Ok(())
+}
+
+async fn an_ingested_record_carries_its_upstream_per_field(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use lakelands_api::{Position, Upstream};
+    let cat = doors(store.as_ref());
+    let own = owner(store.as_ref());
+    let mut reading = feed();
+    let mut unit = field("unit", StorageKind::Text);
+    unit.authority = Authority::Source;
+    reading.fields.push(unit);
+    declare(cat.as_ref(), &own, reading).await?;
+    let from = Upstream {
+        lake: "upstream-lake".into(),
+        position: Position(42),
+    };
+    let mut first = source_record("feed", "r1", json!({"body": "warm", "unit": "C"}));
+    first.upstream = Some(from.clone());
+    let patch_first = first.fields.clone();
+    ingest(cat.as_ref(), &own, "mirror", vec![first])
+        .await
+        .must("ingesting `r1` with an upstream")?;
+    let rec = read(cat.as_ref(), &own, "feed", "r1").await?;
+    for f in ["body", "unit"] {
+        let got = rec.meta.get(f).and_then(|m| m.upstream.clone());
+        ensure!(
+            got.as_ref() == Some(&from),
+            "`r1`'s `{f}` was ingested with upstream {from:?} and must carry it; it carries \
+             {got:?}"
+        );
+    }
+    let events = store
+        .feed()
+        .poll(
+            Position::GENESIS,
+            &lakelands_api::seam::FeedFilter::default(),
+            10_000,
+        )
+        .await
+        .must("reading the log")?
+        .events;
+    let ingested = events
+        .iter()
+        .rev()
+        .find(|e| {
+            matches!(
+                e.body,
+                lakelands_api::event::EventBody::RecordIngested { .. }
+            )
+        })
+        .ok_or_else(|| Failure::new("the log holds no `record_ingested` event"))?;
+    let id = crate::log::ingest_id(
+        &"mirror".into(),
+        &TypeName::from("feed"),
+        &"r1".into(),
+        0,
+        &patch_first,
+    );
+    ensure!(
+        ingested.v == 3 && ingested.upstream.as_ref() == Some(&from) && ingested.id == id,
+        "the ingest with an upstream must be a format 3 event carrying it, with the id its \
+         source, type, key, version and patch make, which leaves `upstream` out; it is format \
+         {} carrying {:?} with id {}, and the id without the member is {}",
+        ingested.v,
+        ingested.upstream,
+        ingested.id.0,
+        id.0
+    );
+    // A later ingest of one field without an upstream.
+    ingest(
+        cat.as_ref(),
+        &own,
+        "mirror",
+        vec![source_record("feed", "r1", json!({"unit": "F"}))],
+    )
+    .await
+    .must("ingesting `r1`'s unit without an upstream")?;
+    let rec = read(cat.as_ref(), &own, "feed", "r1").await?;
+    let (body, unit) = (
+        rec.meta.get("body").and_then(|m| m.upstream.clone()),
+        rec.meta.get("unit").and_then(|m| m.upstream.clone()),
+    );
+    ensure!(
+        body.as_ref() == Some(&from) && unit.is_none(),
+        "after `unit` was ingested again without an upstream, `body` must keep {from:?} and \
+         `unit` carry none; they carry {body:?} and {unit:?}"
+    );
+    // An authored write over a field leaves it without one.
+    let mut stamped = source_record("feed", "r2", json!({"body": "cold"}));
+    stamped.upstream = Some(from.clone());
+    ingest(cat.as_ref(), &own, "mirror", vec![stamped])
+        .await
+        .must("ingesting `r2` with an upstream")?;
+    crate::conformance::fixture::upsert(cat.as_ref(), &own, "feed", "r2", json!({"verdict": "ok"}))
+        .await?;
+    let rec = read(cat.as_ref(), &own, "feed", "r2").await?;
+    let (body, verdict) = (
+        rec.meta.get("body").and_then(|m| m.upstream.clone()),
+        rec.meta.get("verdict").and_then(|m| m.upstream.clone()),
+    );
+    ensure!(
+        body.as_ref() == Some(&from) && verdict.is_none(),
+        "an authored write of `verdict` must carry no upstream and leave `body`'s; they \
+         carry {verdict:?} and {body:?}"
     );
     Ok(())
 }

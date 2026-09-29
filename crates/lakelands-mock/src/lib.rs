@@ -194,6 +194,7 @@ impl Shared {
                 .last()
                 .map_or_else(Digest::zero, |e| e.hash.clone());
             let mut e = Event {
+                upstream: d.upstream,
                 v: LOG_FORMAT_BASE,
                 lake: self.lake.clone(),
                 position,
@@ -234,6 +235,7 @@ struct Draft {
     origin: Origin,
     source: Option<SourceId>,
     seen_at: Option<Timestamp>,
+    upstream: Option<lakelands_api::Upstream>,
     procedure: Option<Procedure>,
     cause: Option<Position>,
     key: Option<IdempotencyKey>,
@@ -248,6 +250,7 @@ impl Draft {
             origin,
             source: None,
             seen_at: None,
+            upstream: None,
             procedure: None,
             cause: None,
             key: None,

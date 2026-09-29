@@ -66,10 +66,10 @@
 //! Aggregates (`count`, `sum`, `min`, `max`, `avg`) appear only in view
 //! measures and in `find`'s aggregate, where a set of records is in
 //! scope.
-//! `date_bucket(x, 'unit')` belongs to reads alone: `find`'s `where` and
-//! group keys and a pattern's `where`. A declaration, whose expressions
-//! the log keeps, refuses it, since the log format closes the functions
-//! a logged expression may call.
+//! `date_bucket(x, 'unit')` serves reads (`find`'s `where` and group
+//! keys, a pattern's `where`) and, from log format version 3 on, every
+//! expression a declaration keeps; the event that first declares such a
+//! call is written in version 3 (`docs/log-format.md` §6).
 //!
 //! # Determinism
 //!

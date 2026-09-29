@@ -119,6 +119,7 @@ macro_rules! door_checks {
             a_value_type_is_loosened_by_declare_and_tightened_by_its_preflight,
             a_sort_index_setting_names_declared_scalar_fields_and_describe_shows_them,
             a_vector_index_setting_names_vector_fields_and_search_says_it_ranked_by_the_index,
+            an_ingested_upstream_is_answered_per_field,
             an_order_by_latest_takes_no_field_and_no_view,
             a_trigger_watches_a_link_type_and_not_a_reference_relations,
             degree_and_components_answer_the_graph_in_one_order);
@@ -1416,6 +1417,7 @@ pub async fn a_retired_record_leaves_reads_but_not_its_past(store: Arc<dyn LakeS
 pub async fn ingest_is_content_addressed(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let rec = || SourceRecord {
+        upstream: None,
         ty: ty(INVOICE),
         key: key("INV-1"),
         fields: patch(&[("amount", json!("120.50"))]),
@@ -1455,6 +1457,51 @@ pub async fn ingest_is_content_addressed(store: Arc<dyn LakeStore>) {
         .err()
         .expect("the clerk may not ingest");
     assert_eq!(refusal(&e).1, &Refusal::NotGranted);
+}
+
+/// A record ingested with `upstream`, the lake and position its values
+/// were read from, answers it in the provenance of every field it set
+/// (`docs/decisions/010-provenance-per-field.md`, extended).
+pub async fn an_ingested_upstream_is_answered_per_field(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let from = lakelands_api::Upstream {
+        lake: "upstream-lake".into(),
+        position: Position(42),
+    };
+    let rec = SourceRecord {
+        upstream: Some(from.clone()),
+        ty: ty(INVOICE),
+        key: key("INV-9"),
+        fields: patch(&[("amount", json!("9.90"))]),
+        seen_at: None,
+    };
+    let mut acks = f
+        .catalog
+        .ingest(&f.cast.importer, &"bank".into(), stream::of(vec![rec]))
+        .await
+        .expect("the importer ingests");
+    for ack in stream::collect(&mut acks).await {
+        ack.expect("the window commits");
+    }
+    let got = f
+        .catalog
+        .get(
+            &f.cast.owner,
+            &ty(INVOICE),
+            Get {
+                key: key("INV-9"),
+                with_meta: true,
+                at: ReadAt::default(),
+            },
+        )
+        .await
+        .expect("the owner reads `INV-9`")
+        .data;
+    assert_eq!(
+        got.meta.get("amount").and_then(|m| m.upstream.clone()),
+        Some(from),
+        "`amount` names the lake and position it was read from"
+    );
 }
 
 /// A cursor is bound to the position of its first page: the page set is
@@ -2247,6 +2294,7 @@ pub async fn key_components_and_source_ids_use_each_values_one_form(store: Arc<d
         let (cat, owner) = (f.catalog.clone(), f.cast.owner.clone());
         async move {
             let record = SourceRecord {
+                upstream: None,
                 ty: ty("reading"),
                 key: key(canonical_key),
                 fields: patch(&[("level", level)]),
@@ -2586,12 +2634,14 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
     // one window as at the door.
     let window = vec![
         SourceRecord {
+            upstream: None,
             ty: ty("sys.link.doc.witnessed_by"),
             key: key("d1:p1"),
             fields: patch(&[("from", json!("d1")), ("to", json!("p1"))]),
             seen_at: None,
         },
         SourceRecord {
+            upstream: None,
             ty: ty("sys.link.doc.witnessed_by"),
             key: key("d1:p2"),
             fields: patch(&[("from", json!("d1")), ("to", json!("p2"))]),
@@ -2947,6 +2997,7 @@ pub async fn a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_rec
             let records = keys
                 .iter()
                 .map(|k| SourceRecord {
+                    upstream: None,
                     ty: ty("partner"),
                     key: key(k),
                     fields: patch(&[("name", json!(k))]),
@@ -3004,6 +3055,7 @@ pub async fn a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_rec
     assert!(live("p5").await);
     // A record the source left no value in is not its any more.
     let clear = SourceRecord {
+        upstream: None,
         ty: ty("partner"),
         key: key("p5"),
         fields: patch(&[("name", Value::Null)]),
@@ -3030,6 +3082,7 @@ pub async fn a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_rec
         let own = own.clone();
         async move {
             let rec = SourceRecord {
+                upstream: None,
                 ty: ty("partner"),
                 key: key("p7"),
                 fields,

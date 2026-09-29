@@ -370,6 +370,7 @@ fn type_default(who: &Principal, ty: &TypeName) -> Access {
 
 fn meta_of(e: &Event) -> FieldMeta {
     FieldMeta {
+        upstream: e.upstream.clone(),
         origin: e.origin,
         known_at: e.known_at,
         seen_at: e.seen_at,

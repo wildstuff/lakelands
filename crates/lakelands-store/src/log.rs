@@ -30,6 +30,9 @@ pub struct Draft {
     pub source: Option<SourceId>,
     /// When the source observed the values.
     pub seen_at: Option<Timestamp>,
+    /// Where the values were read from, for values from another lake's
+    /// log (format version 3).
+    pub upstream: Option<lakelands_api::Upstream>,
     /// The procedure that produced the values.
     pub procedure: Option<Procedure>,
     /// The host's context.
@@ -49,6 +52,7 @@ impl Draft {
     /// A system event: written by the store itself.
     pub fn system(known_at: Timestamp, body: EventBody) -> Draft {
         Draft {
+            upstream: None,
             known_at,
             writer: "system:lakelands".into(),
             origin: Origin::System,
@@ -98,6 +102,7 @@ pub fn seal_at(
 ) -> (Event, CanonicalEvent) {
     let id = d.id.unwrap_or_else(|| positional_id(lake, position));
     let mut event = Event {
+        upstream: d.upstream,
         v,
         lake: lake.clone(),
         position,
@@ -167,18 +172,9 @@ pub fn open(stored: &CanonicalEvent) -> Result<Event> {
             "a member is not in its one written form",
         ));
     }
-    // A member a version does not have is refused, never read.
-    if let EventBody::Migrated { rekeyed, .. } = &event.body
-        && !rekeyed.is_empty()
-        && event.v < 2
-    {
-        return Err(corrupt(
-            stored.position,
-            format!(
-                "a format {} event carries `rekeyed`, which format 2 added",
-                event.v
-            ),
-        ));
+    // A member or a call a version does not have is refused, never read.
+    if let Some(why) = lakelands_core::versions::below(&event) {
+        return Err(corrupt(stored.position, why));
     }
     if hash_without_hash(&event) != event.hash {
         return Err(corrupt(
@@ -290,10 +286,62 @@ mod tests {
     fn a_newer_format_is_refused_by_name() {
         let (_, mut stored) = created();
         let mut v: serde_json::Value = serde_json::from_slice(&stored.bytes).unwrap();
-        v["v"] = json!(3);
+        v["v"] = json!(4);
         stored.bytes = canonical::to_vec(&v);
         let e = open(&stored).unwrap_err().to_string();
-        assert!(e.contains("format 3") && e.contains("format 2"), "{e}");
+        assert!(e.contains("format 4") && e.contains("format 3"), "{e}");
+    }
+
+    /// A version-2 event carrying what version 3 added is refused, naming
+    /// it; the same event written at 3 opens.
+    #[test]
+    fn a_version_2_event_that_carries_upstream_or_declares_date_bucket_is_refused() {
+        let mut ingested = Draft::system(
+            Timestamp(0),
+            EventBody::RecordIngested {
+                ty: "t".into(),
+                key: "k".into(),
+                version: lakelands_api::Version(1),
+                patch: [("f".into(), json!(1))].into(),
+            },
+        );
+        ingested.upstream = Some(lakelands_api::Upstream {
+            lake: "other".into(),
+            position: Position(9),
+        });
+        let declared = Draft::system(
+            Timestamp(0),
+            EventBody::Declared {
+                declaration: serde_json::from_value(json!({
+                    "declare": "type", "name": "t",
+                    "fields": [
+                        {"name": "at", "type": {"kind": "date_time"}},
+                        {"name": "m", "type": {"kind": "date_time"}, "authority": "derived",
+                         "derived": "date_bucket(at, 'month')", "depends_on": ["at"]}
+                    ]
+                }))
+                .unwrap(),
+                schema_hash: None,
+                version: 1,
+            },
+        );
+        for (d, what) in [
+            (ingested, "carries `upstream`"),
+            (declared, "declares a call of `date_bucket`"),
+        ] {
+            let (_, stored) = seal_at(
+                2,
+                &"finance".into(),
+                Position(1),
+                &Digest::zero(),
+                1,
+                d.clone(),
+            );
+            let e = open(&stored).unwrap_err().to_string();
+            assert!(e.contains(what) && e.contains("format 3 added"), "{e}");
+            let (_, stored) = seal_at(3, &"finance".into(), Position(1), &Digest::zero(), 1, d);
+            assert!(open(&stored).is_ok());
+        }
     }
 
     #[test]
