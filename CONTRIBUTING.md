@@ -53,6 +53,10 @@ its tests on macOS as well. You need:
 - A behaviour claim comes with a test that fails without the change.
   For anything an engine must honour, the test belongs in the
   conformance suite, not beside one engine.
+- A change a host must follow in its own code (a variant added to a
+  closed enum, a member a struct literal must set, a trait method to
+  implement) is named in the pull request; the `host-changes` job lists
+  them (`docs/development.md`, releases).
 - The on-disk format is a specification. A change to it is a change to
   the spec document first, with a version bump, and to the code second.
 - No new query language, no calls to a model from inside the store, no

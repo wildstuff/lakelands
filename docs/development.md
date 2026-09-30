@@ -227,6 +227,12 @@ git push origin v0.1.0
 (`scripts/release/check-tag.sh`), runs the checks of `ci.yml`, builds the
 `lakelands` binary and publishes a GitHub release with the binary,
 `LICENSE`, `NOTICE`, the third-party licence list and notes made from
-the titles of the pull requests merged since the previous tag. A
+the titles of the pull requests merged since the previous tag, followed
+by "Changes a host must make" since that tag
+(`scripts/release/host-changes.sh`: `cargo-semver-checks` over
+`lakelands-api` and `lakelands-client`, one plain line per change, and a
+line saying so when there is none). The `host-changes` job of `ci.yml`
+reports the same list on every pull request, and never fails; a release
+pull request copies its report into its body. A
 pre-release `vX.Y.Z-<suffix>` may be tagged on any branch to rehearse
 one. Nothing is published to crates.io yet.

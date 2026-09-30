@@ -166,6 +166,22 @@ jobs:
           path: target/third-party-licences.txt
           retention-days: 7
 
+  # What a host must change to take this tree, against the latest release:
+  # a report in the job summary, never a failure (under 0.x a release may
+  # break a host, and must say how). The release PR's body carries it.
+  host-changes:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+      - run: scripts/release/host-changes.sh | tee -a "$GITHUB_STEP_SUMMARY"
+
   # docs/conformance.md lists every registered check; this fails while the
   # page differs from the registries.
   conformance-page:

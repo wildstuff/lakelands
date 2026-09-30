@@ -21,7 +21,7 @@ use crate::write::{FunctionDecl, ObjectSetDecl};
 /// declaration names or holds the `schema` grant: a condition or an
 /// input list says what the fields it names are compared with, which is
 /// no business of a principal who may not read them.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct LakeDescription {
     /// The lake.
     pub lake: LakeId,
@@ -58,7 +58,7 @@ pub struct LakeRights {
 }
 
 /// One type, on six axes.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TypeDescription {
     /// The type's name.
     pub name: TypeName,
@@ -99,7 +99,7 @@ pub struct TypeDescription {
 
 /// One field, as the principal may see it: the declaration whole for a
 /// field it reads, the shape only for a masked one.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct FieldDescription {
     /// The field's name.
     pub name: FieldName,
@@ -201,7 +201,7 @@ impl FieldDescription {
 }
 
 /// How records of a type are addressed and read.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TypeAccess {
     /// The fields that form the key; empty when the writer gives it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -238,7 +238,7 @@ pub struct TypeRights {
 }
 
 /// Where a type's records come from.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TypeLineage {
     /// Whether any field is fed by a source.
     pub sourced: bool,
@@ -248,7 +248,7 @@ pub struct TypeLineage {
 }
 
 /// A type's version and shape.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeLifecycle {
     /// The declaration's version: one more for every change to it.
     pub version: u32,
