@@ -376,6 +376,24 @@ impl Lake {
         if w.behind {
             self.refold(w)?;
         }
+        // A host's cause names an event the log holds: at or below the
+        // head (021). What it names is the host's business.
+        let head = w.tip.as_ref().map(|(p, _)| *p);
+        if let Some(cause) = drafts
+            .iter()
+            .filter_map(|d| d.context.cause)
+            .find(|c| Some(*c) > head)
+        {
+            return Err(Error::Refused {
+                field: None,
+                reason: lakelands_api::Refusal::Invalid {
+                    message: format!(
+                        "the cause {cause} is past the lake's head {}",
+                        head.map_or_else(|| "(none)".to_owned(), |h| h.to_string())
+                    ),
+                },
+            });
+        }
         // An event that needs a newer format raises the lake to it, from
         // this append on (`lakelands_core::versions`).
         let v = drafts

@@ -93,12 +93,18 @@ pub fn below(event: &Event) -> Option<String> {
     ))
 }
 
-/// Why an event carries a member its kind never carries, if it does:
-/// `upstream` belongs to `record_ingested` alone (`docs/log-format.md`
-/// §1.1), since only a source's record is read from another lake. The
-/// ingest door cannot put it elsewhere; a reader holds the rule for a log
-/// written by something else.
+/// Why an event carries a member where it never sits, if it does:
+/// `cause` inside `context`, since a host's cause is the envelope's
+/// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`); and
+/// `upstream` on any kind but `record_ingested`, since only a source's
+/// record is read from another lake (`docs/log-format.md` §1.1). No door
+/// puts either there; a reader holds the rule for a log written by
+/// something else.
 pub fn misplaced(event: &Event) -> Option<String> {
+    // A host's cause is the envelope's; `context` never carries it (021).
+    if event.context.cause.is_some() {
+        return Some("`context` carries `cause`, which the envelope carries".to_owned());
+    }
     let kind = event_kind(&event.body);
     (event.upstream.is_some() && !matches!(event.body, EventBody::RecordIngested { .. })).then(
         || {

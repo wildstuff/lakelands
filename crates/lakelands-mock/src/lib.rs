@@ -208,8 +208,11 @@ impl Shared {
                 source: d.source,
                 seen_at: d.seen_at,
                 procedure: d.procedure,
-                context,
-                cause: d.cause,
+                context: WriteContext {
+                    cause: None,
+                    ..context
+                },
+                cause: d.cause.or(context.cause),
                 fence: u64::from(position.0 != 0),
                 idempotency_key: d.key,
                 body: d.body,

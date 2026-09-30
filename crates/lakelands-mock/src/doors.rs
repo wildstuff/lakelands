@@ -262,6 +262,15 @@ impl MockCatalog {
         if self.context.depth > max {
             return Err(refused(Refusal::TooDeep { max }));
         }
+        // A host's cause names an event the log holds.
+        if let Some(cause) = self.context.cause {
+            let head = Shared::head(&self.log());
+            if cause > head {
+                return Err(refused(Refusal::Invalid {
+                    message: format!("the cause {cause} is past the lake's head {head}"),
+                }));
+            }
+        }
         Ok(())
     }
 

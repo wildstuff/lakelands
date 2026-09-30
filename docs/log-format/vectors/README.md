@@ -26,7 +26,8 @@ The files:
   `declared` type carrying `annotations` on the type, two fields and a
   relation, whose schema hash is the same type's without them; and
   `negative`, the same event written as version 4, which a reader
-  refuses.
+  refuses; and `misplaced`, the same event with `cause` inside its
+  `context`, which a reader refuses for where the member sits.
 - `v4.json`: two version-4 events after `v3.json`'s position 10: a
   `write_proposed` whose write is `declare`, and one whose write is
   `migrate` with its preflight's report; and `negative`, the first written

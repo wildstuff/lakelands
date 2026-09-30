@@ -194,6 +194,7 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
         lake,
         who: &system,
         context: WriteContext {
+            cause: None,
             origin: WriteOrigin::Scheduled,
             depth: 0,
         },

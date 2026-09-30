@@ -189,6 +189,15 @@ pub struct WriteContext {
     pub origin: WriteOrigin,
     /// 0 for a direct write; one more than its cause for a reaction.
     pub depth: u32,
+    /// The position the write follows from, as the host names it: the
+    /// `trigger_fired` it reacts to, a record of the host's own run, any
+    /// earlier event. It lands in the envelope's `cause` of each event the
+    /// write itself appends, never in `context`; events the store derives
+    /// from those keep the store's cause, which chains back to it. It must
+    /// be at or below the head, and it does not count toward the depth
+    /// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cause: Option<crate::id::Position>,
 }
 
 #[cfg(test)]

@@ -415,6 +415,9 @@ fn the_version_5_annotations_recompute_and_a_version_4_one_is_refused() {
         Some(lakelands_api::shape::schema_hash(&bare).unwrap().as_str()),
         "annotations are not shape"
     );
+    let misplaced: Event = serde_json::from_str(v5["misplaced"].as_str().unwrap()).unwrap();
+    let why = lakelands_core::versions::misplaced(&misplaced).expect("refused");
+    assert!(why.contains("`context` carries `cause`"), "{why}");
     let negative: Event = serde_json::from_str(v5["negative"].as_str().unwrap()).unwrap();
     let why = lakelands_core::versions::below(&negative).expect("refused");
     assert!(

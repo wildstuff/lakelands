@@ -102,6 +102,9 @@ interface types {
     record write-context {
         origin: write-origin,
         depth: u32,
+        /// The position the write follows from, as the host names it; it
+        /// lands in the envelope's `cause` of the write's own events.
+        cause: option<position>,
     }
 
     // ------------------------------------------------------------------

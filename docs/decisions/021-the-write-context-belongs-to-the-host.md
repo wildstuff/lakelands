@@ -41,3 +41,31 @@ The store refuses it as `too_deep` rather than believe the origin: the
 context is the host's, the ceiling the store's. The conformance check
 `a_chain_of_reactions_past_the_lakes_ceiling_is_refused_too_deep_and_appends_nothing`
 holds it on every engine.
+
+## Extended: the host names the cause (lakelands#243)
+
+A host's context may name `cause`, the position its write follows from:
+the `trigger_fired` it reacts to, a record of its own run, any earlier
+event. The store checks only that the position is at or below the head
+when the write appends, and refuses one past it as `invalid`, naming
+both. It neither reads the event nor checks its kind.
+
+The cause lands on the events the host's write itself appends: its
+`record_upserted`, `record_retired` or `record_ingested`, and the first
+event of a verb call or an acceptance (`verb_called`, `write_accepted`).
+Events the store derives from those keep the store's cause, which chains
+back to the host's. A verb's writes name their `verb_called`, the
+declarations after an acceptance name the `write_accepted`, and a
+trigger's firing names the write that fired it. So lineage is one chain
+from any event back to the change that started it, never a choice
+between two causes. The cause sits in the envelope's `cause`, never
+inside `context`.
+
+The cause is lineage, not depth. The host still sets `depth`, and a
+scheduled step naming its run at depth 0 is coherent. The ceiling is
+checked on every door that writes. That covers the record doors, `call`
+and `propose`, and also `ingest`, `accept`, `reject`, `declare`,
+`apply`, `add_field`, `migrate_apply` and `migrate_value_type_apply`,
+which until 0.6.0 let a context past the ceiling through (lakelands#257).
+A host that wrote reactively through those doors past the ceiling is
+now refused `too_deep` there too.

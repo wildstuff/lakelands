@@ -226,6 +226,7 @@ pub(crate) fn run(shared: &Shared, log: &mut Log, today: Timestamp) -> Result<Ag
         }
         if ran.moved > 0 {
             let context = WriteContext {
+                cause: None,
                 origin: WriteOrigin::Scheduled,
                 depth: 0,
             };

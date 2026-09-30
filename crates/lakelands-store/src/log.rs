@@ -114,8 +114,13 @@ pub fn seal_at(
         source: d.source,
         seen_at: d.seen_at,
         procedure: d.procedure,
-        context: d.context,
-        cause: d.cause,
+        // The host's cause lands in the envelope of an event the store set
+        // no cause for, and never in `context` (021).
+        context: WriteContext {
+            cause: None,
+            ..d.context
+        },
+        cause: d.cause.or(d.context.cause),
         fence,
         idempotency_key: d.idempotency_key,
         body: d.body,

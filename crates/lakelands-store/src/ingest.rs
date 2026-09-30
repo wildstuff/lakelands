@@ -52,6 +52,7 @@ pub fn window(
     source: &SourceId,
     records: Vec<SourceRecord>,
 ) -> Result<Committed> {
+    crate::writes::check_context(lake, &context)?;
     let call = Call { lake, who, context };
     let mut w = lake.writer();
     let view = lake.engine.view(None)?;
