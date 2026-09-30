@@ -5,9 +5,9 @@
 //! retired or hidden from the caller is not there
 //! (`docs/decisions/026-the-store-walks-the-graph.md`).
 //!
-//! - [`degree`] counts one record's links. It asks about that record
-//!   alone, so a caller measuring many records holds one record's links at
-//!   a time, not the graph.
+//! - [`degrees`] counts the links of the records it is handed, read
+//!   together. A caller measuring a whole type hands it a page at a time,
+//!   so it holds a page's links, not the graph.
 //! - [`Components`] grows the weak components of the records it is given,
 //!   links taken both ways. It holds every record it reaches, so it is
 //!   bounded: past `max_nodes` records it refuses `too_large` rather than
@@ -18,24 +18,27 @@ use std::collections::{BTreeMap, BTreeSet};
 use lakelands_api::query::Walk;
 use lakelands_api::{Error, Refusal, RelationName, Result};
 
-use super::{EdgeId, EdgeSource, Links, Node, edge_id};
+use super::{EdgeId, EdgeSource, Links, Node, PAGE, edge_id};
 
-/// The number of distinct links of `node` over the given relations, each
-/// walked in its own direction, whose far end may appear. A link named by
-/// two of the pairs counts once.
-pub fn degree<S: EdgeSource + ?Sized>(
+/// For each of `nodes`, in their order, the number of its distinct links
+/// over the given relations, each walked in its own direction, whose far
+/// end may appear. A link named by two of the pairs counts once. The
+/// links of all of them are read together, and each far end is asked
+/// about once for all of them; a caller hands it a page at a time.
+pub fn degrees<S: EdgeSource + ?Sized>(
     source: &S,
-    node: &Node,
+    nodes: &[Node],
     steps: &[(RelationName, Walk)],
-) -> Result<u64> {
+) -> Result<Vec<u64>> {
     let mut links = Links::new(source);
-    let mut seen: BTreeSet<EdgeId> = BTreeSet::new();
+    let mut seen: Vec<BTreeSet<EdgeId>> = vec![BTreeSet::new(); nodes.len()];
     for (relation, walk) in steps {
-        for (_, edge) in links.around(node, std::slice::from_ref(relation), *walk)? {
-            seen.insert(edge_id(&edge));
+        let around = links.around(nodes, std::slice::from_ref(relation), *walk)?;
+        for (seen, around) in seen.iter_mut().zip(around) {
+            seen.extend(around.iter().map(|(_, edge)| edge_id(edge)));
         }
     }
-    Ok(seen.len() as u64)
+    Ok(seen.iter().map(|s| s.len() as u64).collect())
 }
 
 /// One weak component: its records, ordered by `(type, key)`.
@@ -93,8 +96,9 @@ impl<'a, S: EdgeSource + ?Sized> Components<'a, S> {
         Ok(())
     }
 
-    /// Adds a record and everything linked to it. A record already reached
-    /// adds nothing. Refused `too_large` as soon as more than `max_nodes`
+    /// Adds a record and everything linked to it, reading the links of a
+    /// page of the frontier at a time. A record already reached adds
+    /// nothing. Refused `too_large` as soon as more than `max_nodes`
     /// records are reached.
     pub fn add(&mut self, seed: Node) -> Result<()> {
         if self.member_of.contains_key(&seed) {
@@ -104,22 +108,28 @@ impl<'a, S: EdgeSource + ?Sized> Components<'a, S> {
         self.started += 1;
         self.reach(seed.clone(), index)?;
         let mut frontier = vec![seed];
-        while let Some(near) = frontier.pop() {
-            for r in 0..self.relations.len() {
-                let relation = self.relations[r].clone();
-                for edge in self
-                    .source
-                    .edges(&near.0, &near.1, Some(&relation), Walk::Both)?
-                {
-                    let other = super::far(&edge, &near);
-                    if self.member_of.contains_key(&other) || self.hidden.contains(&other) {
-                        continue;
+        while !frontier.is_empty() {
+            let nears = frontier.split_off(frontier.len().saturating_sub(PAGE));
+            let mut found: BTreeSet<Node> = BTreeSet::new();
+            for relation in &self.relations {
+                let edges = super::edges_of(self.source, &nears, Some(relation), Walk::Both)?;
+                for (near, edges) in nears.iter().zip(edges) {
+                    for edge in edges {
+                        let other = super::far(&edge, near);
+                        if !self.member_of.contains_key(&other) && !self.hidden.contains(&other) {
+                            found.insert(other);
+                        }
                     }
-                    if self.source.is_visible(&other.0, &other.1)? {
+                }
+            }
+            let found: Vec<Node> = found.into_iter().collect();
+            for page in found.chunks(PAGE) {
+                for (other, visible) in page.iter().zip(self.source.visible(page)?) {
+                    if visible {
                         self.reach(other.clone(), index)?;
-                        frontier.push(other);
+                        frontier.push(other.clone());
                     } else {
-                        self.hidden.insert(other);
+                        self.hidden.insert(other.clone());
                     }
                 }
             }

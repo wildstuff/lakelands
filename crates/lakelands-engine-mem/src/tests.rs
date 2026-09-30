@@ -606,8 +606,9 @@ fn links(e: &dyn LakeEngine, ty: &str, key: &str, rel: Option<&str>, walk: Walk)
     let mut out: Vec<String> = e
         .view(None)
         .unwrap()
-        .edges(&ty.into(), &key.into(), rel.as_ref(), walk)
+        .edges(&ty.into(), &[key.into()], rel.as_ref(), walk)
         .unwrap()
+        .remove(0)
         .into_iter()
         .map(|e| format!("{}>{}>{}", e.from.1, e.relation, e.to.1))
         .collect();

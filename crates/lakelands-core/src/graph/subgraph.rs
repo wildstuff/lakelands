@@ -51,9 +51,10 @@ pub fn subgraph<S: EdgeSource + ?Sized>(
     let mut truncated = false;
 
     for hop in 1..=depth {
+        let nears: Vec<Node> = frontier.iter().cloned().collect();
         let mut found = BTreeSet::new();
-        for near in &frontier {
-            for (other, edge) in links.around(near, relations, walk)? {
+        for around in links.around(&nears, relations, walk)? {
+            for (other, edge) in around {
                 seen.entry(edge_id(&edge)).or_insert(edge);
                 if !depth_of.contains_key(&other) {
                     found.insert(other);

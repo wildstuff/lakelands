@@ -171,10 +171,10 @@ where
     }
 }
 
-/// Breadth-first over one relation, one level at a time. Each record is
-/// recorded at the first level that reaches it, so its depth is the
-/// fewest hops; each level is a sorted set, so nothing depends on the
-/// order the source answers in.
+/// Breadth-first over one relation, one level at a time, each level's
+/// links read together. Each record is recorded at the first level that
+/// reaches it, so its depth is the fewest hops; each level is a sorted
+/// set, so nothing depends on the order the source answers in.
 fn walk_step<S: EdgeSource + ?Sized>(
     links: &mut Links<'_, S>,
     from: &Node,
@@ -187,9 +187,10 @@ fn walk_step<S: EdgeSource + ?Sized>(
     let mut best: BTreeMap<Node, u32> = BTreeMap::new();
     let mut frontier: BTreeSet<Node> = BTreeSet::from([from.clone()]);
     for hop in 1..=depth.max {
+        let nears: Vec<Node> = frontier.iter().cloned().collect();
         let mut next = BTreeSet::new();
-        for near in &frontier {
-            for (other, _) in links.around(near, slice::from_ref(relation), walk)? {
+        for around in links.around(&nears, slice::from_ref(relation), walk)? {
+            for (other, _) in around {
                 if !best.contains_key(&other) {
                     best.insert(other.clone(), hop);
                     next.insert(other);

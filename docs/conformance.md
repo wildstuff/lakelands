@@ -581,7 +581,7 @@ belongs in the suite, not beside one engine:
 
 - `describe_answers_the_declaration_whole` — 014 and 024: for the owner, a described type projects back onto its declaration byte for byte — every field's function, embedding, searchable, sensitive, label and description, and the type's label, language and view; a masked field shows its shape only; functions, triggers, object sets and views are answered as declared, to a principal who reads every field they name or holds the schema grant, as in force at the read position
 
-### Through the engine seam (52 checks)
+### Through the engine seam (54 checks)
 
 **log**
 
@@ -609,6 +609,8 @@ belongs in the suite, not beside one engine:
 - `a_view_past_the_folded_position_is_refused` — seams §Engine: a view at a position the projection has not folded is refused as out of range, naming the head
 - `a_rolled_back_transaction_leaves_nothing` — seams §Engine: the fold writes one transaction per append, so a crash or an abandoned append leaves the projection at a whole append
 - `edges_walk_in_out_and_both` — 026: out gives the links a record declares, in the links that point at it, both their union with each link once; the store's walks are built on them
+- `edges_over_many_keys_answer_each_key_as_it_answers_alone` — seams §ProjectionView (lakelands#227): edges over many records of one type answer one list per key, in the keys' order, each what the key alone answers, at the head and at an earlier position; a link between two of the keys is in both lists
+- `get_many_answers_what_get_answers_key_by_key` — seams §ProjectionView (lakelands#227): get_many answers each record of the keys that exists at the view's position, retired and restricted ones included, once, in key order; a key with no record is left out
 - `edges_to_a_retired_record_are_returned` — 026: an engine returns a link to a retired or missing record as it is; hiding that end is the store's
 - `edges_follow_a_records_latest_state` — 026: a record put again links where its new state says, and no longer where its earlier state did, in both directions
 - `a_commit_backwards_or_with_a_put_past_through_is_invalid` — seams §ProjectionStore: a commit never moves the projection backwards, and never commits a state valid from after the position it says it folded through

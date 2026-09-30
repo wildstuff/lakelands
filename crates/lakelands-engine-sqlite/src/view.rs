@@ -326,6 +326,12 @@ impl ProjectionView for SqliteView<'_> {
         self.read(None, |r| r.record(ty, key))
     }
 
+    fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
+        self.read(Vec::new(), |r| {
+            r.records_by_key(ty, keys.iter().map(|k| k.to_string()).collect())
+        })
+    }
+
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
         self.read(Vec::new(), |r| {
             let decl = r.type_decl(ty)?;
@@ -370,70 +376,83 @@ impl ProjectionView for SqliteView<'_> {
     fn edges(
         &self,
         ty: &TypeName,
-        key: &RecordKey,
+        keys: &[RecordKey],
         relation: Option<&RelationName>,
         walk: Walk,
-    ) -> Result<Vec<Edge>> {
-        self.read(Vec::new(), |r| {
-            let mut edges = Vec::new();
+    ) -> Result<Vec<Vec<Edge>>> {
+        // One read transaction for all the keys; its statements are
+        // in-process, so each key keeps its own.
+        self.read(vec![Vec::new(); keys.len()], |r| {
             let out = matches!(walk, Walk::Out | Walk::Both);
             let inn = matches!(walk, Walk::In | Walk::Both);
-            if r.head {
-                if out {
-                    edges.extend(r.edge_rows(
-                        "SELECT src_ty, src_key, relation, dst_ty, dst_key FROM edges \
-                         WHERE src_ty = ?1 AND src_key = ?2",
-                        ty.as_str(),
-                        key.as_str(),
-                    )?);
+            let types = r.types()?;
+            let mut all = Vec::with_capacity(keys.len());
+            for key in keys {
+                let mut edges = Vec::new();
+                if r.head {
+                    if out {
+                        edges.extend(r.edge_rows(
+                            "SELECT src_ty, src_key, relation, dst_ty, dst_key FROM edges \
+                             WHERE src_ty = ?1 AND src_key = ?2",
+                            ty.as_str(),
+                            key.as_str(),
+                        )?);
+                    }
+                    if inn {
+                        edges.extend(r.edge_rows(
+                            "SELECT src_ty, src_key, relation, dst_ty, dst_key FROM edges \
+                             WHERE dst_ty = ?1 AND dst_key = ?2",
+                            ty.as_str(),
+                            key.as_str(),
+                        )?);
+                    }
+                    edges.retain(|e| relation.is_none_or(|want| *want == e.relation));
+                } else {
+                    if out
+                        && let (Some(decl), Some(record)) = (r.type_decl(ty)?, r.record(ty, key)?)
+                    {
+                        edges.extend(engines::links_of(&decl, &record, relation));
+                    }
+                    if inn {
+                        edges.extend(engines::in_links(ty, key, relation, &types, |name| {
+                            r.records(name)
+                        })?);
+                    }
                 }
-                if inn {
-                    edges.extend(r.edge_rows(
-                        "SELECT src_ty, src_key, relation, dst_ty, dst_key FROM edges \
-                         WHERE dst_ty = ?1 AND dst_key = ?2",
-                        ty.as_str(),
-                        key.as_str(),
-                    )?);
-                }
-                edges.retain(|e| relation.is_none_or(|want| *want == e.relation));
-            } else {
-                if out && let (Some(decl), Some(record)) = (r.type_decl(ty)?, r.record(ty, key)?) {
-                    edges.extend(engines::links_of(&decl, &record, relation));
-                }
-                if inn {
-                    let types = r.types()?;
-                    edges.extend(engines::in_links(ty, key, relation, &types, |name| {
-                        r.records(name)
-                    })?);
-                }
+                all.push(edges);
             }
             // Relations carried by link records: the link records whose end
-            // is this record. At the head the exact-text index finds them;
-            // at an earlier position the link type's records there are
+            // is one of the records. At the head the exact-text index finds
+            // them; at an earlier position the link type's records there are
             // read. The rulebook decides which count.
-            let types = r.types()?;
-            edges.extend(lakelands_core::links::link_edges(
+            let linked = lakelands_core::links::link_edges(
                 ty,
-                key,
+                keys,
                 relation,
                 walk,
                 &types,
-                |lt, field, k| {
+                |lt, field, ks| {
                     if r.head {
-                        let keys = r.keys(
-                            "SELECT key FROM text_index WHERE ty = ?1 AND field = ?2 AND value = ?3",
-                            &[&lt.as_str(), &field, &k.as_str()],
-                        )?;
-                        r.records_by_key(lt, keys)
+                        let mut found = BTreeSet::new();
+                        for k in ks {
+                            found.extend(r.keys(
+                                "SELECT key FROM text_index WHERE ty = ?1 AND field = ?2 AND value = ?3",
+                                &[&lt.as_str(), &field, &k.as_str()],
+                            )?);
+                        }
+                        r.records_by_key(lt, found)
                     } else {
                         // The link type at the position, whole: the rulebook
-                        // keeps the links whose end this record is.
+                        // keeps the links whose end a record is.
                         r.records(lt)
                     }
                 },
-            )?);
-            engines::order_edges(&mut edges);
-            Ok(edges)
+            )?;
+            for (edges, linked) in all.iter_mut().zip(linked) {
+                edges.extend(linked);
+                engines::order_edges(edges);
+            }
+            Ok(all)
         })
     }
 

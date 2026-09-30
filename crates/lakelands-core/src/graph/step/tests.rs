@@ -213,3 +213,18 @@ fn visibility_is_asked_once_per_record_per_walk() {
     // walk both ways comes back to it.
     assert_eq!(g.visibility_asked.get(), 4);
 }
+
+/// A walk expands a hop of its frontier at a time: from one record to 300,
+/// then from the 300 to 300 more, is one `edges` call, then two.
+#[test]
+fn a_walk_reads_a_page_of_its_frontier_at_a_time() {
+    let mut links: Vec<_> = (0..300)
+        .map(|i| e("a", "next", &format!("b{i:03}")))
+        .collect();
+    links.extend((0..300).map(|i| e(&format!("b{i:03}"), "next", &format!("c{i:03}"))));
+    let g = Graph::new(links);
+    let reached = step(&g, &n("a"), &next(Walk::Out, 1, 2), 16).unwrap();
+    assert_eq!(reached.len(), 600);
+    assert_eq!(g.edges_asked.get(), 3, "the start, then two pages of 256");
+    assert_eq!(g.visible_asked.get(), 4, "two pages of far ends per hop");
+}

@@ -71,6 +71,20 @@ impl ProjectionView for MemView {
         }))
     }
 
+    fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
+        Ok(self.read(|p, at| {
+            let keys: std::collections::BTreeSet<&RecordKey> = keys.iter().collect();
+            keys.into_iter()
+                .filter_map(|key| {
+                    p.records
+                        .get(&(ty.clone(), key.clone()))
+                        .and_then(|h| h.at(at))
+                        .cloned()
+                })
+                .collect()
+        }))
+    }
+
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
         Ok(self.read(|p, at| {
             let decl = p.type_at(ty, at);
@@ -138,56 +152,68 @@ impl ProjectionView for MemView {
     fn edges(
         &self,
         ty: &TypeName,
-        key: &RecordKey,
+        keys: &[RecordKey],
         relation: Option<&RelationName>,
         walk: Walk,
-    ) -> Result<Vec<Edge>> {
+    ) -> Result<Vec<Vec<Edge>>> {
         Ok(self.read(|p, at| {
-            let mut edges = Vec::new();
-            if matches!(walk, Walk::Out | Walk::Both) {
-                let record = p
-                    .records
-                    .get(&(ty.clone(), key.clone()))
-                    .and_then(|h| h.at(at));
-                if let (Some(decl), Some(record)) = (p.type_at(ty, at), record) {
-                    edges.extend(engines::links_of(decl, record, relation));
-                }
-            }
             // At the head the edges into a record, and the link records
             // whose end it is, are kept by it (`projection::index`); at an
             // earlier position the declaring types and link types are read.
             let head = at.is_some() && at == p.folded;
-            if matches!(walk, Walk::In | Walk::Both) {
-                if head {
-                    edges.extend(
-                        p.in_edges
+            let mut all: Vec<Vec<Edge>> = keys
+                .iter()
+                .map(|key| {
+                    let mut edges = Vec::new();
+                    if matches!(walk, Walk::Out | Walk::Both) {
+                        let record = p
+                            .records
                             .get(&(ty.clone(), key.clone()))
-                            .into_iter()
-                            .flat_map(|into| into.values())
-                            .filter(|e| relation.is_none_or(|want| *want == e.relation))
-                            .cloned(),
-                    );
-                } else {
-                    let into = engines::in_links(ty, key, relation, p.types_at(at), |name| {
-                        Ok::<_, std::convert::Infallible>(p.records_at(name, at).cloned().collect())
-                    });
-                    edges.extend(into.unwrap_or_else(|never| match never {}));
-                }
-            }
+                            .and_then(|h| h.at(at));
+                        if let (Some(decl), Some(record)) = (p.type_at(ty, at), record) {
+                            edges.extend(engines::links_of(decl, record, relation));
+                        }
+                    }
+                    if matches!(walk, Walk::In | Walk::Both) {
+                        if head {
+                            edges.extend(
+                                p.in_edges
+                                    .get(&(ty.clone(), key.clone()))
+                                    .into_iter()
+                                    .flat_map(|into| into.values())
+                                    .filter(|e| relation.is_none_or(|want| *want == e.relation))
+                                    .cloned(),
+                            );
+                        } else {
+                            let into =
+                                engines::in_links(ty, key, relation, p.types_at(at), |name| {
+                                    Ok::<_, std::convert::Infallible>(
+                                        p.records_at(name, at).cloned().collect(),
+                                    )
+                                });
+                            edges.extend(into.unwrap_or_else(|never| match never {}));
+                        }
+                    }
+                    edges
+                })
+                .collect();
             // Relations carried by link records: the links at the view's
-            // position whose end is this record.
+            // position whose end is one of the records.
             let linked = lakelands_core::links::link_edges(
                 ty,
-                key,
+                keys,
                 relation,
                 walk,
                 p.types_at(at),
-                |lt, field, k| {
+                |lt, field, ks| {
                     Ok::<_, std::convert::Infallible>(if head {
-                        p.link_ends
-                            .get(&(lt.clone(), FieldName::from(field), k.to_string()))
-                            .into_iter()
-                            .flatten()
+                        ks.iter()
+                            .flat_map(|k| {
+                                p.link_ends
+                                    .get(&(lt.clone(), FieldName::from(field), k.to_string()))
+                                    .into_iter()
+                                    .flatten()
+                            })
                             .filter_map(|lk| {
                                 p.records
                                     .get(&(lt.clone(), lk.clone()))
@@ -197,14 +223,19 @@ impl ProjectionView for MemView {
                             .collect()
                     } else {
                         // The link type at the position, whole: the
-                        // rulebook keeps the links whose end this record is.
+                        // rulebook keeps the links whose end a record is.
                         p.records_at(lt, at).cloned().collect()
                     })
                 },
             );
-            edges.extend(linked.unwrap_or_else(|never| match never {}));
-            engines::order_edges(&mut edges);
-            edges
+            for (edges, linked) in all
+                .iter_mut()
+                .zip(linked.unwrap_or_else(|never| match never {}))
+            {
+                edges.extend(linked);
+                engines::order_edges(edges);
+            }
+            all
         }))
     }
 

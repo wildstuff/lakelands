@@ -1159,10 +1159,11 @@ fn edges_over_a_link_relation_come_from_the_live_link_records_at_the_views_posit
     })?;
     let edges = |at: Option<Position>, ty: &str, key: &str, walk: Walk| {
         view(engine, at)?
-            .edges(&TypeName::from(ty), &RecordKey::from(key), None, walk)
+            .edges(&TypeName::from(ty), &[RecordKey::from(key)], None, walk)
             .must("reading edges")
-            .map(|e| {
-                e.into_iter()
+            .map(|mut e| {
+                e.remove(0)
+                    .into_iter()
                     .map(|e| {
                         format!(
                             "{}>{}@{}",
@@ -1585,11 +1586,12 @@ fn a_records_edges_at_the_head_read_its_links_not_the_type(
         let edges = view
             .edges(
                 &TypeName::from(ty),
-                &RecordKey::from(key),
+                &[RecordKey::from(key)],
                 Some(&relation.into()),
                 walk,
             )
-            .must("reading edges")?;
+            .must("reading edges")?
+            .remove(0);
         let read = crate::engines::links_read() - before;
         ensure!(
             edges.len() == want,

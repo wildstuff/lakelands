@@ -17,7 +17,7 @@
 //! edges over such relations: from the live link records at the view's
 //! position, each an [`Edge`] carrying the link's own fields.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::id::{RecordKey, RelationName, TypeName};
 use lakelands_api::ontology::{
@@ -143,26 +143,32 @@ fn edge_of(t: &TypeName, r: &RelationDecl, link: &StoredRecord) -> Option<Edge> 
     })
 }
 
-/// A record's edges over the relations carried by link records: out, the
-/// links of `ty`'s relations whose `from` is `key`; in, the links of every
-/// type's relations to `ty` whose `to` is `key`; over `relation` or all.
-/// `links_where(link_type, field, key)` answers the link type's records at
-/// the view's position whose `field` (`from` or `to`) holds `key`, found
-/// through an index, or the link type's records there, whole; this keeps
-/// the ones whose end is `key` and decides which count: only live links,
-/// each once. What it is handed is counted (`engines::links_read`).
+/// The edges of many records of one type over the relations carried by
+/// link records, one list per key: out, the links of `ty`'s relations
+/// whose `from` is the key; in, the links of every type's relations to
+/// `ty` whose `to` is; over `relation` or all.
+/// `links_where(link_type, field, keys)` answers, once for all the keys,
+/// the link type's records at the view's position whose `field` (`from`
+/// or `to`) holds one of `keys`, found through an index, or the link
+/// type's records there, whole; this gives each link to the key its end
+/// names and decides which count: only live links, each once per key.
+/// What it is handed is counted (`engines::links_read`).
 pub fn link_edges<'a, E>(
     ty: &TypeName,
-    key: &RecordKey,
+    keys: &[RecordKey],
     relation: Option<&RelationName>,
     walk: Walk,
     types: impl IntoIterator<Item = &'a TypeDecl>,
-    mut links_where: impl FnMut(&TypeName, &str, &RecordKey) -> Result<Vec<StoredRecord>, E>,
-) -> Result<Vec<Edge>, E> {
+    mut links_where: impl FnMut(&TypeName, &str, &[RecordKey]) -> Result<Vec<StoredRecord>, E>,
+) -> Result<Vec<Vec<Edge>>, E> {
     let out = matches!(walk, Walk::Out | Walk::Both);
     let inn = matches!(walk, Walk::In | Walk::Both);
-    let mut edges = Vec::new();
-    let mut seen: BTreeSet<(TypeName, RecordKey)> = BTreeSet::new();
+    let mut index: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (i, k) in keys.iter().enumerate() {
+        index.entry(k.as_str()).or_default().push(i);
+    }
+    let mut edges = vec![Vec::new(); keys.len()];
+    let mut seen: BTreeSet<(usize, TypeName, RecordKey)> = BTreeSet::new();
     for t in types {
         for r in t
             .relations
@@ -178,17 +184,22 @@ pub fn link_edges<'a, E>(
                 wanted.push(TO);
             }
             for field in wanted {
-                let links = links_where(&lt, field, key)?;
+                let links = links_where(&lt, field, keys)?;
                 crate::engines::count_links(links.len());
                 for link in links {
                     let at = link.fields.get(field).and_then(Value::as_str);
-                    if link.retired || at != Some(key.as_str()) {
+                    let Some(ends) = at.and_then(|at| index.get(at)) else {
+                        continue;
+                    };
+                    if link.retired {
                         continue;
                     }
-                    if seen.insert((lt.clone(), link.key.clone()))
-                        && let Some(e) = edge_of(&t.name, r, &link)
-                    {
-                        edges.push(e);
+                    for &i in ends {
+                        if seen.insert((i, lt.clone(), link.key.clone()))
+                            && let Some(e) = edge_of(&t.name, r, &link)
+                        {
+                            edges[i].push(e);
+                        }
                     }
                 }
             }
