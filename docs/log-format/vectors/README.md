@@ -22,6 +22,11 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
+- `v5.json`: one version-5 event after `v4.json`'s position 12: a
+  `declared` type carrying `annotations` on the type, two fields and a
+  relation, whose schema hash is the same type's without them; and
+  `negative`, the same event written as version 4, which a reader
+  refuses.
 - `v4.json`: two version-4 events after `v3.json`'s position 10: a
   `write_proposed` whose write is `declare`, and one whose write is
   `migrate` with its preflight's report; and `negative`, the first written

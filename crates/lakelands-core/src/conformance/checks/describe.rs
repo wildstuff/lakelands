@@ -141,6 +141,7 @@ fn object_set(name: &str, filter: &str) -> ObjectSetDecl {
 /// A described type projected back onto the declaration it describes.
 fn projected(t: &TypeDescription) -> TypeDecl {
     TypeDecl {
+        annotations: t.annotations.clone(),
         name: t.name.clone(),
         key: t.access.key.clone(),
         fields: t.fields.iter().map(field_projected).collect(),
@@ -157,6 +158,7 @@ fn projected(t: &TypeDescription) -> TypeDecl {
 
 fn field_projected(f: &FieldDescription) -> FieldDecl {
     FieldDecl {
+        annotations: f.annotations.clone(),
         name: f.name.clone(),
         ty: f.ty.clone(),
         required: f.required,
@@ -319,6 +321,7 @@ async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) -> Re
             .ok_or_else(|| Failure::new(format!("describe invents field `{}`", f.name)))?;
         if f.name.as_str() == "salary" {
             let shape = FieldDescription {
+                annotations: Default::default(),
                 name: decl.name.clone(),
                 ty: decl.ty.clone(),
                 required: decl.required,

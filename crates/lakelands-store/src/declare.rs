@@ -391,6 +391,9 @@ pub fn check_vocabulary_type(t: &TypeDecl) -> Result<()> {
 /// Check one declaration against the ontology it would join. `who_is_system`
 /// is true only for the store's own declarations.
 pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> Result<()> {
+    if let Some(fault) = d.annotation_fault() {
+        return Err(fault.into());
+    }
     match d {
         Declaration::Type(t) => {
             if is_system(&t.name) && !who_is_system {

@@ -66,6 +66,7 @@ async fn find_ordered_by_latest_lists_records_by_their_last_event(
         ],
     );
     let relation = |name: &str, via: Option<&str>| RelationDecl {
+        annotations: Default::default(),
         name: name.into(),
         target: "partner".into(),
         cardinality: Cardinality::ManyToOne,

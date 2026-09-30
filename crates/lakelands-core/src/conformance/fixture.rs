@@ -122,6 +122,7 @@ pub fn field_writer(store: &dyn LakeStore, id: &str, ty: &str, fields: &[&str]) 
 /// member at its default.
 pub fn field(name: &str, kind: StorageKind) -> FieldDecl {
     FieldDecl {
+        annotations: Default::default(),
         name: FieldName::from(name),
         ty: FieldType::kind(kind),
         required: false,
@@ -141,6 +142,7 @@ pub fn field(name: &str, kind: StorageKind) -> FieldDecl {
 /// A type whose records are keyed by the writer, with these fields.
 pub fn type_decl(name: &str, fields: Vec<FieldDecl>) -> TypeDecl {
     TypeDecl {
+        annotations: Default::default(),
         name: TypeName::from(name),
         key: Vec::new(),
         fields,

@@ -323,3 +323,68 @@ fn a_strict_declaration_is_read_back_from_what_it_writes() {
         assert_eq!(written["declare"], declaration["declare"]);
     }
 }
+
+#[test]
+fn an_annotation_is_refused_naming_the_declaration_the_key_and_where_it_sits() {
+    use lakelands_api::write::{AnnotationFault, Declaration};
+    let fault = |d: serde_json::Value| {
+        serde_json::from_value::<Declaration>(d)
+            .unwrap()
+            .annotation_fault()
+    };
+    let long = format!("acme.{}", "k".repeat(124));
+    let cases = [
+        (
+            json!({"declare": "type", "name": "t", "annotations": {long.clone(): 1}}),
+            long.as_str(),
+            "",
+        ),
+        (
+            json!({"declare": "type", "name": "t", "fields": [
+                {"name": "a", "type": {"kind": "text"}, "annotations": {"acme.n": 9007199254740992_u64}}]}),
+            "9007199254740992",
+            "fields[0]",
+        ),
+        (
+            json!({"declare": "type", "name": "t", "relations": [{"name": "r", "target": "u",
+                "fields": [{"name": "s", "type": {"kind": "text"}, "annotations": {"acme.": 1}}]}]}),
+            "acme.",
+            "relations[0].fields[0]",
+        ),
+        (
+            json!({"declare": "verb", "name": "v", "on": "t", "risk": "low", "effect": "write", "set": [],
+                "payload": [{"name": "p", "type": {"kind": "text"}, "annotations": {"1acme.x": 1}}]}),
+            "1acme.x",
+            "payload[0]",
+        ),
+        (
+            json!({"declare": "function", "name": "f", "backing": "http",
+                "inputs": [{"name": "x", "type": {"kind": "text"}, "annotations": {"acme.x": null}}]}),
+            "acme.x",
+            "inputs[0]",
+        ),
+    ];
+    for (d, named, at) in cases {
+        let Some(AnnotationFault::Invalid { message }) = fault(d.clone()) else {
+            panic!("{d} must be refused as invalid");
+        };
+        let name = d["name"].as_str().unwrap();
+        assert!(message.contains(&format!("`{name}`")), "{message}");
+        assert!(message.contains(named), "{message}");
+        if !at.is_empty() {
+            assert!(message.contains(&format!("at `{at}`")), "{message}");
+        }
+    }
+    // A key of exactly 128 bytes is taken, one of 129 is not.
+    let at_limit = format!("acme.{}", "k".repeat(123));
+    assert_eq!(
+        fault(json!({"declare": "type", "name": "t", "annotations": {at_limit: 1}})),
+        None
+    );
+    let Some(AnnotationFault::Reserved { key, .. }) =
+        fault(json!({"declare": "type", "name": "t", "annotations": {"lakelands.x": 1}}))
+    else {
+        panic!("`lakelands.` is reserved");
+    };
+    assert_eq!(key, "lakelands.x");
+}

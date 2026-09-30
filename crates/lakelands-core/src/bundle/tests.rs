@@ -42,6 +42,7 @@ const PARTNER: (&str, &str) = (
 
 fn field(name: &str, ty: FieldType) -> FieldDecl {
     FieldDecl {
+        annotations: Default::default(),
         name: FieldName::new(name),
         ty,
         required: false,
@@ -184,6 +185,7 @@ fn complete_declarations() -> Vec<Declaration> {
         ..kind(StorageKind::Text)
     };
     let invoice = TypeDecl {
+        annotations: Default::default(),
         name: TypeName::new("invoice"),
         key: vec![FieldName::new("number")],
         fields: vec![
@@ -220,6 +222,7 @@ fn complete_declarations() -> Vec<Declaration> {
             ),
         ],
         relations: vec![RelationDecl {
+            annotations: Default::default(),
             name: RelationName::new("billed_to"),
             target: TypeName::new("partner"),
             cardinality: Cardinality::ManyToOne,
@@ -238,6 +241,7 @@ fn complete_declarations() -> Vec<Declaration> {
         label: Some("Invoice".to_owned()),
     };
     let plain_type = |name: &str| TypeDecl {
+        annotations: Default::default(),
         name: TypeName::new(name),
         key: Vec::new(),
         fields: Vec::new(),
@@ -1217,4 +1221,47 @@ fn a_json_field_may_not_carry_the_name_of_a_type() {
         .is_ok(),
         "a reference field may share its target's name"
     );
+}
+
+#[test]
+fn annotations_lower_as_json_and_a_bad_key_is_reported_against_its_file() {
+    let shelf = (
+        "types/shelf.yaml",
+        "name: shelf\nkey: code\nannotations:\n  acme.icon: books\n  acme.package: {name: library, weight: 1.5}\nfields:\n  code:\n    type: text\n    annotations:\n      acme.format: shelf-code\nrelations:\n  partner:\n    target: partner\n    annotations:\n      acme.plural: partners\n",
+    );
+    let bundle = load(&[PARTNER, shelf]).expect("the bundle loads");
+    let t = bundle
+        .declarations
+        .iter()
+        .find_map(|d| match d {
+            Declaration::Type(t) if t.name.as_str() == "shelf" => Some(t),
+            _ => None,
+        })
+        .expect("`shelf` is declared");
+    assert_eq!(t.annotations["acme.icon"], serde_json::json!("books"));
+    assert_eq!(
+        t.annotations["acme.package"],
+        serde_json::json!({"name": "library", "weight": 1.5})
+    );
+    assert_eq!(
+        t.fields[0].annotations["acme.format"],
+        serde_json::json!("shelf-code")
+    );
+    assert_eq!(
+        t.relations[0].annotations["acme.plural"],
+        serde_json::json!("partners")
+    );
+    let bad = (
+        "types/shelf.yaml",
+        "name: shelf\nannotations:\n  icon: books\nfields:\n  code: text\n",
+    );
+    let e = one(&[bad], Problem::Malformed);
+    assert_eq!(e.file, "types/shelf.yaml");
+    assert!(e.message.contains("`icon`"), "{}", e.message);
+    let reserved = (
+        "types/shelf.yaml",
+        "name: shelf\nannotations:\n  sys.icon: books\nfields:\n  code: text\n",
+    );
+    let e = one(&[reserved], Problem::ReservedName);
+    assert!(e.message.contains("sys.icon"), "{}", e.message);
 }

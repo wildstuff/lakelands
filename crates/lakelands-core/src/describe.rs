@@ -21,7 +21,7 @@ use lakelands_api::describe::{
 };
 use lakelands_api::engine::Declared;
 use lakelands_api::expr::Condition;
-use lakelands_api::ontology::{Authority, TypeDecl, VerbDecl, VerbEffect, ViewDecl};
+use lakelands_api::ontology::{Authority, RelationDecl, TypeDecl, VerbDecl, VerbEffect, ViewDecl};
 use lakelands_api::write::{Declaration, FunctionDecl};
 use lakelands_api::{Access, FieldName, LakeId, Principal, TypeName};
 
@@ -260,11 +260,12 @@ fn type_description(
         label: t.label.clone(),
         language: t.language.clone(),
         view: t.view.clone().filter(|v| view_visible(v, declared, who)),
+        annotations: t.annotations.clone(),
         relations: t
             .relations
             .iter()
             .filter(|r| find_type(declared, &r.target).is_some())
-            .cloned()
+            .map(|r| relation_description(&t.name, r, who))
             .collect(),
         access: TypeAccess {
             key: t.key.clone(),
@@ -290,6 +291,28 @@ fn type_description(
         },
         fields,
     })
+}
+
+/// A relation as the principal may see it: a link field it may not read
+/// is described by its shape alone, as a type's own field is — never by
+/// what it is computed from, what it means or how the host marked it
+/// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
+fn relation_description(t: &TypeName, r: &RelationDecl, who: &Principal) -> RelationDecl {
+    let link = crate::links::link_type_name(t, &r.name);
+    let mut r = r.clone();
+    for f in &mut r.fields {
+        if !field_access(who, &link, f).reads() {
+            f.derived = None;
+            f.function = None;
+            f.depends_on.clear();
+            f.searchable = false;
+            f.description = None;
+            f.label = None;
+            f.embed = None;
+            f.annotations.clear();
+        }
+    }
+    r
 }
 
 /// A verb is callable when every field its effect writes is granted to the
@@ -342,6 +365,7 @@ mod tests {
 
     fn field(name: &str, authority: Authority) -> FieldDecl {
         FieldDecl {
+            annotations: Default::default(),
             name: name.into(),
             ty: FieldType::kind(StorageKind::Text),
             required: false,
@@ -360,6 +384,7 @@ mod tests {
 
     fn declared() -> Vec<Declared> {
         let invoice = TypeDecl {
+            annotations: Default::default(),
             name: "invoice".into(),
             key: vec![],
             fields: vec![

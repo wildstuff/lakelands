@@ -62,7 +62,8 @@ pub enum Refusal {
     /// The field is written by another authority, through another door
     /// (a source field through `upsert`, a derived field by anyone).
     WrongDoor,
-    /// `sys.` names are reserved.
+    /// The name is in a reserved namespace: `sys.` for a type,
+    /// `sys.` and `lakelands.` for an annotation key.
     Reserved,
     /// The request does not fit the lake's map: an unknown field, a
     /// relation the type does not declare, an expression that does not
@@ -147,7 +148,7 @@ impl fmt::Display for Error {
                 match reason {
                     Refusal::NotGranted => write!(f, ": you hold no grant for this"),
                     Refusal::WrongDoor => write!(f, ": another authority writes this field"),
-                    Refusal::Reserved => write!(f, ": `sys.` names are reserved"),
+                    Refusal::Reserved => write!(f, ": the name is in a reserved namespace"),
                     Refusal::Invalid { message }
                     | Refusal::Constraint { message }
                     | Refusal::Precondition { message } => write!(f, ": {message}"),

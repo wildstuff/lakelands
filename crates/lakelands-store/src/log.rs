@@ -288,10 +288,10 @@ mod tests {
     fn a_newer_format_is_refused_by_name() {
         let (_, mut stored) = created();
         let mut v: serde_json::Value = serde_json::from_slice(&stored.bytes).unwrap();
-        v["v"] = json!(5);
+        v["v"] = json!(6);
         stored.bytes = canonical::to_vec(&v);
         let e = open(&stored).unwrap_err().to_string();
-        assert!(e.contains("format 5") && e.contains("format 4"), "{e}");
+        assert!(e.contains("format 6") && e.contains("format 5"), "{e}");
     }
 
     /// A version-2 event carrying what version 3 added is refused, naming

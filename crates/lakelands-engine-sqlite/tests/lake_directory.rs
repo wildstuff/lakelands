@@ -46,6 +46,7 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
     };
     let cat = store.catalog(WriteContext::default());
     let note = FieldDecl {
+        annotations: Default::default(),
         name: "note".into(),
         ty: FieldType::kind(StorageKind::Text),
         required: false,
@@ -63,6 +64,7 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
     cat.declare(
         &owner,
         Declaration::Type(TypeDecl {
+            annotations: Default::default(),
             name: "entry".into(),
             key: vec![],
             fields: vec![note],

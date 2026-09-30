@@ -251,6 +251,7 @@ mod tests {
 
     fn field(name: &str, authority: Authority, sensitive: bool) -> FieldDecl {
         FieldDecl {
+            annotations: Default::default(),
             name: name.into(),
             ty: FieldType::kind(StorageKind::Text),
             required: false,
@@ -269,6 +270,7 @@ mod tests {
 
     fn invoice() -> TypeDecl {
         TypeDecl {
+            annotations: Default::default(),
             name: "invoice".into(),
             key: vec![],
             fields: vec![

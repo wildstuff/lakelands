@@ -60,6 +60,7 @@ fn owner(lake: &str) -> Principal {
 
 fn field(name: &str, kind: StorageKind) -> FieldDecl {
     FieldDecl {
+        annotations: Default::default(),
         name: name.into(),
         ty: FieldType::kind(kind),
         required: false,
@@ -78,6 +79,7 @@ fn field(name: &str, kind: StorageKind) -> FieldDecl {
 
 fn ty(name: &str, fields: Vec<FieldDecl>) -> TypeDecl {
     TypeDecl {
+        annotations: Default::default(),
         name: name.into(),
         key: vec![],
         fields,
@@ -542,6 +544,7 @@ async fn the_door_refuses_what_this_release_does_not_hold() {
     // to a relation carried by link records.
     let mut linked = ty("a", vec![field("b", StorageKind::Reference)]);
     linked.relations.push(RelationDecl {
+        annotations: Default::default(),
         name: "to_a".into(),
         target: "a".into(),
         cardinality: Default::default(),

@@ -68,7 +68,7 @@ check!(
 check!(
     /// An imported export is the lake it came from.
     IMPORT_IS_THE_LAKE = an_export_imported_into_a_fresh_lake_answers_as_the_lake_it_came_from,
-    "030 and log-format §4: an export imported into a fresh lake of the engine holds every event unchanged at its position, so the lake answers as the one exported (the head, verify, the feed from position 0, every type's records with provenance at the head and at an earlier position, describe) and exports the same files byte for byte; its next writer takes a lease greater than every fence in the log and continues it",
+    "030 and log-format §4: an export imported into a fresh lake of the engine holds every event unchanged at its position, of every format version the lake wrote (annotations included), so the lake answers as the one exported (the head, verify, the feed from position 0, every type's records with provenance at the head and at an earlier position, describe) and exports the same files byte for byte; its next writer takes a lease greater than every fence in the log and continues it",
     given
 );
 
@@ -604,12 +604,12 @@ fn import_seams() -> lakelands_api::seam::Seams {
     }
 }
 
-/// A lake with two writers, two sealed segments and three format
+/// A lake with two writers, two sealed segments and four format
 /// versions: invoices, a checkpoint, the lake opened again by a second
 /// writer (a second lease, a greater fence), a re-key (version 2), a
-/// restricted and a retired invoice, a derived `date_bucket` field and a
-/// record ingested with an upstream (version 3), a second checkpoint and
-/// more invoices. Answers the
+/// restricted and a retired invoice, an annotated type (version 5) with a
+/// derived `date_bucket` field, a record ingested with an upstream, a
+/// second checkpoint and more invoices. Answers the
 /// second writer's handle and a position before the second checkpoint.
 async fn exported_lake(
     store: Arc<dyn LakeStore>,
@@ -639,19 +639,25 @@ async fn exported_lake(
     .await
     .must("retiring `i2`")?;
     // Format version 3: a derived field calling date_bucket, and a record
-    // ingested with the lake and position it was read from.
+    // ingested with the lake and position it was read from. Format version
+    // 5: the type, a field and a relation carry annotations.
     let stamp: lakelands_api::write::Declaration = serde_json::from_value(json!({
         "declare": "type", "name": "stamp",
+        "annotations": {"acme.icon": "clock", "acme.package": {"name": "audit", "weight": 1.5}},
         "fields": [
-            {"name": "at", "type": {"kind": "date_time"}, "authority": "source"},
+            {"name": "at", "type": {"kind": "date_time"}, "authority": "source",
+             "annotations": {"acme.format": "iso"}},
             {"name": "month", "type": {"kind": "date_time"}, "authority": "derived",
              "derived": "date_bucket(at, 'month')", "depends_on": ["at"]}
+        ],
+        "relations": [
+            {"name": "of", "target": "invoice", "annotations": {"acme.plural": "invoices"}}
         ]
     }))
     .expect("a declaration");
     cat.declare(&own, stamp)
         .await
-        .must("declaring a derived field calling date_bucket")?;
+        .must("declaring an annotated type with a derived field calling date_bucket")?;
     let mut read_from = crate::conformance::fixture::source_record(
         "stamp",
         "s1",
@@ -729,6 +735,18 @@ async fn an_export_imported_into_a_fresh_lake_answers_as_the_lake_it_came_from(
 ) -> Result<(), Failure> {
     let scratch = Scratch::new(given.scratch.clone());
     let (store, earlier) = exported_lake(store, &given.reopen).await?;
+    let newest = events(store.as_ref())
+        .await?
+        .iter()
+        .map(|e| e.v)
+        .max()
+        .unwrap_or(0);
+    ensure!(
+        newest == lakelands_api::event::LOG_FORMAT_VERSION,
+        "the exported lake must hold an event of the newest format version, {}; its newest is \
+         {newest}",
+        lakelands_api::event::LOG_FORMAT_VERSION
+    );
     let from = scratch.dir("from");
     write(store.as_ref(), &from).await?;
     let lake = store.lake().clone();

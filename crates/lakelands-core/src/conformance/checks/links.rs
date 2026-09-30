@@ -131,6 +131,7 @@ const OCT: &str = "2026-10-01T00:00:00.000000Z";
 
 fn approved_by(fields: Vec<FieldDecl>, authority: Authority) -> RelationDecl {
     RelationDecl {
+        annotations: Default::default(),
         name: "approved_by".into(),
         target: "partner".into(),
         cardinality: Cardinality::ManyToOne,

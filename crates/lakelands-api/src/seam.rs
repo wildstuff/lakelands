@@ -196,6 +196,7 @@ pub const SETTING_TYPE: &str = "sys.setting";
 pub fn setting_type() -> TypeDecl {
     use crate::ontology::{Authority, FieldDecl, FieldType, StorageKind};
     let field = |name: &str, kind| FieldDecl {
+        annotations: Default::default(),
         name: name.into(),
         ty: FieldType::kind(kind),
         required: true,
@@ -211,6 +212,7 @@ pub fn setting_type() -> TypeDecl {
         embed: None,
     };
     TypeDecl {
+        annotations: Default::default(),
         name: SETTING_TYPE.into(),
         key: vec!["key".into()],
         fields: vec![
@@ -348,6 +350,7 @@ pub const AGING_RULE_TYPE: &str = "sys.aging_rule";
 pub fn aging_rule_type() -> TypeDecl {
     use crate::ontology::{Authority, FieldDecl, FieldType, StorageKind};
     let field = |name: &str, kind, required| FieldDecl {
+        annotations: Default::default(),
         name: name.into(),
         ty: FieldType::kind(kind),
         required,
@@ -363,6 +366,7 @@ pub fn aging_rule_type() -> TypeDecl {
         embed: None,
     };
     TypeDecl {
+        annotations: Default::default(),
         name: AGING_RULE_TYPE.into(),
         key: vec!["name".into()],
         fields: vec![

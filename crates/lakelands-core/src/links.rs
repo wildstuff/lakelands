@@ -55,6 +55,7 @@ pub fn carried_by_links(r: &RelationDecl) -> bool {
 
 fn key_field(name: &str, target: &TypeName, authority: Authority) -> FieldDecl {
     FieldDecl {
+        annotations: Default::default(),
         name: name.into(),
         ty: FieldType {
             target: Some(target.clone()),
@@ -82,6 +83,7 @@ pub fn link_type(t: &TypeName, r: &RelationDecl) -> TypeDecl {
     ];
     fields.extend(r.fields.iter().cloned());
     TypeDecl {
+        annotations: Default::default(),
         name: link_type_name(t, &r.name),
         key: vec![FROM.into(), TO.into()],
         fields,

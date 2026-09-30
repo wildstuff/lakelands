@@ -154,6 +154,7 @@ const PARTNER: &str = "partner";
 
 fn text(name: &str) -> FieldDecl {
     FieldDecl {
+        annotations: Default::default(),
         name: name.into(),
         ty: FieldType::kind(StorageKind::Text),
         required: false,
@@ -174,6 +175,7 @@ fn text(name: &str) -> FieldDecl {
 /// linked to partners, with one verb that runs and one that waits.
 pub fn fixture() -> Vec<Declaration> {
     let invoice = TypeDecl {
+        annotations: Default::default(),
         name: INVOICE.into(),
         key: Vec::new(),
         fields: vec![
@@ -206,6 +208,7 @@ pub fn fixture() -> Vec<Declaration> {
             },
         ],
         relations: vec![RelationDecl {
+            annotations: Default::default(),
             name: "billed_by".into(),
             target: PARTNER.into(),
             cardinality: Default::default(),
@@ -734,6 +737,7 @@ pub async fn describe_shows_only_what_the_principal_may_see(store: Arc<dyn LakeS
 /// A described field, read back as the declaration it describes.
 fn as_declared(f: &lakelands_api::describe::FieldDescription) -> FieldDecl {
     FieldDecl {
+        annotations: Default::default(),
         name: f.name.clone(),
         ty: f.ty.clone(),
         required: f.required,
@@ -1241,6 +1245,7 @@ pub async fn a_proposer_sees_only_its_own_proposals(store: Arc<dyn LakeStore>) {
 pub async fn sys_types_cannot_be_declared(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let decl = TypeDecl {
+        annotations: Default::default(),
         name: "sys.setting".into(),
         key: Vec::new(),
         fields: vec![text("value")],
@@ -2467,6 +2472,7 @@ pub async fn schema_hashes_and_proposal_ids_have_the_stores_form(store: Arc<dyn 
     // A view is hashed over its conditions' typed form, so a view written
     // as text hashes to the one digest too.
     let open_by_partner = TypeDecl {
+        annotations: Default::default(),
         name: "open_by_partner".into(),
         key: vec!["partner".into()],
         fields: vec![
@@ -3356,6 +3362,7 @@ pub async fn a_sort_index_setting_names_declared_scalar_fields_and_describe_show
     let f = setup(store).await;
     let owner = &f.cast.owner;
     let reading = TypeDecl {
+        annotations: Default::default(),
         name: "reading".into(),
         key: Vec::new(),
         fields: vec![
@@ -3480,6 +3487,7 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
         ..text(name)
     };
     let doc = TypeDecl {
+        annotations: Default::default(),
         name: "doc".into(),
         key: Vec::new(),
         fields: vec![
@@ -3694,6 +3702,7 @@ pub async fn an_order_by_latest_takes_no_field_and_no_view(store: Arc<dyn LakeSt
         );
     }
     let totals = TypeDecl {
+        annotations: Default::default(),
         name: "partner_totals".into(),
         key: vec!["partner".into()],
         fields: vec![text("partner"), text("count")],
@@ -3739,10 +3748,12 @@ pub async fn a_trigger_watches_a_link_type_and_not_a_reference_relations(
     let f = setup(store).await;
     let owner = &f.cast.owner;
     let doc = TypeDecl {
+        annotations: Default::default(),
         name: "doc".into(),
         key: Vec::new(),
         fields: vec![text("title")],
         relations: vec![RelationDecl {
+            annotations: Default::default(),
             name: "signed_by".into(),
             target: PARTNER.into(),
             cardinality: Default::default(),
@@ -3955,6 +3966,7 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
     let f = setup(store).await;
     let owner = &f.cast.owner;
     let doc = TypeDecl {
+        annotations: Default::default(),
         name: "doc".into(),
         key: Vec::new(),
         fields: vec![

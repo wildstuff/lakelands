@@ -234,6 +234,7 @@ fn field_type() -> FieldType {
 
 fn field_decl() -> FieldDecl {
     FieldDecl {
+        annotations: [("acme.icon".to_owned(), serde_json::json!("x"))].into(),
         name: "f".into(),
         ty: field_type(),
         required: true,
@@ -259,6 +260,7 @@ fn embed_decl() -> EmbedDecl {
 
 fn relation_decl() -> RelationDecl {
     RelationDecl {
+        annotations: [("acme.icon".to_owned(), serde_json::json!("x"))].into(),
         name: "r".into(),
         target: "partner".into(),
         cardinality: Cardinality::OneToMany,
@@ -272,6 +274,7 @@ fn relation_decl() -> RelationDecl {
 
 fn type_decl() -> TypeDecl {
     TypeDecl {
+        annotations: [("acme.icon".to_owned(), serde_json::json!("x"))].into(),
         name: "invoice".into(),
         key: vec!["f".into()],
         fields: vec![field_decl()],
@@ -444,6 +447,7 @@ fn function_decl() -> FunctionDecl {
 
 fn field_description() -> FieldDescription {
     FieldDescription {
+        annotations: [("acme.icon".to_owned(), serde_json::json!("x"))].into(),
         name: "f".into(),
         ty: field_type(),
         required: true,
@@ -464,6 +468,7 @@ fn field_description() -> FieldDescription {
 
 fn type_description() -> TypeDescription {
     TypeDescription {
+        annotations: [("acme.icon".to_owned(), serde_json::json!("x"))].into(),
         name: "invoice".into(),
         description: Some("d".into()),
         label: Some("l".into()),

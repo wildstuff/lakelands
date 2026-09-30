@@ -261,6 +261,7 @@ async fn lake_with_switches() -> (Arc<dyn LakeStore>, Arc<dyn Catalog>, Principa
     let cat = store.catalog(WriteContext::default());
     let who = owner(&name);
     let text = FieldDecl {
+        annotations: Default::default(),
         name: "text".into(),
         ty: FieldType::kind(StorageKind::Text),
         required: false,
@@ -278,6 +279,7 @@ async fn lake_with_switches() -> (Arc<dyn LakeStore>, Arc<dyn Catalog>, Principa
     cat.declare(
         &who,
         Declaration::Type(TypeDecl {
+            annotations: Default::default(),
             name: "note".into(),
             key: vec![],
             fields: vec![text],

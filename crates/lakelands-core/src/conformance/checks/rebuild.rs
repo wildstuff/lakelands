@@ -303,6 +303,7 @@ async fn after_a_rebuild_every_index_answers_as_before(
     let mut ty = type_decl("note", vec![text, embedding, parent]);
     ty.language = Some("en".into());
     ty.relations = vec![RelationDecl {
+        annotations: Default::default(),
         name: "under".into(),
         target: "note".into(),
         cardinality: Default::default(),

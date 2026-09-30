@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use crate::expr::Condition;
 use crate::id::{FieldName, LakeId, RelationName, TypeName, VerbName};
 use crate::ontology::{
-    Authority, EmbedDecl, FieldDecl, FieldType, OnInputChange, RelationDecl, Risk, TriggerDecl,
-    ValueTypeDecl, ViewDecl,
+    Annotations, Authority, EmbedDecl, FieldDecl, FieldType, OnInputChange, RelationDecl, Risk,
+    TriggerDecl, ValueTypeDecl, ViewDecl,
 };
 use crate::principal::Access;
 use crate::write::{FunctionDecl, ObjectSetDecl};
@@ -68,6 +68,9 @@ pub struct TypeDescription {
     /// A short label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// The host's own marks on the type.
+    #[serde(default, skip_serializing_if = "Annotations::is_empty")]
+    pub annotations: Annotations,
     /// The language of its searchable text, as a BCP-47 tag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
@@ -136,13 +139,17 @@ pub struct FieldDescription {
     /// For an embedding: the text fields it is made from, and the model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embed: Option<EmbedDecl>,
+    /// The host's own marks on the field, to a principal who reads it.
+    #[serde(default, skip_serializing_if = "Annotations::is_empty")]
+    pub annotations: Annotations,
 }
 
 impl FieldDescription {
     /// The description of a declared field for a principal with `access`.
     /// A masked field answers its shape only — name, type, whether it is
     /// required and sensitive, its authority and what an input change does
-    /// to it — never what it is computed from or what it means
+    /// to it — never what it is computed from, what it means or how the
+    /// host marked it
     /// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
     pub fn of(decl: &FieldDecl, access: Access) -> FieldDescription {
         use crate::ontology::StorageKind::{Bytes, Json, Vector};
@@ -163,6 +170,7 @@ impl FieldDescription {
                 description: None,
                 label: None,
                 embed: None,
+                annotations: Annotations::new(),
             };
         }
         FieldDescription {
@@ -181,6 +189,7 @@ impl FieldDescription {
             description: decl.description.clone(),
             label: decl.label.clone(),
             embed: decl.embed.clone(),
+            annotations: decl.annotations.clone(),
         }
     }
 

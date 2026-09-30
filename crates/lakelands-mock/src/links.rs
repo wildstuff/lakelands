@@ -26,6 +26,7 @@ pub(crate) fn is_link_type(t: &TypeName) -> bool {
 
 fn end(field: &str, target: &TypeName, r: &RelationDecl) -> FieldDecl {
     FieldDecl {
+        annotations: Default::default(),
         name: field.into(),
         ty: FieldType {
             target: Some(target.clone()),
@@ -50,6 +51,7 @@ pub(crate) fn link_type(t: &TypeName, r: &RelationDecl) -> TypeDecl {
     let mut fields = vec![end(FROM, t, r), end(TO, &r.target, r)];
     fields.extend(r.fields.iter().cloned());
     TypeDecl {
+        annotations: Default::default(),
         name: name(t, &r.name),
         key: vec![FROM.into(), TO.into()],
         fields,

@@ -36,3 +36,22 @@ answer that leaks nothing.
   record is still returned with the field masked or absent.
 - It is not a rule for writers. A write is governed by the principal's
   write grants (006, 012).
+
+## Extended: annotations, and a relation's link fields
+
+A field the principal may not read is described without its
+annotations, as without its description and label. This holds for a
+type's own field and for a relation's link field alike.
+
+`describe` answers a type's relations with their link fields. Until
+now it answered each relation whole, so a link field the principal may
+not read still showed its description and label. That was a gap in the
+answer this record tightened in 0.4.0, and it is closed in 0.5.0
+(lakelands#239): such a link field is described by its shape alone,
+without its derivation, meaning or annotations. A type's and a
+relation's own annotations are shown to whoever the type is described
+to, as their descriptions are.
+
+An annotation grants nothing and restricts nothing. What a principal
+may read is decided by its grants alone. A host that marks a field with
+a policy of its own enforces that policy itself.

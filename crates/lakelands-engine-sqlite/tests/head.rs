@@ -45,6 +45,7 @@ async fn a_read_as_of_the_head_is_never_refused_while_a_writer_appends() {
             .unwrap();
     let cat = store.catalog(WriteContext::default());
     let note = FieldDecl {
+        annotations: Default::default(),
         name: "note".into(),
         ty: FieldType::kind(StorageKind::Text),
         required: false,
@@ -62,6 +63,7 @@ async fn a_read_as_of_the_head_is_never_refused_while_a_writer_appends() {
     cat.declare(
         &owner(),
         Declaration::Type(TypeDecl {
+            annotations: Default::default(),
             name: "entry".into(),
             key: vec![],
             fields: vec![note],

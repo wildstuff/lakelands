@@ -23,8 +23,9 @@ use crate::write::{Declaration, Migration, ProposedWrite};
 /// version newer than the one it knows, by name and with a message, never
 /// by guessing. Version 2 adds `migrated.rekeyed`; version 3 the member
 /// `upstream` and `date_bucket` in a declaration; version 4 a proposed
-/// declaration or migration (`docs/log-format.md` §6).
-pub const LOG_FORMAT_VERSION: u32 = 4;
+/// declaration or migration; version 5 a declaration's `annotations`
+/// (`docs/log-format.md` §6).
+pub const LOG_FORMAT_VERSION: u32 = 5;
 
 /// The version a lake is created with and writes until it needs a newer
 /// one: a lake that never re-keys a type stays at version 1, byte for

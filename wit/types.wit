@@ -150,6 +150,9 @@ interface types {
         description: option<string>,
         label: option<string>,
         embed: option<embed-decl>,
+        /// The host's own marks, by namespaced key (`acme.icon`), each a
+        /// JSON value; Lakelands never reads them.
+        annotations: list<tuple<string, json>>,
     }
 
     /// What a vector field is the embedding of: text fields of the same
@@ -171,6 +174,9 @@ interface types {
         /// Who writes the links, for a relation without `via`.
         authority: authority,
         description: option<string>,
+        /// The host's own marks, by namespaced key (`acme.icon`), each a
+        /// JSON value; Lakelands never reads them.
+        annotations: list<tuple<string, json>>,
     }
 
     record measure {
@@ -197,6 +203,9 @@ interface types {
         field-meta: bool,
         description: option<string>,
         label: option<string>,
+        /// The host's own marks, by namespaced key (`acme.icon`), each a
+        /// JSON value; Lakelands never reads them.
+        annotations: list<tuple<string, json>>,
     }
 
     record value-type-decl {
@@ -735,6 +744,8 @@ interface types {
         description: option<string>,
         label: option<string>,
         embed: option<embed-decl>,
+        /// The host's own marks, to a principal who may see them.
+        annotations: list<tuple<string, json>>,
     }
 
     record type-description {
@@ -752,6 +763,8 @@ interface types {
         verbs: list<verb-name>,
         lineage: type-lineage,
         lifecycle: type-lifecycle,
+        /// The host's own marks, to a principal who may see them.
+        annotations: list<tuple<string, json>>,
     }
 
     record verb-description {

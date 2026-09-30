@@ -49,6 +49,7 @@ async fn org(store: &dyn LakeStore) -> Result<(), Failure> {
         ],
     );
     ty.relations = vec![RelationDecl {
+        annotations: Default::default(),
         name: "reports_to".into(),
         target: "person".into(),
         cardinality: Default::default(),

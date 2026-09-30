@@ -5,10 +5,30 @@
 //! risk, and triggers. Declarations enter the log as events, so every
 //! position has exactly one ontology in force.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::expr::Condition;
 use crate::id::{FieldName, RelationName, TriggerName, TypeName, ValueTypeName, VerbName};
+
+/// A host's own marks on a declaration: a map from a namespaced key
+/// (`acme.icon`) to a JSON value. Lakelands stores, replays and describes
+/// them and never reads them: an annotation grants nothing and restricts
+/// nothing, and is meaning, never shape
+/// (`docs/decisions/007-schema-hash-covers-shape.md`, extended).
+pub type Annotations = BTreeMap<String, serde_json::Value>;
+
+/// The most canonical bytes all the annotations of one declaration may
+/// hold together. A constant of the contract, not a lake's setting, so a
+/// declaration one lake takes every lake takes.
+pub const ANNOTATIONS_MAX_BYTES: usize = 16 * 1024;
+
+/// The longest an annotation key may be, in bytes.
+pub const ANNOTATION_KEY_MAX_BYTES: usize = 128;
+
+/// The namespaces no host may use for an annotation key.
+pub const RESERVED_ANNOTATION_NAMESPACES: &[&str] = &["sys", "lakelands"];
 
 /// How an engine stores, compares and indexes a value. The set is closed:
 /// a kind exists only when an engine must treat it differently from every
@@ -205,6 +225,9 @@ pub struct FieldDecl {
     /// the value is computed, not what the field is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embed: Option<EmbedDecl>,
+    /// The host's own marks; never read by Lakelands.
+    #[serde(default, skip_serializing_if = "Annotations::is_empty")]
+    pub annotations: Annotations,
 }
 
 /// What a vector field is the embedding of
@@ -340,6 +363,9 @@ pub struct RelationDecl {
     /// What the relation means. Not part of the schema hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// The host's own marks; never read by Lakelands.
+    #[serde(default, skip_serializing_if = "Annotations::is_empty")]
+    pub annotations: Annotations,
 }
 
 /// A view type: records computed from other types, read with `find` like
@@ -411,6 +437,9 @@ pub struct TypeDecl {
     /// A short label. Not part of the schema hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// The host's own marks; never read by Lakelands.
+    #[serde(default, skip_serializing_if = "Annotations::is_empty")]
+    pub annotations: Annotations,
 }
 
 fn yes() -> bool {

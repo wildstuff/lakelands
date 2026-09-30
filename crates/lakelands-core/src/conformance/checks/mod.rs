@@ -9,6 +9,7 @@ use super::Check;
 mod after;
 mod aggregates;
 mod aging;
+mod annotations;
 mod backings;
 mod bundles;
 mod compact;
@@ -157,6 +158,10 @@ pub const ALL: &[Check] = &[
     schema_proposals::SCHEMA_TO_ACCEPT,
     schema_proposals::MIGRATION_PREFLIGHTED_AGAIN,
     schema_proposals::REJECTED_UNTOUCHED,
+    annotations::ROUND_TRIP,
+    annotations::VERSION_NOT_HASH,
+    annotations::MASKED_WITHOUT,
+    annotations::REFUSED_NAMING,
     proposals::VERB_PROCEDURE_VERSION,
     cursors::CURSOR_STAYS,
     feed::FEED_IS_THE_LOG,
