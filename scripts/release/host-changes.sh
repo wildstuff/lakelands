@@ -49,13 +49,26 @@ out="$(mktemp)"
 trap 'rm -f "$out"' EXIT
 lines=()
 for crate in "${CRATES[@]}"; do
-    cargo semver-checks check-release -p "$crate" --baseline-rev "$baseline" \
-        --release-type minor >"$out" 2>&1 || true
+    # Without colour: CI sets CARGO_TERM_COLOR=always, and escape codes
+    # would hide every finding from the reading below.
+    CARGO_TERM_COLOR=never cargo semver-checks check-release -p "$crate" \
+        --baseline-rev "$baseline" --release-type minor --color never >"$out" 2>&1 || true
+    # Escape codes stripped all the same, should a terminal setting win.
+    sed -i 's/\x1b\[[0-9;]*[A-Za-z]//g' "$out"
     grep -q 'Summary' "$out" ||
         { cat "$out" >&2; echo "host-changes: cannot run: cargo semver-checks failed for $crate" >&2; exit 2; }
-    while IFS=$'\t' read -r lint summary item; do
+    # The tool's own count of failed checks: the report must read exactly
+    # that many lints, or the reading has gone blind, which is never "no
+    # change".
+    failed="$(sed -n 's/.*Summary .* \([0-9][0-9]*\) major and \([0-9][0-9]*\) minor checks failed.*/\1 \2/p' "$out" |
+        awk '{ print $1 + $2 }')"
+    lints=()
+    # Fields apart by the unit separator, which is not blank: an empty
+    # field stays empty instead of shifting the next one into its place.
+    while IFS=$'\x1f' read -r lint summary item; do
         what="$(advice "$lint")"
         lines+=("\`$crate\`: $item: ${what:-$summary} ($lint)")
+        [ -n "$lint" ] && lints+=("$lint")
     done < <(awk '
         /^--- failure / {
             lint = $3; sub(/:$/, "", lint)
@@ -66,11 +79,17 @@ for crate in "${CRATES[@]}"; do
         inside && /^  / {
             item = $0; sub(/^  /, "", item)
             sub(/,? (in file|in|previously in file) \/.*$/, "", item)
-            print lint "\t" summary "\t" item
+            print lint "\037" summary "\037" item
             next
         }
         { inside = 0 }
     ' "$out" | sort -u)
+    read="$(printf '%s\n' ${lints[@]+"${lints[@]}"} | sed '/^$/d' | sort -u | wc -l | tr -d ' ')"
+    if [ "$read" -ne "${failed:-0}" ]; then
+        cat "$out" >&2
+        echo "host-changes: cannot run: cargo semver-checks failed ${failed:-0} check(s) for $crate, and $read were read" >&2
+        exit 2
+    fi
 done
 
 # Required trait methods (no default body) present now and not in the
