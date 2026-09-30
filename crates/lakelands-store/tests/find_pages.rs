@@ -71,8 +71,14 @@ impl ProjectionView for CountingView<'_> {
     ) -> Result<Vec<Edge>> {
         self.inner.edges(ty, key, relation, walk)
     }
-    fn lexical(&self, ty: &TypeName, text: &str, k: u32) -> Result<Vec<(RecordKey, f64)>> {
-        self.inner.lexical(ty, text, k)
+    fn lexical(
+        &self,
+        ty: &TypeName,
+        text: &str,
+        fields: Option<&[lakelands_api::id::FieldName]>,
+        k: u32,
+    ) -> Result<Vec<(RecordKey, f64)>> {
+        self.inner.lexical(ty, text, fields, k)
     }
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
         self.inner.proposals(filter)

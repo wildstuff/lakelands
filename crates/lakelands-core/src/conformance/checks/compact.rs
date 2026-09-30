@@ -319,6 +319,7 @@ async fn answers(
             ty: TypeName::from("invoice"),
             mode: SearchMode::Lexical {
                 text: "lake note".into(),
+                fields: None,
             },
             k: 20,
             cursor: None,

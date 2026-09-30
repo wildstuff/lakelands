@@ -707,7 +707,7 @@ fn lexical_search_scores_matched_tokens_over_searchable_text() {
         p.put_record(&held).unwrap();
     });
     let v = e.view(None).unwrap();
-    let hits = v.lexical(&"doc".into(), "invoice runs", 10).unwrap();
+    let hits = v.lexical(&"doc".into(), "invoice runs", None, 10).unwrap();
     assert_eq!(
         hits,
         vec![
@@ -719,10 +719,16 @@ fn lexical_search_scores_matched_tokens_over_searchable_text() {
         "a restricted record is a candidate; a retired one is not"
     );
     assert_eq!(
-        v.lexical(&"doc".into(), "invoice runs", 1).unwrap().len(),
+        v.lexical(&"doc".into(), "invoice runs", None, 1)
+            .unwrap()
+            .len(),
         1
     );
-    assert!(v.lexical(&"nope".into(), "invoice", 10).unwrap().is_empty());
+    assert!(
+        v.lexical(&"nope".into(), "invoice", None, 10)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 // ---- proposals -----------------------------------------------------------

@@ -580,6 +580,7 @@ interface types {
 
     record lexical-search {
         text: string,
+        fields: option<list<field-name>>,
     }
 
     record vector-search {
@@ -591,6 +592,7 @@ interface types {
         text: string,
         field: field-name,
         vector: option<list<f32>>,
+        fields: option<list<field-name>>,
     }
 
     variant search-mode {

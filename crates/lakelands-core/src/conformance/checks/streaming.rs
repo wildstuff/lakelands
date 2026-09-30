@@ -1088,6 +1088,7 @@ impl Size<'_> {
                         text: note(SOUGHT),
                         field: "vec".into(),
                         vector: None,
+                        fields: None,
                     },
                     k: K,
                     cursor: None,

@@ -208,7 +208,13 @@ impl ProjectionView for MemView {
         }))
     }
 
-    fn lexical(&self, ty: &TypeName, text: &str, k: u32) -> Result<Vec<(RecordKey, f64)>> {
+    fn lexical(
+        &self,
+        ty: &TypeName,
+        text: &str,
+        fields: Option<&[FieldName]>,
+        k: u32,
+    ) -> Result<Vec<(RecordKey, f64)>> {
         Ok(self.read(|p, at| {
             // Ranked by the text at the head; kept when live and
             // live at the view's position (`docs/seams.md`).
@@ -222,7 +228,7 @@ impl ProjectionView for MemView {
                         .and_then(|h| h.at(at)),
                 )
             };
-            engines::lexical(decl, p.records_at(ty, p.folded), visible, text, k)
+            engines::lexical(decl, p.records_at(ty, p.folded), visible, text, fields, k)
         }))
     }
 

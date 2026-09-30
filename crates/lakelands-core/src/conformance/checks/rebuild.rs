@@ -358,6 +358,7 @@ async fn after_a_rebuild_every_index_answers_as_before(
                 &own,
                 search(SearchMode::Lexical {
                     text: "harbour".into(),
+                    fields: None,
                 }),
             )
             .await
