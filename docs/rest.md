@@ -115,6 +115,16 @@ of the link type, so the version `If-Match` names is the link's.
 - **Reading links:** use `find` on the link type,
   `GET …/types/sys.link.<type>.<relation>/records`.
 
+`describe` answers a type as the principal may see it. A host's
+`annotations` on a type, a field and a relation come back as they were
+declared, in canonical form. A field the principal may not read, a
+relation's link field included, is described by its shape alone, without
+its annotations. An annotation grants nothing and restricts nothing:
+what a principal may read is decided by its grants alone
+(`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+extended). A key without a namespace is refused as `invalid` (422), and
+one in `sys.` or `lakelands.` as `reserved` (403), naming the key.
+
 `schema/declare` and `schema/apply` are REST's alone: MCP offers
 `declare_type`, since an agent authors types, while a program may
 declare verbs, triggers, object sets and the rest. Each body member is
@@ -235,4 +245,6 @@ named, and nothing from the environment.
   in an answer that carries a member the client does not know is
   refused, naming it, never dropped
   (`docs/decisions/028-authoring-is-strict-and-whole.md`, extended), so
-  upgrade the client with the server or before it.
+  upgrade the client with the server or before it. A client from before
+  annotations refuses a described declaration that carries
+  `annotations`, naming the member.
