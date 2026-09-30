@@ -1,7 +1,7 @@
 # Contributing to Lakelands
 
-Thank you for considering a contribution. The code is here: 0.4.0 is
-tagged, and 0.5.0 is being built on `develop`. A contribution is a pull
+Thank you for considering a contribution. The code is here: 0.5.0 is
+tagged, and 0.6.0 is being built on `develop`. A contribution is a pull
 request against `develop`, every commit signed off (below). The pages
 under `docs/` are the specification, and the conformance suite holds the
 code to them, so a change of behaviour changes a page and a check along
