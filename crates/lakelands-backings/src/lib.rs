@@ -37,6 +37,7 @@ pub mod deliver;
 pub mod embed;
 pub mod exec;
 pub mod http;
+pub mod lock;
 mod transport;
 
 /// The backings section of a server configuration.

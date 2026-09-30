@@ -243,7 +243,7 @@ pub struct Deliverer {
     journal: File,
     // Held for the deliverer's life: a second deliverer of the same
     // endpoint and lake is refused at start.
-    _lock: File,
+    _lock: crate::lock::FileLock,
     poll: Duration,
     batch: u32,
     retry_first: Duration,
@@ -330,27 +330,13 @@ pub fn deliverers(
             .map_err(|err| format!("{} cannot be made: {err}", home.display()))?;
         let position_file = home.join(format!("{name}.json"));
         let lock_file = home.join(format!("{name}.lock"));
-        let lock = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&lock_file)
-            .map_err(|err| format!("{} cannot be opened: {err}", lock_file.display()))?;
-        // Called through the trait: the standard library's own `try_lock`
-        // is newer than the workspace's minimum Rust version.
-        match fs4::FileExt::try_lock(&lock) {
-            Ok(()) => {}
-            Err(fs4::TryLockError::WouldBlock) => {
-                return Err(format!(
-                    "endpoint `{name}` of lake `{lake}` is delivered by another process ({} is \
-                     locked)",
-                    lock_file.display()
-                ));
-            }
-            Err(fs4::TryLockError::Error(err)) => {
-                return Err(format!("{} cannot be locked: {err}", lock_file.display()));
-            }
-        }
+        let lock = crate::lock::FileLock::try_acquire(&lock_file)?.ok_or_else(|| {
+            format!(
+                "endpoint `{name}` of lake `{lake}` is delivered by another process ({} is \
+                 locked)",
+                lock_file.display()
+            )
+        })?;
         let journal_file = home.join(format!("{name}.ndjson"));
         let journal = OpenOptions::new()
             .create(true)
