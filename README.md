@@ -75,22 +75,25 @@ of changes without polling, `propose`, `proposals`, `accept` and
 `add_field` and `migrate` for the schema. Served over MCP (stdio and
 HTTP) and REST from one catalog. Agents never write a query language.
 
-> **Status: `0.4.0`.** Lakelands `0.4.0` is the `lakelands` CLI, its MCP
+> **Status: `0.5.0`.** Lakelands `0.5.0` is the `lakelands` CLI, its MCP
 > server (stdio and streamable HTTP) and its REST door over the SQLite,
 > in-memory and PostgreSQL engines, all three passing the whole
-> conformance suite (251 checks through the doors and 50 through the
+> conformance suite (255 checks through the doors and 51 through the
 > engine seam), with 43 decision records and the event log at format
-> version 4, installable from the release. Its budgets: the store facade
-> and engine traits hold 52 of 110 methods, the core crates 67 371 of
-> 70 000 lines, and 2 of 20 `cfg(feature)` sites. Beside what `0.3.0`
-> held it has a vector search that keeps its best `k` and a vector index
-> behind the seam (HNSW on PostgreSQL with pgvector), a lake moved by
-> export and import, a mirror between two lakes that names the source's
-> position (`upstream`), degree and connected components over links,
-> capped by the lake's ceiling, a rebuild that folds a migration over
-> the records its own page wrote, and a declaration or a migration that
-> can be proposed and accepted like any other write. Views over more
-> than one source come after.
+> version 5, installable from the release. Its budgets: the store facade
+> and engine traits hold 52 of 110 methods, the core crates 69 366 lines
+> against a base of 70 000 and a ceiling of 70 000, and 2 of 20
+> `cfg(feature)` sites. Beside what `0.4.0` held, a declaration is
+> strict at every door: a member it does not know is refused, naming it
+> and where it sits, never dropped. Types, fields and relations carry a
+> host's annotations, which the lake stores, replays and describes but
+> never reads, and a field the principal may not read is described by
+> its shape alone, in a relation's link fields too. A search refuses to
+> probe a field the principal may not read in every mode, including a
+> vector's source text, and a lexical or hybrid search can be limited to
+> named fields, so a searchable field the principal may not read no
+> longer blocks a search that does not name it. Views over more than one
+> source come after.
 
 ## Try it
 
