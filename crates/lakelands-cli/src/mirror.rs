@@ -77,7 +77,13 @@
 //! window delivered again appends nothing. Beside it, under
 //! `<root>/mirrors/<target lake>/`, the mirror keeps `<name>.lock`, held
 //! while it runs, and `<name>.ndjson`, a journal line per window and per
-//! action. A position file an earlier version kept there (`<name>.json`)
+//! action.
+//!
+//! **Stopping a mirror is dropping it.** The lock is released when the
+//! [`Mirror`] is dropped, even while a child the process forked still
+//! holds a copy of its descriptor. A host that spawned [`Mirror::run`]
+//! aborts that task and awaits its handle; once the await returns, a new
+//! mirror of the connection starts. A position file an earlier version kept there (`<name>.json`)
 //! seeds the records once, when there are none, and is renamed
 //! `<name>.json.seeded`.
 //!
@@ -101,6 +107,7 @@ use lakelands_api::{
     Principal, ReadAt, Record, RecordKey, RelationName, SourceId, SourceRecord, Timestamp,
     TypeName, Upstream, Value, WriteContext, WriteOpts, ingest_all,
 };
+use lakelands_backings::lock::FileLock;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -407,7 +414,7 @@ pub struct Mirror {
     journal: File,
     // Held for the mirror's life: a second mirror of the same connection
     // is refused at start.
-    _lock: File,
+    _lock: FileLock,
 }
 
 impl std::fmt::Debug for Mirror {
@@ -758,27 +765,13 @@ impl Mirror {
         std::fs::create_dir_all(&home)
             .map_err(|err| format!("{} cannot be made: {err}", home.display()))?;
         let lock_file = home.join(format!("{name}.lock"));
-        let lock = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&lock_file)
-            .map_err(|err| format!("{} cannot be opened: {err}", lock_file.display()))?;
-        // Called through the trait: the standard library's own `try_lock`
-        // is newer than the workspace's minimum Rust version.
-        match fs4::FileExt::try_lock(&lock) {
-            Ok(()) => {}
-            Err(fs4::TryLockError::WouldBlock) => {
-                return Err(format!(
-                    "connection `{name}` into lake `{to}` is mirrored by another process ({} is \
-                     locked)",
-                    lock_file.display()
-                ));
-            }
-            Err(fs4::TryLockError::Error(err)) => {
-                return Err(format!("{} cannot be locked: {err}", lock_file.display()));
-            }
-        }
+        let lock = FileLock::try_acquire(&lock_file)?.ok_or_else(|| {
+            format!(
+                "connection `{name}` into lake `{to}` is mirrored by another process ({} is \
+                 locked)",
+                lock_file.display()
+            )
+        })?;
         let journal_file = home.join(format!("{name}.ndjson"));
         let journal = OpenOptions::new()
             .create(true)

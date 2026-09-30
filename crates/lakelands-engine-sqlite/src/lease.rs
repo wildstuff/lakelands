@@ -50,6 +50,15 @@ pub(crate) struct Held {
     file: File,
 }
 
+/// A lease dropped without [`LeaseFile::release`] still unlocks before its
+/// file closes: the lock belongs to the open file, and a child forked
+/// while it was held keeps a copy until it execs.
+impl Drop for Held {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.file);
+    }
+}
+
 /// A lake's lease file.
 pub(crate) struct LeaseFile {
     path: PathBuf,
@@ -179,3 +188,6 @@ impl LeaseFile {
         cleared.and(unlocked)
     }
 }
+
+#[cfg(test)]
+mod tests;
