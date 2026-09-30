@@ -47,7 +47,7 @@ check!(
     "012 and 011: `null` in a patch clears the field; it is not a value the value type must allow"
 );
 
-async fn one_field(store: &dyn LakeStore, name: &str, ty: FieldType) -> Result<(), Failure> {
+async fn one_field(store: &dyn LakeStore, name: &str, ty: FieldType) -> Result<Lake, Failure> {
     let cat = doors(store);
     let decl = type_decl(
         name,
@@ -57,7 +57,7 @@ async fn one_field(store: &dyn LakeStore, name: &str, ty: FieldType) -> Result<(
         }],
     );
     declare(cat.as_ref(), &owner(store), decl).await?;
-    Ok(())
+    Ok(Lake::of(store))
 }
 
 /// Write `v` to `thing` and expect a refusal on field `v`, with nothing
@@ -122,8 +122,7 @@ async fn date_time_values_read_back_in_their_one_canonical_form(
 async fn bytes_are_padded_standard_base64_and_nothing_else(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    one_field(store.as_ref(), "thing", FieldType::kind(StorageKind::Bytes)).await?;
-    let l = Lake::of(store.as_ref());
+    let l = one_field(store.as_ref(), "thing", FieldType::kind(StorageKind::Bytes)).await?;
     for ok in ["aGVsbG8=", "aGk=", "+/+/", ""] {
         l.upsert("thing", "k", json!({ "v": ok })).await?;
         let r = l.read("thing", "k").await?;
@@ -197,7 +196,8 @@ async fn typed(store: &dyn LakeStore, ty: &str, vt: ValueTypeDecl) -> Result<(),
             ..FieldType::kind(kind)
         },
     )
-    .await
+    .await?;
+    Ok(())
 }
 
 async fn a_value_types_one_of_format_and_scale_hold_on_every_write(

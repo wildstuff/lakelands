@@ -29,7 +29,7 @@ check!(
     "the read contract: records without a value for a sort key sort last in either direction; ordering never drops them"
 );
 
-async fn counter(store: &dyn LakeStore) -> Result<(), Failure> {
+async fn counter(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let cat = doors(store);
     let ty = type_decl(
         "counter",
@@ -39,7 +39,7 @@ async fn counter(store: &dyn LakeStore) -> Result<(), Failure> {
         ],
     );
     declare(cat.as_ref(), &owner(store), ty).await?;
-    Ok(())
+    Ok(Lake::of(store))
 }
 
 fn keys(rows: &[Record]) -> Vec<String> {
@@ -50,8 +50,7 @@ async fn paging_through_find_visits_every_record_exactly_once(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     const TOTAL: usize = 25;
-    counter(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = counter(store.as_ref()).await?;
     for i in 0..TOTAL {
         let key = format!("k{i:03}");
         l.upsert("counter", &key, json!({"n": i % 4})).await?;
@@ -90,8 +89,7 @@ async fn paging_through_find_visits_every_record_exactly_once(
 async fn records_without_the_sort_field_are_listed_last_in_either_direction(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    counter(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = counter(store.as_ref()).await?;
     // Interleaved by key, so a tail that only happened to be in key order
     // cannot pass by accident.
     l.upsert("counter", "k1", json!({"n": 10})).await?;

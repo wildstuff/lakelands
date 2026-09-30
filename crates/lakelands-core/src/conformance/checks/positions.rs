@@ -58,11 +58,11 @@ check!(
     "015: a position that is not in the lake's log is refused as out of range, naming the head"
 );
 
-async fn counter(store: &dyn LakeStore) -> Result<(), Failure> {
+async fn counter(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let cat = doors(store);
     let ty = type_decl("counter", vec![field("n", StorageKind::Number)]);
     declare(cat.as_ref(), &owner(store), ty).await?;
-    Ok(())
+    Ok(Lake::of(store))
 }
 
 async fn every_reply_carries_the_position_it_reflects(
@@ -128,8 +128,7 @@ async fn every_reply_carries_the_position_it_reflects(
 async fn a_read_as_of_a_write_sees_that_write_and_nothing_later(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    counter(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = counter(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let first = l.upsert("counter", "k", json!({"n": 1})).await?;
     l.upsert("counter", "k", json!({"n": 2})).await?;
@@ -187,8 +186,7 @@ async fn a_read_as_of_a_write_sees_that_write_and_nothing_later(
 async fn a_read_as_of_the_position_before_a_write_does_not_see_it(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    counter(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = counter(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let first = l.upsert("counter", "k", json!({"n": 1})).await?;
 
@@ -211,8 +209,7 @@ async fn a_read_as_of_the_position_before_a_write_does_not_see_it(
 async fn retiring_a_record_does_not_erase_its_history(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    counter(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = counter(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let counter = TypeName::from("counter");
     let written = l.upsert("counter", "k", json!({"n": 7})).await?;
@@ -248,8 +245,7 @@ async fn retiring_a_record_does_not_erase_its_history(
 async fn a_read_as_of_a_position_past_the_head_is_refused_as_out_of_range(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    counter(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = counter(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     l.upsert("counter", "k", json!({"n": 1})).await?;
     let head = store.head().await.must("reading the head")?;

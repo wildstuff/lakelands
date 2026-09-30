@@ -94,9 +94,35 @@ fn date(y: i64, m: u32, d: u32) -> Timestamp {
     Timestamp::from_date(y, m, d).expect("a date of the calendar")
 }
 
+/// Writes one aging rule as the owner: on `target` (`type.field`), from
+/// `from` to `to` when `when` holds.
+async fn rule(
+    l: &Lake,
+    name: &str,
+    target: &str,
+    from: &str,
+    to: &str,
+    when: &str,
+) -> Result<(), Failure> {
+    let (on, field) = target
+        .split_once('.')
+        .expect("a rule's target is type.field");
+    rule_as(
+        l.cat.as_ref(),
+        &l.own,
+        name,
+        on,
+        field,
+        json!(from),
+        json!(to),
+        when,
+    )
+    .await
+}
+
 /// Writes one aging rule as `who`.
 #[allow(clippy::too_many_arguments)]
-async fn rule(
+async fn rule_as(
     cat: &dyn Catalog,
     who: &Principal,
     name: &str,
@@ -151,7 +177,6 @@ async fn a_rule_moves_only_the_records_holding_from_whose_condition_holds(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
     invoices(&l).await?;
     for (key, status, amount) in [
         ("due", "open", 200),
@@ -167,13 +192,11 @@ async fn a_rule_moves_only_the_records_holding_from_whose_condition_holds(
         .await
         .must("restricting `held`")?;
     rule(
-        cat.as_ref(),
-        own,
+        &l,
         "overdue",
-        "invoice",
-        "status",
-        json!("open"),
-        json!("overdue"),
+        "invoice.status",
+        "open",
+        "overdue",
         "amount > 100",
     )
     .await?;
@@ -208,18 +231,15 @@ async fn aging_a_date_twice_appends_nothing_the_second_time(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
     invoices(&l).await?;
     l.upsert("invoice", "i1", json!({"status": "open", "amount": 200}))
         .await?;
     rule(
-        cat.as_ref(),
-        own,
+        &l,
         "overdue",
-        "invoice",
-        "status",
-        json!("open"),
-        json!("overdue"),
+        "invoice.status",
+        "open",
+        "overdue",
         "amount > 100",
     )
     .await?;
@@ -258,7 +278,6 @@ async fn today_in_a_rule_is_the_date_aged_not_the_clock(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
     invoices(&l).await?;
     l.upsert(
         "invoice",
@@ -267,13 +286,11 @@ async fn today_in_a_rule_is_the_date_aged_not_the_clock(
     )
     .await?;
     rule(
-        cat.as_ref(),
-        own,
+        &l,
         "overdue",
-        "invoice",
-        "status",
-        json!("open"),
-        json!("overdue"),
+        "invoice.status",
+        "open",
+        "overdue",
         "due_on < today() - 30d",
     )
     .await?;
@@ -296,7 +313,6 @@ async fn a_condition_that_cannot_be_evaluated_leaves_the_record(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
     invoices(&l).await?;
     for (key, divisor) in [("a", 1), ("b", 0), ("c", 2)] {
         l.upsert(
@@ -307,13 +323,11 @@ async fn a_condition_that_cannot_be_evaluated_leaves_the_record(
         .await?;
     }
     rule(
-        cat.as_ref(),
-        own,
+        &l,
         "overdue",
-        "invoice",
-        "status",
-        json!("open"),
-        json!("overdue"),
+        "invoice.status",
+        "open",
+        "overdue",
         "amount / divisor > 10",
     )
     .await?;
@@ -357,13 +371,11 @@ async fn a_move_is_written_by_the_system_as_its_rule(
     // Written twice, so the rule record's version is 2.
     for threshold in ["1000", "100"] {
         rule(
-            cat.as_ref(),
-            own,
+            &l,
             "overdue",
-            "invoice",
-            "status",
-            json!("open"),
-            json!("overdue"),
+            "invoice.status",
+            "open",
+            "overdue",
             &format!("amount > {threshold}"),
         )
         .await?;
@@ -523,35 +535,14 @@ async fn a_rule_that_does_not_fit_is_refused_naming_its_field(
 
 async fn rules_run_in_name_order_one_append_each(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
     invoices(&l).await?;
     for key in ["i1", "i2"] {
         l.upsert("invoice", key, json!({"status": "open", "amount": 200}))
             .await?;
     }
     // Written in the other order: the name orders them.
-    rule(
-        cat.as_ref(),
-        own,
-        "b_second",
-        "invoice",
-        "status",
-        json!("overdue"),
-        json!("late"),
-        "true",
-    )
-    .await?;
-    rule(
-        cat.as_ref(),
-        own,
-        "a_first",
-        "invoice",
-        "status",
-        json!("open"),
-        json!("overdue"),
-        "true",
-    )
-    .await?;
+    rule(&l, "b_second", "invoice.status", "overdue", "late", "true").await?;
+    rule(&l, "a_first", "invoice.status", "open", "overdue", "true").await?;
     let before = store.head().await.must("reading the head")?;
     let report = age(store.as_ref(), date(2026, 3, 1)).await?;
     let names: Vec<&str> = report.rules.iter().map(|r| r.rule.as_str()).collect();
@@ -609,31 +600,18 @@ async fn a_rule_that_no_longer_fits_is_skipped_and_named(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
     invoices(&l).await?;
     l.declare(type_decl("ticket", vec![field("state", StorageKind::Text)]))
         .await?;
     l.upsert("invoice", "i1", json!({"status": "open"})).await?;
     l.upsert("ticket", "t1", json!({"state": "new"})).await?;
+    rule(&l, "a_tickets", "ticket.state", "new", "stale", "true").await?;
     rule(
-        cat.as_ref(),
-        own,
-        "a_tickets",
-        "ticket",
-        "state",
-        json!("new"),
-        json!("stale"),
-        "true",
-    )
-    .await?;
-    rule(
-        cat.as_ref(),
-        own,
+        &l,
         "b_invoices",
-        "invoice",
-        "status",
-        json!("open"),
-        json!("overdue"),
+        "invoice.status",
+        "open",
+        "overdue",
         "true",
     )
     .await?;
@@ -786,28 +764,8 @@ async fn a_move_the_store_would_refuse_leaves_the_record(
     }
     l.upsert("ticket", "t1", json!({"owner": "p1", "state": "new"}))
         .await?;
-    rule(
-        cat.as_ref(),
-        own,
-        "a_reassign",
-        "ticket",
-        "owner",
-        json!("p1"),
-        json!("p2"),
-        "true",
-    )
-    .await?;
-    rule(
-        cat.as_ref(),
-        own,
-        "b_stale",
-        "ticket",
-        "state",
-        json!("new"),
-        json!("stale"),
-        "true",
-    )
-    .await?;
+    rule(&l, "a_reassign", "ticket.owner", "p1", "p2", "true").await?;
+    rule(&l, "b_stale", "ticket.state", "new", "stale", "true").await?;
     // `p2` retired after the rule was written: moving `owner` to it would
     // refer to a record no longer live.
     cat.retire(own, &"partner".into(), &"p2".into(), Default::default())
@@ -842,18 +800,15 @@ async fn a_rule_under_a_retention_hold_is_live_and_runs(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
     invoices(&l).await?;
     l.upsert("invoice", "i1", json!({"status": "open", "amount": 200}))
         .await?;
     rule(
-        cat.as_ref(),
-        own,
+        &l,
         "held_rule",
-        "invoice",
-        "status",
-        json!("open"),
-        json!("overdue"),
+        "invoice.status",
+        "open",
+        "overdue",
         "amount > 100",
     )
     .await?;
@@ -919,7 +874,7 @@ async fn a_rule_reads_the_setting_at_its_run_and_a_replay_reads_its_moves(
             fields: Default::default(),
         },
     );
-    rule(
+    rule_as(
         cat.as_ref(),
         &author,
         "over_limit",
@@ -994,28 +949,8 @@ async fn a_rule_is_skipped_when_its_field_is_dropped_or_its_value_no_longer_admi
     );
     l.declare(with_note).await?;
     l.upsert("case", "c1", json!({"phase": "open"})).await?;
-    rule(
-        cat.as_ref(),
-        own,
-        "a_note",
-        "case",
-        "note",
-        json!("draft"),
-        json!("final"),
-        "true",
-    )
-    .await?;
-    rule(
-        cat.as_ref(),
-        own,
-        "b_late",
-        "case",
-        "phase",
-        json!("open"),
-        json!("late"),
-        "true",
-    )
-    .await?;
+    rule(&l, "a_note", "case.note", "draft", "final", "true").await?;
+    rule(&l, "b_late", "case.phase", "open", "late", "true").await?;
 
     // `note` holds no value, so dropping it is lossless.
     let m = Migration {

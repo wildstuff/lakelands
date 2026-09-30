@@ -33,7 +33,7 @@ check!(
     "024: a search over a searchable field the principal may not read is refused, naming the field"
 );
 
-async fn articles(store: &dyn LakeStore) -> Result<(), Failure> {
+async fn articles(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let cat = doors(store);
     let mut ty = type_decl(
         "article",
@@ -46,7 +46,7 @@ async fn articles(store: &dyn LakeStore) -> Result<(), Failure> {
     // only split and lower-cased.
     ty.language = Some("en".into());
     declare(cat.as_ref(), &owner(store), ty).await?;
-    Ok(())
+    Ok(Lake::of(store))
 }
 
 fn lexical(text: &str) -> Search {
@@ -79,8 +79,7 @@ pub(super) fn keys(h: &Hits) -> Vec<&str> {
 async fn full_text_matches_words_whatever_their_case_inflection_or_accents(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    articles(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = articles(store.as_ref()).await?;
     l.upsert(
         "article",
         "cafe",
@@ -109,8 +108,7 @@ async fn full_text_matches_words_whatever_their_case_inflection_or_accents(
 }
 
 async fn search_is_ordered_by_score_then_key(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
-    articles(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = articles(store.as_ref()).await?;
     for (key, text) in [
         ("b", "lake"),
         ("a", "lake"),
@@ -432,8 +430,7 @@ check!(
 async fn a_search_finds_a_record_by_its_current_text_and_nothing_by_none(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    articles(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = articles(store.as_ref()).await?;
     l.upsert("article", "a", json!({"text": "harbour crane"}))
         .await?;
     l.upsert("article", "a", json!({"text": "mountain goat"}))
@@ -457,8 +454,7 @@ async fn a_retired_or_restricted_record_is_never_a_hit(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     use lakelands_api::WriteOpts;
-    articles(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = articles(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     for k in ["live", "gone", "held"] {
         l.upsert("article", k, json!({"text": "lake report"}))
@@ -757,7 +753,7 @@ async fn a_vector_search_answers_the_brute_force_ranking_to_the_bit(
 
 /// Two documents, each with a text and a vector: `a` matches the text
 /// `quayside` and points north, `b` matches nothing and points east.
-async fn two_docs(store: &dyn LakeStore) -> Result<(), Failure> {
+async fn two_docs(store: &dyn LakeStore) -> Result<Lake, Failure> {
     use lakelands_api::ontology::FieldType;
     let l = Lake::of(store);
     let body = FieldDecl {
@@ -776,7 +772,7 @@ async fn two_docs(store: &dyn LakeStore) -> Result<(), Failure> {
         .await?;
     l.upsert("doc", "b", json!({"body": "harbour", "v": [1.0, 0.0]}))
         .await?;
-    Ok(())
+    Ok(l)
 }
 
 pub(super) fn doc_search(mode: SearchMode) -> Search {
@@ -824,8 +820,7 @@ async fn a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_els
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     use crate::conformance::backing::{UNREACHABLE, embed_calls};
-    two_docs(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = two_docs(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     // The backend makes every text (1, 0), which only `b` points along:
     // `b` is a hit only if the search ranked over the backend's vector.
@@ -889,8 +884,7 @@ async fn every_hit_is_the_record_get_answers_in_its_declared_shape(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     use lakelands_api::{Get, RecordKey};
-    two_docs(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = two_docs(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     // A field no search reads, written on one record only.
     let note = field("note", StorageKind::Text);

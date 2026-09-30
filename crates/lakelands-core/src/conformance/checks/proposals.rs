@@ -57,7 +57,7 @@ check!(
     "010 and the log format §1.1: a value a verb produced carries, as its procedure_version, the version of the verb's declaration"
 );
 
-async fn ledger(store: &dyn LakeStore) -> Result<(), Failure> {
+async fn ledger(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
     let Lake { cat, own } = &l;
     let ty = type_decl(
@@ -83,7 +83,7 @@ async fn ledger(store: &dyn LakeStore) -> Result<(), Failure> {
         cat.declare(own, d).await.must("declaring a verb")?;
     }
     l.upsert("invoice", "i", json!({"status": "open"})).await?;
-    Ok(())
+    Ok(l)
 }
 
 async fn call(
@@ -126,8 +126,7 @@ async fn kinds_from(store: &dyn LakeStore, from: Position) -> Result<Vec<EventBo
 async fn a_low_verb_runs_and_a_higher_one_is_proposed(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    ledger(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = ledger(store.as_ref()).await?;
     let Lake { own, .. } = &l;
     let ran = call(store.as_ref(), own, "approve", json!({}))
         .await
@@ -285,8 +284,7 @@ async fn accepting_a_proposal_applies_its_write_as_the_proposers(
 async fn a_rejected_proposal_writes_nothing_and_a_decided_one_stays_decided(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    ledger(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = ledger(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let (_, id) = proposal(
         &call(store.as_ref(), own, "pay", json!({"reference": "TX-2"}))
@@ -413,8 +411,7 @@ async fn only_a_reviewer_decides_and_a_proposer_sees_its_own_proposals(
 async fn a_verbs_write_carries_the_verbs_procedure_version(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    ledger(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = ledger(store.as_ref()).await?;
     let Lake { own, .. } = &l;
     // Declared once, so at version 1; the plain write before it has none.
     let before = l.read("invoice", "i").await?;
@@ -503,8 +500,7 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
             *position,
             &lakelands_api::seam::FeedFilter {
                 kinds: vec!["output_recorded".into()],
-                types: vec![],
-                keys: Vec::new(),
+                ..Default::default()
             },
             u32::MAX,
         )
@@ -548,8 +544,7 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
             failed_at,
             &lakelands_api::seam::FeedFilter {
                 kinds: vec!["output_recorded".into()],
-                types: vec![],
-                keys: Vec::new(),
+                ..Default::default()
             },
             u32::MAX,
         )

@@ -130,15 +130,13 @@ const OCT: &str = "2026-10-01T00:00:00.000000Z";
 
 fn approved_by(fields: Vec<FieldDecl>, authority: Authority) -> RelationDecl {
     RelationDecl {
-        annotations: Default::default(),
         name: "approved_by".into(),
         target: "partner".into(),
         cardinality: Cardinality::ManyToOne,
         inverse: Some("approved".into()),
-        via: None,
         fields,
         authority,
-        description: None,
+        ..Default::default()
     }
 }
 
@@ -150,7 +148,7 @@ fn invoice(relations: Vec<RelationDecl>) -> TypeDecl {
 
 /// Partners p1 and p2, invoices i1 and i2, and `approved_by` from an
 /// invoice to a partner, carried by link records with a `since`.
-async fn lake(store: &dyn LakeStore) -> Result<(), Failure> {
+async fn lake(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
     l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))
         .await?;
@@ -165,7 +163,7 @@ async fn lake(store: &dyn LakeStore) -> Result<(), Failure> {
     for i in ["i1", "i2"] {
         l.upsert("invoice", i, json!({"amount": "10"})).await?;
     }
-    Ok(())
+    Ok(l)
 }
 
 async fn link(
@@ -232,8 +230,7 @@ fn pairs(edges: &[Edge]) -> Vec<String> {
 async fn a_link_is_written_and_walked_with_its_fields(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     link(cat.as_ref(), own, "i1", "p1", json!({"since": SEPT}))
         .await
@@ -261,8 +258,7 @@ async fn a_link_is_written_and_walked_with_its_fields(
 async fn writing_a_link_again_changes_its_fields_and_keeps_one_link(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     link(cat.as_ref(), own, "i1", "p1", json!({"since": SEPT}))
         .await
@@ -291,8 +287,7 @@ async fn writing_a_link_again_changes_its_fields_and_keeps_one_link(
 async fn an_unlinked_link_leaves_the_walk_and_stays_in_its_history(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let linked = link(cat.as_ref(), own, "i1", "p1", json!({"since": SEPT}))
         .await
@@ -340,8 +335,7 @@ async fn an_unlinked_link_leaves_the_walk_and_stays_in_its_history(
 async fn a_link_that_would_break_the_relations_cardinality_is_refused(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     link(cat.as_ref(), own, "i1", "p1", json!({}))
         .await
@@ -370,8 +364,7 @@ async fn a_link_that_would_break_the_relations_cardinality_is_refused(
 async fn a_link_to_a_key_that_is_no_live_record_is_refused(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
     let dangling = link(cat.as_ref(), own, "i1", "nobody", json!({})).await;
@@ -391,8 +384,7 @@ async fn a_link_to_a_key_that_is_no_live_record_is_refused(
 async fn link_records_go_through_the_link_doors_and_ingest_only(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let key = link_key(&"i1".into(), &"p1".into());
     let upserted = cat
@@ -522,8 +514,7 @@ async fn link_records_go_through_the_link_doors_and_ingest_only(
 async fn a_relation_cannot_move_between_via_and_link_records(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
     let mut moved = invoice(vec![RelationDecl {
@@ -575,8 +566,7 @@ async fn a_link_field_the_principal_may_not_write_refuses_the_link(
 async fn a_relations_fields_are_declared_when_added_and_migrated_when_retyped(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     link(cat.as_ref(), own, "i1", "p1", json!({"since": SEPT}))
         .await
@@ -648,8 +638,7 @@ async fn a_relations_fields_are_declared_when_added_and_migrated_when_retyped(
 async fn retiring_an_end_keeps_the_link_and_the_walk_skips_the_retired_end(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     link(cat.as_ref(), own, "i1", "p1", json!({"since": SEPT}))
         .await
@@ -690,8 +679,7 @@ async fn retiring_an_end_keeps_the_link_and_the_walk_skips_the_retired_end(
 async fn a_relation_that_allows_one_link_per_target_refuses_a_second(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let mut handled = approved_by(vec![], Authority::Authored);
     handled.name = "handled_by".into();
@@ -743,8 +731,7 @@ async fn a_relation_that_allows_one_link_per_target_refuses_a_second(
 async fn a_relations_authority_changes_by_declaration_and_keeps_its_links(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     link(cat.as_ref(), own, "i1", "p1", json!({}))
         .await
@@ -795,8 +782,7 @@ async fn a_relations_authority_changes_by_declaration_and_keeps_its_links(
 async fn ingest_holds_a_source_relations_cardinality_over_the_lake_and_the_window(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref()).await?;
     // A source relation of its own, beside `approved_by`.
     let mut vouched = approved_by(vec![], Authority::Source);
     vouched.name = "vouched_by".into();
@@ -859,8 +845,7 @@ async fn ingest_holds_a_source_relations_cardinality_over_the_lake_and_the_windo
 async fn a_relation_declared_again_with_another_target_is_a_migration(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     link(cat.as_ref(), own, "i1", "p1", json!({}))
         .await
@@ -912,8 +897,7 @@ async fn a_relation_declared_again_with_another_target_is_a_migration(
 async fn a_restricted_link_is_walked_only_with_the_restricted_grant(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     link(cat.as_ref(), own, "i1", "p1", json!({"since": SEPT}))
         .await
@@ -954,8 +938,7 @@ async fn a_restricted_link_is_walked_only_with_the_restricted_grant(
 async fn narrowing_a_relations_cardinality_is_refused_while_links_would_break(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let with = |c: Cardinality| {
         let mut r = approved_by(

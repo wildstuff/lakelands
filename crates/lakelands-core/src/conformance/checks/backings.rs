@@ -83,7 +83,7 @@ check!(
 
 /// Declares `lookup`, a function of the suite's backing that echoes its
 /// input `input`.
-async fn lookup(store: &dyn LakeStore, input: &str, config: Value) -> Result<(), Failure> {
+async fn lookup(store: &dyn LakeStore, input: &str, config: Value) -> Result<Lake, Failure> {
     let l = Lake::of(store);
     let Lake { cat, own } = &l;
     let function: Declaration = serde_json::from_value(json!({
@@ -95,14 +95,13 @@ async fn lookup(store: &dyn LakeStore, input: &str, config: Value) -> Result<(),
     cat.declare(own, function)
         .await
         .must("declaring `lookup`, backed by the suite's backing")?;
-    Ok(())
+    Ok(l)
 }
 
 /// Declares `lookup`, a function of the suite's backing that echoes its
 /// input `code`, and the type `place`, whose `name` it computes.
-async fn places(store: &dyn LakeStore, config: Value) -> Result<(), Failure> {
-    lookup(store, "code", config).await?;
-    let l = Lake::of(store);
+async fn places(store: &dyn LakeStore, config: Value) -> Result<Lake, Failure> {
+    let l = lookup(store, "code", config).await?;
     let name = FieldDecl {
         authority: Authority::Derived,
         function: Some("lookup".into()),
@@ -114,7 +113,7 @@ async fn places(store: &dyn LakeStore, config: Value) -> Result<(), Failure> {
         vec![field("code", StorageKind::Text), name],
     ))
     .await?;
-    Ok(())
+    Ok(Lake::of(store))
 }
 
 async fn a_function_of_a_backing_kind_nobody_bound_is_refused_at_declare(
@@ -143,8 +142,7 @@ async fn a_backed_field_is_filled_from_the_output_the_store_records(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let token = "filled_and_recorded";
-    places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
-    let l = Lake::of(store.as_ref());
+    let l = places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
     let written = l.upsert("place", "p1", json!({"code": "AT"})).await?;
 
     let r = l.read("place", "p1").await?;
@@ -221,8 +219,7 @@ async fn the_same_input_is_never_sent_to_a_backing_twice(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let token = "one_call_per_input";
-    places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
-    let l = Lake::of(store.as_ref());
+    let l = places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
     for (key, code) in [("p1", "AT"), ("p2", "AT"), ("p1", "DE"), ("p1", "AT")] {
         l.upsert("place", key, json!({"code": code})).await?;
     }
@@ -301,8 +298,7 @@ async fn a_rebuild_reads_recorded_outputs_back_without_calling_the_backing(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let token = "rebuild_reads_outputs";
-    places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
-    let l = Lake::of(store.as_ref());
+    let l = places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
     l.upsert("place", "p1", json!({"code": "AT"})).await?;
     let before = l.read("place", "p1").await?;
     let calls = made(token);
@@ -588,8 +584,7 @@ async fn a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let token = "failure_retried";
-    places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
-    let l = Lake::of(store.as_ref());
+    let l = places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
     unplug(token);
     l.upsert("place", "p1", json!({"code": "AT"})).await?;
     l.upsert("place", "p2", json!({"code": "AT"})).await?;

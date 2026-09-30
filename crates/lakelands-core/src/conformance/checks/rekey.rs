@@ -138,7 +138,7 @@ fn to_iban() -> Migration {
 /// The fixture, with accounts a1 (DE1), a2 (DE2), a3 (DE3, retired), a4
 /// (DE4, restricted); payment p1 to a1; entry a1/1; a1 owned by x. `iban`
 /// is optional before the migration, so `missing` can leave one out.
-pub(super) async fn lake(store: &dyn LakeStore, ibans: [Option<&str>; 4]) -> Result<(), Failure> {
+pub(super) async fn lake(store: &dyn LakeStore, ibans: [Option<&str>; 4]) -> Result<Lake, Failure> {
     let l = Lake::of(store);
     let Lake { cat, own } = &l;
     for d in [
@@ -200,7 +200,7 @@ pub(super) async fn lake(store: &dyn LakeStore, ibans: [Option<&str>; 4]) -> Res
     )
     .await
     .must("linking account 1 to x")?;
-    Ok(())
+    Ok(l)
 }
 
 pub(super) const IBANS: [Option<&str>; 4] = [Some("DE1"), Some("DE2"), Some("DE3"), Some("DE4")];
@@ -279,8 +279,7 @@ async fn walked(
 async fn a_rekeys_preflight_counts_what_moves_with_it_and_appends_nothing(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref(), IBANS).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref(), IBANS).await?;
     let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
     let r = preflight(cat.as_ref(), own).await?;
@@ -380,8 +379,7 @@ async fn a_record_without_a_new_key_value_refuses_the_rekey(
 async fn a_rekey_moves_every_record_with_its_values_version_and_provenance(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref(), IBANS).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref(), IBANS).await?;
     let Lake { cat, own } = &l;
     let old = found(cat.as_ref(), own, "account", "1", None)
         .await?
@@ -419,8 +417,7 @@ async fn a_rekey_moves_every_record_with_its_values_version_and_provenance(
 async fn a_reference_to_a_rekeyed_record_names_its_new_key(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref(), IBANS).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref(), IBANS).await?;
     let Lake { cat, own } = &l;
     apply(store.as_ref()).await?;
     let p1 = found(cat.as_ref(), own, "payment", "p1", None)
@@ -442,8 +439,7 @@ async fn a_reference_to_a_rekeyed_record_names_its_new_key(
 async fn a_link_to_a_rekeyed_record_is_rekeyed_and_walked(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref(), IBANS).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref(), IBANS).await?;
     let Lake { cat, own } = &l;
     apply(store.as_ref()).await?;
     let lt = "sys.link.account.owner";
@@ -463,8 +459,7 @@ async fn a_link_to_a_rekeyed_record_is_rekeyed_and_walked(
 async fn a_type_keyed_by_a_reference_to_a_rekeyed_type_is_rekeyed_with_it(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref(), IBANS).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref(), IBANS).await?;
     let Lake { cat, own } = &l;
     apply(store.as_ref()).await?;
     let e = found(cat.as_ref(), own, "entry", "DE1:1", None).await?;
@@ -483,8 +478,7 @@ async fn a_type_keyed_by_a_reference_to_a_rekeyed_type_is_rekeyed_with_it(
 async fn an_old_key_is_ended_and_a_new_write_follows_the_new_rule(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref(), IBANS).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref(), IBANS).await?;
     let Lake { cat, own } = &l;
     let v = found(cat.as_ref(), own, "account", "1", None)
         .await?
@@ -540,8 +534,7 @@ async fn an_old_key_is_ended_and_a_new_write_follows_the_new_rule(
 async fn a_rekey_and_every_event_after_it_are_format_version_2(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref(), IBANS).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref(), IBANS).await?;
     let Lake { cat, own } = &l;
     let read = |ty: &'static str, key: &'static str| {
         let (cat, own) = (cat.clone(), own.clone());
@@ -580,8 +573,7 @@ async fn a_rekey_and_every_event_after_it_are_format_version_2(
 async fn a_lake_that_never_rekeys_writes_format_version_1(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref(), IBANS).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref(), IBANS).await?;
     let Lake { cat, own } = &l;
     // A migration that keeps the key.
     let mut to: serde_json::Map<String, Value> = account("number", false)
@@ -616,8 +608,7 @@ async fn a_lake_that_never_rekeys_writes_format_version_1(
 async fn a_migration_that_takes_every_key_field_away_is_refused(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref(), IBANS).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref(), IBANS).await?;
     let Lake { cat, own } = &l;
     let mut to: serde_json::Map<String, Value> = account("number", false)
         .as_object()
@@ -692,8 +683,7 @@ async fn a_migration_that_takes_every_key_field_away_is_refused(
 async fn a_rekey_report_from_before_a_write_is_refused(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref(), IBANS).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref(), IBANS).await?;
     let Lake { cat, own } = &l;
     let r = preflight(cat.as_ref(), own).await?;
     // Account 2 would move to `DE5` now, not `DE2`.
@@ -729,8 +719,7 @@ fn set_changes(events: &[Event]) -> Vec<(String, bool)> {
 async fn object_set_membership_moves_with_a_rekeyed_record(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref(), IBANS).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref(), IBANS).await?;
     let Lake { cat, own } = &l;
     cat.declare(
         own,
@@ -776,8 +765,7 @@ async fn object_set_membership_moves_with_a_rekeyed_record(
 }
 
 async fn a_rekeyed_type_migrates_again(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
-    lake(store.as_ref(), IBANS).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref(), IBANS).await?;
     let Lake { cat, own } = &l;
     apply(store.as_ref()).await?;
     // A migration that keeps the key: a field added.

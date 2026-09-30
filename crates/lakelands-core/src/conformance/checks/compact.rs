@@ -32,7 +32,6 @@ use lakelands_api::ontology::{
     Authority, EmbedDecl, FieldDecl, FieldType, StorageKind, ValueTypeDecl,
 };
 use lakelands_api::query::{Depth, Pattern, Projection, Search, SearchMode, Step, Walk};
-use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::{CompactReport, Declaration, ProposalFilter, ProposedWrite};
 use lakelands_api::{
     Catalog, Find, Found, IdempotencyKey, LakeStore, Outcome, Position, Principal, ReadAt,
@@ -45,8 +44,8 @@ use super::rekey;
 use crate::conformance::Failure;
 use crate::conformance::backing::{EMBED_MODEL, KIND, made, plug, unplug};
 use crate::conformance::fixture::{
-    Caller, Lake, Must, declare, doors, field, join_all, owner, partner_totals, patch, read,
-    type_decl, upsert,
+    Caller, Lake, Must, declare, doors, field, join_all, log_events, owner, partner_totals, patch,
+    read, type_decl, upsert,
 };
 use crate::export;
 
@@ -179,7 +178,7 @@ async fn notes(l: &Lake) -> Result<(), Failure> {
 /// The churned lake the module documentation describes; `embedded` when
 /// the check binds the suite's embedding backend. `token` is the check's
 /// own, for the backing's calls.
-async fn churned(store: &dyn LakeStore, embedded: bool, token: &str) -> Result<(), Failure> {
+async fn churned(store: &dyn LakeStore, embedded: bool, token: &str) -> Result<Lake, Failure> {
     rekey::lake(store, rekey::IBANS).await?;
     let l = Lake::of(store);
     let Lake { cat, own } = &l;
@@ -235,7 +234,7 @@ async fn churned(store: &dyn LakeStore, embedded: bool, token: &str) -> Result<(
         .must("tightening `account_kind`")?;
     rekey::apply(store).await?;
     store.rebuild().await.must("rebuilding the projection")?;
-    Ok(())
+    Ok(l)
 }
 
 const TYPES: [&str; 8] = [
@@ -473,12 +472,7 @@ async fn a_compacted_lake_answers_every_read_as_before(
 }
 
 async fn log_of(store: &dyn LakeStore) -> Result<String, Failure> {
-    let events = store
-        .feed()
-        .poll(Position::GENESIS, &FeedFilter::default(), 10_000)
-        .await
-        .must("reading the feed")?
-        .events;
+    let events = log_events(store).await?;
     Ok(serde_json::to_string(&events).expect("events serialise"))
 }
 
@@ -660,8 +654,7 @@ fn compactor(store: Arc<dyn LakeStore>) -> Doing {
 async fn writes_made_while_a_compact_runs_each_land_once_before_or_after_it(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    churned(store.as_ref(), true, "compact_writes").await?;
-    let l = Lake::of(store.as_ref());
+    let l = churned(store.as_ref(), true, "compact_writes").await?;
     let Lake { cat, own } = &l;
     l.declare(type_decl("item", vec![field("n", StorageKind::Number)]))
         .await?;

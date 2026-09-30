@@ -321,22 +321,14 @@ async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) -> Re
             .ok_or_else(|| Failure::new(format!("describe invents field `{}`", f.name)))?;
         if f.name.as_str() == "salary" {
             let shape = FieldDescription {
-                annotations: Default::default(),
                 name: decl.name.clone(),
                 ty: decl.ty.clone(),
                 required: decl.required,
                 authority: decl.authority,
                 access: Access::Masked,
-                derived: None,
-                function: None,
-                depends_on: vec![],
                 on_input_change: decl.on_input_change,
-                filterable: false,
-                searchable: false,
                 sensitive: true,
-                description: None,
-                label: None,
-                embed: None,
+                ..Default::default()
             };
             same("the clerk's masked `salary`", f, &shape)?;
         } else {

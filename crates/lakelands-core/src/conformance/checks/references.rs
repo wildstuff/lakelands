@@ -36,7 +36,10 @@ fn reference(name: &str, target: &str) -> FieldDecl {
     }
 }
 
-async fn partners_and_invoices(store: &dyn LakeStore, authority: Authority) -> Result<(), Failure> {
+async fn partners_and_invoices(
+    store: &dyn LakeStore,
+    authority: Authority,
+) -> Result<Lake, Failure> {
     let l = Lake::of(store);
     let mut name = field("name", StorageKind::Text);
     name.authority = authority;
@@ -44,14 +47,13 @@ async fn partners_and_invoices(store: &dyn LakeStore, authority: Authority) -> R
     let mut partner = reference("partner", "partner");
     partner.authority = authority;
     l.declare(type_decl("invoice", vec![partner])).await?;
-    Ok(())
+    Ok(l)
 }
 
 async fn a_write_referencing_a_record_that_does_not_exist_is_refused(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    partners_and_invoices(store.as_ref(), Authority::Authored).await?;
-    let l = Lake::of(store.as_ref());
+    let l = partners_and_invoices(store.as_ref(), Authority::Authored).await?;
     let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
     let err = cat
@@ -85,8 +87,7 @@ async fn a_write_referencing_a_record_that_does_not_exist_is_refused(
 async fn a_reference_to_a_record_earlier_in_the_same_ingest_resolves(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    partners_and_invoices(store.as_ref(), Authority::Source).await?;
-    let l = Lake::of(store.as_ref());
+    let l = partners_and_invoices(store.as_ref(), Authority::Source).await?;
     let records = vec![
         source_record("partner", "acme", json!({"name": "Acme"})),
         source_record("invoice", "i", json!({"partner": "acme"})),

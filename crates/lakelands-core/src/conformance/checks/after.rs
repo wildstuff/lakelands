@@ -19,7 +19,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, all_found, declare, doors, field, owner, type_decl, upsert, value,
+    Lake, Must, all_found, declare, field, type_decl, upsert, value,
 };
 
 check!(
@@ -141,12 +141,11 @@ async fn item(
 }
 
 async fn after_resumes_where_the_cursor_would(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let cat = cat.as_ref();
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let (cat, own) = (l.cat.as_ref(), &l.own);
     declare(
         cat,
-        &own,
+        own,
         type_decl(
             "item",
             vec![
@@ -172,7 +171,7 @@ async fn after_resumes_where_the_cursor_would(store: Arc<dyn LakeStore>) -> Resu
     ];
     let mut earlier = Position(0);
     for (k, n, s) in first {
-        earlier = item(cat, &own, k, n, s).await?.position();
+        earlier = item(cat, own, k, n, s).await?.position();
     }
     // The lake moves on after `earlier`: new rows among the old ones and
     // one row that sorts elsewhere now.
@@ -183,7 +182,7 @@ async fn after_resumes_where_the_cursor_would(store: Arc<dyn LakeStore>) -> Resu
         ("k13", Some(2), None),
         ("k05", Some(1), Some("b")),
     ] {
-        item(cat, &own, k, n, s).await?;
+        item(cat, own, k, n, s).await?;
     }
 
     for dir in [Direction::Asc, Direction::Desc] {
@@ -200,8 +199,8 @@ async fn after_resumes_where_the_cursor_would(store: Arc<dyn LakeStore>) -> Resu
                         },
                         ..Find::default()
                     };
-                    let cursor = by_cursor(cat, &own, find.clone()).await?;
-                    let after = by_after(cat, &own, find.clone(), None, cursor.len() + 1).await?;
+                    let cursor = by_cursor(cat, own, find.clone()).await?;
+                    let after = by_after(cat, own, find.clone(), None, cursor.len() + 1).await?;
                     ensure!(
                         cursor == after,
                         "ordering {:?}, where {filter:?}, as_of {as_of:?}, by {LIMIT}: resuming \
@@ -222,19 +221,19 @@ async fn after_resumes_where_the_cursor_would(store: Arc<dyn LakeStore>) -> Resu
         limit: Some(LIMIT),
         ..Find::default()
     };
-    let (rows, _) = page(cat, &own, whole.clone(), "reading the first page").await?;
+    let (rows, _) = page(cat, own, whole.clone(), "reading the first page").await?;
     let gone = rows
         .last()
         .ok_or_else(|| Failure::new("fourteen records answered an empty first page"))?
         .clone();
-    let listed = keys(&all_found(cat, &own, "item", whole.clone()).await?);
+    let listed = keys(&all_found(cat, own, "item", whole.clone()).await?);
     let at = listed
         .iter()
         .position(|k| k.as_str() == gone.key.as_str())
         .ok_or_else(|| Failure::new("the first page's last row is not in the walk"))?;
     let expected = listed[at + 1..].to_vec();
     cat.retire(
-        &own,
+        own,
         &TypeName::from("item"),
         &gone.key,
         WriteOpts::default(),
@@ -243,7 +242,7 @@ async fn after_resumes_where_the_cursor_would(store: Arc<dyn LakeStore>) -> Resu
     .must("retiring the first page's last row")?;
     let resumed: Vec<String> = by_after(
         cat,
-        &own,
+        own,
         whole.clone(),
         Some(position_of(&order, &gone)),
         100,
@@ -259,7 +258,7 @@ async fn after_resumes_where_the_cursor_would(store: Arc<dyn LakeStore>) -> Resu
     );
 
     // Refused, naming the member.
-    let (_, cursor) = page(cat, &own, whole.clone(), "reading a first page").await?;
+    let (_, cursor) = page(cat, own, whole.clone(), "reading a first page").await?;
     let beside_cursor = Find {
         cursor,
         after: Some(position_of(&order, &gone)),
@@ -292,7 +291,7 @@ async fn after_resumes_where_the_cursor_would(store: Arc<dyn LakeStore>) -> Resu
         ("`after` beside `aggregate`", aggregated),
     ] {
         let refused = cat
-            .find(&own, &TypeName::from("item"), find)
+            .find(own, &TypeName::from("item"), find)
             .await
             .must_fail(what)?;
         ensure!(
@@ -309,7 +308,7 @@ async fn after_resumes_where_the_cursor_would(store: Arc<dyn LakeStore>) -> Resu
         ..whole
     };
     let refused = cat
-        .find(&own, &TypeName::from("item"), unfit)
+        .find(own, &TypeName::from("item"), unfit)
         .await
         .must_fail("a text `after` value for the number `n`")?;
     ensure!(

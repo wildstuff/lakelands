@@ -218,15 +218,10 @@ async fn a_migration_removing_the_field_a_relation_walks_is_refused(
         ],
     );
     invoice.relations = vec![RelationDecl {
-        annotations: Default::default(),
         name: "billed_by".into(),
         target: "partner".into(),
-        cardinality: Default::default(),
-        inverse: None,
         via: Some("partner".into()),
-        fields: Vec::new(),
-        authority: Default::default(),
-        description: None,
+        ..Default::default()
     }];
     l.declare(invoice.clone()).await?;
     let mut to = invoice;
