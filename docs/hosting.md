@@ -296,3 +296,29 @@ A host that already has a store of its own moves in four steps.
 - **Every answer carries its position.** A host that records what an
   agent saw records the position, and reads `as_of` it later. See
   `docs/decisions/009-every-response-carries-its-position.md`.
+
+## Building declarations in Rust
+
+A host that builds declarations or reads descriptions through
+`lakelands-api` keeps compiling when a later release adds a member to
+them:
+
+- **Build with the constructors or with `..Default::default()`.** For
+  example, `FieldDecl { searchable: true, ..FieldDecl::of("note",
+  StorageKind::Text) }`, `TypeDecl { fields, ..TypeDecl::named("invoice") }`,
+  `RelationDecl::to("partner", "partner")`, and `SearchMode::lexical(text)`,
+  `::vector` and `::hybrid`. `TypeDecl`, `FieldDecl`, `RelationDecl`,
+  `TypeDescription`, `FieldDescription`, `LakeDescription` and
+  `TypeLifecycle` all implement `Default`. A name left at its default is
+  empty, and the store refuses it at declare. A field's kind defaults to
+  text.
+- **Read descriptions with `..`.** A pattern such as
+  `TypeDescription { name, fields, .. }` names only what it uses.
+- **Expect closed enums to grow.** `Refusal`, `Projection` and
+  `ProposedWrite` are closed on purpose
+  (`docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`).
+  A release that adds a case names it in its notes, under "Changes a host
+  must make", with every other change a host's code has to follow.
+  `crates/lakelands-api/tests/host_builds.rs` is the host's view, kept
+  compiling.
+

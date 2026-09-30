@@ -46,6 +46,10 @@ engine will never produce.
   request that is wrong is `refused`; `unavailable` is for a lake that
   cannot answer a correct request right now.
 - Adding a variant is a change to the contract, not an extension point.
+  Because the set is closed, a host's exhaustive `match` breaks when a
+  release adds one, which is what makes it handle the new case. That is
+  why every release names such an addition in its notes, under "Changes
+  a host must make" (lakelands#260).
 
 ## Extended: a refusal's sentence is not part of the contract
 

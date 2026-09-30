@@ -33,10 +33,13 @@ pub const RESERVED_ANNOTATION_NAMESPACES: &[&str] = &["sys", "lakelands"];
 /// How an engine stores, compares and indexes a value. The set is closed:
 /// a kind exists only when an engine must treat it differently from every
 /// other kind (`docs/decisions/011-storage-kind-and-value-type.md`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum StorageKind {
     /// UTF-8 text.
+    #[default]
     Text,
     /// A binary floating-point number.
     Number,
@@ -109,8 +112,8 @@ pub struct ValueTypeDecl {
 /// A field's type: a storage kind, optionally refined by a value type
 /// declared over that kind. A `reference` must name its `target`, a
 /// `vector` its `dimensions` (greater than zero); neither member may be
-/// given for another kind.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// given for another kind. Its default, as `StorageKind`'s, is text.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FieldType {
     /// How the value is stored.
@@ -177,7 +180,7 @@ pub enum OnInputChange {
 }
 
 /// One field of a type or of a relation.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FieldDecl {
     /// The field's name.
@@ -230,6 +233,19 @@ pub struct FieldDecl {
     pub annotations: Annotations,
 }
 
+impl FieldDecl {
+    /// A field of one storage kind, every other member at its default:
+    /// build one as `FieldDecl { searchable: true, ..FieldDecl::of(name, kind) }`,
+    /// so a member added later does not break the literal.
+    pub fn of(name: impl Into<FieldName>, kind: StorageKind) -> FieldDecl {
+        FieldDecl {
+            name: name.into(),
+            ty: FieldType::kind(kind),
+            ..FieldDecl::default()
+        }
+    }
+}
+
 /// What a vector field is the embedding of
 /// (`docs/decisions/022-functions-are-declarations.md`, extended).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -244,6 +260,16 @@ pub struct EmbedDecl {
 }
 
 impl TypeDecl {
+    /// A type with no field yet, every other member at its default:
+    /// build one as `TypeDecl { fields: …, ..TypeDecl::named(name) }`, so a
+    /// member added later does not break the literal.
+    pub fn named(name: impl Into<TypeName>) -> TypeDecl {
+        TypeDecl {
+            name: name.into(),
+            ..TypeDecl::default()
+        }
+    }
+
     /// The first of this type's embeddings declared against the rules,
     /// with why: an embedding is a `derived` vector with dimensions,
     /// neither derived from an expression nor computed by a function,
@@ -333,7 +359,7 @@ pub enum Cardinality {
 
 /// A relation from one type to another. A relation may carry fields of
 /// its own (the date a partner was assigned, the share of a payment).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RelationDecl {
     /// The relation's name, unique within its type.
@@ -368,6 +394,19 @@ pub struct RelationDecl {
     pub annotations: Annotations,
 }
 
+impl RelationDecl {
+    /// A relation to `target`, every other member at its default: build
+    /// one as `RelationDecl { inverse: …, ..RelationDecl::to(name, target) }`,
+    /// so a member added later does not break the literal.
+    pub fn to(name: impl Into<RelationName>, target: impl Into<TypeName>) -> RelationDecl {
+        RelationDecl {
+            name: name.into(),
+            target: target.into(),
+            ..RelationDecl::default()
+        }
+    }
+}
+
 /// A view type: records computed from other types, read with `find` like
 /// any other type and never written.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -396,7 +435,7 @@ pub struct Measure {
 }
 
 /// A type: the shape of one kind of record.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TypeDecl {
     /// The type's name. `sys.` names are reserved.

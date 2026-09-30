@@ -194,41 +194,22 @@ pub const SETTING_TYPE: &str = "sys.setting";
 /// creation (`docs/seams.md` §`SystemVocabulary`). One definition, so every
 /// implementation of the contract creates a lake the same way.
 pub fn setting_type() -> TypeDecl {
-    use crate::ontology::{Authority, FieldDecl, FieldType, StorageKind};
+    use crate::ontology::{FieldDecl, StorageKind};
     let field = |name: &str, kind| FieldDecl {
-        annotations: Default::default(),
-        name: name.into(),
-        ty: FieldType::kind(kind),
         required: true,
-        authority: Authority::Authored,
-        derived: None,
-        function: None,
-        depends_on: vec![],
-        on_input_change: Default::default(),
-        sensitive: false,
-        searchable: false,
-        description: None,
-        label: None,
-        embed: None,
+        ..FieldDecl::of(name, kind)
     };
     TypeDecl {
-        annotations: Default::default(),
-        name: SETTING_TYPE.into(),
         key: vec!["key".into()],
         fields: vec![
             field("key", StorageKind::Text),
             field("value", StorageKind::Json),
         ],
-        relations: vec![],
-        view: None,
-        valid_from: None,
-        valid_to: None,
         field_meta: true,
-        language: None,
         description: Some(
             "One named setting of the lake: `setting('key')` reads its value.".into(),
         ),
-        label: None,
+        ..TypeDecl::named(SETTING_TYPE)
     }
 }
 
@@ -348,26 +329,12 @@ pub const AGING_RULE_TYPE: &str = "sys.aging_rule";
 /// rule's `name`, moving `field` of the records of `on` from `from` to `to`
 /// when `when` holds on the date aged.
 pub fn aging_rule_type() -> TypeDecl {
-    use crate::ontology::{Authority, FieldDecl, FieldType, StorageKind};
+    use crate::ontology::{FieldDecl, StorageKind};
     let field = |name: &str, kind, required| FieldDecl {
-        annotations: Default::default(),
-        name: name.into(),
-        ty: FieldType::kind(kind),
         required,
-        authority: Authority::Authored,
-        derived: None,
-        function: None,
-        depends_on: vec![],
-        on_input_change: Default::default(),
-        sensitive: false,
-        searchable: false,
-        description: None,
-        label: None,
-        embed: None,
+        ..FieldDecl::of(name, kind)
     };
     TypeDecl {
-        annotations: Default::default(),
-        name: AGING_RULE_TYPE.into(),
         key: vec!["name".into()],
         fields: vec![
             field("name", StorageKind::Text, true),
@@ -378,18 +345,13 @@ pub fn aging_rule_type() -> TypeDecl {
             field("when", StorageKind::Text, true),
             field("description", StorageKind::Text, false),
         ],
-        relations: vec![],
-        view: None,
-        valid_from: None,
-        valid_to: None,
         field_meta: true,
-        language: None,
         description: Some(
             "One aging rule: on a date, move `field` of every record of `on` from `from` to \
              `to` when `when` holds."
                 .into(),
         ),
-        label: None,
+        ..TypeDecl::named(AGING_RULE_TYPE)
     }
 }
 

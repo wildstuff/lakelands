@@ -306,6 +306,37 @@ pub enum SearchMode {
     },
 }
 
+impl SearchMode {
+    /// A lexical search over every searchable field. A host that builds
+    /// its search modes through these constructors, and matches them with
+    /// `..`, survives a member added to a variant later.
+    pub fn lexical(text: impl Into<String>) -> SearchMode {
+        SearchMode::Lexical {
+            text: text.into(),
+            fields: None,
+        }
+    }
+
+    /// A vector search over `field`.
+    pub fn vector(field: impl Into<FieldName>, vector: Vec<f32>) -> SearchMode {
+        SearchMode::Vector {
+            field: field.into(),
+            vector,
+        }
+    }
+
+    /// A hybrid search over `field`, its query vector left to the lake's
+    /// embedding backend, over every searchable field.
+    pub fn hybrid(text: impl Into<String>, field: impl Into<FieldName>) -> SearchMode {
+        SearchMode::Hybrid {
+            text: text.into(),
+            field: field.into(),
+            vector: None,
+            fields: None,
+        }
+    }
+}
+
 /// `search`: ranked retrieval over one type. Unlike `find`, the answer
 /// is ordered by relevance and every hit carries a score.
 ///

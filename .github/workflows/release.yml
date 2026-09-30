@@ -87,6 +87,11 @@ jobs:
           done
           (cd dist && sha256sum -- * > SHA256SUMS)
           ls -l dist
+      # The notes name what a host must change (scripts/release/host-changes.sh).
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
       - name: Release notes
         env:
           GH_TOKEN: ${{ github.token }}
