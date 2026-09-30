@@ -9,6 +9,7 @@
 #![allow(dead_code)]
 
 pub mod flaky;
+pub mod wire;
 
 use std::path::PathBuf;
 use std::sync::Arc;
