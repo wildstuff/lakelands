@@ -16,8 +16,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, committed, declare, doors, field, get_at, head_unmoved, ingest, owner, patch, read,
-    source_record, type_decl, value, windows_reach_head,
+    Lake, Must, committed, field, get_at, head_unmoved, patch, source_record, type_decl, value,
+    windows_reach_head,
 };
 
 check!(
@@ -66,14 +66,11 @@ fn feed() -> TypeDecl {
 async fn the_same_content_ingested_twice_appends_nothing_the_second_time(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(cat.as_ref(), &own, feed()).await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(feed()).await?;
 
     let once = || vec![source_record("feed", "k1", json!({"body": "unchanged"}))];
-    let first = ingest(cat.as_ref(), &own, "bank", once())
-        .await
-        .must("ingesting `k1`")?;
+    let first = l.ingest("bank", once()).await.must("ingesting `k1`")?;
     windows_reach_head(store.as_ref(), &first, "ingesting `k1`").await?;
     ensure!(
         committed(&first) == (1, 0),
@@ -81,7 +78,8 @@ async fn the_same_content_ingested_twice_appends_nothing_the_second_time(
          answered {first:?}"
     );
     let head = store.head().await.must("reading the head")?;
-    let second = ingest(cat.as_ref(), &own, "bank", once())
+    let second = l
+        .ingest("bank", once())
         .await
         .must("ingesting `k1` again with the same values")?;
     windows_reach_head(
@@ -106,7 +104,8 @@ async fn the_same_content_ingested_twice_appends_nothing_the_second_time(
         source_record("feed", "k2", json!({"body": "same"})),
         source_record("feed", "k2", json!({"body": "same"})),
     ];
-    let windows = ingest(cat.as_ref(), &own, "bank", twice)
+    let windows = l
+        .ingest("bank", twice)
         .await
         .must("ingesting `k2` twice in one delivery")?;
     windows_reach_head(
@@ -121,7 +120,7 @@ async fn the_same_content_ingested_twice_appends_nothing_the_second_time(
          1 duplicate; the windows answered {windows:?}"
     );
     for key in ["k1", "k2"] {
-        let rec = read(cat.as_ref(), &own, "feed", key).await?;
+        let rec = l.read("feed", key).await?;
         ensure!(
             rec.version == Version(1),
             "`{key}` was delivered twice with the same values and must stay at version 1; \
@@ -135,15 +134,15 @@ async fn the_same_content_ingested_twice_appends_nothing_the_second_time(
 async fn the_same_key_twice_in_one_ingest_with_new_values_advances_the_version(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(cat.as_ref(), &own, feed()).await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(feed()).await?;
 
     let delivery = vec![
         source_record("feed", "k1", json!({"body": "first draft"})),
         source_record("feed", "k1", json!({"body": "second draft"})),
     ];
-    let windows = ingest(cat.as_ref(), &own, "bank", delivery)
+    let windows = l
+        .ingest("bank", delivery)
         .await
         .must("ingesting `k1` twice with different values")?;
     windows_reach_head(
@@ -157,7 +156,7 @@ async fn the_same_key_twice_in_one_ingest_with_new_values_advances_the_version(
         "two different values for `k1` are two changes, not a duplicate: the windows must \
          commit 2 records and 0 duplicates; they answered {windows:?}"
     );
-    let rec = read(cat.as_ref(), &own, "feed", "k1").await?;
+    let rec = l.read("feed", "k1").await?;
     ensure!(
         value(&rec, "body") == Some(&json!("second draft")) && rec.version == Version(2),
         "the last record of the delivery stands, at the version after the first one's: \
@@ -171,9 +170,9 @@ async fn the_same_key_twice_in_one_ingest_with_new_values_advances_the_version(
 async fn an_ingested_record_carrying_a_field_the_source_does_not_write_is_refused_whole(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(cat.as_ref(), &own, feed()).await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(feed()).await?;
 
     let delivery = vec![source_record(
         "feed",
@@ -181,7 +180,8 @@ async fn an_ingested_record_carrying_a_field_the_source_does_not_write_is_refuse
         json!({"body": "text", "verdict": "approved"}),
     )];
     let before = store.head().await.must("reading the head")?;
-    let err = ingest(cat.as_ref(), &own, "bank", delivery)
+    let err = l
+        .ingest("bank", delivery)
         .await
         .must_fail("ingesting a record that carries the authored field `verdict`")?;
     head_unmoved(
@@ -200,7 +200,7 @@ async fn an_ingested_record_carrying_a_field_the_source_does_not_write_is_refuse
          wrong door (naming `verdict` if it names a field); it failed with {err:?}"
     );
     let missing = cat
-        .get(&own, &TypeName::from("feed"), get_at("k1", None))
+        .get(own, &TypeName::from("feed"), get_at("k1", None))
         .await;
     ensure!(
         matches!(missing, Err(Error::NotFound { .. })),
@@ -213,14 +213,14 @@ async fn an_ingested_record_carrying_a_field_the_source_does_not_write_is_refuse
 async fn an_upsert_carrying_a_field_only_a_source_writes_is_refused_as_the_wrong_door(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(cat.as_ref(), &own, feed()).await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(feed()).await?;
 
     let before = store.head().await.must("reading the head")?;
     let err = cat
         .upsert(
-            &own,
+            own,
             &TypeName::from("feed"),
             &"k1".into(),
             patch(json!({"body": "typed in", "verdict": "approved"})),
@@ -243,7 +243,7 @@ async fn an_upsert_carrying_a_field_only_a_source_writes_is_refused_as_the_wrong
          wrong door on `body`, even for the owner; it failed with {err:?}"
     );
     let missing = cat
-        .get(&own, &TypeName::from("feed"), get_at("k1", None))
+        .get(own, &TypeName::from("feed"), get_at("k1", None))
         .await;
     ensure!(
         matches!(missing, Err(Error::NotFound { .. })),
@@ -255,9 +255,8 @@ async fn an_upsert_carrying_a_field_only_a_source_writes_is_refused_as_the_wrong
 async fn ingest_skips_redeliveries_and_unchanged_records_but_writes_a_revert(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(cat.as_ref(), &own, feed()).await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(feed()).await?;
     let body = |b: &str| vec![source_record("feed", "f", json!({ "body": b }))];
 
     for (step, b, want) in [
@@ -267,7 +266,8 @@ async fn ingest_skips_redeliveries_and_unchanged_records_but_writes_a_revert(
         ("a revert to `one`", "one", (1, 0)),
         ("`one` again, unchanged", "one", (0, 1)),
     ] {
-        let windows = ingest(cat.as_ref(), &own, "wire", body(b))
+        let windows = l
+            .ingest("wire", body(b))
             .await
             .must(&format!("ingesting {step}"))?;
         windows_reach_head(store.as_ref(), &windows, step).await?;
@@ -282,7 +282,7 @@ async fn ingest_skips_redeliveries_and_unchanged_records_but_writes_a_revert(
             got.1
         );
     }
-    let rec = read(cat.as_ref(), &own, "feed", "f").await?;
+    let rec = l.read("feed", "f").await?;
     ensure!(
         value(&rec, "body") == Some(&json!("one")) && rec.version == Version(3),
         "after one, two and back to one, `f` must read `one` at version 3; it reads \
@@ -305,9 +305,8 @@ async fn a_record_delivered_twice_in_two_windows_is_written_once(
     use crate::conformance::fixture::limits;
     use lakelands_api::event::EventBody;
     use lakelands_api::seam::FeedFilter;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(cat.as_ref(), &own, feed()).await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(feed()).await?;
     let from = store.head().await.must("reading the head")?.next();
     let window = limits().commit_window_events as usize;
     let mut records = vec![source_record("feed", "twice", json!({"body": "same"}))];
@@ -319,7 +318,8 @@ async fn a_record_delivered_twice_in_two_windows_is_written_once(
         ));
     }
     records.push(source_record("feed", "twice", json!({"body": "same"})));
-    let windows = ingest(cat.as_ref(), &own, "wire", records)
+    let windows = l
+        .ingest("wire", records)
         .await
         .must("ingesting `twice` at the start of one window and again in the next")?;
     windows_reach_head(store.as_ref(), &windows, "the two-window ingest").await?;
@@ -354,13 +354,13 @@ async fn an_ingested_record_carries_its_upstream_per_field(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     use lakelands_api::{Position, Upstream};
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let mut reading = feed();
     let mut unit = field("unit", StorageKind::Text);
     unit.authority = Authority::Source;
     reading.fields.push(unit);
-    declare(cat.as_ref(), &own, reading).await?;
+    l.declare(reading).await?;
     let from = Upstream {
         lake: "upstream-lake".into(),
         position: Position(42),
@@ -368,10 +368,10 @@ async fn an_ingested_record_carries_its_upstream_per_field(
     let mut first = source_record("feed", "r1", json!({"body": "warm", "unit": "C"}));
     first.upstream = Some(from.clone());
     let patch_first = first.fields.clone();
-    ingest(cat.as_ref(), &own, "mirror", vec![first])
+    l.ingest("mirror", vec![first])
         .await
         .must("ingesting `r1` with an upstream")?;
-    let rec = read(cat.as_ref(), &own, "feed", "r1").await?;
+    let rec = l.read("feed", "r1").await?;
     for f in ["body", "unit"] {
         let got = rec.meta.get(f).and_then(|m| m.upstream.clone());
         ensure!(
@@ -418,15 +418,13 @@ async fn an_ingested_record_carries_its_upstream_per_field(
         id.0
     );
     // A later ingest of one field without an upstream.
-    ingest(
-        cat.as_ref(),
-        &own,
+    l.ingest(
         "mirror",
         vec![source_record("feed", "r1", json!({"unit": "F"}))],
     )
     .await
     .must("ingesting `r1`'s unit without an upstream")?;
-    let rec = read(cat.as_ref(), &own, "feed", "r1").await?;
+    let rec = l.read("feed", "r1").await?;
     let (body, unit) = (
         rec.meta.get("body").and_then(|m| m.upstream.clone()),
         rec.meta.get("unit").and_then(|m| m.upstream.clone()),
@@ -439,12 +437,12 @@ async fn an_ingested_record_carries_its_upstream_per_field(
     // An authored write over a field leaves it without one.
     let mut stamped = source_record("feed", "r2", json!({"body": "cold"}));
     stamped.upstream = Some(from.clone());
-    ingest(cat.as_ref(), &own, "mirror", vec![stamped])
+    l.ingest("mirror", vec![stamped])
         .await
         .must("ingesting `r2` with an upstream")?;
-    crate::conformance::fixture::upsert(cat.as_ref(), &own, "feed", "r2", json!({"verdict": "ok"}))
+    crate::conformance::fixture::upsert(cat.as_ref(), own, "feed", "r2", json!({"verdict": "ok"}))
         .await?;
-    let rec = read(cat.as_ref(), &own, "feed", "r2").await?;
+    let rec = l.read("feed", "r2").await?;
     let (body, verdict) = (
         rec.meta.get("body").and_then(|m| m.upstream.clone()),
         rec.meta.get("verdict").and_then(|m| m.upstream.clone()),

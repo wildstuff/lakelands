@@ -13,18 +13,18 @@
 
 use std::sync::Arc;
 
-use lakelands_api::event::{Event, EventBody};
+use lakelands_api::event::EventBody;
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{Authority, FieldDecl, StorageKind, TriggerDecl};
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::Declaration;
-use lakelands_api::{Error, LakeStore, Origin, Position, Refusal, Version};
+use lakelands_api::{Error, LakeStore, Origin, Refusal, Version};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::backing::{KIND, made, plug, unplug};
 use crate::conformance::fixture::{
-    Must, declare, doors, field, head_unmoved, owner, read, type_decl, upsert, value,
+    Lake, Must, field, head_unmoved, recorded_outputs, type_decl, value,
 };
 
 check!(
@@ -84,15 +84,15 @@ check!(
 /// Declares `lookup`, a function of the suite's backing that echoes its
 /// input `input`.
 async fn lookup(store: &dyn LakeStore, input: &str, config: Value) -> Result<(), Failure> {
-    let cat = doors(store);
-    let own = owner(store);
+    let l = Lake::of(store);
+    let Lake { cat, own } = &l;
     let function: Declaration = serde_json::from_value(json!({
         "declare": "function", "name": "lookup", "backing": KIND,
         "inputs": [{"name": input, "type": {"kind": "text"}}],
         "config": config
     }))
     .map_err(|e| Failure::new(format!("the check's function does not read: {e}")))?;
-    cat.declare(&own, function)
+    cat.declare(own, function)
         .await
         .must("declaring `lookup`, backed by the suite's backing")?;
     Ok(())
@@ -102,46 +102,26 @@ async fn lookup(store: &dyn LakeStore, input: &str, config: Value) -> Result<(),
 /// input `code`, and the type `place`, whose `name` it computes.
 async fn places(store: &dyn LakeStore, config: Value) -> Result<(), Failure> {
     lookup(store, "code", config).await?;
-    let cat = doors(store);
-    let own = owner(store);
+    let l = Lake::of(store);
     let name = FieldDecl {
         authority: Authority::Derived,
         function: Some("lookup".into()),
         depends_on: vec!["code".into()],
         ..field("name", StorageKind::Text)
     };
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("place", vec![field("code", StorageKind::Text), name]),
-    )
+    l.declare(type_decl(
+        "place",
+        vec![field("code", StorageKind::Text), name],
+    ))
     .await?;
     Ok(())
-}
-
-/// Every `output_recorded` in the log.
-async fn outputs(store: &dyn LakeStore) -> Result<Vec<Event>, Failure> {
-    Ok(store
-        .feed()
-        .poll(
-            Position::GENESIS,
-            &FeedFilter {
-                kinds: vec!["output_recorded".into()],
-                types: vec![],
-                keys: Vec::new(),
-            },
-            u32::MAX,
-        )
-        .await
-        .must("reading the recorded outputs from the feed")?
-        .events)
 }
 
 async fn a_function_of_a_backing_kind_nobody_bound_is_refused_at_declare(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
     let function: Declaration = serde_json::from_value(json!({
         "declare": "function", "name": "geocode", "backing": "nowhere",
@@ -149,7 +129,7 @@ async fn a_function_of_a_backing_kind_nobody_bound_is_refused_at_declare(
         "config": {"url": "https://geo.example/lookup"}
     }))
     .map_err(|e| Failure::new(format!("the check's function does not read: {e}")))?;
-    let answer = cat.declare(&own, function).await;
+    let answer = cat.declare(own, function).await;
     ensure!(
         matches!(&answer, Err(Error::Unbound { seam }) if seam.contains("nowhere")),
         "no backing of the kind `nowhere` is bound, so declaring a function of that kind \
@@ -164,11 +144,10 @@ async fn a_backed_field_is_filled_from_the_output_the_store_records(
 ) -> Result<(), Failure> {
     let token = "filled_and_recorded";
     places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    let written = upsert(cat.as_ref(), &own, "place", "p1", json!({"code": "AT"})).await?;
+    let l = Lake::of(store.as_ref());
+    let written = l.upsert("place", "p1", json!({"code": "AT"})).await?;
 
-    let r = read(cat.as_ref(), &own, "place", "p1").await?;
+    let r = l.read("place", "p1").await?;
     ensure!(
         value(&r, "name") == Some(&json!("AT")),
         "`name` is computed by `lookup`, which answers its input; after writing code AT \
@@ -190,7 +169,7 @@ async fn a_backed_field_is_filled_from_the_output_the_store_records(
         r.version
     );
 
-    let recorded = outputs(store.as_ref()).await?;
+    let recorded = recorded_outputs(store.as_ref()).await?;
     let [event] = recorded.as_slice() else {
         return Err(Failure::new(format!(
             "one call was made, so the log holds one `output_recorded`; it holds {}",
@@ -243,10 +222,9 @@ async fn the_same_input_is_never_sent_to_a_backing_twice(
 ) -> Result<(), Failure> {
     let token = "one_call_per_input";
     places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     for (key, code) in [("p1", "AT"), ("p2", "AT"), ("p1", "DE"), ("p1", "AT")] {
-        upsert(cat.as_ref(), &own, "place", key, json!({"code": code})).await?;
+        l.upsert("place", key, json!({"code": code})).await?;
     }
     let calls = made(token);
     ensure!(
@@ -255,7 +233,7 @@ async fn the_same_input_is_never_sent_to_a_backing_twice(
          once for each, but was called {calls} times"
     );
     for key in ["p1", "p2"] {
-        let r = read(cat.as_ref(), &own, "place", key).await?;
+        let r = l.read("place", key).await?;
         ensure!(
             value(&r, "name") == Some(&json!("AT")),
             "`{key}` has code AT, so its `name` is the output recorded for AT, \"AT\"; it \
@@ -275,12 +253,11 @@ async fn a_failing_backing_clears_the_field_and_records_the_failure(
         json!({"token": token, "echo": "code", "fail_on": "XX"}),
     )
     .await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    upsert(cat.as_ref(), &own, "place", "p1", json!({"code": "AT"})).await?;
-    upsert(cat.as_ref(), &own, "place", "p1", json!({"code": "XX"})).await?;
+    let l = Lake::of(store.as_ref());
+    l.upsert("place", "p1", json!({"code": "AT"})).await?;
+    l.upsert("place", "p1", json!({"code": "XX"})).await?;
 
-    let r = read(cat.as_ref(), &own, "place", "p1").await?;
+    let r = l.read("place", "p1").await?;
     ensure!(
         value(&r, "name").is_none(),
         "`lookup` fails for XX, so `name` must hold no value, not the value AT computed \
@@ -295,7 +272,7 @@ async fn a_failing_backing_clears_the_field_and_records_the_failure(
         "a field cleared by a failure keeps metadata that says why (its `error`) though it \
          holds no value; the read with provenance answered {meta:?}"
     );
-    let recorded = outputs(store.as_ref()).await?;
+    let recorded = recorded_outputs(store.as_ref()).await?;
     let last = recorded.last().map(|e| &e.body);
     ensure!(
         matches!(last, Some(EventBody::OutputRecorded { output, .. })
@@ -304,14 +281,14 @@ async fn a_failing_backing_clears_the_field_and_records_the_failure(
          `output_recorded` is {last:?}"
     );
 
-    upsert(cat.as_ref(), &own, "place", "p2", json!({"code": "XX"})).await?;
+    l.upsert("place", "p2", json!({"code": "XX"})).await?;
     let calls = made(token);
     ensure!(
         calls == 2,
         "a failure is final for its input: `p2` with code XX is cleared from the recorded \
          failure, without a third call; the backing was called {calls} times"
     );
-    let r = read(cat.as_ref(), &own, "place", "p2").await?;
+    let r = l.read("place", "p2").await?;
     ensure!(
         value(&r, "name").is_none() && r.meta.get("name").is_some_and(|m| m.error.is_some()),
         "`p2` reads the recorded failure: no `name`, and an error in its metadata; it \
@@ -325,22 +302,21 @@ async fn a_rebuild_reads_recorded_outputs_back_without_calling_the_backing(
 ) -> Result<(), Failure> {
     let token = "rebuild_reads_outputs";
     places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    upsert(cat.as_ref(), &own, "place", "p1", json!({"code": "AT"})).await?;
-    let before = read(cat.as_ref(), &own, "place", "p1").await?;
+    let l = Lake::of(store.as_ref());
+    l.upsert("place", "p1", json!({"code": "AT"})).await?;
+    let before = l.read("place", "p1").await?;
     let calls = made(token);
 
     unplug(token);
     store.rebuild().await.must("rebuilding the projection")?;
-    let after = read(cat.as_ref(), &own, "place", "p1").await?;
+    let after = l.read("place", "p1").await?;
     ensure!(
         after == before,
         "a rebuild reads the recorded output back, so `p1` reads as before it.\n  before: \
          {before:?}\n  after:  {after:?}"
     );
-    upsert(cat.as_ref(), &own, "place", "p2", json!({"code": "AT"})).await?;
-    let p2 = read(cat.as_ref(), &own, "place", "p2").await?;
+    l.upsert("place", "p2", json!({"code": "AT"})).await?;
+    let p2 = l.read("place", "p2").await?;
     ensure!(
         made(token) == calls && value(&p2, "name") == Some(&json!("AT")),
         "with the backing refusing every call, neither the rebuild nor a later write of the \
@@ -361,8 +337,8 @@ async fn a_filled_field_recomputes_what_reads_it_and_fires_its_triggers(
         json!({"token": token, "echo": "code"}),
     )
     .await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let name = FieldDecl {
         authority: Authority::Derived,
         function: Some("lookup".into()),
@@ -375,17 +351,13 @@ async fn a_filled_field_recomputes_what_reads_it_and_fires_its_triggers(
         depends_on: vec!["name".into()],
         ..field("greeting", StorageKind::Text)
     };
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl(
-            "place",
-            vec![field("code", StorageKind::Text), name, greeting],
-        ),
-    )
+    l.declare(type_decl(
+        "place",
+        vec![field("code", StorageKind::Text), name, greeting],
+    ))
     .await?;
     cat.declare(
-        &own,
+        own,
         Declaration::Trigger(TriggerDecl {
             name: "named".into(),
             on: "place".into(),
@@ -395,16 +367,16 @@ async fn a_filled_field_recomputes_what_reads_it_and_fires_its_triggers(
     )
     .await
     .must("declaring the trigger `named` on `place`")?;
-    upsert(cat.as_ref(), &own, "place", "p1", json!({"code": "AT"})).await?;
+    l.upsert("place", "p1", json!({"code": "AT"})).await?;
 
-    let r = read(cat.as_ref(), &own, "place", "p1").await?;
+    let r = l.read("place", "p1").await?;
     ensure!(
         value(&r, "greeting") == Some(&json!("AT!")),
         "`greeting` is concat(name, '!') and `name` was filled with \"AT\" by the output; \
          the fill is a change of `name`, so `greeting` must read \"AT!\", but reads {:?}",
         value(&r, "greeting")
     );
-    let recorded = outputs(store.as_ref()).await?;
+    let recorded = recorded_outputs(store.as_ref()).await?;
     let Some(output) = recorded.first() else {
         return Err(Failure::new(
             "no `output_recorded` in the log after the write",
@@ -442,8 +414,8 @@ async fn computed_fields_that_read_each_other_in_a_cycle_are_refused(
         json!({"token": token, "echo": "label"}),
     )
     .await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
     let name = FieldDecl {
         authority: Authority::Derived,
@@ -459,7 +431,7 @@ async fn computed_fields_that_read_each_other_in_a_cycle_are_refused(
     };
     let answer = cat
         .declare(
-            &own,
+            own,
             Declaration::Type(type_decl("place", vec![name, label])),
         )
         .await;
@@ -486,15 +458,15 @@ async fn echoing(
     input: &str,
     config: Value,
 ) -> Result<(), Failure> {
-    let cat = doors(store);
-    let own = owner(store);
+    let l = Lake::of(store);
+    let Lake { cat, own } = &l;
     let function: Declaration = serde_json::from_value(json!({
         "declare": "function", "name": name, "backing": KIND,
         "inputs": [{"name": input, "type": {"kind": "text"}}],
         "config": config
     }))
     .map_err(|e| Failure::new(format!("the check's function does not read: {e}")))?;
-    cat.declare(&own, function).await.must(&format!(
+    cat.declare(own, function).await.must(&format!(
         "declaring `{name}`, backed by the suite's backing"
     ))?;
     Ok(())
@@ -520,30 +492,25 @@ async fn a_second_record_with_the_same_input_has_its_derived_fields_right(
         json!({"token": token, "echo": "code"}),
     )
     .await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     let greeting = FieldDecl {
         authority: Authority::Derived,
         derived: Some("concat(name, '!')".into()),
         depends_on: vec!["name".into()],
         ..field("greeting", StorageKind::Text)
     };
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl(
-            "place",
-            vec![
-                field("code", StorageKind::Text),
-                computed_by("name", "lookup", "code"),
-                greeting,
-            ],
-        ),
-    )
+    l.declare(type_decl(
+        "place",
+        vec![
+            field("code", StorageKind::Text),
+            computed_by("name", "lookup", "code"),
+            greeting,
+        ],
+    ))
     .await?;
-    upsert(cat.as_ref(), &own, "place", "p1", json!({"code": "AT"})).await?;
-    upsert(cat.as_ref(), &own, "place", "p2", json!({"code": "AT"})).await?;
-    let r = read(cat.as_ref(), &own, "place", "p2").await?;
+    l.upsert("place", "p1", json!({"code": "AT"})).await?;
+    l.upsert("place", "p2", json!({"code": "AT"})).await?;
+    let r = l.read("place", "p2").await?;
     ensure!(
         value(&r, "name") == Some(&json!("AT")) && value(&r, "greeting") == Some(&json!("AT!")),
         "`p2` has the code AT, whose output the lake already holds: `name` is filled from it \
@@ -580,24 +547,19 @@ async fn a_backed_field_reading_another_waits_for_its_output(
         json!({"token": second, "echo": "a", "fail_on": null}),
     )
     .await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     // `b` is declared before the field it reads.
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl(
-            "place",
-            vec![
-                field("code", StorageKind::Text),
-                computed_by("b", "second", "a"),
-                computed_by("a", "first", "code"),
-            ],
-        ),
-    )
+    l.declare(type_decl(
+        "place",
+        vec![
+            field("code", StorageKind::Text),
+            computed_by("b", "second", "a"),
+            computed_by("a", "first", "code"),
+        ],
+    ))
     .await?;
-    upsert(cat.as_ref(), &own, "place", "p1", json!({"code": "AT"})).await?;
-    let r = read(cat.as_ref(), &own, "place", "p1").await?;
+    l.upsert("place", "p1", json!({"code": "AT"})).await?;
+    let r = l.read("place", "p1").await?;
     ensure!(
         value(&r, "a") == Some(&json!("AT")) && value(&r, "b") == Some(&json!("AT")),
         "`a` is computed from `code` and `b` from `a`: both must read \"AT\", `b` called \
@@ -627,13 +589,12 @@ async fn a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds(
 ) -> Result<(), Failure> {
     let token = "failure_retried";
     places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     unplug(token);
-    upsert(cat.as_ref(), &own, "place", "p1", json!({"code": "AT"})).await?;
-    upsert(cat.as_ref(), &own, "place", "p2", json!({"code": "AT"})).await?;
+    l.upsert("place", "p1", json!({"code": "AT"})).await?;
+    l.upsert("place", "p2", json!({"code": "AT"})).await?;
     let failed = made(token);
-    let r = read(cat.as_ref(), &own, "place", "p1").await?;
+    let r = l.read("place", "p1").await?;
     ensure!(
         failed == 1 && value(&r, "name").is_none(),
         "the backing refused every call, so `p1` and `p2`, both with code AT, hold no \
@@ -647,17 +608,13 @@ async fn a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds(
         depends_on: vec!["code".into()],
         ..field("name", StorageKind::Text)
     };
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("place", vec![field("code", StorageKind::Text), name]),
-    )
+    l.declare(type_decl(
+        "place",
+        vec![field("code", StorageKind::Text), name],
+    ))
     .await?;
     let calls = made(token) - failed;
-    let (p1, p2) = (
-        read(cat.as_ref(), &own, "place", "p1").await?,
-        read(cat.as_ref(), &own, "place", "p2").await?,
-    );
+    let (p1, p2) = (l.read("place", "p1").await?, l.read("place", "p2").await?);
     ensure!(
         calls == 1
             && value(&p1, "name") == Some(&json!("AT"))

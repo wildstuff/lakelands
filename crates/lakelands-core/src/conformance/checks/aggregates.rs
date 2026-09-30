@@ -10,7 +10,7 @@ use lakelands_api::{Find, Found, LakeStore, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Must, dec, decimal, declare, doors, field, owner, type_decl};
+use crate::conformance::fixture::{Lake, Must, dec, decimal, field, type_decl};
 
 check!(
     /// Nothing counts as zero.
@@ -21,8 +21,8 @@ check!(
 async fn an_aggregate_over_no_records_answers_zero(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let money = ValueTypeDecl {
         name: "money".into(),
         kind: StorageKind::Decimal,
@@ -32,7 +32,7 @@ async fn an_aggregate_over_no_records_answers_zero(
         scale: Some(2),
         description: None,
     };
-    cat.declare(&own, Declaration::ValueType(money))
+    cat.declare(own, Declaration::ValueType(money))
         .await
         .must("declaring the value type `money`")?;
     let amount = FieldDecl {
@@ -42,7 +42,7 @@ async fn an_aggregate_over_no_records_answers_zero(
         },
         ..field("amount", StorageKind::Decimal)
     };
-    declare(cat.as_ref(), &own, type_decl("payment", vec![amount])).await?;
+    l.declare(type_decl("payment", vec![amount])).await?;
 
     let find = Find {
         aggregate: Some(Aggregate {
@@ -63,7 +63,7 @@ async fn an_aggregate_over_no_records_answers_zero(
         ..Find::default()
     };
     let reply = cat
-        .find(&own, &TypeName::from("payment"), find)
+        .find(own, &TypeName::from("payment"), find)
         .await
         .must("aggregating over no payments")?;
     let Found::Groups { rows } = reply.data else {

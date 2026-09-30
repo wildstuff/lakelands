@@ -19,9 +19,7 @@ use lakelands_api::{Error, Find, Found, LakeStore, Refusal, TypeName, Value};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{
-    Must, dec, decimal, declare, doors, field, owner, type_decl, upsert,
-};
+use crate::conformance::fixture::{Lake, Must, dec, decimal, doors, field, owner, type_decl};
 
 check!(
     /// Records group into date buckets by unit.
@@ -57,38 +55,25 @@ fn days() -> Vec<String> {
 }
 
 async fn lake(store: &dyn LakeStore) -> Result<(), Failure> {
-    let cat = doors(store);
-    let own = owner(store);
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl(
-            "entry",
-            vec![
-                field("on", StorageKind::DateTime),
-                field("amount", StorageKind::Decimal),
-            ],
-        ),
-    )
+    let l = Lake::of(store);
+    l.declare(type_decl(
+        "entry",
+        vec![
+            field("on", StorageKind::DateTime),
+            field("amount", StorageKind::Decimal),
+        ],
+    ))
     .await?;
     for (i, day) in days().iter().enumerate() {
-        upsert(
-            cat.as_ref(),
-            &own,
+        l.upsert(
             "entry",
             &format!("e{i:03}"),
             json!({"on": day, "amount": "1.25"}),
         )
         .await?;
     }
-    upsert(
-        cat.as_ref(),
-        &own,
-        "entry",
-        "undated",
-        json!({"amount": "1.25"}),
-    )
-    .await?;
+    l.upsert("entry", "undated", json!({"amount": "1.25"}))
+        .await?;
     Ok(())
 }
 
@@ -222,8 +207,8 @@ async fn a_where_selects_the_records_of_one_date_bucket(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     lake(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let mut find = by("month");
     find.filter = Some(Condition::Text(
         "date_bucket(on, 'month') = '2028-02-01T00:00:00.000000Z'".into(),
@@ -241,7 +226,7 @@ async fn a_where_selects_the_records_of_one_date_bucket(
     );
     let refused = cat
         .find(
-            &own,
+            own,
             &TypeName::from("entry"),
             Find {
                 filter: Some(Condition::Text(
@@ -261,8 +246,8 @@ async fn a_where_selects_the_records_of_one_date_bucket(
 async fn a_declaration_may_call_date_bucket_and_from_it_the_lake_writes_format_3(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
     let entry: Declaration = serde_json::from_value(json!({
         "declare": "type", "name": "entry",
@@ -274,7 +259,7 @@ async fn a_declaration_may_call_date_bucket_and_from_it_the_lake_writes_format_3
     }))
     .expect("a declaration");
     let declared_at = cat
-        .declare(&own, entry)
+        .declare(own, entry)
         .await
         .must("declaring a derived field calling date_bucket")?
         .position();
@@ -283,11 +268,11 @@ async fn a_declaration_may_call_date_bucket_and_from_it_the_lake_writes_format_3
         ("b", "2028-01-30T23:59:59Z"),
         ("c", "2028-02-01T00:00:00Z"),
     ] {
-        upsert(cat.as_ref(), &own, "entry", k, json!({ "on": on })).await?;
+        l.upsert("entry", k, json!({ "on": on })).await?;
     }
     let january = cat
         .find(
-            &own,
+            own,
             &TypeName::from("entry"),
             Find {
                 filter: Some(Condition::Text("month = '2028-01-01T00:00:00Z'".into())),
@@ -319,7 +304,7 @@ async fn a_declaration_may_call_date_bucket_and_from_it_the_lake_writes_format_3
          "where": "date_bucket(on, 'day') < '2028-01-10T00:00:00Z'"}
     ]))
     .expect("declarations");
-    cat.apply(&own, more)
+    cat.apply(own, more)
         .await
         .must("applying a view and an object set calling date_bucket")?;
     let events = store

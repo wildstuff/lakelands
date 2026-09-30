@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
-use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl};
+use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl};
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::write::Declaration;
 use lakelands_api::{
@@ -84,6 +84,55 @@ pub fn owner(store: &dyn LakeStore) -> Principal {
     principal(store, PrincipalKind::Human, "owner", Grants::owner())
 }
 
+/// A check's lake: its doors, and its owner, who writes most of what a
+/// check sets up. A write as someone else goes through the free helpers
+/// with the lake's `cat` and that principal.
+pub struct Lake {
+    /// The lake's doors.
+    pub cat: Arc<dyn Catalog>,
+    /// Its owner.
+    pub own: Principal,
+}
+
+impl Lake {
+    /// The doors of `store` and its owner.
+    pub fn of(store: &dyn LakeStore) -> Lake {
+        Lake {
+            cat: doors(store),
+            own: owner(store),
+        }
+    }
+
+    /// Declares a type as the owner.
+    pub async fn declare(&self, ty: TypeDecl) -> Result<Outcome, Failure> {
+        declare(self.cat.as_ref(), &self.own, ty).await
+    }
+
+    /// Upserts `fields` into one record as the owner, with no options.
+    pub async fn upsert(&self, ty: &str, key: &str, fields: Value) -> Result<Outcome, Failure> {
+        upsert(self.cat.as_ref(), &self.own, ty, key, fields).await
+    }
+
+    /// Reads one record at the head as the owner, with provenance.
+    pub async fn read(&self, ty: &str, key: &str) -> Result<Record, Failure> {
+        read(self.cat.as_ref(), &self.own, ty, key).await
+    }
+
+    /// Every record of `ty` the owner finds with this request.
+    pub async fn all_found(&self, ty: &str, find: Find) -> Result<Vec<Record>, Failure> {
+        all_found(self.cat.as_ref(), &self.own, ty, find).await
+    }
+
+    /// Feeds `records` from `source` as the owner, as [`ingest`] does.
+    pub async fn ingest(
+        &self,
+        source: &str,
+        records: Vec<SourceRecord>,
+    ) -> lakelands_api::Result<Vec<Committed>> {
+        ingest(self.cat.as_ref(), &self.own, source, records).await
+    }
+}
+
 /// A principal of the lake with the given grants.
 pub fn principal(
     store: &dyn LakeStore,
@@ -121,39 +170,15 @@ pub fn field_writer(store: &dyn LakeStore, id: &str, ty: &str, fields: &[&str]) 
 /// A field of a bare storage kind, authored, optional, with every other
 /// member at its default.
 pub fn field(name: &str, kind: StorageKind) -> FieldDecl {
-    FieldDecl {
-        annotations: Default::default(),
-        name: FieldName::from(name),
-        ty: FieldType::kind(kind),
-        required: false,
-        authority: Default::default(),
-        derived: None,
-        function: None,
-        depends_on: Vec::new(),
-        on_input_change: Default::default(),
-        sensitive: false,
-        searchable: false,
-        description: None,
-        label: None,
-        embed: None,
-    }
+    FieldDecl::of(name, kind)
 }
 
 /// A type whose records are keyed by the writer, with these fields.
 pub fn type_decl(name: &str, fields: Vec<FieldDecl>) -> TypeDecl {
     TypeDecl {
-        annotations: Default::default(),
-        name: TypeName::from(name),
-        key: Vec::new(),
         fields,
-        relations: Vec::new(),
-        view: None,
-        valid_from: None,
-        valid_to: None,
         field_meta: true,
-        language: None,
-        description: None,
-        label: None,
+        ..TypeDecl::named(name)
     }
 }
 
@@ -161,6 +186,72 @@ pub fn type_decl(name: &str, fields: Vec<FieldDecl>) -> TypeDecl {
 pub async fn declare(cat: &dyn Catalog, who: &Principal, ty: TypeDecl) -> Result<Outcome, Failure> {
     let what = format!("declaring type `{}`", ty.name);
     cat.declare(who, Declaration::Type(ty)).await.must(&what)
+}
+
+/// Every event of the lake's log, oldest first (at most ten thousand).
+pub async fn log_events(
+    store: &dyn LakeStore,
+) -> Result<Vec<lakelands_api::event::Event>, Failure> {
+    Ok(store
+        .feed()
+        .poll(
+            Position::GENESIS,
+            &lakelands_api::seam::FeedFilter::default(),
+            10_000,
+        )
+        .await
+        .must("reading the log")?
+        .events)
+}
+
+/// The `output_recorded` events of the lake's log, oldest first.
+pub async fn recorded_outputs(
+    store: &dyn LakeStore,
+) -> Result<Vec<lakelands_api::event::Event>, Failure> {
+    Ok(store
+        .feed()
+        .poll(
+            Position::GENESIS,
+            &lakelands_api::seam::FeedFilter {
+                kinds: vec!["output_recorded".into()],
+                ..Default::default()
+            },
+            u32::MAX,
+        )
+        .await
+        .must("reading the recorded outputs from the feed")?
+        .events)
+}
+
+/// A view `name` over `invoice`, keyed by `partner`: `total` the sum of
+/// the partner's `amount`s, as a field of kind `total`, and `invoices`
+/// their count.
+pub fn partner_totals(name: &str, total: StorageKind) -> TypeDecl {
+    use lakelands_api::ontology::{Measure, ViewDecl};
+    let measure = |name: &str, expr: &str| Measure {
+        name: FieldName::from(name),
+        expr: expr.into(),
+    };
+    TypeDecl {
+        key: vec![FieldName::from("partner")],
+        view: Some(ViewDecl {
+            source: TypeName::from("invoice"),
+            r#where: None,
+            group_by: vec![FieldName::from("partner")],
+            measures: vec![
+                measure("total", "sum(amount)"),
+                measure("invoices", "count()"),
+            ],
+        }),
+        ..type_decl(
+            name,
+            vec![
+                field("partner", StorageKind::Text),
+                field("total", total),
+                field("invoices", StorageKind::Number),
+            ],
+        )
+    }
 }
 
 /// A patch from a JSON object; anything but an object is an empty patch.

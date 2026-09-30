@@ -13,8 +13,7 @@ use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, all_found, declare, doors, field, head_unmoved, owner, patch, read, type_decl, upsert,
-    value,
+    Lake, Must, declare, doors, field, head_unmoved, owner, patch, type_decl, upsert, value,
 };
 use crate::expr::order::cmp_values;
 
@@ -102,15 +101,14 @@ async fn date_time_values_read_back_in_their_one_canonical_form(
         FieldType::kind(StorageKind::DateTime),
     )
     .await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     for (written, canonical) in [
         ("2026-09-24T07:57:11+02:00", "2026-09-24T05:57:11.000000Z"),
         ("2026-09-24", "2026-09-24T00:00:00.000000Z"),
         ("2026-09-24T05:57:11.5Z", "2026-09-24T05:57:11.500000Z"),
     ] {
-        upsert(cat.as_ref(), &own, "thing", "k", json!({ "v": written })).await?;
-        let r = read(cat.as_ref(), &own, "thing", "k").await?;
+        l.upsert("thing", "k", json!({ "v": written })).await?;
+        let r = l.read("thing", "k").await?;
         ensure!(
             value(&r, "v") == Some(&json!(canonical)),
             "`{written}` must read back as `{canonical}`; it reads {:?}",
@@ -125,11 +123,10 @@ async fn bytes_are_padded_standard_base64_and_nothing_else(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     one_field(store.as_ref(), "thing", FieldType::kind(StorageKind::Bytes)).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     for ok in ["aGVsbG8=", "aGk=", "+/+/", ""] {
-        upsert(cat.as_ref(), &own, "thing", "k", json!({ "v": ok })).await?;
-        let r = read(cat.as_ref(), &own, "thing", "k").await?;
+        l.upsert("thing", "k", json!({ "v": ok })).await?;
+        let r = l.read("thing", "k").await?;
         ensure!(
             value(&r, "v") == Some(&json!(ok)),
             "the bytes `{ok}` must read back as written; they read {:?}",
@@ -185,11 +182,11 @@ fn value_type(name: &str, kind: StorageKind) -> ValueTypeDecl {
 }
 
 async fn typed(store: &dyn LakeStore, ty: &str, vt: ValueTypeDecl) -> Result<(), Failure> {
-    let cat = doors(store);
-    let own = owner(store);
+    let l = Lake::of(store);
+    let Lake { cat, own } = &l;
     let kind = vt.kind;
     let name = vt.name.clone();
-    cat.declare(&own, Declaration::ValueType(vt))
+    cat.declare(own, Declaration::ValueType(vt))
         .await
         .must(&format!("declaring value type `{name}`"))?;
     one_field(
@@ -206,15 +203,15 @@ async fn typed(store: &dyn LakeStore, ty: &str, vt: ValueTypeDecl) -> Result<(),
 async fn a_value_types_one_of_format_and_scale_hold_on_every_write(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
 
     let status = ValueTypeDecl {
         one_of: vec!["open".into(), "paid".into()],
         ..value_type("status", StorageKind::Text)
     };
     typed(store.as_ref(), "thing", status).await?;
-    upsert(cat.as_ref(), &own, "thing", "k", json!({"v": "paid"})).await?;
+    l.upsert("thing", "k", json!({"v": "paid"})).await?;
     refused(store.as_ref(), json!("lost"), "not one of open, paid").await?;
 
     let email = ValueTypeDecl {
@@ -222,14 +219,8 @@ async fn a_value_types_one_of_format_and_scale_hold_on_every_write(
         ..value_type("email", StorageKind::Text)
     };
     typed(store.as_ref(), "contact", email).await?;
-    upsert(
-        cat.as_ref(),
-        &own,
-        "contact",
-        "k",
-        json!({"v": "ada@example.org"}),
-    )
-    .await?;
+    l.upsert("contact", "k", json!({"v": "ada@example.org"}))
+        .await?;
     refused_in(
         store.as_ref(),
         "contact",
@@ -249,8 +240,8 @@ async fn a_value_types_one_of_format_and_scale_hold_on_every_write(
         ("2.004", "2.00"),
         ("7", "7.00"),
     ] {
-        upsert(cat.as_ref(), &own, "payment", "k", json!({ "v": written })).await?;
-        let r = read(cat.as_ref(), &own, "payment", "k").await?;
+        l.upsert("payment", "k", json!({ "v": written })).await?;
+        let r = l.read("payment", "k").await?;
         ensure!(
             value(&r, "v") == Some(&json!(kept)),
             "a `money` value (scale 2) written as {written} must be kept as {kept}, \
@@ -264,7 +255,7 @@ async fn a_value_types_one_of_format_and_scale_hold_on_every_write(
         ..value_type("odd", StorageKind::Text)
     };
     let before = store.head().await.must("reading the head")?;
-    cat.declare(&own, Declaration::ValueType(unknown))
+    cat.declare(own, Declaration::ValueType(unknown))
         .await
         .must_fail("declaring a value type with the unknown format `shoe_size`")?;
     head_unmoved(store.as_ref(), before, "declaring an unknown format").await?;
@@ -279,11 +270,10 @@ async fn null_clears_a_field_whatever_its_value_type_allows(
         ..value_type("status", StorageKind::Text)
     };
     typed(store.as_ref(), "thing", status).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    upsert(cat.as_ref(), &own, "thing", "k", json!({"v": "open"})).await?;
-    upsert(cat.as_ref(), &own, "thing", "k", json!({"v": null})).await?;
-    let r = read(cat.as_ref(), &own, "thing", "k").await?;
+    let l = Lake::of(store.as_ref());
+    l.upsert("thing", "k", json!({"v": "open"})).await?;
+    l.upsert("thing", "k", json!({"v": null})).await?;
+    let r = l.read("thing", "k").await?;
     ensure!(
         value(&r, "v").is_none(),
         "`null` must clear `v` although null is not one of its allowed values; `v` \
@@ -343,12 +333,11 @@ check!(
 /// Every `thing` record's fields as `get` and as `find` answer them, as
 /// JSON text by key.
 async fn texts(store: &dyn LakeStore, keys: &[&str]) -> Result<Vec<(String, String)>, Failure> {
-    let cat = doors(store);
-    let own = owner(store);
-    let found = all_found(cat.as_ref(), &own, "thing", Find::default()).await?;
+    let l = Lake::of(store);
+    let found = l.all_found("thing", Find::default()).await?;
     let mut out = Vec::new();
     for key in keys {
-        let got = read(cat.as_ref(), &own, "thing", key).await?;
+        let got = l.read("thing", key).await?;
         let in_find = found
             .iter()
             .find(|r| r.key.as_str() == *key)
@@ -366,10 +355,9 @@ async fn texts(store: &dyn LakeStore, keys: &[&str]) -> Result<Vec<(String, Stri
 /// through `get` and `find`, live and after a rebuild, and holds each to
 /// its one form.
 async fn one_form(store: Arc<dyn LakeStore>, cases: &[(&str, Value, &str)]) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     for (key, written, _) in cases {
-        upsert(cat.as_ref(), &own, "thing", key, json!({ "v": written })).await?;
+        l.upsert("thing", key, json!({ "v": written })).await?;
     }
     let keys: Vec<&str> = cases.iter().map(|(k, _, _)| *k).collect();
     let live = texts(store.as_ref(), &keys).await?;
@@ -469,10 +457,9 @@ async fn a_geo_value_reads_back_in_its_one_form_and_a_malformed_one_is_refused(
     ] {
         refused_in(store.as_ref(), "thing", bad, why).await?;
     }
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    upsert(cat.as_ref(), &own, "thing", "point", json!({"v": null})).await?;
-    let r = read(cat.as_ref(), &own, "thing", "point").await?;
+    let l = Lake::of(store.as_ref());
+    l.upsert("thing", "point", json!({"v": null})).await?;
+    let r = l.read("thing", "point").await?;
     ensure!(
         value(&r, "v").is_none(),
         "`null` must clear the geo field `v`; it reads {:?}",
@@ -498,10 +485,9 @@ async fn a_json_value_reads_back_in_its_one_form_and_null_clears_it(
         ],
     )
     .await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    upsert(cat.as_ref(), &own, "thing", "object", json!({"v": null})).await?;
-    let r = read(cat.as_ref(), &own, "thing", "object").await?;
+    let l = Lake::of(store.as_ref());
+    l.upsert("thing", "object", json!({"v": null})).await?;
+    let r = l.read("thing", "object").await?;
     ensure!(
         value(&r, "v").is_none(),
         "`null` must clear the json field `v`, not be kept as a JSON value; it reads {:?}",
@@ -513,16 +499,11 @@ async fn a_json_value_reads_back_in_its_one_form_and_null_clears_it(
 async fn a_page_ordered_by_a_geo_or_json_field_takes_the_rulebooks_fallback_order(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl(
-            "thing",
-            vec![field("g", StorageKind::Geo), field("j", StorageKind::Json)],
-        ),
-    )
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl(
+        "thing",
+        vec![field("g", StorageKind::Geo), field("j", StorageKind::Json)],
+    ))
     .await?;
     let point = |x: f64, y: f64| json!({"type": "Point", "coordinates": [x, y]});
     // Keys interleave the values, so no order passes by following the
@@ -554,7 +535,7 @@ async fn a_page_ordered_by_a_geo_or_json_field_takes_the_rulebooks_fallback_orde
         ("r12", point(0.0, 0.0), json!({"a": 1})),
     ];
     for (key, g, j) in &rows {
-        upsert(cat.as_ref(), &own, "thing", key, json!({"g": g, "j": j})).await?;
+        l.upsert("thing", key, json!({"g": g, "j": j})).await?;
     }
     for (name, at) in [("g", 1), ("j", 2)] {
         for dir in [Direction::Asc, Direction::Desc] {
@@ -585,7 +566,8 @@ async fn a_page_ordered_by_a_geo_or_json_field_takes_the_rulebooks_fallback_orde
                     limit: Some(limit),
                     ..Find::default()
                 };
-                let walked: Vec<String> = all_found(cat.as_ref(), &own, "thing", find)
+                let walked: Vec<String> = l
+                    .all_found("thing", find)
                     .await?
                     .iter()
                     .map(|r| r.key.as_str().to_owned())

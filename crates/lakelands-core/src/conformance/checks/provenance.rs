@@ -13,8 +13,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, all_found, declare, doors, field, field_writer, ingest, owner, read, source_record,
-    type_decl, upsert, windows_reach_head,
+    Lake, Must, field, field_writer, source_record, type_decl, upsert, windows_reach_head,
 };
 
 check!(
@@ -38,8 +37,8 @@ fn day(m: u32, d: u32) -> String {
 async fn valid_at_and_as_of_combine_and_neither_stands_in_for_the_other(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let mut ty = type_decl(
         "contract",
         vec![
@@ -50,26 +49,18 @@ async fn valid_at_and_as_of_combine_and_neither_stands_in_for_the_other(
     );
     ty.valid_from = Some("from".into());
     ty.valid_to = Some("to".into());
-    declare(cat.as_ref(), &own, ty).await?;
+    l.declare(ty).await?;
 
     // Valid in January only, as first written; then extended to March.
-    let first = upsert(
-        cat.as_ref(),
-        &own,
-        "contract",
-        "c",
-        json!({"party": "acme", "from": day(1, 1), "to": day(2, 1)}),
-    )
-    .await?
-    .position();
-    upsert(
-        cat.as_ref(),
-        &own,
-        "contract",
-        "c",
-        json!({"to": day(4, 1)}),
-    )
-    .await?;
+    let first = l
+        .upsert(
+            "contract",
+            "c",
+            json!({"party": "acme", "from": day(1, 1), "to": day(2, 1)}),
+        )
+        .await?
+        .position();
+    l.upsert("contract", "c", json!({"to": day(4, 1)})).await?;
 
     let contract = TypeName::from("contract");
     let at = |as_of: Option<Position>, valid: String| ReadAt {
@@ -142,7 +133,7 @@ async fn valid_at_and_as_of_combine_and_neither_stands_in_for_the_other(
         at: at(Some(first), day(3, 15)),
         ..Find::default()
     };
-    let rows = all_found(cat.as_ref(), &own, "contract", find).await?;
+    let rows = l.all_found("contract", find).await?;
     ensure!(
         rows.is_empty(),
         "`find` valid at March as of the first write answered {} record(s); the lake \
@@ -153,8 +144,8 @@ async fn valid_at_and_as_of_combine_and_neither_stands_in_for_the_other(
 }
 
 async fn every_field_carries_its_own_provenance(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let ty = type_decl(
         "invoice",
         vec![
@@ -165,12 +156,13 @@ async fn every_field_carries_its_own_provenance(store: Arc<dyn LakeStore>) -> Re
             field("status", StorageKind::Text),
         ],
     );
-    declare(cat.as_ref(), &own, ty).await?;
+    l.declare(ty).await?;
 
     let seen = Timestamp::from_date(2026, 2, 3);
     let mut rec = source_record("invoice", "i", json!({"amount": "12.50"}));
     rec.seen_at = seen;
-    let windows = ingest(cat.as_ref(), &own, "bank", vec![rec])
+    let windows = l
+        .ingest("bank", vec![rec])
         .await
         .must("ingesting `i` from `bank`")?;
     windows_reach_head(store.as_ref(), &windows, "ingesting `i` from `bank`").await?;
@@ -186,7 +178,7 @@ async fn every_field_carries_its_own_provenance(store: Arc<dyn LakeStore>) -> Re
     .await?
     .position();
 
-    let r = read(cat.as_ref(), &own, "invoice", "i").await?;
+    let r = l.read("invoice", "i").await?;
     let amount = r
         .meta
         .get("amount")
@@ -226,7 +218,7 @@ async fn every_field_carries_its_own_provenance(store: Arc<dyn LakeStore>) -> Re
 
     let plain = cat
         .get(
-            &own,
+            own,
             &TypeName::from("invoice"),
             Get {
                 key: "i".into(),

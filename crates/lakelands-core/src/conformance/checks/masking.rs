@@ -10,9 +10,7 @@ use lakelands_api::{Access, FieldName, Find, LakeStore, ReadAt, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{
-    Must, all_found, declare, doors, field, field_writer, owner, read, type_decl, upsert,
-};
+use crate::conformance::fixture::{Lake, Must, all_found, field, field_writer, read, type_decl};
 
 check!(
     /// A masked field is named; an ungranted one is not there at all.
@@ -23,8 +21,8 @@ check!(
 async fn a_masked_field_is_listed_masked_and_an_ungranted_one_is_absent(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, .. } = &l;
     let ty = type_decl(
         "patient",
         vec![
@@ -36,10 +34,8 @@ async fn a_masked_field_is_listed_masked_and_an_ungranted_one_is_absent(
             field("salary", StorageKind::Number),
         ],
     );
-    declare(cat.as_ref(), &own, ty).await?;
-    upsert(
-        cat.as_ref(),
-        &own,
+    l.declare(ty).await?;
+    l.upsert(
         "patient",
         "p",
         json!({"name": "Ada", "diagnosis": "flu", "salary": 100}),

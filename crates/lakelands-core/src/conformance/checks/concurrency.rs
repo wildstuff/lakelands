@@ -32,7 +32,7 @@ use serde_json::{Value, json};
 use crate::conformance::Failure;
 use crate::conformance::backing::{KIND, made};
 use crate::conformance::fixture::{
-    Caller, Must, all, declare, doors, field, join_all, owner, patch, type_decl,
+    Caller, Lake, Must, all, declare, doors, field, join_all, owner, patch, type_decl,
 };
 
 check!(
@@ -173,8 +173,8 @@ async fn concurrent_writes_each_land_once_in_one_order_of_the_log(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     items(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     // Each writer writes its own records, and every writer also writes
     // the one record they share.
     let mut callers: Vec<Caller<'static, Result<Vec<Written>, Failure>>> = (0..WRITERS)
@@ -213,7 +213,7 @@ async fn concurrent_writes_each_land_once_in_one_order_of_the_log(
     );
     for (key, value, at) in written.iter().filter(|(k, _, _)| k != "shared") {
         let got = cat
-            .get(&own, &TypeName::from("item"), get_at(key, *at))
+            .get(own, &TypeName::from("item"), get_at(key, *at))
             .await
             .must(&format!("reading `{key}` as of {at}"))?
             .data;
@@ -227,7 +227,7 @@ async fn concurrent_writes_each_land_once_in_one_order_of_the_log(
     for (_, version, at) in written.iter().filter(|(k, _, _)| k == "shared") {
         let got = cat
             .get(
-                &own,
+                own,
                 &TypeName::from("item"),
                 Get {
                     with_meta: true,
@@ -244,7 +244,7 @@ async fn concurrent_writes_each_land_once_in_one_order_of_the_log(
             got.version.0
         );
     }
-    let live = all(cat.as_ref(), &own, "item").await?;
+    let live = all(cat.as_ref(), own, "item").await?;
     let live: Vec<_> = live
         .into_iter()
         .filter(|r| r.key.as_str() != "shared")
@@ -309,8 +309,8 @@ async fn writes_and_a_declaration_made_at_once_are_ordered_as_one_log(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     items(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let mut callers: Vec<Caller<'static, Result<Vec<Written>, Failure>>> = (0..4)
         .map(|w| writer(cat.clone(), own.clone(), w, 20, 1))
         .collect();
@@ -349,7 +349,7 @@ async fn writes_and_a_declaration_made_at_once_are_ordered_as_one_log(
     for (key, _, at) in &written {
         let d = cat
             .describe_type(
-                &own,
+                own,
                 &TypeName::from("item"),
                 ReadAt {
                     as_of: Some(*at),
@@ -420,8 +420,8 @@ async fn a_read_at_a_position_answers_the_same_during_writes_and_after(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     items(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let done = Arc::new(AtomicBool::new(false));
     let mut writers: Vec<Caller<'static, Result<Vec<Written>, Failure>>> = (0..4)
         .map(|w| writer(cat.clone(), own.clone(), w, 20, 2))
@@ -476,7 +476,7 @@ async fn a_read_at_a_position_answers_the_same_during_writes_and_after(
         seen.len()
     );
     for (at, keys, one) in seen {
-        let (again, one_again) = read_at(cat.as_ref(), &own, at).await?;
+        let (again, one_again) = read_at(cat.as_ref(), own, at).await?;
         ensure!(
             again == keys && one_again == one,
             "as of {at}, during the writes, `find` answered {} records and `get` of \
@@ -493,8 +493,8 @@ async fn two_feed_readers_polling_during_writes_see_one_log(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     items(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let from = store.head().await.must("reading the head")?.next();
     let done = Arc::new(AtomicBool::new(false));
     let mut writers: Vec<Caller<'static, Result<Vec<Written>, Failure>>> = (0..4)
@@ -553,15 +553,15 @@ async fn concurrent_writes_see_their_own_filled_field_and_one_input_is_called_on
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let token = "backed_under_writes";
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let function: Declaration = serde_json::from_value(json!({
         "declare": "function", "name": "lookup", "backing": KIND,
         "inputs": [{"name": "code", "type": {"kind": "text"}}],
         "config": {"token": token, "echo": "code"}
     }))
     .map_err(|e| Failure::new(format!("the check's function does not read: {e}")))?;
-    cat.declare(&own, function)
+    cat.declare(own, function)
         .await
         .must("declaring `lookup`")?;
     let name = lakelands_api::ontology::FieldDecl {
@@ -570,11 +570,10 @@ async fn concurrent_writes_see_their_own_filled_field_and_one_input_is_called_on
         depends_on: vec!["code".into()],
         ..field("name", StorageKind::Text)
     };
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("place", vec![field("code", StorageKind::Text), name]),
-    )
+    l.declare(type_decl(
+        "place",
+        vec![field("code", StorageKind::Text), name],
+    ))
     .await?;
     let callers: Vec<Caller<'static, Result<(String, Position), Failure>>> = (0..WRITERS)
         .map(|w| {
@@ -604,7 +603,7 @@ async fn concurrent_writes_see_their_own_filled_field_and_one_input_is_called_on
     for (key, at) in &written {
         let got = cat
             .get(
-                &own,
+                own,
                 &TypeName::from("place"),
                 Get {
                     key: RecordKey::from(key.as_str()),
@@ -643,34 +642,24 @@ check!(
 async fn writes_made_while_a_rule_runs_land_before_or_after_its_append(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl(
-            "task",
-            vec![
-                field("state", StorageKind::Text),
-                field("note", StorageKind::Text),
-            ],
-        ),
-    )
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl(
+        "task",
+        vec![
+            field("state", StorageKind::Text),
+            field("note", StorageKind::Text),
+        ],
+    ))
     .await?;
     let keys: Vec<String> = (0..200).map(|n| format!("t{n}")).collect();
     for k in &keys {
-        crate::conformance::fixture::upsert(
-            cat.as_ref(),
-            &own,
-            "task",
-            k,
-            json!({"state": "open"}),
-        )
-        .await?;
+        crate::conformance::fixture::upsert(cat.as_ref(), own, "task", k, json!({"state": "open"}))
+            .await?;
     }
     crate::conformance::fixture::upsert(
         cat.as_ref(),
-        &own,
+        own,
         lakelands_api::seam::AGING_RULE_TYPE,
         "go_stale",
         json!({"on": "task", "field": "state", "from": "open", "to": "stale", "when": "true"}),
@@ -747,7 +736,7 @@ async fn writes_made_while_a_rule_runs_land_before_or_after_its_append(
         };
         let before = cat
             .get(
-                &own,
+                own,
                 &TypeName::from("task"),
                 get_at(key.as_str(), Position(m.position.0 - 1)),
             )

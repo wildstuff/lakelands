@@ -19,7 +19,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, all, before, declare, doors, field, get_at, owner, type_decl, upsert, value,
+    Lake, Must, all, before, declare, doors, field, get_at, owner, type_decl, value,
 };
 
 check!(
@@ -68,12 +68,12 @@ async fn counter(store: &dyn LakeStore) -> Result<(), Failure> {
 async fn every_reply_carries_the_position_it_reflects(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let ty = type_decl("counter", vec![field("n", StorageKind::Number)]);
-    let declared = declare(cat.as_ref(), &own, ty).await?;
-    let first = upsert(cat.as_ref(), &own, "counter", "k", json!({"n": 1})).await?;
-    let second = upsert(cat.as_ref(), &own, "counter", "k", json!({"n": 2})).await?;
+    let declared = l.declare(ty).await?;
+    let first = l.upsert("counter", "k", json!({"n": 1})).await?;
+    let second = l.upsert("counter", "k", json!({"n": 2})).await?;
     ensure!(
         declared.position() < first.position() && first.position() < second.position(),
         "three writes in a row answered positions {}, {} and {}; each write appends, \
@@ -86,15 +86,15 @@ async fn every_reply_carries_the_position_it_reflects(
     let head = store.head().await.must("reading the head")?;
     let counter = TypeName::from("counter");
     let got = cat
-        .get(&own, &counter, get_at("k", None))
+        .get(own, &counter, get_at("k", None))
         .await
         .must("reading `k` at the head")?;
     let found = cat
-        .find(&own, &counter, Find::default())
+        .find(own, &counter, Find::default())
         .await
         .must("finding counters at the head")?;
     let described = cat
-        .describe(&own, ReadAt::default())
+        .describe(own, ReadAt::default())
         .await
         .must("describing the lake")?;
     for (door, position) in [
@@ -112,7 +112,7 @@ async fn every_reply_carries_the_position_it_reflects(
     }
 
     let pinned = cat
-        .get(&own, &counter, get_at("k", Some(first.position())))
+        .get(own, &counter, get_at("k", Some(first.position())))
         .await
         .must("reading `k` as of the first write")?;
     ensure!(
@@ -129,15 +129,15 @@ async fn a_read_as_of_a_write_sees_that_write_and_nothing_later(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     counter(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    let first = upsert(cat.as_ref(), &own, "counter", "k", json!({"n": 1})).await?;
-    upsert(cat.as_ref(), &own, "counter", "k", json!({"n": 2})).await?;
-    upsert(cat.as_ref(), &own, "counter", "other", json!({"n": 9})).await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    let first = l.upsert("counter", "k", json!({"n": 1})).await?;
+    l.upsert("counter", "k", json!({"n": 2})).await?;
+    l.upsert("counter", "other", json!({"n": 9})).await?;
 
     let counter = TypeName::from("counter");
     let live = cat
-        .get(&own, &counter, get_at("k", None))
+        .get(own, &counter, get_at("k", None))
         .await
         .must("reading `k` at the head")?;
     ensure!(
@@ -148,7 +148,7 @@ async fn a_read_as_of_a_write_sees_that_write_and_nothing_later(
 
     let at = get_at("k", Some(first.position()));
     let then = cat
-        .get(&own, &counter, at.clone())
+        .get(own, &counter, at.clone())
         .await
         .must("reading `k` as of the first write")?;
     ensure!(
@@ -159,7 +159,7 @@ async fn a_read_as_of_a_write_sees_that_write_and_nothing_later(
         value(&then.data, "n")
     );
     let again = cat
-        .get(&own, &counter, at)
+        .get(own, &counter, at)
         .await
         .must("reading `k` as of the first write again")?;
     ensure!(
@@ -174,7 +174,7 @@ async fn a_read_as_of_a_write_sees_that_write_and_nothing_later(
         },
         ..Find::default()
     };
-    let rows = crate::conformance::fixture::all_found(cat.as_ref(), &own, "counter", find).await?;
+    let rows = crate::conformance::fixture::all_found(cat.as_ref(), own, "counter", find).await?;
     let keys: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
     ensure!(
         keys == ["k"],
@@ -188,13 +188,13 @@ async fn a_read_as_of_the_position_before_a_write_does_not_see_it(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     counter(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    let first = upsert(cat.as_ref(), &own, "counter", "k", json!({"n": 1})).await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    let first = l.upsert("counter", "k", json!({"n": 1})).await?;
 
     let earlier = before(&first);
     let got = cat
-        .get(&own, &TypeName::from("counter"), get_at("k", Some(earlier)))
+        .get(own, &TypeName::from("counter"), get_at("k", Some(earlier)))
         .await;
     ensure!(
         matches!(
@@ -212,20 +212,20 @@ async fn retiring_a_record_does_not_erase_its_history(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     counter(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let counter = TypeName::from("counter");
-    let written = upsert(cat.as_ref(), &own, "counter", "k", json!({"n": 7})).await?;
-    cat.retire(&own, &counter, &"k".into(), Default::default())
+    let written = l.upsert("counter", "k", json!({"n": 7})).await?;
+    cat.retire(own, &counter, &"k".into(), Default::default())
         .await
         .must("retiring `k`")?;
 
-    let live = cat.get(&own, &counter, get_at("k", None)).await;
+    let live = cat.get(own, &counter, get_at("k", None)).await;
     ensure!(
         matches!(live, Err(Error::NotFound { .. })),
         "a retired record must not be found at the head; the read answered {live:?}"
     );
-    let rows = all(cat.as_ref(), &own, "counter").await?;
+    let rows = all(cat.as_ref(), own, "counter").await?;
     ensure!(
         rows.is_empty(),
         "`find` at the head must not list a retired record; it listed {:?}",
@@ -233,7 +233,7 @@ async fn retiring_a_record_does_not_erase_its_history(
     );
 
     let then = cat
-        .get(&own, &counter, get_at("k", Some(written.position())))
+        .get(own, &counter, get_at("k", Some(written.position())))
         .await
         .must("reading `k` as of its write, before it was retired")?;
     ensure!(
@@ -249,14 +249,14 @@ async fn a_read_as_of_a_position_past_the_head_is_refused_as_out_of_range(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     counter(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    upsert(cat.as_ref(), &own, "counter", "k", json!({"n": 1})).await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.upsert("counter", "k", json!({"n": 1})).await?;
     let head = store.head().await.must("reading the head")?;
 
     let beyond = Position(head.0 + 1000);
     let got = cat
-        .get(&own, &TypeName::from("counter"), get_at("k", Some(beyond)))
+        .get(own, &TypeName::from("counter"), get_at("k", Some(beyond)))
         .await;
     ensure!(
         matches!(
@@ -272,19 +272,15 @@ async fn a_read_as_of_a_position_past_the_head_is_refused_as_out_of_range(
 async fn position_at_answers_the_last_position_at_or_before_an_instant(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("tick", vec![field("n", StorageKind::Number)]),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("tick", vec![field("n", StorageKind::Number)]))
+        .await?;
     // One record per append, each under a key of its own.
     let mut written = Vec::new();
     for n in 0..12 {
         let key = format!("t{n}");
-        let o = upsert(cat.as_ref(), &own, "tick", &key, json!({"n": n})).await?;
+        let o = l.upsert("tick", &key, json!({"n": n})).await?;
         written.push((key, n, o.position()));
     }
     let head = store.head().await.must("reading the head")?;
@@ -363,7 +359,7 @@ async fn position_at_answers_the_last_position_at_or_before_an_instant(
             .await?
             .ok_or_else(|| Failure::new(format!("position_at({t}) answers none")))?;
         let r = cat
-            .get(&own, &TypeName::from("tick"), get_at(key, Some(answer)))
+            .get(own, &TypeName::from("tick"), get_at(key, Some(answer)))
             .await
             .must(&format!("reading `tick` `{key}` as of {answer}"))?;
         ensure!(

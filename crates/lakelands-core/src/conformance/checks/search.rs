@@ -12,7 +12,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, declare, doors, field, field_writer, owner, type_decl, upsert,
+    Lake, Must, declare, doors, field, field_writer, owner, type_decl, upsert,
 };
 
 check!(
@@ -80,24 +80,15 @@ async fn full_text_matches_words_whatever_their_case_inflection_or_accents(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     articles(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    upsert(
-        cat.as_ref(),
-        &own,
+    let l = Lake::of(store.as_ref());
+    l.upsert(
         "article",
         "cafe",
         json!({"text": "The Café was Running late"}),
     )
     .await?;
-    upsert(
-        cat.as_ref(),
-        &own,
-        "article",
-        "other",
-        json!({"text": "Nothing to see here"}),
-    )
-    .await?;
+    l.upsert("article", "other", json!({"text": "Nothing to see here"}))
+        .await?;
 
     for query in ["cafe", "CAFÉ", "runs", "running"] {
         let got = hits(store.as_ref(), query).await?;
@@ -119,15 +110,14 @@ async fn full_text_matches_words_whatever_their_case_inflection_or_accents(
 
 async fn search_is_ordered_by_score_then_key(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
     articles(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     for (key, text) in [
         ("b", "lake"),
         ("a", "lake"),
         ("c", "lake lake lake shore"),
         ("d", "mountain"),
     ] {
-        upsert(cat.as_ref(), &own, "article", key, json!({ "text": text })).await?;
+        l.upsert("article", key, json!({ "text": text })).await?;
     }
     let got = hits(store.as_ref(), "lake").await?;
     let ranked: Vec<(f64, &str)> = got
@@ -331,8 +321,8 @@ async fn a_search_over_a_vector_embedded_from_an_unreadable_field_is_refused(
 ) -> Result<(), Failure> {
     use crate::conformance::backing::EMBED_MODEL;
     use lakelands_api::ontology::{Authority, EmbedDecl, FieldType};
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     // Neither text is searchable: only the embedding reads `body`.
     let vec = FieldDecl {
         ty: FieldType {
@@ -346,22 +336,16 @@ async fn a_search_over_a_vector_embedded_from_an_unreadable_field_is_refused(
         }),
         ..field("vec", StorageKind::Text)
     };
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl(
-            "doc",
-            vec![
-                field("title", StorageKind::Text),
-                field("body", StorageKind::Text),
-                vec,
-            ],
-        ),
-    )
+    l.declare(type_decl(
+        "doc",
+        vec![
+            field("title", StorageKind::Text),
+            field("body", StorageKind::Text),
+            vec,
+        ],
+    ))
     .await?;
-    upsert(
-        cat.as_ref(),
-        &own,
+    l.upsert(
         "doc",
         "a",
         json!({"title": "Minutes", "body": "the salary of the harbour master"}),
@@ -372,7 +356,7 @@ async fn a_search_over_a_vector_embedded_from_an_unreadable_field_is_refused(
         vector: vec![1.0, 0.0],
     };
     let mine = cat
-        .search(&own, doc_search(along()))
+        .search(own, doc_search(along()))
         .await
         .must("the owner's vector search over `vec`")?
         .data;
@@ -449,24 +433,11 @@ async fn a_search_finds_a_record_by_its_current_text_and_nothing_by_none(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     articles(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    upsert(
-        cat.as_ref(),
-        &own,
-        "article",
-        "a",
-        json!({"text": "harbour crane"}),
-    )
-    .await?;
-    upsert(
-        cat.as_ref(),
-        &own,
-        "article",
-        "a",
-        json!({"text": "mountain goat"}),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    l.upsert("article", "a", json!({"text": "harbour crane"}))
+        .await?;
+    l.upsert("article", "a", json!({"text": "mountain goat"}))
+        .await?;
     let old = hits(store.as_ref(), "harbour").await?;
     let new = hits(store.as_ref(), "goat").await?;
     let none = hits(store.as_ref(), "").await?;
@@ -487,20 +458,14 @@ async fn a_retired_or_restricted_record_is_never_a_hit(
 ) -> Result<(), Failure> {
     use lakelands_api::WriteOpts;
     articles(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     for k in ["live", "gone", "held"] {
-        upsert(
-            cat.as_ref(),
-            &own,
-            "article",
-            k,
-            json!({"text": "lake report"}),
-        )
-        .await?;
+        l.upsert("article", k, json!({"text": "lake report"}))
+            .await?;
     }
     let article = TypeName::from("article");
-    cat.retire(&own, &article, &"gone".into(), WriteOpts::default())
+    cat.retire(own, &article, &"gone".into(), WriteOpts::default())
         .await
         .must("retiring `gone`")?;
     store
@@ -535,8 +500,8 @@ async fn a_retired_record_or_a_cleared_vector_is_no_longer_a_nearest_neighbour(
 ) -> Result<(), Failure> {
     use lakelands_api::WriteOpts;
     use lakelands_api::ontology::FieldType;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let embedding = FieldDecl {
         ty: FieldType {
             dimensions: Some(2),
@@ -544,13 +509,13 @@ async fn a_retired_record_or_a_cleared_vector_is_no_longer_a_nearest_neighbour(
         },
         ..field("embedding", StorageKind::Text)
     };
-    declare(cat.as_ref(), &own, type_decl("doc", vec![embedding])).await?;
+    l.declare(type_decl("doc", vec![embedding])).await?;
     for (k, v) in [
         ("east", [1.0, 0.0]),
         ("north", [0.0, 1.0]),
         ("near", [0.9, 0.1]),
     ] {
-        upsert(cat.as_ref(), &own, "doc", k, json!({ "embedding": v })).await?;
+        l.upsert("doc", k, json!({ "embedding": v })).await?;
     }
     let nearest = |store: Arc<dyn LakeStore>| async move {
         let s = Search {
@@ -583,17 +548,10 @@ async fn a_retired_record_or_a_cleared_vector_is_no_longer_a_nearest_neighbour(
         "nearest to (1, 0) must start with `east` and include `near`; it answered {first:?}"
     );
     let doc = TypeName::from("doc");
-    cat.retire(&own, &doc, &"east".into(), WriteOpts::default())
+    cat.retire(own, &doc, &"east".into(), WriteOpts::default())
         .await
         .must("retiring `east`")?;
-    upsert(
-        cat.as_ref(),
-        &own,
-        "doc",
-        "near",
-        json!({"embedding": null}),
-    )
-    .await?;
+    l.upsert("doc", "near", json!({"embedding": null})).await?;
     let after = nearest(store.clone()).await?;
     ensure!(
         !after.contains(&"east".to_owned()) && !after.contains(&"near".to_owned()),
@@ -676,8 +634,8 @@ async fn a_vector_search_answers_the_brute_force_ranking_to_the_bit(
 ) -> Result<(), Failure> {
     use lakelands_api::ontology::FieldType;
     use lakelands_api::{Position, WriteOpts};
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let v = FieldDecl {
         ty: FieldType {
             dimensions: Some(3),
@@ -686,7 +644,7 @@ async fn a_vector_search_answers_the_brute_force_ranking_to_the_bit(
         ..field("v", StorageKind::Text)
     };
     let group = field("group", StorageKind::Number);
-    declare(cat.as_ref(), &own, type_decl("point", vec![v, group])).await?;
+    l.declare(type_decl("point", vec![v, group])).await?;
     let mut points: Vec<Point> = (0..POINTS)
         .map(|i| Point {
             key: format!("p{i:03}"),
@@ -697,14 +655,8 @@ async fn a_vector_search_answers_the_brute_force_ranking_to_the_bit(
         })
         .collect();
     for p in &points {
-        upsert(
-            cat.as_ref(),
-            &own,
-            "point",
-            &p.key,
-            json!({"v": p.vector, "group": p.group}),
-        )
-        .await?;
+        l.upsert("point", &p.key, json!({"v": p.vector, "group": p.group}))
+            .await?;
     }
     let then = store.head().await.must("reading the head")?;
     for p in &mut points {
@@ -717,22 +669,16 @@ async fn a_vector_search_answers_the_brute_force_ranking_to_the_bit(
         if i % 17 == 8 {
             p.vector = Some(QUERY.map(|x| x * 8.0));
             p.group = (p.group + 1) % 4;
-            upsert(
-                cat.as_ref(),
-                &own,
-                "point",
-                &p.key,
-                json!({"v": p.vector, "group": p.group}),
-            )
-            .await?;
+            l.upsert("point", &p.key, json!({"v": p.vector, "group": p.group}))
+                .await?;
         }
         if i % 13 == 6 {
             p.vector = None;
-            upsert(cat.as_ref(), &own, "point", &p.key, json!({"v": null})).await?;
+            l.upsert("point", &p.key, json!({"v": null})).await?;
         }
         if i % 11 == 5 {
             p.retired = true;
-            cat.retire(&own, &point, &p.key.as_str().into(), WriteOpts::default())
+            cat.retire(own, &point, &p.key.as_str().into(), WriteOpts::default())
                 .await
                 .must(&format!("retiring `{}`", p.key))?;
         }
@@ -745,14 +691,8 @@ async fn a_vector_search_answers_the_brute_force_ranking_to_the_bit(
             retired: false,
             then: None,
         };
-        upsert(
-            cat.as_ref(),
-            &own,
-            "point",
-            &p.key,
-            json!({"v": p.vector, "group": p.group}),
-        )
-        .await?;
+        l.upsert("point", &p.key, json!({"v": p.vector, "group": p.group}))
+            .await?;
         points.push(p);
     }
     // The fixture must put equal scores across a cut, or the check would
@@ -792,7 +732,7 @@ async fn a_vector_search_answers_the_brute_force_ranking_to_the_bit(
                     }
                 );
                 let got: Vec<(String, u64)> = cat
-                    .search(&own, s)
+                    .search(own, s)
                     .await
                     .must(&what)?
                     .data
@@ -819,8 +759,7 @@ async fn a_vector_search_answers_the_brute_force_ranking_to_the_bit(
 /// `quayside` and points north, `b` matches nothing and points east.
 async fn two_docs(store: &dyn LakeStore) -> Result<(), Failure> {
     use lakelands_api::ontology::FieldType;
-    let cat = doors(store);
-    let own = owner(store);
+    let l = Lake::of(store);
     let body = FieldDecl {
         searchable: true,
         ..field("body", StorageKind::Text)
@@ -832,23 +771,11 @@ async fn two_docs(store: &dyn LakeStore) -> Result<(), Failure> {
         },
         ..field("v", StorageKind::Text)
     };
-    declare(cat.as_ref(), &own, type_decl("doc", vec![body, v])).await?;
-    upsert(
-        cat.as_ref(),
-        &own,
-        "doc",
-        "a",
-        json!({"body": "quayside", "v": [0.0, 1.0]}),
-    )
-    .await?;
-    upsert(
-        cat.as_ref(),
-        &own,
-        "doc",
-        "b",
-        json!({"body": "harbour", "v": [1.0, 0.0]}),
-    )
-    .await?;
+    l.declare(type_decl("doc", vec![body, v])).await?;
+    l.upsert("doc", "a", json!({"body": "quayside", "v": [0.0, 1.0]}))
+        .await?;
+    l.upsert("doc", "b", json!({"body": "harbour", "v": [1.0, 0.0]}))
+        .await?;
     Ok(())
 }
 
@@ -898,13 +825,13 @@ async fn a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_els
 ) -> Result<(), Failure> {
     use crate::conformance::backing::{UNREACHABLE, embed_calls};
     two_docs(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     // The backend makes every text (1, 0), which only `b` points along:
     // `b` is a hit only if the search ranked over the backend's vector.
     let before = embed_calls();
     let got = cat
-        .search(&own, doc_search(hybrid("quayside", None)))
+        .search(own, doc_search(hybrid("quayside", None)))
         .await
         .must("a hybrid search for \"quayside\" without a vector, a backend bound")?
         .data;
@@ -921,7 +848,7 @@ async fn a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_els
     );
     let before = embed_calls();
     cat.search(
-        &own,
+        own,
         doc_search(SearchMode::Vector {
             field: "v".into(),
             vector: vec![1.0, 0.0],
@@ -930,7 +857,7 @@ async fn a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_els
     .await
     .must("a vector search")?;
     let brought = cat
-        .search(&own, doc_search(hybrid("quayside", Some(vec![0.0, 1.0]))))
+        .search(own, doc_search(hybrid("quayside", Some(vec![0.0, 1.0]))))
         .await
         .must("a hybrid search bringing its vector")?
         .data;
@@ -941,7 +868,7 @@ async fn a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_els
         embed_calls() - before
     );
     let text = format!("{UNREACHABLE} quayside");
-    match cat.search(&own, doc_search(hybrid(&text, None))).await {
+    match cat.search(own, doc_search(hybrid(&text, None))).await {
         Err(Error::Unavailable { .. }) => Ok(()),
         other => Err(Failure::new(format!(
             "a hybrid search whose bound embedding backend fails must be unavailable, \
@@ -963,14 +890,14 @@ async fn every_hit_is_the_record_get_answers_in_its_declared_shape(
 ) -> Result<(), Failure> {
     use lakelands_api::{Get, RecordKey};
     two_docs(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     // A field no search reads, written on one record only.
     let note = field("note", StorageKind::Text);
-    cat.add_field(&own, &TypeName::from("doc"), note)
+    cat.add_field(own, &TypeName::from("doc"), note)
         .await
         .must("adding `note` to `doc`")?;
-    upsert(cat.as_ref(), &own, "doc", "a", json!({"note": "berth 4"})).await?;
+    l.upsert("doc", "a", json!({"note": "berth 4"})).await?;
     // A reader of `body` and `v` only: `note` is not in its shape.
     let mut reader = field_writer(store.as_ref(), "reader", "doc", &[]);
     let doc_grants = reader
@@ -980,7 +907,7 @@ async fn every_hit_is_the_record_get_answers_in_its_declared_shape(
         .expect("field_writer grants the type");
     doc_grants.fields.insert("note".into(), Access::None);
 
-    for who in [&own, &reader] {
+    for who in [own, &reader] {
         for (what, mode) in [
             (
                 "lexical",

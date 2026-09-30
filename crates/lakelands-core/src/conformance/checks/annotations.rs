@@ -28,7 +28,7 @@ use lakelands_api::{
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Must, doors, field, head_unmoved, owner, principal, type_decl};
+use crate::conformance::fixture::{Lake, Must, field, head_unmoved, principal, type_decl};
 
 check!(
     /// Annotations come back as declared.
@@ -168,14 +168,14 @@ async fn declared_event(
 async fn annotations_round_trip_through_declare_the_feed_and_describe(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
-    cat.declare(&own, Declaration::Type(room()))
+    cat.declare(own, Declaration::Type(room()))
         .await
         .must("declaring `room`")?;
     let shelf = shelf();
-    cat.declare(&own, Declaration::Type(shelf.clone()))
+    cat.declare(own, Declaration::Type(shelf.clone()))
         .await
         .must("declaring the annotated `shelf`")?;
     let want = canonical(&declared_maps(&shelf));
@@ -187,7 +187,7 @@ async fn annotations_round_trip_through_declare_the_feed_and_describe(
          carried {got:?}, declared {want:?}"
     );
     let d = cat
-        .describe_type(&own, &TypeName::from("shelf"), ReadAt::default())
+        .describe_type(own, &TypeName::from("shelf"), ReadAt::default())
         .await
         .must("describing `shelf` as the owner")?
         .data;
@@ -201,11 +201,11 @@ async fn annotations_round_trip_through_declare_the_feed_and_describe(
     let mut crate_ = shelf.clone();
     crate_.name = "crate".into();
     crate_.annotations = marks(&[("acme.icon", json!("box"))]);
-    cat.apply(&own, vec![Declaration::Type(crate_.clone())])
+    cat.apply(own, vec![Declaration::Type(crate_.clone())])
         .await
         .must("applying the annotated `crate`")?;
     let d = cat
-        .describe_type(&own, &TypeName::from("crate"), ReadAt::default())
+        .describe_type(own, &TypeName::from("crate"), ReadAt::default())
         .await
         .must("describing `crate` as the owner")?
         .data;
@@ -224,18 +224,18 @@ async fn annotations_round_trip_through_declare_the_feed_and_describe(
 async fn an_annotation_change_alone_moves_the_version_and_not_the_schema_hash(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    cat.declare(&own, Declaration::Type(room()))
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    cat.declare(own, Declaration::Type(room()))
         .await
         .must("declaring `room`")?;
     let mut shelf = shelf();
-    cat.declare(&own, Declaration::Type(shelf.clone()))
+    cat.declare(own, Declaration::Type(shelf.clone()))
         .await
         .must("declaring `shelf`")?;
     let lifecycle = |d: TypeDescription| d.lifecycle;
     let first = lifecycle(
-        cat.describe_type(&own, &TypeName::from("shelf"), ReadAt::default())
+        cat.describe_type(own, &TypeName::from("shelf"), ReadAt::default())
             .await
             .must("describing `shelf`")?
             .data,
@@ -246,11 +246,11 @@ async fn an_annotation_change_alone_moves_the_version_and_not_the_schema_hash(
     shelf.fields[0]
         .annotations
         .insert("acme.width".into(), json!(80));
-    cat.declare(&own, Declaration::Type(shelf))
+    cat.declare(own, Declaration::Type(shelf))
         .await
         .must("re-declaring `shelf` with only its annotations changed")?;
     let second = lifecycle(
-        cat.describe_type(&own, &TypeName::from("shelf"), ReadAt::default())
+        cat.describe_type(own, &TypeName::from("shelf"), ReadAt::default())
             .await
             .must("describing `shelf` again")?
             .data,
@@ -273,13 +273,13 @@ async fn an_annotation_change_alone_moves_the_version_and_not_the_schema_hash(
 async fn a_masked_field_is_described_without_its_annotations(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    cat.declare(&own, Declaration::Type(room()))
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    cat.declare(own, Declaration::Type(room()))
         .await
         .must("declaring `room`")?;
     let shelf = shelf();
-    cat.declare(&own, Declaration::Type(shelf.clone()))
+    cat.declare(own, Declaration::Type(shelf.clone()))
         .await
         .must("declaring `shelf`")?;
     // Reads everything but `secret` (masked: it is sensitive) and the
@@ -366,8 +366,8 @@ async fn a_masked_field_is_described_without_its_annotations(
 async fn an_unnamespaced_reserved_null_or_oversized_annotation_is_refused_naming_it(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     // `{"acme.blob":""}` is 16 bytes; the string fills the rest.
     let blob = |n: usize| marks(&[("acme.blob", json!("x".repeat(n - 16)))]);
     let cases: Vec<(&str, Annotations, bool, &str)> = vec![
@@ -406,7 +406,7 @@ async fn an_unnamespaced_reserved_null_or_oversized_annotation_is_refused_naming
         let mut t = type_decl("tag", vec![field("code", StorageKind::Text)]);
         t.fields[0].annotations = annotations;
         let before = store.head().await.must("reading the head")?;
-        let e = match cat.declare(&own, Declaration::Type(t)).await {
+        let e = match cat.declare(own, Declaration::Type(t)).await {
             Ok(_) => {
                 return Err(Failure::new(format!(
                     "{what} must be refused; it was declared"
@@ -439,7 +439,7 @@ async fn an_unnamespaced_reserved_null_or_oversized_annotation_is_refused_naming
     }
     let mut t = type_decl("tag", vec![field("code", StorageKind::Text)]);
     t.fields[0].annotations = blob(ANNOTATIONS_MAX_BYTES);
-    cat.declare(&own, Declaration::Type(t))
+    cat.declare(own, Declaration::Type(t))
         .await
         .must("declaring a type holding exactly the ceiling of annotations")?;
     Ok(())

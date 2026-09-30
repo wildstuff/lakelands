@@ -10,7 +10,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, declare, doors, field, field_writer, get_at, head_unmoved, owner, type_decl, upsert,
+    Lake, Must, field, field_writer, get_at, head_unmoved, type_decl,
 };
 
 check!(
@@ -28,27 +28,23 @@ check!(
 async fn a_type_whose_fields_all_come_from_a_source_has_no_upsert(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let sourced = |name: &str, kind| {
         let mut f = field(name, kind);
         f.authority = Authority::Source;
         f
     };
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl(
-            "rate",
-            vec![
-                sourced("currency", StorageKind::Text),
-                sourced("value", StorageKind::Decimal),
-            ],
-        ),
-    )
+    l.declare(type_decl(
+        "rate",
+        vec![
+            sourced("currency", StorageKind::Text),
+            sourced("value", StorageKind::Decimal),
+        ],
+    ))
     .await?;
     let d = cat
-        .describe_type(&own, &TypeName::from("rate"), ReadAt::default())
+        .describe_type(own, &TypeName::from("rate"), ReadAt::default())
         .await
         .must("describing `rate` as the owner")?
         .data;
@@ -62,7 +58,7 @@ async fn a_type_whose_fields_all_come_from_a_source_has_no_upsert(
     let before = store.head().await.must("reading the head")?;
     let err = cat
         .upsert(
-            &own,
+            own,
             &TypeName::from("rate"),
             &"eur".into(),
             crate::conformance::fixture::patch(json!({"currency": "EUR"})),
@@ -94,28 +90,18 @@ check!(
 async fn a_principal_who_may_write_only_some_fields_cannot_retire(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl(
-            "invoice",
-            vec![
-                field("status", StorageKind::Text),
-                field("amount", StorageKind::Decimal),
-            ],
-        ),
-    )
-    .await?;
-    upsert(
-        cat.as_ref(),
-        &own,
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, .. } = &l;
+    l.declare(type_decl(
         "invoice",
-        "i",
-        json!({"status": "open", "amount": "1.00"}),
-    )
+        vec![
+            field("status", StorageKind::Text),
+            field("amount", StorageKind::Decimal),
+        ],
+    ))
     .await?;
+    l.upsert("invoice", "i", json!({"status": "open", "amount": "1.00"}))
+        .await?;
     let clerk = field_writer(store.as_ref(), "clerk", "invoice", &["status"]);
     let invoice = TypeName::from("invoice");
 
@@ -172,26 +158,18 @@ async fn a_principal_who_may_write_only_some_fields_cannot_retire(
 async fn a_record_retired_at_a_position_is_readable_just_before_it(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("invoice", vec![field("status", StorageKind::Text)]),
-    )
-    .await?;
-    upsert(
-        cat.as_ref(),
-        &own,
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl(
         "invoice",
-        "i1",
-        json!({"status": "open"}),
-    )
+        vec![field("status", StorageKind::Text)],
+    ))
     .await?;
+    l.upsert("invoice", "i1", json!({"status": "open"})).await?;
     let reader = field_writer(store.as_ref(), "reader", "invoice", &[]);
     let invoice = TypeName::from("invoice");
     let retired = cat
-        .retire(&own, &invoice, &"i1".into(), WriteOpts::default())
+        .retire(own, &invoice, &"i1".into(), WriteOpts::default())
         .await
         .must("retiring `i1`")?
         .position();

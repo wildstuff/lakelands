@@ -14,9 +14,7 @@ use lakelands_api::{Error, FieldName, LakeStore, Refusal, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{
-    Must, declare, doors, field, head_unmoved, owner, patch, read, type_decl, upsert, value,
-};
+use crate::conformance::fixture::{Lake, Must, field, head_unmoved, patch, type_decl, value};
 
 check!(
     /// A key that disagrees with the key fields is refused.
@@ -46,12 +44,10 @@ fn keyed() -> lakelands_api::ontology::TypeDecl {
 async fn a_key_that_disagrees_with_its_key_fields_is_refused(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(cat.as_ref(), &own, keyed()).await?;
-    upsert(
-        cat.as_ref(),
-        &own,
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(keyed()).await?;
+    l.upsert(
         "line",
         "INV%3A7%251:2",
         json!({"invoice": "INV:7%1", "n": 2, "note": "a"}),
@@ -61,7 +57,7 @@ async fn a_key_that_disagrees_with_its_key_fields_is_refused(
     let before = store.head().await.must("reading the head")?;
     let err = cat
         .upsert(
-            &own,
+            own,
             &TypeName::from("line"),
             &"INV%3A7%251:3".into(),
             patch(json!({"invoice": "INV:7%1", "n": 2})),
@@ -90,18 +86,11 @@ async fn a_key_that_disagrees_with_its_key_fields_is_refused(
 async fn a_record_created_by_its_key_alone_gets_its_key_fields(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(cat.as_ref(), &own, keyed()).await?;
-    upsert(
-        cat.as_ref(),
-        &own,
-        "line",
-        "INV%3A9:4",
-        json!({"note": "from the key"}),
-    )
-    .await?;
-    let r = read(cat.as_ref(), &own, "line", "INV%3A9:4").await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(keyed()).await?;
+    l.upsert("line", "INV%3A9:4", json!({"note": "from the key"}))
+        .await?;
+    let r = l.read("line", "INV%3A9:4").await?;
     ensure!(
         value(&r, "invoice") == Some(&json!("INV:9")) && value(&r, "n") == Some(&json!(4)),
         "a record created by the key `INV%3A9:4` must hold invoice = \"INV:9\" and n = 4; it holds {:?}",

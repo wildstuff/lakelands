@@ -19,9 +19,7 @@ use lakelands_api::{Error, LakeStore, Position, Refusal, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{
-    Must, declare, doors, field, ingest, owner, patch, source_record, type_decl, upsert,
-};
+use crate::conformance::fixture::{Lake, Must, field, patch, source_record, type_decl};
 use crate::links::{link_key, link_type_name};
 
 check!(
@@ -67,14 +65,10 @@ fn trigger(name: &str, on: &TypeName, when: Option<&str>) -> Declaration {
 async fn a_trigger_on_a_link_type_fires_on_link_rewrite_unlink_and_ingest(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("partner", vec![field("name", StorageKind::Text)]),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))
+        .await?;
     let mut invoice = type_decl("invoice", vec![field("amount", StorageKind::Decimal)]);
     invoice.relations = vec![
         relation(
@@ -85,7 +79,7 @@ async fn a_trigger_on_a_link_type_fires_on_link_rewrite_unlink_and_ingest(
         ),
         relation("sourced_by", None, Authority::Source, vec![]),
     ];
-    declare(cat.as_ref(), &own, invoice).await?;
+    l.declare(invoice).await?;
     let approved = link_type_name(&"invoice".into(), &"approved_by".into());
     let sourced = link_type_name(&"invoice".into(), &"sourced_by".into());
     for t in [
@@ -94,13 +88,13 @@ async fn a_trigger_on_a_link_type_fires_on_link_rewrite_unlink_and_ingest(
         trigger("note_changed", &approved, Some("changed(note)")),
         trigger("any_source", &sourced, None),
     ] {
-        cat.declare(&own, t)
+        cat.declare(own, t)
             .await
             .must("declaring a trigger on a link type")?;
     }
-    upsert(cat.as_ref(), &own, "partner", "p1", json!({"name": "one"})).await?;
+    l.upsert("partner", "p1", json!({"name": "one"})).await?;
     for i in ["i1", "i2", "i3"] {
-        upsert(cat.as_ref(), &own, "invoice", i, json!({"amount": "1"})).await?;
+        l.upsert("invoice", i, json!({"amount": "1"})).await?;
     }
     let link = |note: &'static str| {
         let cat = cat.clone();
@@ -122,7 +116,7 @@ async fn a_trigger_on_a_link_type_fires_on_link_rewrite_unlink_and_ingest(
     let first = link("x").await?.position();
     link("y").await?;
     cat.unlink(
-        &own,
+        own,
         &"invoice".into(),
         &"i1".into(),
         &"approved_by".into(),
@@ -131,9 +125,7 @@ async fn a_trigger_on_a_link_type_fires_on_link_rewrite_unlink_and_ingest(
     )
     .await
     .must("unlinking i1 from p1")?;
-    ingest(
-        cat.as_ref(),
-        &own,
+    l.ingest(
         "erp",
         ["i2", "i3"]
             .into_iter()
@@ -218,14 +210,10 @@ async fn a_trigger_on_a_link_type_fires_on_link_rewrite_unlink_and_ingest(
 async fn a_trigger_on_the_link_type_of_a_reference_relation_is_refused(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("partner", vec![field("name", StorageKind::Text)]),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))
+        .await?;
     let mut invoice = type_decl(
         "invoice",
         vec![FieldDecl {
@@ -242,10 +230,10 @@ async fn a_trigger_on_the_link_type_of_a_reference_relation_is_refused(
         Authority::Authored,
         vec![],
     )];
-    declare(cat.as_ref(), &own, invoice).await?;
+    l.declare(invoice).await?;
     let on = link_type_name(&"invoice".into(), &"billed_by".into());
     let e = cat
-        .declare(&own, trigger("billing", &on, None))
+        .declare(own, trigger("billing", &on, None))
         .await
         .expect_err("a trigger on the link type of a reference relation is refused");
     let Error::Refused {

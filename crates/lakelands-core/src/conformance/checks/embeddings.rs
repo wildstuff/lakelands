@@ -12,17 +12,18 @@
 
 use std::sync::Arc;
 
-use lakelands_api::event::{Event, EventBody};
+use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{Authority, EmbedDecl, FieldDecl, FieldType, StorageKind};
 use lakelands_api::query::{Search, SearchMode};
-use lakelands_api::seam::{FeedFilter, Seams};
+use lakelands_api::seam::Seams;
 use lakelands_api::write::Declaration;
-use lakelands_api::{Error, LakeStore, Position};
+use lakelands_api::{Error, LakeStore};
 use serde_json::{Value, json};
 
 use crate::conformance::backing::{EMBED_MODEL, embedded, plug_text, unplug_text};
 use crate::conformance::fixture::{
-    Must, declare, doors, field, ingest, owner, read, source_record, type_decl, upsert, value,
+    Lake, Must, declare, doors, field, owner, read, recorded_outputs, source_record, type_decl,
+    upsert, value,
 };
 use crate::conformance::{Failure, Reopen, backing};
 
@@ -134,24 +135,6 @@ async fn notes(store: &dyn LakeStore) -> Result<(), Failure> {
     Ok(())
 }
 
-/// Every `output_recorded` in the log.
-async fn outputs(store: &dyn LakeStore) -> Result<Vec<Event>, Failure> {
-    Ok(store
-        .feed()
-        .poll(
-            Position::GENESIS,
-            &FeedFilter {
-                kinds: vec!["output_recorded".into()],
-                types: vec![],
-                keys: Vec::new(),
-            },
-            u32::MAX,
-        )
-        .await
-        .must("reading the recorded outputs from the feed")?
-        .events)
-}
-
 async fn vec_of(store: &dyn LakeStore, key: &str) -> Result<Option<Value>, Failure> {
     let r = read(doors(store).as_ref(), &owner(store), "note", key).await?;
     Ok(value(&r, "vec").cloned())
@@ -168,11 +151,8 @@ async fn a_write_embeds_its_text_and_records_the_vector(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     notes(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    upsert(
-        cat.as_ref(),
-        &own,
+    let l = Lake::of(store.as_ref());
+    l.upsert(
         "note",
         "n1",
         json!({"title": "Write harbour", "body": "A write crane."}),
@@ -187,7 +167,7 @@ async fn a_write_embeds_its_text_and_records_the_vector(
          but it reads {got:?}",
         embedded(text)
     );
-    let recorded = outputs(store.as_ref()).await?;
+    let recorded = recorded_outputs(store.as_ref()).await?;
     let [event] = recorded.as_slice() else {
         return Err(Failure::new(format!(
             "one text was embedded, so the log holds one `output_recorded`; it holds {}",
@@ -221,21 +201,14 @@ async fn the_same_text_is_embedded_once_whichever_record_asks(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     notes(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     let text = "Once harbour";
     for key in ["n1", "n2"] {
-        upsert(cat.as_ref(), &own, "note", key, json!({"title": text})).await?;
+        l.upsert("note", key, json!({"title": text})).await?;
     }
-    upsert(
-        cat.as_ref(),
-        &own,
-        "note",
-        "n1",
-        json!({"title": "Once elsewhere"}),
-    )
-    .await?;
-    upsert(cat.as_ref(), &own, "note", "n1", json!({"title": text})).await?;
+    l.upsert("note", "n1", json!({"title": "Once elsewhere"}))
+        .await?;
+    l.upsert("note", "n1", json!({"title": text})).await?;
     let (n1, n2) = (
         vec_of(store.as_ref(), "n1").await?,
         vec_of(store.as_ref(), "n2").await?,
@@ -247,7 +220,7 @@ async fn the_same_text_is_embedded_once_whichever_record_asks(
          (they hold {n1:?} and {n2:?})",
         embedded(text)
     );
-    let recorded = outputs(store.as_ref()).await?.len();
+    let recorded = recorded_outputs(store.as_ref()).await?.len();
     ensure!(
         recorded == 2,
         "two distinct texts were embedded, so the log holds two `output_recorded`; a \
@@ -261,10 +234,9 @@ async fn a_rebuild_reads_the_vectors_back_without_embedding(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     notes(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     let text = "Rebuilt harbour";
-    upsert(cat.as_ref(), &own, "note", "n1", json!({"title": text})).await?;
+    l.upsert("note", "n1", json!({"title": text})).await?;
     let calls = embedded(text);
     store.rebuild().await.must("rebuilding the lake")?;
     let got = vec_of(store.as_ref(), "n1").await?;
@@ -292,11 +264,11 @@ fn answered<T>(r: &lakelands_api::Result<T>) -> String {
 async fn an_embedding_whose_model_the_backend_does_not_make_is_refused_at_declare(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let other_model = cat
         .declare(
-            &own,
+            own,
             Declaration::Type(notes_with(
                 vec_field(&["title"], "another-model", 2),
                 vec![],
@@ -305,7 +277,7 @@ async fn an_embedding_whose_model_the_backend_does_not_make_is_refused_at_declar
         .await;
     let other_dimensions = cat
         .declare(
-            &own,
+            own,
             Declaration::Type(notes_with(vec_field(&["title"], EMBED_MODEL, 3), vec![])),
         )
         .await;
@@ -343,30 +315,19 @@ async fn a_changed_embedding_is_due_on_every_live_record_and_an_unchanged_one_em
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     notes(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     let records = [
         ("n1", "Redeclared north", "Redeclared shared body"),
         ("n2", "Redeclared south", "Redeclared shared body"),
         ("n3", "Redeclared west", "Redeclared own body"),
     ];
     for (key, title, body) in records {
-        upsert(
-            cat.as_ref(),
-            &own,
-            "note",
-            key,
-            json!({"title": title, "body": body}),
-        )
-        .await?;
+        l.upsert("note", key, json!({"title": title, "body": body}))
+            .await?;
     }
     // Now made from `body` alone: two distinct texts for three records.
-    declare(
-        cat.as_ref(),
-        &own,
-        notes_with(vec_field(&["body"], EMBED_MODEL, 2), vec![]),
-    )
-    .await?;
+    l.declare(notes_with(vec_field(&["body"], EMBED_MODEL, 2), vec![]))
+        .await?;
     let (shared, own_body) = (
         embedded("Redeclared shared body"),
         embedded("Redeclared own body"),
@@ -381,12 +342,8 @@ async fn a_changed_embedding_is_due_on_every_live_record_and_an_unchanged_one_em
          two distinct bodies must each be embedded once (they were {shared} and \
          {own_body} times) and every record hold a vector ({filled:?})"
     );
-    declare(
-        cat.as_ref(),
-        &own,
-        notes_with(vec_field(&["body"], EMBED_MODEL, 2), vec![]),
-    )
-    .await?;
+    l.declare(notes_with(vec_field(&["body"], EMBED_MODEL, 2), vec![]))
+        .await?;
     ensure!(
         embedded("Redeclared shared body") == 1 && embedded("Redeclared own body") == 1,
         "declaring `vec` again unchanged reads the recorded vectors back; the bodies were \
@@ -401,21 +358,20 @@ async fn a_record_with_nothing_to_embed_holds_no_vector_and_embeds_nothing(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     notes(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    upsert(cat.as_ref(), &own, "note", "n1", json!({"title": ""})).await?;
-    let r = read(cat.as_ref(), &own, "note", "n1").await?;
+    let l = Lake::of(store.as_ref());
+    l.upsert("note", "n1", json!({"title": ""})).await?;
+    let r = l.read("note", "n1").await?;
     let meta = r.meta.get("vec");
     ensure!(
         value(&r, "vec").is_none()
             && meta.is_some_and(|m| m.error.is_none())
-            && outputs(store.as_ref()).await?.is_empty(),
+            && recorded_outputs(store.as_ref()).await?.is_empty(),
         "`n1` has no text to embed: `vec` holds no value, keeps metadata without an error, \
          and nothing is recorded; it reads {:?} with metadata {meta:?}",
         value(&r, "vec")
     );
     let text = "Later harbour";
-    upsert(cat.as_ref(), &own, "note", "n1", json!({"title": text})).await?;
+    l.upsert("note", "n1", json!({"title": text})).await?;
     let got = vec_of(store.as_ref(), "n1").await?;
     ensure!(
         is_east(&got) && embedded(text) == 1,
@@ -430,14 +386,13 @@ async fn a_failed_embedding_clears_the_field_and_a_redeclaration_retries_it(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     notes(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     let text = "Retried harbour";
     unplug_text(text);
-    upsert(cat.as_ref(), &own, "note", "n1", json!({"title": text})).await?;
+    l.upsert("note", "n1", json!({"title": text})).await?;
     // A second record with the same text reads the recorded failure.
-    upsert(cat.as_ref(), &own, "note", "n2", json!({"title": text})).await?;
-    let r = read(cat.as_ref(), &own, "note", "n1").await?;
+    l.upsert("note", "n2", json!({"title": text})).await?;
+    let r = l.read("note", "n1").await?;
     let meta = r.meta.get("vec");
     ensure!(
         value(&r, "vec").is_none()
@@ -449,14 +404,13 @@ async fn a_failed_embedding_clears_the_field_and_a_redeclaration_retries_it(
         embedded(text)
     );
     // A later write of another field does not retry it.
-    upsert(cat.as_ref(), &own, "note", "n1", json!({"body": ""})).await?;
+    l.upsert("note", "n1", json!({"body": ""})).await?;
     let before = embedded(text);
     plug_text(text);
-    declare(
-        cat.as_ref(),
-        &own,
-        notes_with(vec_field(&["title", "body"], EMBED_MODEL, 2), vec![]),
-    )
+    l.declare(notes_with(
+        vec_field(&["title", "body"], EMBED_MODEL, 2),
+        vec![],
+    ))
     .await?;
     let (n1, n2) = (
         vec_of(store.as_ref(), "n1").await?,
@@ -475,29 +429,18 @@ async fn a_failed_embedding_clears_the_field_and_a_redeclaration_retries_it(
 async fn an_embedded_vector_recomputes_the_derived_fields_that_read_it(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     let has = FieldDecl {
         authority: Authority::Derived,
         derived: Some("vec is not null".into()),
         depends_on: vec!["vec".into()],
         ..field("embedded", StorageKind::Boolean)
     };
-    declare(
-        cat.as_ref(),
-        &own,
-        notes_with(vec_field(&["title"], EMBED_MODEL, 2), vec![has]),
-    )
-    .await?;
-    upsert(
-        cat.as_ref(),
-        &own,
-        "note",
-        "n1",
-        json!({"title": "Reacting harbour"}),
-    )
-    .await?;
-    let r = read(cat.as_ref(), &own, "note", "n1").await?;
+    l.declare(notes_with(vec_field(&["title"], EMBED_MODEL, 2), vec![has]))
+        .await?;
+    l.upsert("note", "n1", json!({"title": "Reacting harbour"}))
+        .await?;
+    let r = l.read("note", "n1").await?;
     ensure!(
         value(&r, "embedded") == Some(&json!(true)),
         "`embedded` is `vec is not null`; the vector's fill is a change of `vec`, so it \
@@ -648,30 +591,16 @@ async fn a_due_embedding_waits_while_no_backend_makes_it(
     store = reopen(store, with_embedder(Some(backing::embedder())))
         .await
         .map_err(|e| reopen_failed("with the suite's embedding backend again", e))?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    upsert(
-        cat.as_ref(),
-        &own,
-        "note",
-        "later",
-        json!({"title": "Later quay"}),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    l.upsert("note", "later", json!({"title": "Later quay"}))
+        .await?;
     let still = vec_of(store.as_ref(), "gone").await?;
     ensure!(
         still.is_none(),
         "opening the lake and writing another record call nothing for `gone`, whose \
          `vec` waits; it reads {still:?}"
     );
-    upsert(
-        cat.as_ref(),
-        &own,
-        "note",
-        "gone",
-        json!({"body": "touched"}),
-    )
-    .await?;
+    l.upsert("note", "gone", json!({"body": "touched"})).await?;
     let touched = vec_of(store.as_ref(), "gone").await?;
     ensure!(
         is_east(&touched),
@@ -701,8 +630,8 @@ check!(
 async fn an_embedding_that_is_not_a_derived_vector_of_its_own_text_fields_is_refused(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let good = || vec_field(&["title"], EMBED_MODEL, 2);
     let number = field("pages", StorageKind::Number);
     let cases: Vec<(&str, FieldDecl, Vec<FieldDecl>)> = vec![
@@ -779,7 +708,7 @@ async fn an_embedding_that_is_not_a_derived_vector_of_its_own_text_fields_is_ref
     let before = store.head().await.must("reading the head")?;
     for (what, vec, extra) in cases {
         let got = cat
-            .declare(&own, Declaration::Type(notes_with(vec, extra)))
+            .declare(own, Declaration::Type(notes_with(vec, extra)))
             .await;
         ensure!(
             matches!(
@@ -799,20 +728,16 @@ async fn an_embedding_that_is_not_a_derived_vector_of_its_own_text_fields_is_ref
         "every refused declaration appends nothing; the head moved from {before} to {after}"
     );
     // The same field, sensitive like its source, is an embedding.
-    declare(
-        cat.as_ref(),
-        &own,
-        notes_with(
-            FieldDecl {
-                sensitive: true,
-                ..vec_field(&["secret"], EMBED_MODEL, 2)
-            },
-            vec![FieldDecl {
-                sensitive: true,
-                ..field("secret", StorageKind::Text)
-            }],
-        ),
-    )
+    l.declare(notes_with(
+        FieldDecl {
+            sensitive: true,
+            ..vec_field(&["secret"], EMBED_MODEL, 2)
+        },
+        vec![FieldDecl {
+            sensitive: true,
+            ..field("secret", StorageKind::Text)
+        }],
+    ))
     .await?;
     Ok(())
 }
@@ -833,8 +758,7 @@ async fn no_request_carries_more_than_sixty_four_texts(
     let store = reopen(store, with_embedder(Some(backing::embedder_as(model, 2))))
         .await
         .map_err(|e| reopen_failed(&format!("with a backend of `{model}`"), e))?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     // Ingest writes source fields: the text comes from a source here. The
     // records come first and the embedding after, so that one declaration
     // makes all 150 due at once; an ingest commits in smaller windows.
@@ -842,7 +766,7 @@ async fn no_request_carries_more_than_sixty_four_texts(
         authority: Authority::Source,
         ..field("title", StorageKind::Text)
     };
-    declare(cat.as_ref(), &own, type_decl("batch", vec![title()])).await?;
+    l.declare(type_decl("batch", vec![title()])).await?;
     let records: Vec<_> = (0..150)
         .map(|n| {
             source_record(
@@ -852,14 +776,13 @@ async fn no_request_carries_more_than_sixty_four_texts(
             )
         })
         .collect();
-    ingest(cat.as_ref(), &own, "batches", records)
+    l.ingest("batches", records)
         .await
         .must("ingesting 150 batches")?;
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("batch", vec![title(), vec_field(&["title"], model, 2)]),
-    )
+    l.declare(type_decl(
+        "batch",
+        vec![title(), vec_field(&["title"], model, 2)],
+    ))
     .await?;
     let sizes = backing::embed_call_sizes(model);
     ensure!(
@@ -887,15 +810,15 @@ async fn vector_coverage_counts_embedded_and_due_records_at_the_head(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     notes(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     for (key, title) in [
         ("n1", "Coverage harbour one"),
         ("n2", "Coverage harbour two"),
         ("n3", "Coverage harbour three"),
         ("n0", ""),
     ] {
-        upsert(cat.as_ref(), &own, "note", key, json!({"title": title})).await?;
+        l.upsert("note", key, json!({"title": title})).await?;
     }
     let got = coverage(store.as_ref(), "once the backend settled").await?;
     ensure!(
@@ -907,7 +830,7 @@ async fn vector_coverage_counts_embedded_and_due_records_at_the_head(
     let failing = ["Coverage harbour four", "Coverage harbour five"];
     for (key, title) in [("n4", failing[0]), ("n5", failing[1])] {
         unplug_text(title);
-        upsert(cat.as_ref(), &own, "note", key, json!({"title": title})).await?;
+        l.upsert("note", key, json!({"title": title})).await?;
     }
     let got = coverage(store.as_ref(), "with two embeddings failed").await?;
     ensure!(
@@ -919,11 +842,10 @@ async fn vector_coverage_counts_embedded_and_due_records_at_the_head(
     for title in failing {
         plug_text(title);
     }
-    declare(
-        cat.as_ref(),
-        &own,
-        notes_with(vec_field(&["title", "body"], EMBED_MODEL, 2), vec![]),
-    )
+    l.declare(notes_with(
+        vec_field(&["title", "body"], EMBED_MODEL, 2),
+        vec![],
+    ))
     .await?;
     let got = coverage(store.as_ref(), "after the redeclaration's retry").await?;
     ensure!(
@@ -933,7 +855,7 @@ async fn vector_coverage_counts_embedded_and_due_records_at_the_head(
     );
 
     cat.retire(
-        &own,
+        own,
         &"note".into(),
         &"n1".into(),
         lakelands_api::WriteOpts::default(),
@@ -954,12 +876,8 @@ async fn vector_coverage_counts_embedded_and_due_records_at_the_head(
         matches!(missing, Err(lakelands_api::Error::NotFound { .. })),
         "vector_coverage of a type the lake does not hold is not found; it answered {missing:?}"
     );
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("plain", vec![field("text", StorageKind::Text)]),
-    )
-    .await?;
+    l.declare(type_decl("plain", vec![field("text", StorageKind::Text)]))
+        .await?;
     let none = store
         .vector_coverage(&lakelands_api::TypeName::from("plain"))
         .await

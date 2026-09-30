@@ -14,7 +14,7 @@ use lakelands_api::write::{Declaration, Outcome};
 use lakelands_api::{Error, LakeStore};
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Must, doors, field, owner, type_decl};
+use crate::conformance::fixture::{Lake, Must, field, type_decl};
 
 check!(
     /// A bundle with forward references is applied whole or not at all.
@@ -35,12 +35,12 @@ fn referring(name: &str, target: &str) -> Declaration {
 async fn a_bundle_with_forward_references_is_applied_whole_or_not_at_all(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
     let applied = cat
         .apply(
-            &own,
+            own,
             vec![
                 referring("invoice", "partner"),
                 Declaration::Type(type_decl("partner", vec![field("name", StorageKind::Text)])),
@@ -56,7 +56,7 @@ async fn a_bundle_with_forward_references_is_applied_whole_or_not_at_all(
          {after}; it must append both in one append and answer the last position"
     );
     let described = cat
-        .describe(&own, ReadAt::default())
+        .describe(own, ReadAt::default())
         .await
         .must("describing the lake")?;
     let names: Vec<String> = described
@@ -72,7 +72,7 @@ async fn a_bundle_with_forward_references_is_applied_whole_or_not_at_all(
 
     let refused = cat
         .apply(
-            &own,
+            own,
             vec![
                 Declaration::Type(type_decl("fine", vec![field("n", StorageKind::Number)])),
                 referring("orphan", "ghost"),
@@ -94,7 +94,7 @@ async fn a_bundle_with_forward_references_is_applied_whole_or_not_at_all(
          {after} to {unmoved}; it must be refused whole, naming both problems, appending nothing"
     );
     let described = cat
-        .describe(&own, ReadAt::default())
+        .describe(own, ReadAt::default())
         .await
         .must("describing the lake")?;
     ensure!(

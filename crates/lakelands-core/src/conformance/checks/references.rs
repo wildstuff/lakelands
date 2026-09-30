@@ -10,8 +10,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, committed, declare, doors, field, head_unmoved, ingest, owner, patch, read,
-    source_record, type_decl, upsert, value, windows_reach_head,
+    Lake, Must, committed, field, head_unmoved, patch, source_record, type_decl, value,
+    windows_reach_head,
 };
 
 check!(
@@ -37,14 +37,13 @@ fn reference(name: &str, target: &str) -> FieldDecl {
 }
 
 async fn partners_and_invoices(store: &dyn LakeStore, authority: Authority) -> Result<(), Failure> {
-    let cat = doors(store);
-    let own = owner(store);
+    let l = Lake::of(store);
     let mut name = field("name", StorageKind::Text);
     name.authority = authority;
-    declare(cat.as_ref(), &own, type_decl("partner", vec![name])).await?;
+    l.declare(type_decl("partner", vec![name])).await?;
     let mut partner = reference("partner", "partner");
     partner.authority = authority;
-    declare(cat.as_ref(), &own, type_decl("invoice", vec![partner])).await?;
+    l.declare(type_decl("invoice", vec![partner])).await?;
     Ok(())
 }
 
@@ -52,12 +51,12 @@ async fn a_write_referencing_a_record_that_does_not_exist_is_refused(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     partners_and_invoices(store.as_ref(), Authority::Authored).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
     let err = cat
         .upsert(
-            &own,
+            own,
             &TypeName::from("invoice"),
             &"i".into(),
             patch(json!({"partner": "nobody"})),
@@ -72,23 +71,9 @@ async fn a_write_referencing_a_record_that_does_not_exist_is_refused(
         "a reference to a partner that does not exist must be refused on `partner`; \
          it failed with {err:?}"
     );
-    upsert(
-        cat.as_ref(),
-        &own,
-        "partner",
-        "acme",
-        json!({"name": "Acme"}),
-    )
-    .await?;
-    upsert(
-        cat.as_ref(),
-        &own,
-        "invoice",
-        "i",
-        json!({"partner": "acme"}),
-    )
-    .await?;
-    let r = read(cat.as_ref(), &own, "invoice", "i").await?;
+    l.upsert("partner", "acme", json!({"name": "Acme"})).await?;
+    l.upsert("invoice", "i", json!({"partner": "acme"})).await?;
+    let r = l.read("invoice", "i").await?;
     ensure!(
         value(&r, "partner") == Some(&json!("acme")),
         "a reference to the existing `acme` must be written; `partner` reads {:?}",
@@ -101,13 +86,13 @@ async fn a_reference_to_a_record_earlier_in_the_same_ingest_resolves(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     partners_and_invoices(store.as_ref(), Authority::Source).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     let records = vec![
         source_record("partner", "acme", json!({"name": "Acme"})),
         source_record("invoice", "i", json!({"partner": "acme"})),
     ];
-    let windows = ingest(cat.as_ref(), &own, "erp", records)
+    let windows = l
+        .ingest("erp", records)
         .await
         .must("ingesting a partner and then an invoice referring to it")?;
     windows_reach_head(store.as_ref(), &windows, "ingesting partner then invoice").await?;
@@ -116,7 +101,7 @@ async fn a_reference_to_a_record_earlier_in_the_same_ingest_resolves(
         "both records must be committed; the windows committed {:?}",
         committed(&windows)
     );
-    let r = read(cat.as_ref(), &own, "invoice", "i").await?;
+    let r = l.read("invoice", "i").await?;
     ensure!(
         value(&r, "partner") == Some(&json!("acme")),
         "the invoice must refer to `acme`; `partner` reads {:?}",

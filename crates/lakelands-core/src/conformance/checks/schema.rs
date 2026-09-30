@@ -14,7 +14,7 @@ use lakelands_api::{Error, LakeStore, ReadAt, Refusal, TypeName};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Must, declare, doors, field, head_unmoved, owner, type_decl};
+use crate::conformance::fixture::{Lake, Must, doors, field, head_unmoved, owner, type_decl};
 
 check!(
     /// The schema hash is the log format's, byte for byte.
@@ -57,8 +57,9 @@ async fn the_schema_hash_of_the_log_formats_vector_is_the_one_it_pins(
         .map_err(|e| Failure::new(format!("the vector's declaration does not read: {e}")))?;
     let want = vector["schema_hash"].as_str().unwrap_or_default();
 
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+
+    let Lake { cat, own } = &l;
     // The view reads an invoice with the fields its measures name.
     let invoice = type_decl(
         "invoice",
@@ -69,11 +70,11 @@ async fn the_schema_hash_of_the_log_formats_vector_is_the_one_it_pins(
             field("due", StorageKind::DateTime),
         ],
     );
-    declare(cat.as_ref(), &own, invoice).await?;
+    l.declare(invoice).await?;
     let name = decl.name.clone();
-    declare(cat.as_ref(), &own, decl).await?;
+    l.declare(decl).await?;
     let d = cat
-        .describe_type(&own, &name, ReadAt::default())
+        .describe_type(own, &name, ReadAt::default())
         .await
         .must(&format!("describing `{name}`"))?
         .data;
@@ -98,8 +99,7 @@ async fn hash_of(store: &dyn LakeStore, ty: &str) -> Result<(String, u32), Failu
 async fn describing_and_relabelling_a_type_leaves_its_schema_hash(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     let first = type_decl(
         "memo",
         vec![
@@ -107,7 +107,7 @@ async fn describing_and_relabelling_a_type_leaves_its_schema_hash(
             field("body", StorageKind::Text),
         ],
     );
-    declare(cat.as_ref(), &own, first.clone()).await?;
+    l.declare(first.clone()).await?;
     let (hash, version) = hash_of(store.as_ref(), "memo").await?;
 
     let mut revised = first;
@@ -116,7 +116,7 @@ async fn describing_and_relabelling_a_type_leaves_its_schema_hash(
     revised.fields.reverse();
     revised.fields[0].description = Some("What the memo says.".into());
     revised.fields[0].label = Some("Body".into());
-    declare(cat.as_ref(), &own, revised).await?;
+    l.declare(revised).await?;
     let (after, next) = hash_of(store.as_ref(), "memo").await?;
     ensure!(
         after == hash,
@@ -133,8 +133,8 @@ async fn describing_and_relabelling_a_type_leaves_its_schema_hash(
 async fn declare_refuses_a_revision_that_reshapes_stored_records(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let first = type_decl(
         "memo",
         vec![
@@ -142,7 +142,7 @@ async fn declare_refuses_a_revision_that_reshapes_stored_records(
             field("pages", StorageKind::Number),
         ],
     );
-    declare(cat.as_ref(), &own, first.clone()).await?;
+    l.declare(first.clone()).await?;
 
     let mut retyped = first.clone();
     retyped.fields[1].ty = FieldType::kind(StorageKind::Text);
@@ -156,7 +156,7 @@ async fn declare_refuses_a_revision_that_reshapes_stored_records(
         ("requiring `title`", required),
     ] {
         let before = store.head().await.must("reading the head")?;
-        cat.declare(&own, Declaration::Type(decl))
+        cat.declare(own, Declaration::Type(decl))
             .await
             .must_fail(&format!("redeclaring `memo` {what}"))?;
         head_unmoved(
@@ -169,15 +169,15 @@ async fn declare_refuses_a_revision_that_reshapes_stored_records(
 
     let mut added = first;
     added.fields.push(field("tags", StorageKind::Json));
-    declare(cat.as_ref(), &own, added).await?;
+    l.declare(added).await?;
     Ok(())
 }
 
 async fn declare_refuses_bad_names_unknown_references_and_tool_name_collisions(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let reference = FieldDecl {
         ty: FieldType {
             target: Some("nowhere".into()),
@@ -200,12 +200,8 @@ async fn declare_refuses_bad_names_unknown_references_and_tool_name_collisions(
         .into_iter()
         .map(|(what, decl)| (what, Declaration::Type(decl)))
         .collect();
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("memo", vec![field("title", StorageKind::Text)]),
-    )
-    .await?;
+    l.declare(type_decl("memo", vec![field("title", StorageKind::Text)]))
+        .await?;
     let verb = |name: &str| -> Result<Declaration, Failure> {
         serde_json::from_value(json!({
             "declare": "verb", "name": name, "on": "memo", "risk": "low",
@@ -216,7 +212,7 @@ async fn declare_refuses_bad_names_unknown_references_and_tool_name_collisions(
     // The colliding names come from the one generator, never spelled here.
     let generic = GENERIC_TOOLS[0];
     let described = cat
-        .describe(&own, ReadAt::default())
+        .describe(own, ReadAt::default())
         .await
         .must("describing the lake")?
         .data;
@@ -237,7 +233,7 @@ async fn declare_refuses_bad_names_unknown_references_and_tool_name_collisions(
     for (what, decl) in cases {
         let before = store.head().await.must("reading the head")?;
         let err = cat
-            .declare(&own, decl)
+            .declare(own, decl)
             .await
             .must_fail(&format!("declaring {what}"))?;
         head_unmoved(store.as_ref(), before, &format!("declaring {what}")).await?;
@@ -252,12 +248,12 @@ async fn declare_refuses_bad_names_unknown_references_and_tool_name_collisions(
 async fn an_ordinary_principal_cannot_declare_a_sys_type(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
     let err = cat
         .declare(
-            &own,
+            own,
             Declaration::Type(type_decl("sys.mine", vec![field("v", StorageKind::Text)])),
         )
         .await
@@ -286,8 +282,7 @@ check!(
 async fn redeclaring_a_type_with_its_fields_reordered_keeps_its_schema_hash(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     let first = type_decl(
         "memo",
         vec![
@@ -296,12 +291,12 @@ async fn redeclaring_a_type_with_its_fields_reordered_keeps_its_schema_hash(
             field("pages", StorageKind::Number),
         ],
     );
-    declare(cat.as_ref(), &own, first.clone()).await?;
+    l.declare(first.clone()).await?;
     let (hash, version) = hash_of(store.as_ref(), "memo").await?;
     let before = store.head().await.must("reading the head")?;
     let mut reordered = first;
     reordered.fields.reverse();
-    declare(cat.as_ref(), &own, reordered).await?;
+    l.declare(reordered).await?;
     let after = store.head().await.must("reading the head")?;
     let (again, next) = hash_of(store.as_ref(), "memo").await?;
     ensure!(

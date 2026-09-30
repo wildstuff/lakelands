@@ -15,9 +15,7 @@ use lakelands_api::{FieldName, Find, LakeStore, Record};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{
-    all_found, declare, doors, field, owner, type_decl, upsert, value,
-};
+use crate::conformance::fixture::{Lake, declare, doors, field, owner, type_decl, value};
 
 check!(
     /// Walking the cursor visits each record once.
@@ -53,11 +51,10 @@ async fn paging_through_find_visits_every_record_exactly_once(
 ) -> Result<(), Failure> {
     const TOTAL: usize = 25;
     counter(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     for i in 0..TOTAL {
         let key = format!("k{i:03}");
-        upsert(cat.as_ref(), &own, "counter", &key, json!({"n": i % 4})).await?;
+        l.upsert("counter", &key, json!({"n": i % 4})).await?;
     }
 
     for order_by in [
@@ -73,7 +70,7 @@ async fn paging_through_find_visits_every_record_exactly_once(
             limit: Some(7),
             ..Find::default()
         };
-        let seen = keys(&all_found(cat.as_ref(), &own, "counter", find).await?);
+        let seen = keys(&l.all_found("counter", find).await?);
         let unique: BTreeSet<&String> = seen.iter().collect();
         ensure!(
             unique.len() == seen.len(),
@@ -94,14 +91,13 @@ async fn records_without_the_sort_field_are_listed_last_in_either_direction(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     counter(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     // Interleaved by key, so a tail that only happened to be in key order
     // cannot pass by accident.
-    upsert(cat.as_ref(), &own, "counter", "k1", json!({"n": 10})).await?;
-    upsert(cat.as_ref(), &own, "counter", "k2", json!({"tag": "b"})).await?;
-    upsert(cat.as_ref(), &own, "counter", "k3", json!({"n": 30})).await?;
-    upsert(cat.as_ref(), &own, "counter", "k4", json!({"tag": "d"})).await?;
+    l.upsert("counter", "k1", json!({"n": 10})).await?;
+    l.upsert("counter", "k2", json!({"tag": "b"})).await?;
+    l.upsert("counter", "k3", json!({"n": 30})).await?;
+    l.upsert("counter", "k4", json!({"tag": "d"})).await?;
 
     for (dir, valued) in [
         (Direction::Asc, ["k1", "k3"]),
@@ -117,7 +113,7 @@ async fn records_without_the_sort_field_are_listed_last_in_either_direction(
             limit: Some(50),
             ..Find::default()
         };
-        let rows = all_found(cat.as_ref(), &own, "counter", whole).await?;
+        let rows = l.all_found("counter", whole).await?;
         let listed = keys(&rows);
         ensure!(
             listed.len() == 4
@@ -132,7 +128,7 @@ async fn records_without_the_sort_field_are_listed_last_in_either_direction(
             limit: Some(1),
             ..Find::default()
         };
-        let walked = keys(&all_found(cat.as_ref(), &own, "counter", one_by_one).await?);
+        let walked = keys(&l.all_found("counter", one_by_one).await?);
         ensure!(
             walked == listed,
             "paging one record at a time by `n` {dir:?} walked {walked:?}, but the whole \

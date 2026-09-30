@@ -17,8 +17,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, dec, decimal, declare, doors, field, get_at, head_unmoved, owner, patch, read, type_decl,
-    upsert, value,
+    Lake, Must, dec, decimal, field, get_at, head_unmoved, patch, type_decl, value,
 };
 
 check!(
@@ -50,23 +49,18 @@ fn gross() -> FieldDecl {
 async fn a_derived_field_is_computed_by_the_fold_on_every_write(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let ty = type_decl(
         "invoice",
         vec![field("amount", StorageKind::Decimal), gross()],
     );
-    declare(cat.as_ref(), &own, ty).await?;
+    l.declare(ty).await?;
 
-    let first = upsert(
-        cat.as_ref(),
-        &own,
-        "invoice",
-        "i1",
-        json!({"amount": "100.00"}),
-    )
-    .await?;
-    let rec = read(cat.as_ref(), &own, "invoice", "i1").await?;
+    let first = l
+        .upsert("invoice", "i1", json!({"amount": "100.00"}))
+        .await?;
+    let rec = l.read("invoice", "i1").await?;
     let got = rec.fields.get("gross");
     ensure!(
         decimal(got) == Some(dec("119")),
@@ -81,15 +75,9 @@ async fn a_derived_field_is_computed_by_the_fold_on_every_write(
          carries {origin:?}"
     );
 
-    upsert(
-        cat.as_ref(),
-        &own,
-        "invoice",
-        "i1",
-        json!({"amount": "200.00"}),
-    )
-    .await?;
-    let rec = read(cat.as_ref(), &own, "invoice", "i1").await?;
+    l.upsert("invoice", "i1", json!({"amount": "200.00"}))
+        .await?;
+    let rec = l.read("invoice", "i1").await?;
     let got = rec.fields.get("gross");
     ensure!(
         decimal(got) == Some(dec("238")),
@@ -98,7 +86,7 @@ async fn a_derived_field_is_computed_by_the_fold_on_every_write(
 
     let then = cat
         .get(
-            &own,
+            own,
             &TypeName::from("invoice"),
             get_at("i1", Some(first.position())),
         )
@@ -115,18 +103,18 @@ async fn a_derived_field_is_computed_by_the_fold_on_every_write(
 async fn a_derived_field_written_through_a_door_is_refused_as_the_wrong_door(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let ty = type_decl(
         "invoice",
         vec![field("amount", StorageKind::Decimal), gross()],
     );
-    declare(cat.as_ref(), &own, ty).await?;
+    l.declare(ty).await?;
 
     let before = store.head().await.must("reading the head")?;
     let err = cat
         .upsert(
-            &own,
+            own,
             &TypeName::from("invoice"),
             &"i1".into(),
             patch(json!({"amount": "100.00", "gross": "1.00"})),
@@ -149,7 +137,7 @@ async fn a_derived_field_written_through_a_door_is_refused_as_the_wrong_door(
          `gross`, even for the owner; it failed with {err:?}"
     );
     let missing = cat
-        .get(&own, &TypeName::from("invoice"), get_at("i1", None))
+        .get(own, &TypeName::from("invoice"), get_at("i1", None))
         .await;
     ensure!(
         matches!(missing, Err(Error::NotFound { .. })),
@@ -161,32 +149,20 @@ async fn a_derived_field_written_through_a_door_is_refused_as_the_wrong_door(
 async fn a_derived_field_added_to_a_live_type_is_computed_on_later_writes(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let ty = type_decl("invoice", vec![field("amount", StorageKind::Decimal)]);
-    declare(cat.as_ref(), &own, ty).await?;
-    upsert(
-        cat.as_ref(),
-        &own,
-        "invoice",
-        "i1",
-        json!({"amount": "100.00"}),
-    )
-    .await?;
+    l.declare(ty).await?;
+    l.upsert("invoice", "i1", json!({"amount": "100.00"}))
+        .await?;
 
-    cat.add_field(&own, &TypeName::from("invoice"), gross())
+    cat.add_field(own, &TypeName::from("invoice"), gross())
         .await
         .must("adding the derived field `gross` to the live type `invoice`")?;
 
-    upsert(
-        cat.as_ref(),
-        &own,
-        "invoice",
-        "i2",
-        json!({"amount": "100.00"}),
-    )
-    .await?;
-    let rec = read(cat.as_ref(), &own, "invoice", "i2").await?;
+    l.upsert("invoice", "i2", json!({"amount": "100.00"}))
+        .await?;
+    let rec = l.read("invoice", "i2").await?;
     let got = rec.fields.get("gross");
     ensure!(
         decimal(got) == Some(dec("119")),
@@ -194,15 +170,9 @@ async fn a_derived_field_added_to_a_live_type_is_computed_on_later_writes(
          must read gross 119, but reads {got:?}"
     );
 
-    upsert(
-        cat.as_ref(),
-        &own,
-        "invoice",
-        "i1",
-        json!({"amount": "10.00"}),
-    )
-    .await?;
-    let rec = read(cat.as_ref(), &own, "invoice", "i1").await?;
+    l.upsert("invoice", "i1", json!({"amount": "10.00"}))
+        .await?;
+    let rec = l.read("invoice", "i1").await?;
     let got = rec.fields.get("gross");
     ensure!(
         decimal(got) == Some(dec("11.9")),
@@ -227,11 +197,11 @@ check!(
 async fn a_derived_field_accepts_no_value_from_a_source_or_a_verb_either(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    use crate::conformance::fixture::{head_unmoved, ingest, patch, source_record};
+    use crate::conformance::fixture::{head_unmoved, patch, source_record};
     use lakelands_api::ontology::FieldDecl;
     use lakelands_api::write::Declaration;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let mut net = field("net", StorageKind::Decimal);
     net.authority = Authority::Shared;
     let gross = FieldDecl {
@@ -240,34 +210,27 @@ async fn a_derived_field_accepts_no_value_from_a_source_or_a_verb_either(
         depends_on: vec!["net".into()],
         ..field("gross", StorageKind::Decimal)
     };
-    declare(cat.as_ref(), &own, type_decl("bill", vec![net, gross])).await?;
+    l.declare(type_decl("bill", vec![net, gross])).await?;
     let verb: Declaration = serde_json::from_value(serde_json::json!({
         "declare": "verb", "name": "inflate", "on": "bill", "risk": "low",
         "effect": "write", "set": [{"field": "gross", "value": "'99'"}]
     }))
     .map_err(|e| Failure::new(format!("the check's verb does not read: {e}")))?;
-    let declared = cat.declare(&own, verb).await;
-    upsert(
-        cat.as_ref(),
-        &own,
-        "bill",
-        "b",
-        serde_json::json!({"net": "1"}),
-    )
-    .await?;
+    let declared = cat.declare(own, verb).await;
+    l.upsert("bill", "b", serde_json::json!({"net": "1"}))
+        .await?;
 
     let before = store.head().await.must("reading the head")?;
-    let fed = ingest(
-        cat.as_ref(),
-        &own,
-        "erp",
-        vec![source_record(
-            "bill",
-            "b",
-            serde_json::json!({"gross": "5"}),
-        )],
-    )
-    .await;
+    let fed = l
+        .ingest(
+            "erp",
+            vec![source_record(
+                "bill",
+                "b",
+                serde_json::json!({"gross": "5"}),
+            )],
+        )
+        .await;
     ensure!(
         fed.is_err(),
         "a source record setting the derived `gross` must be refused; the ingest answered {fed:?}"
@@ -280,7 +243,7 @@ async fn a_derived_field_accepts_no_value_from_a_source_or_a_verb_either(
         let before = store.head().await.must("reading the head")?;
         let called = cat
             .call(
-                &own,
+                own,
                 &"inflate".into(),
                 &"b".into(),
                 patch(serde_json::json!({})),
@@ -293,7 +256,7 @@ async fn a_derived_field_accepts_no_value_from_a_source_or_a_verb_either(
         );
         head_unmoved(store.as_ref(), before, "a verb setting a derived field").await?;
     }
-    let r = read(cat.as_ref(), &own, "bill", "b").await?;
+    let r = l.read("bill", "b").await?;
     ensure!(
         decimal(value(&r, "gross")) == Some(dec("2")),
         "`gross` must still be the fold's net * 2 = 2; it reads {:?}",
@@ -307,8 +270,8 @@ async fn a_derived_field_reading_a_function_is_recomputed_when_the_function_chan
 ) -> Result<(), Failure> {
     use lakelands_api::ontology::FieldDecl;
     use lakelands_api::write::Declaration;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let function = |expr: &str| -> Result<Declaration, Failure> {
         serde_json::from_value(serde_json::json!({
             "declare": "function", "name": "scaled", "backing": "expr",
@@ -317,7 +280,7 @@ async fn a_derived_field_reading_a_function_is_recomputed_when_the_function_chan
         }))
         .map_err(|e| Failure::new(format!("the check's function does not read: {e}")))
     };
-    cat.declare(&own, function("net * 2")?)
+    cat.declare(own, function("net * 2")?)
         .await
         .must("declaring the function `scaled` as net * 2")?;
     let scaled = FieldDecl {
@@ -326,31 +289,24 @@ async fn a_derived_field_reading_a_function_is_recomputed_when_the_function_chan
         depends_on: vec!["net".into()],
         ..field("scaled", StorageKind::Decimal)
     };
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("bill", vec![field("net", StorageKind::Decimal), scaled]),
-    )
-    .await?;
-    upsert(
-        cat.as_ref(),
-        &own,
+    l.declare(type_decl(
         "bill",
-        "b",
-        serde_json::json!({"net": "3"}),
-    )
+        vec![field("net", StorageKind::Decimal), scaled],
+    ))
     .await?;
-    let r = read(cat.as_ref(), &own, "bill", "b").await?;
+    l.upsert("bill", "b", serde_json::json!({"net": "3"}))
+        .await?;
+    let r = l.read("bill", "b").await?;
     ensure!(
         decimal(value(&r, "scaled")) == Some(dec("6")),
         "`scaled` must be computed by `scaled` (net * 2) as 6; it reads {:?}",
         value(&r, "scaled")
     );
 
-    cat.declare(&own, function("net * 3")?)
+    cat.declare(own, function("net * 3")?)
         .await
         .must("declaring `scaled` again as net * 3")?;
-    let r = read(cat.as_ref(), &own, "bill", "b").await?;
+    let r = l.read("bill", "b").await?;
     let meta = r
         .meta
         .get("scaled")

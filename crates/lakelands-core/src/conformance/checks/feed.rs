@@ -12,7 +12,7 @@ use lakelands_api::{LakeStore, Position, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Must, declare, doors, field, owner, type_decl, upsert};
+use crate::conformance::fixture::{Lake, Must, doors, field, log_events, owner, type_decl, upsert};
 
 check!(
     /// A key filter answers one record's events.
@@ -51,26 +51,17 @@ check!(
 );
 
 async fn invoices(store: &dyn LakeStore) -> Result<(), Failure> {
-    let cat = doors(store);
-    let own = owner(store);
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl(
-            "invoice",
-            vec![
-                field("status", StorageKind::Text),
-                field("note", StorageKind::Text),
-            ],
-        ),
-    )
+    let l = Lake::of(store);
+    l.declare(type_decl(
+        "invoice",
+        vec![
+            field("status", StorageKind::Text),
+            field("note", StorageKind::Text),
+        ],
+    ))
     .await?;
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("memo", vec![field("text", StorageKind::Text)]),
-    )
-    .await?;
+    l.declare(type_decl("memo", vec![field("text", StorageKind::Text)]))
+        .await?;
     Ok(())
 }
 
@@ -99,26 +90,13 @@ async fn a_poll_with_a_limit_of_zero_answers_one_event(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     invoices(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     let from = store.head().await.must("reading the head")?.next();
-    let first = upsert(
-        cat.as_ref(),
-        &own,
-        "invoice",
-        "a",
-        json!({"status": "open"}),
-    )
-    .await?
-    .position();
-    upsert(
-        cat.as_ref(),
-        &own,
-        "invoice",
-        "b",
-        json!({"status": "open"}),
-    )
-    .await?;
+    let first = l
+        .upsert("invoice", "a", json!({"status": "open"}))
+        .await?
+        .position();
+    l.upsert("invoice", "b", json!({"status": "open"})).await?;
     let batch = store
         .feed()
         .poll(from, &FeedFilter::default(), 0)
@@ -140,30 +118,20 @@ async fn the_feed_answers_the_log_from_a_position_by_kind_and_type(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     invoices(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     let from = store.head().await.must("reading the head")?.next();
-    let a = upsert(
-        cat.as_ref(),
-        &own,
-        "invoice",
-        "a",
-        json!({"status": "open"}),
-    )
-    .await?
-    .position();
-    let m = upsert(cat.as_ref(), &own, "memo", "m", json!({"text": "hi"}))
+    let a = l
+        .upsert("invoice", "a", json!({"status": "open"}))
         .await?
         .position();
-    let b = upsert(
-        cat.as_ref(),
-        &own,
-        "invoice",
-        "b",
-        json!({"status": "open"}),
-    )
-    .await?
-    .position();
+    let m = l
+        .upsert("memo", "m", json!({"text": "hi"}))
+        .await?
+        .position();
+    let b = l
+        .upsert("invoice", "b", json!({"status": "open"}))
+        .await?
+        .position();
     let feed = store.feed();
 
     let everything = feed
@@ -226,10 +194,9 @@ async fn rebuilding_the_projection_changes_nothing_in_the_feed(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     invoices(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     for (k, s) in [("a", "open"), ("b", "paid"), ("a", "held")] {
-        upsert(cat.as_ref(), &own, "invoice", k, json!({ "status": s })).await?;
+        l.upsert("invoice", k, json!({ "status": s })).await?;
     }
     let before = all_events(store.as_ref(), Position::GENESIS).await?;
     let head = store.head().await.must("reading the head")?;
@@ -253,13 +220,13 @@ async fn a_trigger_fires_on_every_write_whose_guard_holds(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     invoices(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let trigger: Declaration = serde_json::from_value(json!({
         "declare": "trigger", "name": "paid", "on": "invoice", "when": "status = 'paid'"
     }))
     .map_err(|e| Failure::new(format!("the check's trigger does not read: {e}")))?;
-    cat.declare(&own, trigger)
+    cat.declare(own, trigger)
         .await
         .must("declaring the trigger `paid`")?;
 
@@ -270,14 +237,8 @@ async fn a_trigger_fires_on_every_write_whose_guard_holds(
         ("held", "four", false),
     ] {
         let from = store.head().await.must("reading the head")?.next();
-        upsert(
-            cat.as_ref(),
-            &own,
-            "invoice",
-            "i",
-            json!({"status": status, "note": note}),
-        )
-        .await?;
+        l.upsert("invoice", "i", json!({"status": status, "note": note}))
+            .await?;
         let appended = all_events(store.as_ref(), from).await?;
         let did = appended
             .iter()
@@ -297,13 +258,13 @@ async fn an_object_set_change_is_written_only_when_membership_changes(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     invoices(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let set: Declaration = serde_json::from_value(json!({
         "declare": "object_set", "name": "open_ones", "of": "invoice", "where": "status = 'open'"
     }))
     .map_err(|e| Failure::new(format!("the check's object set does not read: {e}")))?;
-    cat.declare(&own, set)
+    cat.declare(own, set)
         .await
         .must("declaring the object set `open_ones`")?;
 
@@ -314,7 +275,7 @@ async fn an_object_set_change_is_written_only_when_membership_changes(
         (json!({"note": "still paid"}), None),
     ] {
         let from = store.head().await.must("reading the head")?.next();
-        upsert(cat.as_ref(), &own, "invoice", "i", fields.clone()).await?;
+        l.upsert("invoice", "i", fields.clone()).await?;
         let appended = all_events(store.as_ref(), from).await?;
         let changes: Vec<bool> = appended
             .iter()
@@ -343,8 +304,7 @@ async fn polling_from_next_in_small_pages_sees_every_matching_event_once_in_orde
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     invoices(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     let invoices_only = FeedFilter {
         kinds: vec!["record_upserted".into()],
         types: vec!["invoice".into()],
@@ -361,20 +321,14 @@ async fn polling_from_next_in_small_pages_sees_every_matching_event_once_in_orde
         for n in 0..(2 - round % 2) {
             let key = format!("p{round}-{n}");
             written.push(
-                upsert(
-                    cat.as_ref(),
-                    &own,
-                    "invoice",
-                    &key,
-                    json!({"status": "open"}),
-                )
-                .await?
-                .position(),
+                l.upsert("invoice", &key, json!({"status": "open"}))
+                    .await?
+                    .position(),
             );
         }
         if round % 2 == 0 {
             let key = format!("m{round}");
-            upsert(cat.as_ref(), &own, "memo", &key, json!({"text": "aside"})).await?;
+            l.upsert("memo", &key, json!({"text": "aside"})).await?;
         }
         let limit = 1 + round % 2;
         let batch = feed
@@ -422,16 +376,6 @@ const ABOUT_A_RECORD: [&str; 8] = [
     "verb_called",
 ];
 
-/// Every event of the lake, from the start.
-async fn whole_log(store: &dyn LakeStore) -> Result<Vec<Event>, Failure> {
-    Ok(store
-        .feed()
-        .poll(Position::GENESIS, &FeedFilter::default(), 10_000)
-        .await
-        .must("reading the whole feed")?
-        .events)
-}
-
 async fn polled(store: &dyn LakeStore, filter: FeedFilter) -> Result<Vec<Event>, Failure> {
     Ok(store
         .feed()
@@ -458,20 +402,16 @@ fn positions(events: &[Event]) -> Vec<u64> {
 async fn a_feed_filtered_by_key_answers_that_records_events_only(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     for ty in ["invoice", "credit"] {
-        declare(
-            cat.as_ref(),
-            &own,
-            type_decl(
-                ty,
-                vec![
-                    field("status", StorageKind::Text),
-                    field("amount", StorageKind::Number),
-                ],
-            ),
-        )
+        l.declare(type_decl(
+            ty,
+            vec![
+                field("status", StorageKind::Text),
+                field("amount", StorageKind::Number),
+            ],
+        ))
         .await?;
     }
     for d in [
@@ -482,7 +422,7 @@ async fn a_feed_filtered_by_key_answers_that_records_events_only(
     ] {
         let d: Declaration = serde_json::from_value(d)
             .map_err(|e| Failure::new(format!("the check's declaration does not read: {e}")))?;
-        cat.declare(&own, d)
+        cat.declare(own, d)
             .await
             .must("declaring the check's reactions")?;
     }
@@ -491,17 +431,11 @@ async fn a_feed_filtered_by_key_answers_that_records_events_only(
         ("invoice", "INV-2"),
         ("credit", "INV-1"),
     ] {
-        upsert(
-            cat.as_ref(),
-            &own,
-            ty,
-            key,
-            json!({"status": "open", "amount": 1}),
-        )
-        .await?;
+        l.upsert(ty, key, json!({"status": "open", "amount": 1}))
+            .await?;
     }
     cat.call(
-        &own,
+        own,
         &"approve".into(),
         &"INV-1".into(),
         crate::conformance::fixture::patch(json!({})),
@@ -509,14 +443,8 @@ async fn a_feed_filtered_by_key_answers_that_records_events_only(
     )
     .await
     .must("calling `approve` on INV-1")?;
-    upsert(
-        cat.as_ref(),
-        &own,
-        "invoice",
-        "INV-1",
-        json!({"status": "paid"}),
-    )
-    .await?;
+    l.upsert("invoice", "INV-1", json!({"status": "paid"}))
+        .await?;
     let (invoice, inv1) = (
         TypeName::from("invoice"),
         lakelands_api::RecordKey::from("INV-1"),
@@ -531,7 +459,7 @@ async fn a_feed_filtered_by_key_answers_that_records_events_only(
         .must("lifting the hold")?;
     for key in ["INV-2", "INV-1"] {
         cat.retire(
-            &own,
+            own,
             &invoice,
             &key.into(),
             lakelands_api::WriteOpts::default(),
@@ -540,7 +468,7 @@ async fn a_feed_filtered_by_key_answers_that_records_events_only(
         .must(&format!("retiring {key}"))?;
     }
 
-    let log = whole_log(store.as_ref()).await?;
+    let log = log_events(store.as_ref()).await?;
     let keys = || vec![inv1.clone()];
 
     // Types and keys: one record's history.

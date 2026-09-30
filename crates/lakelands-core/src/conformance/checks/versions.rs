@@ -13,8 +13,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, declare, doors, field, get_at, head_unmoved, owner, patch, principal, read, type_decl,
-    upsert, value,
+    Lake, Must, declare, doors, field, get_at, head_unmoved, owner, patch, principal, type_decl,
+    value,
 };
 
 check!(
@@ -53,17 +53,17 @@ async fn versions_start_at_one_and_grow_by_one_with_every_change(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     counter(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let counter = TypeName::from("counter");
 
-    let one = upsert(cat.as_ref(), &own, "counter", "k", json!({"n": 1})).await?;
-    let two = upsert(cat.as_ref(), &own, "counter", "k", json!({"n": 2})).await?;
+    let one = l.upsert("counter", "k", json!({"n": 1})).await?;
+    let two = l.upsert("counter", "k", json!({"n": 2})).await?;
     let retired = cat
-        .retire(&own, &counter, &"k".into(), WriteOpts::default())
+        .retire(own, &counter, &"k".into(), WriteOpts::default())
         .await
         .must("retiring `k`")?;
-    let again = upsert(cat.as_ref(), &own, "counter", "k", json!({"n": 3})).await?;
+    let again = l.upsert("counter", "k", json!({"n": 3})).await?;
 
     let got: Vec<Option<u64>> = [&one, &two, &retired, &again]
         .iter()
@@ -75,7 +75,7 @@ async fn versions_start_at_one_and_grow_by_one_with_every_change(
          version starts at 1 and grows by one per change, and a retired key written \
          again continues its count, so they must be 1, 2, 3, 4"
     );
-    let rec = read(cat.as_ref(), &own, "counter", "k").await?;
+    let rec = l.read("counter", "k").await?;
     ensure!(
         rec.version == Version(4),
         "the record reads at version {}, but its last write answered version 4",
@@ -88,8 +88,8 @@ async fn a_write_expecting_a_superseded_version_is_refused_as_a_conflict(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     counter(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let counter = TypeName::from("counter");
     let expecting = |v: u64| WriteOpts {
         expected_version: Some(Version(v)),
@@ -97,7 +97,7 @@ async fn a_write_expecting_a_superseded_version_is_refused_as_a_conflict(
     };
 
     cat.upsert(
-        &own,
+        own,
         &counter,
         &"k".into(),
         patch(json!({"n": 1})),
@@ -106,7 +106,7 @@ async fn a_write_expecting_a_superseded_version_is_refused_as_a_conflict(
     .await
     .must("creating `k` expecting version 0 (no such record yet)")?;
     cat.upsert(
-        &own,
+        own,
         &counter,
         &"k".into(),
         patch(json!({"n": 2})),
@@ -118,7 +118,7 @@ async fn a_write_expecting_a_superseded_version_is_refused_as_a_conflict(
     let before = store.head().await.must("reading the head")?;
     let err = cat
         .upsert(
-            &own,
+            own,
             &counter,
             &"k".into(),
             patch(json!({"n": 3})),
@@ -143,7 +143,7 @@ async fn a_write_expecting_a_superseded_version_is_refused_as_a_conflict(
     let before = store.head().await.must("reading the head")?;
     let err = cat
         .upsert(
-            &own,
+            own,
             &counter,
             &"k".into(),
             patch(json!({"n": 4})),
@@ -166,7 +166,7 @@ async fn a_write_expecting_a_superseded_version_is_refused_as_a_conflict(
          a conflict (expected 0, actual 2); it failed with {err:?}"
     );
 
-    let rec = read(cat.as_ref(), &own, "counter", "k").await?;
+    let rec = l.read("counter", "k").await?;
     ensure!(
         value(&rec, "n") == Some(&json!(2)) && rec.version == Version(2),
         "the losing writes must not land: `k` reads n = {:?} at version {}, expected \
@@ -181,8 +181,8 @@ async fn a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_app
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     counter(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let counter = TypeName::from("counter");
     let keyed = || WriteOpts {
         expected_version: None,
@@ -190,13 +190,13 @@ async fn a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_app
     };
 
     let first = cat
-        .upsert(&own, &counter, &"k".into(), patch(json!({"n": 1})), keyed())
+        .upsert(own, &counter, &"k".into(), patch(json!({"n": 1})), keyed())
         .await
         .must("writing `k` with idempotency key `retry-1`")?;
     let head = store.head().await.must("reading the head")?;
 
     let retry = cat
-        .upsert(&own, &counter, &"k".into(), patch(json!({"n": 1})), keyed())
+        .upsert(own, &counter, &"k".into(), patch(json!({"n": 1})), keyed())
         .await
         .must("retrying the same write with the same key")?;
     ensure!(
@@ -206,7 +206,7 @@ async fn a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_app
     );
     let other = cat
         .upsert(
-            &own,
+            own,
             &counter,
             &"other".into(),
             patch(json!({"n": 5})),
@@ -224,7 +224,7 @@ async fn a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_app
         after == head,
         "the retries moved the head from {head} to {after}; a retry appends nothing"
     );
-    let missing = cat.get(&own, &counter, get_at("other", None)).await;
+    let missing = cat.get(own, &counter, get_at("other", None)).await;
     ensure!(
         matches!(missing, Err(Error::NotFound { .. })),
         "the write of `other` reused a spent key and must not have happened; `other` \
@@ -266,21 +266,21 @@ async fn a_write_expecting_the_version_before_a_retirement_is_a_conflict(
 ) -> Result<(), Failure> {
     use crate::conformance::fixture::head_unmoved;
     counter(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let counter = TypeName::from("counter");
     let expecting = |v: u64| WriteOpts {
         expected_version: Some(Version(v)),
         idempotency_key: None,
     };
-    upsert(cat.as_ref(), &own, "counter", "k", json!({"n": 1})).await?;
-    cat.retire(&own, &counter, &"k".into(), WriteOpts::default())
+    l.upsert("counter", "k", json!({"n": 1})).await?;
+    cat.retire(own, &counter, &"k".into(), WriteOpts::default())
         .await
         .must("retiring `k`")?;
     let before = store.head().await.must("reading the head")?;
     let err = cat
         .upsert(
-            &own,
+            own,
             &counter,
             &"k".into(),
             patch(json!({"n": 5})),
@@ -305,7 +305,7 @@ async fn a_write_expecting_the_version_before_a_retirement_is_a_conflict(
     );
     let again = cat
         .upsert(
-            &own,
+            own,
             &counter,
             &"k".into(),
             patch(json!({"n": 3})),
@@ -320,7 +320,7 @@ async fn a_write_expecting_the_version_before_a_retirement_is_a_conflict(
     );
     let err = cat
         .upsert(
-            &own,
+            own,
             &counter,
             &"k".into(),
             patch(json!({"n": 9})),

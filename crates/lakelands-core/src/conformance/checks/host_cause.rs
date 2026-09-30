@@ -24,8 +24,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, doors, field, head_unmoved, ingest, limits, owner, patch, source_record, type_decl,
-    upsert,
+    Lake, Must, doors, field, head_unmoved, ingest, limits, owner, patch, source_record, type_decl,
 };
 
 check!(
@@ -67,8 +66,8 @@ async fn events_after(store: &dyn LakeStore, after: Position) -> Result<Vec<Even
 async fn a_reactive_write_with_a_cause_carries_it_on_each_of_its_events(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let mut reading = type_decl("reading", vec![field("value", StorageKind::Number)]);
     reading.fields[0].authority = Authority::Source;
     for d in [
@@ -95,13 +94,13 @@ async fn a_reactive_write_with_a_cause_carries_it_on_each_of_its_events(
             description: None,
         }),
     ] {
-        cat.declare(&own, d)
+        cat.declare(own, d)
             .await
             .must("declaring the job, its trigger and verb, and the reading")?;
     }
     // The direct write whose trigger firing the host reacts to.
     let before = store.head().await.must("reading the head")?;
-    upsert(cat.as_ref(), &own, "job", "j0", json!({"status": "open"})).await?;
+    l.upsert("job", "j0", json!({"status": "open"})).await?;
     let fired = events_after(store.as_ref(), before)
         .await?
         .into_iter()
@@ -113,7 +112,7 @@ async fn a_reactive_write_with_a_cause_carries_it_on_each_of_its_events(
     let before = store.head().await.must("reading the head")?;
     reaction
         .upsert(
-            &own,
+            own,
             &TypeName::from("job"),
             &"j1".into(),
             patch(json!({"status": "open"})),
@@ -123,7 +122,7 @@ async fn a_reactive_write_with_a_cause_carries_it_on_each_of_its_events(
         .must("the host's reactive upsert of `j1`")?;
     reaction
         .call(
-            &own,
+            own,
             &"close".into(),
             &"j1".into(),
             patch(json!({})),
@@ -133,7 +132,7 @@ async fn a_reactive_write_with_a_cause_carries_it_on_each_of_its_events(
         .must("the host's reactive call of `close` on `j1`")?;
     ingest(
         reaction.as_ref(),
-        &own,
+        own,
         "meter",
         vec![source_record("reading", "r1", json!({"value": 7}))],
     )
@@ -273,15 +272,15 @@ async fn a_cause_past_the_head_is_refused_and_appends_nothing(
 async fn the_reactive_ceiling_holds_on_every_door_that_writes(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let mut reading = type_decl("reading", vec![field("value", StorageKind::Number)]);
     reading.fields[0].authority = Authority::Source;
     for t in [
         type_decl("job", vec![field("status", StorageKind::Text)]),
         reading,
     ] {
-        crate::conformance::fixture::declare(cat.as_ref(), &own, t).await?;
+        crate::conformance::fixture::declare(cat.as_ref(), own, t).await?;
     }
     let proposal = |key: &str| ProposedWrite::Upsert {
         ty: "job".into(),
@@ -296,12 +295,12 @@ async fn the_reactive_ceiling_holds_on_every_door_that_writes(
         ))),
     };
     let accept_me = pending(
-        cat.propose(&own, proposal("p1"), "to accept".into())
+        cat.propose(own, proposal("p1"), "to accept".into())
             .await
             .must("proposing `p1`")?,
     )?;
     let reject_me = pending(
-        cat.propose(&own, proposal("p2"), "to reject".into())
+        cat.propose(own, proposal("p2"), "to reject".into())
             .await
             .must("proposing `p2`")?,
     )?;
@@ -312,7 +311,7 @@ async fn the_reactive_ceiling_holds_on_every_door_that_writes(
         renames: vec![],
     };
     let report = cat
-        .migrate(&own, migration.clone())
+        .migrate(own, migration.clone())
         .await
         .must("preflighting a migration of `job`")?
         .data;
@@ -324,22 +323,22 @@ async fn the_reactive_ceiling_holds_on_every_door_that_writes(
             "ingest",
             ingest(
                 deep.as_ref(),
-                &own,
+                own,
                 "meter",
                 vec![source_record("reading", "r1", json!({"value": 7}))],
             )
             .await
             .map(drop),
         ),
-        ("accept", deep.accept(&own, &accept_me).await.map(drop)),
+        ("accept", deep.accept(own, &accept_me).await.map(drop)),
         (
             "reject",
-            deep.reject(&own, &reject_me, "no".into()).await.map(drop),
+            deep.reject(own, &reject_me, "no".into()).await.map(drop),
         ),
         (
             "declare",
             deep.declare(
-                &own,
+                own,
                 Declaration::Type(type_decl("other", vec![field("n", StorageKind::Number)])),
             )
             .await
@@ -348,7 +347,7 @@ async fn the_reactive_ceiling_holds_on_every_door_that_writes(
         (
             "apply",
             deep.apply(
-                &own,
+                own,
                 vec![Declaration::Type(type_decl(
                     "another",
                     vec![field("n", StorageKind::Number)],
@@ -359,13 +358,13 @@ async fn the_reactive_ceiling_holds_on_every_door_that_writes(
         ),
         (
             "add_field",
-            deep.add_field(&own, &"job".into(), field("extra", StorageKind::Text))
+            deep.add_field(own, &"job".into(), field("extra", StorageKind::Text))
                 .await
                 .map(drop),
         ),
         (
             "migrate_apply",
-            deep.migrate_apply(&own, migration, &report.report_id)
+            deep.migrate_apply(own, migration, &report.report_id)
                 .await
                 .map(drop),
         ),
@@ -394,7 +393,7 @@ async fn the_reactive_ceiling_holds_on_every_door_that_writes(
         scale: None,
         description: None,
     };
-    cat.declare(&own, Declaration::ValueType(vt.clone()))
+    cat.declare(own, Declaration::ValueType(vt.clone()))
         .await
         .must("declaring the value type `code`")?;
     let tightened = lakelands_api::ontology::ValueTypeDecl {
@@ -402,13 +401,13 @@ async fn the_reactive_ceiling_holds_on_every_door_that_writes(
         ..vt
     };
     let report = cat
-        .migrate_value_type(&own, tightened.clone())
+        .migrate_value_type(own, tightened.clone())
         .await
         .must("preflighting a tightened `code`")?
         .data;
     let before = store.head().await.must("reading the head")?;
     match deep
-        .migrate_value_type_apply(&own, tightened, &report.report_id)
+        .migrate_value_type_apply(own, tightened, &report.report_id)
         .await
     {
         Err(Error::Refused {
