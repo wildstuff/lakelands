@@ -86,6 +86,13 @@ check!(
     given
 );
 
+check!(
+    /// A line whose `context` carries `cause` is refused.
+    IMPORT_CONTEXT_CAUSE = an_import_refuses_a_context_carrying_cause_naming_it,
+    "021, extended, and log-format §1.1: a host's cause is the envelope's and never written inside `context`; an export whose line carries `cause` in its `context`, its hash made right, is refused on import naming the member, and a write through the doors carries no cause",
+    given
+);
+
 /// The check's scratch directory, cleared of anything an earlier run
 /// left, and removed again when the check ends, however it ends.
 struct Scratch(PathBuf);
@@ -939,6 +946,52 @@ async fn an_import_refuses_a_declaration_member_it_does_not_know_naming_it(
         why.contains("`icon`") && why.contains("`invoice`"),
         "an export whose declaration of `invoice` carries `icon` must be refused naming the \
          member and the declaration; it was refused with: {why}"
+    );
+    Ok(())
+}
+
+async fn an_import_refuses_a_context_carrying_cause_naming_it(
+    store: Arc<dyn LakeStore>,
+    given: crate::conformance::Given,
+) -> Result<(), Failure> {
+    let scratch = Scratch::new(given.scratch.clone());
+    invoices(store.as_ref(), 0, 1).await?;
+    let written = events(store.as_ref()).await?;
+    ensure!(
+        written.iter().all(|e| e.context.cause.is_none()),
+        "no event carries `cause` in its `context`"
+    );
+    let upserted = written
+        .iter()
+        .find(|e| matches!(e.body, EventBody::RecordUpserted { .. }))
+        .ok_or_else(|| Failure::new("the lake holds a `record_upserted` event"))?;
+    ensure!(
+        upserted.cause.is_none(),
+        "a write through the doors carries no cause; `record_upserted` at {} carries {:?}",
+        upserted.position,
+        upserted.cause
+    );
+    let from = scratch.dir("from");
+    write(store.as_ref(), &from).await?;
+    let file = files(&from)?.remove(0);
+    let mut lines = lines_of(&from, &file)?;
+    let at = upserted.position.0 as usize;
+    lines[at] = rehashed(&lines[at], |e| {
+        e["context"]["cause"] = json!(0);
+    })?;
+    rewrite(&from, &file, &lines)?;
+    let why = match (given.import)(from, store.lake().clone(), None, import_seams()).await {
+        Ok(_) => {
+            return Err(Failure::new(
+                "an export whose `context` carries `cause` must be refused; it was imported",
+            ));
+        }
+        Err(e) => e.to_string(),
+    };
+    ensure!(
+        why.contains("`context` carries `cause`"),
+        "an export whose `context` carries `cause` must be refused naming it; it was refused \
+         with: {why}"
     );
     Ok(())
 }

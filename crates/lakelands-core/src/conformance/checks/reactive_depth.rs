@@ -30,6 +30,7 @@ check!(
 
 fn at_depth(depth: u32) -> WriteContext {
     WriteContext {
+        cause: None,
         origin: if depth == 0 {
             WriteOrigin::Direct
         } else {
@@ -169,6 +170,7 @@ async fn a_chain_of_reactions_past_the_lakes_ceiling_is_refused_too_deep_and_app
     for origin in [WriteOrigin::Direct, WriteOrigin::Scheduled] {
         let head = store.head().await.must("reading the head")?;
         let context = WriteContext {
+            cause: None,
             origin,
             depth: max + 1,
         };

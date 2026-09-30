@@ -579,6 +579,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
         (
             "write_context",
             members(&WriteContext {
+                cause: Some(Position(1)),
                 origin: WriteOrigin::Reactive,
                 depth: 1,
             }),

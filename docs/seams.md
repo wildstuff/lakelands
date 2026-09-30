@@ -1358,8 +1358,19 @@ A host writes a reaction through a `Catalog` bound to a reactive
 `WriteContext` one deeper than the write it reacts to, and the log keeps
 each write's depth. The store refuses a write deeper than the lake's
 `max_reactive_depth`, a limit of its `Location`, as `too_deep` naming
-that ceiling, on every door that writes, and appends nothing (suite:
-`a_chain_of_reactions_past_the_lakes_ceiling_is_refused_too_deep_and_appends_nothing`).
+that ceiling, on every door that writes (ingest, schema writes and
+proposal decisions included), and appends nothing (suite:
+`a_chain_of_reactions_past_the_lakes_ceiling_is_refused_too_deep_and_appends_nothing`,
+`the_reactive_ceiling_holds_on_every_door_that_writes`).
+
+The context may also name `cause`, the position the write follows from.
+The store takes a cause at or below the head, and refuses one past it as
+`invalid` naming both positions. It puts the cause in the envelope of
+each event the write itself appends; events it derives from those keep
+their own cause, which chains back
+(`docs/decisions/021-the-write-context-belongs-to-the-host.md`, extended;
+suite: `a_reactive_write_with_a_cause_carries_it_on_each_of_its_events`,
+`a_cause_past_the_head_is_refused_and_appends_nothing`).
 
 `LakeStore::head` answers the last position the projection has folded:
 a position a read can be answered at at once, on every engine. An

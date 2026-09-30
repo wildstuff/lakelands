@@ -25,6 +25,7 @@ mod feed;
 mod fields;
 mod filters;
 mod graph_measures;
+mod host_cause;
 mod ingest;
 mod keys;
 mod latest;
@@ -280,6 +281,7 @@ pub const ALL: &[Check] = &[
     export::IMPORT_IS_THE_LAKE,
     export::IMPORT_REFUSED,
     export::IMPORT_UNKNOWN_MEMBER,
+    export::IMPORT_CONTEXT_CAUSE,
     compact::ANSWERS_AS_BEFORE,
     compact::APPENDS_NOTHING,
     compact::AGAIN_AND_ON,
@@ -313,6 +315,9 @@ pub const ALL: &[Check] = &[
     value_types::CONDITION_NEVER_HOLDS,
     streaming::STREAMS,
     reactive_depth::TOO_DEEP,
+    host_cause::CAUSE_ON_OWN_EVENTS,
+    host_cause::CAUSE_PAST_HEAD,
+    host_cause::DEPTH_ON_EVERY_DOOR,
     after::AFTER_RESUMES,
     describe::DESCRIBE_IS_THE_DECLARATION,
 ];

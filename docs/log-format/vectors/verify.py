@@ -191,6 +191,8 @@ def verify_dir(root):
                  f"a format {v} event proposes a declaration or a migration, which format 4 added")
             need(not annotated(event["body"]) or v >= 5,
                  f"a format {v} event carries `annotations` in a declaration, which format 5 added")
+            need("cause" not in event.get("context", {}),
+                 "`context` carries `cause`, which the envelope carries")
             need("upstream" not in event or event["body"].get("kind") == "record_ingested",
                  f"a `{event['body'].get('kind')}` event carries `upstream`, which only a `record_ingested` event carries")
             # known_at in its one form (§1.3), whose text orders as its
@@ -341,6 +343,11 @@ def main():
     check(sha(canonical(body)) == negative5["hash"], "v5.json: the negative line's hash is its own")
     check(negative5["v"] == 4 and annotated(negative5["body"]),
           "v5.json: the negative line carries annotations in format 4, which a reader refuses")
+    misplaced5 = json.loads(v5["misplaced"])
+    body = {k: v for k, v in misplaced5.items() if k != "hash"}
+    check(sha(canonical(body)) == misplaced5["hash"], "v5.json: the misplaced line's hash is its own")
+    check("cause" in misplaced5["context"],
+          "v5.json: the misplaced line carries `cause` inside `context`, which a reader refuses")
     misplaced = json.loads(v3["misplaced"])
     body = {k: v for k, v in misplaced.items() if k != "hash"}
     check(sha(canonical(body)) == misplaced["hash"], "v3.json: the misplaced line's hash is its own")

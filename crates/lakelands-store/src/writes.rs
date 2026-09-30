@@ -81,6 +81,23 @@ fn not_granted() -> Error {
     }
 }
 
+/// Refuse a write whose context the lake does not take: deeper than its
+/// reactive ceiling, whatever the origin names
+/// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`). Every
+/// write path calls it before it takes the writer; a host's `cause` is
+/// checked against the head where the write appends
+/// ([`crate::lake::Lake::append_after`]).
+pub fn check_context(lake: &Lake, context: &WriteContext) -> Result<()> {
+    let max = lake.limits.max_reactive_depth;
+    if context.depth > max {
+        return Err(Error::Refused {
+            field: None,
+            reason: Refusal::TooDeep { max },
+        });
+    }
+    Ok(())
+}
+
 /// The write-side context of one call.
 pub struct Call<'a> {
     /// The lake.
@@ -166,15 +183,8 @@ impl Call<'_> {
         }
     }
 
-    fn check_depth(&self) -> Result<()> {
-        let max = self.lake.limits.max_reactive_depth;
-        if self.context.depth > max {
-            return Err(Error::Refused {
-                field: None,
-                reason: Refusal::TooDeep { max },
-            });
-        }
-        Ok(())
+    fn check_context(&self) -> Result<()> {
+        check_context(self.lake, &self.context)
     }
 
     /// The first write's outcome, if this key was used before.
@@ -767,7 +777,7 @@ impl Call<'_> {
         opts: WriteOpts,
         check: impl FnOnce(&Writer, &dyn ProjectionView) -> Result<()>,
     ) -> Result<Outcome> {
-        self.check_depth()?;
+        self.check_context()?;
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
         if let Some(o) = self.replay(&opts.idempotency_key, view.as_ref())? {
@@ -876,7 +886,7 @@ impl Call<'_> {
 
     /// A retirement of one record, as `retire` and `unlink` make it.
     fn retire_record(&self, ty: &TypeName, key: &RecordKey, opts: WriteOpts) -> Result<Outcome> {
-        self.check_depth()?;
+        self.check_context()?;
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
         if let Some(o) = self.replay(&opts.idempotency_key, view.as_ref())? {
@@ -1109,7 +1119,7 @@ impl Call<'_> {
         payload: Patch,
         opts: WriteOpts,
     ) -> Result<(Outcome, Option<External>)> {
-        self.check_depth()?;
+        self.check_context()?;
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
         if let Some(o) = self.replay(&opts.idempotency_key, view.as_ref())? {
@@ -1219,7 +1229,7 @@ impl Call<'_> {
     /// every value (`docs/log-format.md` §1.3), exactly as an applied write
     /// would.
     pub fn propose(&self, write: ProposedWrite, why: String) -> Result<Outcome> {
-        self.check_depth()?;
+        self.check_context()?;
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
         let now = self.lake.clock(&mut w);
@@ -1368,6 +1378,7 @@ impl Call<'_> {
 
     /// `accept`: apply a pending proposal's write, written as the proposer.
     pub fn accept(&self, proposal: &ProposalId) -> Result<(Outcome, Option<External>)> {
+        self.check_context()?;
         if !self.who.grants.review {
             return Err(not_granted());
         }
@@ -1575,6 +1586,7 @@ impl Call<'_> {
 
     /// `reject`.
     pub fn reject(&self, proposal: &ProposalId, reason: String) -> Result<Outcome> {
+        self.check_context()?;
         if !self.who.grants.review {
             return Err(not_granted());
         }
@@ -1666,6 +1678,7 @@ impl Call<'_> {
 
     /// `declare`.
     pub fn declare(&self, declaration: Declaration) -> Result<Outcome> {
+        self.check_context()?;
         if !self.who.grants.schema {
             return Err(not_granted());
         }
@@ -1710,6 +1723,7 @@ impl Call<'_> {
     /// names are checked over all of it; every problem is collected, and
     /// one refusal names them all.
     pub fn apply(&self, declarations: Vec<Declaration>) -> Result<Outcome> {
+        self.check_context()?;
         if !self.who.grants.schema {
             return Err(not_granted());
         }
@@ -2060,6 +2074,7 @@ impl Call<'_> {
 
     /// `migrate_apply`.
     pub fn migrate_apply(&self, m: Migration, report_id: &str) -> Result<Outcome> {
+        self.check_context()?;
         if !self.who.grants.schema {
             return Err(not_granted());
         }
@@ -2267,6 +2282,7 @@ impl Call<'_> {
     /// Put a tightened value type in force against the report the caller
     /// was shown: one `declared` at the next version, no record changed.
     pub fn migrate_value_type_apply(&self, to: ValueTypeDecl, report_id: &str) -> Result<Outcome> {
+        self.check_context()?;
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
         let report = self.preflight_value_type(&w, view.as_ref(), &to)?;
