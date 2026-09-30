@@ -17,8 +17,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, declare, doors, field, field_writer, head_unmoved, owner, patch, principal, read,
-    type_decl, upsert, value,
+    Lake, Must, doors, field, field_writer, head_unmoved, owner, patch, principal, read, type_decl,
+    value,
 };
 
 check!(
@@ -58,8 +58,8 @@ check!(
 );
 
 async fn ledger(store: &dyn LakeStore) -> Result<(), Failure> {
-    let cat = doors(store);
-    let own = owner(store);
+    let l = Lake::of(store);
+    let Lake { cat, own } = &l;
     let ty = type_decl(
         "invoice",
         vec![
@@ -67,7 +67,7 @@ async fn ledger(store: &dyn LakeStore) -> Result<(), Failure> {
             field("paid_ref", StorageKind::Text),
         ],
     );
-    declare(cat.as_ref(), &own, ty).await?;
+    l.declare(ty).await?;
     for verb in [
         json!({"declare": "verb", "name": "approve", "on": "invoice", "risk": "low",
                "effect": "write", "set": [{"field": "status", "value": "'approved'"}]}),
@@ -80,16 +80,9 @@ async fn ledger(store: &dyn LakeStore) -> Result<(), Failure> {
     ] {
         let d: Declaration = serde_json::from_value(verb)
             .map_err(|e| Failure::new(format!("the check's verb does not read: {e}")))?;
-        cat.declare(&own, d).await.must("declaring a verb")?;
+        cat.declare(own, d).await.must("declaring a verb")?;
     }
-    upsert(
-        cat.as_ref(),
-        &own,
-        "invoice",
-        "i",
-        json!({"status": "open"}),
-    )
-    .await?;
+    l.upsert("invoice", "i", json!({"status": "open"})).await?;
     Ok(())
 }
 
@@ -134,9 +127,9 @@ async fn a_low_verb_runs_and_a_higher_one_is_proposed(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     ledger(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    let ran = call(store.as_ref(), &own, "approve", json!({}))
+    let l = Lake::of(store.as_ref());
+    let Lake { own, .. } = &l;
+    let ran = call(store.as_ref(), own, "approve", json!({}))
         .await
         .must("calling the low-risk `approve`")?;
     ensure!(
@@ -157,14 +150,14 @@ async fn a_low_verb_runs_and_a_higher_one_is_proposed(
          from the head {head}, which it must answer",
         ran.position()
     );
-    let r = read(cat.as_ref(), &own, "invoice", "i").await?;
+    let r = l.read("invoice", "i").await?;
     ensure!(
         value(&r, "status") == Some(&json!("approved")),
         "after `approve` ran, `status` reads {:?}",
         value(&r, "status")
     );
 
-    let waiting = call(store.as_ref(), &own, "pay", json!({"reference": "TX-1"}))
+    let waiting = call(store.as_ref(), own, "pay", json!({"reference": "TX-1"}))
         .await
         .must("calling the high-risk `pay`")?;
     let (at, _) = proposal(&waiting)?;
@@ -173,7 +166,7 @@ async fn a_low_verb_runs_and_a_higher_one_is_proposed(
         at == head,
         "the proposal answered position {at}, but the head is {head}"
     );
-    let r = read(cat.as_ref(), &own, "invoice", "i").await?;
+    let r = l.read("invoice", "i").await?;
     ensure!(
         value(&r, "status") == Some(&json!("approved")) && r.version == Version(2),
         "a proposed `pay` must not run: `i` reads status {:?} at version {}",
@@ -293,16 +286,16 @@ async fn a_rejected_proposal_writes_nothing_and_a_decided_one_stays_decided(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     ledger(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let (_, id) = proposal(
-        &call(store.as_ref(), &own, "pay", json!({"reference": "TX-2"}))
+        &call(store.as_ref(), own, "pay", json!({"reference": "TX-2"}))
             .await
             .must("calling `pay`")?,
     )?;
     let before = store.head().await.must("reading the head")?;
     let rejected = cat
-        .reject(&own, &id, "not this month".into())
+        .reject(own, &id, "not this month".into())
         .await
         .must("rejecting the proposal")?;
     let logged = kinds_from(store.as_ref(), before.next()).await?;
@@ -313,7 +306,7 @@ async fn a_rejected_proposal_writes_nothing_and_a_decided_one_stays_decided(
          version; it answered {rejected:?} and appended {:?}",
         logged.iter().map(EventBody::kind).collect::<Vec<_>>()
     );
-    let r = read(cat.as_ref(), &own, "invoice", "i").await?;
+    let r = l.read("invoice", "i").await?;
     ensure!(
         value(&r, "status") == Some(&json!("open")),
         "a rejected `pay` must write nothing; `status` reads {:?}",
@@ -322,9 +315,9 @@ async fn a_rejected_proposal_writes_nothing_and_a_decided_one_stays_decided(
     for what in ["accepting", "rejecting"] {
         let before = store.head().await.must("reading the head")?;
         let result = if what == "accepting" {
-            cat.accept(&own, &id).await
+            cat.accept(own, &id).await
         } else {
-            cat.reject(&own, &id, "again".into()).await
+            cat.reject(own, &id, "again".into()).await
         };
         let err = result.must_fail(&format!("{what} a rejected proposal"))?;
         head_unmoved(
@@ -421,10 +414,10 @@ async fn a_verbs_write_carries_the_verbs_procedure_version(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     ledger(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { own, .. } = &l;
     // Declared once, so at version 1; the plain write before it has none.
-    let before = read(cat.as_ref(), &own, "invoice", "i").await?;
+    let before = l.read("invoice", "i").await?;
     ensure!(
         before
             .meta
@@ -434,10 +427,10 @@ async fn a_verbs_write_carries_the_verbs_procedure_version(
          reads {:?}",
         before.meta.get("status")
     );
-    call(store.as_ref(), &own, "approve", json!({}))
+    call(store.as_ref(), own, "approve", json!({}))
         .await
         .must("calling the low-risk `approve`")?;
-    let after = read(cat.as_ref(), &own, "invoice", "i").await?;
+    let after = l.read("invoice", "i").await?;
     let meta = after.meta.get("status");
     ensure!(
         meta.is_some_and(|m| m.procedure_version.as_deref() == Some("1")),
@@ -459,22 +452,18 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
 ) -> Result<(), Failure> {
     use crate::conformance::backing::{EXECUTOR, executed};
     use lakelands_api::IdempotencyKey;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("job", vec![field("status", StorageKind::Text)]),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
+        .await?;
     let verb: Declaration = serde_json::from_value(json!({
         "declare": "verb", "name": "dispatch", "on": "job", "risk": "low",
         "payload": [{"name": "fail", "type": {"kind": "boolean"}}],
         "effect": "external", "executor": EXECUTOR}))
     .map_err(|e| Failure::new(format!("the check's verb does not read: {e}")))?;
-    cat.declare(&own, verb).await.must("declaring `dispatch`")?;
+    cat.declare(own, verb).await.must("declaring `dispatch`")?;
     let key = "executor-job";
-    upsert(cat.as_ref(), &own, "job", key, json!({"status": "open"})).await?;
+    l.upsert("job", key, json!({"status": "open"})).await?;
     let dispatch = |payload: serde_json::Value, opts: WriteOpts| {
         let cat = cat.clone();
         let own = own.clone();

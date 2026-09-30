@@ -15,7 +15,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, declare, doors, field, field_writer, get_at, head_unmoved, owner, read, type_decl,
+    Lake, Must, declare, doors, field, field_writer, get_at, head_unmoved, owner, read, type_decl,
     upsert, value,
 };
 
@@ -319,8 +319,7 @@ async fn a_patch_with_a_field_the_principal_may_not_write_is_refused_whole(
 async fn a_field_absent_from_a_patch_is_unchanged_and_null_clears_it(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     let ty = type_decl(
         "note",
         vec![
@@ -329,18 +328,16 @@ async fn a_field_absent_from_a_patch_is_unchanged_and_null_clears_it(
             field("pages", StorageKind::Number),
         ],
     );
-    declare(cat.as_ref(), &own, ty).await?;
+    l.declare(ty).await?;
 
-    upsert(
-        cat.as_ref(),
-        &own,
+    l.upsert(
         "note",
         "n1",
         json!({"title": "draft", "body": "text", "pages": 3}),
     )
     .await?;
-    upsert(cat.as_ref(), &own, "note", "n1", json!({"body": null})).await?;
-    let rec = read(cat.as_ref(), &own, "note", "n1").await?;
+    l.upsert("note", "n1", json!({"body": null})).await?;
+    let rec = l.read("note", "n1").await?;
     ensure!(
         value(&rec, "body").is_none(),
         "a patch setting `body` to null must clear it; it reads {:?}",
@@ -354,8 +351,8 @@ async fn a_field_absent_from_a_patch_is_unchanged_and_null_clears_it(
         value(&rec, "pages")
     );
 
-    upsert(cat.as_ref(), &own, "note", "n1", json!({"title": "final"})).await?;
-    let rec = read(cat.as_ref(), &own, "note", "n1").await?;
+    l.upsert("note", "n1", json!({"title": "final"})).await?;
+    let rec = l.read("note", "n1").await?;
     ensure!(
         value(&rec, "body").is_none() && value(&rec, "title") == Some(&json!("final")),
         "after clearing `body` and then writing only `title`, the record reads {:?}; \
@@ -368,17 +365,17 @@ async fn a_field_absent_from_a_patch_is_unchanged_and_null_clears_it(
 async fn a_patch_with_an_undeclared_field_is_refused_whole(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let ty = type_decl("memo", vec![field("text", StorageKind::Text)]);
-    declare(cat.as_ref(), &own, ty).await?;
-    upsert(cat.as_ref(), &own, "memo", "m1", json!({"text": "hello"})).await?;
+    l.declare(ty).await?;
+    l.upsert("memo", "m1", json!({"text": "hello"})).await?;
 
     for key in ["m1", "m2"] {
         let before = store.head().await.must("reading the head")?;
         let err = cat
             .upsert(
-                &own,
+                own,
                 &TypeName::from("memo"),
                 &key.into(),
                 crate::conformance::fixture::patch(
@@ -407,14 +404,14 @@ async fn a_patch_with_an_undeclared_field_is_refused_whole(
         );
     }
 
-    let rec = read(cat.as_ref(), &own, "memo", "m1").await?;
+    let rec = l.read("memo", "m1").await?;
     ensure!(
         value(&rec, "text") == Some(&json!("hello")) && value(&rec, "remark").is_none(),
         "the refused patch was applied in part to `m1`: it reads {:?}",
         rec.fields
     );
     let missing = cat
-        .get(&own, &TypeName::from("memo"), get_at("m2", None))
+        .get(own, &TypeName::from("memo"), get_at("m2", None))
         .await;
     ensure!(
         matches!(missing, Err(Error::NotFound { .. })),

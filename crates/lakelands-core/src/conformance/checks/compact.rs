@@ -29,14 +29,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use lakelands_api::ontology::{
-    Authority, EmbedDecl, FieldDecl, FieldType, Measure, StorageKind, ValueTypeDecl, ViewDecl,
+    Authority, EmbedDecl, FieldDecl, FieldType, StorageKind, ValueTypeDecl,
 };
 use lakelands_api::query::{Depth, Pattern, Projection, Search, SearchMode, Step, Walk};
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::{CompactReport, Declaration, ProposalFilter, ProposedWrite};
 use lakelands_api::{
-    Catalog, FieldName, Find, Found, IdempotencyKey, LakeStore, Outcome, Position, Principal,
-    ReadAt, RecordKey, TypeName, WriteOpts,
+    Catalog, Find, Found, IdempotencyKey, LakeStore, Outcome, Position, Principal, ReadAt,
+    RecordKey, TypeName, WriteOpts,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -45,7 +45,8 @@ use super::rekey;
 use crate::conformance::Failure;
 use crate::conformance::backing::{EMBED_MODEL, KIND, made, plug, unplug};
 use crate::conformance::fixture::{
-    Caller, Must, declare, doors, field, join_all, owner, patch, read, type_decl, upsert,
+    Caller, Lake, Must, declare, doors, field, join_all, owner, partner_totals, patch, read,
+    type_decl, upsert,
 };
 use crate::export;
 
@@ -96,34 +97,6 @@ fn invoice_type() -> lakelands_api::ontology::TypeDecl {
     )
 }
 
-fn totals() -> lakelands_api::ontology::TypeDecl {
-    let mut ty = type_decl(
-        "totals",
-        vec![
-            field("partner", StorageKind::Text),
-            field("total", StorageKind::Number),
-            field("invoices", StorageKind::Number),
-        ],
-    );
-    ty.key = vec![FieldName::from("partner")];
-    ty.view = Some(ViewDecl {
-        source: TypeName::from("invoice"),
-        r#where: None,
-        group_by: vec![FieldName::from("partner")],
-        measures: vec![
-            Measure {
-                name: FieldName::from("total"),
-                expr: "sum(amount)".into(),
-            },
-            Measure {
-                name: FieldName::from("invoices"),
-                expr: "count()".into(),
-            },
-        ],
-    });
-    ty
-}
-
 /// The write the churned lake made with an idempotency key, and makes
 /// again to see it recognised.
 async fn keyed(cat: &dyn Catalog, who: &Principal) -> Result<Outcome, Failure> {
@@ -143,7 +116,8 @@ async fn keyed(cat: &dyn Catalog, who: &Principal) -> Result<Outcome, Failure> {
 
 /// `lookup`, a function of the suite's backing echoing its input `code`
 /// under the check's own `token`, and `place`, whose `name` it computes.
-async fn places(cat: &dyn Catalog, own: &Principal, token: &str) -> Result<(), Failure> {
+async fn places(l: &Lake, token: &str) -> Result<(), Failure> {
+    let (cat, own) = (l.cat.as_ref(), &l.own);
     let function: Declaration = serde_json::from_value(json!({
         "declare": "function", "name": "lookup", "backing": KIND,
         "inputs": [{"name": "code", "type": {"kind": "text"}}],
@@ -172,7 +146,8 @@ async fn places(cat: &dyn Catalog, own: &Principal, token: &str) -> Result<(), F
 }
 
 /// `note`, whose `vec` the suite's embedding backend makes from `title`.
-async fn notes(cat: &dyn Catalog, own: &Principal) -> Result<(), Failure> {
+async fn notes(l: &Lake) -> Result<(), Failure> {
+    let (cat, own) = (l.cat.as_ref(), &l.own);
     let vec = FieldDecl {
         ty: FieldType {
             dimensions: Some(2),
@@ -206,19 +181,18 @@ async fn notes(cat: &dyn Catalog, own: &Principal) -> Result<(), Failure> {
 /// own, for the backing's calls.
 async fn churned(store: &dyn LakeStore, embedded: bool, token: &str) -> Result<(), Failure> {
     rekey::lake(store, rekey::IBANS).await?;
-    let cat = doors(store);
-    let own = owner(store);
-    declare(cat.as_ref(), &own, invoice_type()).await?;
-    declare(cat.as_ref(), &own, totals()).await?;
-    places(cat.as_ref(), &own, token).await?;
+    let l = Lake::of(store);
+    let Lake { cat, own } = &l;
+    l.declare(invoice_type()).await?;
+    l.declare(partner_totals("totals", StorageKind::Number))
+        .await?;
+    places(&l, token).await?;
     if embedded {
-        notes(cat.as_ref(), &own).await?;
+        notes(&l).await?;
     }
     for round in 0..3 {
         for i in 0..INVOICES {
-            upsert(
-                cat.as_ref(),
-                &own,
+            l.upsert(
                 "invoice",
                 &format!("i{i}"),
                 json!({"partner": format!("p{}", i % 2), "amount": round * 10 + i,
@@ -227,8 +201,8 @@ async fn churned(store: &dyn LakeStore, embedded: bool, token: &str) -> Result<(
             .await?;
         }
     }
-    keyed(cat.as_ref(), &own).await?;
-    cat.retire(&own, &"invoice".into(), &"i1".into(), WriteOpts::default())
+    keyed(cat.as_ref(), own).await?;
+    cat.retire(own, &"invoice".into(), &"i1".into(), WriteOpts::default())
         .await
         .must("retiring invoice i1")?;
     store
@@ -236,7 +210,7 @@ async fn churned(store: &dyn LakeStore, embedded: bool, token: &str) -> Result<(
         .await
         .must("restricting invoice i2")?;
     cat.propose(
-        &own,
+        own,
         ProposedWrite::Upsert {
             ty: "invoice".into(),
             key: "i3".into(),
@@ -252,11 +226,11 @@ async fn churned(store: &dyn LakeStore, embedded: bool, token: &str) -> Result<(
     )
     .expect("a value type");
     let r = cat
-        .migrate_value_type(&own, tighter.clone())
+        .migrate_value_type(own, tighter.clone())
         .await
         .must("running the preflight of tightening `account_kind`")?
         .data;
-    cat.migrate_value_type_apply(&own, tighter, &r.report_id)
+    cat.migrate_value_type_apply(own, tighter, &r.report_id)
         .await
         .must("tightening `account_kind`")?;
     rekey::apply(store).await?;
@@ -284,8 +258,8 @@ async fn answers(
     store: &dyn LakeStore,
     through: Position,
 ) -> Result<Vec<(String, String)>, Failure> {
-    let cat = doors(store);
-    let own = owner(store);
+    let l = Lake::of(store);
+    let Lake { cat, own } = &l;
     let mut out = Vec::new();
     for p in 0..=through.0 {
         let at = ReadAt {
@@ -300,7 +274,7 @@ async fn answers(
                 ..Find::default()
             };
             for page in 0.. {
-                let reply = cat.find(&own, &TypeName::from(ty), find.clone()).await;
+                let reply = cat.find(own, &TypeName::from(ty), find.clone()).await;
                 let next = match &reply {
                     Ok(r) => match &r.data {
                         Found::Records { next_cursor, .. } => next_cursor.clone(),
@@ -329,7 +303,7 @@ async fn answers(
         };
         out.push((
             format!("a lexical search at {p}"),
-            said(cat.search(&own, search).await),
+            said(cat.search(own, search).await),
         ));
         let vector = Search {
             ty: TypeName::from("note"),
@@ -345,7 +319,7 @@ async fn answers(
         };
         out.push((
             format!("a vector search at {p}"),
-            said(cat.search(&own, vector).await),
+            said(cat.search(own, vector).await),
         ));
         for key in ["1", "DE1"] {
             let mut walk = Pattern::traverse(
@@ -363,7 +337,7 @@ async fn answers(
             walk.at = at;
             out.push((
                 format!("a walk from account `{key}` at {p}"),
-                said(cat.query(&own, walk).await),
+                said(cat.query(own, walk).await),
             ));
         }
         let filter = ProposalFilter {
@@ -372,7 +346,7 @@ async fn answers(
         };
         out.push((
             format!("the proposals at {p}"),
-            said(cat.proposals(&own, filter).await),
+            said(cat.proposals(own, filter).await),
         ));
     }
     Ok(out)
@@ -607,11 +581,11 @@ async fn a_lake_compacts_again_and_writes_on(store: Arc<dyn LakeStore>) -> Resul
             &format!("after {n} compact"),
         )?;
     }
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let was = cat
         .get(
-            &own,
+            own,
             &"invoice".into(),
             crate::conformance::fixture::get_at("i0", None),
         )
@@ -619,7 +593,7 @@ async fn a_lake_compacts_again_and_writes_on(store: Arc<dyn LakeStore>) -> Resul
         .must("reading invoice i0")?
         .data
         .version;
-    let o = upsert(cat.as_ref(), &own, "invoice", "i0", json!({"amount": 1000})).await?;
+    let o = l.upsert("invoice", "i0", json!({"amount": 1000})).await?;
     let Outcome::Applied {
         version: Some(v), ..
     } = &o
@@ -687,14 +661,10 @@ async fn writes_made_while_a_compact_runs_each_land_once_before_or_after_it(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     churned(store.as_ref(), true, "compact_writes").await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("item", vec![field("n", StorageKind::Number)]),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("item", vec![field("n", StorageKind::Number)]))
+        .await?;
     let head = store.head().await.must("reading the head")?;
     let before = answers(store.as_ref(), head).await?;
 
@@ -739,7 +709,7 @@ async fn writes_made_while_a_compact_runs_each_land_once_before_or_after_it(
     for (key, n, at) in &written {
         let r = cat
             .get(
-                &own,
+                own,
                 &"item".into(),
                 crate::conformance::fixture::get_at(key, Some(*at)),
             )

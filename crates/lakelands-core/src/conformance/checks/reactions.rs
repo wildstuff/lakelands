@@ -18,7 +18,7 @@ use lakelands_api::{LakeStore, Patch};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Must, doors, field, owner, type_decl, upsert};
+use crate::conformance::fixture::{Lake, Must, field, type_decl};
 
 check!(
     /// A trigger fires, and a set changes, on a verb's write.
@@ -27,8 +27,8 @@ check!(
 );
 
 async fn a_trigger_fires_on_a_verbs_write(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let declarations = [
         Declaration::Type(type_decl(
             "invoice",
@@ -62,21 +62,14 @@ async fn a_trigger_fires_on_a_verbs_write(store: Arc<dyn LakeStore>) -> Result<(
         }),
     ];
     for d in declarations {
-        cat.declare(&own, d)
+        cat.declare(own, d)
             .await
             .must("declaring the invoice, its verb, trigger and set")?;
     }
-    let opened = upsert(
-        cat.as_ref(),
-        &own,
-        "invoice",
-        "i1",
-        json!({"status": "open"}),
-    )
-    .await?;
+    let opened = l.upsert("invoice", "i1", json!({"status": "open"})).await?;
     let ran = cat
         .call(
-            &own,
+            own,
             &"settle".into(),
             &"i1".into(),
             Patch::new(),

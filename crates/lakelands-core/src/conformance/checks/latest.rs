@@ -15,9 +15,7 @@ use lakelands_api::{Find, LakeStore, Position, ReadAt};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{
-    Must, all_found, declare, doors, field, ingest, owner, patch, source_record, type_decl, upsert,
-};
+use crate::conformance::fixture::{Lake, Must, field, patch, source_record, type_decl};
 
 check!(
     /// `latest` orders by each record's last event.
@@ -39,14 +37,10 @@ fn latest(dir: Direction) -> Find {
 async fn find_ordered_by_latest_lists_records_by_their_last_event(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("partner", vec![field("name", StorageKind::Text)]),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))
+        .await?;
     let mut invoice = type_decl(
         "invoice",
         vec![
@@ -80,29 +74,28 @@ async fn find_ordered_by_latest_lists_records_by_their_last_event(
         relation("billed_by", Some("billed")),
         relation("approved_by", None),
     ];
-    declare(cat.as_ref(), &own, invoice).await?;
-    upsert(cat.as_ref(), &own, "partner", "p1", json!({"name": "one"})).await?;
+    l.declare(invoice).await?;
+    l.upsert("partner", "p1", json!({"name": "one"})).await?;
     for i in ["i1", "i2", "i3", "i4", "i5"] {
-        upsert(cat.as_ref(), &own, "invoice", i, json!({"amount": "10"})).await?;
+        l.upsert("invoice", i, json!({"amount": "10"})).await?;
     }
     // i1 changes another field; i2 then leaves; i3 changes by ingest; i4
     // gains a link record; i5 a reference.
-    let noted = upsert(cat.as_ref(), &own, "invoice", "i1", json!({"note": "late"}))
+    let noted = l
+        .upsert("invoice", "i1", json!({"note": "late"}))
         .await?
         .position();
-    cat.retire(&own, &"invoice".into(), &"i2".into(), WriteOpts::default())
+    cat.retire(own, &"invoice".into(), &"i2".into(), WriteOpts::default())
         .await
         .must("retiring i2")?;
-    ingest(
-        cat.as_ref(),
-        &own,
+    l.ingest(
         "erp",
         vec![source_record("invoice", "i3", json!({"seen": "yes"}))],
     )
     .await
     .must("ingesting a change to i3")?;
     cat.link(
-        &own,
+        own,
         &"invoice".into(),
         &"i4".into(),
         &"approved_by".into(),
@@ -112,29 +105,27 @@ async fn find_ordered_by_latest_lists_records_by_their_last_event(
     )
     .await
     .must("linking i4 to p1 by a link record")?;
-    upsert(cat.as_ref(), &own, "invoice", "i5", json!({"billed": "p1"})).await?;
+    l.upsert("invoice", "i5", json!({"billed": "p1"})).await?;
 
     let keys = |records: Vec<lakelands_api::Record>| -> Vec<String> {
         records.into_iter().map(|r| r.key.0).collect()
     };
     let newest = ["i5", "i3", "i1", "i4"];
-    let desc = keys(all_found(cat.as_ref(), &own, "invoice", latest(Direction::Desc)).await?);
+    let desc = keys(l.all_found("invoice", latest(Direction::Desc)).await?);
     ensure!(
         desc == newest,
         "ordered by `latest` descending, `find` answered {desc:?}; the last events are i5's \
          reference, i3's ingest, i1's note, then i4's own upsert (its link record moves only \
          the link), and i2 is retired, so {newest:?}"
     );
-    let asc = keys(all_found(cat.as_ref(), &own, "invoice", latest(Direction::Asc)).await?);
+    let asc = keys(l.all_found("invoice", latest(Direction::Asc)).await?);
     let reversed: Vec<&str> = newest.iter().rev().copied().collect();
     ensure!(
         asc == reversed,
         "ordered by `latest` ascending, `find` answered {asc:?}, not the reverse {reversed:?}"
     );
     let paged = keys(
-        all_found(
-            cat.as_ref(),
-            &own,
+        l.all_found(
             "invoice",
             Find {
                 limit: Some(2),
@@ -148,9 +139,7 @@ async fn find_ordered_by_latest_lists_records_by_their_last_event(
         "in pages of 2 with the cursor, `latest` descending answered {paged:?}, not {newest:?}"
     );
     let filtered = keys(
-        all_found(
-            cat.as_ref(),
-            &own,
+        l.all_found(
             "invoice",
             Find {
                 filter: Some("amount > 0 and now() > now() - 1d".into()),
@@ -166,9 +155,7 @@ async fn find_ordered_by_latest_lists_records_by_their_last_event(
          {filtered:?}, not {newest:?}"
     );
     let then = keys(
-        all_found(
-            cat.as_ref(),
-            &own,
+        l.all_found(
             "invoice",
             Find {
                 at: ReadAt {

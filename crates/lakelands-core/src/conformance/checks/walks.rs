@@ -11,7 +11,7 @@ use lakelands_api::{Error, LakeStore, RecordKey, Refusal, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Must, declare, doors, field, limits, owner, type_decl, upsert};
+use crate::conformance::fixture::{Lake, Must, field, limits, type_decl};
 
 check!(
     /// A step must follow a declared relation.
@@ -33,8 +33,7 @@ check!(
 
 /// People who report to people, through `boss`.
 async fn org(store: &dyn LakeStore) -> Result<(), Failure> {
-    let cat = doors(store);
-    let own = owner(store);
+    let l = Lake::of(store);
     let mut ty = type_decl(
         "person",
         vec![
@@ -59,7 +58,7 @@ async fn org(store: &dyn LakeStore) -> Result<(), Failure> {
         authority: Default::default(),
         description: None,
     }];
-    declare(cat.as_ref(), &own, ty).await?;
+    l.declare(ty).await?;
     for (key, boss) in [
         ("ceo", None),
         ("vp", Some("ceo")),
@@ -70,7 +69,7 @@ async fn org(store: &dyn LakeStore) -> Result<(), Failure> {
         if let Some(b) = boss {
             fields["boss"] = json!(b);
         }
-        upsert(cat.as_ref(), &own, "person", key, fields).await?;
+        l.upsert("person", key, fields).await?;
     }
     Ok(())
 }
@@ -93,13 +92,13 @@ async fn a_step_over_a_relation_the_type_does_not_declare_is_refused(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     org(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    cat.query(&own, from("zed", vec![step("reports_to", Walk::Out, 1, 1)]))
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    cat.query(own, from("zed", vec![step("reports_to", Walk::Out, 1, 1)]))
         .await
         .must("walking `reports_to` from `zed`")?;
     let err = cat
-        .query(&own, from("zed", vec![step("audited_by", Walk::Out, 1, 1)]))
+        .query(own, from("zed", vec![step("audited_by", Walk::Out, 1, 1)]))
         .await
         .must_fail("walking the undeclared relation `audited_by`")?;
     ensure!(
@@ -120,11 +119,11 @@ async fn a_step_deeper_than_the_lakes_limit_is_refused(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     org(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let limit = limits().max_depth;
     cat.query(
-        &own,
+        own,
         from("zed", vec![step("reports_to", Walk::Out, 1, limit)]),
     )
     .await
@@ -133,7 +132,7 @@ async fn a_step_deeper_than_the_lakes_limit_is_refused(
     ))?;
     let err = cat
         .query(
-            &own,
+            own,
             from("zed", vec![step("reports_to", Walk::Out, 1, limit + 1)]),
         )
         .await
@@ -151,12 +150,12 @@ async fn a_walk_answers_what_it_reaches_in_one_order(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     org(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let mut p = from("ceo", vec![step("reports_to", Walk::In, 1, 2)]);
     p.project = lakelands_api::query::Projection::Graph;
     let reply = cat
-        .query(&own, p)
+        .query(own, p)
         .await
         .must("walking `reports_to` backwards two deep from `ceo`")?;
     let QueryResult::Graph { nodes, .. } = reply.data else {
@@ -181,17 +180,17 @@ async fn a_walk_over_a_cycle_ends_and_answers_each_record_once(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     org(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     // The ceo reports to the one who reports to the ceo: a cycle of two.
-    upsert(cat.as_ref(), &own, "person", "ceo", json!({"boss": "vp"})).await?;
+    l.upsert("person", "ceo", json!({"boss": "vp"})).await?;
     let mut p = from(
         "ceo",
         vec![step("reports_to", Walk::Out, 1, limits().max_depth)],
     );
     p.project = lakelands_api::query::Projection::Graph;
     let reply = cat
-        .query(&own, p)
+        .query(own, p)
         .await
         .must("walking `reports_to` around the cycle ceo → vp → ceo")?;
     let QueryResult::Graph { nodes, .. } = reply.data else {

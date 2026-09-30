@@ -11,7 +11,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, declare, doors, field, head_unmoved, owner, read, type_decl, upsert, value,
+    Lake, Must, declare, doors, field, head_unmoved, owner, type_decl, value,
 };
 
 check!(
@@ -68,9 +68,9 @@ async fn migrate_apply_requires_the_report_it_was_shown(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let ty = memo(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    upsert(cat.as_ref(), &own, "memo", "a", json!({"pages": 3})).await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.upsert("memo", "a", json!({"pages": 3})).await?;
     let m = Migration {
         to: retype(&ty, "pages", StorageKind::Text),
         renames: Vec::new(),
@@ -83,21 +83,21 @@ async fn migrate_apply_requires_the_report_it_was_shown(
     );
 
     let before = store.head().await.must("reading the head")?;
-    cat.migrate_apply(&own, m.clone(), "not-the-report")
+    cat.migrate_apply(own, m.clone(), "not-the-report")
         .await
         .must_fail("applying the migration with a report id it was never shown")?;
     head_unmoved(store.as_ref(), before, "applying with another report id").await?;
 
     // The lake moves; the report no longer describes it.
-    upsert(cat.as_ref(), &own, "memo", "b", json!({"pages": 5})).await?;
+    l.upsert("memo", "b", json!({"pages": 5})).await?;
     let before = store.head().await.must("reading the head")?;
-    cat.migrate_apply(&own, m.clone(), &report.report_id)
+    cat.migrate_apply(own, m.clone(), &report.report_id)
         .await
         .must_fail("applying the migration against a report the lake has moved past")?;
     head_unmoved(store.as_ref(), before, "applying a stale report").await?;
 
     let fresh = preflight(store.as_ref(), &m).await?;
-    cat.migrate_apply(&own, m, &fresh.report_id)
+    cat.migrate_apply(own, m, &fresh.report_id)
         .await
         .must("applying the migration against a fresh report")?;
     Ok(())
@@ -107,10 +107,10 @@ async fn a_migration_that_would_lose_information_is_refused_with_its_report(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let ty = memo(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    upsert(cat.as_ref(), &own, "memo", "ok", json!({"ref": "12"})).await?;
-    upsert(cat.as_ref(), &own, "memo", "bad", json!({"ref": "twelve"})).await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.upsert("memo", "ok", json!({"ref": "12"})).await?;
+    l.upsert("memo", "bad", json!({"ref": "twelve"})).await?;
     let m = Migration {
         to: retype(&ty, "ref", StorageKind::Number),
         renames: Vec::new(),
@@ -127,7 +127,7 @@ async fn a_migration_that_would_lose_information_is_refused_with_its_report(
     );
     let before = store.head().await.must("reading the head")?;
     let err = cat
-        .migrate_apply(&own, m, &report.report_id)
+        .migrate_apply(own, m, &report.report_id)
         .await
         .must_fail("applying a lossy migration")?;
     head_unmoved(store.as_ref(), before, "applying a lossy migration").await?;
@@ -142,11 +142,9 @@ async fn migrated_values_follow_the_conversion_table_and_renames_keep_them(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let ty = memo(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    upsert(
-        cat.as_ref(),
-        &own,
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.upsert(
         "memo",
         "a",
         json!({"title": "Plan", "pages": 12, "ref": "42"}),
@@ -168,11 +166,11 @@ async fn migrated_values_follow_the_conversion_table_and_renames_keep_them(
         renames: vec![("title".into(), "heading".into())],
     };
     let report = preflight(store.as_ref(), &m).await?;
-    cat.migrate_apply(&own, m, &report.report_id)
+    cat.migrate_apply(own, m, &report.report_id)
         .await
         .must("applying the lossless migration")?;
 
-    let r = read(cat.as_ref(), &own, "memo", "a").await?;
+    let r = l.read("memo", "a").await?;
     ensure!(
         value(&r, "pages") == Some(&json!("12"))
             && value(&r, "ref") == Some(&json!(42))
@@ -202,14 +200,10 @@ async fn a_migration_removing_the_field_a_relation_walks_is_refused(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     use lakelands_api::ontology::{FieldDecl, RelationDecl};
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("partner", vec![field("name", StorageKind::Text)]),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))
+        .await?;
     let mut invoice = type_decl(
         "invoice",
         vec![
@@ -234,7 +228,7 @@ async fn a_migration_removing_the_field_a_relation_walks_is_refused(
         authority: Default::default(),
         description: None,
     }];
-    declare(cat.as_ref(), &own, invoice.clone()).await?;
+    l.declare(invoice.clone()).await?;
     let mut to = invoice;
     to.fields.retain(|f| f.name.as_str() != "partner");
     let m = Migration {
@@ -242,10 +236,10 @@ async fn a_migration_removing_the_field_a_relation_walks_is_refused(
         renames: Vec::new(),
     };
     let before = store.head().await.must("reading the head")?;
-    let refused = match cat.migrate(&own, m.clone()).await {
+    let refused = match cat.migrate(own, m.clone()).await {
         Err(_) => true,
         Ok(report) => cat
-            .migrate_apply(&own, m, &report.data.report_id)
+            .migrate_apply(own, m, &report.data.report_id)
             .await
             .is_err(),
     };
@@ -261,8 +255,7 @@ async fn a_migration_removing_the_field_a_relation_walks_is_refused(
 async fn the_preflight_names_every_dropped_field_and_an_empty_type_migrates_cleanly(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     let wide = type_decl(
         "memo",
         vec![
@@ -271,7 +264,7 @@ async fn the_preflight_names_every_dropped_field_and_an_empty_type_migrates_clea
             field("ref", StorageKind::Text),
         ],
     );
-    declare(cat.as_ref(), &own, wide.clone()).await?;
+    l.declare(wide.clone()).await?;
     let mut narrow = wide.clone();
     narrow.fields.retain(|f| f.name.as_str() == "title");
     let m = Migration {
@@ -285,23 +278,11 @@ async fn the_preflight_names_every_dropped_field_and_an_empty_type_migrates_clea
          and be lossless; it answered {empty:?}"
     );
 
-    upsert(
-        cat.as_ref(),
-        &own,
-        "memo",
-        "a",
-        json!({"title": "A", "pages": 3, "ref": "x"}),
-    )
-    .await?;
-    upsert(
-        cat.as_ref(),
-        &own,
-        "memo",
-        "b",
-        json!({"title": "B", "pages": 5}),
-    )
-    .await?;
-    upsert(cat.as_ref(), &own, "memo", "c", json!({"title": "C"})).await?;
+    l.upsert("memo", "a", json!({"title": "A", "pages": 3, "ref": "x"}))
+        .await?;
+    l.upsert("memo", "b", json!({"title": "B", "pages": 5}))
+        .await?;
+    l.upsert("memo", "c", json!({"title": "C"})).await?;
     let report = preflight(store.as_ref(), &m).await?;
     let mut dropped: Vec<(String, u64)> = report
         .dropped

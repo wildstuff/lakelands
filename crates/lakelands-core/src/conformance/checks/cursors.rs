@@ -8,7 +8,7 @@ use lakelands_api::{Find, Found, LakeStore, TypeName, WriteOpts};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Must, declare, doors, field, owner, type_decl, upsert};
+use crate::conformance::fixture::{Lake, Must, field, type_decl};
 
 check!(
     /// Later pages read where the first page was read.
@@ -19,16 +19,12 @@ check!(
 async fn a_cursor_stays_on_the_position_of_its_first_page(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("item", vec![field("n", StorageKind::Number)]),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("item", vec![field("n", StorageKind::Number)]))
+        .await?;
     for (i, k) in ["b", "c", "d", "e"].iter().enumerate() {
-        upsert(cat.as_ref(), &own, "item", k, json!({ "n": i })).await?;
+        l.upsert("item", k, json!({ "n": i })).await?;
     }
     let item = TypeName::from("item");
     let page = |cursor| Find {
@@ -38,7 +34,7 @@ async fn a_cursor_stays_on_the_position_of_its_first_page(
     };
 
     let first = cat
-        .find(&own, &item, page(None))
+        .find(own, &item, page(None))
         .await
         .must("reading the first page")?;
     let Found::Records { rows, next_cursor } = first.data else {
@@ -49,15 +45,15 @@ async fn a_cursor_stays_on_the_position_of_its_first_page(
         .ok_or_else(|| Failure::new("four records in pages of two answered no next page"))?;
 
     // The lake moves on: a record that sorts first, a change and a retirement.
-    upsert(cat.as_ref(), &own, "item", "a", json!({"n": 9})).await?;
-    upsert(cat.as_ref(), &own, "item", "d", json!({"n": 99})).await?;
-    cat.retire(&own, &item, &"e".into(), WriteOpts::default())
+    l.upsert("item", "a", json!({"n": 9})).await?;
+    l.upsert("item", "d", json!({"n": 99})).await?;
+    cat.retire(own, &item, &"e".into(), WriteOpts::default())
         .await
         .must("retiring `e`")?;
 
     loop {
         let next = cat
-            .find(&own, &item, page(Some(cursor)))
+            .find(own, &item, page(Some(cursor)))
             .await
             .must("reading a later page")?;
         ensure!(

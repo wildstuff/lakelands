@@ -13,9 +13,7 @@ use lakelands_api::{Error, LakeStore, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{
-    Must, declare, doors, field, get_at, owner, principal, type_decl, upsert,
-};
+use crate::conformance::fixture::{Lake, Must, field, get_at, principal, type_decl};
 
 check!(
     /// A restricted record is withheld from principals without the grant.
@@ -26,15 +24,11 @@ check!(
 async fn a_restricted_record_is_withheld_but_kept(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("file", vec![field("body", StorageKind::Text)]),
-    )
-    .await?;
-    let written = upsert(cat.as_ref(), &own, "file", "f1", json!({"body": "kept"})).await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("file", vec![field("body", StorageKind::Text)]))
+        .await?;
+    let written = l.upsert("file", "f1", json!({"body": "kept"})).await?;
     let reader = principal(
         store.as_ref(),
         PrincipalKind::Agent,
@@ -56,7 +50,7 @@ async fn a_restricted_record_is_withheld_but_kept(
         "a principal without the restricted grant must not find `f1` after the hold; it answered {hidden:?}"
     );
     let seen = cat
-        .get(&own, &ty, get_at("f1", None))
+        .get(own, &ty, get_at("f1", None))
         .await
         .must("reading `f1` with the restricted grant")?;
     ensure!(

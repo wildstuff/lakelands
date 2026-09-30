@@ -25,7 +25,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, doors, field_writer, head_unmoved, owner, principal, upsert,
+    Lake, Must, doors, field_writer, head_unmoved, owner, principal, upsert,
 };
 
 check!(
@@ -215,18 +215,18 @@ async fn accepting_a_schema_proposal_needs_the_schema_grant(
 async fn a_migration_proposal_carries_its_report_and_is_preflighted_again_at_accept(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let memo: Declaration = serde_json::from_value(json!({
         "declare": "type", "name": "memo",
         "fields": [{"name": "title", "type": {"kind": "text"}},
                    {"name": "pages", "type": {"kind": "text"}}]
     }))
     .expect("a declaration");
-    cat.declare(&own, memo.clone())
+    cat.declare(own, memo.clone())
         .await
         .must("declaring `memo`")?;
-    upsert(cat.as_ref(), &own, "memo", "a", json!({"pages": "3"})).await?;
+    l.upsert("memo", "a", json!({"pages": "3"})).await?;
     let Declaration::Type(mut to) = memo else {
         unreachable!("a type")
     };
@@ -279,7 +279,7 @@ async fn a_migration_proposal_carries_its_report_and_is_preflighted_again_at_acc
          carries {report:?}"
     );
     // The lake moves: a record the retype would lose.
-    upsert(cat.as_ref(), &own, "memo", "b", json!({"pages": "many"})).await?;
+    l.upsert("memo", "b", json!({"pages": "many"})).await?;
     let before = store.head().await.must("reading the head")?;
     let refused = cat
         .accept(&reviewer(store.as_ref(), true), &id)
@@ -303,7 +303,7 @@ async fn a_migration_proposal_carries_its_report_and_is_preflighted_again_at_acc
         .must("listing the pending proposals")?
         .data;
     let pages = cat
-        .describe_type(&own, &TypeName::from("memo"), ReadAt::default())
+        .describe_type(own, &TypeName::from("memo"), ReadAt::default())
         .await
         .must("describing `memo`")?
         .data

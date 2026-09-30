@@ -12,8 +12,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, all_found, declare, doors, field, field_writer, ingest, owner, source_record, type_decl,
-    upsert, windows_reach_head,
+    Lake, Must, all_found, declare, doors, field, field_writer, owner, source_record, type_decl,
+    windows_reach_head,
 };
 
 check!(
@@ -78,11 +78,10 @@ async fn absent_fields_never_match_not_even_not_equal(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     lines(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    upsert(cat.as_ref(), &own, "line", "with", json!({"note": "x"})).await?;
-    upsert(cat.as_ref(), &own, "line", "other", json!({"note": "y"})).await?;
-    upsert(cat.as_ref(), &own, "line", "without", json!({"label": "a"})).await?;
+    let l = Lake::of(store.as_ref());
+    l.upsert("line", "with", json!({"note": "x"})).await?;
+    l.upsert("line", "other", json!({"note": "y"})).await?;
+    l.upsert("line", "without", json!({"label": "a"})).await?;
 
     for (filter, want) in [
         ("note = 'x'", vec!["with"]),
@@ -107,32 +106,13 @@ async fn numbers_and_numeric_text_compare_as_numbers(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     lines(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    upsert(
-        cat.as_ref(),
-        &own,
-        "line",
-        "nine",
-        json!({"qty": 9, "price": "9.50"}),
-    )
-    .await?;
-    upsert(
-        cat.as_ref(),
-        &own,
-        "line",
-        "ten",
-        json!({"qty": 10, "price": "10.00"}),
-    )
-    .await?;
-    upsert(
-        cat.as_ref(),
-        &own,
-        "line",
-        "hundred",
-        json!({"qty": 100, "price": "100"}),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    l.upsert("line", "nine", json!({"qty": 9, "price": "9.50"}))
+        .await?;
+    l.upsert("line", "ten", json!({"qty": 10, "price": "10.00"}))
+        .await?;
+    l.upsert("line", "hundred", json!({"qty": 100, "price": "100"}))
+        .await?;
 
     for (filter, want) in [
         ("qty > 9", vec!["hundred", "ten"]),
@@ -157,16 +137,9 @@ async fn values_of_kinds_that_do_not_compare_match_nothing_and_fail_nothing(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     lines(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    upsert(
-        cat.as_ref(),
-        &own,
-        "line",
-        "a",
-        json!({"label": "abc", "qty": 1, "flag": true}),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    l.upsert("line", "a", json!({"label": "abc", "qty": 1, "flag": true}))
+        .await?;
 
     for filter in [
         "label = 1",
@@ -192,16 +165,10 @@ async fn probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggre
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     lines(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    upsert(
-        cat.as_ref(),
-        &own,
-        "line",
-        "a",
-        json!({"qty": 1, "note": "secret"}),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, .. } = &l;
+    l.upsert("line", "a", json!({"qty": 1, "note": "secret"}))
+        .await?;
 
     // Reads everything but `note`, which it may not see at all.
     let mut reader = field_writer(store.as_ref(), "reader", "line", &[]);
@@ -278,8 +245,7 @@ async fn probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggre
 async fn a_filter_and_an_order_can_read_when_a_source_saw_a_value(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     let ty = type_decl(
         "reading",
         vec![FieldDecl {
@@ -287,7 +253,7 @@ async fn a_filter_and_an_order_can_read_when_a_source_saw_a_value(
             ..field("level", StorageKind::Number)
         }],
     );
-    declare(cat.as_ref(), &own, ty).await?;
+    l.declare(ty).await?;
     let seen = |day: u32| Timestamp::from_date(2026, 3, day);
     let mut records = Vec::new();
     for (key, day) in [("a", 20), ("b", 10), ("c", 15)] {
@@ -295,7 +261,8 @@ async fn a_filter_and_an_order_can_read_when_a_source_saw_a_value(
         r.seen_at = seen(day);
         records.push(r);
     }
-    let windows = ingest(cat.as_ref(), &own, "gauge", records)
+    let windows = l
+        .ingest("gauge", records)
         .await
         .must("ingesting three readings with their seen_at")?;
     windows_reach_head(store.as_ref(), &windows, "ingesting three readings").await?;
@@ -309,7 +276,7 @@ async fn a_filter_and_an_order_can_read_when_a_source_saw_a_value(
         }],
         ..Find::default()
     };
-    let rows = all_found(cat.as_ref(), &own, "reading", find).await?;
+    let rows = l.all_found("reading", find).await?;
     let keys: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
     ensure!(
         keys == ["c", "b"],
@@ -330,17 +297,10 @@ async fn a_cleared_field_matches_nothing_but_its_record_is_found_by_another(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     lines(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    upsert(
-        cat.as_ref(),
-        &own,
-        "line",
-        "a",
-        json!({"label": "keep", "note": "gone"}),
-    )
-    .await?;
-    upsert(cat.as_ref(), &own, "line", "a", json!({"note": null})).await?;
+    let l = Lake::of(store.as_ref());
+    l.upsert("line", "a", json!({"label": "keep", "note": "gone"}))
+        .await?;
+    l.upsert("line", "a", json!({"note": null})).await?;
     let by_note = keys_where(store.as_ref(), "note = 'gone'").await?;
     let by_label = keys_where(store.as_ref(), "label = 'keep' and note is null").await?;
     ensure!(

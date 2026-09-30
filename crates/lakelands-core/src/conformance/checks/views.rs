@@ -19,8 +19,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, all, dec, decimal, declare, doors, field, ingest, owner, read, source_record, type_decl,
-    upsert, windows_reach_head,
+    Lake, Must, all, dec, decimal, doors, field, partner_totals, source_record, type_decl, upsert,
+    windows_reach_head,
 };
 
 check!(
@@ -60,36 +60,6 @@ fn invoices(authority: Authority) -> TypeDecl {
     partner.authority = authority;
     amount.authority = authority;
     type_decl("invoice", vec![partner, amount])
-}
-
-/// A view named `name` over `invoice`: per partner, the exact total and
-/// how many invoices went into it.
-fn totals(name: &str) -> TypeDecl {
-    let mut ty = type_decl(
-        name,
-        vec![
-            field("partner", StorageKind::Text),
-            field("total", StorageKind::Decimal),
-            field("invoices", StorageKind::Number),
-        ],
-    );
-    ty.key = vec![FieldName::from("partner")];
-    ty.view = Some(ViewDecl {
-        source: TypeName::from("invoice"),
-        r#where: None,
-        group_by: vec![FieldName::from("partner")],
-        measures: vec![
-            Measure {
-                name: FieldName::from("total"),
-                expr: "sum(amount)".into(),
-            },
-            Measure {
-                name: FieldName::from("invoices"),
-                expr: "count()".into(),
-            },
-        ],
-    });
-    ty
 }
 
 /// A view's records, by partner: each record's fields as stored.
@@ -158,19 +128,20 @@ async fn write_invoice(
 async fn a_view_groups_its_source_and_sums_it_exactly(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(cat.as_ref(), &own, invoices(Authority::Authored)).await?;
-    declare(cat.as_ref(), &own, totals("partner_totals")).await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { own, .. } = &l;
+    l.declare(invoices(Authority::Authored)).await?;
+    l.declare(partner_totals("partner_totals", StorageKind::Decimal))
+        .await?;
     for (nr, partner, amount) in [
         ("i1", "p1", "10.00"),
         ("i2", "p1", "5.50"),
         ("i3", "p2", "3.00"),
     ] {
-        write_invoice(store.as_ref(), &own, nr, partner, amount).await?;
+        write_invoice(store.as_ref(), own, nr, partner, amount).await?;
     }
 
-    let got = view_totals(store.as_ref(), &own, "partner_totals").await?;
+    let got = view_totals(store.as_ref(), own, "partner_totals").await?;
     let expected = want(&[("p1", "15.50", 2.0), ("p2", "3.00", 1.0)]);
     ensure!(
         got == expected,
@@ -184,35 +155,37 @@ async fn a_view_groups_its_source_and_sums_it_exactly(
 async fn a_view_is_the_same_whether_declared_before_or_after_its_source_was_written(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(cat.as_ref(), &own, invoices(Authority::Authored)).await?;
-    declare(cat.as_ref(), &own, totals("totals_early")).await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { own, .. } = &l;
+    l.declare(invoices(Authority::Authored)).await?;
+    l.declare(partner_totals("totals_early", StorageKind::Decimal))
+        .await?;
     for (nr, partner, amount) in [
         ("i1", "p1", "10.00"),
         ("i2", "p1", "5.50"),
         ("i3", "p2", "3.00"),
         ("i4", "p3", "100.00"),
     ] {
-        write_invoice(store.as_ref(), &own, nr, partner, amount).await?;
+        write_invoice(store.as_ref(), own, nr, partner, amount).await?;
     }
     // An update in place, a move between groups, and a group's only
     // member restated at a shorter scale: every way the early view must
     // follow its source.
-    write_invoice(store.as_ref(), &own, "i1", "p1", "20.00").await?;
-    write_invoice(store.as_ref(), &own, "i2", "p2", "5.50").await?;
-    write_invoice(store.as_ref(), &own, "i4", "p3", "100.5").await?;
-    declare(cat.as_ref(), &own, totals("totals_late")).await?;
+    write_invoice(store.as_ref(), own, "i1", "p1", "20.00").await?;
+    write_invoice(store.as_ref(), own, "i2", "p2", "5.50").await?;
+    write_invoice(store.as_ref(), own, "i4", "p3", "100.5").await?;
+    l.declare(partner_totals("totals_late", StorageKind::Decimal))
+        .await?;
 
-    let early = view_rows(store.as_ref(), &own, "totals_early").await?;
-    let late = view_rows(store.as_ref(), &own, "totals_late").await?;
+    let early = view_rows(store.as_ref(), own, "totals_early").await?;
+    let late = view_rows(store.as_ref(), own, "totals_late").await?;
     ensure!(
         early == late,
         "two views over the same source state disagree: declared before the writes it \
          holds {early:?}, declared after them {late:?}. A view is a function of its \
          source's state, byte for byte, trailing zeros included"
     );
-    let got = view_totals(store.as_ref(), &own, "totals_early").await?;
+    let got = view_totals(store.as_ref(), own, "totals_early").await?;
     let expected = want(&[
         ("p1", "20.00", 1.0),
         ("p2", "8.50", 2.0),
@@ -229,22 +202,23 @@ async fn a_view_is_the_same_whether_declared_before_or_after_its_source_was_writ
 async fn a_view_drops_a_group_whose_last_member_is_retired(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(cat.as_ref(), &own, invoices(Authority::Authored)).await?;
-    declare(cat.as_ref(), &own, totals("partner_totals")).await?;
-    write_invoice(store.as_ref(), &own, "i1", "p1", "10.00").await?;
-    write_invoice(store.as_ref(), &own, "i2", "p2", "3.00").await?;
-    write_invoice(store.as_ref(), &own, "i3", "p2", "4.00").await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(invoices(Authority::Authored)).await?;
+    l.declare(partner_totals("partner_totals", StorageKind::Decimal))
+        .await?;
+    write_invoice(store.as_ref(), own, "i1", "p1", "10.00").await?;
+    write_invoice(store.as_ref(), own, "i2", "p2", "3.00").await?;
+    write_invoice(store.as_ref(), own, "i3", "p2", "4.00").await?;
 
     let invoice = TypeName::from("invoice");
     for nr in ["i2", "i1"] {
-        cat.retire(&own, &invoice, &nr.into(), Default::default())
+        cat.retire(own, &invoice, &nr.into(), Default::default())
             .await
             .must(&format!("retiring invoice `{nr}`"))?;
     }
 
-    let got = view_totals(store.as_ref(), &own, "partner_totals").await?;
+    let got = view_totals(store.as_ref(), own, "partner_totals").await?;
     let expected = want(&[("p2", "4.00", 1.0)]);
     ensure!(
         got == expected,
@@ -257,10 +231,11 @@ async fn a_view_drops_a_group_whose_last_member_is_retired(
 async fn a_view_over_an_ingested_source_is_current_once_the_ingest_is_committed(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(cat.as_ref(), &own, invoices(Authority::Source)).await?;
-    declare(cat.as_ref(), &own, totals("partner_totals")).await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { own, .. } = &l;
+    l.declare(invoices(Authority::Source)).await?;
+    l.declare(partner_totals("partner_totals", StorageKind::Decimal))
+        .await?;
 
     let delivery = [
         ("i1", "p1", "10.00"),
@@ -275,7 +250,8 @@ async fn a_view_over_an_ingested_source_is_current_once_the_ingest_is_committed(
         source_record("invoice", nr, json!({"partner": partner, "amount": amount}))
     })
     .collect();
-    let windows = ingest(cat.as_ref(), &own, "ledger", delivery)
+    let windows = l
+        .ingest("ledger", delivery)
         .await
         .must("ingesting four invoices from `ledger`")?;
     windows_reach_head(
@@ -285,7 +261,7 @@ async fn a_view_over_an_ingested_source_is_current_once_the_ingest_is_committed(
     )
     .await?;
 
-    let got = view_totals(store.as_ref(), &own, "partner_totals").await?;
+    let got = view_totals(store.as_ref(), own, "partner_totals").await?;
     let expected = want(&[("p1", "25.50", 2.0), ("p2", "3.00", 1.0)]);
     ensure!(
         got == expected,
@@ -299,11 +275,11 @@ async fn a_view_over_an_ingested_source_is_current_once_the_ingest_is_committed(
 async fn a_view_record_is_keyed_by_its_group_by_fields(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let mut source = invoices(Authority::Authored);
     source.fields.push(field("region", StorageKind::Text));
-    declare(cat.as_ref(), &own, source).await?;
+    l.declare(source).await?;
     let mut view = type_decl(
         "by_both",
         vec![
@@ -322,22 +298,20 @@ async fn a_view_record_is_keyed_by_its_group_by_fields(
             expr: "count()".into(),
         }],
     });
-    declare(cat.as_ref(), &own, view).await?;
+    l.declare(view).await?;
     for (k, partner, region) in [
         ("1", "acme", "north"),
         ("2", "acme", "south:east"),
         ("3", "acme", "north"),
     ] {
-        upsert(
-            cat.as_ref(),
-            &own,
+        l.upsert(
             "invoice",
             k,
             json!({"partner": partner, "region": region, "amount": "1"}),
         )
         .await?;
     }
-    let mut keys: Vec<String> = all(cat.as_ref(), &own, "by_both")
+    let mut keys: Vec<String> = all(cat.as_ref(), own, "by_both")
         .await?
         .into_iter()
         .map(|r| r.key.0)
@@ -348,7 +322,7 @@ async fn a_view_record_is_keyed_by_its_group_by_fields(
         "the view grouped by partner and region must key its records `acme:north` and \
          `acme:south%3Aeast` (the `:` inside a value escaped); they are keyed {keys:?}"
     );
-    let north = read(cat.as_ref(), &own, "by_both", "acme:north").await?;
+    let north = l.read("by_both", "acme:north").await?;
     ensure!(
         north.fields.get("invoices").and_then(Value::as_f64) == Some(2.0),
         "reading the view record `acme:north` by its key must answer 2 invoices; it \

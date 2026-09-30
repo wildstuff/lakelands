@@ -21,9 +21,7 @@ use lakelands_api::{
 };
 use serde_json::json;
 
-use crate::conformance::fixture::{
-    Must, declare, doors, field, owner, patch, principal, type_decl, upsert,
-};
+use crate::conformance::fixture::{Lake, Must, doors, field, owner, patch, principal, type_decl};
 use crate::conformance::{Failure, Given};
 
 check!(
@@ -65,14 +63,10 @@ check!(
 ///
 /// Answers the position before the last link.
 async fn lake(store: &dyn LakeStore) -> Result<Position, Failure> {
-    let cat = doors(store);
-    let own = owner(store);
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("partner", vec![field("name", StorageKind::Text)]),
-    )
-    .await?;
+    let l = Lake::of(store);
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))
+        .await?;
     let mut invoice: TypeDecl = type_decl(
         "invoice",
         vec![
@@ -110,9 +104,9 @@ async fn lake(store: &dyn LakeStore) -> Result<Position, Failure> {
             description: None,
         },
     ];
-    declare(cat.as_ref(), &own, invoice).await?;
+    l.declare(invoice).await?;
     for p in ["p1", "p2", "p3"] {
-        upsert(cat.as_ref(), &own, "partner", p, json!({"name": p})).await?;
+        l.upsert("partner", p, json!({"name": p})).await?;
     }
     for (i, p) in [
         ("i0", None),
@@ -123,13 +117,13 @@ async fn lake(store: &dyn LakeStore) -> Result<Position, Failure> {
         ("i5", Some("p3")),
     ] {
         let fields = p.map_or_else(|| json!({"note": i}), |p| json!({"note": i, "partner": p}));
-        upsert(cat.as_ref(), &own, "invoice", i, fields).await?;
+        l.upsert("invoice", i, fields).await?;
     }
-    cat.retire(&own, &"partner".into(), &"p3".into(), WriteOpts::default())
+    cat.retire(own, &"partner".into(), &"p3".into(), WriteOpts::default())
         .await
         .must("retiring p3")?;
     for (from, to) in [("i2", "p1"), ("i4", "p1")] {
-        link(cat.as_ref(), &own, from, to).await?;
+        link(&l, from, to).await?;
     }
     store
         .restrict(
@@ -140,11 +134,12 @@ async fn lake(store: &dyn LakeStore) -> Result<Position, Failure> {
         .await
         .must("restricting the link i4 → p1")?;
     let before = store.head().await.must("reading the head")?;
-    link(cat.as_ref(), &own, "i1", "p2").await?;
+    link(&l, "i1", "p2").await?;
     Ok(before)
 }
 
-async fn link(cat: &dyn Catalog, who: &Principal, from: &str, to: &str) -> Result<(), Failure> {
+async fn link(l: &Lake, from: &str, to: &str) -> Result<(), Failure> {
+    let (cat, who) = (l.cat.as_ref(), &l.own);
     cat.link(
         who,
         &"invoice".into(),
@@ -246,8 +241,8 @@ async fn degree_counts_each_records_links_to_ends_it_may_see_highest_first(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     lake(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let out = || {
         measure(
             "invoice",
@@ -255,7 +250,7 @@ async fn degree_counts_each_records_links_to_ends_it_may_see_highest_first(
             Projection::Degree,
         )
     };
-    let (got, _) = rows(cat.as_ref(), &own, out(), "the invoices' out-degree").await?;
+    let (got, _) = rows(cat.as_ref(), own, out(), "the invoices' out-degree").await?;
     ensure!(
         got == [
             "invoice:i1=2",
@@ -292,7 +287,7 @@ async fn degree_counts_each_records_links_to_ends_it_may_see_highest_first(
         vec![step("billed_to", Walk::In)],
         Projection::Degree,
     );
-    let (got, _) = rows(cat.as_ref(), &own, inn, "the partners' in-degree").await?;
+    let (got, _) = rows(cat.as_ref(), own, inn, "the partners' in-degree").await?;
     ensure!(
         got == ["partner:p1=2", "partner:p2=1"],
         "the partners' in-degree over `billed_to` is p1 2, p2 1, and the retired p3 is no \
@@ -301,7 +296,7 @@ async fn degree_counts_each_records_links_to_ends_it_may_see_highest_first(
     let mut first = out();
     first.limit = Some(2);
     let reply = cat
-        .query(&own, first)
+        .query(own, first)
         .await
         .must("the first page of degrees")?;
     let QueryResult::Rows {
@@ -321,7 +316,7 @@ async fn degree_counts_each_records_links_to_ends_it_may_see_highest_first(
     let mut next = out();
     next.limit = Some(2);
     next.cursor = next_cursor;
-    let (got, _) = rows(cat.as_ref(), &own, next, "the second page of degrees").await?;
+    let (got, _) = rows(cat.as_ref(), own, next, "the second page of degrees").await?;
     ensure!(
         got == ["invoice:i3=1", "invoice:i4=1"],
         "the second page holds i3 and i4; it answered {got:?}"
@@ -333,10 +328,10 @@ async fn components_partition_what_the_start_reaches_largest_first(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     lake(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let all = || measure("invoice", both(), Projection::Components);
-    let (got, _) = rows(cat.as_ref(), &own, all(), "the invoices' components").await?;
+    let (got, _) = rows(cat.as_ref(), own, all(), "the invoices' components").await?;
     let want = [
         "0/6 invoice:i1",
         "0/6 invoice:i2",
@@ -382,13 +377,13 @@ async fn a_measure_reads_the_graph_at_the_position_it_is_asked_at(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let before = lake(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let mut then = measure("invoice", both(), Projection::Components);
     then.at.as_of = Some(before);
     let (got, _) = rows(
         cat.as_ref(),
-        &own,
+        own,
         then,
         "the components before the last link",
     )
@@ -414,7 +409,7 @@ async fn a_measure_reads_the_graph_at_the_position_it_is_asked_at(
         Projection::Degree,
     );
     then.at.as_of = Some(before);
-    let (got, _) = rows(cat.as_ref(), &own, then, "the degrees before the last link").await?;
+    let (got, _) = rows(cat.as_ref(), own, then, "the degrees before the last link").await?;
     ensure!(
         got.first().map(String::as_str) == Some("invoice:i2=1")
             && got.contains(&"invoice:i1=0".to_owned()),
@@ -484,8 +479,8 @@ async fn a_measure_refuses_depth_where_to_order_by_and_one_way_components(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     lake(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let degree = || {
         measure(
             "invoice",
@@ -524,7 +519,7 @@ async fn a_measure_refuses_depth_where_to_order_by_and_one_way_components(
     ));
     for (what, p) in cases {
         let err = cat
-            .query(&own, p)
+            .query(own, p)
             .await
             .must_fail(&format!("a measure with {what}"))?;
         ensure!(

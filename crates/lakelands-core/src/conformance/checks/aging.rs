@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, declare, doors, field, head_unmoved, owner, read, type_decl, upsert,
+    Lake, Must, declare, field, head_unmoved, read, type_decl, upsert,
 };
 
 check!(
@@ -121,13 +121,15 @@ async fn age(store: &dyn LakeStore, today: Timestamp) -> Result<AgeReport, Failu
     store.age(today).await.must(&format!("aging {today}"))
 }
 
-async fn status(cat: &dyn Catalog, who: &Principal, key: &str) -> Result<Value, Failure> {
+async fn status(l: &Lake, key: &str) -> Result<Value, Failure> {
+    let (cat, who) = (l.cat.as_ref(), &l.own);
     let r = read(cat, who, "invoice", key).await?;
     Ok(r.fields.get("status").cloned().unwrap_or(Value::Null))
 }
 
 /// `invoice` with `status` (text) and `amount` (number).
-async fn invoices(cat: &dyn Catalog, who: &Principal) -> Result<(), Failure> {
+async fn invoices(l: &Lake) -> Result<(), Failure> {
+    let (cat, who) = (l.cat.as_ref(), &l.own);
     declare(
         cat,
         who,
@@ -148,23 +150,17 @@ async fn invoices(cat: &dyn Catalog, who: &Principal) -> Result<(), Failure> {
 async fn a_rule_moves_only_the_records_holding_from_whose_condition_holds(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    invoices(cat.as_ref(), &own).await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    invoices(&l).await?;
     for (key, status, amount) in [
         ("due", "open", 200),
         ("small", "open", 50),
         ("paid", "paid", 200),
         ("held", "open", 300),
     ] {
-        upsert(
-            cat.as_ref(),
-            &own,
-            "invoice",
-            key,
-            json!({"status": status, "amount": amount}),
-        )
-        .await?;
+        l.upsert("invoice", key, json!({"status": status, "amount": amount}))
+            .await?;
     }
     store
         .restrict(&"invoice".into(), &"held".into(), "a retention hold".into())
@@ -172,7 +168,7 @@ async fn a_rule_moves_only_the_records_holding_from_whose_condition_holds(
         .must("restricting `held`")?;
     rule(
         cat.as_ref(),
-        &own,
+        own,
         "overdue",
         "invoice",
         "status",
@@ -188,7 +184,7 @@ async fn a_rule_moves_only_the_records_holding_from_whose_condition_holds(
         ("paid", "paid"),
         ("held", "overdue"),
     ] {
-        let got = status(cat.as_ref(), &own, key).await?;
+        let got = status(&l, key).await?;
         ensure!(
             got == json!(want),
             "after aging, `{key}` holds status {got}, and {want:?} was expected: a rule moves \
@@ -211,20 +207,14 @@ async fn a_rule_moves_only_the_records_holding_from_whose_condition_holds(
 async fn aging_a_date_twice_appends_nothing_the_second_time(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    invoices(cat.as_ref(), &own).await?;
-    upsert(
-        cat.as_ref(),
-        &own,
-        "invoice",
-        "i1",
-        json!({"status": "open", "amount": 200}),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    invoices(&l).await?;
+    l.upsert("invoice", "i1", json!({"status": "open", "amount": 200}))
+        .await?;
     rule(
         cat.as_ref(),
-        &own,
+        own,
         "overdue",
         "invoice",
         "status",
@@ -241,14 +231,7 @@ async fn aging_a_date_twice_appends_nothing_the_second_time(
     );
     // Set back by hand: the day's move is in the lake, so the same date
     // does not move it again.
-    upsert(
-        cat.as_ref(),
-        &own,
-        "invoice",
-        "i1",
-        json!({"status": "open"}),
-    )
-    .await?;
+    l.upsert("invoice", "i1", json!({"status": "open"})).await?;
     let before = store.head().await.must("reading the head")?;
     let second = age(store.as_ref(), date(2026, 3, 1)).await?;
     ensure!(
@@ -274,12 +257,10 @@ async fn aging_a_date_twice_appends_nothing_the_second_time(
 async fn today_in_a_rule_is_the_date_aged_not_the_clock(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    invoices(cat.as_ref(), &own).await?;
-    upsert(
-        cat.as_ref(),
-        &own,
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    invoices(&l).await?;
+    l.upsert(
         "invoice",
         "i1",
         json!({"status": "open", "due_on": "2020-01-01T00:00:00Z"}),
@@ -287,7 +268,7 @@ async fn today_in_a_rule_is_the_date_aged_not_the_clock(
     .await?;
     rule(
         cat.as_ref(),
-        &own,
+        own,
         "overdue",
         "invoice",
         "status",
@@ -299,13 +280,13 @@ async fn today_in_a_rule_is_the_date_aged_not_the_clock(
     // The clock is years past the due date; the date handed in is not.
     let early = age(store.as_ref(), date(2020, 1, 15)).await?;
     ensure!(
-        early.transitions == 0 && status(cat.as_ref(), &own, "i1").await? == json!("open"),
+        early.transitions == 0 && status(&l, "i1").await? == json!("open"),
         "aged at 2020-01-15, fifteen days after the due date, `i1` moved: `today()` read \
          the clock, not the date handed in"
     );
     let late = age(store.as_ref(), date(2020, 3, 1)).await?;
     ensure!(
-        late.transitions == 1 && status(cat.as_ref(), &own, "i1").await? == json!("overdue"),
+        late.transitions == 1 && status(&l, "i1").await? == json!("overdue"),
         "aged at 2020-03-01, sixty days after the due date, `i1` did not move"
     );
     Ok(())
@@ -314,13 +295,11 @@ async fn today_in_a_rule_is_the_date_aged_not_the_clock(
 async fn a_condition_that_cannot_be_evaluated_leaves_the_record(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    invoices(cat.as_ref(), &own).await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    invoices(&l).await?;
     for (key, divisor) in [("a", 1), ("b", 0), ("c", 2)] {
-        upsert(
-            cat.as_ref(),
-            &own,
+        l.upsert(
             "invoice",
             key,
             json!({"status": "open", "amount": 100, "divisor": divisor}),
@@ -329,7 +308,7 @@ async fn a_condition_that_cannot_be_evaluated_leaves_the_record(
     }
     rule(
         cat.as_ref(),
-        &own,
+        own,
         "overdue",
         "invoice",
         "status",
@@ -340,12 +319,12 @@ async fn a_condition_that_cannot_be_evaluated_leaves_the_record(
     .await?;
     let report = age(store.as_ref(), date(2026, 3, 1)).await?;
     ensure!(
-        status(cat.as_ref(), &own, "b").await? == json!("open"),
+        status(&l, "b").await? == json!("open"),
         "`b` divides by zero in `when`, and it moved"
     );
     for key in ["a", "c"] {
         ensure!(
-            status(cat.as_ref(), &own, key).await? == json!("overdue"),
+            status(&l, key).await? == json!("overdue"),
             "`{key}`'s condition holds, and it did not move: a failed guard stopped the run"
         );
     }
@@ -359,11 +338,11 @@ async fn a_condition_that_cannot_be_evaluated_leaves_the_record(
 async fn a_move_is_written_by_the_system_as_its_rule(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    invoices(cat.as_ref(), &own).await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    invoices(&l).await?;
     cat.declare(
-        &own,
+        own,
         Declaration::Trigger(TriggerDecl {
             name: "went_overdue".into(),
             on: "invoice".into(),
@@ -373,19 +352,13 @@ async fn a_move_is_written_by_the_system_as_its_rule(
     )
     .await
     .must("declaring the trigger `went_overdue`")?;
-    upsert(
-        cat.as_ref(),
-        &own,
-        "invoice",
-        "i1",
-        json!({"status": "open", "amount": 200}),
-    )
-    .await?;
+    l.upsert("invoice", "i1", json!({"status": "open", "amount": 200}))
+        .await?;
     // Written twice, so the rule record's version is 2.
     for threshold in ["1000", "100"] {
         rule(
             cat.as_ref(),
-            &own,
+            own,
             "overdue",
             "invoice",
             "status",
@@ -430,7 +403,7 @@ async fn a_move_is_written_by_the_system_as_its_rule(
         "the move's id is {:?}, and log-format §3 gives {id:?}",
         moved.id
     );
-    let meta = read(cat.as_ref(), &own, "invoice", "i1").await?.meta;
+    let meta = l.read("invoice", "i1").await?.meta;
     let m = meta
         .get("status")
         .ok_or_else(|| Failure::new("the moved field has no provenance"))?;
@@ -455,8 +428,8 @@ async fn a_move_is_written_by_the_system_as_its_rule(
 async fn a_rule_that_does_not_fit_is_refused_naming_its_field(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let mut total = field("total", StorageKind::Number);
     total.authority = Authority::Derived;
     total.derived = Some(Condition::from("amount * 2"));
@@ -471,7 +444,7 @@ async fn a_rule_that_does_not_fit_is_refused_naming_its_field(
     );
     ty.fields.push(total);
     ty.key = vec!["number".into()];
-    declare(cat.as_ref(), &own, ty).await?;
+    l.declare(ty).await?;
     let mut counts = type_decl(
         "counts",
         vec![
@@ -489,7 +462,7 @@ async fn a_rule_that_does_not_fit_is_refused_naming_its_field(
             expr: "count()".into(),
         }],
     });
-    declare(cat.as_ref(), &own, counts).await?;
+    l.declare(counts).await?;
     let before = store.head().await.must("reading the head")?;
     let cases = [
         (
@@ -528,7 +501,7 @@ async fn a_rule_that_does_not_fit_is_refused_naming_its_field(
     for (at, fields) in cases {
         let e = cat
             .upsert(
-                &own,
+                own,
                 &AGING_RULE_TYPE.into(),
                 &"bad".into(),
                 crate::conformance::fixture::patch(fields),
@@ -549,23 +522,17 @@ async fn a_rule_that_does_not_fit_is_refused_naming_its_field(
 }
 
 async fn rules_run_in_name_order_one_append_each(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    invoices(cat.as_ref(), &own).await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    invoices(&l).await?;
     for key in ["i1", "i2"] {
-        upsert(
-            cat.as_ref(),
-            &own,
-            "invoice",
-            key,
-            json!({"status": "open", "amount": 200}),
-        )
-        .await?;
+        l.upsert("invoice", key, json!({"status": "open", "amount": 200}))
+            .await?;
     }
     // Written in the other order: the name orders them.
     rule(
         cat.as_ref(),
-        &own,
+        own,
         "b_second",
         "invoice",
         "status",
@@ -576,7 +543,7 @@ async fn rules_run_in_name_order_one_append_each(store: Arc<dyn LakeStore>) -> R
     .await?;
     rule(
         cat.as_ref(),
-        &own,
+        own,
         "a_first",
         "invoice",
         "status",
@@ -615,7 +582,7 @@ async fn rules_run_in_name_order_one_append_each(store: Arc<dyn LakeStore>) -> R
     );
     for key in ["i1", "i2"] {
         ensure!(
-            status(cat.as_ref(), &own, key).await? == json!("late"),
+            status(&l, key).await? == json!("late"),
             "`{key}` did not reach `late` through both rules in name order"
         );
     }
@@ -641,27 +608,16 @@ async fn age_at_a_time_other_than_midnight_is_refused(
 async fn a_rule_that_no_longer_fits_is_skipped_and_named(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    invoices(cat.as_ref(), &own).await?;
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("ticket", vec![field("state", StorageKind::Text)]),
-    )
-    .await?;
-    upsert(
-        cat.as_ref(),
-        &own,
-        "invoice",
-        "i1",
-        json!({"status": "open"}),
-    )
-    .await?;
-    upsert(cat.as_ref(), &own, "ticket", "t1", json!({"state": "new"})).await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    invoices(&l).await?;
+    l.declare(type_decl("ticket", vec![field("state", StorageKind::Text)]))
+        .await?;
+    l.upsert("invoice", "i1", json!({"status": "open"})).await?;
+    l.upsert("ticket", "t1", json!({"state": "new"})).await?;
     rule(
         cat.as_ref(),
-        &own,
+        own,
         "a_tickets",
         "ticket",
         "state",
@@ -672,7 +628,7 @@ async fn a_rule_that_no_longer_fits_is_skipped_and_named(
     .await?;
     rule(
         cat.as_ref(),
-        &own,
+        own,
         "b_invoices",
         "invoice",
         "status",
@@ -684,7 +640,7 @@ async fn a_rule_that_no_longer_fits_is_skipped_and_named(
     // `state` becomes the source's: the rule written for it no longer fits.
     let mut state = field("state", StorageKind::Text);
     state.authority = Authority::Source;
-    declare(cat.as_ref(), &own, type_decl("ticket", vec![state])).await?;
+    l.declare(type_decl("ticket", vec![state])).await?;
     let report = age(store.as_ref(), date(2026, 3, 1)).await?;
     let skipped = report
         .rules
@@ -697,10 +653,10 @@ async fn a_rule_that_no_longer_fits_is_skipped_and_named(
          is skipped, naming why"
     );
     ensure!(
-        status(cat.as_ref(), &own, "i1").await? == json!("overdue"),
+        status(&l, "i1").await? == json!("overdue"),
         "the rule `b_invoices` fits, and did not run beside the skipped one"
     );
-    let t1 = read(cat.as_ref(), &own, "ticket", "t1").await?;
+    let t1 = l.read("ticket", "t1").await?;
     ensure!(
         t1.fields.get("state") == Some(&json!("new")),
         "the skipped rule moved `t1`"
@@ -737,8 +693,8 @@ async fn a_rule_needs_write_on_its_field_and_read_on_what_when_reads(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     use lakelands_api::Access;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, .. } = &l;
     let ty = type_decl(
         "invoice",
         vec![
@@ -747,7 +703,7 @@ async fn a_rule_needs_write_on_its_field_and_read_on_what_when_reads(
             field("score", StorageKind::Number),
         ],
     );
-    declare(cat.as_ref(), &own, ty).await?;
+    l.declare(ty).await?;
     let fields = |when: &str| {
         crate::conformance::fixture::patch(json!({"on": "invoice", "field": "status",
             "from": "open", "to": "overdue", "when": when}))
@@ -814,39 +770,25 @@ async fn a_rule_needs_write_on_its_field_and_read_on_what_when_reads(
 async fn a_move_the_store_would_refuse_leaves_the_record(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("partner", vec![field("name", StorageKind::Text)]),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))
+        .await?;
     let mut owner_field = field("owner", StorageKind::Reference);
     owner_field.ty.target = Some("partner".into());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl(
-            "ticket",
-            vec![owner_field, field("state", StorageKind::Text)],
-        ),
-    )
+    l.declare(type_decl(
+        "ticket",
+        vec![owner_field, field("state", StorageKind::Text)],
+    ))
     .await?;
     for p in ["p1", "p2"] {
-        upsert(cat.as_ref(), &own, "partner", p, json!({"name": p})).await?;
+        l.upsert("partner", p, json!({"name": p})).await?;
     }
-    upsert(
-        cat.as_ref(),
-        &own,
-        "ticket",
-        "t1",
-        json!({"owner": "p1", "state": "new"}),
-    )
-    .await?;
+    l.upsert("ticket", "t1", json!({"owner": "p1", "state": "new"}))
+        .await?;
     rule(
         cat.as_ref(),
-        &own,
+        own,
         "a_reassign",
         "ticket",
         "owner",
@@ -857,7 +799,7 @@ async fn a_move_the_store_would_refuse_leaves_the_record(
     .await?;
     rule(
         cat.as_ref(),
-        &own,
+        own,
         "b_stale",
         "ticket",
         "state",
@@ -868,11 +810,11 @@ async fn a_move_the_store_would_refuse_leaves_the_record(
     .await?;
     // `p2` retired after the rule was written: moving `owner` to it would
     // refer to a record no longer live.
-    cat.retire(&own, &"partner".into(), &"p2".into(), Default::default())
+    cat.retire(own, &"partner".into(), &"p2".into(), Default::default())
         .await
         .must("retiring `p2`")?;
     let report = age(store.as_ref(), date(2026, 3, 1)).await?;
-    let t1 = read(cat.as_ref(), &own, "ticket", "t1").await?;
+    let t1 = l.read("ticket", "t1").await?;
     ensure!(
         t1.fields.get("owner") == Some(&json!("p1")),
         "`t1` was moved to the retired `p2`: {:?}",
@@ -899,20 +841,14 @@ check!(
 async fn a_rule_under_a_retention_hold_is_live_and_runs(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    invoices(cat.as_ref(), &own).await?;
-    upsert(
-        cat.as_ref(),
-        &own,
-        "invoice",
-        "i1",
-        json!({"status": "open", "amount": 200}),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    invoices(&l).await?;
+    l.upsert("invoice", "i1", json!({"status": "open", "amount": 200}))
+        .await?;
     rule(
         cat.as_ref(),
-        &own,
+        own,
         "held_rule",
         "invoice",
         "status",
@@ -931,7 +867,7 @@ async fn a_rule_under_a_retention_hold_is_live_and_runs(
         .must("restricting the rule record")?;
     let report = age(store.as_ref(), date(2026, 3, 1)).await?;
     ensure!(
-        status(cat.as_ref(), &own, "i1").await? == json!("overdue")
+        status(&l, "i1").await? == json!("overdue")
             && report
                 .rules
                 .iter()
@@ -955,23 +891,15 @@ async fn a_rule_reads_the_setting_at_its_run_and_a_replay_reads_its_moves(
     use lakelands_api::Access;
     use lakelands_api::principal::TypeGrants;
     use lakelands_api::seam::SETTING_TYPE;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    invoices(cat.as_ref(), &own).await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, .. } = &l;
+    invoices(&l).await?;
     for (key, amount) in [("big", 200), ("small", 50)] {
-        upsert(
-            cat.as_ref(),
-            &own,
-            "invoice",
-            key,
-            json!({"status": "open", "amount": amount}),
-        )
-        .await?;
+        l.upsert("invoice", key, json!({"status": "open", "amount": amount}))
+            .await?;
     }
     // When the rule is written, `limit` is 1000: nothing would move.
-    upsert(
-        cat.as_ref(),
-        &own,
+    l.upsert(
         SETTING_TYPE,
         "limit",
         json!({"key": "limit", "value": 1000}),
@@ -1004,19 +932,10 @@ async fn a_rule_reads_the_setting_at_its_run_and_a_replay_reads_its_moves(
     .await?;
     // Between the rule and the run, `limit` falls to 100: the run takes the
     // setting as it stands at the head when it runs.
-    upsert(
-        cat.as_ref(),
-        &own,
-        SETTING_TYPE,
-        "limit",
-        json!({"key": "limit", "value": 100}),
-    )
-    .await?;
+    l.upsert(SETTING_TYPE, "limit", json!({"key": "limit", "value": 100}))
+        .await?;
     age(store.as_ref(), date(2026, 3, 1)).await?;
-    let (big, small) = (
-        status(cat.as_ref(), &own, "big").await?,
-        status(cat.as_ref(), &own, "small").await?,
-    );
+    let (big, small) = (status(&l, "big").await?, status(&l, "small").await?);
     ensure!(
         big == json!("overdue") && small == json!("open"),
         "`limit` was 1000 when the rule was written and 100 when the lake aged: the run \
@@ -1025,16 +944,14 @@ async fn a_rule_reads_the_setting_at_its_run_and_a_replay_reads_its_moves(
     );
     // The setting changes afterwards; the moves are events, so a rebuild
     // reads them as they were and never evaluates `when` again.
-    upsert(
-        cat.as_ref(),
-        &own,
+    l.upsert(
         SETTING_TYPE,
         "limit",
         json!({"key": "limit", "value": 1000}),
     )
     .await?;
     store.rebuild().await.must("rebuilding the projection")?;
-    let after = status(cat.as_ref(), &own, "big").await?;
+    let after = status(&l, "big").await?;
     ensure!(
         after == json!("overdue"),
         "`limit` rose to 1000 after the run; a rebuild replays the move and does not \
@@ -1054,14 +971,14 @@ async fn a_rule_is_skipped_when_its_field_is_dropped_or_its_value_no_longer_admi
 ) -> Result<(), Failure> {
     use lakelands_api::ontology::ValueTypeDecl;
     use lakelands_api::write::Migration;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let stage_type = |one_of: &[&str]| -> Result<ValueTypeDecl, Failure> {
         serde_json::from_value(json!({"name": "stage", "kind": "text", "one_of": one_of}))
             .map_err(|e| Failure::new(format!("the check's value type does not read: {e}")))
     };
     cat.declare(
-        &own,
+        own,
         Declaration::ValueType(stage_type(&["open", "late", "closed"])?),
     )
     .await
@@ -1075,11 +992,11 @@ async fn a_rule_is_skipped_when_its_field_is_dropped_or_its_value_no_longer_admi
         "case",
         vec![phase.clone(), field("note", StorageKind::Text)],
     );
-    declare(cat.as_ref(), &own, with_note).await?;
-    upsert(cat.as_ref(), &own, "case", "c1", json!({"phase": "open"})).await?;
+    l.declare(with_note).await?;
+    l.upsert("case", "c1", json!({"phase": "open"})).await?;
     rule(
         cat.as_ref(),
-        &own,
+        own,
         "a_note",
         "case",
         "note",
@@ -1090,7 +1007,7 @@ async fn a_rule_is_skipped_when_its_field_is_dropped_or_its_value_no_longer_admi
     .await?;
     rule(
         cat.as_ref(),
-        &own,
+        own,
         "b_late",
         "case",
         "phase",
@@ -1106,21 +1023,21 @@ async fn a_rule_is_skipped_when_its_field_is_dropped_or_its_value_no_longer_admi
         renames: Vec::new(),
     };
     let report = cat
-        .migrate(&own, m.clone())
+        .migrate(own, m.clone())
         .await
         .must("the preflight of dropping `note`")?
         .data;
-    cat.migrate_apply(&own, m, &report.report_id)
+    cat.migrate_apply(own, m, &report.report_id)
         .await
         .must("dropping `note`")?;
     // `late` leaves `stage`; every stored value (`open`) still fits.
     let tighter = stage_type(&["open", "closed"])?;
     let vt = cat
-        .migrate_value_type(&own, tighter.clone())
+        .migrate_value_type(own, tighter.clone())
         .await
         .must("the preflight of tightening `stage`")?
         .data;
-    cat.migrate_value_type_apply(&own, tighter, &vt.report_id)
+    cat.migrate_value_type_apply(own, tighter, &vt.report_id)
         .await
         .must("tightening `stage`")?;
 
@@ -1138,7 +1055,7 @@ async fn a_rule_is_skipped_when_its_field_is_dropped_or_its_value_no_longer_admi
         "`note` was dropped and `late` left `stage`: both rules are skipped and named, \
          each with why; the report says {report:?}"
     );
-    let c1 = read(cat.as_ref(), &own, "case", "c1").await?;
+    let c1 = l.read("case", "c1").await?;
     ensure!(
         c1.fields.get("phase") == Some(&json!("open")),
         "a skipped rule moves nothing: `c1` holds {:?}",

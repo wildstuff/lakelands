@@ -29,7 +29,7 @@ use lakelands_api::query::{Search, SearchMode};
 use lakelands_api::{LakeStore, Position, Principal, ReadAt, SourceId, SourceRecord, TypeName};
 use serde_json::json;
 
-use crate::conformance::fixture::{Must, declare, doors, field, owner, type_decl, upsert};
+use crate::conformance::fixture::{Lake, Must, doors, field, type_decl};
 use crate::conformance::{Failure, Given, next};
 
 check!(
@@ -183,8 +183,8 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
     given: Given,
 ) -> Result<(), Failure> {
     use lakelands_api::WriteOpts;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let source = |f: FieldDecl| FieldDecl {
         authority: Authority::Source,
         ..f
@@ -197,7 +197,7 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
         ..field("v", StorageKind::Text)
     });
     let group = source(field("group", StorageKind::Number));
-    declare(cat.as_ref(), &own, type_decl(TY, vec![v, group])).await?;
+    l.declare(type_decl(TY, vec![v, group])).await?;
     let mut points: Vec<Point> = (0..POINTS)
         .map(|i| Point {
             key: format!("p{i:05}"),
@@ -209,16 +209,14 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
         .collect();
     deliver(
         store.as_ref(),
-        &own,
+        own,
         points
             .iter()
             .map(|p| source_record(&p.key, p.vector.as_deref(), p.group))
             .collect(),
     )
     .await?;
-    upsert(
-        cat.as_ref(),
-        &own,
+    l.upsert(
         lakelands_api::seam::SETTING_TYPE,
         "vector_index.point",
         json!({"key": "vector_index.point", "value": ["v"]}),
@@ -235,7 +233,7 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
         match i % 100 {
             5 => {
                 p.retired = true;
-                cat.retire(&own, &point, &p.key.as_str().into(), WriteOpts::default())
+                cat.retire(own, &point, &p.key.as_str().into(), WriteOpts::default())
                     .await
                     .must(&format!("retiring `{}`", p.key))?;
             }
@@ -262,7 +260,7 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
         changed.push(source_record(&p.key, p.vector.as_deref(), p.group));
         points.push(p);
     }
-    deliver(store.as_ref(), &own, changed).await?;
+    deliver(store.as_ref(), own, changed).await?;
 
     let search = |q: Vec<f32>, k: u32, group: Option<u32>, earlier: bool| {
         let cat = cat.clone();

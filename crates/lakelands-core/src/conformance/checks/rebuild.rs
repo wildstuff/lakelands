@@ -16,7 +16,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, all_found, declare, doors, field, get_at, owner, type_decl, upsert,
+    Lake, Must, all_found, declare, doors, field, get_at, owner, type_decl, upsert,
 };
 
 check!(
@@ -70,8 +70,8 @@ async fn snapshot(
 async fn a_rebuilt_projection_answers_every_read_as_the_live_one_did(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
 
     let mut gross = field("gross", StorageKind::Decimal);
     gross.authority = Authority::Derived;
@@ -85,7 +85,7 @@ async fn a_rebuilt_projection_answers_every_read_as_the_live_one_did(
             gross,
         ],
     );
-    declare(cat.as_ref(), &own, invoice).await?;
+    l.declare(invoice).await?;
     let mut view = type_decl(
         "partner_totals",
         vec![
@@ -106,33 +106,24 @@ async fn a_rebuilt_projection_answers_every_read_as_the_live_one_did(
 
     let mut positions = Vec::new();
     for (nr, partner, amount) in [("i1", "p1", "10.00"), ("i2", "p1", "5.50")] {
-        let written = upsert(
-            cat.as_ref(),
-            &own,
-            "invoice",
-            nr,
-            json!({"partner": partner, "amount": amount}),
-        )
-        .await?;
+        let written = l
+            .upsert("invoice", nr, json!({"partner": partner, "amount": amount}))
+            .await?;
         positions.push(written.position());
     }
     // Declared after records exist, then kept by later writes: a rebuild
     // has to redo both.
-    declare(cat.as_ref(), &own, view).await?;
+    l.declare(view).await?;
     for (nr, fields) in [
         ("i1", json!({"amount": "20.00"})),
         ("i3", json!({"partner": "p2", "amount": "3.00"})),
         ("i1", json!({"partner": null})),
     ] {
-        positions.push(
-            upsert(cat.as_ref(), &own, "invoice", nr, fields)
-                .await?
-                .position(),
-        );
+        positions.push(l.upsert("invoice", nr, fields).await?.position());
     }
     let retired = cat
         .retire(
-            &own,
+            own,
             &TypeName::from("invoice"),
             &"i2".into(),
             Default::default(),
@@ -146,16 +137,16 @@ async fn a_rebuilt_projection_answers_every_read_as_the_live_one_did(
     // the same page as the records they change.
     let migrated = migrations(store.as_ref()).await?;
     let head = store.head().await.must("reading the head")?;
-    let mut live = snapshot(store.as_ref(), &own, &positions).await?;
-    live.extend(migrated_snapshot(store.as_ref(), &own, &migrated).await?);
+    let mut live = snapshot(store.as_ref(), own, &positions).await?;
+    live.extend(migrated_snapshot(store.as_ref(), own, &migrated).await?);
     let through = store.rebuild().await.must("rebuilding the projection")?;
     ensure!(
         through == head,
         "the lake's head is {head}, but the projection was rebuilt through {through}; a \
          rebuild folds the whole log"
     );
-    let mut rebuilt = snapshot(store.as_ref(), &own, &positions).await?;
-    rebuilt.extend(migrated_snapshot(store.as_ref(), &own, &migrated).await?);
+    let mut rebuilt = snapshot(store.as_ref(), own, &positions).await?;
+    rebuilt.extend(migrated_snapshot(store.as_ref(), own, &migrated).await?);
 
     for ((label, before), (_, after)) in live.iter().zip(&rebuilt) {
         ensure!(
@@ -174,8 +165,8 @@ async fn a_rebuilt_projection_answers_every_read_as_the_live_one_did(
 async fn migrations(store: &dyn LakeStore) -> Result<Vec<Position>, Failure> {
     use lakelands_api::ontology::FieldType;
     use lakelands_api::write::Migration;
-    let cat = doors(store);
-    let own = owner(store);
+    let l = Lake::of(store);
+    let Lake { cat, own } = &l;
     let memo = type_decl(
         "memo",
         vec![
@@ -183,9 +174,9 @@ async fn migrations(store: &dyn LakeStore) -> Result<Vec<Position>, Failure> {
             field("pages", StorageKind::Number),
         ],
     );
-    declare(cat.as_ref(), &own, memo.clone()).await?;
+    l.declare(memo.clone()).await?;
     for (k, pages) in [("a", 3), ("b", 12)] {
-        upsert(cat.as_ref(), &own, "memo", k, json!({"pages": pages})).await?;
+        l.upsert("memo", k, json!({"pages": pages})).await?;
     }
     let mut to = memo;
     for f in &mut to.fields {
@@ -198,12 +189,12 @@ async fn migrations(store: &dyn LakeStore) -> Result<Vec<Position>, Failure> {
         renames: Vec::new(),
     };
     let report = cat
-        .migrate(&own, m.clone())
+        .migrate(own, m.clone())
         .await
         .must("the preflight of retyping `pages`")?
         .data;
     let retyped = cat
-        .migrate_apply(&own, m, &report.report_id)
+        .migrate_apply(own, m, &report.report_id)
         .await
         .must("retyping `pages` from number to text")?
         .position();
@@ -246,16 +237,11 @@ async fn migrated_snapshot(
 }
 
 async fn a_rebuild_reproduces_the_chain(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("memo", vec![field("text", StorageKind::Text)]),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl("memo", vec![field("text", StorageKind::Text)]))
+        .await?;
     for (k, t) in [("a", "one"), ("b", "two"), ("a", "three")] {
-        upsert(cat.as_ref(), &own, "memo", k, json!({ "text": t })).await?;
+        l.upsert("memo", k, json!({ "text": t })).await?;
     }
     let before = store.verify(None, None).await.must("verifying the chain")?;
     store.rebuild().await.must("rebuilding the projection")?;
@@ -443,8 +429,7 @@ async fn a_number_and_a_vector_read_back_in_their_one_json_form_before_and_after
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     use lakelands_api::ontology::{FieldDecl, FieldType};
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     let v = FieldDecl {
         ty: FieldType {
             dimensions: Some(3),
@@ -452,22 +437,16 @@ async fn a_number_and_a_vector_read_back_in_their_one_json_form_before_and_after
         },
         ..field("v", StorageKind::Text)
     };
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl(
-            "sample",
-            vec![
-                field("n", StorageKind::Number),
-                field("m", StorageKind::Number),
-                v,
-            ],
-        ),
-    )
+    l.declare(type_decl(
+        "sample",
+        vec![
+            field("n", StorageKind::Number),
+            field("m", StorageKind::Number),
+            v,
+        ],
+    ))
     .await?;
-    upsert(
-        cat.as_ref(),
-        &own,
+    l.upsert(
         "sample",
         "s",
         json!({"n": 2.0, "m": 1.5, "v": [0.0, 1.0, 0.25]}),

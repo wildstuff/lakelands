@@ -15,9 +15,7 @@ use lakelands_api::{FieldName, Find, Found, LakeStore, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{
-    Must, all, dec, decimal, declare, doors, field, owner, type_decl, upsert, value,
-};
+use crate::conformance::fixture::{Lake, Must, all, dec, decimal, field, type_decl, value};
 
 check!(
     /// A decimal reads back as it was written.
@@ -49,23 +47,16 @@ const AMOUNTS: [&str; 6] = [
 async fn a_decimal_reads_back_exactly_as_it_was_written(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let ty = type_decl("payment", vec![field("amount", StorageKind::Decimal)]);
-    declare(cat.as_ref(), &own, ty).await?;
+    l.declare(ty).await?;
     for (i, amount) in AMOUNTS.iter().enumerate() {
         let key = format!("m{i}");
-        upsert(
-            cat.as_ref(),
-            &own,
-            "payment",
-            &key,
-            json!({"amount": amount}),
-        )
-        .await?;
+        l.upsert("payment", &key, json!({"amount": amount})).await?;
     }
 
-    let rows = all(cat.as_ref(), &own, "payment").await?;
+    let rows = all(cat.as_ref(), own, "payment").await?;
     ensure!(
         rows.len() == AMOUNTS.len(),
         "`find` listed {} payments; {} were written",
@@ -88,19 +79,12 @@ async fn a_decimal_reads_back_exactly_as_it_was_written(
 }
 
 async fn a_sum_over_decimals_is_exact(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let ty = type_decl("payment", vec![field("amount", StorageKind::Decimal)]);
-    declare(cat.as_ref(), &own, ty).await?;
+    l.declare(ty).await?;
     for (key, amount) in [("a", "0.10"), ("b", "0.20"), ("c", "0.30")] {
-        upsert(
-            cat.as_ref(),
-            &own,
-            "payment",
-            key,
-            json!({"amount": amount}),
-        )
-        .await?;
+        l.upsert("payment", key, json!({"amount": amount})).await?;
     }
 
     let find = Find {
@@ -115,7 +99,7 @@ async fn a_sum_over_decimals_is_exact(store: Arc<dyn LakeStore>) -> Result<(), F
         ..Find::default()
     };
     let reply = cat
-        .find(&own, &TypeName::from("payment"), find)
+        .find(own, &TypeName::from("payment"), find)
         .await
         .must("summing `amount` over the payments")?;
     let Found::Groups { rows } = reply.data else {
@@ -141,13 +125,13 @@ async fn a_sum_over_decimals_is_exact(store: Arc<dyn LakeStore>) -> Result<(), F
 async fn a_scaled_decimal_keeps_its_scale_when_derived_and_summed(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let money: lakelands_api::write::Declaration = serde_json::from_value(json!({
         "declare": "value_type", "name": "money", "kind": "decimal", "scale": 2
     }))
     .map_err(|e| Failure::new(format!("the check's value type does not read: {e}")))?;
-    cat.declare(&own, money)
+    cat.declare(own, money)
         .await
         .must("declaring the value type `money`")?;
     let money_field = |name: &str| {
@@ -158,16 +142,12 @@ async fn a_scaled_decimal_keeps_its_scale_when_derived_and_summed(
     let mut gross = money_field("gross");
     gross.derived = Some(lakelands_api::expr::Condition::from("net * 1.19"));
     gross.authority = lakelands_api::ontology::Authority::Derived;
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("invoice", vec![money_field("net"), gross]),
-    )
-    .await?;
+    l.declare(type_decl("invoice", vec![money_field("net"), gross]))
+        .await?;
     for (key, net) in [("a", "4000.00"), ("b", "5000"), ("c", "0.05")] {
-        upsert(cat.as_ref(), &own, "invoice", key, json!({"net": net})).await?;
+        l.upsert("invoice", key, json!({"net": net})).await?;
     }
-    let rows = all(cat.as_ref(), &own, "invoice").await?;
+    let rows = all(cat.as_ref(), own, "invoice").await?;
     let grosses: Vec<Option<&serde_json::Value>> = ["a", "b", "c"]
         .iter()
         .map(|k| {
@@ -199,7 +179,7 @@ async fn a_scaled_decimal_keeps_its_scale_when_derived_and_summed(
         ..Find::default()
     };
     let reply = cat
-        .find(&own, &TypeName::from("invoice"), find)
+        .find(own, &TypeName::from("invoice"), find)
         .await
         .must("summing `gross`")?;
     let Found::Groups { rows } = reply.data else {

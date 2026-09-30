@@ -11,8 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use lakelands_api::event::{Event, EventBody};
-use lakelands_api::seam::FeedFilter;
+use lakelands_api::event::EventBody;
 use lakelands_api::{Error, LakeStore, Position, Refusal};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -20,7 +19,7 @@ use sha2::{Digest as _, Sha256};
 use super::rekey;
 use crate::canonical;
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Must, doors, field, owner, type_decl, upsert};
+use crate::conformance::fixture::{Lake, Must, doors, field, log_events, owner, type_decl, upsert};
 use crate::export::{self, Manifest};
 
 check!(
@@ -136,23 +135,14 @@ fn files(dir: &Path) -> Result<Vec<String>, Failure> {
     Ok(out)
 }
 
-async fn events(store: &dyn LakeStore) -> Result<Vec<Event>, Failure> {
-    Ok(store
-        .feed()
-        .poll(Position::GENESIS, &FeedFilter::default(), 10_000)
-        .await
-        .must("reading the log")?
-        .events)
-}
-
 /// A lake with an `invoice` type and `n` invoices written.
 async fn invoices(store: &dyn LakeStore, from: u32, n: u32) -> Result<Position, Failure> {
-    let cat = doors(store);
-    let own = owner(store);
+    let l = Lake::of(store);
+    let Lake { cat, own } = &l;
     if from == 0 {
         crate::conformance::fixture::declare(
             cat.as_ref(),
-            &own,
+            own,
             type_decl(
                 "invoice",
                 vec![field(
@@ -165,15 +155,10 @@ async fn invoices(store: &dyn LakeStore, from: u32, n: u32) -> Result<Position, 
     }
     let mut at = Position::GENESIS;
     for i in from..from + n {
-        at = upsert(
-            cat.as_ref(),
-            &own,
-            "invoice",
-            &format!("i{i}"),
-            json!({"amount": i}),
-        )
-        .await?
-        .position();
+        at = l
+            .upsert("invoice", &format!("i{i}"), json!({"amount": i}))
+            .await?
+            .position();
     }
     Ok(at)
 }
@@ -198,7 +183,7 @@ async fn an_export_writes_one_file_per_segment_of_canonical_lines(
         got == want,
         "a lake checkpointed at {sealed_at} exports the files {want:?}, and the export holds {got:?}"
     );
-    let all = events(store.as_ref()).await?;
+    let all = log_events(store.as_ref()).await?;
     for (file, run) in [
         (&want[0], &all[..sealed_at.0 as usize]),
         (&want[1], &all[sealed_at.0 as usize..]),
@@ -316,7 +301,7 @@ async fn a_rekeyed_lake_exports_both_format_versions_as_written(
         lines.extend(read(&dir, &file)?);
     }
     let mut want = Vec::new();
-    for e in events(store.as_ref()).await? {
+    for e in log_events(store.as_ref()).await? {
         want.extend(canonical::of(&e));
         want.push(b'\n');
     }
@@ -692,7 +677,7 @@ async fn answers(store: &dyn LakeStore, earlier: Position) -> Result<Value, Fail
     let cat = doors(store);
     let head = store.head().await.must("reading the head")?;
     let verified = store.verify(None, None).await.must("verifying")?;
-    let feed: Vec<Value> = events(store)
+    let feed: Vec<Value> = log_events(store)
         .await?
         .iter()
         .map(|e| serde_json::to_value(e).expect("an event serialises"))
@@ -742,7 +727,7 @@ async fn an_export_imported_into_a_fresh_lake_answers_as_the_lake_it_came_from(
 ) -> Result<(), Failure> {
     let scratch = Scratch::new(given.scratch.clone());
     let (store, earlier) = exported_lake(store, &given.reopen).await?;
-    let newest = events(store.as_ref())
+    let newest = log_events(store.as_ref())
         .await?
         .iter()
         .map(|e| e.v)
@@ -801,7 +786,7 @@ async fn an_export_imported_into_a_fresh_lake_answers_as_the_lake_it_came_from(
         );
     }
     // The next writer continues the lake above every fence in it.
-    let highest = events(imported.as_ref())
+    let highest = log_events(imported.as_ref())
         .await?
         .iter()
         .map(|e| e.fence)
@@ -811,7 +796,7 @@ async fn an_export_imported_into_a_fresh_lake_answers_as_the_lake_it_came_from(
         .await
         .map_err(|e| Failure::new(format!("opening the imported lake for writing: {e}")))?;
     invoices(writer.as_ref(), 5, 1).await?;
-    let log = events(writer.as_ref()).await?;
+    let log = log_events(writer.as_ref()).await?;
     let taken = log.iter().rev().find_map(|e| match &e.body {
         EventBody::LeaseTaken { fence, .. } => Some(*fence),
         _ => None,
@@ -956,7 +941,7 @@ async fn an_import_refuses_a_context_carrying_cause_naming_it(
 ) -> Result<(), Failure> {
     let scratch = Scratch::new(given.scratch.clone());
     invoices(store.as_ref(), 0, 1).await?;
-    let written = events(store.as_ref()).await?;
+    let written = log_events(store.as_ref()).await?;
     ensure!(
         written.iter().all(|e| e.context.cause.is_none()),
         "no event carries `cause` in its `context`"

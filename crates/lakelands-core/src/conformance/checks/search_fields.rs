@@ -12,7 +12,7 @@ use serde_json::json;
 
 use super::search::{doc_search, keys, masking, refused};
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Must, declare, doors, field, owner, type_decl, upsert};
+use crate::conformance::fixture::{Lake, Must, doors, field, owner, type_decl};
 
 check!(
     /// Named fields narrow the match and the ranking.
@@ -45,8 +45,7 @@ check!(
 /// searchable field; `b` holds both in `note`, `a` one, `c` none.
 async fn accounts(store: &dyn LakeStore) -> Result<(), Failure> {
     use lakelands_api::ontology::FieldType;
-    let cat = doors(store);
-    let own = owner(store);
+    let l = Lake::of(store);
     let searchable = |name| FieldDecl {
         searchable: true,
         ..field(name, StorageKind::Text)
@@ -58,19 +57,15 @@ async fn accounts(store: &dyn LakeStore) -> Result<(), Failure> {
         },
         ..field("w", StorageKind::Text)
     };
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl(
-            "doc",
-            vec![
-                searchable("note"),
-                searchable("secret"),
-                field("label", StorageKind::Text),
-                w,
-            ],
-        ),
-    )
+    l.declare(type_decl(
+        "doc",
+        vec![
+            searchable("note"),
+            searchable("secret"),
+            field("label", StorageKind::Text),
+            w,
+        ],
+    ))
     .await?;
     for (key, fields) in [
         (
@@ -80,7 +75,7 @@ async fn accounts(store: &dyn LakeStore) -> Result<(), Failure> {
         ("b", json!({"note": "harbour quayside", "w": [1.0, 0.0]})),
         ("c", json!({"secret": "harbour", "label": "harbour"})),
     ] {
-        upsert(cat.as_ref(), &own, "doc", key, fields).await?;
+        l.upsert("doc", key, fields).await?;
     }
     Ok(())
 }
@@ -310,8 +305,7 @@ async fn a_hybrid_search_limited_to_named_fields_still_probes_what_its_vector_is
 ) -> Result<(), Failure> {
     use crate::conformance::backing::EMBED_MODEL;
     use lakelands_api::ontology::{Authority, EmbedDecl, FieldType};
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     let vec = FieldDecl {
         ty: FieldType {
             dimensions: Some(2),
@@ -328,15 +322,12 @@ async fn a_hybrid_search_limited_to_named_fields_still_probes_what_its_vector_is
         searchable: true,
         ..field("note", StorageKind::Text)
     };
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("doc", vec![note, field("secret", StorageKind::Text), vec]),
-    )
+    l.declare(type_decl(
+        "doc",
+        vec![note, field("secret", StorageKind::Text), vec],
+    ))
     .await?;
-    upsert(
-        cat.as_ref(),
-        &own,
+    l.upsert(
         "doc",
         "a",
         json!({"note": "harbour", "secret": "the salary of the harbour master"}),
