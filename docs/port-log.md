@@ -79,6 +79,19 @@ behaviour and needs no port. Every other root still holds the files it
 held at the freeze, apart from the one test file the second commit adds
 to `{engine}`. **The list is closed for `0.4.0` as of `21384bf69f`.**
 
+**Checked on 2026-09-30, before the `0.5.0` tag**, against the source's
+mainline at `1c58d0fcbc`: the 39 commits after `21384bf69f` (731 after
+the freeze in all). The check is the same as before, with the files the
+first of the last two rows moved out of `{types}` followed into their
+new crate, all of which was checked. No mainline commit touches a root.
+Seven merges do show changes under the roots when compared with their
+side parent. Each brings a branch up to a mainline that already held the
+last two rows' commits. The roots are byte for byte what they were at
+`21384bf69f`, and every root, the new crate included, holds the same
+files. No row is added. **The list is closed for `0.5.0` as of
+`1c58d0fcbc`.** If the mainline moves before the tag, only the commits
+after it are checked.
+
 | Source commit | Behaviour, in one line | Ported in, or not applicable and why |
 |---|---|---|
 | `5914084de9` | One German user-interface sentence in the capabilities module changes its form of address from formal to informal. | Not applicable: the capabilities module was not carried (cut in O2: there is no capability negotiation; see `docs/import-ledger.md`), and no storage behaviour changes: no event, no fold rule, no signature, no stored byte. |
