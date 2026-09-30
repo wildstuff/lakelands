@@ -363,7 +363,7 @@ fn link_relation(
         .decl
         .relations
         .iter()
-        .find(|r| &r.name == relation && r.via.is_none())
+        .find(|r| &r.name == relation && r.via.is_none() && r.derived.is_none())
         .cloned()
         .ok_or_else(|| {
             invalid(format!(
@@ -597,12 +597,16 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
                     .types
                     .get(&t.name)
                     .and_then(|o| o.decl.relations.iter().find(|b| b.name == r.name))
-                    && before.via.is_some() != r.via.is_some()
+                    && (before.via.is_some() != r.via.is_some()
+                        || before.derived.is_some() != r.derived.is_some())
                 {
                     return Err(invalid(format!(
                         "type `{}`, relation `{}`: a relation keeps its carrier",
                         t.name, r.name
                     )));
+                }
+                if let Some(d) = &r.derived {
+                    derived_pairs(st, t, r, d)?;
                 }
             }
         }
@@ -674,7 +678,7 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
             o.decl
                 .relations
                 .iter()
-                .filter(|r| r.via.is_none())
+                .filter(|r| r.via.is_none() && r.derived.is_none())
                 .map(|r| (o.decl.name.clone(), r.name.clone()))
                 .collect::<Vec<_>>()
         })
@@ -683,7 +687,7 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
         link_relations.extend(
             t.relations
                 .iter()
-                .filter(|r| r.via.is_none())
+                .filter(|r| r.via.is_none() && r.derived.is_none())
                 .map(|r| (t.name.clone(), r.name.clone())),
         );
     }
@@ -802,6 +806,7 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
                 .iter()
                 .filter(|r| {
                     r.via.is_none()
+                        && r.derived.is_none()
                         && r.authority == Authority::Authored
                         && st.visible(who, &r.target).is_some()
                 })
@@ -2264,7 +2269,7 @@ impl Catalog for MockCatalog {
                     match rel {
                         Some(r) => (
                             r.target.clone(),
-                            r.via.clone(),
+                            (r.via.clone(), r.derived.clone()),
                             true,
                             links::name(&scope_ty.decl.name, &r.name),
                         ),
@@ -2289,7 +2294,7 @@ impl Catalog for MockCatalog {
                             .map(|r| {
                                 (
                                     o.decl.name.clone(),
-                                    r.via.clone(),
+                                    (r.via.clone(), r.derived.clone()),
                                     links::name(&o.decl.name, &r.name),
                                 )
                             })
@@ -2324,6 +2329,19 @@ impl Catalog for MockCatalog {
                     step.relation
                 )));
             }
+            // A derived relation probes its matched fields on both sides
+            // (024, 044).
+            if let (_, Some(d)) = &via {
+                let (owner, target) = if forward {
+                    (scope_ty, next)
+                } else {
+                    (next, scope_ty)
+                };
+                for p in &d.pairs {
+                    readable(&st, who, owner, &p.from)?;
+                    readable(&st, who, target, &p.to)?;
+                }
+            }
             let se = filter(&st, who, next, step.filter.as_ref())?;
             let reached = candidates(&st, who, next, pattern.at, se.as_ref())?;
             let mut out = Vec::new();
@@ -2331,14 +2349,16 @@ impl Catalog for MockCatalog {
                 let last = p[p.len() - 1];
                 for r in &reached {
                     let linked = match (&via, forward) {
-                        (Some(via), true) => {
+                        ((_, Some(d)), true) => derived_match(&d.pairs, last, r),
+                        ((_, Some(d)), false) => derived_match(&d.pairs, r, last),
+                        ((Some(via), None), true) => {
                             last.fields.get(via).and_then(Value::as_str) == Some(r.key.as_str())
                         }
-                        (Some(via), false) => {
+                        ((Some(via), None), false) => {
                             r.fields.get(via).and_then(Value::as_str) == Some(last.key.as_str())
                         }
-                        (None, true) => linked_by(&last.key, &r.key),
-                        (None, false) => linked_by(&r.key, &last.key),
+                        ((None, None), true) => linked_by(&last.key, &r.key),
+                        ((None, None), false) => linked_by(&r.key, &last.key),
                     };
                     if linked {
                         let mut q = p.clone();
@@ -3048,7 +3068,11 @@ fn plan_window(
                 o.decl
                     .relations
                     .iter()
-                    .find(|x| x.via.is_none() && links::name(&o.decl.name, &x.name) == r.ty)
+                    .find(|x| {
+                        x.via.is_none()
+                            && x.derived.is_none()
+                            && links::name(&o.decl.name, &x.name) == r.ty
+                    })
                     .cloned()
             })
         {
@@ -3134,4 +3158,67 @@ fn decidable<'a>(st: &'a State, who: &Principal, id: &ProposalId) -> Result<&'a 
         return Err(refused(Refusal::Decided));
     }
     Ok(p)
+}
+
+/// Whether `owner` and `target` match over a derived relation's pairs:
+/// each holds the same non-null value (044).
+fn derived_match(
+    pairs: &[lakelands_api::ontology::MatchPair],
+    owner: &StoredRecord,
+    target: &StoredRecord,
+) -> bool {
+    pairs.iter().all(|p| {
+        owner
+            .fields
+            .get(&p.from)
+            .is_some_and(|v| !v.is_null() && target.fields.get(&p.to) == Some(v))
+    })
+}
+
+/// A derived relation's match, as the store checks it: no carrier of its
+/// own, one or more pairs, each of two fields of the same keyable kind
+/// (044).
+fn derived_pairs(
+    st: &State,
+    t: &TypeDecl,
+    r: &lakelands_api::ontology::RelationDecl,
+    d: &lakelands_api::ontology::Derived,
+) -> Result<()> {
+    let at = |why: String| invalid(format!("type `{}`, relation `{}`: {why}", t.name, r.name));
+    if r.via.is_some() || !r.fields.is_empty() || r.authority != Authority::Authored {
+        return Err(at(
+            "a derived relation has no `via`, fields or link authority".into(),
+        ));
+    }
+    if d.pairs.is_empty() {
+        return Err(at("a derived relation matches at least one pair".into()));
+    }
+    let target = if r.target == t.name {
+        Some(t)
+    } else {
+        st.types.get(&r.target).map(|o| &o.decl)
+    };
+    for p in &d.pairs {
+        let from = t.fields.iter().find(|f| f.name == p.from);
+        let to = target.and_then(|u| u.fields.iter().find(|f| f.name == p.to));
+        let (Some(from), Some(to)) = (from, to) else {
+            return Err(at(format!(
+                "the pair `{}` = `{}` names a field not declared",
+                p.from, p.to
+            )));
+        };
+        if from.ty.kind != to.ty.kind {
+            return Err(at(format!(
+                "the pair `{}` = `{}` matches fields of two kinds",
+                p.from, p.to
+            )));
+        }
+        if !lakelands_api::key::keyable(from.ty.kind) {
+            return Err(at(format!(
+                "the pair `{}` = `{}` is of a kind no key may be",
+                p.from, p.to
+            )));
+        }
+    }
+    Ok(())
 }

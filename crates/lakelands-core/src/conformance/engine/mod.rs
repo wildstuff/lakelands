@@ -138,6 +138,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     reads::FIELD_ORDER_WALK,
     reads::SORTED_PAGE,
     reads::FILTER_AS_EVALUATOR,
+    reads::EQUAL_IS_IDENTITY,
     reads::FLAGS_AND_VALID_AT,
     reads::LEXICAL_HITS,
     reads::LEXICAL_BEYOND_ASCII,

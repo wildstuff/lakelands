@@ -12,6 +12,8 @@
 //! - **5**: an event whose declaration carries `annotations` anywhere: a
 //!   `declared` event's declaration, a `migrated` event's `to`, a proposed
 //!   `declare` or `migrate`.
+//! - **6**: an event whose declaration holds a relation with `derived`,
+//!   in the same places.
 //!
 //! The store appends each event at the greatest of the lake's version and
 //! the one [`needed`] answers, and refuses, when it reads the log, an
@@ -25,6 +27,9 @@ use lakelands_api::write::{Declaration, ProposedWrite};
 /// The lowest format version that can carry `body`, with `upstream` or
 /// without it.
 pub fn needed(body: &EventBody, upstream: bool) -> u32 {
+    if derives_a_relation(body) {
+        return 6;
+    }
     if carries_annotations(body) {
         return 5;
     }
@@ -49,24 +54,38 @@ pub fn needed(body: &EventBody, upstream: bool) -> u32 {
     }
 }
 
-/// Whether a declaration the event carries holds a non-empty
-/// `annotations` anywhere.
-pub fn carries_annotations(body: &EventBody) -> bool {
-    let annotated = |d: &Declaration| d.annotation_maps().iter().any(|(_, m)| !m.is_empty());
+/// Whether any declaration the event carries holds for `test`: a
+/// `declared` event's declaration, a `migrated` event's `to`, a proposed
+/// `declare` or `migrate`.
+fn any_declaration(body: &EventBody, test: impl Fn(&Declaration) -> bool) -> bool {
     match body {
-        EventBody::Declared { declaration, .. } => annotated(declaration),
-        EventBody::Migrated { migration, .. } => {
-            annotated(&Declaration::Type(migration.to.clone()))
-        }
+        EventBody::Declared { declaration, .. } => test(declaration),
+        EventBody::Migrated { migration, .. } => test(&Declaration::Type(migration.to.clone())),
         EventBody::WriteProposed { write, .. } => match write {
-            ProposedWrite::Declare { declarations } => declarations.iter().any(annotated),
+            ProposedWrite::Declare { declarations } => declarations.iter().any(test),
             ProposedWrite::Migrate { migration, .. } => {
-                annotated(&Declaration::Type(migration.to.clone()))
+                test(&Declaration::Type(migration.to.clone()))
             }
             _ => false,
         },
         _ => false,
     }
+}
+
+/// Whether a declaration the event carries holds a non-empty
+/// `annotations` anywhere.
+pub fn carries_annotations(body: &EventBody) -> bool {
+    any_declaration(body, |d| {
+        d.annotation_maps().iter().any(|(_, m)| !m.is_empty())
+    })
+}
+
+/// Whether a declaration the event carries declares a derived relation.
+pub fn derives_a_relation(body: &EventBody) -> bool {
+    any_declaration(
+        body,
+        |d| matches!(d, Declaration::Type(t) if t.relations.iter().any(|r| r.derived.is_some())),
+    )
 }
 
 /// Why an event is written below the version it needs, if it is: what it
@@ -76,7 +95,9 @@ pub fn below(event: &Event) -> Option<String> {
     if event.v >= need {
         return None;
     }
-    let what = if need == 5 {
+    let what = if need == 6 {
+        "declares a derived relation".to_owned()
+    } else if need == 5 {
         "carries `annotations` in a declaration".to_owned()
     } else if need == 4 {
         "proposes a declaration or a migration".to_owned()

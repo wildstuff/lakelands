@@ -599,9 +599,10 @@ fn import_seams() -> lakelands_api::seam::Seams {
 /// A lake with two writers, two sealed segments and four format
 /// versions: invoices, a checkpoint, the lake opened again by a second
 /// writer (a second lease, a greater fence), a re-key (version 2), a
-/// restricted and a retired invoice, an annotated type (version 5) with a
-/// derived `date_bucket` field, a record ingested with an upstream, a
-/// second checkpoint and more invoices. Answers the
+/// restricted and a retired invoice, an annotated type with a derived
+/// relation (version 6) and a derived `date_bucket` field, a record
+/// ingested with an upstream, a second checkpoint and more invoices.
+/// Answers the
 /// second writer's handle and a position before the second checkpoint.
 async fn exported_lake(
     store: Arc<dyn LakeStore>,
@@ -632,7 +633,8 @@ async fn exported_lake(
     .must("retiring `i2`")?;
     // Format version 3: a derived field calling date_bucket, and a record
     // ingested with the lake and position it was read from. Format version
-    // 5: the type, a field and a relation carry annotations.
+    // 5: the type, a field and a relation carry annotations. Format version
+    // 6: a relation derived from matching values.
     let stamp: lakelands_api::write::Declaration = serde_json::from_value(json!({
         "declare": "type", "name": "stamp",
         "annotations": {"acme.icon": "clock", "acme.package": {"name": "audit", "weight": 1.5}},
@@ -643,7 +645,8 @@ async fn exported_lake(
              "derived": "date_bucket(at, 'month')", "depends_on": ["at"]}
         ],
         "relations": [
-            {"name": "of", "target": "invoice", "annotations": {"acme.plural": "invoices"}}
+            {"name": "of", "target": "invoice", "annotations": {"acme.plural": "invoices"}},
+            {"name": "same_at", "target": "stamp", "derived": {"match": [{"from": "at", "to": "at"}]}}
         ]
     }))
     .expect("a declaration");

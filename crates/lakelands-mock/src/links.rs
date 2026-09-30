@@ -73,7 +73,7 @@ pub(crate) fn link_type(t: &TypeName, r: &RelationDecl) -> TypeDecl {
 pub(crate) fn of(t: &TypeDecl) -> Vec<TypeDecl> {
     t.relations
         .iter()
-        .filter(|r| r.via.is_none())
+        .filter(|r| r.via.is_none() && r.derived.is_none())
         .map(|r| link_type(&t.name, r))
         .collect()
 }

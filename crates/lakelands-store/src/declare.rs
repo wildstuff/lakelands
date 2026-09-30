@@ -34,7 +34,7 @@
 
 use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::ontology::{
-    Authority, FieldDecl, StorageKind, TypeDecl, ValueTypeDecl, VerbEffect,
+    Authority, Derived, FieldDecl, RelationDecl, StorageKind, TypeDecl, ValueTypeDecl, VerbEffect,
 };
 use lakelands_api::tools::name_problems;
 use lakelands_api::write::Declaration;
@@ -277,12 +277,14 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             .types
             .get(&t.name)
             .and_then(|e| e.decl.relations.iter().find(|b| b.name == r.name))
-            && before.via.is_some() != r.via.is_some()
+            && carrier(before) != carrier(r)
         {
             return Err(invalid(format!(
-                "{owner}, relation `{}`: a relation keeps its carrier; moving it between a `via` \
-                 field and link records would move its links",
-                r.name
+                "{owner}, relation `{}`: a relation keeps its carrier; it is carried by {} and \
+                 cannot be carried by {}; declare the other kind under another name",
+                r.name,
+                carrier(before),
+                carrier(r)
             )));
         }
         if r.target != t.name && !o.types.contains_key(&r.target) {
@@ -298,6 +300,9 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
                 "{owner}, relation `{}`: `via` names `{via}`, which is not a field",
                 r.name
             )));
+        }
+        if let Some(d) = &r.derived {
+            derived(o, t, r, d, &owner)?;
         }
         for f in &r.fields {
             field_type(
@@ -389,6 +394,72 @@ pub fn check_vocabulary_type(t: &TypeDecl) -> Result<()> {
 }
 
 /// Check one declaration against the ontology it would join. `who_is_system`
+/// What carries a relation's edges: a `via` field, link records, or
+/// nothing stored (derived, 044).
+fn carrier(r: &RelationDecl) -> &'static str {
+    match (&r.via, &r.derived) {
+        (_, Some(_)) => "matching values (`derived`)",
+        (Some(_), None) => "a `via` field",
+        (None, None) => "link records",
+    }
+}
+
+/// A derived relation's match: one or more pairs, each a field of the
+/// owner and a field of the target of the same storage kind, one a key
+/// may be, so that identity of the stored values is what connects them;
+/// and no carrier of its own (`docs/decisions/044-a-relation-may-be-derived-from-matching-values.md`).
+fn derived(o: &Ontology, t: &TypeDecl, r: &RelationDecl, d: &Derived, owner: &str) -> Result<()> {
+    let at = |why: String| invalid(format!("{owner}, relation `{}`: {why}", r.name));
+    if r.via.is_some() || !r.fields.is_empty() || r.authority != Authority::Authored {
+        return Err(at(
+            "a derived relation stores no edge, so it has no `via`, no fields and no link \
+             authority"
+                .into(),
+        ));
+    }
+    if d.pairs.is_empty() {
+        return Err(at(
+            "a derived relation matches at least one pair of fields".into()
+        ));
+    }
+    let target = if r.target == t.name {
+        Some(t)
+    } else {
+        o.ty(&r.target).ok()
+    };
+    for p in &d.pairs {
+        if d.pairs.iter().filter(|q| *q == p).count() > 1 {
+            return Err(at(format!(
+                "the pair `{}` = `{}` is matched twice",
+                p.from, p.to
+            )));
+        }
+        let from = t.fields.iter().find(|f| f.name == p.from);
+        let to = target.and_then(|u| u.fields.iter().find(|f| f.name == p.to));
+        let (Some(from), Some(to)) = (from, to) else {
+            return Err(at(format!(
+                "the pair `{}` = `{}` names a field `{}` or `{}.{}` does not have",
+                p.from, p.to, t.name, r.target, p.to
+            )));
+        };
+        if from.ty.kind != to.ty.kind {
+            return Err(at(format!(
+                "the pair `{}` = `{}` matches a {:?} field with a {:?} field; values of two \
+                 kinds are never identical, so the pair would match nothing",
+                p.from, p.to, from.ty.kind, to.ty.kind
+            )));
+        }
+        if !lakelands_core::log::keyable(from.ty.kind) {
+            return Err(at(format!(
+                "the pair `{}` = `{}` matches {:?} fields; a match is between fields of a kind a \
+                 key may be: text, a reference, a decimal, a number, a boolean or a date-time",
+                p.from, p.to, from.ty.kind
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// is true only for the store's own declarations.
 pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> Result<()> {
     if let Some(fault) = d.annotation_fault() {

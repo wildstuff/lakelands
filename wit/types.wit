@@ -167,6 +167,19 @@ interface types {
 
     enum cardinality { one-to-one, one-to-many, many-to-one, many-to-many }
 
+    /// One pair of a derived relation's match: a field of the owner and a
+    /// field of the target, of the same kind.
+    record match-pair {
+        %from: field-name,
+        to: field-name,
+    }
+
+    /// What connects a derived relation's records: every pair holds the
+    /// same non-null value on both sides.
+    record derived {
+        %match: list<match-pair>,
+    }
+
     record relation-decl {
         name: relation-name,
         target: type-name,
@@ -180,6 +193,8 @@ interface types {
         /// The host's own marks, by namespaced key (`acme.icon`), each a
         /// JSON value; Lakelands never reads them.
         annotations: list<tuple<string, json>>,
+        /// Instead of a carrier: the fields whose values connect (044).
+        derived: option<derived>,
     }
 
     record measure {

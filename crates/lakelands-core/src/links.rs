@@ -50,7 +50,7 @@ pub fn link_type_parts(name: &TypeName) -> Option<(TypeName, RelationName)> {
 
 /// Whether a relation is carried by link records.
 pub fn carried_by_links(r: &RelationDecl) -> bool {
-    r.via.is_none()
+    r.via.is_none() && r.derived.is_none()
 }
 
 fn key_field(name: &str, target: &TypeName, authority: Authority) -> FieldDecl {

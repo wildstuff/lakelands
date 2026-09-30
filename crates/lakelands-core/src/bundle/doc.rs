@@ -150,6 +150,9 @@ pub(super) struct RelationDoc {
     pub description: Option<String>,
     #[serde(default)]
     pub annotations: Annotations,
+    /// Instead of a carrier: the fields whose values connect (044).
+    #[serde(default)]
+    pub derived: Option<lakelands_api::ontology::Derived>,
 }
 
 /// A view type's definition.

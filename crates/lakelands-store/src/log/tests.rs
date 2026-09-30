@@ -64,10 +64,10 @@ fn a_member_in_another_written_form_is_refused_even_with_a_matching_hash() {
 fn a_newer_format_is_refused_by_name() {
     let (_, mut stored) = created();
     let mut v: serde_json::Value = serde_json::from_slice(&stored.bytes).unwrap();
-    v["v"] = json!(6);
+    v["v"] = json!(7);
     stored.bytes = canonical::to_vec(&v);
     let e = open(&stored).unwrap_err().to_string();
-    assert!(e.contains("format 6") && e.contains("format 5"), "{e}");
+    assert!(e.contains("format 7") && e.contains("format 6"), "{e}");
 }
 
 /// A version-2 event carrying what version 3 added is refused, naming

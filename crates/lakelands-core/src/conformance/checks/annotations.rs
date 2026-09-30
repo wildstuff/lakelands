@@ -85,6 +85,7 @@ fn shelf() -> TypeDecl {
         ),
     ]);
     t.relations = vec![RelationDecl {
+        derived: None,
         annotations: marks(&[("acme.plural", json!("rooms"))]),
         name: "room".into(),
         target: "room".into(),

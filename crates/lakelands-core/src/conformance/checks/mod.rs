@@ -18,6 +18,7 @@ mod cursors;
 mod date_bucket;
 mod decimals;
 mod derived_fields;
+mod derived_relations;
 mod describe;
 mod embeddings;
 mod export;
@@ -204,6 +205,13 @@ pub const ALL: &[Check] = &[
     date_bucket::DECLARED,
     filters::CLEARED_FIELD,
     walks::CYCLE_TERMINATES,
+    derived_relations::BOTH_WAYS,
+    derived_relations::EDGE_MOVES,
+    derived_relations::NULL_NEVER_MATCHES,
+    derived_relations::PROBES_BOTH_SIDES,
+    derived_relations::MEASURES_AS_LINKS,
+    derived_relations::DECLARED_NOT_MIGRATED,
+    derived_relations::PAIR_OF_TWO_KINDS,
     graph_measures::DEGREE_COUNTS,
     graph_measures::COMPONENTS_PARTITION,
     graph_measures::MEASURES_AT_THEIR_POSITION,

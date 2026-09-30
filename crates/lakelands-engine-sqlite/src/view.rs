@@ -329,10 +329,7 @@ impl ProjectionView for SqliteView<'_> {
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
         self.read(Vec::new(), |r| {
             let decl = r.type_decl(ty)?;
-            let narrowed = match (
-                r.head,
-                scan.filter.as_ref().and_then(engines::exact_text_term),
-            ) {
+            let narrowed = match (r.head, engines::text_lookup(scan)) {
                 (true, Some((field, text))) => Some(r.keys(
                     "SELECT key FROM text_index WHERE ty = ?1 AND field = ?2 AND value = ?3",
                     &[&ty.as_str(), &field.as_str(), &text],

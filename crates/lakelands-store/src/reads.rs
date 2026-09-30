@@ -46,7 +46,7 @@ use std::collections::BTreeMap;
 use lakelands_api::describe::{LakeDescription, TypeDescription};
 use lakelands_api::engine::{After, ProjectionView, Scan};
 use lakelands_api::expr::{Expr, Func};
-use lakelands_api::ontology::TypeDecl;
+use lakelands_api::ontology::{MatchPair, RelationDecl, TypeDecl};
 use lakelands_api::query::{
     Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Walk,
 };
@@ -923,6 +923,28 @@ impl<'a> Reader<'a> {
         Ok(hits)
     }
 
+    /// Refuse a walk over a derived relation around `here` that probes a
+    /// matched field the principal may not read, on either side: an edge
+    /// that appears or not answers whether the two values are equal (024,
+    /// 044).
+    fn probe_derived(&self, here: &TypeName, relation: &RelationName) -> Result<()> {
+        for e in self.ontology.types.values() {
+            for r in &e.decl.relations {
+                let Some(d) = &r.derived else { continue };
+                if r.name != *relation || (e.decl.name != *here && r.target != *here) {
+                    continue;
+                }
+                rights::check_probe(self.who, &e.decl, d.pairs.iter().map(|p| &p.from))?;
+                rights::check_probe(
+                    self.who,
+                    self.ontology.ty(&r.target)?,
+                    d.pairs.iter().map(|p| &p.to),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     /// `query`: the one pattern query.
     pub fn query(&self, p: &Pattern) -> Result<QueryResult> {
         let start_decl = self.visible_type(&p.start.ty)?.clone();
@@ -949,6 +971,7 @@ impl<'a> Reader<'a> {
                 step.walk,
                 matches!(p.project, Projection::Graph | Projection::Components),
             )?;
+            self.probe_derived(&here, &step.relation)?;
             if let (Some(t), Some(r)) = (&step.ty, &reached)
                 && t != r
             {
@@ -1317,6 +1340,99 @@ fn out_any(o: &Ontology, relation: &RelationName) -> bool {
         .any(|e| e.decl.relations.iter().any(|r| &r.name == relation))
 }
 
+/// The edges of a derived relation around one record, resolved from the
+/// view by identity of the matched values: out to the target's records
+/// that hold the owner's values, in from the owners that hold the
+/// target's. Nothing is stored; the edges are as the view's position has
+/// the values (`docs/decisions/044-a-relation-may-be-derived-from-matching-values.md`).
+fn derived_edges(
+    r: &Reader<'_>,
+    ty: &TypeName,
+    key: &RecordKey,
+    relation: Option<&RelationName>,
+    walk: Walk,
+) -> Result<Vec<Edge>> {
+    let wanted = |x: &RelationDecl| x.derived.is_some() && relation.is_none_or(|n| *n == x.name);
+    let owned: Vec<&RelationDecl> = match (walk, r.ontology.ty(ty)) {
+        (Walk::Out | Walk::Both, Ok(t)) => t.relations.iter().filter(|x| wanted(x)).collect(),
+        _ => Vec::new(),
+    };
+    let targeted: Vec<(&TypeName, &RelationDecl)> = if walk == Walk::Out {
+        Vec::new()
+    } else {
+        r.ontology
+            .types
+            .values()
+            .flat_map(|e| e.decl.relations.iter().map(move |x| (&e.decl.name, x)))
+            .filter(|(_, x)| x.target == *ty && wanted(x))
+            .collect()
+    };
+    if owned.is_empty() && targeted.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(near) = r.view.get(ty, key)? else {
+        return Ok(Vec::new());
+    };
+    // The values `near` holds for one side of a match, and the pairs a
+    // scan of the other side must hold: none when a value is missing, for
+    // null never matches.
+    let equal = |pairs: &[MatchPair], out: bool| -> Option<Vec<(FieldName, Value)>> {
+        pairs
+            .iter()
+            .map(|p| {
+                let (here, there) = if out {
+                    (&p.from, &p.to)
+                } else {
+                    (&p.to, &p.from)
+                };
+                near.fields
+                    .get(here)
+                    .filter(|v| !v.is_null())
+                    .map(|v| (there.clone(), v.clone()))
+            })
+            .collect()
+    };
+    let scan = |other: &TypeName, equal: Vec<(FieldName, Value)>| {
+        r.view.scan(
+            other,
+            &Scan {
+                equal,
+                limit: u32::MAX,
+                restricted: true,
+                ..Scan::default()
+            },
+        )
+    };
+    let mut out = Vec::new();
+    for x in owned {
+        let pairs = &x.derived.as_ref().expect("derived").pairs;
+        if let Some(equal) = equal(pairs, true) {
+            for m in scan(&x.target, equal)? {
+                out.push(Edge {
+                    from: (ty.clone(), key.clone()),
+                    relation: x.name.clone(),
+                    to: (x.target.clone(), m.key),
+                    fields: BTreeMap::new(),
+                });
+            }
+        }
+    }
+    for (owner, x) in targeted {
+        let pairs = &x.derived.as_ref().expect("derived").pairs;
+        if let Some(equal) = equal(pairs, false) {
+            for m in scan(owner, equal)? {
+                out.push(Edge {
+                    from: (owner.clone(), m.key),
+                    relation: x.name.clone(),
+                    to: (ty.clone(), key.clone()),
+                    fields: BTreeMap::new(),
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// The walks' view of the lake for one principal: a record is visible when
 /// it is live, not restricted unless the principal may see restricted
 /// records, valid at the read's `valid_at`, and of a type the principal
@@ -1335,6 +1451,7 @@ impl EdgeSource for Visible<'_, '_> {
     ) -> Result<Vec<Edge>> {
         let r = self.reader;
         let mut edges = ProjectionView::edges(r.view.as_ref(), ty, key, relation, walk)?;
+        edges.extend(derived_edges(r, ty, key, relation, walk)?);
         // A link's edge comes from its own record: a restricted link is
         // walked only with the `restricted` grant, and its fields only as
         // far as the principal may read the link type's fields.

@@ -108,3 +108,24 @@ fn annotations_anywhere_in_a_declaration_need_format_5() {
     };
     assert_eq!(needed(&plain, false), 1, "an empty map is no annotation");
 }
+
+#[test]
+fn a_derived_relation_needs_format_6_and_a_carried_one_does_not() {
+    let with = |derived: bool| {
+        let mut r = json!({"name": "customer", "target": "customer"});
+        if derived {
+            r["derived"] = json!({"match": [{"from": "customer_no", "to": "no"}]});
+        }
+        EventBody::Declared {
+            declaration: declaration(json!({
+                "declare": "type", "name": "invoice",
+                "fields": [{"name": "customer_no", "type": {"kind": "text"}}],
+                "relations": [r]
+            })),
+            schema_hash: None,
+            version: 1,
+        }
+    };
+    assert_eq!(needed(&with(true), false), 6);
+    assert_eq!(needed(&with(false), false), 1);
+}

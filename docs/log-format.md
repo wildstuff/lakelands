@@ -1,6 +1,6 @@
 # The log format
 
-**Format version 5.** Reviewed so that a verifier can be written from
+**Format version 6.** Reviewed so that a verifier can be written from
 this document alone (lakelands#14). `0.1.0` is tagged, so every change
 to the format bumps the version, and a lake writes the version it had
 until an event needs a newer one (§6). Version 2 adds one member,
@@ -8,7 +8,8 @@ until an event needs a newer one (§6). Version 2 adds one member,
 and reads exactly as before. Version 3 adds the envelope member
 `upstream` and a call of `date_bucket` in a declaration. Version 4 adds
 the proposal of a declaration or a migration. Version 5 adds a
-declaration's `annotations`. §6 says which event needs which version.
+declaration's `annotations`. Version 6 adds a derived relation. §6 says
+which event needs which version.
 
 A lake's event log is its truth (`docs/decisions/001-the-log-is-the-truth.md`).
 This document specifies the log so that a lake can be read, verified and
@@ -36,7 +37,7 @@ every kind, and `body`, which holds the kind and its payload.
 
 | Member | Type | Presence | Meaning |
 |---|---|---|---|
-| `v` | integer | always | The format version the event was written under: `1`, `2` from a lake's first re-keying `migrated` event on, `3` from its first event carrying `upstream` or declaring a call of `date_bucket` on, `4` from its first proposal of a declaration or a migration on, `5` from its first declaration carrying `annotations` on (§6). |
+| `v` | integer | always | The format version the event was written under: `1`, `2` from a lake's first re-keying `migrated` event on, `3` from its first event carrying `upstream` or declaring a call of `date_bucket` on, `4` from its first proposal of a declaration or a migration on, `5` from its first declaration carrying `annotations` on, `6` from its first declaration of a derived relation on (§6). |
 | `lake` | string | always | The lake the event belongs to. |
 | `position` | integer | always | The event's coordinate: `0` for the lake's first event, then consecutive, with no gaps. |
 | `id` | string | always | The event's identifier: 32 lower-case hex digits (§3). |
@@ -570,6 +571,7 @@ carries a lower `v` than the event before it.
 | 3 | The envelope member `upstream` (§1.1, §2.3) and a call of `date_bucket` in a declaration's expressions (Appendix B). A lake writes the version it had until its first event that carries `upstream`, or that declares (in a `declared` or `migrated` event) an expression calling `date_bucket`; that event carries `v` 3, as does every event after it. A version-2 (or 1) event that carries either is refused, naming it. A version-2 reader refuses the version-3 events rather than misreading them. |
 | 4 | A proposal of a declaration or a migration: `write_proposed` whose `write` is `declare` or `migrate` (§2.4, Appendix A). A lake writes the version it had until its first such proposal, which carries `v` 4, as does every event after it; a version-3 (or older) event that carries one is refused, naming it. A version-3 reader refuses the version-4 events rather than failing on a write it does not know. |
 | 5 | A declaration's `annotations` (Appendix A): on a type, a field or a relation, anywhere in the declaration a `declared` event carries, in a `migrated` event's `to`, or in a proposed `declare` or `migrate`. A lake writes the version it had until its first event whose declaration holds a non-empty `annotations`, which carries `v` 5, as does every event after it; a version-4 (or older) event that carries annotations is refused, naming them. A version-4 reader refuses the version-5 events rather than refusing a member it does not know. An annotation is never part of the schema hash (§2.2). |
+| 6 | A derived relation: a relation declaration's `derived` (Appendix A). A lake writes the version it had until its first event whose declaration holds a relation with `derived` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`), which carries `v` 6, as does every event after it; a version-5 (or older) event that carries one is refused, naming it. A version-5 reader refuses the version-6 events rather than refusing a member it does not know. `derived` is never part of the schema hash (§2.2). |
 
 ## Appendix A. Encodings
 
@@ -599,7 +601,7 @@ with that declaration's members beside it. Every member not marked
 | `type` | `name` (required), `key` (`[]`), `fields` (`[]`), `relations` (`[]`), `view` (none), `valid_from`, `valid_to`, `language` (none), `field_meta` (`true`), `description`, `label` (none), `annotations` (`{}`, version 5) |
 | a field (in `fields`, a relation's `fields`, a verb's `payload`, a function's `inputs`) | `name` and `type` (required), `required` (`false`), `authority` (`authored`), `derived` (none), `depends_on` (`[]`), `on_input_change` (`keep`), `sensitive` (`false`), `searchable` (`false`), `description`, `label` (none), `annotations` (`{}`, version 5) |
 | a field's `type` | `kind` (required), `value_type`, `target`, `dimensions` (none) |
-| a relation | `name` and `target` (required), `cardinality` (`many_to_one`), `authority` (`authored`; who writes its links, when it has no `via`), `inverse`, `via` (none), `fields` (`[]`), `description` (none), `annotations` (`{}`, version 5) |
+| a relation | `name` and `target` (required), `cardinality` (`many_to_one`), `authority` (`authored`; who writes its links, when it has no `via`), `inverse`, `via` (none), `fields` (`[]`), `description` (none), `annotations` (`{}`, version 5), `derived` (none, version 6: `{ "match": [ { "from", "to" } ] }`, a field of the owner and one of the target per pair) |
 | a `view` | `source` and `measures` (required; each measure `{ "name", "expr" }`), `where` (none), `group_by` (`[]`) |
 | `value_type` | `name` and `kind` (required), `constraint` (none), `one_of` (`[]`), `format`, `scale`, `description` (none) |
 | `verb` | `name`, `on`, `risk` and `effect` (required), `payload` (`[]`), `requires` (none), `description` (none); `effect: write` carries `set`, a list of `{ "field", "value" }`; `effect: external` carries `executor` |

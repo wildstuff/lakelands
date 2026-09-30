@@ -260,6 +260,12 @@ fn embed_decl() -> EmbedDecl {
 
 fn relation_decl() -> RelationDecl {
     RelationDecl {
+        derived: Some(lakelands_api::ontology::Derived {
+            pairs: vec![lakelands_api::ontology::MatchPair {
+                from: "f".into(),
+                to: "g".into(),
+            }],
+        }),
         annotations: [("acme.icon".to_owned(), serde_json::json!("x"))].into(),
         name: "r".into(),
         target: "partner".into(),

@@ -135,3 +135,11 @@ through the doors that check the relation's authority and cardinality.
 - **The WIT package** gains the two doors, `relation-decl.authority` and
   `type-rights.link`, and stays at `lakelands:data@0.2.0`, which is not
   released yet.
+
+## Extended: a relation may instead be derived
+
+A relation may have no carrier at all: a derived relation connects
+records by matching values when the store reads, and stores no link
+(`docs/decisions/044-a-relation-may-be-derived-from-matching-values.md`).
+The carrier rule holds across all three kinds: a relation carried by
+`via`, by link records or by matching values keeps that carrier.
