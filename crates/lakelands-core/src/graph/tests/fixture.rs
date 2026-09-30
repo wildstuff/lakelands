@@ -15,25 +15,25 @@ use lakelands_api::{RecordKey, RelationName, Result, TypeName};
 
 use super::{EdgeSource, Node};
 
-pub(super) struct Graph {
+pub(in crate::graph) struct Graph {
     edges: Vec<Edge>,
     present: BTreeSet<Node>,
     retired: BTreeSet<Node>,
-    pub(super) visibility_asked: Cell<usize>,
+    pub(in crate::graph) visibility_asked: Cell<usize>,
 }
 
 /// A record of type `n`.
-pub(super) fn n(key: &str) -> Node {
+pub(in crate::graph) fn n(key: &str) -> Node {
     (TypeName::new("n"), RecordKey::new(key))
 }
 
 /// A link of type `n` to type `n`.
-pub(super) fn e(from: &str, relation: &str, to: &str) -> Edge {
+pub(in crate::graph) fn e(from: &str, relation: &str, to: &str) -> Edge {
     link(n(from), relation, n(to))
 }
 
 /// A link between any two records.
-pub(super) fn link(from: Node, relation: &str, to: Node) -> Edge {
+pub(in crate::graph) fn link(from: Node, relation: &str, to: Node) -> Edge {
     Edge {
         from,
         relation: RelationName::new(relation),
@@ -43,12 +43,12 @@ pub(super) fn link(from: Node, relation: &str, to: Node) -> Edge {
 }
 
 /// The keys of a list of records.
-pub(super) fn keys<'a>(nodes: impl IntoIterator<Item = &'a Node>) -> Vec<&'a str> {
+pub(in crate::graph) fn keys<'a>(nodes: impl IntoIterator<Item = &'a Node>) -> Vec<&'a str> {
     nodes.into_iter().map(|n| n.1.as_str()).collect()
 }
 
 impl Graph {
-    pub(super) fn new(edges: Vec<Edge>) -> Self {
+    pub(in crate::graph) fn new(edges: Vec<Edge>) -> Self {
         let mut present = BTreeSet::new();
         for edge in &edges {
             present.insert(edge.from.clone());
@@ -63,7 +63,7 @@ impl Graph {
     }
 
     /// A chain `a → b → c → d` over `next`.
-    pub(super) fn chain() -> Self {
+    pub(in crate::graph) fn chain() -> Self {
         Graph::new(vec![
             e("a", "next", "b"),
             e("b", "next", "c"),
@@ -71,12 +71,12 @@ impl Graph {
         ])
     }
 
-    pub(super) fn retire(mut self, key: &str) -> Self {
+    pub(in crate::graph) fn retire(mut self, key: &str) -> Self {
         self.retired.insert(n(key));
         self
     }
 
-    pub(super) fn missing(mut self, key: &str) -> Self {
+    pub(in crate::graph) fn missing(mut self, key: &str) -> Self {
         self.present.remove(&n(key));
         self
     }

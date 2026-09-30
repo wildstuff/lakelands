@@ -28,7 +28,9 @@ importing the shape of the platform the organs come from.
 - **One catalog.** Every LLM-facing tool name is produced by the catalog
   generator; a string-literal tool name outside it fails.
 - **Budgets.** `cfg(feature)` sites ≤ 20 (features are one per engine);
-  store facade + engine traits ≤ 110 methods; core crates ≤ 70k LOC,
+  store facade + engine traits ≤ 110 methods; the core crates' product
+  code ≤ 36k lines and their specification (the conformance suite and
+  unit tests, which live in `tests.rs` files, never inline) ≤ 40k, each
   ratcheting down only.
 - **The conformance suite is the specification.** A behaviour claim goes
   into the suite, not beside one engine; it runs on every engine in CI.
