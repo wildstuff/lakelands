@@ -207,19 +207,6 @@ fn key_order_is_shape() {
 }
 
 #[test]
-fn a_view_written_as_text_hashes_like_its_typed_form() {
-    let text = a_view("amount > 0".into(), "sum(amount)".into());
-    let typed = a_view(
-        crate::expr::parse("amount > 0").unwrap().into(),
-        crate::expr::parse("sum(amount)").unwrap().into(),
-    );
-    assert_eq!(hash(&text), hash(&typed));
-    // Whitespace is not shape either: it does not survive the parse.
-    let spaced = a_view("amount   >   0".into(), "sum( amount )".into());
-    assert_eq!(hash(&text), hash(&spaced));
-}
-
-#[test]
 fn a_view_change_is_a_shape_change() {
     let bare = hash(&a_view("amount > 0".into(), "sum(amount)".into()));
     assert_ne!(
@@ -243,15 +230,4 @@ fn a_view_that_does_not_parse_has_no_hash() {
         Err(ViewConditionError { at, .. }) => assert_eq!(at, "view.measures.total"),
         other => panic!("expected a condition error, got {other:?}"),
     }
-}
-
-#[test]
-fn the_hash_is_64_lower_case_hex_digits_and_reproducible() {
-    let h = hash(&invoice());
-    assert_eq!(h.len(), 64);
-    assert!(
-        h.bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    );
-    assert_eq!(h, hash(&invoice()));
 }

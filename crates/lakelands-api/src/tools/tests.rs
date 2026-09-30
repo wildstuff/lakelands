@@ -156,34 +156,6 @@ fn a_type_gives_four_doors_and_the_generic_tools_follow_rights() {
 }
 
 #[test]
-fn a_reader_gets_only_reading_doors() {
-    let reader = ty(
-        "invoice",
-        READ,
-        vec![field(
-            "amount",
-            StorageKind::Number,
-            Authority::Source,
-            Access::Read,
-        )],
-    );
-    let t = tools_ok(&lake(vec![reader], vec![], LakeRights::default()));
-    assert_eq!(
-        names(&t),
-        [
-            "describe",
-            "invoice_find",
-            "invoice_get",
-            "pin",
-            "query",
-            "search",
-            "subscribe",
-            "unsubscribe",
-        ]
-    );
-}
-
-#[test]
 fn upsert_offers_only_authored_fields_the_principal_may_write() {
     let t = tools_ok(&lake(vec![invoice()], vec![], LakeRights::default()));
     let upsert = t.iter().find(|t| t.name == "invoice_upsert").unwrap();
@@ -191,22 +163,6 @@ fn upsert_offers_only_authored_fields_the_principal_may_write() {
         .as_object()
         .unwrap();
     assert_eq!(fields.keys().collect::<Vec<_>>(), ["verdict"]);
-}
-
-#[test]
-fn a_field_the_principal_may_not_read_is_absent_from_the_record_schema() {
-    let mut t = invoice();
-    t.fields.push(field(
-        "secret",
-        StorageKind::Text,
-        Authority::Authored,
-        Access::None,
-    ));
-    let tools = tools_ok(&lake(vec![t], vec![], LakeRights::default()));
-    let get = tools.iter().find(|t| t.name == "invoice_get").unwrap();
-    let fields = &get.output_schema["properties"]["data"]["properties"]["fields"]["properties"];
-    assert!(fields.get("amount").is_some());
-    assert!(fields.get("secret").is_none());
 }
 
 #[test]

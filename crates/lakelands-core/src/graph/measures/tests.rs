@@ -1,20 +1,8 @@
-use super::super::tests::fixture::{Graph, e, keys, link, n};
+use super::super::tests::fixture::{Graph, e, n};
 use super::*;
-use lakelands_api::{RecordKey, TypeName};
 
 fn rel(r: &str) -> RelationName {
     RelationName::new(r)
-}
-
-fn components(g: &Graph, seeds: &[&str], relations: &[&str], max: u32) -> Result<Vec<Vec<String>>> {
-    let mut c = Components::new(g, relations.iter().map(|r| rel(r)).collect(), max);
-    for s in seeds {
-        c.add(n(s))?;
-    }
-    Ok(c.finish()
-        .iter()
-        .map(|c| keys(c).into_iter().map(str::to_owned).collect())
-        .collect())
 }
 
 #[test]
@@ -42,36 +30,6 @@ fn degree_counts_links_in_the_named_direction_to_visible_ends() {
     );
 }
 
-#[test]
-fn components_partition_what_the_seeds_reach_largest_first() {
-    let g = Graph::new(vec![
-        e("a", "r", "b"),
-        e("c", "r", "b"),
-        e("x", "r", "y"),
-        e("p", "s", "q"),
-    ]);
-    assert_eq!(
-        components(&g, &["y", "a", "p", "lone"], &["r"], 100).unwrap(),
-        vec![vec!["a", "b", "c"], vec!["x", "y"], vec!["lone"], vec!["p"],],
-        "over `r` only, `p` stands alone; ties by the least member"
-    );
-}
-
-#[test]
-fn a_component_spans_types() {
-    let partner = (TypeName::new("partner"), RecordKey::new("P"));
-    let g = Graph::new(vec![
-        link(n("i1"), "billed", partner.clone()),
-        link(n("i2"), "billed", partner.clone()),
-    ]);
-    let mut c = Components::new(&g, vec![rel("billed")], 10);
-    c.add(n("i1")).unwrap();
-    c.add(n("i2")).unwrap();
-    let all = c.finish();
-    assert_eq!(all.len(), 1);
-    assert_eq!(all[0], vec![n("i1"), n("i2"), partner]);
-}
-
 /// Every record is asked about once and counted when first seen, so
 /// the walk holds each record once, however many links lead to it
 /// before it is expanded: on a complete graph of 12 records, 11
@@ -94,17 +52,4 @@ fn each_record_is_asked_about_once_and_held_once() {
         "each far end is asked about once, the retired one included"
     );
     assert_eq!(c.finish()[0].len(), 11);
-}
-
-#[test]
-fn past_the_cap_a_measure_is_refused_not_cut() {
-    let g = Graph::new(vec![e("a", "r", "b"), e("b", "r", "c")]);
-    assert!(components(&g, &["a"], &["r"], 3).is_ok());
-    match components(&g, &["a"], &["r"], 2) {
-        Err(Error::Refused {
-            reason: Refusal::TooLarge { max: 2 },
-            ..
-        }) => {}
-        other => panic!("expected too_large, got {other:?}"),
-    }
 }

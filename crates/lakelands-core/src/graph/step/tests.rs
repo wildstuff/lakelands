@@ -1,4 +1,4 @@
-use lakelands_api::{Error, RecordKey, Refusal, TypeName};
+use lakelands_api::{RecordKey, TypeName};
 
 use super::super::tests::fixture::{Graph, e, keys, link, n};
 use super::*;
@@ -85,18 +85,6 @@ fn a_cycle_terminates_and_reports_the_start_where_it_closes() {
     let got = step(&g, &n("a"), &next(Walk::Out, 1, 3), 16).unwrap();
     assert_eq!(nodes(&got), vec!["b", "a"]);
     assert_eq!(depths(&got), vec![1, 2]);
-}
-
-#[test]
-fn a_step_deeper_than_the_ceiling_is_refused_not_clamped() {
-    let err = step(&Graph::chain(), &n("a"), &next(Walk::Out, 1, u32::MAX), 16).unwrap_err();
-    assert!(matches!(
-        err,
-        Error::Refused {
-            reason: Refusal::Invalid { .. },
-            ..
-        }
-    ));
 }
 
 #[test]

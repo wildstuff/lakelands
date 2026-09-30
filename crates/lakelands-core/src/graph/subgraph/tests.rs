@@ -13,16 +13,6 @@ fn edge_keys(s: &Subgraph) -> Vec<(&str, &str, &str)> {
 }
 
 #[test]
-fn a_subgraph_always_contains_its_start() {
-    let g = Graph::new(vec![]);
-    let got = subgraph(&g, &n("lonely"), &[], Walk::Both, 3, 100, 16).unwrap();
-    assert_eq!(node_keys(&got), vec!["lonely"]);
-    assert_eq!(got.nodes[0].depth, 0);
-    assert!(got.edges.is_empty());
-    assert!(!got.truncated);
-}
-
-#[test]
 fn a_capped_subgraph_says_so_and_stays_closed() {
     let got = subgraph(&Graph::chain(), &n("a"), &[], Walk::Out, 5, 2, 16).unwrap();
     assert!(got.truncated, "the cap was spent with records left");

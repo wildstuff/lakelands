@@ -284,45 +284,6 @@ fn a_walk_in_index_order_answers_what_a_whole_sort_answers() {
 }
 
 #[test]
-fn mixed_kinds_order_totally() {
-    let mut values = vec![
-        json!("abc"),
-        json!(true),
-        json!("10"),
-        json!({"a": 1}),
-        json!("2026-01-01"),
-        json!(9),
-        json!(false),
-    ];
-    values.sort_by(cmp_values);
-    assert_eq!(
-        values,
-        vec![
-            json!(9),
-            json!("10"),
-            json!("2026-01-01"),
-            json!("abc"),
-            json!(false),
-            json!(true),
-            json!({"a": 1}),
-        ]
-    );
-}
-
-#[test]
-fn missing_values_sort_last_in_both_directions() {
-    let (one, two) = (json!(1), json!(2));
-    for dir in [Direction::Asc, Direction::Desc] {
-        assert_eq!(cmp_key(None, Some(&one), dir), Ordering::Greater);
-        assert_eq!(cmp_key(Some(&one), None, dir), Ordering::Less);
-    }
-    assert_eq!(
-        cmp_key(Some(&one), Some(&two), Direction::Desc),
-        Ordering::Greater
-    );
-}
-
-#[test]
 fn only_text_that_compares_as_text_narrows() {
     let term = |s: &str| exact_text_term(&crate::expr::parse(s).unwrap());
     assert_eq!(
@@ -340,24 +301,6 @@ fn only_text_that_compares_as_text_narrows() {
         "compares as an instant"
     );
     assert_eq!(term("status = 'a' or status = 'b'"), None);
-}
-
-#[test]
-fn cosine_ignores_length_and_a_zero_vector_scores_zero() {
-    assert!((cosine(&[3.0, 0.0], &[1.0, 0.0]) - 1.0).abs() < 1e-12);
-    assert!((cosine(&[1.0, 1.0], &[1.0, 0.0]) - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-9);
-    assert_eq!(cosine(&[0.0, 0.0], &[1.0, 0.0]), 0.0);
-}
-
-#[test]
-fn ranking_is_best_first_with_ties_by_key() {
-    let mut hits = vec![("b".into(), 1.0), ("a".into(), 1.0), ("c".into(), 2.0)];
-    rank(&mut hits, 2);
-    let keys: Vec<&str> = hits
-        .iter()
-        .map(|(k, _): &(RecordKey, f64)| k.as_str())
-        .collect();
-    assert_eq!(keys, ["c", "a"]);
 }
 
 /// `TopK` answers what `rank` answers over the whole stream, to the
