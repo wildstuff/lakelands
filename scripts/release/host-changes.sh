@@ -52,7 +52,8 @@ for crate in "${CRATES[@]}"; do
     # Without colour: CI sets CARGO_TERM_COLOR=always, and escape codes
     # would hide every finding from the reading below.
     CARGO_TERM_COLOR=never cargo semver-checks check-release -p "$crate" \
-        --baseline-rev "$baseline" --release-type minor --color never >"$out" 2>&1 || true
+        --baseline-rev "$baseline" --release-type minor --color never >"$out" 2>&1 &&
+        status=0 || status=$?
     # Escape codes stripped all the same, should a terminal setting win.
     sed -i 's/\x1b\[[0-9;]*[A-Za-z]//g' "$out"
     grep -q 'Summary' "$out" ||
@@ -62,6 +63,16 @@ for crate in "${CRATES[@]}"; do
     # change".
     failed="$(sed -n 's/.*Summary .* \([0-9][0-9]*\) major and \([0-9][0-9]*\) minor checks failed.*/\1 \2/p' "$out" |
         awk '{ print $1 + $2 }')"
+    # The tool's exit and its count must agree: it exits 0 when no check
+    # failed and non-zero otherwise (100 for failed checks), so a non-zero
+    # exit with no failed check counted is a run that did not report,
+    # never "no change".
+    if { [ "$status" -ne 0 ] && [ "${failed:-0}" -eq 0 ]; } ||
+        { [ "$status" -eq 0 ] && [ "${failed:-0}" -ne 0 ]; }; then
+        cat "$out" >&2
+        echo "host-changes: cannot run: cargo semver-checks exited $status for $crate with ${failed:-no} failed check(s) counted" >&2
+        exit 2
+    fi
     lints=()
     # Fields apart by the unit separator, which is not blank: an empty
     # field stays empty instead of shifting the next one into its place.
