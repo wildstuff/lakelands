@@ -114,6 +114,7 @@ pub const ALL: &[Check] = &[
     views::VIEW_FIELD_NOT_SEARCHED,
     views::VIEW_NOT_SEARCHED,
     views::SOURCE_CYCLE_REFUSED,
+    views::MEASURE_BY_NAME_DESCRIBED,
     views::VIEW_FIELDS_DECLARED,
     ingest::SAME_CONTENT_TWICE,
     ingest::SAME_KEY_TWICE,

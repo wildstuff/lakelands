@@ -20,7 +20,7 @@ use lakelands_api::describe::{
     TypeLineage, TypeRights, VerbDescription,
 };
 use lakelands_api::engine::Declared;
-use lakelands_api::expr::Condition;
+use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::ontology::{Authority, RelationDecl, TypeDecl, VerbDecl, VerbEffect, ViewDecl};
 use lakelands_api::write::{Declaration, FunctionDecl};
 use lakelands_api::{Access, FieldName, LakeId, Principal, TypeName};
@@ -148,15 +148,56 @@ fn view_visible(v: &ViewDecl, declared: &[Declared], who: &Principal) -> bool {
         return true;
     }
     let mut names = std::collections::BTreeSet::new();
-    let conditions = v.r#where.iter().chain(v.measures.iter().map(|m| &m.expr));
-    for c in conditions {
-        match named(c) {
+    if let Some(w) = &v.r#where {
+        match named(w) {
             Some(n) => names.extend(n),
+            None => return false,
+        }
+    }
+    for m in &v.measures {
+        match parsed(&m.expr) {
+            Some(e) => aggregated(&e, false, &mut names),
             None => return false,
         }
     }
     names.extend(v.group_by.iter().cloned());
     reads_all(&names, &v.source, declared, who)
+}
+
+/// The fields a measure reads from its source's records: the paths inside
+/// an aggregate's arguments. A name outside an aggregate is read from the
+/// group, an earlier measure or a grouping field, and is no source field.
+fn aggregated(e: &Expr, inside: bool, out: &mut std::collections::BTreeSet<FieldName>) {
+    match e {
+        Expr::Path { path } if inside => out.extend(path.first().cloned()),
+        Expr::Path { .. } | Expr::Lit { .. } => {}
+        Expr::Call { func, args } => {
+            let inside = inside || func.is_aggregate();
+            args.iter().for_each(|a| aggregated(a, inside, out));
+        }
+        Expr::Cmp { lhs, rhs, .. } | Expr::Arith { lhs, rhs, .. } => {
+            aggregated(lhs, inside, out);
+            aggregated(rhs, inside, out);
+        }
+        Expr::Neg { arg } | Expr::Not { arg } | Expr::IsNull { arg } => {
+            aggregated(arg, inside, out);
+        }
+        Expr::And { args } | Expr::Or { args } => {
+            args.iter().for_each(|a| aggregated(a, inside, out));
+        }
+        Expr::In { arg, list } => {
+            aggregated(arg, inside, out);
+            list.iter().for_each(|a| aggregated(a, inside, out));
+        }
+    }
+}
+
+/// A condition in its typed form; `None` when it does not parse.
+fn parsed(c: &Condition) -> Option<Expr> {
+    match c {
+        Condition::Expr(e) => Some(e.clone()),
+        Condition::Text(t) => crate::expr::parse(t).ok(),
+    }
 }
 
 /// Whether a function may be shown to `who`: it computes at least one
