@@ -123,6 +123,9 @@ relations:
         "types/open_totals.yaml",
         r#"
 name: open_totals
+fields:
+  partner: reference(partner)
+  total: decimal
 view:
   source: invoice
   where: "status = 'open'"
@@ -262,6 +265,16 @@ fn complete_declarations() -> Vec<Declaration> {
                 }],
                 params: Default::default(),
             })),
+            fields: vec![
+                field(
+                    "partner",
+                    FieldType {
+                        target: Some(TypeName::new("partner")),
+                        ..kind(StorageKind::Reference)
+                    },
+                ),
+                field("total", kind(StorageKind::Decimal)),
+            ],
             ..plain_type("open_totals")
         }),
         Declaration::Type(TypeDecl {

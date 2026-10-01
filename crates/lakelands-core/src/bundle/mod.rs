@@ -121,10 +121,17 @@
 //! ```
 //!
 //! `valid_to` and `field_meta` (on unless `false`) are also accepted. A
-//! view type has no fields of its own and a `view` instead:
+//! view type has a `view`, and declares the fields it computes: one for
+//! each `group_by` field and each measure, of the kind its value holds. A
+//! read answers declared fields only, so a measure without a field, or a
+//! field nothing computes, is refused when the view is declared:
 //!
 //! ```yaml
 //! name: open_totals
+//! fields:
+//!   partner: reference(partner)
+//!   total: decimal
+//!   invoices: number
 //! view:
 //!   source: invoice
 //!   where: "status = 'open'"
@@ -140,11 +147,14 @@
 //!
 //! ```yaml
 //! name: due_up_to
+//! fields:
+//!   partner: reference(partner)
+//!   invoices: number
 //! view:
 //!   source: invoice
 //!   params:
 //!     until: date_time
-//!   where: "due_on <= param('until')"
+//!   where: "issued_on <= param('until')"
 //!   group_by: partner
 //!   measures:
 //!     invoices: "count()"

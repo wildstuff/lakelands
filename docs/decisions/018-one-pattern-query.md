@@ -59,7 +59,11 @@ measured, each measure landing in the kind the view
 declares for it. A group with no member has no record. Keeping a view's
 records materialised is an engine's optimisation, never a rule: it may
 make a read faster and may never change its answer, and the conformance
-checks on views bind it. Every read of a view reads those computed
+checks on views bind it. A view declares the fields it computes, one for each
+`group_by` field and each measure, and no other: a read answers declared
+fields only, so a computed value with no field would be dropped without
+a word, and a field nothing computes would always be empty; `declare`
+refuses both, naming the field. Every read of a view reads those computed
 records, the pattern query included: a pattern that starts on a view,
 or a walk that reaches one over a derived relation, finds the records
 `find` would, and never asks an engine for records it does not keep. A

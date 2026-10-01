@@ -110,6 +110,46 @@ fn source_cycle(
     })
 }
 
+/// A view's declared fields are exactly what it computes: a field for each
+/// `group_by` field and each measure, in which its value lands, and no
+/// field that nothing fills (028). A read answers declared fields only, so
+/// a computed value with no field would be dropped without a word.
+fn view_fields(owner: &str, t: &TypeDecl, v: &lakelands_api::ontology::ViewDecl) -> Result<()> {
+    let computed: Vec<(&FieldName, &str)> = v
+        .group_by
+        .iter()
+        .map(|g| (g, "group_by field"))
+        .chain(v.measures.iter().map(|m| (&m.name, "measure")))
+        .collect();
+    if let Some((n, what)) = computed
+        .iter()
+        .find(|(n, _)| !t.fields.iter().any(|f| &f.name == *n))
+    {
+        return Err(invalid_field(
+            n,
+            format!(
+                "{owner}: its view's {what} `{n}` has no declared field to land in; a view \
+                 declares a field for each value it computes, of the kind it holds"
+            ),
+        ));
+    }
+    if let Some(f) = t
+        .fields
+        .iter()
+        .find(|f| !computed.iter().any(|(n, _)| **n == f.name))
+    {
+        return Err(invalid_field(
+            &f.name,
+            format!(
+                "{owner}: its field `{}` is neither a `group_by` field nor a measure of its \
+                 view, so nothing would fill it",
+                f.name
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// A view's parameters: each named by the rule every name follows, once,
 /// of a scalar kind, and read by its `where` or a measure; and every
 /// `param('name')` they hold, `read`, names one of them.
@@ -468,6 +508,7 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             )?;
             lakelands_core::expr::params_read(&e, &mut read);
         }
+        view_fields(&owner, t, v)?;
         view_params(&owner, v, &read)?;
     }
     // Order the fields as the fold will compute them: a field computed by
