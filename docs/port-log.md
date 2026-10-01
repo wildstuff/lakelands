@@ -92,6 +92,19 @@ files. No row is added. **The list is closed for `0.5.0` as of
 `1c58d0fcbc`.** If the mainline moves before the tag, only the commits
 after it are checked.
 
+**Checked on 2026-10-01, before the `0.6.0` tag**, against the source's
+mainline at `ff72cdfed4`: the 105 commits after `1c58d0fcbc` (836 after
+the freeze in all), checked the same way, the moved `{types}` files in
+their new crate included. Two of them touch a root, and they are the last
+two rows. The first fixes the writer of `{engine}` and `{store}` around a
+lake that is deleted and created again while it is written; Lakelands has
+no such deletion and no shared write queue, so it does not apply. The
+second makes the `{pg}` engine's refusal of a transaction-mode pooler see
+leaked temporary tables as well as a leaked `search_path`; Lakelands'
+engine sets neither and probes a setting of its own, so it is not needed.
+Every root holds the same files it held at `1c58d0fcbc`. **The list is
+closed for `0.6.0` as of `ff72cdfed4`.**
+
 | Source commit | Behaviour, in one line | Ported in, or not applicable and why |
 |---|---|---|
 | `5914084de9` | One German user-interface sentence in the capabilities module changes its form of address from formal to informal. | Not applicable: the capabilities module was not carried (cut in O2: there is no capability negotiation; see `docs/import-ledger.md`), and no storage behaviour changes: no event, no fold rule, no signature, no stored byte. |
@@ -101,3 +114,5 @@ after it are checked.
 | `c9f8a0ad6e` | A new store on `/dev/shm` first removes the directories left by test processes that were killed by a signal. | Not applicable: the same fixture; no storage behaviour changes. |
 | `5c9c476b11` | Seventeen files of the contract-and-types module move into a new crate of the source's own for its shared type layer. The old module re-exports them for the time being. Three pieces cut from larger files move with them: the verb and CRUD vocabulary with its mapping onto the write grant, the filter predicate, and the page cursor. Only import paths change. | Not applicable: no behaviour changes. No event, fold rule, signature or stored byte changes; the renamed files differ from their old selves in `use` lines alone. Lakelands' contract types are its own, written new in O1 (`lakelands-api`), and the crate the files now live in is outside the roots. Later checks follow the moved files. |
 | `8a47557f5e` | A lexical search, which matches every searchable field at once, is refused and names the field when the caller may not read one of those fields: otherwise the question probes the field even though the hit masks it. A hybrid search whose lexical half is refused now answers with that refusal instead of falling back to its vector half. | Not needed: Lakelands already refuses. `rights::check_search` refuses a search in every mode, before either half runs, when the principal may not read one of the type's searchable fields or the searched vector field (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`). So a hybrid search never falls back to its vector half. The suite holds the lexical case (`searching_a_type_whose_searchable_field_is_unreadable_is_refused`). |
+| `def9edb870` | A write made around a lake that is deleted and created again lands once or says why: a writer handle that no longer fronts the lake's files hands its queued window back unwritten to the handle that does, and a queued write's acknowledgement answers exactly once, the close's answer when it is dropped. | Not applicable: Lakelands deletes no lake and parks no lake's files, so no handle can outlive the files it writes. A lake has one writer, which holds its lease (`docs/decisions/008-one-writer-per-lake.md`), and an ingest window is taken from one caller's stream and answered through that caller's own channel (`lakelands-store/src/ingest.rs`); there is no queue shared between callers whose answers a close could drop. |
+| `d3cb2ccf17` | The PostgreSQL engine's refusal of a transaction-mode pooler also probes a temporary table, since a pooler that learned to re-apply a client's `search_path` still lets one session read another's temporary tables, and the engine's replay of an earlier position builds such tables. | Not needed: Lakelands' PostgreSQL engine sets no `search_path` (every statement names its schema) and builds no temporary tables; an earlier position is read from the kept history rows. The session state a pooler could lose or leak is the writer lease, a session lock, and `connect::session_keeping_state` refuses before taking it, by a setting of its own (`lakelands.probe`) that the server does not report, so no pooler that re-applies reported settings restores it. |
