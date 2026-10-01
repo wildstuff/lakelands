@@ -1,7 +1,8 @@
 //! The log format version an event needs (`docs/log-format.md` §6).
 //!
-//! A lake writes the version it was created with until an event needs a
-//! newer one, and that version from there on. What needs which:
+//! A lake writes the version it was created with until an append holds an
+//! event that needs a newer one, and that version from that append on:
+//! every event of the append carries it. What needs which:
 //!
 //! - **2**: a `migrated` event that re-keys (`rekeyed`).
 //! - **3**: an event carrying `upstream`, the lake and position values
@@ -22,9 +23,10 @@
 //!   proposed `declare`), called (`verb_called` without `key`) or proposed
 //!   (a `call` without `key`).
 //!
-//! The store appends each event at the greatest of the lake's version and
-//! the one [`needed`] answers, and refuses, when it reads the log, an
-//! event written below what it needs.
+//! The store writes every event of one append at the greatest of the
+//! lake's version and what [`needed`] answers for each event of the
+//! append, and refuses, when it reads the log, an event written below what
+//! it needs.
 
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::expr::{Condition, Expr, Func};
