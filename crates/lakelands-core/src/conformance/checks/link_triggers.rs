@@ -53,6 +53,7 @@ fn relation(
 
 fn trigger(name: &str, on: &TypeName, when: Option<&str>) -> Declaration {
     Declaration::Trigger(TriggerDecl {
+        max_depth: None,
         name: name.into(),
         on: on.clone(),
         when: when.map(Condition::from),

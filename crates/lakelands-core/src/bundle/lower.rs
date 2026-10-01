@@ -510,6 +510,7 @@ pub(super) fn trigger(l: &mut Lower<'_>, doc: TriggerDoc) -> TriggerDecl {
     let on = l.type_ref("`on`", &doc.on);
     let when = l.opt_cond("`when`", doc.when);
     TriggerDecl {
+        max_depth: doc.max_depth,
         name: TriggerName::new(doc.name),
         on,
         when,

@@ -355,6 +355,7 @@ async fn a_filled_field_recomputes_what_reads_it_and_fires_its_triggers(
     cat.declare(
         own,
         Declaration::Trigger(TriggerDecl {
+            max_depth: None,
             name: "named".into(),
             on: "place".into(),
             when: Some(Condition::from("name = 'AT'")),

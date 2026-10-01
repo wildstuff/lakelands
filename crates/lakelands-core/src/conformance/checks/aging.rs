@@ -358,6 +358,7 @@ async fn a_move_is_written_by_the_system_as_its_rule(
     cat.declare(
         own,
         Declaration::Trigger(TriggerDecl {
+            max_depth: None,
             name: "went_overdue".into(),
             on: "invoice".into(),
             when: Some(Condition::from("status = 'overdue'")),

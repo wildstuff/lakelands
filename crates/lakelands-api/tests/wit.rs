@@ -424,6 +424,7 @@ fn migration_report() -> MigrationReport {
 
 fn trigger_decl() -> TriggerDecl {
     TriggerDecl {
+        max_depth: Some(2),
         name: "t".into(),
         on: "invoice".into(),
         when: Some(cond()),
@@ -1418,6 +1419,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     description: None,
                 }),
                 Declaration::Trigger(TriggerDecl {
+                    max_depth: Some(2),
                     name: "t".into(),
                     on: "t".into(),
                     when: None,

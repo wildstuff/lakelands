@@ -129,3 +129,16 @@ fn a_derived_relation_needs_format_6_and_a_carried_one_does_not() {
     assert_eq!(needed(&with(true), false), 6);
     assert_eq!(needed(&with(false), false), 1);
 }
+
+#[test]
+fn a_triggers_max_depth_needs_format_6() {
+    let trigger = |max_depth: serde_json::Value| EventBody::Declared {
+        declaration: declaration(json!({
+            "declare": "trigger", "name": "t", "on": "job", "max_depth": max_depth
+        })),
+        schema_hash: None,
+        version: 1,
+    };
+    assert_eq!(needed(&trigger(json!(1)), false), 6);
+    assert_eq!(needed(&trigger(serde_json::Value::Null), false), 1);
+}

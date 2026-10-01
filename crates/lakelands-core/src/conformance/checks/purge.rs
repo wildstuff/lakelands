@@ -433,6 +433,7 @@ async fn each_purged_record_reacts_as_a_retire_does_in_the_same_append(
     cat.declare(
         own,
         Declaration::Trigger(TriggerDecl {
+            max_depth: None,
             name: "partner_changed".into(),
             on: "partner".into(),
             when: None,

@@ -487,6 +487,25 @@ fn the_version_6_derived_relation_recomputes_and_a_version_5_one_is_refused() {
         why.contains("derived relation") && why.contains("format 6 added"),
         "{why}"
     );
+    // Position 15: a trigger's `max_depth`, which version 6 also added.
+    let line = v6["lines"][1].as_str().unwrap();
+    let value: Value = serde_json::from_str(line).unwrap();
+    let capped: Event = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(
+        canonical::of(&capped),
+        line.as_bytes(),
+        "the contract writes it as the line"
+    );
+    let mut body = value;
+    body.as_object_mut().unwrap().remove("hash");
+    assert_eq!(sha(&canonical::to_vec(&body)), capped.hash.0);
+    assert_eq!(capped.hash.0, v6["hashes"][1].as_str().unwrap());
+    assert_eq!(capped.prev, event.hash, "it follows position 14");
+    assert_eq!(lakelands_core::versions::needed(&capped.body, false), 6);
+    let mut below = capped.clone();
+    below.v = 5;
+    let why = lakelands_core::versions::below(&below).expect("refused");
+    assert!(why.contains("`max_depth`"), "{why}");
 }
 
 /// The negative vector `negative/known-at-goes-back`: the first segment

@@ -74,6 +74,7 @@ async fn a_reactive_write_with_a_cause_carries_it_on_each_of_its_events(
         Declaration::Type(type_decl("job", vec![field("status", StorageKind::Text)])),
         Declaration::Type(reading),
         Declaration::Trigger(TriggerDecl {
+            max_depth: None,
             name: "opened".into(),
             on: "job".into(),
             when: None,

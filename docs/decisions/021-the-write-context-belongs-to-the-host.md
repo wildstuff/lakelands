@@ -69,3 +69,21 @@ and `propose`, and also `ingest`, `accept`, `reject`, `declare`,
 which until 0.6.0 let a context past the ceiling through (lakelands#257).
 A host that wrote reactively through those doors past the ceiling is
 now refused `too_deep` there too.
+
+## Extended: a trigger caps the reactions to it (lakelands#244)
+
+A trigger may declare `max_depth`, at most the lake's
+`max_reactive_depth`, `0` included. A reactive write whose `cause` names a
+firing of that trigger, and whose depth is above the trigger's ceiling,
+is refused `too_deep`, naming the trigger, with nothing appended. The
+store reads the one event the cause names and takes the ceiling the head
+declares for the trigger. A trigger with `max_depth: 1` thus cascades once,
+however high the lake's own ceiling is.
+
+The per-trigger ceiling binds the reactions that name the firing. A
+reaction that names no cause is bound by the lake's ceiling alone: what a
+write follows from is the host's to say, and a host that wants the
+trigger's ceiling names the firing. Suppressing the firing itself past
+the ceiling would need no cause, but it would drop the durable fact the
+feed promises (004). So the firing is always appended, and the reaction
+is what is refused.

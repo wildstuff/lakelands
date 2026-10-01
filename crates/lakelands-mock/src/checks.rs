@@ -798,6 +798,7 @@ pub async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) {
     invoice.language = Some("en".into());
     invoice.label = Some("Invoice".into());
     let trigger = |name: &str, when: &str| TriggerDecl {
+        max_depth: None,
         name: name.into(),
         on: INVOICE.into(),
         when: Some(Condition::from(when)),
@@ -3781,6 +3782,7 @@ pub async fn a_trigger_watches_a_link_type_and_not_a_reference_relations(
         .expect("the owner declares a type with a relation carried by link records");
     let trigger = |name: &str, on: &str| {
         Declaration::Trigger(TriggerDecl {
+            max_depth: None,
             name: name.into(),
             on: on.into(),
             when: None,

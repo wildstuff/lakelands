@@ -13,7 +13,7 @@
 //!   `declared` event's declaration, a `migrated` event's `to`, a proposed
 //!   `declare` or `migrate`.
 //! - **6**: an event whose declaration holds a relation with `derived`,
-//!   in the same places.
+//!   or is a trigger with `max_depth`, in the same places.
 //!
 //! The store appends each event at the greatest of the lake's version and
 //! the one [`needed`] answers, and refuses, when it reads the log, an
@@ -27,7 +27,7 @@ use lakelands_api::write::{Declaration, ProposedWrite};
 /// The lowest format version that can carry `body`, with `upstream` or
 /// without it.
 pub fn needed(body: &EventBody, upstream: bool) -> u32 {
-    if derives_a_relation(body) {
+    if derives_a_relation(body) || caps_a_trigger(body) {
         return 6;
     }
     if carries_annotations(body) {
@@ -88,6 +88,14 @@ pub fn derives_a_relation(body: &EventBody) -> bool {
     )
 }
 
+/// Whether a declaration the event carries is a trigger with `max_depth`.
+pub fn caps_a_trigger(body: &EventBody) -> bool {
+    any_declaration(
+        body,
+        |d| matches!(d, Declaration::Trigger(t) if t.max_depth.is_some()),
+    )
+}
+
 /// Why an event is written below the version it needs, if it is: what it
 /// carries and the version that added it.
 pub fn below(event: &Event) -> Option<String> {
@@ -95,7 +103,9 @@ pub fn below(event: &Event) -> Option<String> {
     if event.v >= need {
         return None;
     }
-    let what = if need == 6 {
+    let what = if need == 6 && caps_a_trigger(&event.body) {
+        "declares a trigger's `max_depth`".to_owned()
+    } else if need == 6 {
         "declares a derived relation".to_owned()
     } else if need == 5 {
         "carries `annotations` in a declaration".to_owned()

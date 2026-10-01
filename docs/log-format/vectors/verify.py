@@ -130,7 +130,8 @@ ONE_FORM = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[
 
 
 def derives(body):
-    """Whether a declaration the event body carries holds a derived relation."""
+    """Whether a declaration the event body carries holds what version 6
+    added: a derived relation, or a trigger's `max_depth`."""
     decls = []
     kind = body.get("kind")
     if kind == "declared":
@@ -143,7 +144,8 @@ def derives(body):
             decls = w["declarations"]
         elif w.get("write") == "migrate":
             decls = [w["migration"]["to"]]
-    return any("derived" in r for d in decls for r in d.get("relations", []))
+    return any("derived" in r for d in decls for r in d.get("relations", [])) or any(
+        d.get("declare") == "trigger" and "max_depth" in d for d in decls)
 
 
 def annotated(body):
@@ -207,7 +209,7 @@ def verify_dir(root):
             need(proposed not in ("declare", "migrate") or v >= 4,
                  f"a format {v} event proposes a declaration or a migration, which format 4 added")
             need(not derives(event["body"]) or v >= 6,
-                 f"a format {v} event declares a derived relation, which format 6 added")
+                 f"a format {v} event declares a derived relation or a trigger's `max_depth`, which format 6 added")
             need(not annotated(event["body"]) or v >= 5,
                  f"a format {v} event carries `annotations` in a declaration, which format 5 added")
             need("cause" not in event.get("context", {}),
@@ -368,7 +370,7 @@ def main():
         event = json.loads(line)
         check(canonical(event) == line.encode("utf-8"), f"v6.json: position {event['position']} is canonical")
         check(event["v"] == 6 and derives(event["body"]),
-              f"v6.json: position {event['position']} is a format 6 declaration of a derived relation")
+              f"v6.json: position {event['position']} is a format 6 declaration of what version 6 added")
         body = {k: v for k, v in event.items() if k != "hash"}
         check(sha(canonical(body)) == event["hash"] == want, f"v6.json: hash {want[:12]}…")
         check(event["prev"] == prev, f"v6.json: position {event['position']} follows the one before it")
