@@ -1,0 +1,4 @@
+name: order_settled
+on: order
+when: "status = 'paid' and not retired()"
+description: A paid order was written, and not by retiring it.
