@@ -62,7 +62,12 @@ make a read faster and may never change its answer, and the conformance
 checks on views bind it. Every read of a view reads those computed
 records, the pattern query included: a pattern that starts on a view,
 or a walk that reaches one over a derived relation, finds the records
-`find` would, and never asks an engine for records it does not keep.
+`find` would, and never asks an engine for records it does not keep. A
+view is not searched: the indexes a search reads hold stored records
+only, so a search of computed records could only answer nothing. A view
+field that is searchable, carries an embedding or is a vector is
+refused when the view is declared, and a search on a view is refused,
+naming it; neither is answered empty.
 
 ## Extended: a view may take parameters bound at read
 

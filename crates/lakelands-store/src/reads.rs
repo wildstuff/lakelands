@@ -959,6 +959,15 @@ impl<'a> Reader<'a> {
     /// `search`.
     pub fn search(&self, s: &Search) -> Result<Hits> {
         let decl = self.visible_type(&s.ty)?.clone();
+        // A view's records are computed on read and no index holds them, so
+        // a search could only answer nothing (018).
+        if decl.view.is_some() {
+            return Err(invalid(format!(
+                "`{}` is a view, and a view is not searched: its records are computed on read \
+                 and no index holds them",
+                s.ty
+            )));
+        }
         let vector_field = match &s.mode {
             SearchMode::Vector { field, .. } | SearchMode::Hybrid { field, .. } => {
                 Some(field.clone())

@@ -2453,6 +2453,12 @@ impl Catalog for MockCatalog {
         let t = st
             .visible(who, &search.ty)
             .ok_or_else(|| no_type(&search.ty))?;
+        if t.decl.view.is_some() {
+            return Err(invalid(format!(
+                "`{}` is a view, and a view is not searched",
+                search.ty
+            )));
+        }
         // A search probes every searchable field, or the ones it names,
         // then the vector field it names and the fields that vector is
         // embedded from; one the caller may not read refuses the search

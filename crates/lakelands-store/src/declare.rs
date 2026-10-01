@@ -197,6 +197,30 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
     let owner = format!("type `{}`", t.name);
     let has = |f: &FieldName| t.fields.iter().any(|d| &d.name == f);
     let mut seen = std::collections::BTreeSet::new();
+    // A view is not searched: its records are computed on read, and the
+    // indexes a search reads hold stored records only (018).
+    if t.view.is_some()
+        && let Some(f) = t
+            .fields
+            .iter()
+            .find(|f| f.searchable || f.embed.is_some() || f.ty.kind == StorageKind::Vector)
+    {
+        let asks = if f.searchable {
+            "is searchable"
+        } else if f.embed.is_some() {
+            "carries an embedding"
+        } else {
+            "is a vector"
+        };
+        return Err(invalid_field(
+            &f.name,
+            format!(
+                "view `{}`: its field `{}` {asks}, and a view is not searched; its records \
+                 are computed on read and no index holds them",
+                t.name, f.name
+            ),
+        ));
+    }
     if let Some((field, why)) = t.embedding_problem() {
         return Err(invalid_field(&field, why));
     }
