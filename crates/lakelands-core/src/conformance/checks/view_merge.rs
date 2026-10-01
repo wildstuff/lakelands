@@ -18,7 +18,7 @@ use lakelands_api::{
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, field, principal, type_decl};
+use crate::conformance::fixture::{Lake, field, log_events, principal, type_decl};
 
 check!(
     /// Sources meet on their key.
@@ -42,6 +42,12 @@ check!(
     /// A merge is declared strictly.
     MERGE_DECLARED_STRICTLY = a_merge_declared_badly_is_refused_naming_it,
     "028 and 018: `declare` refuses a merged source that is not declared, read twice, grouped by another number of fields or a field of another kind than the one it lines up with, a measure named twice, a merged measure with no declared field or one that calls no aggregate, a view with parameters as any source, and a merge that closes a cycle of views, naming it"
+);
+
+check!(
+    /// A merge is written in format 9.
+    FORMAT_9 = a_view_that_merges_is_written_in_log_format_9,
+    "log format §6 and 018: the event that declares a view merging sources is written in format 9, as is every event after it; a view without a merge leaves the lake's format where it was"
 );
 
 check!(
@@ -441,6 +447,51 @@ async fn a_merged_sources_fields_are_probed_as_a_read_of_it(
                  must be refused not_granted; it answered {other:?}"
             )));
         }
+    }
+    Ok(())
+}
+
+async fn a_view_that_merges_is_written_in_log_format_9(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = lake(store.as_ref()).await?;
+    let mut plain = energy_balance("food_only", Vec::new(), None, None);
+    if let Some(v) = plain.view.as_mut() {
+        v.merge.clear();
+        v.measures.truncate(1);
+    }
+    plain
+        .fields
+        .retain(|f| f.name == "day" || f.name == "calories_in");
+    l.declare(plain).await?;
+    let highest = log_events(store.as_ref())
+        .await?
+        .iter()
+        .map(|e| e.v)
+        .max()
+        .unwrap_or(0);
+    ensure!(
+        highest < 9,
+        "a view without a merge needs no format 9, yet the lake writes {highest}"
+    );
+    let declared = l
+        .declare(energy_balance("energy_balance", Vec::new(), None, None))
+        .await?
+        .position();
+    l.upsert(
+        "food_log",
+        "f9",
+        json!({"day": "2026-06-04", "kcal": "100.00"}),
+    )
+    .await?;
+    for e in log_events(store.as_ref()).await? {
+        ensure!(
+            (e.position >= declared) == (e.v == 9),
+            "the event at {} is written in format {}; the one declaring a view that merges \
+             and every one after it must be 9, and none before it",
+            e.position,
+            e.v
+        );
     }
     Ok(())
 }

@@ -117,6 +117,7 @@ pub const ALL: &[Check] = &[
     view_merge::PARAMS_BIND_EVERY_SOURCE,
     view_merge::MERGE_DECLARED_STRICTLY,
     view_merge::MERGE_PROBES_EACH_SOURCE,
+    view_merge::FORMAT_9,
     views::VIEW_FIELD_NOT_SEARCHED,
     views::VIEW_NOT_SEARCHED,
     views::SOURCE_CYCLE_REFUSED,

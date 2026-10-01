@@ -22,6 +22,8 @@
 //!   on its type: declared with `scope: type` (a `declared` event, a
 //!   proposed `declare`), called (`verb_called` without `key`) or proposed
 //!   (a `call` without `key`).
+//! - **9**: an event whose declaration is a view that `merge`s sources, in
+//!   the places 5 names.
 //!
 //! The store writes every event of one append at the greatest of the
 //! lake's version and what [`needed`] answers for each event of the
@@ -36,6 +38,9 @@ use lakelands_api::write::{Declaration, ProposedWrite};
 /// The lowest format version that can carry `body`, with `upstream` or
 /// without it.
 pub fn needed(body: &EventBody, upstream: bool) -> u32 {
+    if merges_sources(body) {
+        return 9;
+    }
     if declares_view_params(body) || declares_a_verb_on_its_type(body) || calls_with_no_key(body) {
         return 8;
     }
@@ -108,6 +113,14 @@ pub fn calls_retired(body: &EventBody) -> bool {
     any_declaration(body, |d| declares_call(d, Func::Retired))
 }
 
+/// Whether a declaration the event carries is a view that merges sources.
+pub fn merges_sources(body: &EventBody) -> bool {
+    any_declaration(
+        body,
+        |d| matches!(d, Declaration::Type(t) if t.view.as_ref().is_some_and(|v| !v.merge.is_empty())),
+    )
+}
+
 /// Whether a declaration the event carries is a view with parameters, or
 /// calls `param`.
 pub fn declares_view_params(body: &EventBody) -> bool {
@@ -153,7 +166,9 @@ pub fn below(event: &Event) -> Option<String> {
     if event.v >= need {
         return None;
     }
-    let what = if need == 8 && declares_a_verb_on_its_type(&event.body) {
+    let what = if need == 9 {
+        "declares a view that merges sources".to_owned()
+    } else if need == 8 && declares_a_verb_on_its_type(&event.body) {
         "declares a verb on its type".to_owned()
     } else if need == 8 && calls_with_no_key(&event.body) {
         "calls a verb with no key".to_owned()
