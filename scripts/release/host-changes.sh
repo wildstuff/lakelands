@@ -92,6 +92,10 @@ for crate in "${CRATES[@]}"; do
         inside && /^  / {
             item = $0; sub(/^  /, "", item)
             sub(/,? (in file|in|previously in file) \/.*$/, "", item)
+            # A path with `::` throughout: the tool writes an added
+            # variant with one colon (`Func:Retired`).
+            while (match(item, /[A-Za-z0-9_]:[A-Za-z_]/))
+                item = substr(item, 1, RSTART) ":" substr(item, RSTART + 1)
             print lint "\037" summary "\037" item
             next
         }
