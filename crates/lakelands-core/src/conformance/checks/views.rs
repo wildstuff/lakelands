@@ -18,7 +18,7 @@ use lakelands_api::ontology::{
 };
 use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Start, Step, Walk};
 use lakelands_api::read::Find;
-use lakelands_api::{FieldName, LakeStore, Principal, TypeName, Value};
+use lakelands_api::{Error, FieldName, LakeStore, Principal, Refusal, TypeName, Value};
 use rust_decimal::Decimal;
 use serde_json::json;
 
@@ -62,6 +62,18 @@ check!(
     /// A walk reaches a view over a derived relation.
     WALK_REACHES_A_VIEW = a_walk_over_a_derived_relation_reaches_a_views_records_both_ways,
     "018, 026 and 044: a derived relation between a stored type and a view connects their records by matching values like any other, so a walk out from the stored type reaches the view's records, a step's `where` keeps those of them it holds for, and a walk in from the view reaches the stored ones"
+);
+
+check!(
+    /// A view's field asks for no search.
+    VIEW_FIELD_NOT_SEARCHED = a_view_field_that_asks_to_be_searched_or_embedded_is_refused,
+    "018: a view is not searched, so `declare` refuses a view field that is searchable, carries an embedding or is a vector, naming the view and the field"
+);
+
+check!(
+    /// A view is not searched.
+    VIEW_NOT_SEARCHED = a_search_on_a_view_is_refused_naming_it,
+    "018: a view's records are computed on read and no index holds them, so a lexical, vector or hybrid search on a view is refused as invalid, naming the view, never answered empty"
 );
 
 check!(
@@ -553,6 +565,95 @@ async fn a_walk_over_a_derived_relation_reaches_a_views_records_both_ways(
             "walking `totals` {walk:?} from {start} `{key}` (step where {filter:?}) must reach \
              {want:?}, the records whose matched value is the same and that the step's where \
              holds for; it reaches {got:?}"
+        );
+    }
+    Ok(())
+}
+
+async fn a_view_field_that_asks_to_be_searched_or_embedded_is_refused(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(invoices(Authority::Authored)).await?;
+    let mut searchable = partner_totals("searched_totals", StorageKind::Decimal);
+    searchable.fields[0].searchable = true;
+    let mut vector = partner_totals("vector_totals", StorageKind::Decimal);
+    let mut dims = field("near", StorageKind::Vector);
+    dims.ty.dimensions = Some(3);
+    vector.fields.push(dims.clone());
+    let mut embedded = partner_totals("embedded_totals", StorageKind::Decimal);
+    dims.authority = Authority::Derived;
+    dims.embed = Some(lakelands_api::ontology::EmbedDecl {
+        from: vec![FieldName::from("partner")],
+        model: "m".into(),
+    });
+    embedded.fields.push(dims);
+    for (what, ty, name) in [
+        ("is searchable", searchable, "partner"),
+        ("is a vector", vector, "near"),
+        ("carries an embedding", embedded, "near"),
+    ] {
+        let view = ty.name.clone();
+        let r = cat
+            .declare(own, lakelands_api::write::Declaration::Type(ty))
+            .await;
+        ensure!(
+            matches!(&r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
+                if message.contains(view.as_str()) && message.contains(name)),
+            "a view whose field `{name}` {what} must be refused as invalid, naming `{view}` \
+             and `{name}`; declare answered {r:?}"
+        );
+    }
+    Ok(())
+}
+
+async fn a_search_on_a_view_is_refused_naming_it(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+    use lakelands_api::query::{Search, SearchMode};
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(invoices(Authority::Authored)).await?;
+    l.declare(partner_totals("partner_totals", StorageKind::Decimal))
+        .await?;
+    write_invoice(store.as_ref(), own, "i1", "p1", "10.00").await?;
+    let near = || (FieldName::from("total"), vec![1.0, 0.0, 0.0]);
+    for mode in [
+        SearchMode::Lexical {
+            text: "p1".into(),
+            fields: None,
+        },
+        SearchMode::Vector {
+            field: near().0,
+            vector: near().1,
+        },
+        SearchMode::Hybrid {
+            text: "p1".into(),
+            fields: None,
+            field: near().0,
+            vector: Some(near().1),
+        },
+    ] {
+        let what = format!("{mode:?}");
+        let r = cat
+            .search(
+                own,
+                Search {
+                    ty: "partner_totals".into(),
+                    mode,
+                    k: 10,
+                    cursor: None,
+                    filter: None,
+                    with_meta: false,
+                    at: Default::default(),
+                },
+            )
+            .await;
+        ensure!(
+            matches!(&r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
+                if message.contains("partner_totals") && message.contains("view")),
+            "a search on the view `partner_totals` ({what}) must be refused as invalid, \
+             naming it as a view; it answered {r:?}. An empty answer looks exactly like no \
+             match"
         );
     }
     Ok(())
