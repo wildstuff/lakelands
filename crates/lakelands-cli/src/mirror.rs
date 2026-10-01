@@ -800,7 +800,7 @@ impl Mirror {
             _lock: lock,
         };
         let refused = |why: String| format!("connection `{name}` from `{from}` into `{to}`: {why}");
-        mirror.load(&home).await.map_err(&refused)?;
+        mirror.load(&home).await.map_err(refused)?;
         let tcat = mirror.target.catalog(WriteContext::default());
         let mut descriptions = BTreeMap::new();
         for (s, t) in &names {
@@ -850,8 +850,8 @@ impl Mirror {
         for (s, td) in &descriptions {
             match mirror.kept.types.get(s).cloned() {
                 None => {
-                    let sd = mirror.describe_source(s, None).await.map_err(&refused)?;
-                    admits(&sd, td, &names).map_err(&refused)?;
+                    let sd = mirror.describe_source(s, None).await.map_err(refused)?;
+                    admits(&sd, td, &names).map_err(refused)?;
                 }
                 Some(state) => {
                     let resume = state.stopped.as_ref().map_or(state.next, |s| s.at);
