@@ -3,11 +3,18 @@
 //! whole-graph measures (degree centrality, connected components).
 //!
 //! Every engine keeps a lake's links and answers one narrow question
-//! about them, [`ProjectionView::edges`]: the links of one record, over
-//! one relation or all, in one direction. The walks are written once,
-//! here, over that question and one more (may this record appear?), so
-//! every engine walks the same way and returns the same answer. An
-//! engine never implements a walk of its own.
+//! about them, [`ProjectionView::edges`]: the links of some records of
+//! one type, over one relation or all, in one direction, one list per
+//! record. The walks are written once, here, over that question and one
+//! more (may these records appear?), so every engine walks the same way
+//! and returns the same answer. An engine never implements a walk of its
+//! own.
+//!
+//! Both questions are asked of a [`PAGE`] of records at a time: a walk
+//! expands one hop of its frontier, a measure one page of its records,
+//! together. That keeps an engine whose every read is a round trip from
+//! paying one per record (lakelands#227). What a walk answers does not
+//! depend on it: every hop is expanded whole before the next.
 //!
 //! ## The rules every walk keeps
 //!
@@ -19,11 +26,11 @@
 //!   results never sees a reordering as a change.
 //! - **Visibility is asked of the far endpoint.** A walk follows a link
 //!   only if the record at its far end may appear
-//!   ([`EdgeSource::is_visible`]). Through a projection view that means
-//!   the record exists at the view's position and is not retired. A
-//!   restricted record is the caller's concern: the store wraps the view
-//!   in an [`EdgeSource`] that also hides restricted records from a
-//!   principal without the grant. The start of a walk is not checked,
+//!   ([`EdgeSource::visible`]), asked once per record per walk. Through
+//!   a projection view that means the record exists at the view's
+//!   position and is not retired. A restricted record is the caller's
+//!   concern: the store wraps the view in an [`EdgeSource`] that also
+//!   hides restricted records from a principal without the grant. The start of a walk is not checked,
 //!   because the caller has already read it; only a link that leads back
 //!   to it asks about it, like any other far endpoint.
 //! - **Cycles terminate by construction.** Every walk keeps the set of
@@ -42,12 +49,12 @@ mod path;
 mod step;
 mod subgraph;
 
-pub use measures::{Component, Components, degree};
+pub use measures::{Component, Components, degrees};
 pub use path::{Path, shortest_path};
 pub use step::{Reached, Traversal, neighbors, step, traverse};
 pub use subgraph::{Subgraph, subgraph};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::engine::ProjectionView;
 use lakelands_api::query::{Depth, Edge, Walk};
@@ -56,24 +63,32 @@ use lakelands_api::{Error, RecordKey, Refusal, RelationName, Result, TypeName};
 /// A record's identity: its type and its key. Ordered by type, then key.
 pub type Node = (TypeName, RecordKey);
 
-/// The two questions the walks ask of a lake's projection.
+/// The records one call asks about at most: a walk reads the links of a
+/// page of records at once, and asks about a page of far ends at once, so
+/// what one call holds is a page's links, never the graph.
+pub const PAGE: usize = 256;
+
+/// The two questions the walks ask of a lake's projection, each for many
+/// records at once.
 ///
 /// Every [`ProjectionView`] is one: the view's `edges` answers the first
-/// question and its `get` the second. The store wraps a view in its own
-/// implementation when visibility depends on who is asking.
+/// question and its `get_many` the second. The store wraps a view in its
+/// own implementation when visibility depends on who is asking.
 pub trait EdgeSource {
-    /// The links of one record, over one relation or (with `None`) all,
-    /// in one direction. No order is promised; the walks sort.
+    /// The links of many records of one type, over one relation or (with
+    /// `None`) all, in one direction: one list per key, in the keys'
+    /// order. No order is promised within a list; the walks sort.
     fn edges(
         &self,
         ty: &TypeName,
-        key: &RecordKey,
+        keys: &[RecordKey],
         relation: Option<&RelationName>,
         walk: Walk,
-    ) -> Result<Vec<Edge>>;
+    ) -> Result<Vec<Vec<Edge>>>;
 
-    /// Whether a record reached over a link may appear in an answer.
-    fn is_visible(&self, ty: &TypeName, key: &RecordKey) -> Result<bool>;
+    /// Whether each record reached over a link may appear in an answer,
+    /// in `nodes`' order.
+    fn visible(&self, nodes: &[Node]) -> Result<Vec<bool>>;
 }
 
 /// Through a projection view, a record is visible when it exists at the
@@ -85,16 +100,57 @@ impl<V: ProjectionView + ?Sized> EdgeSource for V {
     fn edges(
         &self,
         ty: &TypeName,
-        key: &RecordKey,
+        keys: &[RecordKey],
         relation: Option<&RelationName>,
         walk: Walk,
-    ) -> Result<Vec<Edge>> {
-        ProjectionView::edges(self, ty, key, relation, walk)
+    ) -> Result<Vec<Vec<Edge>>> {
+        ProjectionView::edges(self, ty, keys, relation, walk)
     }
 
-    fn is_visible(&self, ty: &TypeName, key: &RecordKey) -> Result<bool> {
-        Ok(self.get(ty, key)?.is_some_and(|record| !record.retired))
+    fn visible(&self, nodes: &[Node]) -> Result<Vec<bool>> {
+        let mut live = BTreeSet::new();
+        for (ty, keys) in by_type(nodes) {
+            for record in self.get_many(ty, &keys)? {
+                if !record.retired {
+                    live.insert((record.ty, record.key));
+                }
+            }
+        }
+        Ok(nodes.iter().map(|n| live.contains(n)).collect())
     }
+}
+
+/// `nodes`' keys grouped by type.
+pub fn by_type(nodes: &[Node]) -> BTreeMap<&TypeName, Vec<RecordKey>> {
+    let mut out: BTreeMap<&TypeName, Vec<RecordKey>> = BTreeMap::new();
+    for (ty, key) in nodes {
+        out.entry(ty).or_default().push(key.clone());
+    }
+    out
+}
+
+/// The links of each of `nodes`, over one relation or all, in `nodes`'
+/// order: asked of `source` a type and a [`PAGE`] at a time.
+fn edges_of<S: EdgeSource + ?Sized>(
+    source: &S,
+    nodes: &[Node],
+    relation: Option<&RelationName>,
+    walk: Walk,
+) -> Result<Vec<Vec<Edge>>> {
+    let mut out = vec![Vec::new(); nodes.len()];
+    let mut by_type: BTreeMap<&TypeName, Vec<usize>> = BTreeMap::new();
+    for (i, (ty, _)) in nodes.iter().enumerate() {
+        by_type.entry(ty).or_default().push(i);
+    }
+    for (ty, at) in by_type {
+        for page in at.chunks(PAGE) {
+            let keys: Vec<RecordKey> = page.iter().map(|&i| nodes[i].1.clone()).collect();
+            for (&i, edges) in page.iter().zip(source.edges(ty, &keys, relation, walk)?) {
+                out[i].extend(edges);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Refuse a depth range the lake does not allow: one whose `max` is
@@ -142,7 +198,7 @@ fn far(edge: &Edge, near: &Node) -> Node {
 
 /// The walks' view of an [`EdgeSource`]: links sorted and deduplicated,
 /// filtered to visible far endpoints, with each record's visibility asked
-/// once per walk.
+/// once per walk, a [`PAGE`] of records at a time.
 struct Links<'a, S: EdgeSource + ?Sized> {
     source: &'a S,
     visible: BTreeMap<Node, bool>,
@@ -156,51 +212,75 @@ impl<'a, S: EdgeSource + ?Sized> Links<'a, S> {
         }
     }
 
-    fn visible(&mut self, node: &Node) -> Result<bool> {
-        if let Some(&known) = self.visible.get(node) {
-            return Ok(known);
+    /// Ask about every one of `nodes` not asked about before in this walk.
+    fn learn<'n>(&mut self, nodes: impl IntoIterator<Item = &'n Node>) -> Result<()> {
+        let unknown: BTreeSet<Node> = nodes
+            .into_iter()
+            .filter(|n| !self.visible.contains_key(*n))
+            .cloned()
+            .collect();
+        let unknown: Vec<Node> = unknown.into_iter().collect();
+        for page in unknown.chunks(PAGE) {
+            for (node, answer) in page.iter().zip(self.source.visible(page)?) {
+                self.visible.insert(node.clone(), answer);
+            }
         }
-        let answer = self.source.is_visible(&node.0, &node.1)?;
-        self.visible.insert(node.clone(), answer);
-        Ok(answer)
+        Ok(())
     }
 
-    /// The links of `near` over the given relations (all of them when
-    /// `relations` is empty), each paired with its far endpoint, keeping
-    /// only visible far endpoints. Ordered by `(relation, far, from, to)`,
+    /// The links of each of `nears` over the given relations (all of them
+    /// when `relations` is empty), each paired with its far endpoint,
+    /// keeping only visible far endpoints: one list per record, in
+    /// `nears`' order, each ordered by `(relation, far, from, to)`
     /// without duplicates.
     fn around(
         &mut self,
-        near: &Node,
+        nears: &[Node],
         relations: &[RelationName],
         walk: Walk,
-    ) -> Result<Vec<(Node, Edge)>> {
-        let mut raw = Vec::new();
+    ) -> Result<Vec<Vec<(Node, Edge)>>> {
+        let mut raw = vec![Vec::new(); nears.len()];
         if relations.is_empty() {
-            raw.extend(self.source.edges(&near.0, &near.1, None, walk)?);
+            raw = edges_of(self.source, nears, None, walk)?;
         } else {
             for relation in relations {
-                raw.extend(self.source.edges(&near.0, &near.1, Some(relation), walk)?);
+                for (all, more) in
+                    raw.iter_mut()
+                        .zip(edges_of(self.source, nears, Some(relation), walk)?)
+                {
+                    all.extend(more);
+                }
             }
         }
-        let mut sorted: BTreeMap<(RelationName, Node, Node, Node), Edge> = BTreeMap::new();
-        for edge in raw {
-            let other = far(&edge, near);
-            let key = (
-                edge.relation.clone(),
-                other,
-                edge.from.clone(),
-                edge.to.clone(),
-            );
-            sorted.entry(key).or_insert(edge);
-        }
-        let mut out = Vec::with_capacity(sorted.len());
-        for ((_, other, _, _), edge) in sorted {
-            if self.visible(&other)? {
-                out.push((other, edge));
+        let mut sorted = Vec::with_capacity(nears.len());
+        for (near, edges) in nears.iter().zip(raw) {
+            let mut one: BTreeMap<(RelationName, Node, Node, Node), Edge> = BTreeMap::new();
+            for edge in edges {
+                let other = far(&edge, near);
+                let key = (
+                    edge.relation.clone(),
+                    other,
+                    edge.from.clone(),
+                    edge.to.clone(),
+                );
+                one.entry(key).or_insert(edge);
             }
+            sorted.push(one);
         }
-        Ok(out)
+        self.learn(
+            sorted
+                .iter()
+                .flat_map(|one| one.keys().map(|(_, other, _, _)| other)),
+        )?;
+        Ok(sorted
+            .into_iter()
+            .map(|one| {
+                one.into_iter()
+                    .filter(|((_, other, _, _), _)| self.visible[other])
+                    .map(|((_, other, _, _), edge)| (other, edge))
+                    .collect()
+            })
+            .collect())
     }
 }
 

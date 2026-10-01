@@ -27,8 +27,8 @@ fn stored(key: &str, retired: bool, restricted: bool) -> StoredRecord {
     }
 }
 
-/// A projection view holding a few records and no links; only `get`
-/// and `edges` are ever asked.
+/// A projection view holding a few records and no links; only
+/// `get_many` and `edges` are ever asked.
 struct View {
     records: Vec<StoredRecord>,
     asked: RefCell<Vec<Option<RelationName>>>,
@@ -41,12 +41,16 @@ impl ProjectionView for View {
     fn declarations(&self) -> Result<Vec<Declared>> {
         unreachable!()
     }
-    fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
+    fn get(&self, _: &TypeName, _: &RecordKey) -> Result<Option<StoredRecord>> {
+        unreachable!()
+    }
+    fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
         Ok(self
             .records
             .iter()
-            .find(|r| r.ty == *ty && r.key == *key)
-            .cloned())
+            .filter(|r| r.ty == *ty && keys.contains(&r.key))
+            .cloned()
+            .collect())
     }
     fn scan(&self, _: &TypeName, _: &Scan) -> Result<Vec<StoredRecord>> {
         unreachable!()
@@ -54,12 +58,12 @@ impl ProjectionView for View {
     fn edges(
         &self,
         _: &TypeName,
-        _: &RecordKey,
+        keys: &[RecordKey],
         relation: Option<&RelationName>,
         _: Walk,
-    ) -> Result<Vec<Edge>> {
+    ) -> Result<Vec<Vec<Edge>>> {
         self.asked.borrow_mut().push(relation.cloned());
-        Ok(Vec::new())
+        Ok(vec![Vec::new(); keys.len()])
     }
     fn lexical(
         &self,
@@ -98,17 +102,22 @@ fn view() -> View {
 #[test]
 fn through_a_view_a_live_record_is_visible_and_a_retired_or_missing_one_is_not() {
     let v = view();
-    let visible = |k: &str| EdgeSource::is_visible(&v, &TypeName::new("n"), &RecordKey::new(k));
-    assert!(visible("live").unwrap());
-    assert!(!visible("retired").unwrap());
-    assert!(!visible("missing").unwrap());
+    let asked = [
+        node("n", "live"),
+        node("n", "retired"),
+        node("n", "missing"),
+    ];
+    assert_eq!(
+        EdgeSource::visible(&v, &asked).unwrap(),
+        [true, false, false]
+    );
 }
 
 #[test]
 fn through_a_view_a_restricted_record_is_left_to_the_caller() {
     let v = view();
     let n = node("n", "restricted");
-    assert!(EdgeSource::is_visible(&v, &n.0, &n.1).unwrap());
+    assert_eq!(EdgeSource::visible(&v, &[n]).unwrap(), [true]);
 }
 
 #[test]

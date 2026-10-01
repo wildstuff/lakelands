@@ -19,7 +19,11 @@ pub(in crate::graph) struct Graph {
     edges: Vec<Edge>,
     present: BTreeSet<Node>,
     retired: BTreeSet<Node>,
+    /// Records asked about, one by one.
     pub(in crate::graph) visibility_asked: Cell<usize>,
+    /// Calls of `edges`, and of `visible`.
+    pub(in crate::graph) edges_asked: Cell<usize>,
+    pub(in crate::graph) visible_asked: Cell<usize>,
 }
 
 /// A record of type `n`.
@@ -59,6 +63,8 @@ impl Graph {
             present,
             retired: BTreeSet::new(),
             visibility_asked: Cell::new(0),
+            edges_asked: Cell::new(0),
+            visible_asked: Cell::new(0),
         }
     }
 
@@ -86,28 +92,37 @@ impl EdgeSource for Graph {
     fn edges(
         &self,
         ty: &TypeName,
-        key: &RecordKey,
+        keys: &[RecordKey],
         relation: Option<&RelationName>,
         walk: Walk,
-    ) -> Result<Vec<Edge>> {
-        let at = |side: &Node| side.0 == *ty && side.1 == *key;
-        Ok(self
-            .edges
+    ) -> Result<Vec<Vec<Edge>>> {
+        self.edges_asked.set(self.edges_asked.get() + 1);
+        Ok(keys
             .iter()
-            .rev()
-            .filter(|edge| relation.is_none_or(|r| edge.relation == *r))
-            .filter(|edge| match walk {
-                Walk::Out => at(&edge.from),
-                Walk::In => at(&edge.to),
-                Walk::Both => at(&edge.from) || at(&edge.to),
+            .map(|key| {
+                let at = |side: &Node| side.0 == *ty && side.1 == *key;
+                self.edges
+                    .iter()
+                    .rev()
+                    .filter(|edge| relation.is_none_or(|r| edge.relation == *r))
+                    .filter(|edge| match walk {
+                        Walk::Out => at(&edge.from),
+                        Walk::In => at(&edge.to),
+                        Walk::Both => at(&edge.from) || at(&edge.to),
+                    })
+                    .cloned()
+                    .collect()
             })
-            .cloned()
             .collect())
     }
 
-    fn is_visible(&self, ty: &TypeName, key: &RecordKey) -> Result<bool> {
-        self.visibility_asked.set(self.visibility_asked.get() + 1);
-        let node = (ty.clone(), key.clone());
-        Ok(self.present.contains(&node) && !self.retired.contains(&node))
+    fn visible(&self, nodes: &[Node]) -> Result<Vec<bool>> {
+        self.visible_asked.set(self.visible_asked.get() + 1);
+        self.visibility_asked
+            .set(self.visibility_asked.get() + nodes.len());
+        Ok(nodes
+            .iter()
+            .map(|node| self.present.contains(node) && !self.retired.contains(node))
+            .collect())
     }
 }

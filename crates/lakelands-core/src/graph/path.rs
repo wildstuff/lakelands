@@ -52,9 +52,10 @@ pub fn shortest_path<S: EdgeSource + ?Sized>(
     let mut frontier: BTreeSet<Node> = BTreeSet::from([from.clone()]);
     let mut found = false;
     'levels: for _ in 1..=depth {
+        let nears: Vec<Node> = frontier.iter().cloned().collect();
         let mut next = BTreeSet::new();
-        for near in &frontier {
-            for (other, edge) in links.around(near, relations, walk)? {
+        for (near, around) in nears.iter().zip(links.around(&nears, relations, walk)?) {
+            for (other, edge) in around {
                 if other == *from || prev.contains_key(&other) {
                     continue;
                 }

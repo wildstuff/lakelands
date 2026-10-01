@@ -90,14 +90,27 @@ impl Reader<'_> {
                 // the heap's top is the one ranking last.
                 let keep = offset + limit + 1;
                 let mut best: BinaryHeap<(Reverse<u64>, RecordKey)> = BinaryHeap::new();
+                // The seeds come a page at a time; their degrees are read
+                // a page at a time too.
+                let mut seeds: Vec<Node> = Vec::with_capacity(graph::PAGE);
+                let mut rank = |seeds: &mut Vec<Node>| -> Result<()> {
+                    let degrees = graph::degrees(&hidden, seeds, &steps)?;
+                    for (node, d) in seeds.drain(..).zip(degrees) {
+                        best.push((Reverse(d), node.1));
+                        if best.len() > keep {
+                            best.pop();
+                        }
+                    }
+                    Ok(())
+                };
                 self.seeds(p, |node| {
-                    let d = graph::degree(&hidden, &node, &steps)?;
-                    best.push((Reverse(d), node.1));
-                    if best.len() > keep {
-                        best.pop();
+                    seeds.push(node);
+                    if seeds.len() == graph::PAGE {
+                        rank(&mut seeds)?;
                     }
                     Ok(())
                 })?;
+                rank(&mut seeds)?;
                 let ty = &p.start.ty;
                 let all: Vec<BTreeMap<String, Value>> = best
                     .into_sorted_vec()

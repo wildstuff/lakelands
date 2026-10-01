@@ -54,6 +54,18 @@ engine_check!(
 );
 
 engine_check!(
+    /// Edges over many keys answer each key as it is answered alone.
+    EDGES_OF_MANY_KEYS = edges_over_many_keys_answer_each_key_as_it_answers_alone,
+    "seams §ProjectionView (lakelands#227): edges over many records of one type answer one list per key, in the keys' order, each what the key alone answers, at the head and at an earlier position; a link between two of the keys is in both lists"
+);
+
+engine_check!(
+    /// `get_many` answers what `get` answers, key by key.
+    GET_MANY = get_many_answers_what_get_answers_key_by_key,
+    "seams §ProjectionView (lakelands#227): get_many answers each record of the keys that exists at the view's position, retired and restricted ones included, once, in key order; a key with no record is left out"
+);
+
+engine_check!(
     /// Edges follow a record's latest state.
     EDGES_FOLLOW_THE_LATEST_STATE = edges_follow_a_records_latest_state,
     "026: a record put again links where its new state says, and no longer where its earlier state did, in both directions"
@@ -286,11 +298,12 @@ fn links(
     let mut out: Vec<String> = at
         .edges(
             &TypeName::from(ty),
-            &RecordKey::from(key),
+            &[RecordKey::from(key)],
             relation.as_ref(),
             walk,
         )
         .must(&format!("reading the {walk:?} edges of {ty} {key}"))?
+        .remove(0)
         .into_iter()
         .map(|e| format!("{}>{}>{}", e.from.1, e.relation, e.to.1))
         .collect();
@@ -699,5 +712,151 @@ fn several_puts_of_one_thing_in_one_transaction_leave_what_they_leave_one_by_one
         "`a` linked to `b` at 1 and 4 and to itself in a put replaced at 6, and its latest state \
          links nowhere; its out edges at the head are {out:?}"
     );
+    Ok(())
+}
+
+/// [`billing`], and a relation `approved_by` from invoices to customers
+/// carried by link records: through position 1, i1 and i2 approved by
+/// c1; at position 2, i2's link removed and a record i3 retired.
+fn billing_with_links(engine: &dyn LakeEngine) -> Result<(), Failure> {
+    billing(engine)?;
+    let read = |v: Value| {
+        serde_json::from_value::<Declaration>(v)
+            .map_err(|e| Failure::new(format!("the check's declaration does not read: {e}")))
+    };
+    let invoice = read(json!({
+        "declare": "type", "name": "invoice", "fields": [],
+        "relations": [
+            {"name": "billed_to", "target": "customer", "via": "customer"},
+            {"name": "replaces", "target": "invoice", "via": "replaces"},
+            {"name": "approved_by", "target": "customer"}
+        ]
+    }))?;
+    let Declaration::Type(t) = &invoice else {
+        unreachable!("declared as a type")
+    };
+    let lt = crate::links::link_types_of(t).remove(0);
+    let link = |from: &str, to: &str, at: u64| {
+        let key = crate::links::link_key(&from.into(), &to.into());
+        record(
+            lt.name.as_str(),
+            key.as_str(),
+            json!({"from": from, "to": to}),
+            at,
+        )
+    };
+    fold(engine, 1, |p| {
+        p.put_declaration(&invoice, 2, None, Position(1))?;
+        p.put_declaration(&Declaration::Type(lt.clone()), 1, None, Position(1))?;
+        p.put_record(&record("invoice", "i3", json!({"customer": "c1"}), 1))?;
+        p.put_record(&link("i1", "c1", 1))?;
+        p.put_record(&link("i2", "c1", 1))
+    })?;
+    fold(engine, 2, |p| {
+        let mut gone = link("i2", "c1", 2);
+        gone.retired = true;
+        gone.version = Version(2);
+        p.put_record(&gone)?;
+        let mut retired = record("invoice", "i3", json!({"customer": "c1"}), 2);
+        retired.retired = true;
+        retired.version = Version(2);
+        p.put_record(&retired)
+    })
+}
+
+fn edges_over_many_keys_answer_each_key_as_it_answers_alone(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    billing_with_links(engine)?;
+    let sorted = |edges: Vec<lakelands_api::query::Edge>| {
+        let mut out: Vec<String> = edges
+            .into_iter()
+            .map(|e| format!("{}>{}>{}", e.from.1, e.relation, e.to.1))
+            .collect();
+        out.sort();
+        out
+    };
+    // Out of key order, with a key that names no record.
+    let keys: [(&str, &[&str]); 2] = [
+        ("invoice", &["i9", "i3", "i2", "i1"]),
+        ("customer", &["c1", "c9"]),
+    ];
+    let mut shared = false;
+    for at in [Some(Position(1)), None] {
+        let v = view(engine, at)?;
+        for (ty, ks) in keys {
+            let ty = TypeName::from(ty);
+            let ks: Vec<RecordKey> = ks.iter().map(|k| RecordKey::from(*k)).collect();
+            for relation in [None, Some("replaces"), Some("approved_by")] {
+                let relation = relation.map(RelationName::from);
+                for walk in [Walk::Out, Walk::In, Walk::Both] {
+                    let what = format!("the {walk:?} edges over {relation:?} at {at:?}");
+                    let many = v
+                        .edges(&ty, &ks, relation.as_ref(), walk)
+                        .must(&format!("reading {what} of {ks:?}"))?;
+                    ensure!(
+                        many.len() == ks.len(),
+                        "{what} of {} keys answered {} lists",
+                        ks.len(),
+                        many.len()
+                    );
+                    for (key, got) in ks.iter().zip(many) {
+                        let alone = v
+                            .edges(&ty, std::slice::from_ref(key), relation.as_ref(), walk)
+                            .must(&format!("reading {what} of {key}"))?
+                            .remove(0);
+                        let (got, alone) = (sorted(got), sorted(alone));
+                        ensure!(
+                            got == alone,
+                            "{what} of {ty} {key} among {ks:?} are {got:?}; alone they are \
+                             {alone:?}"
+                        );
+                        shared |= walk == Walk::Both
+                            && key.as_str() == "i2"
+                            && got.contains(&"i2>replaces>i1".to_owned());
+                    }
+                }
+            }
+        }
+    }
+    ensure!(
+        shared,
+        "i2 replaces i1 and both were asked about; the link must be in i2's list as in i1's"
+    );
+    Ok(())
+}
+
+fn get_many_answers_what_get_answers_key_by_key(engine: &dyn LakeEngine) -> Result<(), Failure> {
+    billing_with_links(engine)?;
+    let mut restricted = record("invoice", "i1", json!({"customer": "c1"}), 3);
+    restricted.restricted = true;
+    restricted.version = Version(2);
+    fold(engine, 3, |p| p.put_record(&restricted))?;
+    // Out of key order, one key twice, one that names no record.
+    let keys: Vec<RecordKey> = ["i3", "i9", "i2", "i1", "i2"]
+        .into_iter()
+        .map(RecordKey::from)
+        .collect();
+    let ty = TypeName::from("invoice");
+    for at in [Some(Position(0)), Some(Position(2)), None] {
+        let v = view(engine, at)?;
+        let got = v
+            .get_many(&ty, &keys)
+            .must(&format!("reading {keys:?} at {at:?}"))?;
+        let mut want = Vec::new();
+        for key in ["i1", "i2", "i3", "i9"] {
+            if let Some(r) = v
+                .get(&ty, &RecordKey::from(key))
+                .must(&format!("reading {key} at {at:?}"))?
+            {
+                want.push(r);
+            }
+        }
+        ensure!(
+            got == want,
+            "get_many of {keys:?} at {at:?} answered {got:?}; key by key, in key order and each \
+             once, get answers {want:?}"
+        );
+    }
     Ok(())
 }

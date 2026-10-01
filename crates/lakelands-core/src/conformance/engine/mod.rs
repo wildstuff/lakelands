@@ -123,6 +123,8 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     projection::PAST_THE_FOLD,
     projection::ROLLBACK,
     projection::EDGES_IN_OUT_BOTH,
+    projection::EDGES_OF_MANY_KEYS,
+    projection::GET_MANY,
     projection::EDGES_TO_RETIRED,
     projection::EDGES_FOLLOW_THE_LATEST_STATE,
     projection::COMMIT_INVALID,

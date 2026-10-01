@@ -295,14 +295,20 @@ pub trait ProjectionView {
     /// Records of one type.
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>>;
 
-    /// The links of one record, over one relation or all.
+    /// Many records of one type; a key with no record is left out.
+    /// Retired and restricted records included; ordered by key.
+    fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>>;
+
+    /// The links of many records of one type, over one relation or all:
+    /// one list per key, in the keys' order. A link between two of the
+    /// keys is in both their lists.
     fn edges(
         &self,
         ty: &TypeName,
-        key: &RecordKey,
+        keys: &[RecordKey],
         relation: Option<&RelationName>,
         walk: Walk,
-    ) -> Result<Vec<Edge>>;
+    ) -> Result<Vec<Vec<Edge>>>;
 
     /// Full-text search over a type's searchable fields, or those of them
     /// `fields` names: keys and scores, best first.

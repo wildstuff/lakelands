@@ -56,6 +56,9 @@ impl ProjectionView for CountingView<'_> {
     fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
         self.inner.get(ty, key)
     }
+    fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
+        self.inner.get_many(ty, keys)
+    }
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
         let rows = self.inner.scan(ty, scan)?;
         self.handed.rows.fetch_add(rows.len(), Ordering::SeqCst);
@@ -65,11 +68,11 @@ impl ProjectionView for CountingView<'_> {
     fn edges(
         &self,
         ty: &TypeName,
-        key: &RecordKey,
+        keys: &[RecordKey],
         relation: Option<&RelationName>,
         walk: Walk,
-    ) -> Result<Vec<Edge>> {
-        self.inner.edges(ty, key, relation, walk)
+    ) -> Result<Vec<Vec<Edge>>> {
+        self.inner.edges(ty, keys, relation, walk)
     }
     fn lexical(
         &self,

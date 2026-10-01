@@ -2471,7 +2471,8 @@ pub fn cardinality(
     };
     if per_from
         && let Some(e) = view
-            .edges(ty, from, Some(&r.name), Walk::Out)?
+            .edges(ty, std::slice::from_ref(from), Some(&r.name), Walk::Out)?
+            .remove(0)
             .into_iter()
             .find(|e| e.to.1 != *to)
     {
@@ -2482,7 +2483,8 @@ pub fn cardinality(
     }
     if per_to
         && let Some(e) = view
-            .edges(&r.target, to, Some(&r.name), Walk::In)?
+            .edges(&r.target, std::slice::from_ref(to), Some(&r.name), Walk::In)?
+            .remove(0)
             .into_iter()
             .find(|e| e.from.0 == *ty && e.from.1 != *from)
     {

@@ -292,19 +292,31 @@ impl Read<'_> {
             .collect()
     }
 
-    /// Records of a type by their keys, at the view's position.
+    /// Records of a type by their keys, at the view's position, in key
+    /// order: one statement, however many keys.
     fn records_by_key(
         &mut self,
         ty: &TypeName,
         keys: BTreeSet<String>,
     ) -> Result<Vec<StoredRecord>> {
-        let mut out = Vec::with_capacity(keys.len());
-        for key in keys {
-            if let Some(r) = self.record(ty, &RecordKey::from(key))? {
-                out.push(r);
-            }
+        if keys.is_empty() {
+            return Ok(Vec::new());
         }
-        Ok(out)
+        let at = self.at();
+        let keys: Vec<String> = keys.into_iter().collect();
+        self.db
+            .query(
+                &format!(
+                    "SELECT state FROM {} WHERE ty = $1 AND key = ANY($2::text[]) AND {} \
+                     ORDER BY key COLLATE \"C\"",
+                    self.names.t("records"),
+                    holds_at(3)
+                ),
+                &[&ty.as_str(), &keys, &at],
+            )?
+            .iter()
+            .map(|r| decode_record(&r.get::<_, String>(0)))
+            .collect()
     }
 
     fn keys(
@@ -342,10 +354,17 @@ impl Read<'_> {
         Ok(out)
     }
 
-    fn edge_rows(&mut self, query: &str, a: &str, b: &str) -> Result<Vec<Edge>> {
+    /// The rows of the head's `edges` table whose `end` (`src` or `dst`)
+    /// is a record of `ty` among `keys`: one statement for all of them.
+    fn edge_rows(&mut self, end: &str, ty: &TypeName, keys: &[String]) -> Result<Vec<Edge>> {
+        let query = format!(
+            "SELECT src_ty, src_key, relation, dst_ty, dst_key FROM {} \
+             WHERE {end}_ty = $1 AND {end}_key = ANY($2::text[])",
+            self.names.t("edges")
+        );
         Ok(self
             .db
-            .query(query, &[&a, &b])?
+            .query(&query, &[&ty.as_str(), &keys])?
             .iter()
             .map(|r| Edge {
                 from: (r.get::<_, String>(0).into(), r.get::<_, String>(1).into()),
@@ -406,6 +425,12 @@ impl ProjectionView for PgView<'_> {
         self.single(None, |r| r.record(ty, key))
     }
 
+    fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
+        self.single(Vec::new(), |r| {
+            r.records_by_key(ty, keys.iter().map(|k| k.to_string()).collect())
+        })
+    }
+
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
         self.read(Vec::new(), |r| {
             let decl = r.type_decl(ty)?;
@@ -456,78 +481,99 @@ impl ProjectionView for PgView<'_> {
     fn edges(
         &self,
         ty: &TypeName,
-        key: &RecordKey,
+        keys: &[RecordKey],
         relation: Option<&RelationName>,
         walk: Walk,
-    ) -> Result<Vec<Edge>> {
-        self.read(Vec::new(), |r| {
-            let mut edges = Vec::new();
+    ) -> Result<Vec<Vec<Edge>>> {
+        // One read transaction for all the keys, each of its reads one
+        // statement for all of them (lakelands#227).
+        self.read(vec![Vec::new(); keys.len()], |r| {
             let out = matches!(walk, Walk::Out | Walk::Both);
             let inn = matches!(walk, Walk::In | Walk::Both);
+            let mut index: std::collections::BTreeMap<&str, Vec<usize>> = Default::default();
+            for (i, k) in keys.iter().enumerate() {
+                index.entry(k.as_str()).or_default().push(i);
+            }
+            let names: Vec<String> = index.keys().map(|k| (*k).to_owned()).collect();
+            let mut all = vec![Vec::new(); keys.len()];
+            let give = |all: &mut Vec<Vec<Edge>>, at: &str, e: &Edge| {
+                for &i in index.get(at).into_iter().flatten() {
+                    all[i].push(e.clone());
+                }
+            };
+            let types = r.types()?;
             if r.head {
-                let table = r.names.t("edges");
+                let wanted = |e: &Edge| relation.is_none_or(|want| *want == e.relation);
                 if out {
-                    edges.extend(r.edge_rows(
-                        &format!(
-                            "SELECT src_ty, src_key, relation, dst_ty, dst_key FROM {table} \
-                             WHERE src_ty = $1 AND src_key = $2"
-                        ),
-                        ty.as_str(),
-                        key.as_str(),
-                    )?);
+                    for e in r.edge_rows("src", ty, &names)?.iter().filter(|e| wanted(e)) {
+                        give(&mut all, e.from.1.as_str(), e);
+                    }
                 }
                 if inn {
-                    edges.extend(r.edge_rows(
-                        &format!(
-                            "SELECT src_ty, src_key, relation, dst_ty, dst_key FROM {table} \
-                             WHERE dst_ty = $1 AND dst_key = $2"
-                        ),
-                        ty.as_str(),
-                        key.as_str(),
-                    )?);
+                    for e in r.edge_rows("dst", ty, &names)?.iter().filter(|e| wanted(e)) {
+                        give(&mut all, e.to.1.as_str(), e);
+                    }
                 }
-                edges.retain(|e| relation.is_none_or(|want| *want == e.relation));
             } else {
-                if out && let (Some(decl), Some(record)) = (r.type_decl(ty)?, r.record(ty, key)?) {
-                    edges.extend(engines::links_of(&decl, &record, relation));
+                if out && let Some(decl) = r.type_decl(ty)? {
+                    for record in r.records_by_key(ty, names.iter().cloned().collect())? {
+                        for e in engines::links_of(&decl, &record, relation) {
+                            give(&mut all, record.key.as_str(), &e);
+                        }
+                    }
                 }
                 if inn {
-                    let types = r.types()?;
-                    edges.extend(engines::in_links(ty, key, relation, &types, |name| {
-                        r.records(name)
-                    })?);
+                    // The declaring types' records at the position, read
+                    // once for the page, not once per key.
+                    let mut read: std::collections::BTreeMap<TypeName, Vec<StoredRecord>> =
+                        Default::default();
+                    for key in index.keys() {
+                        let key = RecordKey::from(*key);
+                        let into = engines::in_links(ty, &key, relation, &types, |name| {
+                            if !read.contains_key(name) {
+                                read.insert(name.clone(), r.records(name)?);
+                            }
+                            Ok::<_, lakelands_api::Error>(read[name].clone())
+                        })?;
+                        for e in into {
+                            give(&mut all, key.as_str(), &e);
+                        }
+                    }
                 }
             }
             // Relations carried by link records: the link records whose end
-            // is this record. At the head the exact-text index finds them;
-            // at an earlier position the link type's records there are
+            // is one of the records. At the head the exact-text index finds
+            // them; at an earlier position the link type's records there are
             // read. The rulebook decides which count.
-            let types = r.types()?;
             let head = r.head;
             let text_index = r.names.t("text_index");
             let linked = lakelands_core::links::link_edges(
                 ty,
-                key,
+                keys,
                 relation,
                 walk,
                 &types,
-                |lt, field, k| {
+                |lt, field, ks| {
                     if head {
+                        let values: Vec<String> = ks.iter().map(|k| k.to_string()).collect();
                         let query = format!(
-                            "SELECT key FROM {text_index} WHERE ty = $1 AND field = $2 AND value = $3"
+                            "SELECT key FROM {text_index} WHERE ty = $1 AND field = $2 \
+                             AND value = ANY($3::text[])"
                         );
-                        let keys = r.keys(&query, &[&lt.as_str(), &field, &k.as_str()])?;
-                        r.records_by_key(lt, keys)
+                        let found = r.keys(&query, &[&lt.as_str(), &field, &values])?;
+                        r.records_by_key(lt, found)
                     } else {
                         // The link type at the position, whole: the rulebook
-                        // keeps the links whose end this record is.
+                        // keeps the links whose end a record is.
                         r.records(lt)
                     }
                 },
             )?;
-            edges.extend(linked);
-            engines::order_edges(&mut edges);
-            Ok(edges)
+            for (edges, linked) in all.iter_mut().zip(linked) {
+                edges.extend(linked);
+                engines::order_edges(edges);
+            }
+            Ok(all)
         })
     }
 

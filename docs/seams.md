@@ -257,8 +257,9 @@ masking are the store's.
 | `position` | The position the view reflects. |
 | `declarations` | Every declaration in force: for each `declare` and name, the latest put at or before the position, with the position it is in force `since`. No order is promised. |
 | `get(type, key)` | One record's latest state at or before the position, retired and restricted included; none if it had none by then. |
+| `get_many(type, keys)` | What `get` answers for each of the keys, in one read: each record once, in key order, a key with no record left out. The store's walks read the far ends of a page of links through it (lakelands#227). |
 | `scan(type, scan)` | The records of `type` whose latest state at the position qualifies, as below. |
-| `edges(type, key, relation, walk)` | One record's links over one relation or all: `Out` those it declares, `In` those that point at it, `Both` their union with each link once (a link from a record to itself included). Links to a retired or missing record are returned as they are; hiding that end is the store's (`docs/decisions/026-the-store-walks-the-graph.md`). No order is promised; the store's walks order their own answers. A relation with `via` is carried by that reference field: a record links to the target whose key is the field's text value, and `Edge.fields` is empty. A relation without `via` is carried by the live records of its link type `sys.link.<type>.<relation>` at the position (`docs/log-format.md` §2.3): `Out` gives the links whose `from` is the record, `In` those whose `to` is, and `Edge.fields` holds each link's own fields, `from` and `to` left out. A removed (retired) link is no edge. The rule is `lakelands_core::links::link_edges`: at the head an engine may find a link type's candidates through its own index (SQLite and PostgreSQL look `from` and `to` up in their exact-text index), and at an earlier position it reads the link type's records there. |
+| `edges(type, keys, relation, walk)` | The links of some records of one type, one list per key in the keys' order, each what the key alone answers; a link between two of the keys is in both lists. An engine answers them in one read, not one per key: the store's walks ask a page of records at a time (`lakelands_core::graph::PAGE`, 256), and PostgreSQL reads each page in a fixed number of statements (lakelands#227). For each record, its links over one relation or all: `Out` those it declares, `In` those that point at it, `Both` their union with each link once (a link from a record to itself included). Links to a retired or missing record are returned as they are; hiding that end is the store's (`docs/decisions/026-the-store-walks-the-graph.md`). No order is promised; the store's walks order their own answers. A relation with `via` is carried by that reference field: a record links to the target whose key is the field's text value, and `Edge.fields` is empty. A relation without `via` is carried by the live records of its link type `sys.link.<type>.<relation>` at the position (`docs/log-format.md` §2.3): `Out` gives the links whose `from` is the record, `In` those whose `to` is, and `Edge.fields` holds each link's own fields, `from` and `to` left out. A removed (retired) link is no edge. The rule is `lakelands_core::links::link_edges`: at the head an engine may find a link type's candidates through its own index (SQLite and PostgreSQL look `from` and `to` up in their exact-text index), and at an earlier position it reads the link type's records there. |
 | `lexical(type, text, fields, k)` | Full-text hits at the position, as below; with `fields`, in those of the type's searchable fields only. |
 | `proposals(filter)` | Every proposal whose latest state at the position matches `filter.state`, `filter.kind` (`upsert`, `retire`, `call`, `declare` or `migrate`) and `filter.type` (a `call`'s type is its verb's `on` type in force at the position; a `declare` touches every type it declares or a declaration of it acts on, a `migrate` its type), newest first — by the position of that latest state, descending, then by id — and at most `filter.limit`. `order_by`, `cursor` and the read position in the filter are the store's and the engine ignores them: the store applies the caller's `order_by` to the engine's answer, and refuses as `Invalid` an `order_by` naming a member a proposal does not have. |
 | `is_member(set, type, key)` | Whether the record is in the object set at the position; false if never put. |
@@ -357,8 +358,10 @@ on one text field. A view type's page
 is computed from its source's records, whole, as before.
 
 **The ceiling of a walk.** A pattern query asks the engine for the edges
-of each record it reaches (`edges`), so what a walk holds and how long
-it takes follow what it reaches, not the lake. At the head every engine
+of the records it reaches (`edges`), a hop of its frontier and a page
+of records at a time, so what a walk holds and how long it takes follow
+what it reaches, not the lake, and on an engine whose every read is a
+round trip, a hop costs a few round trips per page, not per record. At the head every engine
 finds a record's edges from the record itself: the edges out of it from
 its own reference fields; the edges into it over a relation carried by a
 reference field from an index of the head's edges (SQLite's and
@@ -371,17 +374,22 @@ backwards from one start, 48 rows: it holds 0.1 MiB of heap and takes
 on PostgreSQL, at 25 000 records over 40 621 links and at 100 000 over
 162 496 alike (its long run, a machine of 12 cores at a load of 14 to
 33; lakelands#190). **Its ceiling:** at an earlier position an engine
-reads the declaring types and link types there whole, for every record
-the walk reaches, so a walk into the past costs the relation's records
-per hop. The heap is held by the suite; the time is reported.
+reads the declaring types and link types there whole, for every page of
+records the walk reaches, so a walk into the past costs the relation's
+records per page of each hop. The heap is held by the suite; the time is reported.
 
 **The whole-graph measures.** A pattern query projected as `degree` or
 `components` asks nothing new of an engine: the store asks `edges` of
-every record it measures, as a walk does
+the records it measures a page at a time, as a walk does
 (`docs/decisions/026-the-store-walks-the-graph.md`). A degree reads the
-start's records a page at a time and keeps the best rows asked for, so
-the streaming check's `degree` line, the ten records of highest degree
-over the whole type, holds the same heap at every size of the lake.
+start's records a page at a time, reads their links and their far ends
+a page at a time, and keeps the best rows asked for, so the streaming
+check's `degree` line, the ten records of highest degree over the whole
+type, holds the same heap at every size of the lake: a page's links,
+5.4 MiB on PostgreSQL and 4.9 MiB on SQLite. At 100 000 records it took
+20 to 21 s on PostgreSQL and 16 s on SQLite, against 356 to 536 s and
+31 s while each record was read on its own (the long run, interleaved,
+on a machine of 12 cores at a load of 17 to 28; lakelands#227).
 Components hold every record they reach, so their `components` line
 grows with the graph and is reported; the lake's `max_graph_nodes`, a
 limit of its `Location` (100 000 unless it says otherwise), bounds them,
@@ -542,6 +550,7 @@ holds it to.
 | a view past the fold is `OutOfRange` naming the head | engine: `a_view_past_the_folded_position_is_refused`; suite: `a_read_as_of_a_position_past_the_head_is_refused_as_out_of_range` |
 | a rolled-back transaction leaves nothing | engine: `a_rolled_back_transaction_leaves_nothing` |
 | edges `Out`, `In`, `Both`, a self-link once, links to a retired record kept | engine: `edges_walk_in_out_and_both`, `edges_to_a_retired_record_are_returned` |
+| edges of many keys: one list per key, each what the key alone answers, at the head and earlier; `get_many` what `get` answers key by key, once each, in key order | engine: `edges_over_many_keys_answer_each_key_as_it_answers_alone`, `get_many_answers_what_get_answers_key_by_key` |
 | edges from link records: `Out` and `In` by `from` and `to`, the link's fields in `Edge.fields`, a removed link gone, an earlier position's links | engine: `edges_over_a_link_relation_come_from_the_live_link_records_at_the_views_position`; doors: the sixteen `links` checks |
 | a rebuild answers every read as before | suite: `a_rebuilt_projection_answers_every_read_as_the_live_one_did` |
 | ingest, the feed, an export and its verification, a rebuild (lakelands#130) and a reopen (lakelands#133) hold as much memory at four times a lake's size as at its first; so does each page of a walk of a type through `find` (lakelands#134) | suite: `a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it` |
