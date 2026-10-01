@@ -7,11 +7,13 @@
 #
 # The findings are cargo-semver-checks' (checked against the rules of a
 # minor release: under 0.x the tool reads 0.5 -> 0.6 as a major step and
-# would report nothing), plus one check of its own: a public trait of
-# `lakelands-api` that gained a method without a default, which every
-# implementer must add. The tool does not report it for the engine traits.
-# With nothing found it says so. It exits 0 whatever it finds, and 2 when
-# it cannot run.
+# would report nothing), plus two checks of its own over the public
+# traits of `lakelands-api`, which the tool does not make for them: a
+# method without a default that was added, which every implementer must
+# add, and a method whose signature changed while its parameter count did
+# not, which every implementer must follow. A method a line already names
+# is not reported twice. With nothing found it says so. It exits 0
+# whatever it finds, and 2 when it cannot run.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
@@ -103,26 +105,92 @@ for crate in "${CRATES[@]}"; do
     fi
 done
 
-# Required trait methods (no default body) present now and not in the
-# baseline, by trait and name.
-required() {
+# Every method of a public trait, one line each, fields apart by a tab:
+# `Trait::method`, `required` or `provided` (a default body), its
+# signature as written, and the same without parameter names, which is
+# what is compared: a renamed parameter asks nothing of an implementation.
+# A signature is read from its `fn` (or `async fn`) at the trait's indent
+# to its `;` or the `{` of its body, without comments or attributes, with
+# whitespace collapsed and rustfmt's trailing comma of the vertical form
+# dropped, so the one-line and the vertical form read the same.
+methods() {
     awk '
-        /^pub trait [A-Za-z]+/ { t = $3; sub(/[:<{].*/, "", t); depth = 0; intrait = 1 }
-        intrait {
-            if ($0 ~ /^    fn [a-z_0-9]+/ && $0 ~ /;$/) { f = $0; sub(/^    fn /, "", f); sub(/[<(].*/, "", f); print t "::" f }
-            else if ($0 ~ /^    fn [a-z_0-9]+/ && $0 !~ /[{;]$/) { pending = $0 }
-            else if (pending != "" && $0 ~ /^    \) -> .*;$|^    \);$/) { f = pending; sub(/^    fn /, "", f); sub(/[<(].*/, "", f); print t "::" f; pending = "" }
-            else if ($0 ~ /^    \) .*\{$|^    \) \{$/) { pending = "" }
-            if ($0 ~ /^\}/) { intrait = 0; pending = "" }
+        # The signature without its parameter names: a `name: ` (or
+        # `mut name: `) at the start of a parameter of the outer list.
+        function unnamed(s,    out, n, i, c, d, a, start, rest) {
+            out = ""; d = 0; a = 0; start = 0; n = length(s)
+            for (i = 1; i <= n; i++) {
+                c = substr(s, i, 1)
+                if (c == "-" && substr(s, i + 1, 1) == ">") { out = out "->"; i++; start = 0; continue }
+                if (start && c == " ") { out = out c; continue }
+                if (start && d == 1 && a == 0) {
+                    rest = substr(s, i)
+                    if (match(rest, /^(mut )?[A-Za-z_][A-Za-z0-9_]*: /)) { i += RLENGTH - 1; start = 0; continue }
+                }
+                start = 0
+                if (c == "(") { d++; if (d == 1 && a == 0) start = 1 }
+                else if (c == ")") d--
+                else if (c == "<") a++
+                else if (c == ">") a--
+                else if (c == "," && d == 1 && a == 0) start = 1
+                out = out c
+            }
+            return out
+        }
+        function done(kind) {
+            gsub(/[ \t]+/, " ", sig)
+            sub(/^ /, "", sig); sub(/ $/, "", sig)
+            gsub(/\( /, "(", sig); gsub(/ \)/, ")", sig)
+            gsub(/,\)/, ")", sig); gsub(/, >/, ">", sig); gsub(/,>/, ">", sig)
+            print t "::" name "\t" kind "\t" sig "\t" unnamed(sig)
+            sig = ""; reading = 0
+        }
+        /^pub trait [A-Za-z]/ { t = $3; sub(/[:<{].*/, "", t); intrait = 1; next }
+        !intrait { next }
+        /^\}/ { intrait = 0; reading = 0; next }
+        !reading && /^    (async )?fn [A-Za-z_]/ {
+            name = $0; sub(/^    (async )?fn /, "", name); sub(/[^A-Za-z0-9_].*/, "", name)
+            reading = 1; sig = ""
+        }
+        reading {
+            line = $0
+            if (line ~ /^[ \t]*(#\[|\/\/)/) next
+            sub(/[ \t]*\/\/.*$/, "", line)
+            sig = sig " " line
+            if (sig ~ /\{/) { sub(/[ \t]*\{.*$/, "", sig); done("provided") }
+            else if (sig ~ /;[ \t]*$/) { sub(/;[ \t]*$/, "", sig); done("required") }
         }
     '
 }
+
+# Whether a line of the report already names `Trait::method`, and not
+# only a longer name it begins (`get` in `get_many`).
+named() {
+    [ "${#lines[@]}" -gt 0 ] &&
+        printf '%s\n' "${lines[@]}" | grep -Eq "(^|[^A-Za-z0-9_:])$1([^A-Za-z0-9_]|$)"
+}
+
 for f in "${TRAIT_FILES[@]}"; do
     [ -f "$f" ] || continue
+    base="$(git show "$baseline:$f" 2>/dev/null | methods)" || base=""
+    head="$(methods < "$f")"
+    # Required now and not in the baseline: added, or its default dropped.
     while read -r m; do
-        case "${lines[*]:-}" in *"$m"*) continue ;; esac
+        [ -n "$m" ] || continue
+        named "$m" && continue
         lines+=("\`lakelands-api\`: trait method $m: an implementation of the trait must add it (trait_method_added)")
-    done < <(comm -13 <(git show "$baseline:$f" 2>/dev/null | required | sort -u) <(required < "$f" | sort -u))
+    done < <(LC_ALL=C comm -13 \
+        <(printf '%s\n' "$base" | awk -F '\t' '$2 == "required" { print $1 }' | LC_ALL=C sort -u) \
+        <(printf '%s\n' "$head" | awk -F '\t' '$2 == "required" { print $1 }' | LC_ALL=C sort -u))
+    # In both, with another signature once the parameter names are left
+    # out. Under `async_trait` an `async` that comes or goes is a change.
+    while IFS=$'\t' read -r m was was_unnamed now now_unnamed; do
+        [ "$was_unnamed" != "$now_unnamed" ] || continue
+        named "$m" && continue
+        lines+=("\`lakelands-api\`: trait method $m: an implementation of the trait must follow: was \`$was\`, now \`$now\` (trait_method_signature_changed)")
+    done < <(LC_ALL=C join -t $'\t' -o 1.1,1.3,1.4,2.3,2.4 \
+        <(printf '%s\n' "$base" | sed '/^$/d' | LC_ALL=C sort -t $'\t' -k1,1) \
+        <(printf '%s\n' "$head" | sed '/^$/d' | LC_ALL=C sort -t $'\t' -k1,1))
 done
 
 echo "Changes a host must make, since $baseline:"
