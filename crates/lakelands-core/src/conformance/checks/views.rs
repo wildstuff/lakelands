@@ -83,6 +83,12 @@ check!(
 );
 
 check!(
+    /// A view declares the fields it computes.
+    VIEW_FIELDS_DECLARED = a_view_declares_exactly_the_fields_it_computes,
+    "018 and 028: a read answers declared fields only, so `declare` refuses a view whose `group_by` field or measure has no declared field, or which declares a field nothing computes, naming it"
+);
+
+check!(
     /// Ingest keeps a view current.
     CURRENT_AFTER_INGEST = a_view_over_an_ingested_source_is_current_once_the_ingest_is_committed,
     "016 and the ontology: both write doors are folded by the same rules, so a view over ingested records is kept like any other"
@@ -732,5 +738,45 @@ async fn a_view_closing_a_cycle_over_source_is_refused_naming_the_chain(
         "the refused declarations change nothing: `view_c` still reads `view_b`, which reads \
          `view_a`, which reads the invoices, and holds one partner; it holds {got:?}"
     );
+    Ok(())
+}
+
+async fn a_view_declares_exactly_the_fields_it_computes(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use lakelands_api::write::Declaration;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(invoices(Authority::Authored)).await?;
+    let without = |name: &str| {
+        let mut t = partner_totals("totals", StorageKind::Decimal);
+        t.fields.retain(|f| f.name != name);
+        t
+    };
+    let mut extra = partner_totals("totals", StorageKind::Decimal);
+    extra.fields.push(field("note", StorageKind::Text));
+    for (what, t, name) in [
+        (
+            "the measure `total` without a field",
+            without("total"),
+            "total",
+        ),
+        (
+            "the group_by field `partner` without a field",
+            without("partner"),
+            "partner",
+        ),
+        ("a field `note` that nothing computes", extra, "note"),
+    ] {
+        let r = cat.declare(own, Declaration::Type(t)).await;
+        ensure!(
+            matches!(&r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
+                if message.contains(&format!("`{name}`")) && message.contains("`totals`")),
+            "a view with {what} must be refused as invalid, naming `{name}` and the view; \
+             declare answered {r:?}"
+        );
+    }
+    l.declare(partner_totals("totals", StorageKind::Decimal))
+        .await?;
     Ok(())
 }
