@@ -16,6 +16,8 @@
 //!   or is a trigger with `max_depth`, in the same places.
 //! - **7**: an event whose declaration calls `retired` in any expression
 //!   it keeps, in the same places.
+//! - **8**: an event whose declaration is a view with `params`, or calls
+//!   `param` in any expression it keeps, in the same places.
 //!
 //! The store appends each event at the greatest of the lake's version and
 //! the one [`needed`] answers, and refuses, when it reads the log, an
@@ -29,6 +31,9 @@ use lakelands_api::write::{Declaration, ProposedWrite};
 /// The lowest format version that can carry `body`, with `upstream` or
 /// without it.
 pub fn needed(body: &EventBody, upstream: bool) -> u32 {
+    if declares_view_params(body) {
+        return 8;
+    }
     if calls_retired(body) {
         return 7;
     }
@@ -98,6 +103,15 @@ pub fn calls_retired(body: &EventBody) -> bool {
     any_declaration(body, |d| declares_call(d, Func::Retired))
 }
 
+/// Whether a declaration the event carries is a view with parameters, or
+/// calls `param`.
+pub fn declares_view_params(body: &EventBody) -> bool {
+    any_declaration(body, |d| {
+        matches!(d, Declaration::Type(t) if t.view.as_ref().is_some_and(|v| !v.params.is_empty()))
+            || declares_call(d, Func::Param)
+    })
+}
+
 /// Whether a declaration the event carries is a trigger with `max_depth`.
 pub fn caps_a_trigger(body: &EventBody) -> bool {
     any_declaration(
@@ -113,7 +127,9 @@ pub fn below(event: &Event) -> Option<String> {
     if event.v >= need {
         return None;
     }
-    let what = if need == 7 {
+    let what = if need == 8 {
+        "declares a view's parameters".to_owned()
+    } else if need == 7 {
         "declares a call of `retired`".to_owned()
     } else if need == 6 && caps_a_trigger(&event.body) {
         "declares a trigger's `max_depth`".to_owned()

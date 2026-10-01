@@ -472,6 +472,7 @@ impl<'a> View<'a> {
                     key: key.clone(),
                     with_meta: false,
                     at: as_of(read_at),
+                    params: Default::default(),
                 },
             )
             .await;

@@ -64,6 +64,35 @@ records, the pattern query included: a pattern that starts on a view,
 or a walk that reaches one over a derived relation, finds the records
 `find` would, and never asks an engine for records it does not keep.
 
+## Extended: a view may take parameters bound at read
+
+A view may declare parameters, each a name and a scalar kind (text,
+number, decimal, boolean or date_time), and read them in its `where`
+and its measures as `param('name')`. The read binds them: `find` and
+`get` on the view, and a pattern that starts on it, carry `params`, and
+every declared parameter must be bound. One view then answers the window
+around any date its reader names, which is the reader's question and not
+the view's: a thirteen-week cash flow anchored on the date a person asks
+about is one view, not one per date.
+
+There is no default. A parameter a read forgets is refused, naming it,
+because a default would answer a window around a date nobody asked for,
+and that answer would look complete. A reader who means today passes
+today. A date given without a time is midnight UTC, so
+`date <= param('anchor')` leaves out the rest of that day; a reader who
+means its end passes the next day with `<`, or the instant itself.
+
+`param()` is read only in a view's `where` and measures, where the view
+declares what it reads; anywhere else it is refused. A parameter is a
+value, never the clock: `today()` and `now()` stay the read's time, and
+`as_of` and `valid_at` combine with the parameters as they combine with
+each other. A view's parameters are part of its shape, so changing them
+is a change of shape like any other. A view that declares none keeps the
+schema hash it had. A cursor carries the parameters its first page was
+read with, and continuing it with others is refused, since the pages
+would belong to two answers. Views are computed on read, so nothing is
+kept per binding.
+
 ## Extended: a whole-graph measure is a projection
 
 Degree centrality and connected components are two more projections of

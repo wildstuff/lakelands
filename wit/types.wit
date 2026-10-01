@@ -41,6 +41,7 @@ interface types {
     type relation-name = string;
     type verb-name = string;
     type trigger-name = string;
+    type param-name = string;
     type value-type-name = string;
     type source-id = string;
     type proposal-id = string;
@@ -202,8 +203,15 @@ interface types {
         expr: condition,
     }
 
+    /// A parameter of a view: a value every read of it binds.
+    record view-param {
+        name: param-name,
+        kind: storage-kind,
+    }
+
     record view-decl {
         source: type-name,
+        params: list<view-param>,
         where: option<condition>,
         group-by: list<field-name>,
         measures: list<measure>,
@@ -456,6 +464,8 @@ interface types {
         after: option<after-row>,
         aggregate: option<aggregate>,
         with-meta: bool,
+        /// The values bound to a view's parameters, each as JSON.
+        params: list<tuple<param-name, json>>,
         at: read-at,
     }
 
@@ -485,6 +495,7 @@ interface types {
     record get {
         key: record-key,
         with-meta: bool,
+        params: list<tuple<param-name, json>>,
         at: read-at,
     }
 
@@ -627,6 +638,7 @@ interface types {
         key: option<record-key>,
         where: option<condition>,
         search: option<search-mode>,
+        params: list<tuple<param-name, json>>,
     }
 
     record step {

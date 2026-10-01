@@ -18,9 +18,7 @@ use lakelands_api::{Error, RecordKey, RelationName, Result, Value};
 use lakelands_core::expr::Place;
 use lakelands_core::graph::{self, Components, Node};
 
-use super::{
-    CursorState, Reader, Visible, condition, core_derive, decode, encode, invalid, rights,
-};
+use super::{CursorState, Reader, Visible, condition, core_derive, encode, invalid, rights};
 
 /// The records a seed page reads at once.
 const PAGE: usize = 256;
@@ -74,10 +72,8 @@ impl Reader<'_> {
     /// A measure's answer; the pattern has passed [`check`] and its steps
     /// have been checked against the declarations.
     pub(super) fn measure(&self, p: &Pattern, limit: usize) -> Result<QueryResult> {
-        let offset = match &p.cursor {
-            Some(c) => decode(c)?.offset as usize,
-            None => 0,
-        };
+        let params = self.bound_params(&p.start.ty);
+        let offset = super::offset(p.cursor.as_ref(), &params)?;
         let hidden = Visible { reader: self };
         let (rows, more) = match p.project {
             Projection::Degree => {
@@ -151,6 +147,7 @@ impl Reader<'_> {
                 at: self.position,
                 after: None,
                 offset: (offset + limit) as u64,
+                params,
             })
         });
         Ok(QueryResult::Rows { rows, next_cursor })
@@ -167,6 +164,7 @@ impl Reader<'_> {
                 key: key.clone(),
                 with_meta: false,
                 at: ReadAt::default(),
+                params: Default::default(),
             };
             return match self.get(&ty, &get) {
                 Ok(_) => each((ty, key.clone())),

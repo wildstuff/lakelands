@@ -179,3 +179,44 @@ fn a_declaration_calling_retired_needs_format_7_and_says_so_below_it() {
         Some("a format 6 event declares a call of `retired`, which format 7 added")
     );
 }
+
+#[test]
+fn a_view_with_parameters_needs_format_8_and_says_so_below_it() {
+    let view = |params: serde_json::Value, filter: &str| {
+        declaration(json!({
+            "declare": "type", "name": "window", "key": ["account"],
+            "fields": [{"name": "account", "type": {"kind": "text"}},
+                       {"name": "n", "type": {"kind": "number"}}],
+            "view": {"source": "payment", "params": params, "where": filter,
+                     "group_by": ["account"],
+                     "measures": [{"name": "n", "expr": "count()"}]}
+        }))
+    };
+    let declared = |d: Declaration| EventBody::Declared {
+        declaration: d,
+        schema_hash: None,
+        version: 1,
+    };
+    let anchored = view(
+        json!([{"name": "anchor", "kind": "date_time"}]),
+        "date <= param('anchor')",
+    );
+    assert_eq!(needed(&declared(anchored.clone()), false), 8);
+    assert_eq!(
+        needed(&declared(view(json!([]), "date <= '2026-06-30'")), false),
+        1
+    );
+    let event: Event = serde_json::from_value(json!({
+        "v": 7, "lake": "l", "position": 1, "id": "0".repeat(32),
+        "prev": "0".repeat(64), "known_at": "2026-01-01T00:00:00.000000Z",
+        "writer": "system:lakelands", "origin": "system",
+        "context": {"origin": "direct", "depth": 0}, "fence": 1,
+        "body": {"kind": "declared", "declaration": anchored, "version": 1},
+        "hash": "0".repeat(64)
+    }))
+    .unwrap();
+    assert_eq!(
+        below(&event).as_deref(),
+        Some("a format 7 event declares a view's parameters, which format 8 added")
+    );
+}

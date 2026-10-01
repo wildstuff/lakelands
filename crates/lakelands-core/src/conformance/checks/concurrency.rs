@@ -166,6 +166,7 @@ fn get_at(key: &str, as_of: Position) -> Get {
             as_of: Some(as_of),
             valid_at: None,
         },
+        params: Default::default(),
     }
 }
 
@@ -608,6 +609,7 @@ async fn concurrent_writes_see_their_own_filled_field_and_one_input_is_called_on
                         as_of: Some(*at),
                         valid_at: None,
                     },
+                    params: Default::default(),
                 },
             )
             .await

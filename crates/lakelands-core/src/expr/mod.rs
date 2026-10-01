@@ -8,5 +8,8 @@ pub mod eval;
 pub mod iregexp;
 pub mod order;
 
-pub use eval::{EvalError, Place, RecordScope, Scope, Val, WriteScope, check, eval, holds};
+pub use eval::{
+    EvalError, Place, RecordScope, Scope, Val, WriteScope, bind_params, check, eval, holds,
+    params_read,
+};
 pub use lakelands_api::expr::{ParseError, arity, func_name, parse, print};

@@ -57,6 +57,7 @@ mod value_types;
 mod values;
 mod vector_index;
 mod versions;
+mod view_params;
 mod views;
 mod vocabulary;
 mod walks;
@@ -102,6 +103,13 @@ pub const ALL: &[Check] = &[
     views::CURRENT_AFTER_INGEST,
     views::PATTERN_STARTS_ON_A_VIEW,
     views::WALK_REACHES_A_VIEW,
+    view_params::TWO_ANCHORS,
+    view_params::BINDING_REFUSED,
+    view_params::PARAM_ONLY_IN_A_VIEW,
+    view_params::PARAMS_DECLARED_STRICTLY,
+    view_params::PATTERN_START_BINDS,
+    view_params::CURSOR_KEEPS_PARAMS,
+    view_params::FORMAT_8,
     ingest::SAME_CONTENT_TWICE,
     ingest::SAME_KEY_TWICE,
     ingest::FOREIGN_FIELD_REFUSED,

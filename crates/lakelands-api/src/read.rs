@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::expr::Condition;
-use crate::id::{Cursor, FieldName, Position, RecordKey};
+use crate::id::{Cursor, FieldName, ParamName, Position, RecordKey};
 use crate::record::{Record, Value};
 use crate::time::Timestamp;
 
@@ -34,6 +34,10 @@ pub struct ReadAt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_at: Option<Timestamp>,
 }
+
+/// The values a read binds to a view's parameters, by name. Empty for
+/// every type that is not a view with parameters.
+pub type Params = BTreeMap<ParamName, Value>;
 
 /// Sort direction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -223,6 +227,9 @@ pub struct Find {
     /// Return each field's provenance with its value.
     #[serde(default)]
     pub with_meta: bool,
+    /// The values bound to the view's parameters.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: Params,
     /// The time axes.
     #[serde(default, flatten)]
     pub at: ReadAt,
@@ -277,6 +284,9 @@ pub struct Get {
     /// Return each field's provenance with its value.
     #[serde(default)]
     pub with_meta: bool,
+    /// The values bound to the view's parameters.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: Params,
     /// The time axes.
     #[serde(default, flatten)]
     pub at: ReadAt,

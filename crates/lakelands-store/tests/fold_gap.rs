@@ -369,6 +369,7 @@ async fn a_failed_fold_is_folded_again_before_the_next_append() {
                 key: "n1".into(),
                 with_meta: false,
                 at: ReadAt::default(),
+                params: Default::default(),
             },
         )
         .await
@@ -443,6 +444,7 @@ async fn checkpoint_and_rebuild_after_a_failed_fold_fold_it_and_publish_the_head
                     key: "n1".into(),
                     with_meta: false,
                     at: ReadAt::default(),
+                    params: Default::default(),
                 },
             )
             .await;

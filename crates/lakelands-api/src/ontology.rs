@@ -10,7 +10,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::expr::Condition;
-use crate::id::{FieldName, RelationName, TriggerName, TypeName, ValueTypeName, VerbName};
+use crate::id::{
+    FieldName, ParamName, RelationName, TriggerName, TypeName, ValueTypeName, VerbName,
+};
 
 /// A host's own marks on a declaration: a map from a namespaced key
 /// (`acme.icon`) to a JSON value. Lakelands stores, replays and describes
@@ -440,6 +442,10 @@ impl RelationDecl {
 pub struct ViewDecl {
     /// The type the view reads.
     pub source: TypeName,
+    /// The values a read binds, which `where` and `measures` read with
+    /// `param('name')`, in declared order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<ViewParam>,
     /// Which source records it covers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#where: Option<Condition>,
@@ -448,6 +454,17 @@ pub struct ViewDecl {
     pub group_by: Vec<FieldName>,
     /// The view's fields, each an expression over its group.
     pub measures: Vec<Measure>,
+}
+
+/// One parameter of a view: a value of a scalar kind that every read of
+/// the view binds.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewParam {
+    /// Its name.
+    pub name: ParamName,
+    /// Its kind: `text`, `number`, `decimal`, `boolean` or `date_time`.
+    pub kind: StorageKind,
 }
 
 /// One computed field of a view.
@@ -476,9 +493,10 @@ pub struct TypeDecl {
     /// The relations to other types.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relations: Vec<RelationDecl>,
-    /// If set, this is a view type computed from another type.
+    /// If set, this is a view type computed from another type. Boxed, as
+    /// few types are views and a view is the largest member.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub view: Option<ViewDecl>,
+    pub view: Option<Box<ViewDecl>>,
     /// The field that holds a record's business start time, if the type
     /// is valid-timed; `valid_to` is its end, if declared.
     #[serde(default, skip_serializing_if = "Option::is_none")]

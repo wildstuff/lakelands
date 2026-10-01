@@ -155,6 +155,7 @@ impl Doors {
             key: ext.key.clone(),
             with_meta: false,
             at: ReadAt::default(),
+            params: Default::default(),
         };
         // The executor is the host's own code: it receives the record whole,
         // unmasked by the grants of whoever made the verb due. The caller

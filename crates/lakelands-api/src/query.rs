@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::expr::Condition;
 use crate::id::{Cursor, FieldName, RecordKey, RelationName, TypeName};
-use crate::read::{Aggregate, Order, ReadAt};
+use crate::read::{Aggregate, Order, Params, ReadAt};
 use crate::record::{Record, Value};
 
 /// Which way a step walks a relation.
@@ -64,6 +64,9 @@ pub struct Start {
     /// Records a search finds, best first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search: Option<SearchMode>,
+    /// The values bound to the parameters of a view the pattern starts on.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: Params,
 }
 
 /// One step of a pattern.
@@ -162,6 +165,7 @@ impl Pattern {
                 key: Some(key),
                 filter: None,
                 search: None,
+                params: Default::default(),
             },
             steps,
             to: None,

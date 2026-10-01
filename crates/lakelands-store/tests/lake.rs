@@ -335,6 +335,7 @@ async fn a_low_verb_runs_a_high_one_waits_for_acceptance_and_an_unbound_one_is_r
         key: k.into(),
         with_meta: true,
         at: ReadAt::default(),
+        params: Default::default(),
     };
     let r = cat
         .get(&o, &"invoice".into(), get("i1"))
@@ -496,6 +497,7 @@ async fn a_second_write_to_a_record_in_one_window_is_folded_over_the_first() {
                 key: "a1".into(),
                 with_meta: false,
                 at: ReadAt::default(),
+                params: Default::default(),
             },
         )
         .await
@@ -826,6 +828,7 @@ async fn a_proposal_holds_the_write_as_checked() {
                 key: "applied".into(),
                 with_meta: false,
                 at: ReadAt::default(),
+                params: Default::default(),
             },
         )
         .await
@@ -1727,6 +1730,7 @@ async fn a_redeclared_function_recomputes_its_fields_naming_its_version() {
                     key: "b".into(),
                     with_meta: true,
                     at: ReadAt::default(),
+                    params: Default::default(),
                 },
             )
             .await
@@ -1939,6 +1943,7 @@ async fn numbers_and_vectors_read_in_their_one_json_form_live_and_after_a_rebuil
                 key: "a".into(),
                 with_meta: false,
                 at: ReadAt::default(),
+                params: Default::default(),
             },
         )
         .await
@@ -2246,6 +2251,7 @@ fn get(key: &str) -> Get {
         key: key.into(),
         with_meta: true,
         at: ReadAt::default(),
+        params: Default::default(),
     }
 }
 

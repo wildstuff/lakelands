@@ -51,7 +51,9 @@
 //! `previous(f)` is `f`'s value before that write. `setting('key')` reads
 //! the `value` of the lake's `sys.setting` record whose key is `key`, as
 //! of the position being read or folded, in every place an expression is
-//! evaluated; an absent key is null.
+//! evaluated; an absent key is null. `param('name')` is the value a read
+//! binds to the view parameter of that name; only a view's `where` and
+//! `measures` may call it, since only a view declares parameters.
 //!
 //! **Comparisons across kinds.** A comparison between values of kinds
 //! that do not compare — a number against text that is not a number, a
@@ -233,6 +235,10 @@ pub enum Func {
     /// `setting('key')`: the value of the lake's `sys.setting` record with
     /// that key, as it stood at the position being read or folded.
     Setting,
+    /// `param('name')`: the value a read binds to the view's parameter of
+    /// that name. Only a view's `where` and `measures` may call it. Format 8
+    /// (`docs/log-format.md` §6).
+    Param,
     /// `changed(field)`: in a guard, whether the write changes the field.
     Changed,
     /// `retired()`: in a trigger's guard, whether the write retires the

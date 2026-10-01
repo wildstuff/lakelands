@@ -1,6 +1,6 @@
 # The log format
 
-**Format version 7.** Reviewed so that a verifier can be written from
+**Format version 8.** Reviewed so that a verifier can be written from
 this document alone (lakelands#14). `0.1.0` is tagged, so every change
 to the format bumps the version, and a lake writes the version it had
 until an event needs a newer one (§6). Version 2 adds one member,
@@ -9,7 +9,8 @@ and reads exactly as before. Version 3 adds the envelope member
 `upstream` and a call of `date_bucket` in a declaration. Version 4 adds
 the proposal of a declaration or a migration. Version 5 adds a
 declaration's `annotations`. Version 6 adds a derived relation and a trigger's `max_depth`.
-Version 7 adds a call of `retired` in a declaration. §6 says
+Version 7 adds a call of `retired` in a declaration. Version 8 adds a
+view's `params` and a call of `param`. §6 says
 which event needs which version.
 
 A lake's event log is its truth (`docs/decisions/001-the-log-is-the-truth.md`).
@@ -191,7 +192,11 @@ this object:
 - `view` is `{ "source", "where", "group_by", "measures" }` with every
   member present: `where` is `null` when absent, `group_by` is `[]` when
   empty. `group_by` and `measures` keep their declared order: a measure
-  may read the measures before it, so their order is meaning.
+  may read the measures before it, so their order is meaning. A view
+  that declares parameters has a fifth member, `params`, the list of
+  `{ "name", "kind" }` in declared order; a view without them has no
+  `params` member, so its hash is the one it had before views could take
+  parameters.
 - All four members are always present: an empty `key`, `fields` or
   `relations` is written `[]`, and a type that is not a view has
   `"view": null`.
@@ -574,6 +579,7 @@ carries a lower `v` than the event before it.
 | 5 | A declaration's `annotations` (Appendix A): on a type, a field or a relation, anywhere in the declaration a `declared` event carries, in a `migrated` event's `to`, or in a proposed `declare` or `migrate`. A lake writes the version it had until its first event whose declaration holds a non-empty `annotations`, which carries `v` 5, as does every event after it; a version-4 (or older) event that carries annotations is refused, naming them. A version-4 reader refuses the version-5 events rather than refusing a member it does not know. An annotation is never part of the schema hash (§2.2). |
 | 6 | A derived relation, a relation declaration's `derived`, and a trigger's `max_depth` (Appendix A). A lake writes the version it had until its first event whose declaration holds a relation with `derived` or is a trigger with `max_depth` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`), which carries `v` 6, as does every event after it; a version-5 (or older) event that carries one is refused, naming it. A version-5 reader refuses the version-6 events rather than refusing a member it does not know. `derived` is never part of the schema hash (§2.2). Version 6 took both members while it was untagged; a tagged version is closed. |
 | 7 | A call of `retired` in a declaration's expressions (Appendix B): in a trigger's `when`, the one place it means something. A lake writes the version it had until its first event whose declaration calls `retired` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`), which carries `v` 7, as does every event after it; a version-6 (or older) event that calls it is refused, naming it. A version-6 reader refuses the version-7 events rather than reading a guard it cannot evaluate, which would never fire. |
+| 8 | A view's `params` and a call of `param` in a declaration's expressions (Appendix A, Appendix B): a view may declare parameters, which a read binds and its `where` and measures read with `param('name')`. A lake writes the version it had until its first event whose declaration is a view with a non-empty `params`, or calls `param` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`), which carries `v` 8, as does every event after it; a version-7 (or older) event that carries either is refused, naming it. A version-7 reader refuses the version-8 events rather than computing a view whose parameters it cannot bind. `params` is part of the schema hash only when it is not empty (§2.2). |
 
 ## Appendix A. Encodings
 
@@ -604,7 +610,7 @@ with that declaration's members beside it. Every member not marked
 | a field (in `fields`, a relation's `fields`, a verb's `payload`, a function's `inputs`) | `name` and `type` (required), `required` (`false`), `authority` (`authored`), `derived` (none), `depends_on` (`[]`), `on_input_change` (`keep`), `sensitive` (`false`), `searchable` (`false`), `description`, `label` (none), `annotations` (`{}`, version 5) |
 | a field's `type` | `kind` (required), `value_type`, `target`, `dimensions` (none) |
 | a relation | `name` and `target` (required), `cardinality` (`many_to_one`), `authority` (`authored`; who writes its links, when it has no `via`), `inverse`, `via` (none), `fields` (`[]`), `description` (none), `annotations` (`{}`, version 5), `derived` (none, version 6: `{ "match": [ { "from", "to" } ] }`, a field of the owner and one of the target per pair) |
-| a `view` | `source` and `measures` (required; each measure `{ "name", "expr" }`), `where` (none), `group_by` (`[]`) |
+| a `view` | `source` and `measures` (required; each measure `{ "name", "expr" }`), `where` (none), `group_by` (`[]`), `params` (`[]`, version 8: each `{ "name", "kind" }`, a kind of `text`, `number`, `decimal`, `boolean` or `date_time`) |
 | `value_type` | `name` and `kind` (required), `constraint` (none), `one_of` (`[]`), `format`, `scale`, `description` (none) |
 | `verb` | `name`, `on`, `risk` and `effect` (required), `payload` (`[]`), `requires` (none), `description` (none); `effect: write` carries `set`, a list of `{ "field", "value" }`; `effect: external` carries `executor` |
 | `trigger` | `name` and `on` (required), `when`, `description` (none), `max_depth` (none, version 6: an integer at most the lake's `max_reactive_depth`) |
@@ -710,7 +716,10 @@ arguments are the value and its unit as a string literal (`day`, `week`,
 bucket holding the value starts (the week from Monday, as ISO counts
 weeks). A read may call `date_bucket` in any version; a declaration from
 version 3 on (§6). From version 7 on, `retired`, with no arguments: true
-when the write retires the record, in a trigger's guard only (§6).
+when the write retires the record, in a trigger's guard only (§6). From
+version 8 on, `param`, with one argument, a parameter's name as a string
+literal: the value the read binds to that parameter of the view, in a
+view's `where` and measures only (§6).
 
 **From text to typed form.**
 

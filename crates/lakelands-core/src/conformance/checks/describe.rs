@@ -96,7 +96,7 @@ fn by_title(name: &str, measure: &str, over: &str) -> TypeDecl {
         ],
     );
     ty.key = vec![FieldName::from("title")];
-    ty.view = Some(ViewDecl {
+    ty.view = Some(Box::new(ViewDecl {
         source: TypeName::from("ledger"),
         r#where: None,
         group_by: vec![FieldName::from("title")],
@@ -104,7 +104,8 @@ fn by_title(name: &str, measure: &str, over: &str) -> TypeDecl {
             name: FieldName::from(measure),
             expr: Condition::from(format!("sum({over})").as_str()),
         }],
-    });
+        params: Default::default(),
+    }));
     ty.description = Some(format!("the ledger's {over} by title"));
     ty
 }
@@ -147,7 +148,7 @@ fn projected(t: &TypeDescription) -> TypeDecl {
         key: t.access.key.clone(),
         fields: t.fields.iter().map(field_projected).collect(),
         relations: t.relations.clone(),
-        view: t.view.clone(),
+        view: t.view.clone().map(Box::new),
         valid_from: t.access.valid_from.clone(),
         valid_to: t.access.valid_to.clone(),
         language: t.language.clone(),
@@ -364,7 +365,7 @@ async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) -> Re
     same(
         "the clerk's view over the net",
         &one_type(&c, "net_by_title")?.view,
-        &net_view.view,
+        &net_view.view.clone().map(|v| *v),
     )?;
     same(
         "the clerk's view over the salary",
