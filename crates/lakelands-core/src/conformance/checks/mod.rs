@@ -100,6 +100,8 @@ pub const ALL: &[Check] = &[
     views::SAME_EITHER_WAY,
     views::EMPTIED_GROUP_GOES,
     views::CURRENT_AFTER_INGEST,
+    views::PATTERN_STARTS_ON_A_VIEW,
+    views::WALK_REACHES_A_VIEW,
     ingest::SAME_CONTENT_TWICE,
     ingest::SAME_KEY_TWICE,
     ingest::FOREIGN_FIELD_REFUSED,

@@ -38,10 +38,13 @@
 //! fields (whose values form the view record's key, in declared order, by
 //! the one key rule of `docs/log-format.md` §2.3) and measured. A group with no member has no record. Keeping a view's
 //! records materialised would be an engine's optimisation, and it could
-//! never change an answer.
+//! never change an answer. A walk reads a view's records from that
+//! computation too, once per read, never from the engine.
 
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use lakelands_api::describe::{LakeDescription, TypeDescription};
 use lakelands_api::engine::{After, ProjectionView, Scan};
@@ -106,6 +109,9 @@ pub struct Reader<'a> {
     pub valid_at: Option<Timestamp>,
     /// The clock `now()` and `today()` read.
     pub now: Timestamp,
+    /// The records of each view this read has computed, so that a walk
+    /// meeting a view many times computes it once.
+    computed: RefCell<BTreeMap<TypeName, Rc<Vec<StoredRecord>>>>,
 }
 
 mod measures;
@@ -187,7 +193,64 @@ impl<'a> Reader<'a> {
             position,
             valid_at: at.valid_at,
             now: now(),
+            computed: RefCell::default(),
         })
+    }
+
+    /// The records of `ty` with these keys, at this read. A view's come
+    /// from its computation, any other type's from the engine, which keeps
+    /// no view records and would answer none for one.
+    fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
+        let Some(all) = self.computed(ty)? else {
+            return self.view.get_many(ty, keys);
+        };
+        let keys: BTreeSet<&RecordKey> = keys.iter().collect();
+        Ok(all
+            .iter()
+            .filter(|r| keys.contains(&r.key))
+            .cloned()
+            .collect())
+    }
+
+    /// The record of `ty` with this key, at this read, as [`Self::get_many`].
+    fn get_one(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
+        Ok(self.get_many(ty, std::slice::from_ref(key))?.pop())
+    }
+
+    /// The records of `ty` whose fields hold every value of `equal`, as
+    /// [`Self::get_many`] reads them.
+    fn matching(&self, ty: &TypeName, equal: Vec<(FieldName, Value)>) -> Result<Vec<StoredRecord>> {
+        let Some(all) = self.computed(ty)? else {
+            let scan = Scan {
+                equal,
+                limit: u32::MAX,
+                restricted: true,
+                ..Scan::default()
+            };
+            return self.view.scan(ty, &scan);
+        };
+        Ok(all
+            .iter()
+            .filter(|r| equal.iter().all(|(f, v)| r.fields.get(f) == Some(v)))
+            .cloned()
+            .collect())
+    }
+
+    /// A view's records at this read, computed once; `None` for a type
+    /// that is not a view.
+    fn computed(&self, ty: &TypeName) -> Result<Option<Rc<Vec<StoredRecord>>>> {
+        let decl = match self.ontology.ty(ty) {
+            Ok(decl) if decl.view.is_some() => decl.clone(),
+            _ => return Ok(None),
+        };
+        if let Some(all) = self.computed.borrow().get(ty) {
+            return Ok(Some(Rc::clone(all)));
+        }
+        let all = Rc::new(self.records(&decl, None)?);
+        self.computed
+            .borrow_mut()
+            .insert(ty.clone(), Rc::clone(&all));
+        Ok(Some(all))
     }
 
     fn declared(&self) -> Vec<lakelands_api::engine::Declared> {
@@ -1008,7 +1071,7 @@ impl<'a> Reader<'a> {
                     at: ReadAt::default(),
                 },
             ) {
-                Ok(_) => self.view.get(&p.start.ty, key)?.into_iter().collect(),
+                Ok(_) => self.get_one(&p.start.ty, key)?.into_iter().collect(),
                 Err(Error::NotFound { .. }) => Vec::new(),
                 Err(e) => return Err(e),
             }
@@ -1241,7 +1304,7 @@ impl<'a> Reader<'a> {
         node: &lakelands_core::graph::Node,
     ) -> Result<()> {
         let decl = self.ontology.ty(&node.0)?;
-        if let Some(r) = self.view.get(&node.0, &node.1)?
+        if let Some(r) = self.get_one(&node.0, &node.1)?
             && let Some(rec) = rights::visible(self.who, decl, &r, false)
         {
             row.insert(format!("{}.key", node.0), Value::String(node.1.to_string()));
@@ -1261,7 +1324,7 @@ impl<'a> Reader<'a> {
         let mut records = Vec::new();
         for (ty, key) in &nodes {
             let decl = self.ontology.ty(ty)?;
-            if let Some(r) = self.view.get(ty, key)?
+            if let Some(r) = self.get_one(ty, key)?
                 && let Some(rec) = rights::visible(self.who, decl, &r, false)
             {
                 records.push(rec);
@@ -1373,7 +1436,6 @@ fn derived_edges(
         return Ok(all);
     }
     let nears: BTreeMap<RecordKey, StoredRecord> = r
-        .view
         .get_many(ty, keys)?
         .into_iter()
         .map(|near| (near.key.clone(), near))
@@ -1401,17 +1463,7 @@ fn derived_edges(
                 })
                 .collect()
         };
-        let scan = |other: &TypeName, equal: Vec<(FieldName, Value)>| {
-            r.view.scan(
-                other,
-                &Scan {
-                    equal,
-                    limit: u32::MAX,
-                    restricted: true,
-                    ..Scan::default()
-                },
-            )
-        };
+        let scan = |other: &TypeName, equal| r.matching(other, equal);
         for x in &owned {
             let pairs = &x.derived.as_ref().expect("derived").pairs;
             if let Some(equal) = equal(pairs, true) {
@@ -1531,7 +1583,7 @@ impl EdgeSource for Visible<'_, '_> {
             if describe::one_type(ty, &r.declared(), r.who).is_none() {
                 continue;
             }
-            for rec in r.view.get_many(ty, &keys)? {
+            for rec in r.get_many(ty, &keys)? {
                 if !rec.retired
                     && (r.who.grants.restricted || !rec.restricted)
                     && r.valid_at
