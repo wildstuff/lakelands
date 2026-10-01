@@ -233,24 +233,7 @@ impl Session {
             Some(fault) => Err(fault),
             None => self.door(&spec, arguments.clone()).await,
         };
-        let answer = match outcome {
-            Ok(v) => {
-                let position = v.get("position").cloned().unwrap_or(Value::Null);
-                let text = format!(
-                    "position {position}\n{}",
-                    serde_json::to_string_pretty(&v).expect("JSON prints")
-                );
-                json!({"content": [{"type": "text", "text": text}], "structuredContent": v, "isError": false})
-            }
-            Err(Fault::Contract(e)) => {
-                let text = Failure::from(e.clone()).to_string();
-                json!({"content": [{"type": "text", "text": text}, {"type": "text", "text": to_json(&e).to_string()}], "isError": true})
-            }
-            Err(Fault::Arguments(what, todo)) => {
-                let text = Failure::new(what, todo).to_string();
-                json!({"content": [{"type": "text", "text": text}], "isError": true})
-            }
-        };
+        let answer = tool_answer(outcome);
         // A declaration's `tools/list_changed` is the pump's to send, to
         // every session, when the feed shows it.
         vec![result(id, answer)]
@@ -359,6 +342,29 @@ impl Session {
     }
 }
 
+/// What a tool call answers: the door's JSON, or a fault as its two
+/// sentences, and a contract fault with its JSON beside them.
+fn tool_answer(outcome: Result<Value, Fault>) -> Value {
+    match outcome {
+        Ok(v) => {
+            let position = v.get("position").cloned().unwrap_or(Value::Null);
+            let text = format!(
+                "position {position}\n{}",
+                serde_json::to_string_pretty(&v).expect("JSON prints")
+            );
+            json!({"content": [{"type": "text", "text": text}], "structuredContent": v, "isError": false})
+        }
+        Err(Fault::Contract(e)) => {
+            let text = Failure::from(e.clone()).to_string();
+            json!({"content": [{"type": "text", "text": text}, {"type": "text", "text": to_json(&e).to_string()}], "isError": true})
+        }
+        Err(Fault::Arguments(what, todo)) => {
+            let text = Failure::new(what, todo).to_string();
+            json!({"content": [{"type": "text", "text": text}], "isError": true})
+        }
+    }
+}
+
 /// A tool as `tools/list` lists it.
 fn listing(t: &ToolSpec) -> Value {
     json!({
@@ -367,4 +373,30 @@ fn listing(t: &ToolSpec) -> Value {
         "inputSchema": t.input_schema,
         "outputSchema": t.output_schema,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use lakelands_api::error::{Error, Refusal};
+
+    use super::*;
+
+    /// A reaction past a trigger's `max_depth` is refused by the store,
+    /// never by a door caller, whose writes carry no cause; when a tool
+    /// answers it, the trigger is named in its sentence and its JSON.
+    #[test]
+    fn a_too_deep_refusal_names_the_trigger_in_a_tool_answer() {
+        let answer = tool_answer(Err(Fault::Contract(Error::Refused {
+            field: Some("once".into()),
+            reason: Refusal::TooDeep { max: 1 },
+        })));
+        assert_eq!(answer["isError"], true, "{answer}");
+        let text = answer["content"][0]["text"].as_str().unwrap_or_default();
+        assert!(text.contains("`once`") && text.contains('1'), "{text}");
+        let error: Value =
+            serde_json::from_str(answer["content"][1]["text"].as_str().unwrap_or("null")).unwrap();
+        assert_eq!(error["field"], "once", "{error}");
+        assert_eq!(error["reason"]["refusal"], "too_deep", "{error}");
+        assert_eq!(error["reason"]["max"], 1, "{error}");
+    }
 }
