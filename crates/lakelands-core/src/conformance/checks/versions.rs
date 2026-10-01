@@ -42,18 +42,17 @@ fn version_of(outcome: &Outcome) -> Option<Version> {
     }
 }
 
-async fn counter(store: &dyn LakeStore) -> Result<(), Failure> {
+async fn counter(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let cat = doors(store);
     let ty = type_decl("counter", vec![field("n", StorageKind::Number)]);
     declare(cat.as_ref(), &owner(store), ty).await?;
-    Ok(())
+    Ok(Lake::of(store))
 }
 
 async fn versions_start_at_one_and_grow_by_one_with_every_change(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    counter(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = counter(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let counter = TypeName::from("counter");
 
@@ -87,8 +86,7 @@ async fn versions_start_at_one_and_grow_by_one_with_every_change(
 async fn a_write_expecting_a_superseded_version_is_refused_as_a_conflict(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    counter(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = counter(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let counter = TypeName::from("counter");
     let expecting = |v: u64| WriteOpts {
@@ -180,8 +178,7 @@ async fn a_write_expecting_a_superseded_version_is_refused_as_a_conflict(
 async fn a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_appends_nothing(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    counter(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = counter(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let counter = TypeName::from("counter");
     let keyed = || WriteOpts {
@@ -265,8 +262,7 @@ async fn a_write_expecting_the_version_before_a_retirement_is_a_conflict(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     use crate::conformance::fixture::head_unmoved;
-    counter(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = counter(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let counter = TypeName::from("counter");
     let expecting = |v: u64| WriteOpts {

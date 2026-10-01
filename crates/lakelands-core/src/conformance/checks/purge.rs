@@ -115,15 +115,11 @@ async fn lake(store: &dyn LakeStore) -> Result<(), Failure> {
         vec![sourced("amount", StorageKind::Number), status, gross],
     );
     invoice.relations = vec![RelationDecl {
-        annotations: Default::default(),
         name: "approved_by".into(),
         target: "partner".into(),
         cardinality: Cardinality::ManyToOne,
-        inverse: None,
-        via: None,
-        fields: vec![],
         authority: Authority::Source,
-        description: None,
+        ..Default::default()
     }];
     l.declare(invoice).await?;
     feed(
@@ -574,7 +570,6 @@ async fn a_record_whose_values_from_the_source_were_all_cleared_stays(
 ) -> Result<(), Failure> {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
     // `crm` clears the one value it gave `p1`; `p2` keeps its name. On
     // `erp`'s `i1`, `crm` sets `status` and clears it again: `i1` holds
     // nothing of `crm`'s, only `erp`'s `amount`.
@@ -601,11 +596,7 @@ async fn a_record_whose_values_from_the_source_were_all_cleared_stays(
         !live(&l, "partner", "p2").await?,
         "`p2` still holds `crm`'s name, and the purge left it: {report:?}"
     );
-    let i1 = cat
-        .get(own, &"invoice".into(), get_at("i1", None))
-        .await
-        .must("reading `i1` after the purge")?
-        .data;
+    let i1 = l.read("invoice", "i1").await?;
     ensure!(
         i1.fields.get("amount") == Some(&json!(5)),
         "`i1` is `erp`'s, with nothing of `crm`'s left, and the purge took it or its amount: \

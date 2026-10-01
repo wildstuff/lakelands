@@ -50,7 +50,7 @@ check!(
     "004: a write that moves a record into or out of an object set appends `object_set_changed`; one that leaves membership as it was appends none"
 );
 
-async fn invoices(store: &dyn LakeStore) -> Result<(), Failure> {
+async fn invoices(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
     l.declare(type_decl(
         "invoice",
@@ -62,7 +62,7 @@ async fn invoices(store: &dyn LakeStore) -> Result<(), Failure> {
     .await?;
     l.declare(type_decl("memo", vec![field("text", StorageKind::Text)]))
         .await?;
-    Ok(())
+    Ok(l)
 }
 
 async fn all_events(store: &dyn LakeStore, from: Position) -> Result<Vec<Event>, Failure> {
@@ -89,8 +89,7 @@ check!(
 async fn a_poll_with_a_limit_of_zero_answers_one_event(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    invoices(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = invoices(store.as_ref()).await?;
     let from = store.head().await.must("reading the head")?.next();
     let first = l
         .upsert("invoice", "a", json!({"status": "open"}))
@@ -117,8 +116,7 @@ async fn a_poll_with_a_limit_of_zero_answers_one_event(
 async fn the_feed_answers_the_log_from_a_position_by_kind_and_type(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    invoices(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = invoices(store.as_ref()).await?;
     let from = store.head().await.must("reading the head")?.next();
     let a = l
         .upsert("invoice", "a", json!({"status": "open"}))
@@ -193,8 +191,7 @@ async fn the_feed_answers_the_log_from_a_position_by_kind_and_type(
 async fn rebuilding_the_projection_changes_nothing_in_the_feed(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    invoices(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = invoices(store.as_ref()).await?;
     for (k, s) in [("a", "open"), ("b", "paid"), ("a", "held")] {
         l.upsert("invoice", k, json!({ "status": s })).await?;
     }
@@ -219,8 +216,7 @@ async fn rebuilding_the_projection_changes_nothing_in_the_feed(
 async fn a_trigger_fires_on_every_write_whose_guard_holds(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    invoices(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = invoices(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let trigger: Declaration = serde_json::from_value(json!({
         "declare": "trigger", "name": "paid", "on": "invoice", "when": "status = 'paid'"
@@ -257,8 +253,7 @@ async fn a_trigger_fires_on_every_write_whose_guard_holds(
 async fn an_object_set_change_is_written_only_when_membership_changes(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    invoices(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = invoices(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let set: Declaration = serde_json::from_value(json!({
         "declare": "object_set", "name": "open_ones", "of": "invoice", "where": "status = 'open'"
@@ -303,8 +298,7 @@ async fn an_object_set_change_is_written_only_when_membership_changes(
 async fn polling_from_next_in_small_pages_sees_every_matching_event_once_in_order(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    invoices(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = invoices(store.as_ref()).await?;
     let invoices_only = FeedFilter {
         kinds: vec!["record_upserted".into()],
         types: vec!["invoice".into()],

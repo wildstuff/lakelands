@@ -82,26 +82,17 @@ async fn lake(store: &dyn LakeStore) -> Result<Position, Failure> {
     );
     invoice.relations = vec![
         RelationDecl {
-            annotations: Default::default(),
             name: "billed_to".into(),
             target: "partner".into(),
             cardinality: Cardinality::ManyToOne,
-            inverse: None,
             via: Some("partner".into()),
-            fields: Vec::new(),
-            authority: Default::default(),
-            description: None,
+            ..Default::default()
         },
         RelationDecl {
-            annotations: Default::default(),
             name: "approved_by".into(),
             target: "partner".into(),
             cardinality: Cardinality::ManyToMany,
-            inverse: None,
-            via: None,
-            fields: Vec::new(),
-            authority: Default::default(),
-            description: None,
+            ..Default::default()
         },
     ];
     l.declare(invoice).await?;

@@ -32,7 +32,7 @@ check!(
 );
 
 /// People who report to people, through `boss`.
-async fn org(store: &dyn LakeStore) -> Result<(), Failure> {
+async fn org(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
     let mut ty = type_decl(
         "person",
@@ -48,15 +48,11 @@ async fn org(store: &dyn LakeStore) -> Result<(), Failure> {
         ],
     );
     ty.relations = vec![RelationDecl {
-        annotations: Default::default(),
         name: "reports_to".into(),
         target: "person".into(),
-        cardinality: Default::default(),
         inverse: Some("manages".into()),
         via: Some("boss".into()),
-        fields: Vec::new(),
-        authority: Default::default(),
-        description: None,
+        ..Default::default()
     }];
     l.declare(ty).await?;
     for (key, boss) in [
@@ -71,7 +67,7 @@ async fn org(store: &dyn LakeStore) -> Result<(), Failure> {
         }
         l.upsert("person", key, fields).await?;
     }
-    Ok(())
+    Ok(l)
 }
 
 fn step(relation: &str, walk: Walk, min: u32, max: u32) -> Step {
@@ -91,8 +87,7 @@ fn from(key: &str, steps: Vec<Step>) -> Pattern {
 async fn a_step_over_a_relation_the_type_does_not_declare_is_refused(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    org(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = org(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     cat.query(own, from("zed", vec![step("reports_to", Walk::Out, 1, 1)]))
         .await
@@ -118,8 +113,7 @@ async fn a_step_over_a_relation_the_type_does_not_declare_is_refused(
 async fn a_step_deeper_than_the_lakes_limit_is_refused(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    org(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = org(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let limit = limits().max_depth;
     cat.query(
@@ -149,8 +143,7 @@ async fn a_step_deeper_than_the_lakes_limit_is_refused(
 async fn a_walk_answers_what_it_reaches_in_one_order(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    org(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = org(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let mut p = from("ceo", vec![step("reports_to", Walk::In, 1, 2)]);
     p.project = lakelands_api::query::Projection::Graph;
@@ -179,8 +172,7 @@ check!(
 async fn a_walk_over_a_cycle_ends_and_answers_each_record_once(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    org(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = org(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     // The ceo reports to the one who reports to the ceo: a cycle of two.
     l.upsert("person", "ceo", json!({"boss": "vp"})).await?;

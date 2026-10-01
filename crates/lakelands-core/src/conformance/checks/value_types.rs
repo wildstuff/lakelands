@@ -15,11 +15,13 @@ use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{Authority, Cardinality, RelationDecl, StorageKind, ValueTypeDecl};
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::{Declaration, ValueTypeReport};
-use lakelands_api::{Error, Grants, LakeStore, Position, PrincipalKind, Refusal, WriteOpts};
+use lakelands_api::{Error, Grants, LakeStore, PrincipalKind, Refusal, WriteOpts};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, field, get_at, head_unmoved, principal, type_decl};
+use crate::conformance::fixture::{
+    Lake, Must, field, head_unmoved, log_events, principal, type_decl,
+};
 
 check!(
     /// A loosening is declared.
@@ -87,7 +89,7 @@ fn score(constraint: Option<&str>) -> ValueTypeDecl {
 
 /// `status_code` (open, paid, late, void) and `score` (no constraint);
 /// `invoice` uses both, `ticket` uses `status_code`.
-async fn lake(store: &dyn LakeStore) -> Result<(), Failure> {
+async fn lake(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
     let Lake { cat, own } = &l;
     for d in [status(&["open", "paid", "late", "void"]), score(None)] {
@@ -115,28 +117,21 @@ async fn lake(store: &dyn LakeStore) -> Result<(), Failure> {
         vec![typed("state", StorageKind::Text, "status_code")],
     );
     ticket.relations = vec![RelationDecl {
-        annotations: Default::default(),
         name: "raised_by".into(),
         target: "invoice".into(),
         cardinality: Cardinality::ManyToOne,
-        inverse: None,
-        via: None,
         fields: vec![typed("status", StorageKind::Text, "status_code")],
         authority: Authority::Authored,
-        description: None,
+        ..Default::default()
     }];
     l.declare(ticket).await?;
-    Ok(())
+    Ok(l)
 }
 
 /// The versions `declared` gave `name`, in log order.
 async fn versions(store: &dyn LakeStore, name: &str) -> Result<Vec<u32>, Failure> {
-    Ok(store
-        .feed()
-        .poll(Position::GENESIS, &FeedFilter::default(), 10_000)
-        .await
-        .must("reading the feed")?
-        .events
+    Ok(log_events(store)
+        .await?
         .into_iter()
         .filter_map(|e| match e.body {
             EventBody::Declared {
@@ -165,16 +160,11 @@ fn is_invalid_naming(e: &Error, word: &str) -> bool {
 async fn a_value_type_that_accepts_more_is_declared_and_no_record_changes(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     l.upsert("invoice", "i1", json!({"status": "late", "score": 3}))
         .await?;
-    let before = cat
-        .get(own, &"invoice".into(), get_at("i1", None))
-        .await
-        .must("reading `i1`")?
-        .data;
+    let before = l.read("invoice", "i1").await?;
     for loosened in [
         status(&["open", "paid", "late", "void", "held"]),
         status(&[]),
@@ -191,11 +181,7 @@ async fn a_value_type_that_accepts_more_is_declared_and_no_record_changes(
         v == [1, 2, 3],
         "`status_code` was declared, then loosened twice; its versions are {v:?}"
     );
-    let after = cat
-        .get(own, &"invoice".into(), get_at("i1", None))
-        .await
-        .must("reading `i1` again")?
-        .data;
+    let after = l.read("invoice", "i1").await?;
     ensure!(
         after.version == before.version && after.fields == before.fields,
         "a loosening changed `i1`: {:?} became {:?}",
@@ -208,8 +194,7 @@ async fn a_value_type_that_accepts_more_is_declared_and_no_record_changes(
 async fn declare_refuses_a_value_type_that_accepts_less_or_reshapes(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     for d in [
         json!({"name": "money", "kind": "decimal", "scale": 2}),
@@ -289,7 +274,7 @@ async fn declare_refuses_a_value_type_that_accepts_less_or_reshapes(
 /// `i1` late, `i2` open with a negative score, `i3` late and retired, `i4`
 /// late and restricted; `t1` late, raised by `i1` with a link whose status
 /// is late.
-async fn stored(store: &dyn LakeStore) -> Result<(), Failure> {
+async fn stored(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
     let Lake { cat, own } = &l;
     for (k, s, n) in [
@@ -320,15 +305,14 @@ async fn stored(store: &dyn LakeStore) -> Result<(), Failure> {
     )
     .await
     .must("linking `t1` to `i1`")?;
-    Ok(())
+    Ok(l)
 }
 
 async fn the_preflight_counts_what_would_not_fit_over_every_use_and_history(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     lake(store.as_ref()).await?;
-    stored(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = stored(store.as_ref()).await?;
     let before = store.head().await.must("reading the head")?;
     let r = preflight(&l, status(&["open", "paid", "void"])).await?;
     let uses: Vec<(String, String, u64, u64)> = r
@@ -374,8 +358,7 @@ async fn applying_a_tightening_some_value_does_not_fit_is_refused(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     lake(store.as_ref()).await?;
-    stored(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = stored(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let to = status(&["open", "paid", "void"]);
     let r = preflight(&l, to.clone()).await?;
@@ -395,14 +378,9 @@ async fn a_tightening_every_value_fits_is_one_declared_version(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     lake(store.as_ref()).await?;
-    stored(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = stored(store.as_ref()).await?;
     let Lake { cat, own } = &l;
-    let i1 = cat
-        .get(own, &"invoice".into(), get_at("i1", None))
-        .await
-        .must("reading `i1`")?
-        .data;
+    let i1 = l.read("invoice", "i1").await?;
     // No record holds `void`.
     let to = status(&["open", "paid", "late"]);
     let r = preflight(&l, to.clone()).await?;
@@ -425,11 +403,7 @@ async fn a_tightening_every_value_fits_is_one_declared_version(
         v == [1, 2],
         "`status_code`'s versions are {v:?}; 1 then 2 was expected"
     );
-    let after = cat
-        .get(own, &"invoice".into(), get_at("i1", None))
-        .await
-        .must("reading `i1` again")?
-        .data;
+    let after = l.read("invoice", "i1").await?;
     ensure!(
         after.version == i1.version,
         "the tightening changed `i1`'s version from {} to {}",
@@ -456,8 +430,7 @@ async fn a_tightening_every_value_fits_is_one_declared_version(
 async fn a_value_type_report_from_before_the_lake_moved_is_refused(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let to = status(&["open", "paid", "late"]);
     let r = preflight(&l, to.clone()).await?;
@@ -483,8 +456,7 @@ async fn a_value_type_report_from_before_the_lake_moved_is_refused(
 async fn a_value_type_migration_needs_the_schema_grant(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref()).await?;
     let Lake { cat, .. } = &l;
     let to = status(&["open", "paid", "late"]);
     let r = preflight(&l, to.clone()).await?;
@@ -518,8 +490,7 @@ async fn a_value_type_migration_needs_the_schema_grant(
 async fn an_apply_that_loosens_one_value_type_and_tightens_another_is_refused_whole(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
     let e = cat
@@ -623,8 +594,7 @@ async fn a_trigger_or_set_on_a_value_the_type_no_longer_admits_never_holds(
     use lakelands_api::expr::Condition;
     use lakelands_api::ontology::TriggerDecl;
     use lakelands_api::write::ObjectSetDecl;
-    lake(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     for d in [
         Declaration::Trigger(TriggerDecl {
@@ -665,12 +635,8 @@ async fn a_trigger_or_set_on_a_value_the_type_no_longer_admits_never_holds(
         "the tightening left the trigger on `late` declared; describe lists {:?}",
         described.triggers
     );
-    let sets: Vec<String> = store
-        .feed()
-        .poll(Position::GENESIS, &FeedFilter::default(), 10_000)
-        .await
-        .must("reading the log's declarations")?
-        .events
+    let sets: Vec<String> = log_events(store.as_ref())
+        .await?
         .into_iter()
         .filter_map(|e| match e.body {
             EventBody::Declared {

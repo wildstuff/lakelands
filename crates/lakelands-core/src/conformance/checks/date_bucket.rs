@@ -54,7 +54,7 @@ fn days() -> Vec<String> {
     out
 }
 
-async fn lake(store: &dyn LakeStore) -> Result<(), Failure> {
+async fn lake(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
     l.declare(type_decl(
         "entry",
@@ -74,7 +74,7 @@ async fn lake(store: &dyn LakeStore) -> Result<(), Failure> {
     }
     l.upsert("entry", "undated", json!({"amount": "1.25"}))
         .await?;
-    Ok(())
+    Ok(l)
 }
 
 fn by(unit: &str) -> Find {
@@ -206,8 +206,7 @@ async fn find_groups_records_by_date_bucket_for_every_unit(
 async fn a_where_selects_the_records_of_one_date_bucket(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lake(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let mut find = by("month");
     find.filter = Some(Condition::Text(

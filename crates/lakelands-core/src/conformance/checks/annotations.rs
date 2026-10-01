@@ -88,12 +88,8 @@ fn shelf() -> TypeDecl {
         annotations: marks(&[("acme.plural", json!("rooms"))]),
         name: "room".into(),
         target: "room".into(),
-        cardinality: Default::default(),
-        inverse: None,
-        via: None,
         fields: vec![note],
-        authority: Default::default(),
-        description: None,
+        ..Default::default()
     }];
     t
 }

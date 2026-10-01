@@ -60,15 +60,12 @@ async fn find_ordered_by_latest_lists_records_by_their_last_event(
         ],
     );
     let relation = |name: &str, via: Option<&str>| RelationDecl {
-        annotations: Default::default(),
         name: name.into(),
         target: "partner".into(),
         cardinality: Cardinality::ManyToOne,
-        inverse: None,
         via: via.map(Into::into),
-        fields: vec![],
         authority: Authority::Authored,
-        description: None,
+        ..Default::default()
     };
     invoice.relations = vec![
         relation("billed_by", Some("billed")),

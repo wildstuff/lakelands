@@ -46,7 +46,7 @@ check!(
     "010 and 017: `seen_at(f)` reads a field's provenance in `where`, and `order_by` may order by it"
 );
 
-async fn lines(store: &dyn LakeStore) -> Result<(), Failure> {
+async fn lines(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let cat = doors(store);
     let ty = type_decl(
         "line",
@@ -59,7 +59,7 @@ async fn lines(store: &dyn LakeStore) -> Result<(), Failure> {
         ],
     );
     declare(cat.as_ref(), &owner(store), ty).await?;
-    Ok(())
+    Ok(Lake::of(store))
 }
 
 async fn keys_where(store: &dyn LakeStore, filter: &str) -> Result<Vec<String>, Failure> {
@@ -77,8 +77,7 @@ async fn keys_where(store: &dyn LakeStore, filter: &str) -> Result<Vec<String>, 
 async fn absent_fields_never_match_not_even_not_equal(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lines(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lines(store.as_ref()).await?;
     l.upsert("line", "with", json!({"note": "x"})).await?;
     l.upsert("line", "other", json!({"note": "y"})).await?;
     l.upsert("line", "without", json!({"label": "a"})).await?;
@@ -105,8 +104,7 @@ async fn absent_fields_never_match_not_even_not_equal(
 async fn numbers_and_numeric_text_compare_as_numbers(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lines(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lines(store.as_ref()).await?;
     l.upsert("line", "nine", json!({"qty": 9, "price": "9.50"}))
         .await?;
     l.upsert("line", "ten", json!({"qty": 10, "price": "10.00"}))
@@ -136,8 +134,7 @@ async fn numbers_and_numeric_text_compare_as_numbers(
 async fn values_of_kinds_that_do_not_compare_match_nothing_and_fail_nothing(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lines(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lines(store.as_ref()).await?;
     l.upsert("line", "a", json!({"label": "abc", "qty": 1, "flag": true}))
         .await?;
 
@@ -164,8 +161,7 @@ async fn values_of_kinds_that_do_not_compare_match_nothing_and_fail_nothing(
 async fn probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggregate(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lines(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lines(store.as_ref()).await?;
     let Lake { cat, .. } = &l;
     l.upsert("line", "a", json!({"qty": 1, "note": "secret"}))
         .await?;
@@ -296,8 +292,7 @@ check!(
 async fn a_cleared_field_matches_nothing_but_its_record_is_found_by_another(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    lines(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = lines(store.as_ref()).await?;
     l.upsert("line", "a", json!({"label": "keep", "note": "gone"}))
         .await?;
     l.upsert("line", "a", json!({"note": null})).await?;

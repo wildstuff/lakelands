@@ -69,7 +69,7 @@ check!(
 const WRITERS: usize = 8;
 const EACH: usize = 25;
 
-async fn items(store: &dyn LakeStore) -> Result<(), Failure> {
+async fn items(store: &dyn LakeStore) -> Result<Lake, Failure> {
     declare(
         doors(store).as_ref(),
         &owner(store),
@@ -82,7 +82,7 @@ async fn items(store: &dyn LakeStore) -> Result<(), Failure> {
         ),
     )
     .await?;
-    Ok(())
+    Ok(Lake::of(store))
 }
 
 /// What one write answered: the record, the value it wrote, the position.
@@ -172,8 +172,7 @@ fn get_at(key: &str, as_of: Position) -> Get {
 async fn concurrent_writes_each_land_once_in_one_order_of_the_log(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    items(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = items(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     // Each writer writes its own records, and every writer also writes
     // the one record they share.
@@ -308,8 +307,7 @@ async fn concurrent_writes_each_land_once_in_one_order_of_the_log(
 async fn writes_and_a_declaration_made_at_once_are_ordered_as_one_log(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    items(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = items(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let mut callers: Vec<Caller<'static, Result<Vec<Written>, Failure>>> = (0..4)
         .map(|w| writer(cat.clone(), own.clone(), w, 20, 1))
@@ -419,8 +417,7 @@ async fn read_at(
 async fn a_read_at_a_position_answers_the_same_during_writes_and_after(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    items(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = items(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let done = Arc::new(AtomicBool::new(false));
     let mut writers: Vec<Caller<'static, Result<Vec<Written>, Failure>>> = (0..4)
@@ -492,8 +489,7 @@ async fn a_read_at_a_position_answers_the_same_during_writes_and_after(
 async fn two_feed_readers_polling_during_writes_see_one_log(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    items(store.as_ref()).await?;
-    let l = Lake::of(store.as_ref());
+    let l = items(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let from = store.head().await.must("reading the head")?.next();
     let done = Arc::new(AtomicBool::new(false));

@@ -203,15 +203,11 @@ fn reading() -> TypeDecl {
         ],
     );
     ty.relations = vec![RelationDecl {
-        annotations: Default::default(),
         name: FOLLOWS.into(),
         target: TY.into(),
         cardinality: Cardinality::ManyToMany,
-        inverse: None,
-        via: None,
-        fields: Vec::new(),
         authority: Authority::Source,
-        description: None,
+        ..Default::default()
     }];
     ty
 }
