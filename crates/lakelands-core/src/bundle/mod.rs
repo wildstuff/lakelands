@@ -134,6 +134,22 @@
 //!     invoices: "count()"
 //! ```
 //!
+//! A view's `params` are the values a read binds, each a name and a
+//! storage kind, in the order written; its `where` and measures read them
+//! with `param('name')`:
+//!
+//! ```yaml
+//! name: due_up_to
+//! view:
+//!   source: invoice
+//!   params:
+//!     until: date_time
+//!   where: "due_on <= param('until')"
+//!   group_by: partner
+//!   measures:
+//!     invoices: "count()"
+//! ```
+//!
 //! A function, `functions/gross.yaml`. The backing is `expr` unless
 //! named; an `expr` function carries `expr`, any other backing carries
 //! `config` (any YAML) and no `expr`:

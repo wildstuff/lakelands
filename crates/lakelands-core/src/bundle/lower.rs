@@ -11,11 +11,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{
     Assignment, EmbedDecl, FieldDecl, FieldType, Measure, RelationDecl, StorageKind, TriggerDecl,
-    TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, ViewDecl,
+    TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, ViewDecl, ViewParam,
 };
 use lakelands_api::write::{AnnotationFault, Declaration, FunctionDecl, ObjectSetDecl};
 use lakelands_api::{
-    FieldName, Patch, RelationName, TriggerName, TypeName, ValueTypeName, VerbName,
+    FieldName, ParamName, Patch, RelationName, TriggerName, TypeName, ValueTypeName, VerbName,
 };
 
 use super::doc::{
@@ -417,6 +417,25 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
         .collect();
     let view = doc.view.map(|v| {
         let source = l.type_ref("view", &v.source);
+        let params = v
+            .params
+            .0
+            .into_iter()
+            .filter_map(|(name, kind)| {
+                l.name("parameter", &name);
+                let Some(kind) = kind_named(&kind) else {
+                    l.fail(
+                        Problem::BadFieldType,
+                        format!("view, parameter `{name}`: `{kind}` is not a storage kind"),
+                    );
+                    return None;
+                };
+                Some(ViewParam {
+                    name: ParamName::new(name),
+                    kind,
+                })
+            })
+            .collect();
         let filter = l.opt_cond("view, `where`", v.filter);
         let group_by = l.names("group_by field", v.group_by.0);
         let measures = v
@@ -437,7 +456,7 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
             r#where: filter,
             group_by,
             measures,
-            params: Default::default(),
+            params,
         }
     });
     let t = TypeDecl {

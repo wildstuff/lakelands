@@ -664,7 +664,7 @@ fn the_documented_examples_load() {
         };
         owned.push((format!("{lane}/{}.yaml", owned.len()), body.to_owned()));
     }
-    assert_eq!(owned.len(), 9, "every documented example is found");
+    assert_eq!(owned.len(), 10, "every documented example is found");
     fs.extend(owned.iter().map(|(p, c)| (p.as_str(), c.as_str())));
     load(&fs).expect("the documented examples load");
 }
@@ -1319,4 +1319,45 @@ fn a_triggers_max_depth_lowers_from_its_yaml() {
         })
         .expect("the trigger is declared");
     assert_eq!(t.max_depth, Some(1));
+}
+
+#[test]
+fn a_views_parameters_arrive_in_the_order_they_were_written() {
+    let view = (
+        "types/window.yaml",
+        "name: window\nview:\n  source: invoice\n  params:\n    until: date_time\n    state: text\n  \
+         where: \"due_on <= param('until') and status = param('state')\"\n  group_by: status\n  \
+         measures:\n    invoices: \"count()\"\n",
+    );
+    let bundle = load(&[INVOICE, view]).expect("a view with parameters loads");
+    let params = bundle
+        .declarations
+        .iter()
+        .find_map(|d| match d {
+            Declaration::Type(t) if t.name == "window" => t.view.as_ref().map(|v| v.params.clone()),
+            _ => None,
+        })
+        .expect("the view is declared");
+    let got: Vec<(&str, StorageKind)> = params.iter().map(|p| (p.name.as_str(), p.kind)).collect();
+    assert_eq!(
+        got,
+        [
+            ("until", StorageKind::DateTime),
+            ("state", StorageKind::Text)
+        ]
+    );
+}
+
+#[test]
+fn a_view_parameter_of_no_storage_kind_is_refused_naming_it() {
+    let view = (
+        "types/window.yaml",
+        "name: window\nview:\n  source: invoice\n  params:\n    until: date\n  \
+         where: \"due_on <= param('until')\"\n  measures:\n    invoices: \"count()\"\n",
+    );
+    let e = one(&[INVOICE, view], Problem::BadFieldType);
+    assert!(
+        e.message.contains("`until`") && e.message.contains("`date`"),
+        "{e}"
+    );
 }
