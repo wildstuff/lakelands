@@ -77,6 +77,39 @@ fn declared(c: &Condition, place: Place, at: &str) -> Result<Expr> {
     condition(c, place, at)
 }
 
+/// Whether `t`'s view comes back to `t` by following each view's `source`
+/// through `o`, in which `t` stands for its declared self: the chain, as
+/// "`a` reads `b`, `b` reads `c` and `c` reads `a`", if it does. A cycle
+/// that does not pass through `t` is an earlier one, the reader's to refuse.
+fn source_cycle(
+    o: &Ontology,
+    t: &TypeDecl,
+    v: &lakelands_api::ontology::ViewDecl,
+) -> std::result::Result<(), String> {
+    let mut chain: Vec<&TypeName> = vec![&t.name];
+    let mut next = &v.source;
+    while *next != t.name {
+        if chain.contains(&next) {
+            return Ok(());
+        }
+        let Some(view) = o.ty(next).ok().and_then(|u| u.view.as_deref()) else {
+            return Ok(());
+        };
+        chain.push(next);
+        next = &view.source;
+    }
+    chain.push(&t.name);
+    let links: Vec<String> = chain
+        .windows(2)
+        .map(|w| format!("`{}` reads `{}`", w[0], w[1]))
+        .collect();
+    Err(match links.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => String::new(),
+    })
+}
+
 /// A view's parameters: each named by the rule every name follows, once,
 /// of a scalar kind, and read by its `where` or a measure; and every
 /// `param('name')` they hold, `read`, names one of them.
@@ -395,6 +428,12 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
         }
     }
     if let Some(v) = &t.view {
+        source_cycle(o, t, v).map_err(|chain| {
+            invalid(format!(
+                "{owner}: its view closes a cycle, {chain}; a view may not read itself, \
+                 through other views or directly"
+            ))
+        })?;
         let source = o.ty(&v.source).map_err(|_| {
             invalid(format!(
                 "{owner}: its view reads `{}`, which is not declared",

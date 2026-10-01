@@ -77,6 +77,12 @@ check!(
 );
 
 check!(
+    /// A view may not read itself.
+    SOURCE_CYCLE_REFUSED = a_view_closing_a_cycle_over_source_is_refused_naming_the_chain,
+    "018 and 028: a view may not read itself, directly or through other views, so `declare` refuses a view whose `source` closes a cycle of length 1, 2 or 3, and a set applied whole whose new views close one among themselves, naming the chain; the views keep what they read"
+);
+
+check!(
     /// Ingest keeps a view current.
     CURRENT_AFTER_INGEST = a_view_over_an_ingested_source_is_current_once_the_ingest_is_committed,
     "016 and the ontology: both write doors are folded by the same rules, so a view over ingested records is kept like any other"
@@ -656,5 +662,75 @@ async fn a_search_on_a_view_is_refused_naming_it(store: Arc<dyn LakeStore>) -> R
              match"
         );
     }
+    Ok(())
+}
+
+/// A view over `source`, counting its records by partner.
+fn counted(name: &str, source: &str) -> TypeDecl {
+    let mut t = type_decl(
+        name,
+        vec![
+            field("partner", StorageKind::Text),
+            field("n", StorageKind::Number),
+        ],
+    );
+    t.key = vec![FieldName::from("partner")];
+    t.view = Some(Box::new(ViewDecl {
+        source: TypeName::from(source),
+        params: Vec::new(),
+        r#where: None,
+        group_by: vec![FieldName::from("partner")],
+        measures: vec![Measure {
+            name: FieldName::from("n"),
+            expr: "count()".into(),
+        }],
+    }));
+    t
+}
+
+async fn a_view_closing_a_cycle_over_source_is_refused_naming_the_chain(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use lakelands_api::write::Declaration;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(invoices(Authority::Authored)).await?;
+    write_invoice(store.as_ref(), own, "i1", "p1", "10.00").await?;
+    l.declare(counted("view_a", "invoice")).await?;
+    l.declare(counted("view_b", "view_a")).await?;
+    l.declare(counted("view_c", "view_b")).await?;
+    for (reads, chain) in [
+        ("view_a", vec!["view_a"]),
+        ("view_b", vec!["view_a", "view_b"]),
+        ("view_c", vec!["view_a", "view_b", "view_c"]),
+    ] {
+        let r = cat
+            .declare(own, Declaration::Type(counted("view_a", reads)))
+            .await;
+        ensure!(
+            matches!(&r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
+                if chain.iter().all(|v| message.contains(&format!("`{v}`")))),
+            "`view_a` declared to read `{reads}` closes a cycle of {} view(s); it must be \
+             refused as invalid, naming {chain:?}; declare answered {r:?}",
+            chain.len()
+        );
+    }
+    let set = vec![
+        Declaration::Type(counted("view_x", "view_y")),
+        Declaration::Type(counted("view_y", "view_x")),
+    ];
+    let r = cat.apply(own, set).await;
+    ensure!(
+        matches!(&r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
+            if message.contains("`view_x`") && message.contains("`view_y`")),
+        "a set whose new views `view_x` and `view_y` read each other must be refused as \
+         invalid, naming both; apply answered {r:?}"
+    );
+    let got = view_rows(store.as_ref(), own, "view_c").await?;
+    ensure!(
+        got.len() == 1,
+        "the refused declarations change nothing: `view_c` still reads `view_b`, which reads \
+         `view_a`, which reads the invoices, and holds one partner; it holds {got:?}"
+    );
     Ok(())
 }
