@@ -115,6 +115,8 @@ pub struct Reader<'a> {
     /// The parameters this read binds, by the view they bind: as given, in
     /// canonical form, and as the literals `param()` is replaced by.
     bound: RefCell<BTreeMap<TypeName, Bound>>,
+    /// The views being computed, outermost first.
+    computing: RefCell<Vec<TypeName>>,
 }
 
 mod measures;
@@ -224,6 +226,7 @@ impl<'a> Reader<'a> {
             now: now(),
             computed: RefCell::default(),
             bound: RefCell::default(),
+            computing: RefCell::default(),
         })
     }
 
@@ -530,8 +533,35 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// A view type's records, computed.
+    /// A view type's records, computed. A view met again while it is
+    /// still being computed is a cycle over `source` that came in with a
+    /// log `declare` did not check; it is refused, naming the chain, never
+    /// followed.
     fn view_records(
+        &self,
+        decl: &TypeDecl,
+        v: &lakelands_api::ontology::ViewDecl,
+        filter: Option<&Expr>,
+    ) -> Result<Vec<StoredRecord>> {
+        if let Some(at) = self.computing.borrow().iter().position(|t| *t == decl.name) {
+            let chain = self.computing.borrow()[at..]
+                .iter()
+                .chain(std::iter::once(&decl.name))
+                .map(|t| format!("`{t}`"))
+                .collect::<Vec<_>>()
+                .join(" reads ");
+            return Err(invalid(format!(
+                "view `{}` reads itself through other views ({chain}), so it has no records",
+                decl.name
+            )));
+        }
+        self.computing.borrow_mut().push(decl.name.clone());
+        let records = self.computed_view(decl, v, filter);
+        self.computing.borrow_mut().pop();
+        records
+    }
+
+    fn computed_view(
         &self,
         decl: &TypeDecl,
         v: &lakelands_api::ontology::ViewDecl,

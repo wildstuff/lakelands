@@ -86,6 +86,13 @@ check!(
 );
 
 check!(
+    /// A cycle of views from a log is refused on read.
+    IMPORTED_VIEW_CYCLE = a_cycle_of_views_from_an_imported_log_is_refused_on_read,
+    "018 and 030: a log can bring in a cycle of views over `source` that `declare` would have refused; a read of a view on it is refused as invalid, naming the chain, the process goes on, and a view off the cycle reads as before",
+    given
+);
+
+check!(
     /// A line whose `context` carries `cause` is refused.
     IMPORT_CONTEXT_CAUSE = an_import_refuses_a_context_carrying_cause_naming_it,
     "021, extended, and log-format §1.1: a host's cause is the envelope's and never written inside `context`; an export whose line carries `cause` in its `context`, its hash made right, is refused on import naming the member, and a write through the doors carries no cause",
@@ -1021,6 +1028,114 @@ async fn an_import_refuses_a_context_carrying_cause_naming_it(
         why.contains("`context` carries `cause`"),
         "an export whose `context` carries `cause` must be refused naming it; it was refused \
          with: {why}"
+    );
+    Ok(())
+}
+
+/// A view over `source`, counting its records by `k`.
+fn tally_view(name: &str, source: &str) -> lakelands_api::ontology::TypeDecl {
+    let mut t = type_decl(
+        name,
+        vec![
+            field("k", lakelands_api::ontology::StorageKind::Text),
+            field("n", lakelands_api::ontology::StorageKind::Number),
+        ],
+    );
+    t.key = vec!["k".into()];
+    t.view = Some(Box::new(lakelands_api::ontology::ViewDecl {
+        source: source.into(),
+        params: Vec::new(),
+        r#where: None,
+        group_by: vec!["k".into()],
+        measures: vec![lakelands_api::ontology::Measure {
+            name: "n".into(),
+            expr: "count()".into(),
+        }],
+    }));
+    t
+}
+
+async fn a_cycle_of_views_from_an_imported_log_is_refused_on_read(
+    store: Arc<dyn LakeStore>,
+    given: crate::conformance::Given,
+) -> Result<(), Failure> {
+    let scratch = Scratch::new(given.scratch.clone());
+    let l = Lake::of(store.as_ref());
+    let mut tally = type_decl(
+        "tally",
+        vec![field("k", lakelands_api::ontology::StorageKind::Text)],
+    );
+    tally.key = vec!["k".into()];
+    l.declare(tally).await?;
+    l.upsert("tally", "x", json!({"k": "x"})).await?;
+    l.declare(tally_view("view_a", "tally")).await?;
+    l.declare(tally_view("view_b", "view_a")).await?;
+    l.declare(tally_view("view_c", "tally")).await?;
+    // The last event declares `view_a` again; the export's copy of it is
+    // made to read `view_b`, closing a cycle no door would declare.
+    let mut again = tally_view("view_a", "tally");
+    again.description = Some("view_a, declared again".into());
+    l.declare(again).await?;
+    let from = scratch.dir("from");
+    write(store.as_ref(), &from).await?;
+    let file = files(&from)?
+        .pop()
+        .ok_or_else(|| Failure::new("the export holds no file"))?;
+    let mut lines = lines_of(&from, &file)?;
+    let last = lines
+        .last_mut()
+        .ok_or_else(|| Failure::new("the export's last file holds no line"))?;
+    let mut failure = None;
+    *last = rehashed(last, |e| {
+        if e["body"]["kind"] != "declared" || e["body"]["declaration"]["name"] != "view_a" {
+            failure = Some("the export's last event does not declare `view_a`");
+            return;
+        }
+        e["body"]["declaration"]["view"]["source"] = json!("view_b");
+        match serde_json::from_value::<lakelands_api::write::Declaration>(
+            e["body"]["declaration"].clone(),
+        )
+        .ok()
+        .and_then(|d| match d {
+            lakelands_api::write::Declaration::Type(t) => {
+                lakelands_api::shape::schema_hash(&t).ok()
+            }
+            _ => None,
+        }) {
+            Some(hash) => e["body"]["schema_hash"] = json!(hash),
+            None => failure = Some("the rewritten declaration has no schema hash"),
+        }
+    })?;
+    if let Some(f) = failure {
+        return Err(Failure::new(f));
+    }
+    rewrite(&from, &file, &lines)?;
+    let crate::conformance::ImportedLake {
+        store: imported, ..
+    } = (given.import)(from, store.lake().clone(), None, import_seams())
+        .await
+        .map_err(|e| Failure::new(format!("importing the export with the cycle: {e}")))?;
+    let cat = doors(imported.as_ref());
+    let own = owner(imported.as_ref());
+    for view in ["view_a", "view_b"] {
+        let r = cat
+            .find(&own, &view.into(), lakelands_api::read::Find::default())
+            .await;
+        ensure!(
+            matches!(&r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
+                if message.contains("`view_a`") && message.contains("`view_b`")),
+            "`{view}` reads itself through the other view in the imported log, so a read of it \
+             must be refused as invalid, naming both; it answered {r:?}"
+        );
+    }
+    let off = cat
+        .find(&own, &"view_c".into(), lakelands_api::read::Find::default())
+        .await
+        .must("reading `view_c`, which is off the cycle")?;
+    ensure!(
+        matches!(&off.data, lakelands_api::Found::Records { rows, .. } if rows.len() == 1),
+        "`view_c` is off the cycle and counts the one tally; it answered {:?}",
+        off.data
     );
     Ok(())
 }
