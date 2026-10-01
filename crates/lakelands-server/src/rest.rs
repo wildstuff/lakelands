@@ -1184,6 +1184,25 @@ async fn tail(
 mod tests {
     use super::*;
 
+    /// A reaction past a trigger's `max_depth` is refused by the store,
+    /// never by a door caller, whose writes carry no cause; when REST
+    /// answers it, it is 422, `too_deep`, naming the trigger.
+    #[test]
+    fn a_too_deep_refusal_is_422_naming_the_trigger() {
+        let e = Error::Refused {
+            field: Some("once".into()),
+            reason: Refusal::TooDeep { max: 1 },
+        };
+        assert_eq!(status_of(&e), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = failure_json(&e, &Failure::from(e.clone()));
+        assert_eq!(body["error"], "refused", "{body}");
+        assert_eq!(body["field"], "once", "{body}");
+        assert_eq!(body["reason"]["refusal"], "too_deep", "{body}");
+        assert_eq!(body["reason"]["max"], 1, "{body}");
+        let what = body["what"].as_str().unwrap_or_default();
+        assert!(what.contains("`once`"), "{what}");
+    }
+
     #[test]
     fn the_short_order_form_reads_fields_provenance_and_latest() {
         assert_eq!(

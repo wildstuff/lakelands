@@ -131,6 +131,16 @@ declare verbs, triggers, object sets and the rest. Each body member is
 the declaration as the contract writes it, and a member the route does
 not take is refused.
 
+A trigger's `max_depth` caps the reactions to its firings: writes a
+host makes naming a firing as their cause
+(`docs/decisions/021-the-write-context-belongs-to-the-host.md`). A
+request through REST or MCP is never one, since a door's caller sends
+no cause, so the host meets that refusal, not the doors; said through
+a door it would be `too_deep` (422), naming the trigger in `field`. A
+`max_depth` above the lake's `max_reactive_depth` is refused at
+`schema/declare` as `invalid` (422), naming the trigger and both
+numbers.
+
 ### Query parameters
 
 A query parameter carries the value the door's argument of that name
