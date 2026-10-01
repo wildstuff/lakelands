@@ -1579,6 +1579,7 @@ impl Worker {
                     key: key.into(),
                     with_meta: false,
                     at: ReadAt::default(),
+                    params: Default::default(),
                 };
                 let r = self
                     .remote
@@ -2284,6 +2285,7 @@ async fn drive(plan: &Plan, dir: &Path, report: &mut Report) -> Result<(), Strin
                     key: shared.contended.as_str().into(),
                     with_meta: false,
                     at: ReadAt::default(),
+                    params: Default::default(),
                 },
             )
             .await

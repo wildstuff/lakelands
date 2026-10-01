@@ -938,6 +938,7 @@ async fn every_hit_is_the_record_get_answers_in_its_declared_shape(
                             key: RecordKey::from(hit.record.key.as_str()),
                             with_meta: false,
                             at: ReadAt::default(),
+                            params: Default::default(),
                         },
                     )
                     .await

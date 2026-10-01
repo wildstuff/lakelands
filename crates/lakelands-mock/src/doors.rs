@@ -779,7 +779,11 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
         description: d.description.clone(),
         label: d.label.clone(),
         language: d.language.clone(),
-        view: d.view.clone().filter(|v| view_visible(st, who, v)),
+        view: d
+            .view
+            .clone()
+            .filter(|v| view_visible(st, who, v))
+            .map(|v| *v),
         fields,
         relations: d
             .relations

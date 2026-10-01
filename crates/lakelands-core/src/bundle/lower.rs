@@ -437,6 +437,7 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
             r#where: filter,
             group_by,
             measures,
+            params: Default::default(),
         }
     });
     let t = TypeDecl {
@@ -445,7 +446,7 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
         key,
         fields,
         relations,
-        view,
+        view: view.map(Box::new),
         valid_from: doc.valid_from.map(FieldName::new),
         valid_to: doc.valid_to.map(FieldName::new),
         field_meta: doc.field_meta,

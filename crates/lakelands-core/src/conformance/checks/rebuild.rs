@@ -94,7 +94,7 @@ async fn a_rebuilt_projection_answers_every_read_as_the_live_one_did(
         ],
     );
     view.key = vec![FieldName::from("partner")];
-    view.view = Some(ViewDecl {
+    view.view = Some(Box::new(ViewDecl {
         source: TypeName::from("invoice"),
         r#where: None,
         group_by: vec![FieldName::from("partner")],
@@ -102,7 +102,8 @@ async fn a_rebuilt_projection_answers_every_read_as_the_live_one_did(
             name: FieldName::from("total"),
             expr: "sum(amount)".into(),
         }],
-    });
+        params: Default::default(),
+    }));
 
     let mut positions = Vec::new();
     for (nr, partner, amount) in [("i1", "p1", "10.00"), ("i2", "p1", "5.50")] {

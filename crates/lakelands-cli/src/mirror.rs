@@ -1399,6 +1399,7 @@ impl Mirror {
             key: key.clone(),
             with_meta: false,
             at: at(p),
+            params: Default::default(),
         };
         match scat.get(&self.reader, s, get).await {
             Ok(r) => Ok(Some(r.data)),
@@ -1421,6 +1422,7 @@ impl Mirror {
             key: key.clone(),
             with_meta: false,
             at: ReadAt::default(),
+            params: Default::default(),
         };
         match tcat.get(&who, t, get).await {
             Ok(r) => Ok(Some(r.data)),
@@ -1441,6 +1443,7 @@ impl Mirror {
             key: key.clone(),
             with_meta: false,
             at: ReadAt::default(),
+            params: Default::default(),
         };
         match tcat.get(&who, t, get).await {
             Ok(_) => Ok(Some(false)),

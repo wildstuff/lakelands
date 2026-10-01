@@ -61,6 +61,7 @@ pub fn func_name(f: Func) -> &'static str {
         Func::SeenAt => "seen_at",
         Func::Previous => "previous",
         Func::Setting => "setting",
+        Func::Param => "param",
         Func::Changed => "changed",
         Func::Retired => "retired",
         Func::Coalesce => "coalesce",
@@ -86,13 +87,14 @@ pub fn func_name(f: Func) -> &'static str {
     }
 }
 
-const FUNCS: [Func; 28] = [
+const FUNCS: [Func; 29] = [
     Func::Now,
     Func::Today,
     Func::KnownAt,
     Func::SeenAt,
     Func::Previous,
     Func::Setting,
+    Func::Param,
     Func::Changed,
     Func::Retired,
     Func::Coalesce,
@@ -130,6 +132,7 @@ pub fn arity(f: Func) -> (usize, Option<usize>) {
         | Func::SeenAt
         | Func::Previous
         | Func::Setting
+        | Func::Param
         | Func::Changed
         | Func::Lower
         | Func::Upper
@@ -504,7 +507,7 @@ impl Parser {
                 self.pos = start;
                 return Err(self.err(format!("`{first}` takes a field name")));
             }
-            if func == Func::Setting
+            if matches!(func, Func::Setting | Func::Param)
                 && !matches!(
                     args.first(),
                     Some(Expr::Lit {
@@ -513,7 +516,11 @@ impl Parser {
                 )
             {
                 self.pos = start;
-                return Err(self.err("`setting` takes a quoted key, as in setting('vat_rate')"));
+                return Err(self.err(if func == Func::Param {
+                    "`param` takes a quoted name, as in param('anchor')"
+                } else {
+                    "`setting` takes a quoted key, as in setting('vat_rate')"
+                }));
             }
             return Ok(Expr::Call { func, args });
         }

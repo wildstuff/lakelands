@@ -259,7 +259,11 @@ fn type_description(
         description: t.description.clone(),
         label: t.label.clone(),
         language: t.language.clone(),
-        view: t.view.clone().filter(|v| view_visible(v, declared, who)),
+        view: t
+            .view
+            .clone()
+            .filter(|v| view_visible(v, declared, who))
+            .map(|v| *v),
         annotations: t.annotations.clone(),
         relations: t
             .relations

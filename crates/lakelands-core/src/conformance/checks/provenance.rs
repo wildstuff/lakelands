@@ -80,6 +80,7 @@ async fn valid_at_and_as_of_combine_and_neither_stands_in_for_the_other(
                         key: "c".into(),
                         with_meta: false,
                         at: at(as_of, valid),
+                        params: Default::default(),
                     },
                 )
                 .await;
@@ -224,6 +225,7 @@ async fn every_field_carries_its_own_provenance(store: Arc<dyn LakeStore>) -> Re
                 key: "i".into(),
                 with_meta: false,
                 at: ReadAt::default(),
+                params: Default::default(),
             },
         )
         .await

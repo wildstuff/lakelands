@@ -306,7 +306,7 @@ async fn a_view_record_is_keyed_by_its_group_by_fields(
         ],
     );
     view.key = vec![FieldName::from("partner"), FieldName::from("region")];
-    view.view = Some(ViewDecl {
+    view.view = Some(Box::new(ViewDecl {
         source: TypeName::from("invoice"),
         r#where: None,
         group_by: vec![FieldName::from("partner"), FieldName::from("region")],
@@ -314,7 +314,8 @@ async fn a_view_record_is_keyed_by_its_group_by_fields(
             name: FieldName::from("invoices"),
             expr: "count()".into(),
         }],
-    });
+        params: Default::default(),
+    }));
     l.declare(view).await?;
     for (k, partner, region) in [
         ("1", "acme", "north"),
@@ -357,6 +358,7 @@ fn pattern(ty: &str, key: Option<&str>, filter: Option<&str>, steps: Vec<Step>) 
             key: key.map(Into::into),
             filter: filter.map(Into::into),
             search: None,
+            params: Default::default(),
         },
         project: if steps.is_empty() {
             Projection::Graph

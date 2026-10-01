@@ -1069,6 +1069,7 @@ impl<'a> Reader<'a> {
                     key: key.clone(),
                     with_meta: false,
                     at: ReadAt::default(),
+                    params: Default::default(),
                 },
             ) {
                 Ok(_) => self.get_one(&p.start.ty, key)?.into_iter().collect(),

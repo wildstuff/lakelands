@@ -175,6 +175,7 @@ fn measure(ty: &str, steps: Vec<Step>, project: Projection) -> Pattern {
             key: None,
             filter: None,
             search: None,
+            params: Default::default(),
         },
         steps,
         to: None,

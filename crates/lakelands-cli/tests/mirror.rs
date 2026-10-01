@@ -333,6 +333,7 @@ impl Two {
             key: RecordKey::from(key),
             with_meta: true,
             at: ReadAt::default(),
+            params: Default::default(),
         };
         match doors(self.main.as_ref())
             .get(&owner(self.main.as_ref()), &TypeName::from(ty), get)
@@ -478,6 +479,7 @@ async fn state_of(crm: &dyn LakeStore, ty: &str, key: &str) -> Position {
                 key: RecordKey::from(key),
                 with_meta: true,
                 at: ReadAt::default(),
+                params: Default::default(),
             },
         )
         .await
@@ -587,6 +589,7 @@ async fn a_held_record_crosses_only_to_a_mirror_that_may_see_held_records() {
                     key: RecordKey::from("c1"),
                     with_meta: false,
                     at: ReadAt::default(),
+                    params: Default::default(),
                 };
                 let seen = doors(two.main.as_ref()).get(&plain, &ty, get).await;
                 assert!(matches!(seen, Err(Error::NotFound { .. })), "{seen:?}");

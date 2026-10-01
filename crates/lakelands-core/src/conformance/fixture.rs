@@ -234,7 +234,7 @@ pub fn partner_totals(name: &str, total: StorageKind) -> TypeDecl {
     };
     TypeDecl {
         key: vec![FieldName::from("partner")],
-        view: Some(ViewDecl {
+        view: Some(Box::new(ViewDecl {
             source: TypeName::from("invoice"),
             r#where: None,
             group_by: vec![FieldName::from("partner")],
@@ -242,7 +242,8 @@ pub fn partner_totals(name: &str, total: StorageKind) -> TypeDecl {
                 measure("total", "sum(amount)"),
                 measure("invoices", "count()"),
             ],
-        }),
+            params: Default::default(),
+        })),
         ..type_decl(
             name,
             vec![
@@ -292,6 +293,7 @@ pub fn get_at(key: &str, as_of: Option<Position>) -> Get {
             as_of,
             valid_at: None,
         },
+        params: Default::default(),
     }
 }
 

@@ -77,6 +77,7 @@ fn get(k: &str) -> Get {
         key: RecordKey::from(k),
         with_meta: false,
         at: Default::default(),
+        params: Default::default(),
     }
 }
 

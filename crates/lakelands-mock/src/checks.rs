@@ -415,6 +415,7 @@ fn get(k: &str) -> Get {
         key: key(k),
         with_meta: false,
         at: ReadAt::default(),
+        params: Default::default(),
     }
 }
 
@@ -846,7 +847,7 @@ pub async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) {
             &invoice.label,
             &invoice.language,
             &invoice.description,
-            &invoice.view
+            &invoice.view.clone().map(|v| *v)
         )
     );
     let d = f
@@ -1553,6 +1554,7 @@ pub async fn an_ingested_upstream_is_answered_per_field(store: Arc<dyn LakeStore
                 key: key("INV-9"),
                 with_meta: true,
                 at: ReadAt::default(),
+                params: Default::default(),
             },
         )
         .await
@@ -2537,7 +2539,7 @@ pub async fn schema_hashes_and_proposal_ids_have_the_stores_form(store: Arc<dyn 
             },
         ],
         relations: Vec::new(),
-        view: Some(ViewDecl {
+        view: Some(Box::new(ViewDecl {
             source: INVOICE.into(),
             r#where: Some("status != 'paid'  and not (amount is null)".into()),
             group_by: vec!["partner".into()],
@@ -2551,7 +2553,8 @@ pub async fn schema_hashes_and_proposal_ids_have_the_stores_form(store: Arc<dyn 
                     expr: "count() * -1.50".into(),
                 },
             ],
-        }),
+            params: Default::default(),
+        })),
         valid_from: None,
         valid_to: None,
         field_meta: true,
@@ -3758,7 +3761,7 @@ pub async fn an_order_by_latest_takes_no_field_and_no_view(store: Arc<dyn LakeSt
         key: vec!["partner".into()],
         fields: vec![text("partner"), text("count")],
         relations: Vec::new(),
-        view: Some(ViewDecl {
+        view: Some(Box::new(ViewDecl {
             source: INVOICE.into(),
             r#where: None,
             group_by: vec!["partner".into()],
@@ -3766,7 +3769,8 @@ pub async fn an_order_by_latest_takes_no_field_and_no_view(store: Arc<dyn LakeSt
                 name: "count".into(),
                 expr: "count()".into(),
             }],
-        }),
+            params: Default::default(),
+        })),
         valid_from: None,
         valid_to: None,
         field_meta: true,

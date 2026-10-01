@@ -114,6 +114,10 @@ name!(
     /// A trigger declared in a lake's ontology.
     TriggerName
 );
+name!(
+    /// A parameter a view declares and a read binds.
+    ParamName
+);
 
 /// The log coordinate: the exact place in a lake's history an answer
 /// reflects. Positions start at 0 (the lake's first event) and have no

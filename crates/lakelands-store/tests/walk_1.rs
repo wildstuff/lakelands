@@ -161,6 +161,7 @@ async fn answer(
                         as_of,
                         valid_at: None,
                     },
+                    params: Default::default(),
                 },
             )
             .await
@@ -270,6 +271,7 @@ async fn the_walks_question_has_the_answers_the_script_expects() {
                 key: "INV-1001".into(),
                 with_meta: true,
                 at: ReadAt::default(),
+                params: Default::default(),
             },
         )
         .await

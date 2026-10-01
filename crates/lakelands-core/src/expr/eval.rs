@@ -126,6 +126,12 @@ pub trait Scope {
         None
     }
 
+    /// The value a read binds to the view parameter of this name. `None`
+    /// outside a view's `where` and `measures`.
+    fn param(&self, _name: &str) -> Option<Value> {
+        None
+    }
+
     /// The clock `now()` and `today()` read.
     fn now(&self) -> Timestamp;
 
@@ -369,7 +375,7 @@ pub fn check(e: &Expr, place: Place) -> Result<()> {
                 {
                     return err(format!("{name}() takes one field name"));
                 }
-                Func::Setting
+                Func::Setting | Func::Param
                     if !matches!(
                         args.first(),
                         Some(Expr::Lit {
@@ -377,7 +383,7 @@ pub fn check(e: &Expr, place: Place) -> Result<()> {
                         })
                     ) =>
                 {
-                    return err("setting() takes a quoted key");
+                    return err(format!("{name}() takes a quoted name"));
                 }
                 Func::DateBucket => {
                     let unit = match args.get(1) {
@@ -719,6 +725,10 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
         Func::Setting => match &vals[0] {
             Val::Text(key) => scope.setting(key).map_or(Val::Null, |v| from_json(&v)),
             other => return err(format!("setting() takes a key, not {}", describe(other))),
+        },
+        Func::Param => match &vals[0] {
+            Val::Text(name) => scope.param(name).map_or(Val::Null, |v| from_json(&v)),
+            other => return err(format!("param() takes a name, not {}", describe(other))),
         },
         Func::Lower => Val::Text(s(0).to_lowercase()),
         Func::Upper => Val::Text(s(0).to_uppercase()),

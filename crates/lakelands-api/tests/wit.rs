@@ -30,7 +30,7 @@ use lakelands_api::location::Limits;
 use lakelands_api::ontology::{
     Assignment, Authority, Cardinality, EmbedDecl, FieldDecl, FieldType, Measure, OnInputChange,
     RelationDecl, Risk, StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
-    ViewDecl,
+    ViewDecl, ViewParam,
 };
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{
@@ -285,7 +285,7 @@ fn type_decl() -> TypeDecl {
         key: vec!["f".into()],
         fields: vec![field_decl()],
         relations: vec![relation_decl()],
-        view: Some(view_decl()),
+        view: Some(Box::new(view_decl())),
         valid_from: Some("f".into()),
         valid_to: Some("f".into()),
         language: Some("en".into()),
@@ -301,6 +301,14 @@ fn view_decl() -> ViewDecl {
         r#where: Some(cond()),
         group_by: vec!["f".into()],
         measures: vec![measure()],
+        params: vec![view_param()],
+    }
+}
+
+fn view_param() -> ViewParam {
+    ViewParam {
+        name: "anchor".into(),
+        kind: StorageKind::DateTime,
     }
 }
 
@@ -309,6 +317,10 @@ fn measure() -> Measure {
         name: "m".into(),
         expr: cond(),
     }
+}
+
+fn params() -> lakelands_api::Params {
+    [("anchor".into(), json!("2026-06-30"))].into()
 }
 
 fn read_at() -> ReadAt {
@@ -596,6 +608,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
         ("embed_decl", members(&embed_decl())),
         ("relation_decl", members(&relation_decl())),
         ("measure", members(&measure())),
+        ("view_param", members(&view_param())),
         ("view_decl", members(&view_decl())),
         ("type_decl", members(&type_decl())),
         (
@@ -679,6 +692,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     aggregate: Some(aggregate()),
                     with_meta: true,
                     at: read_at(),
+                    params: params(),
                 }),
                 at,
                 &["at"],
@@ -698,6 +712,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     key: "k".into(),
                     with_meta: true,
                     at: read_at(),
+                    params: params(),
                 }),
                 at,
                 &["at"],
@@ -754,6 +769,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 key: Some("k".into()),
                 filter: Some(cond()),
                 search: Some(search_mode()),
+                params: params(),
             }),
         ),
         (
@@ -775,6 +791,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                         key: None,
                         filter: None,
                         search: None,
+                        params: Default::default(),
                     },
                     steps: vec![],
                     to: Some(("partner".into(), "k".into())),
