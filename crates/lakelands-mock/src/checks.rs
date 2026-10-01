@@ -209,6 +209,7 @@ pub fn fixture() -> Vec<Declaration> {
             },
         ],
         relations: vec![RelationDecl {
+            derived: None,
             annotations: Default::default(),
             name: "billed_by".into(),
             target: PARTNER.into(),
@@ -3755,6 +3756,7 @@ pub async fn a_trigger_watches_a_link_type_and_not_a_reference_relations(
         key: Vec::new(),
         fields: vec![text("title")],
         relations: vec![RelationDecl {
+            derived: None,
             annotations: Default::default(),
             name: "signed_by".into(),
             target: PARTNER.into(),

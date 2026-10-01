@@ -12,8 +12,8 @@ export or a SQLite lake directory holds it instead, reading only
 `<dir>/log/` (log-format §4.2): canonical lines each ending in a line
 feed, positions consecutive from 0 and naming their files in 20 digits,
 the hash chain from 64 zeros, every checkpoint against the position,
-the hash and the files before it, format versions from 1 to 5 that
-never go down, a declaration's `annotations` only from version 5 on, a proposed declaration or migration only from version 4 on, `upstream` only from version 3 on and only on a
+the hash and the files before it, format versions from 1 to 6 that
+never go down, a derived relation only from version 6 on, a declaration's `annotations` only from version 5 on, a proposed declaration or migration only from version 4 on, `upstream` only from version 3 on and only on a
 `record_ingested` event, and every `known_at` in its one form and never before
 the `known_at` before it (log-format §1.3). It prints one line
 per file and the last position and hash, or the position where the
@@ -125,8 +125,25 @@ def check(ok, what):
         sys.exit(1)
 
 
-FIRST_FORMAT, NEWEST_FORMAT = 1, 5
+FIRST_FORMAT, NEWEST_FORMAT = 1, 6
 ONE_FORM = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z")
+
+
+def derives(body):
+    """Whether a declaration the event body carries holds a derived relation."""
+    decls = []
+    kind = body.get("kind")
+    if kind == "declared":
+        decls = [body["declaration"]]
+    elif kind == "migrated":
+        decls = [body["migration"]["to"]]
+    elif kind == "write_proposed":
+        w = body.get("write", {})
+        if w.get("write") == "declare":
+            decls = w["declarations"]
+        elif w.get("write") == "migrate":
+            decls = [w["migration"]["to"]]
+    return any("derived" in r for d in decls for r in d.get("relations", []))
 
 
 def annotated(body):
@@ -189,6 +206,8 @@ def verify_dir(root):
             proposed = event["body"].get("write", {}).get("write") if event["body"].get("kind") == "write_proposed" else None
             need(proposed not in ("declare", "migrate") or v >= 4,
                  f"a format {v} event proposes a declaration or a migration, which format 4 added")
+            need(not derives(event["body"]) or v >= 6,
+                 f"a format {v} event declares a derived relation, which format 6 added")
             need(not annotated(event["body"]) or v >= 5,
                  f"a format {v} event carries `annotations` in a declaration, which format 5 added")
             need("cause" not in event.get("context", {}),
@@ -343,6 +362,22 @@ def main():
     check(sha(canonical(body)) == negative5["hash"], "v5.json: the negative line's hash is its own")
     check(negative5["v"] == 4 and annotated(negative5["body"]),
           "v5.json: the negative line carries annotations in format 4, which a reader refuses")
+    v6 = json.loads((HERE / "v6.json").read_text("utf-8"))
+    prev = v5["hashes"][-1]
+    for line, want in zip(v6["lines"], v6["hashes"]):
+        event = json.loads(line)
+        check(canonical(event) == line.encode("utf-8"), f"v6.json: position {event['position']} is canonical")
+        check(event["v"] == 6 and derives(event["body"]),
+              f"v6.json: position {event['position']} is a format 6 declaration of a derived relation")
+        body = {k: v for k, v in event.items() if k != "hash"}
+        check(sha(canonical(body)) == event["hash"] == want, f"v6.json: hash {want[:12]}…")
+        check(event["prev"] == prev, f"v6.json: position {event['position']} follows the one before it")
+        prev = event["hash"]
+    negative6 = json.loads(v6["negative"])
+    body = {k: v for k, v in negative6.items() if k != "hash"}
+    check(sha(canonical(body)) == negative6["hash"], "v6.json: the negative line's hash is its own")
+    check(negative6["v"] == 5 and derives(negative6["body"]),
+          "v6.json: the negative line declares a derived relation in format 5, which a reader refuses")
     misplaced5 = json.loads(v5["misplaced"])
     body = {k: v for k, v in misplaced5.items() if k != "hash"}
     check(sha(canonical(body)) == misplaced5["hash"], "v5.json: the misplaced line's hash is its own")

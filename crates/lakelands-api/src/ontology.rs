@@ -392,6 +392,32 @@ pub struct RelationDecl {
     /// The host's own marks; never read by Lakelands.
     #[serde(default, skip_serializing_if = "Annotations::is_empty")]
     pub annotations: Annotations,
+    /// Instead of a carrier: the fields whose values connect the two
+    /// types. The store resolves it when a walk reads it and stores no
+    /// edge (`docs/decisions/044-a-relation-may-be-derived-from-matching-values.md`).
+    /// Not part of the schema hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived: Option<Derived>,
+}
+
+/// What connects the records of a derived relation: every pair of fields
+/// holds the same non-null value on both sides.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Derived {
+    /// The pairs, one or more.
+    #[serde(rename = "match")]
+    pub pairs: Vec<MatchPair>,
+}
+
+/// One pair of a derived relation's match.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MatchPair {
+    /// A field of the owning type.
+    pub from: FieldName,
+    /// A field of the target type, of the same storage kind.
+    pub to: FieldName,
 }
 
 impl RelationDecl {

@@ -91,6 +91,28 @@ impl<'a> Seen<'a> {
         for (owner, r) in decls {
             let out = matches!(walk, Walk::Out | Walk::Both) && owner == near.0;
             let inn = matches!(walk, Walk::In | Walk::Both) && r.target == near.0;
+            if let Some(d) = &r.derived {
+                let Some(here) = self.st.live(&near.0, &near.1) else {
+                    continue;
+                };
+                for rec in self.st.records.values().filter(|x| !x.retired) {
+                    if out && rec.ty == r.target && super::derived_match(&d.pairs, here, rec) {
+                        raw.push((
+                            near.clone(),
+                            r.name.clone(),
+                            (r.target.clone(), rec.key.clone()),
+                        ));
+                    }
+                    if inn && rec.ty == owner && super::derived_match(&d.pairs, rec, here) {
+                        raw.push((
+                            (owner.clone(), rec.key.clone()),
+                            r.name.clone(),
+                            near.clone(),
+                        ));
+                    }
+                }
+                continue;
+            }
             match &r.via {
                 Some(via) => {
                     if out

@@ -271,6 +271,13 @@ masking are the store's.
   `scan.restricted` is set;
 - for a valid-timed type and a `scan.valid_at`, it is valid at that
   instant as `lakelands_core::valid_time::record_holds` decides;
+- it holds each of `scan.equal`'s values exactly: the field's stored
+  JSON value is identical to the one given, and never null
+  (`lakelands_core::engines::holds_exactly`). This is identity, not the
+  evaluator's `=`: a derived relation's walk asks for its matches this
+  way (`docs/decisions/044-a-relation-may-be-derived-from-matching-values.md`).
+  At the head an engine may look a string value up in its exact-text
+  index (`lakelands_core::engines::text_lookup`);
 - `scan.filter` holds for it, exactly as the one evaluator
   (`lakelands_core::expr::holds`) decides over the record's own fields,
   with no settings and no clock. A filter the evaluator cannot evaluate

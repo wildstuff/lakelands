@@ -54,6 +54,12 @@ engine_check!(
 );
 
 engine_check!(
+    /// A scan's `equal` selects identical values only.
+    EQUAL_IS_IDENTITY = a_scan_with_equal_answers_exactly_the_identical_values,
+    "044 and seams §scan: a scan's `equal` selects the records whose field holds exactly the JSON value, never the expression's `=` (`'010'` is not `'10'`, text is not a number, an instant in another written form is not the same), never a null, at the head and at an earlier position alike"
+);
+
+engine_check!(
     /// A scan's filter selects exactly what the evaluator selects.
     FILTER_AS_EVALUATOR = scan_filters_exactly_as_the_evaluator_including_mixed_kinds_and_errors,
     "seams §scan: an engine selects exactly the records the one evaluator selects, comparisons across kinds included, and a filter that errors for a record does not select it"
@@ -1596,6 +1602,57 @@ fn a_records_edges_at_the_head_read_its_links_not_the_type(
              rulebook {read} records of the {N} in the type: at the head a record's edges are \
              found from the record, not by reading the type"
         );
+    }
+    Ok(())
+}
+
+fn a_scan_with_equal_answers_exactly_the_identical_values(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    fold(engine, 1, |p| {
+        for (key, v) in [
+            ("a", json!("10")),
+            ("b", json!("010")),
+            ("c", json!(10)),
+            ("d", json!("10.0")),
+            ("e", json!("2026-01-01T00:00:00Z")),
+            ("f", json!("2026-01-01T00:00:00.000000Z")),
+            ("g", json!("10")),
+        ] {
+            p.put_record(&record("t", key, json!({"v": v}), 1))?;
+        }
+        p.put_record(&record("t", "h", json!({}), 1))
+    })?;
+    // Later, `g` moves away: the head and position 1 differ.
+    fold(engine, 2, |p| {
+        p.put_record(&record("t", "g", json!({"v": "11"}), 2))
+    })?;
+    let ty = TypeName::from("t");
+    for (at, head_g) in [(None, false), (Some(Position(1)), true)] {
+        let v = view(engine, at)?;
+        for (value, expected) in [
+            (json!("10"), if head_g { vec!["a", "g"] } else { vec!["a"] }),
+            (json!("010"), vec!["b"]),
+            (json!(10), vec!["c"]),
+            (json!("2026-01-01T00:00:00Z"), vec!["e"]),
+            (json!(null), vec![]),
+        ] {
+            let got = keys(
+                &v.scan(
+                    &ty,
+                    &Scan {
+                        equal: vec![("v".into(), value.clone())],
+                        ..scan_all()
+                    },
+                )
+                .must(&format!("scanning for exactly {value} at {at:?}"))?,
+            );
+            ensure!(
+                got == expected,
+                "a scan for exactly {value} at {at:?} selected {got:?}; identity selects \
+                 {expected:?}"
+            );
+        }
     }
     Ok(())
 }

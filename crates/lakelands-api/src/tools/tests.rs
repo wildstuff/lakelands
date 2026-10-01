@@ -299,6 +299,7 @@ fn colliding_and_overlong_names_are_reported() {
 fn linked_invoice() -> (TypeDescription, TypeDescription) {
     let mut invoice = invoice();
     invoice.relations = vec![crate::ontology::RelationDecl {
+        derived: None,
         annotations: Default::default(),
         name: "approved_by".into(),
         target: "partner".into(),
@@ -388,6 +389,7 @@ fn a_link_tool_offers_only_the_link_fields_the_principal_may_write() {
 fn a_link_relation_gets_link_and_unlink_tools_named_by_type_and_relation() {
     let mut invoice = invoice();
     invoice.relations = vec![crate::ontology::RelationDecl {
+        derived: None,
         annotations: Default::default(),
         name: "approved_by".into(),
         target: "partner".into(),

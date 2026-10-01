@@ -134,7 +134,7 @@ use crate::links::{link_key, link_type_name};
 check!(
     /// A large lake goes through ingest, the feed and export in bounded memory.
     STREAMS = a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it,
-    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification and its import into a new lake, each page of a walk of a type through find, a rebuild, a reopen, a three-hop walk over link records, a hybrid search with k = 10 over every record's vector, without and with a vector index asked for, the ten records of highest degree over the whole type, and components refused at the lake's max_graph_nodes, hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB, and the search answers what it must",
+    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification and its import into a new lake, each page of a walk of a type through find, a rebuild, a reopen, a three-hop walk over link records, a three-hop walk over a derived relation, a hybrid search with k = 10 over every record's vector, without and with a vector index asked for, the ten records of highest degree over the whole type, and components refused at the lake's max_graph_nodes, hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB, and the search answers what it must",
     given,
     embedding
 );
@@ -156,6 +156,9 @@ const TY: &str = "reading";
 const SOURCE: &str = "meters";
 /// The relation the walk follows, and the source its links arrive from.
 const FOLLOWS: &str = "follows";
+/// The derived relation from a record to the records holding its note:
+/// itself alone, since every note is its own (044).
+const SAME_NOTE: &str = "same_note";
 const LINKS: &str = "chains";
 /// The record whose note the search asks for, and the one the walk
 /// starts from.
@@ -209,6 +212,15 @@ fn reading() -> TypeDecl {
         authority: Authority::Source,
         ..Default::default()
     }];
+    ty.relations.push(RelationDecl {
+        derived: Some(lakelands_api::ontology::Derived {
+            pairs: vec![lakelands_api::ontology::MatchPair {
+                from: "note".into(),
+                to: "note".into(),
+            }],
+        }),
+        ..RelationDecl::to(SAME_NOTE, TY)
+    });
     ty
 }
 
@@ -1186,6 +1198,50 @@ impl Size<'_> {
         Ok(())
     }
 
+    /// Walk the derived `same_note` out of [`WALK_FROM`], [`HOPS`] hops:
+    /// each hop is one lookup of a note at the head, so the walk holds a
+    /// record whatever the lake's size, never the type (044).
+    async fn derived_walk(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+        let head = store.head().await.must("reading the head")?;
+        let step = || Step {
+            relation: SAME_NOTE.into(),
+            walk: Walk::Out,
+            ty: None,
+            filter: None,
+            depth: Depth { min: 1, max: 1 },
+        };
+        let pattern = Pattern::traverse(
+            TypeName::from(TY),
+            key(WALK_FROM),
+            (0..HOPS).map(|_| step()).collect(),
+        );
+        let m = Measure::start(&self.given.meter, false);
+        let reply = doors(store)
+            .query(&self.own, pattern)
+            .await
+            .must(&format!("walking `{SAME_NOTE}` {HOPS} hops"))?;
+        let measured = m.stop();
+        let QueryResult::Rows { rows, .. } = reply.data else {
+            return Err(Failure::new("a rows projection answered something else"));
+        };
+        ensure!(
+            rows.len() == 1,
+            "walking `{SAME_NOTE}` {HOPS} hops from `{}` answered {} rows; every note is its \
+             own, so the one path is the record itself",
+            key(WALK_FROM),
+            rows.len()
+        );
+        self.row(
+            "derived-walk",
+            Claim::Held,
+            records,
+            head.0 + 1,
+            format!("{HOPS} hops over a derived relation, one note lookup each"),
+            measured,
+        );
+        Ok(())
+    }
+
     /// The ten records of highest degree over `follows`, both ways, over
     /// the whole type: the seeds are read a page at a time and the best
     /// rows kept, so the measure holds a page, not the type.
@@ -1440,6 +1496,7 @@ async fn a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_doe
         size.sorted_walks(store.as_ref(), records).await?;
         size.searches(store.as_ref(), records).await?;
         size.traverse(store.as_ref(), records).await?;
+        size.derived_walk(store.as_ref(), records).await?;
         size.degree(store.as_ref(), records).await?;
         size.components(store.as_ref(), records).await?;
         store = size.components_capped(store, records).await?;

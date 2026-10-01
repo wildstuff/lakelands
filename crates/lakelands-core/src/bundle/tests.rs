@@ -222,6 +222,7 @@ fn complete_declarations() -> Vec<Declaration> {
             ),
         ],
         relations: vec![RelationDecl {
+            derived: None,
             annotations: Default::default(),
             name: RelationName::new("billed_to"),
             target: TypeName::new("partner"),
@@ -1264,4 +1265,28 @@ fn annotations_lower_as_json_and_a_bad_key_is_reported_against_its_file() {
     );
     let e = one(&[reserved], Problem::ReservedName);
     assert!(e.message.contains("sys.icon"), "{}", e.message);
+}
+
+#[test]
+fn a_derived_relation_lowers_from_its_yaml_match() {
+    let invoice = (
+        "types/invoice.yaml",
+        "name: invoice\nkey: number\nfields:\n  number: text\n  partner_id: text\nrelations:\n  partner:\n    target: partner\n    derived:\n      match:\n        - from: partner_id\n          to: id\n",
+    );
+    let bundle = load(&[PARTNER, invoice]).expect("the bundle loads");
+    let t = bundle
+        .declarations
+        .iter()
+        .find_map(|d| match d {
+            Declaration::Type(t) if t.name.as_str() == "invoice" => Some(t),
+            _ => None,
+        })
+        .expect("`invoice` is declared");
+    let d = t.relations[0]
+        .derived
+        .as_ref()
+        .expect("the relation is derived");
+    assert_eq!(d.pairs.len(), 1);
+    assert_eq!(d.pairs[0].from.as_str(), "partner_id");
+    assert_eq!(d.pairs[0].to.as_str(), "id");
 }

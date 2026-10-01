@@ -426,6 +426,69 @@ fn the_version_5_annotations_recompute_and_a_version_4_one_is_refused() {
     );
 }
 
+/// Format version 6's addition (`docs/log-format.md` §6): a `declared`
+/// type with a derived relation, after `v5.json`'s position 13. The line
+/// recomputes, needs version 6, and its schema hash is the one the same
+/// type with the relation carried by links hashes to; the negative line,
+/// the same event written as version 5, is refused.
+#[test]
+fn the_version_6_derived_relation_recomputes_and_a_version_5_one_is_refused() {
+    let v6 = read_json("v6.json");
+    let v5 = read_json("v5.json");
+    let prev = v5["hashes"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .as_str()
+        .unwrap();
+    let line = v6["lines"][0].as_str().unwrap();
+    let value: Value = serde_json::from_str(line).unwrap();
+    assert_eq!(
+        canonical::to_vec(&value),
+        line.as_bytes(),
+        "the line is canonical"
+    );
+    let event: Event = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(
+        canonical::of(&event),
+        line.as_bytes(),
+        "the contract writes it as the line"
+    );
+    let mut body = value;
+    body.as_object_mut().unwrap().remove("hash");
+    assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
+    assert_eq!(event.hash.0, v6["hashes"][0].as_str().unwrap());
+    assert_eq!(event.prev.0, prev, "it follows the event before it");
+    assert_eq!(event.v, 6);
+    assert_eq!(lakelands_core::versions::needed(&event.body, false), 6);
+    let lakelands_api::event::EventBody::Declared {
+        declaration: lakelands_api::write::Declaration::Type(t),
+        schema_hash,
+        ..
+    } = &event.body
+    else {
+        panic!("position 14 declares a type");
+    };
+    let mut carried = t.clone();
+    carried.relations.iter_mut().for_each(|r| r.derived = None);
+    assert_eq!(
+        schema_hash.as_deref(),
+        Some(
+            lakelands_api::shape::schema_hash(&carried)
+                .unwrap()
+                .as_str()
+        ),
+        "`derived` is not shape"
+    );
+    let negative: Event = serde_json::from_str(v6["negative"].as_str().unwrap()).unwrap();
+    let why = lakelands_core::versions::below(&negative).expect("refused");
+    assert!(
+        why.contains("derived relation") && why.contains("format 6 added"),
+        "{why}"
+    );
+}
+
 /// The negative vector `negative/known-at-goes-back`: the first segment
 /// of the vectors with the last event's `known_at` set before the one
 /// before it, its hash made right. `export::verify` refuses it at that

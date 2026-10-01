@@ -210,12 +210,32 @@ pub fn cmp_places(a: &Place<'_>, b: &Place<'_>, order_by: &[Order]) -> Ordering 
         .unwrap_or_else(|| a.key.cmp(b.key))
 }
 
-/// Whether a scan selects `record`: its flags, `valid_at` and the filter.
+/// Whether a scan selects `record`: its flags, `valid_at`, the fields it
+/// must hold exactly, and the filter.
 pub fn admits(decl: Option<&TypeDecl>, record: &StoredRecord, scan: &Scan) -> bool {
     (scan.retired || !record.retired)
         && (scan.restricted || !record.restricted)
         && valid(decl, record, scan.valid_at)
+        && holds_exactly(record, &scan.equal)
         && selects(scan.filter.as_ref(), record)
+}
+
+/// Whether `record` holds each value exactly: the same JSON value, never
+/// null (a derived relation's match, 044).
+pub fn holds_exactly(record: &StoredRecord, equal: &[(FieldName, Value)]) -> bool {
+    equal
+        .iter()
+        .all(|(f, v)| !v.is_null() && record.fields.get(f) == Some(v))
+}
+
+/// The one field and text an engine may look candidates up by in its text
+/// index at the head: a string the scan must hold exactly, else the
+/// filter's [`exact_text_term`]. The engine still admits each candidate.
+pub fn text_lookup(scan: &Scan) -> Option<(FieldName, String)> {
+    scan.equal
+        .iter()
+        .find_map(|(f, v)| v.as_str().map(|t| (f.clone(), t.to_owned())))
+        .or_else(|| scan.filter.as_ref().and_then(exact_text_term))
 }
 
 /// How many rows a key-ordered scan asks its storage for at a time: the

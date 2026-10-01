@@ -274,6 +274,10 @@ pub struct Scan {
     pub retired: bool,
     /// Include restricted records.
     pub restricted: bool,
+    /// Only records whose field holds exactly this JSON value, pair by
+    /// pair: identity of the stored value, not the expression's `=`. A
+    /// derived relation's walk asks for its matches this way.
+    pub equal: Vec<(FieldName, Value)>,
 }
 
 /// A read view of the projection at one position. Records come back

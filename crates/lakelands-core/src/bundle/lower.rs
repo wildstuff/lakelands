@@ -403,6 +403,7 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
             let fields = l.fields(&format!("{at}, field"), r.fields);
             RelationDecl {
                 annotations: r.annotations,
+                derived: r.derived,
                 name: RelationName::new(name),
                 target,
                 cardinality: r.cardinality,

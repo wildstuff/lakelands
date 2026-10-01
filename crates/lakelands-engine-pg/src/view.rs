@@ -409,10 +409,7 @@ impl ProjectionView for PgView<'_> {
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
         self.read(Vec::new(), |r| {
             let decl = r.type_decl(ty)?;
-            let narrowed = match (
-                r.head,
-                scan.filter.as_ref().and_then(engines::exact_text_term),
-            ) {
+            let narrowed = match (r.head, engines::text_lookup(scan)) {
                 (true, Some((field, text))) => {
                     let query = format!(
                         "SELECT key FROM {} WHERE ty = $1 AND field = $2 AND value = $3",

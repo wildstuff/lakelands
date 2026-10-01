@@ -544,6 +544,7 @@ async fn the_door_refuses_what_this_release_does_not_hold() {
     // to a relation carried by link records.
     let mut linked = ty("a", vec![field("b", StorageKind::Reference)]);
     linked.relations.push(RelationDecl {
+        derived: None,
         annotations: Default::default(),
         name: "to_a".into(),
         target: "a".into(),
