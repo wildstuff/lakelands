@@ -190,7 +190,7 @@ enum Kind {
 }
 
 const AT: [(&str, Kind); 2] = [("as_of", Kind::Int), ("valid_at", Kind::Text)];
-const FIND: [(&str, Kind); 9] = [
+const FIND: [(&str, Kind); 10] = [
     ("where", Kind::Text),
     ("order_by", Kind::Order),
     ("limit", Kind::Int),
@@ -198,10 +198,16 @@ const FIND: [(&str, Kind); 9] = [
     ("after", Kind::Json),
     ("aggregate", Kind::Json),
     ("with_meta", Kind::Flag),
+    ("params", Kind::Json),
     AT[0],
     AT[1],
 ];
-const GET: [(&str, Kind); 3] = [("with_meta", Kind::Flag), AT[0], AT[1]];
+const GET: [(&str, Kind); 4] = [
+    ("with_meta", Kind::Flag),
+    ("params", Kind::Json),
+    AT[0],
+    AT[1],
+];
 const PROPOSALS: [(&str, Kind); 8] = [
     ("state", Kind::Text),
     ("type", Kind::Text),

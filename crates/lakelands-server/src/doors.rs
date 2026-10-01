@@ -87,12 +87,16 @@ pub(crate) fn to_json<T: serde::Serialize>(v: &T) -> Value {
 
 /// Refuse an argument the door's input schema does not list, before
 /// anything runs: a misspelled `expected_version` must not turn a
-/// compare-and-set into an unconditional write.
+/// compare-and-set into an unconditional write. A read's `params` is the
+/// exception: the catalog lists it only for a view with parameters, and
+/// for any other type the store refuses it itself, before it reads
+/// anything, saying the type declares none.
 pub(crate) fn unknown_argument(spec: &ToolSpec, arguments: &Map<String, Value>) -> Option<Fault> {
     let listed = spec.input_schema["properties"].as_object();
-    let key = arguments
-        .keys()
-        .find(|k| !listed.is_some_and(|p| p.contains_key(k.as_str())))?;
+    let read = matches!(spec.door, Door::Find { .. } | Door::Get { .. });
+    let key = arguments.keys().find(|k| {
+        !(read && k.as_str() == "params") && !listed.is_some_and(|p| p.contains_key(k.as_str()))
+    })?;
     Some(Fault::Arguments(
         format!(
             "`{}` takes no argument `{key}`; nothing was done",

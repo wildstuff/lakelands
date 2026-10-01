@@ -27,7 +27,7 @@ use lakelands_api::id::{
 };
 use lakelands_api::ontology::{
     Assignment, Authority, FieldDecl, FieldType, Measure, OnInputChange, RelationDecl, Risk,
-    StorageKind, TriggerDecl, TypeDecl, VerbDecl, VerbEffect, ViewDecl,
+    StorageKind, TriggerDecl, TypeDecl, VerbDecl, VerbEffect, ViewDecl, ViewParam,
 };
 use lakelands_api::principal::{Access, Grants, Principal, PrincipalKind, TypeGrants};
 use lakelands_api::query::{Pattern, Search, SearchMode, Step, Walk};
@@ -62,6 +62,11 @@ use crate::stream;
 /// check is ignored, saying why on its own line, and every other check
 /// runs unchanged. A check that calls a host operation without the mark
 /// fails there as `Unbound`, never silently.
+///
+/// A check marked `#[views]` reads a view's computed records, which the
+/// mock does not compute. Given `mock` after `$block_on`, as the mock's
+/// own tests give it, each marked check is ignored, saying why; every
+/// lake that computes views runs it.
 #[macro_export]
 macro_rules! door_checks {
     ($new:expr, $block_on:path) => {
@@ -69,6 +74,9 @@ macro_rules! door_checks {
     };
     ($new:expr, $block_on:path, remote) => {
         $crate::door_checks!(@all remote, $new, $block_on);
+    };
+    ($new:expr, $block_on:path, mock) => {
+        $crate::door_checks!(@all mock, $new, $block_on);
     };
     (@all $at:ident, $new:expr, $block_on:path) => {
         $crate::door_checks!(@each $at, $new, $block_on;
@@ -123,6 +131,8 @@ macro_rules! door_checks {
             an_ingested_upstream_is_answered_per_field,
             a_schema_proposal_is_refused_by_kind_at_propose_and_at_accept,
             an_order_by_latest_takes_no_field_and_no_view,
+            #[views] a_view_reads_the_parameters_each_read_binds,
+            a_parameter_its_type_does_not_declare_is_refused,
             a_trigger_watches_a_link_type_and_not_a_reference_relations,
             degree_and_components_answer_the_graph_in_one_order,
             a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_mode,
@@ -137,6 +147,13 @@ macro_rules! door_checks {
     (@one remote, $new:expr, $block_on:path, [host_ops] $name:ident) => {
         #[test]
         #[ignore = "calls a host operation, which no network door offers"]
+        fn $name() {
+            $block_on($crate::checks::$name(($new)()));
+        }
+    };
+    (@one mock, $new:expr, $block_on:path, [views] $name:ident) => {
+        #[test]
+        #[ignore = "reads a view's records, which the mock does not compute"]
         fn $name() {
             $block_on($crate::checks::$name(($new)()));
         }
@@ -3791,6 +3808,154 @@ pub async fn an_order_by_latest_takes_no_field_and_no_view(store: Arc<dyn LakeSt
         matches!(refusal(&e).1, Refusal::Invalid { .. }),
         "a view ordered by `latest`: expected invalid, got {e:?}"
     );
+}
+
+/// A view's parameters are bound by each read, through every door: `find`
+/// and `get` take `params`, a pattern started on the view takes
+/// `start.params`, and the same view read with two values answers two
+/// windows. A read that leaves a parameter out is refused `invalid`,
+/// naming the view and the parameter.
+pub async fn a_view_reads_the_parameters_each_read_binds(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    for (k, status) in [("INV-1", "open"), ("INV-2", "open"), ("INV-3", "approved")] {
+        f.write(&f.cast.clerk, k, &[("status", json!(status))])
+            .await;
+    }
+    let by_status = TypeDecl {
+        name: "by_status".into(),
+        key: vec!["status".into()],
+        fields: vec![
+            text("status"),
+            FieldDecl {
+                ty: FieldType::kind(StorageKind::Number),
+                ..text("count")
+            },
+        ],
+        view: Some(Box::new(ViewDecl {
+            source: INVOICE.into(),
+            params: vec![ViewParam {
+                name: "state".into(),
+                kind: StorageKind::Text,
+            }],
+            r#where: Some("status = param('state')".into()),
+            group_by: vec!["status".into()],
+            measures: vec![Measure {
+                name: "count".into(),
+                expr: "count()".into(),
+            }],
+        })),
+        field_meta: true,
+        ..Default::default()
+    };
+    f.catalog
+        .declare(owner, Declaration::Type(by_status))
+        .await
+        .expect("the owner declares a view with a parameter");
+    let view = ty("by_status");
+    let params = |state: &str| BTreeMap::from([("state".into(), json!(state))]);
+    // `find`: one window per value bound.
+    for (state, count) in [("open", 2), ("approved", 1)] {
+        let found = f
+            .catalog
+            .find(
+                owner,
+                &view,
+                Find {
+                    params: params(state),
+                    ..Find::default()
+                },
+            )
+            .await
+            .unwrap_or_else(|e| panic!("find with `state` = {state}: {e:?}"));
+        let Found::Records { rows, .. } = found.data else {
+            panic!("find on a view answers its records");
+        };
+        let got: Vec<_> = rows
+            .iter()
+            .map(|r| (r.key.as_str().to_owned(), r.fields.get("count").cloned()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![(state.to_owned(), Some(json!(count)))],
+            "the view's window for `state` = {state}"
+        );
+    }
+    // `get`: the record of the window bound, and none outside it.
+    let get = |state: &str, key: &str| Get {
+        key: key.into(),
+        with_meta: false,
+        params: params(state),
+        at: ReadAt::default(),
+    };
+    let open = f
+        .catalog
+        .get(owner, &view, get("open", "open"))
+        .await
+        .expect("get binds the parameter");
+    assert_eq!(open.data.fields.get("count"), Some(&json!(2)));
+    let e = f
+        .catalog
+        .get(owner, &view, get("approved", "open"))
+        .await
+        .expect_err("`open` is not in the window of `approved`");
+    assert!(
+        matches!(e, Error::NotFound { .. }),
+        "a key outside the window bound is not found: {e:?}"
+    );
+    // A pattern started on the view binds them as `start.params`.
+    let pattern: Pattern = serde_json::from_value(json!({
+        "start": {"type": "by_status", "params": {"state": "approved"}}
+    }))
+    .expect("a pattern starts on a view with its parameters");
+    let walked = f.catalog.query(owner, pattern).await.unwrap();
+    let json = serde_json::to_value(&walked.data).unwrap();
+    assert_eq!(json["rows"].as_array().map(Vec::len), Some(1), "{json}");
+    assert_eq!(json["rows"][0]["by_status.count"], json!(1), "{json}");
+    // Left out, the parameter is refused, named with its view.
+    let e = f
+        .catalog
+        .find(owner, &view, Find::default())
+        .await
+        .expect_err("a read of the view binds every parameter");
+    let (_, reason) = refusal(&e);
+    let Refusal::Invalid { message } = reason else {
+        panic!("a missing parameter is invalid: {reason:?}");
+    };
+    for name in ["by_status", "state"] {
+        assert!(message.contains(name), "{message:?} names `{name}`");
+    }
+}
+
+/// A read that binds a parameter its type does not declare is refused as
+/// invalid, naming it: a type that is not a view declares none.
+pub async fn a_parameter_its_type_does_not_declare_is_refused(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let params: lakelands_api::Params = [("anchor".into(), json!("2026-06-30"))].into();
+    let found = f
+        .catalog
+        .find(
+            &f.cast.owner,
+            &ty(INVOICE),
+            Find {
+                params: params.clone(),
+                ..Find::default()
+            },
+        )
+        .await;
+    let got = Get {
+        params,
+        ..get("INV-1")
+    };
+    let got = f.catalog.get(&f.cast.owner, &ty(INVOICE), got).await;
+    for e in [found.map(|_| ()), got.map(|_| ())] {
+        let e = e.expect_err("a parameter the type does not declare is refused");
+        let (_, why) = refusal(&e);
+        assert!(
+            matches!(why, Refusal::Invalid { message } if message.contains("anchor")),
+            "refused as invalid, naming `anchor`: {e:?}"
+        );
+    }
 }
 
 /// A trigger may watch the link type of a relation carried by link

@@ -67,8 +67,8 @@ key may hold any character.
 
 | Route | Door | Arguments from |
 |---|---|---|
-| `GET …/types/<type>/records` | find | query: `where`, `order_by`, `limit`, `cursor`, `after`, `aggregate`, `with_meta`, `as_of`, `valid_at` |
-| `GET …/types/<type>/records/<key>` | get | query: `with_meta`, `as_of`, `valid_at` |
+| `GET …/types/<type>/records` | find | query: `where`, `order_by`, `limit`, `cursor`, `after`, `aggregate`, `with_meta`, `params`, `as_of`, `valid_at` |
+| `GET …/types/<type>/records/<key>` | get | query: `with_meta`, `params`, `as_of`, `valid_at` |
 | `PUT …/types/<type>/records/<key>` | upsert | body: the fields to change; `If-Match`, `If-None-Match`, `Idempotency-Key` |
 | `DELETE …/types/<type>/records/<key>` | retire | `If-Match`, `Idempotency-Key` |
 | `PUT …/types/<type>/records/<key>/links/<relation>/<to>` | link | body: the link's own fields (none is `{}` or no body); `If-Match`, `If-None-Match`, `Idempotency-Key` |
@@ -93,7 +93,9 @@ key may hold any character.
 
 A parameter or a body member the door does not take is refused before
 anything runs, so a misspelling never turns a compare-and-set into an
-unconditional write.
+unconditional write. `params` is the exception on the two reads: on a
+type that is not a view with parameters the store refuses it itself, as
+`invalid` (422), saying the type declares none.
 
 The link doors (`link`, `unlink`,
 `docs/decisions/035-a-link-is-a-record.md`) are served under the record
@@ -157,6 +159,14 @@ order by the position of each record's latest change —
 `order_by=-due_date,known_at(status)`, or `order_by=-latest()` for the
 most recently changed first. `kinds` and `types` are words
 separated by commas.
+
+`params` is the JSON object of the values a read binds to a view's
+parameters, one member per parameter, every parameter bound:
+`params={"anchor":"2026-06-30"}`. A `date_time` given as a date alone is
+midnight UTC, so `date <= param('anchor')` leaves out the rest of that
+day. A pattern started on a view binds them as `start.params` in the
+body of `POST …/query`. A parameter missing, unknown or of the wrong
+kind is `invalid` (422), naming the view and the parameter.
 
 ### Writes
 
