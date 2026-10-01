@@ -96,7 +96,7 @@ async fn call(
         .call(
             who,
             &verb.into(),
-            &"i".into(),
+            Some(&"i".into()),
             patch(payload),
             WriteOpts::default(),
         )
@@ -465,8 +465,14 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
         let cat = cat.clone();
         let own = own.clone();
         async move {
-            cat.call(&own, &"dispatch".into(), &key.into(), patch(payload), opts)
-                .await
+            cat.call(
+                &own,
+                &"dispatch".into(),
+                Some(&key.into()),
+                patch(payload),
+                opts,
+            )
+            .await
         }
     };
 

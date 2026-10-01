@@ -282,6 +282,7 @@ fn complete_declarations() -> Vec<Declaration> {
         Declaration::Verb(VerbDecl {
             name: VerbName::new("pay_invoice"),
             on: TypeName::new("invoice"),
+            scope: Default::default(),
             payload: vec![FieldDecl {
                 required: true,
                 ..field("paid_on", kind(StorageKind::DateTime))
@@ -299,6 +300,7 @@ fn complete_declarations() -> Vec<Declaration> {
         Declaration::Verb(VerbDecl {
             name: VerbName::new("send_reminder"),
             on: TypeName::new("invoice"),
+            scope: Default::default(),
             payload: Vec::new(),
             risk: Risk::Medium,
             requires: None,

@@ -35,6 +35,7 @@
 use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::ontology::{
     Authority, Derived, FieldDecl, RelationDecl, StorageKind, TypeDecl, ValueTypeDecl, VerbEffect,
+    VerbScope,
 };
 use lakelands_api::tools::name_problems;
 use lakelands_api::write::Declaration;
@@ -656,6 +657,12 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
         }
         Declaration::Verb(v) => {
             name("verb", v.name.as_str())?;
+            if v.scope == VerbScope::Type {
+                return Err(invalid(format!(
+                    "verb `{}` is declared on its type, which this store does not take yet",
+                    v.name
+                )));
+            }
             let t = o.ty(&v.on).map_err(|_| {
                 invalid(format!(
                     "verb `{}` acts on `{}`, which is not declared",

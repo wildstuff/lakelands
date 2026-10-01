@@ -103,8 +103,10 @@ pub enum ProposedWrite {
     Call {
         /// The verb.
         verb: VerbName,
-        /// The record it is called on.
-        key: RecordKey,
+        /// The record it is called on; absent for a verb called on its
+        /// type (log format 8).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<RecordKey>,
         /// Its payload.
         payload: Patch,
         /// Its options.

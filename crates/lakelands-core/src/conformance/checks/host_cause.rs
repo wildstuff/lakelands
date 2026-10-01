@@ -83,6 +83,7 @@ async fn a_reactive_write_with_a_cause_carries_it_on_each_of_its_events(
         Declaration::Verb(VerbDecl {
             name: "close".into(),
             on: "job".into(),
+            scope: Default::default(),
             payload: vec![],
             risk: Risk::Low,
             requires: None,
@@ -125,7 +126,7 @@ async fn a_reactive_write_with_a_cause_carries_it_on_each_of_its_events(
         .call(
             own,
             &"close".into(),
-            &"j1".into(),
+            Some(&"j1".into()),
             patch(json!({})),
             WriteOpts::default(),
         )

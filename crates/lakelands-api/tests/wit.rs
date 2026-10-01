@@ -30,7 +30,7 @@ use lakelands_api::location::Limits;
 use lakelands_api::ontology::{
     Assignment, Authority, Cardinality, EmbedDecl, FieldDecl, FieldType, Measure, OnInputChange,
     RelationDecl, Risk, StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
-    ViewDecl, ViewParam,
+    VerbScope, ViewDecl, ViewParam,
 };
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{
@@ -636,6 +636,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 members(&VerbDecl {
                     name: "pay".into(),
                     on: "invoice".into(),
+                    scope: VerbScope::Type,
                     payload: vec![field_decl()],
                     risk: Risk::Low,
                     requires: Some(cond()),
@@ -870,6 +871,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             members(&VerbDescription {
                 name: "pay".into(),
                 on: "invoice".into(),
+                scope: VerbScope::Type,
                 payload: vec![field_description()],
                 risk: Risk::High,
                 external: true,
@@ -884,6 +886,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 verbs: vec![VerbDescription {
                     name: "pay".into(),
                     on: "invoice".into(),
+                    scope: VerbScope::Record,
                     payload: vec![],
                     risk: Risk::Low,
                     external: false,
@@ -1100,6 +1103,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
         [OneToOne, OneToMany, ManyToOne, ManyToMany]
     );
     units!("risk", Risk, [Low, Medium, High]);
+    units!("verb_scope", VerbScope, [Record, Type]);
     units!("origin", Origin, [Source, Authored, Derived, System]);
     units!("direction", Direction, [Asc, Desc]);
     units!("order_by", OrderBy, [Value, KnownAt, SeenAt, Latest]);
@@ -1269,7 +1273,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 },
                 ProposedWrite::Call {
                     verb: "v".into(),
-                    key: "k".into(),
+                    key: Some("k".into()),
                     payload: Default::default(),
                     opts: WriteOpts::default(),
                 },
@@ -1429,6 +1433,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 Declaration::Verb(VerbDecl {
                     name: "v".into(),
                     on: "t".into(),
+                    scope: VerbScope::Record,
                     payload: vec![],
                     risk: Risk::Low,
                     requires: None,

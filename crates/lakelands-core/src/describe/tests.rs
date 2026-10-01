@@ -34,6 +34,7 @@ fn declared() -> Vec<Declared> {
     let settle = VerbDecl {
         name: "settle".into(),
         on: "invoice".into(),
+        scope: Default::default(),
         payload: vec![],
         risk: Risk::Low,
         requires: None,

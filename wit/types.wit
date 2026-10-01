@@ -258,9 +258,14 @@ interface types {
         external(string),
     }
 
+    /// What a verb is called on: one record of its type, or the type,
+    /// with no key (log format 8).
+    enum verb-scope { %record, %type }
+
     record verb-decl {
         name: verb-name,
         on: type-name,
+        scope: verb-scope,
         payload: list<field-decl>,
         risk: risk,
         requires: option<condition>,
@@ -542,7 +547,7 @@ interface types {
 
     record call-write {
         verb: verb-name,
-        key: record-key,
+        key: option<record-key>,
         payload: patch,
         opts: write-opts,
     }
@@ -805,6 +810,7 @@ interface types {
     record verb-description {
         name: verb-name,
         on: type-name,
+        scope: verb-scope,
         payload: list<field-description>,
         risk: risk,
         external: bool,

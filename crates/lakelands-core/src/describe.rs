@@ -346,6 +346,7 @@ fn verb_description(
     Some(VerbDescription {
         name: v.name.clone(),
         on: v.on.clone(),
+        scope: v.scope,
         // The payload is the caller's own input: every field of it is its to
         // write.
         payload: v

@@ -561,6 +561,27 @@ pub enum VerbEffect {
     },
 }
 
+/// What a verb is called on: one record of its type, or its type
+/// (`docs/decisions/013-verbs-run-by-declared-risk.md`, extended). A verb
+/// on its type takes no key, and its effect reaches outside the lake.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerbScope {
+    /// One record, named by its key.
+    #[default]
+    Record,
+    /// The type, with no record: an effect that creates something
+    /// outside the lake, for which no record exists yet.
+    Type,
+}
+
+impl VerbScope {
+    /// Whether this is the default, which a declaration never writes.
+    pub fn is_record(&self) -> bool {
+        *self == VerbScope::Record
+    }
+}
+
 /// One field a verb sets.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -571,15 +592,20 @@ pub struct Assignment {
     pub value: Condition,
 }
 
-/// A verb: a named action on a record of one type, with a typed payload.
-/// Over MCP each verb is its own tool.
+/// A verb: a named action on a record of one type, or on the type itself,
+/// with a typed payload. Over MCP each verb is its own tool.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "VerbWire")]
 pub struct VerbDecl {
     /// The verb's name (`pay_invoice`).
     pub name: VerbName,
-    /// The type of the record it is called on.
+    /// Its type: the type of the record it is called on, or the type it
+    /// is called on.
     pub on: TypeName,
+    /// Whether it is called on a record of `on` (the default, never
+    /// written) or on `on` itself (log format 8).
+    #[serde(default, skip_serializing_if = "VerbScope::is_record")]
+    pub scope: VerbScope,
     /// The payload's fields.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub payload: Vec<FieldDecl>,
@@ -605,6 +631,8 @@ pub struct VerbDecl {
 struct VerbWire {
     name: VerbName,
     on: TypeName,
+    #[serde(default)]
+    scope: VerbScope,
     #[serde(default)]
     payload: Vec<FieldDecl>,
     risk: Risk,
@@ -645,6 +673,7 @@ impl TryFrom<VerbWire> for VerbDecl {
         Ok(VerbDecl {
             name: w.name,
             on: w.on,
+            scope: w.scope,
             payload: w.payload,
             risk: w.risk,
             requires: w.requires,

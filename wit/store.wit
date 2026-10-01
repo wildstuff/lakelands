@@ -79,9 +79,10 @@ interface store {
         /// (`docs/decisions/035-a-link-is-a-record.md`).
         link: func(who: principal, %type: type-name, key: record-key, relation: relation-name, to: record-key, fields: patch, opts: write-opts) -> result<outcome, error>;
         unlink: func(who: principal, %type: type-name, key: record-key, relation: relation-name, to: record-key, opts: write-opts) -> result<outcome, error>;
-        /// Call a declared verb; it runs or is proposed by its declared
-        /// risk (`docs/decisions/013-verbs-run-by-declared-risk.md`).
-        call: func(who: principal, verb: verb-name, key: record-key, payload: patch, opts: write-opts) -> result<outcome, error>;
+        /// Call a declared verb, on a record by its key or, for a verb
+        /// declared on its type, with none; it runs or is proposed by its
+        /// declared risk (`docs/decisions/013-verbs-run-by-declared-risk.md`).
+        call: func(who: principal, verb: verb-name, key: option<record-key>, payload: patch, opts: write-opts) -> result<outcome, error>;
         propose: func(who: principal, write: proposed-write, why: string) -> result<outcome, error>;
         accept: func(who: principal, proposal: proposal-id) -> result<outcome, error>;
         reject: func(who: principal, proposal: proposal-id, reason: string) -> result<outcome, error>;

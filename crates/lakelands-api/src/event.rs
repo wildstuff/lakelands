@@ -220,8 +220,10 @@ pub enum EventBody {
     VerbCalled {
         /// The verb.
         verb: VerbName,
-        /// The record it was called on.
-        key: RecordKey,
+        /// The record it was called on; absent for a verb called on its
+        /// type (log format 8).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<RecordKey>,
         /// Its payload.
         payload: Patch,
     },

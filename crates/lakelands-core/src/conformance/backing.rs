@@ -284,8 +284,10 @@ fn executions() -> &'static Mutex<BTreeMap<String, usize>> {
 }
 
 /// The scripted executor: it answers `{"done": <verb>, "record": <key>}`,
-/// or fails when the payload's `fail` is `true`. It counts its runs per
-/// record key, so a check uses keys of its own.
+/// the key null for a verb called on its type, or fails when the
+/// payload's `fail` is `true`. It counts its runs per record key, and per
+/// verb for a verb called on its type, so a check uses keys and such verbs
+/// of its own.
 struct Executor;
 
 #[async_trait]
@@ -295,11 +297,17 @@ impl lakelands_api::seam::VerbExecutor for Executor {
     }
 
     async fn execute(&self, invocation: &lakelands_api::seam::VerbInvocation) -> Result<Value> {
-        let key = invocation.record.key.as_str().to_owned();
+        let key = invocation
+            .record
+            .as_ref()
+            .map(|r| r.key.as_str().to_owned());
         *executions()
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .entry(key.clone())
+            .entry(
+                key.clone()
+                    .unwrap_or_else(|| invocation.verb.as_str().to_owned()),
+            )
             .or_default() += 1;
         if invocation.payload.get("fail") == Some(&Value::Bool(true)) {
             return Err(fail(format!("`{}` was asked to fail", invocation.verb)));
@@ -313,7 +321,8 @@ pub fn executors() -> Vec<Arc<dyn lakelands_api::seam::VerbExecutor>> {
     vec![Arc::new(Executor)]
 }
 
-/// How many times the executor ran for a record key.
+/// How many times the executor ran for a record key, or for a verb
+/// called on its type.
 pub fn executed(key: &str) -> usize {
     executions()
         .lock()

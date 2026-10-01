@@ -174,7 +174,7 @@ impl Doors {
         let invocation = VerbInvocation {
             lake: self.lake.id.clone(),
             verb: ext.verb.clone(),
-            record,
+            record: Some(record),
             payload: ext.payload.clone(),
             position: ext.position,
         };
@@ -311,14 +311,14 @@ impl Catalog for Doors {
         &self,
         who: &Principal,
         verb: &VerbName,
-        key: &RecordKey,
+        key: Option<&RecordKey>,
         payload: Patch,
         opts: WriteOpts,
     ) -> Result<Outcome> {
-        let (verb, key) = (verb.clone(), key.clone());
+        let (verb, key) = (verb.clone(), key.cloned());
         let seen = self.seen();
         let (outcome, external) = self
-            .write(who, move |c| c.call(&verb, &key, payload, opts))
+            .write(who, move |c| c.call(&verb, key.as_ref(), payload, opts))
             .await?;
         let outcome = self.settled(outcome, seen).await?;
         match external {
@@ -706,7 +706,7 @@ fn key_of(body: &EventBody) -> Option<&RecordKey> {
         | EventBody::RecordUnrestricted { key, .. }
         | EventBody::TriggerFired { key, .. }
         | EventBody::ObjectSetChanged { key, .. }
-        | EventBody::VerbCalled { key, .. } => Some(key),
+        | EventBody::VerbCalled { key: Some(key), .. } => Some(key),
         _ => None,
     }
 }

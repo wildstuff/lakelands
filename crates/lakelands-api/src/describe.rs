@@ -9,7 +9,7 @@ use crate::expr::Condition;
 use crate::id::{FieldName, LakeId, RelationName, TypeName, VerbName};
 use crate::ontology::{
     Annotations, Authority, EmbedDecl, FieldDecl, FieldType, OnInputChange, RelationDecl, Risk,
-    TriggerDecl, ValueTypeDecl, ViewDecl,
+    TriggerDecl, ValueTypeDecl, VerbScope, ViewDecl,
 };
 use crate::principal::Access;
 use crate::write::{FunctionDecl, ObjectSetDecl};
@@ -273,8 +273,12 @@ pub struct TypeLifecycle {
 pub struct VerbDescription {
     /// The verb.
     pub name: VerbName,
-    /// The type of record it is called on.
+    /// The type of record it is called on, or the type it is called on.
     pub on: TypeName,
+    /// Whether it is called on a record of `on`, with its key, or on
+    /// `on` itself, with none. Left out for a record.
+    #[serde(default, skip_serializing_if = "VerbScope::is_record")]
+    pub scope: VerbScope,
     /// Its payload's fields.
     pub payload: Vec<FieldDescription>,
     /// Its declared risk: `low` runs, anything else is proposed.

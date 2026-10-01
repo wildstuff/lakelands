@@ -37,6 +37,7 @@ async fn a_trigger_fires_on_a_verbs_write(store: Arc<dyn LakeStore>) -> Result<(
         Declaration::Verb(VerbDecl {
             name: "settle".into(),
             on: "invoice".into(),
+            scope: Default::default(),
             payload: vec![],
             risk: Risk::Low,
             requires: None,
@@ -72,7 +73,7 @@ async fn a_trigger_fires_on_a_verbs_write(store: Arc<dyn LakeStore>) -> Result<(
         .call(
             own,
             &"settle".into(),
-            &"i1".into(),
+            Some(&"i1".into()),
             Patch::new(),
             Default::default(),
         )

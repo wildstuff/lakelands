@@ -966,7 +966,7 @@ fn proposals_filter_by_state_and_type_newest_first(engine: &dyn LakeEngine) -> R
     };
     let call = ProposedWrite::Call {
         verb: "pay".into(),
-        key: "k".into(),
+        key: Some("k".into()),
         payload: Default::default(),
         opts: Default::default(),
     };

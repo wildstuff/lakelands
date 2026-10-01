@@ -74,6 +74,16 @@ fn invalid(message: impl Into<String>) -> Error {
     }
 }
 
+/// The record a verb is called on. A call without a key is refused until
+/// the store takes a verb called on its type (lakelands#277).
+fn keyed<'k>(verb: &VerbName, key: Option<&'k RecordKey>) -> Result<&'k RecordKey> {
+    key.ok_or_else(|| {
+        invalid(format!(
+            "verb `{verb}` is called without a key, which this store does not take yet"
+        ))
+    })
+}
+
 fn not_granted() -> Error {
     Error::Refused {
         field: None,
@@ -1061,7 +1071,7 @@ impl Call<'_> {
             Origin::Authored,
             EventBody::VerbCalled {
                 verb: verb.name.clone(),
-                key: key.clone(),
+                key: Some(key.clone()),
                 payload: payload.clone(),
             },
         );
@@ -1142,11 +1152,12 @@ impl Call<'_> {
     pub fn call(
         &self,
         verb: &VerbName,
-        key: &RecordKey,
+        key: Option<&RecordKey>,
         payload: Patch,
         opts: WriteOpts,
     ) -> Result<(Outcome, Option<External>)> {
         self.check_context()?;
+        let key = keyed(verb, key)?;
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
         if let Some(o) = self.replay(&opts.idempotency_key, view.as_ref())? {
@@ -1217,7 +1228,7 @@ impl Call<'_> {
                     proposal: ProposalId::from(id.0.as_str()),
                     write: ProposedWrite::Call {
                         verb: verb.clone(),
-                        key: key.clone(),
+                        key: Some(key.clone()),
                         payload: payload.clone(),
                         opts: opts.clone(),
                     },
@@ -1324,6 +1335,7 @@ impl Call<'_> {
                 payload,
                 opts,
             } => {
+                let key = keyed(&verb, key.as_ref())?.clone();
                 let decl = w
                     .ontology
                     .verbs
@@ -1352,7 +1364,7 @@ impl Call<'_> {
                 }
                 ProposedWrite::Call {
                     verb,
-                    key,
+                    key: Some(key),
                     payload,
                     opts,
                 }
@@ -1529,6 +1541,7 @@ impl Call<'_> {
                 payload,
                 opts,
             } => {
+                let key = keyed(verb, key.as_ref())?;
                 let decl = w
                     .ontology
                     .verbs

@@ -245,7 +245,7 @@ async fn a_derived_field_accepts_no_value_from_a_source_or_a_verb_either(
             .call(
                 own,
                 &"inflate".into(),
-                &"b".into(),
+                Some(&"b".into()),
                 patch(serde_json::json!({})),
                 Default::default(),
             )

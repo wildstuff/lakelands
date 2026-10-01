@@ -121,8 +121,11 @@ pub trait Catalog: Send + Sync {
         opts: WriteOpts,
     ) -> Result<Outcome>;
 
-    /// Call a declared verb on one record. It runs or is proposed by its
-    /// declared risk. A verb whose effect reaches outside the lake answers,
+    /// Call a declared verb: on one record, named by `key`, or, for a verb
+    /// declared on its type, on the type, with no key. A key passed to a
+    /// verb on its type, none passed to a verb on a record, or an expected
+    /// version with no key, is refused as invalid, naming the verb. It runs
+    /// or is proposed by its declared risk. A verb whose effect reaches outside the lake answers,
     /// when it runs, `Applied` with its executor's recorded `output` —
     /// `{"error": "<text>"}` when the executor failed, since the verb's
     /// position is real either way. A retry answered from its idempotency
@@ -131,7 +134,7 @@ pub trait Catalog: Send + Sync {
         &self,
         who: &Principal,
         verb: &VerbName,
-        key: &RecordKey,
+        key: Option<&RecordKey>,
         payload: Patch,
         opts: WriteOpts,
     ) -> Result<Outcome>;
