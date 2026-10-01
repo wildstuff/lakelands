@@ -42,20 +42,11 @@ const PARTNER: (&str, &str) = (
 
 fn field(name: &str, ty: FieldType) -> FieldDecl {
     FieldDecl {
-        annotations: Default::default(),
         name: FieldName::new(name),
         ty,
-        required: false,
         authority: Authority::Authored,
-        derived: None,
-        function: None,
-        depends_on: Vec::new(),
         on_input_change: OnInputChange::Keep,
-        sensitive: false,
-        searchable: false,
-        description: None,
-        label: None,
-        embed: None,
+        ..Default::default()
     }
 }
 
@@ -185,7 +176,6 @@ fn complete_declarations() -> Vec<Declaration> {
         ..kind(StorageKind::Text)
     };
     let invoice = TypeDecl {
-        annotations: Default::default(),
         name: TypeName::new("invoice"),
         key: vec![FieldName::new("number")],
         fields: vec![
@@ -222,38 +212,23 @@ fn complete_declarations() -> Vec<Declaration> {
             ),
         ],
         relations: vec![RelationDecl {
-            derived: None,
-            annotations: Default::default(),
             name: RelationName::new("billed_to"),
             target: TypeName::new("partner"),
             cardinality: Cardinality::ManyToOne,
             inverse: Some(RelationName::new("invoices")),
             via: Some(FieldName::new("partner")),
             fields: vec![field("since", kind(StorageKind::DateTime))],
-            authority: Default::default(),
-            description: None,
+            ..Default::default()
         }],
-        view: None,
         valid_from: Some(FieldName::new("issued_on")),
-        valid_to: None,
-        field_meta: false,
-        language: None,
         description: Some("A bill sent to a partner.".to_owned()),
         label: Some("Invoice".to_owned()),
+        ..Default::default()
     };
     let plain_type = |name: &str| TypeDecl {
-        annotations: Default::default(),
         name: TypeName::new(name),
-        key: Vec::new(),
-        fields: Vec::new(),
-        relations: Vec::new(),
-        view: None,
-        valid_from: None,
-        valid_to: None,
         field_meta: true,
-        language: None,
-        description: None,
-        label: None,
+        ..Default::default()
     };
     vec![
         Declaration::ValueType(ValueTypeDecl {

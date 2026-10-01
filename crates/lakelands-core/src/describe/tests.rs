@@ -6,41 +6,25 @@ use lakelands_api::{FieldName, Position};
 
 fn field(name: &str, authority: Authority) -> FieldDecl {
     FieldDecl {
-        annotations: Default::default(),
         name: name.into(),
         ty: FieldType::kind(StorageKind::Text),
-        required: false,
         authority,
-        derived: None,
-        function: None,
-        depends_on: vec![],
-        on_input_change: Default::default(),
-        sensitive: false,
         searchable: name == "note",
-        description: None,
-        label: None,
-        embed: None,
+        ..Default::default()
     }
 }
 
 fn declared() -> Vec<Declared> {
     let invoice = TypeDecl {
-        annotations: Default::default(),
         name: "invoice".into(),
-        key: vec![],
         fields: vec![
             field("amount", Authority::Source),
             field("verdict", Authority::Authored),
             field("note", Authority::Authored),
         ],
-        relations: vec![],
-        view: None,
-        valid_from: None,
-        valid_to: None,
         field_meta: true,
-        language: None,
         description: Some("A bill".into()),
-        label: None,
+        ..Default::default()
     };
     let secret = TypeDecl {
         name: "salary".into(),

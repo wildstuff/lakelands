@@ -6,6 +6,19 @@ fn created() -> (Event, CanonicalEvent) {
     seal(&"finance".into(), Position(0), &Digest::zero(), 1, d)
 }
 
+/// `finance` sealed at format `v`, the event at `position` with the
+/// previous digest zero and the lease's `fence`.
+fn sealed(v: u32, position: u64, fence: u64, d: Draft) -> (Event, CanonicalEvent) {
+    seal_at(
+        v,
+        &"finance".into(),
+        Position(position),
+        &Digest::zero(),
+        fence,
+        d,
+    )
+}
+
 #[test]
 fn a_sealed_event_opens_to_itself() {
     let (event, stored) = created();
@@ -107,17 +120,10 @@ fn a_version_2_event_that_carries_upstream_or_declares_date_bucket_is_refused() 
         (ingested, "carries `upstream`"),
         (declared, "declares a call of `date_bucket`"),
     ] {
-        let (_, stored) = seal_at(
-            2,
-            &"finance".into(),
-            Position(1),
-            &Digest::zero(),
-            1,
-            d.clone(),
-        );
+        let (_, stored) = sealed(2, 1, 1, d.clone());
         let e = open(&stored).unwrap_err().to_string();
         assert!(e.contains(what) && e.contains("format 3 added"), "{e}");
-        let (_, stored) = seal_at(3, &"finance".into(), Position(1), &Digest::zero(), 1, d);
+        let (_, stored) = sealed(3, 1, 1, d);
         assert!(open(&stored).is_ok());
     }
 }
@@ -150,7 +156,7 @@ fn a_version_1_event_that_carries_rekeyed_is_refused() {
     );
     let e = open(&stored).unwrap_err().to_string();
     assert!(e.contains("format 2 added"), "{e}");
-    let (_, stored) = seal_at(2, &"finance".into(), Position(0), &Digest::zero(), 0, d);
+    let (_, stored) = sealed(2, 0, 0, d);
     assert!(open(&stored).is_ok());
 }
 
@@ -170,20 +176,13 @@ fn a_version_3_event_proposing_a_declaration_is_refused() {
             why: "w".into(),
         },
     );
-    let (_, stored) = seal_at(
-        3,
-        &"finance".into(),
-        Position(1),
-        &Digest::zero(),
-        1,
-        d.clone(),
-    );
+    let (_, stored) = sealed(3, 1, 1, d.clone());
     let e = open(&stored).unwrap_err().to_string();
     assert!(
         e.contains("proposes a declaration or a migration") && e.contains("format 4 added"),
         "{e}"
     );
-    let (_, stored) = seal_at(4, &"finance".into(), Position(1), &Digest::zero(), 1, d);
+    let (_, stored) = sealed(4, 1, 1, d);
     assert!(open(&stored).is_ok());
 }
 
@@ -203,14 +202,7 @@ fn upstream_on_another_kind_is_refused() {
         lake: "other".into(),
         position: Position(9),
     });
-    let (_, stored) = seal_at(
-        3,
-        &"finance".into(),
-        Position(1),
-        &Digest::zero(),
-        1,
-        retired,
-    );
+    let (_, stored) = sealed(3, 1, 1, retired);
     let e = open(&stored).unwrap_err().to_string();
     assert!(
         e.contains("`record_retired`") && e.contains("only a `record_ingested`"),

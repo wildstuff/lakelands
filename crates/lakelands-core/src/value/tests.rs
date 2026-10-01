@@ -27,20 +27,11 @@ fn typed(k: StorageKind, vt: &str) -> FieldType {
 
 fn field(name: &str, ty: FieldType) -> FieldDecl {
     FieldDecl {
-        annotations: Default::default(),
         name: name.into(),
         ty,
-        required: false,
         authority: Authority::Authored,
-        derived: None,
-        function: None,
-        depends_on: Vec::new(),
         on_input_change: OnInputChange::Keep,
-        sensitive: false,
-        searchable: false,
-        description: None,
-        label: None,
-        embed: None,
+        ..Default::default()
     }
 }
 

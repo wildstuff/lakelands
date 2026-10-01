@@ -6,28 +6,17 @@ use serde_json::json;
 
 fn field(name: &str, authority: Authority, sensitive: bool) -> FieldDecl {
     FieldDecl {
-        annotations: Default::default(),
         name: name.into(),
         ty: FieldType::kind(StorageKind::Text),
-        required: false,
         authority,
-        derived: None,
-        function: None,
-        depends_on: vec![],
-        on_input_change: Default::default(),
         sensitive,
-        searchable: false,
-        description: None,
-        label: None,
-        embed: None,
+        ..Default::default()
     }
 }
 
 fn invoice() -> TypeDecl {
     TypeDecl {
-        annotations: Default::default(),
         name: "invoice".into(),
-        key: vec![],
         fields: vec![
             field("amount", Authority::Source, false),
             field("verdict", Authority::Authored, false),
@@ -35,14 +24,8 @@ fn invoice() -> TypeDecl {
             field("note", Authority::Shared, false),
             field("score", Authority::Derived, false),
         ],
-        relations: vec![],
-        view: None,
-        valid_from: None,
-        valid_to: None,
         field_meta: true,
-        language: None,
-        description: None,
-        label: None,
+        ..Default::default()
     }
 }
 

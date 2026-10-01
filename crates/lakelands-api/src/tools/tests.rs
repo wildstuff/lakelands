@@ -5,53 +5,33 @@ use crate::principal::Access;
 
 fn field(name: &str, kind: StorageKind, authority: Authority, access: Access) -> FieldDescription {
     let decl = FieldDecl {
-        annotations: Default::default(),
         name: name.into(),
         ty: FieldType::kind(kind),
-        required: false,
         authority,
-        derived: None,
-        function: None,
-        depends_on: vec![],
-        on_input_change: Default::default(),
-        sensitive: false,
-        searchable: false,
-        description: None,
-        label: None,
-        embed: None,
+        ..Default::default()
     };
     FieldDescription::of(&decl, access)
 }
 
 fn ty(name: &str, may: TypeRights, fields: Vec<FieldDescription>) -> TypeDescription {
     TypeDescription {
-        annotations: Default::default(),
         name: name.into(),
-        description: None,
-        label: None,
-        language: None,
-        view: None,
         fields,
-        relations: vec![],
         access: TypeAccess {
-            key: vec![],
-            valid_from: None,
-            valid_to: None,
             searchable: true,
             field_meta: true,
+            ..Default::default()
         },
         may,
-        verbs: vec![],
         lineage: TypeLineage {
-            sourced: false,
-            view_of: None,
+            ..Default::default()
         },
         lifecycle: TypeLifecycle {
             version: 1,
             schema_hash: "h".into(),
-            sorted: vec![],
-            indexed: vec![],
+            ..Default::default()
         },
+        ..Default::default()
     }
 }
 
@@ -79,11 +59,8 @@ fn lake(
         lake: "finance".into(),
         types,
         verbs,
-        value_types: vec![],
-        functions: vec![],
-        triggers: vec![],
-        object_sets: vec![],
         may,
+        ..Default::default()
     }
 }
 
@@ -255,65 +232,30 @@ fn colliding_and_overlong_names_are_reported() {
 fn linked_invoice() -> (TypeDescription, TypeDescription) {
     let mut invoice = invoice();
     invoice.relations = vec![crate::ontology::RelationDecl {
-        derived: None,
-        annotations: Default::default(),
         name: "approved_by".into(),
         target: "partner".into(),
-        cardinality: Default::default(),
-        inverse: None,
-        via: None,
-        fields: vec![],
         authority: Authority::Authored,
-        description: None,
+        ..Default::default()
     }];
     invoice.may.link = vec!["approved_by".into()];
+    let authored = |name: &str, kind, access| field(name, kind, Authority::Authored, access);
     let link_type = ty(
         "sys.link.invoice.approved_by",
         READ,
         vec![
-            field(
-                "from",
-                StorageKind::Reference,
-                Authority::Authored,
-                Access::Write,
-            ),
-            field(
-                "to",
-                StorageKind::Reference,
-                Authority::Authored,
-                Access::Write,
-            ),
-            field(
-                "since",
-                StorageKind::DateTime,
-                Authority::Authored,
-                Access::Write,
-            ),
-            field(
-                "score",
-                StorageKind::Number,
-                Authority::Authored,
-                Access::Read,
-            ),
+            authored("from", StorageKind::Reference, Access::Write),
+            authored("to", StorageKind::Reference, Access::Write),
+            authored("since", StorageKind::DateTime, Access::Write),
+            authored("score", StorageKind::Number, Access::Read),
         ],
     );
     for f in &link_type.fields {
         if f.name.as_str() == "since" || f.name.as_str() == "score" {
             invoice.relations[0].fields.push(FieldDecl {
-                annotations: Default::default(),
                 name: f.name.clone(),
                 ty: f.ty.clone(),
-                required: false,
                 authority: Authority::Authored,
-                derived: None,
-                function: None,
-                depends_on: vec![],
-                on_input_change: Default::default(),
-                sensitive: false,
-                searchable: false,
-                description: None,
-                label: None,
-                embed: None,
+                ..Default::default()
             });
         }
     }
@@ -343,39 +285,12 @@ fn a_link_tool_offers_only_the_link_fields_the_principal_may_write() {
 
 #[test]
 fn a_link_relation_gets_link_and_unlink_tools_named_by_type_and_relation() {
-    let mut invoice = invoice();
-    invoice.relations = vec![crate::ontology::RelationDecl {
-        derived: None,
-        annotations: Default::default(),
-        name: "approved_by".into(),
-        target: "partner".into(),
-        cardinality: Default::default(),
-        inverse: None,
-        via: None,
-        fields: vec![FieldDecl {
-            annotations: Default::default(),
-            name: "since".into(),
-            ty: FieldType::kind(StorageKind::DateTime),
-            required: false,
-            authority: Authority::Authored,
-            derived: None,
-            function: None,
-            depends_on: vec![],
-            on_input_change: Default::default(),
-            sensitive: false,
-            searchable: false,
-            description: None,
-            label: None,
-            embed: None,
-        }],
-        authority: Authority::Authored,
-        description: None,
-    }];
+    let (mut invoice, link_type) = linked_invoice();
     // Offered only for the relations the principal may link.
+    invoice.may.link.clear();
     let without = tools_ok(&lake(vec![invoice.clone()], vec![], LakeRights::default()));
     assert!(!names(&without).iter().any(|n| n.ends_with("link")));
     invoice.may.link = vec!["approved_by".into()];
-    let (_, link_type) = linked_invoice();
     let t = tools_ok(&lake(
         vec![invoice, link_type],
         vec![],
