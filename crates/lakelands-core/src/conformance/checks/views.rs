@@ -12,15 +12,20 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use lakelands_api::ontology::{Authority, Measure, StorageKind, TypeDecl, ViewDecl};
+use lakelands_api::ontology::{
+    Authority, Cardinality, Derived, MatchPair, Measure, RelationDecl, StorageKind, TypeDecl,
+    ViewDecl,
+};
+use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Start, Step, Walk};
+use lakelands_api::read::Find;
 use lakelands_api::{FieldName, LakeStore, Principal, TypeName, Value};
 use rust_decimal::Decimal;
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all, dec, decimal, doors, field, partner_totals, source_record, type_decl, upsert,
-    windows_reach_head,
+    Lake, Must, all, all_found, dec, decimal, doors, field, partner_totals, source_record,
+    type_decl, upsert, windows_reach_head,
 };
 
 check!(
@@ -45,6 +50,18 @@ check!(
     /// A group with no members left has no record.
     EMPTIED_GROUP_GOES = a_view_drops_a_group_whose_last_member_is_retired,
     "the ontology: a view holds a record per group that has members; retiring a group's last member removes the group"
+);
+
+check!(
+    /// A pattern may start on a view.
+    PATTERN_STARTS_ON_A_VIEW = a_pattern_started_on_a_view_holds_the_records_find_returns,
+    "018 and 026: a view is read like any other type, so a pattern started on it by key, by `where` or with neither has as its graph's nodes exactly the records `find` returns for that selection; a key with no group has none"
+);
+
+check!(
+    /// A walk reaches a view over a derived relation.
+    WALK_REACHES_A_VIEW = a_walk_over_a_derived_relation_reaches_a_views_records_both_ways,
+    "018, 026 and 044: a derived relation between a stored type and a view connects their records by matching values like any other, so a walk out from the stored type reaches the view's records and a walk in from the view reaches the stored ones"
 );
 
 check!(
@@ -329,5 +346,191 @@ async fn a_view_record_is_keyed_by_its_group_by_fields(
          answers {:?}",
         north.fields
     );
+    Ok(())
+}
+
+/// A pattern over `ty` from a start, with its steps and projection.
+fn pattern(ty: &str, key: Option<&str>, filter: Option<&str>, steps: Vec<Step>) -> Pattern {
+    Pattern {
+        start: Start {
+            ty: ty.into(),
+            key: key.map(Into::into),
+            filter: filter.map(Into::into),
+            search: None,
+        },
+        project: if steps.is_empty() {
+            Projection::Graph
+        } else {
+            Projection::Rows { fields: vec![] }
+        },
+        steps,
+        to: None,
+        order_by: Vec::new(),
+        limit: None,
+        cursor: None,
+        at: Default::default(),
+    }
+}
+
+/// The `type:key` of every node a graph answers, or every `far` key a
+/// walk's rows reach, sorted.
+async fn nodes(
+    store: &dyn LakeStore,
+    who: &Principal,
+    p: Pattern,
+    far: &str,
+) -> Result<Vec<String>, Failure> {
+    let what = format!(
+        "a pattern started on `{}` (key {:?}, where {:?})",
+        p.start.ty, p.start.key, p.start.filter
+    );
+    let reply = doors(store).query(who, p).await.must(&what)?;
+    let mut got: Vec<String> = match reply.data {
+        QueryResult::Graph { nodes, .. } => nodes
+            .into_iter()
+            .map(|n| format!("{}:{}", n.ty, n.key))
+            .collect(),
+        QueryResult::Rows { rows, .. } => rows
+            .iter()
+            .filter_map(|r| r.get(&format!("{far}.key")).and_then(Value::as_str))
+            .map(|k| format!("{far}:{k}"))
+            .collect(),
+        QueryResult::Groups { .. } => {
+            return Err(Failure::new(format!("{what} answered groups")));
+        }
+    };
+    got.sort();
+    got.dedup();
+    Ok(got)
+}
+
+async fn a_pattern_started_on_a_view_holds_the_records_find_returns(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(invoices(Authority::Authored)).await?;
+    l.declare(partner_totals("partner_totals", StorageKind::Decimal))
+        .await?;
+    for (nr, partner, amount) in [
+        ("i1", "p1", "10.00"),
+        ("i2", "p2", "3.00"),
+        ("i3", "p1", "5.00"),
+    ] {
+        write_invoice(store.as_ref(), own, nr, partner, amount).await?;
+    }
+    for (key, filter) in [
+        (None, None),
+        (None, Some("partner = 'p1'")),
+        (Some("p2"), None),
+    ] {
+        let found = all_found(
+            cat.as_ref(),
+            own,
+            "partner_totals",
+            Find {
+                filter: filter.map(Into::into),
+                ..Find::default()
+            },
+        )
+        .await?;
+        let want: Vec<String> = found
+            .iter()
+            .map(|r| format!("partner_totals:{}", r.key))
+            .filter(|n| key.is_none_or(|k| *n == format!("partner_totals:{k}")))
+            .collect();
+        let got = nodes(
+            store.as_ref(),
+            own,
+            pattern("partner_totals", key, filter, vec![]),
+            "",
+        )
+        .await?;
+        ensure!(
+            got == want,
+            "a pattern started on the view `partner_totals` (key {key:?}, where {filter:?}) must \
+             hold as its graph's nodes the records `find` returns, {want:?}; it holds {got:?}. \
+             A view read through the pattern query that answers nothing looks exactly like an \
+             empty view"
+        );
+    }
+    let none = nodes(
+        store.as_ref(),
+        own,
+        pattern("partner_totals", Some("p9"), None, vec![]),
+        "",
+    )
+    .await?;
+    ensure!(
+        none.is_empty(),
+        "no invoice has partner p9, so the view has no group `p9` and a pattern started on \
+         it by that key has no node; it holds {none:?}"
+    );
+    Ok(())
+}
+
+async fn a_walk_over_a_derived_relation_reaches_a_views_records_both_ways(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let Lake { own, .. } = &l;
+    l.declare(invoices(Authority::Authored)).await?;
+    l.declare(partner_totals("partner_totals", StorageKind::Decimal))
+        .await?;
+    let mut partner = type_decl("partner", vec![field("name", StorageKind::Text)]);
+    partner.key = vec![FieldName::from("name")];
+    partner.relations = vec![RelationDecl {
+        cardinality: Cardinality::OneToOne,
+        derived: Some(Derived {
+            pairs: vec![MatchPair {
+                from: "name".into(),
+                to: "partner".into(),
+            }],
+        }),
+        ..RelationDecl::to("totals", "partner_totals")
+    }];
+    l.declare(partner).await?;
+    for name in ["p1", "p2", "p3"] {
+        l.upsert("partner", name, json!({"name": name})).await?;
+    }
+    write_invoice(store.as_ref(), own, "i1", "p1", "10.00").await?;
+    write_invoice(store.as_ref(), own, "i2", "p2", "3.00").await?;
+    let step = |walk| Step {
+        relation: "totals".into(),
+        walk,
+        ty: None,
+        filter: None,
+        depth: Depth::default(),
+    };
+    for (start, key, walk, far, want) in [
+        (
+            "partner",
+            "p1",
+            Walk::Out,
+            "partner_totals",
+            vec!["partner_totals:p1"],
+        ),
+        ("partner", "p3", Walk::Out, "partner_totals", vec![]),
+        (
+            "partner_totals",
+            "p2",
+            Walk::In,
+            "partner",
+            vec!["partner:p2"],
+        ),
+    ] {
+        let got = nodes(
+            store.as_ref(),
+            own,
+            pattern(start, Some(key), None, vec![step(walk)]),
+            far,
+        )
+        .await?;
+        ensure!(
+            got == want,
+            "walking `totals` {walk:?} from {start} `{key}` must reach {want:?}, the records \
+             whose matched value is the same; it reaches {got:?}"
+        );
+    }
     Ok(())
 }
