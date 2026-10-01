@@ -144,24 +144,31 @@ fn condition_visible(
 /// Whether a view may be shown whole to `who`: every source field it names
 /// is read.
 fn view_visible(v: &ViewDecl, declared: &[Declared], who: &Principal) -> bool {
-    if who.grants.schema {
-        return true;
-    }
-    let mut names = std::collections::BTreeSet::new();
-    if let Some(w) = &v.r#where {
-        match named(w) {
-            Some(n) => names.extend(n),
-            None => return false,
-        }
-    }
-    for m in &v.measures {
-        match parsed(&m.expr) {
-            Some(e) => aggregated(&e, false, &mut names),
-            None => return false,
-        }
-    }
-    names.extend(v.group_by.iter().cloned());
-    reads_all(&names, &v.source, declared, who)
+    // Each source is read as a read of it (024): its `where`, its grouping,
+    // and what its measures aggregate.
+    who.grants.schema
+        || std::iter::once((&v.source, v.r#where.as_ref(), &v.group_by, &v.measures))
+            .chain(
+                v.merge
+                    .iter()
+                    .map(|m| (&m.source, m.r#where.as_ref(), &m.group_by, &m.measures)),
+            )
+            .all(|(source, filter, group_by, measures)| {
+                let mut names: std::collections::BTreeSet<FieldName> =
+                    group_by.iter().cloned().collect();
+                match filter.map(named) {
+                    Some(Some(n)) => names.extend(n),
+                    Some(None) => return false,
+                    None => {}
+                }
+                for m in measures {
+                    match parsed(&m.expr) {
+                        Some(e) => aggregated(&e, false, &mut names),
+                        None => return false,
+                    }
+                }
+                reads_all(&names, source, declared, who)
+            })
 }
 
 /// The fields a measure reads from its source's records: the paths inside

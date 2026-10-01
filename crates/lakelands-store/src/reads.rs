@@ -125,6 +125,9 @@ mod measures;
 /// form, and as the literals `param()` is replaced by.
 type Bound = (Params, BTreeMap<String, Literal>);
 
+/// One source of a view as read: its members and its measures, bound.
+type Source = (Vec<StoredRecord>, Vec<(FieldName, Expr)>);
+
 /// A row's sort values and its tiebreak.
 type SortKey = (Vec<Value>, RecordKey);
 
@@ -567,8 +570,6 @@ impl<'a> Reader<'a> {
         v: &lakelands_api::ontology::ViewDecl,
         filter: Option<&Expr>,
     ) -> Result<Vec<StoredRecord>> {
-        let source = self.ontology.ty(&v.source)?.clone();
-        let mut probed: Vec<FieldName> = v.group_by.clone();
         let literals = match self.bound.borrow().get(&decl.name) {
             Some((_, literals)) => literals.clone(),
             None if v.params.is_empty() => BTreeMap::new(),
@@ -584,61 +585,96 @@ impl<'a> Reader<'a> {
                 )));
             }
         };
-        let bound = |e: Expr| expr::bind_params(&e, &literals);
-        let where_ = v
-            .r#where
-            .as_ref()
-            .map(|w| condition(w, Place::View, "view").map(bound))
-            .transpose()?;
-        if let Some(w) = &where_ {
-            probed.extend(core_derive::reads(w));
-        }
-        let measures: Vec<(FieldName, Expr)> = v
-            .measures
-            .iter()
-            .map(|m| {
-                let e = condition(&m.expr, Place::Group, "measure")?;
-                Ok((m.name.clone(), bound(e)))
-            })
-            .collect::<Result<_>>()?;
-        for (_, m) in &measures {
-            probed.extend(
-                core_derive::reads(m)
-                    .into_iter()
-                    .filter(|f| source.fields.iter().any(|d| &d.name == f)),
-            );
-        }
-        rights::check_probe(self.who, &source, probed.iter())?;
-        // A `where` that read a parameter is evaluated here, never handed to
-        // an engine: a bound date is text, and its arithmetic is the
-        // evaluator's.
-        let members = if literals.is_empty() {
-            self.records(&source, where_.as_ref())?
-        } else {
-            let mut all = self.records(&source, None)?;
-            if let Some(w) = &where_ {
-                all.retain(|r| self.holds(w, &r.fields, Some(&r.meta)));
-            }
-            all
-        };
+        let (members, measures) = self.view_source(
+            &v.source,
+            v.r#where.as_ref(),
+            &v.group_by,
+            &v.measures,
+            &literals,
+        )?;
         // A view record is keyed like any record: its group_by values, in
-        // declared order, by the one key rule.
+        // declared order, by the one key rule. Sources meet where their
+        // keys are identical (044's identity of values, not 017's `=`).
         let keyed_by = TypeDecl {
             key: v.group_by.clone(),
             ..decl.clone()
         };
         let rows: Vec<&BTreeMap<FieldName, Value>> = members.iter().map(|r| &r.fields).collect();
-        let mut out = Vec::new();
+        type Group<'g> = (
+            BTreeMap<FieldName, Value>,
+            Vec<&'g BTreeMap<FieldName, Value>>,
+        );
+        let mut groups: BTreeMap<RecordKey, Group<'_>> = BTreeMap::new();
         for (by, group) in aggregate::groups(&rows, &v.group_by) {
             if by.values().any(Value::is_null) {
                 continue;
             }
-            let values =
-                aggregate::measures(&group, &by, &measures, Some(&self.settings), self.now)
-                    .map_err(|e| invalid(format!("view `{}`: {e}", decl.name)))?;
-            let Some(key) = lakelands_core::log::record_key(&keyed_by, &by) else {
-                continue;
-            };
+            if let Some(key) = lakelands_core::log::record_key(&keyed_by, &by) {
+                groups.insert(key, (by, group));
+            }
+        }
+        // One group's measures, seeing the values `given` by name.
+        let measured = |rows: &[&BTreeMap<FieldName, Value>],
+                        by: &BTreeMap<FieldName, Value>,
+                        measures: &[(FieldName, Expr)],
+                        given| {
+            aggregate::measures(rows, by, measures, given, Some(&self.settings), self.now)
+                .map_err(|e| invalid(format!("view `{}`: {e}", decl.name)))
+        };
+        // Each merged source's measures by key; a key it lacks is measured
+        // over its empty group below.
+        let mut merged = Vec::with_capacity(v.merge.len());
+        for m in &v.merge {
+            let (members, measures) = self.view_source(
+                &m.source,
+                m.r#where.as_ref(),
+                &m.group_by,
+                &m.measures,
+                &literals,
+            )?;
+            let rows: Vec<&BTreeMap<FieldName, Value>> =
+                members.iter().map(|r| &r.fields).collect();
+            let mut at = BTreeMap::new();
+            for (own, group) in aggregate::groups(&rows, &m.group_by) {
+                if own.values().any(Value::is_null) {
+                    continue;
+                }
+                let by: BTreeMap<FieldName, Value> = v
+                    .group_by
+                    .iter()
+                    .zip(&m.group_by)
+                    .map(|(to, from)| (to.clone(), own[from].clone()))
+                    .collect();
+                let Some(key) = lakelands_core::log::record_key(&keyed_by, &by) else {
+                    continue;
+                };
+                let values = measured(&group, &own, &measures, BTreeMap::new())?;
+                groups
+                    .entry(key.clone())
+                    .or_insert_with(|| (by, Vec::new()));
+                at.insert(key, values);
+            }
+            merged.push((m, measures, at));
+        }
+        let mut out = Vec::new();
+        for (key, (by, group)) in groups {
+            let mut given = BTreeMap::new();
+            for (m, measures, at) in &merged {
+                let values = match at.get(&key) {
+                    Some(values) => values.clone(),
+                    None => {
+                        let own: BTreeMap<FieldName, Value> = m
+                            .group_by
+                            .iter()
+                            .zip(&v.group_by)
+                            .map(|(from, to)| (from.clone(), by[to].clone()))
+                            .collect();
+                        measured(&[], &own, measures, BTreeMap::new())?
+                    }
+                };
+                given.extend(values);
+            }
+            let values = measured(&group, &by, &measures, given)?;
             let mut fields = by.clone();
             // A measure lands in the kind the view type declares for it.
             for (name, v) in values {
@@ -665,6 +701,57 @@ impl<'a> Reader<'a> {
             out.retain(|r| self.holds(e, &r.fields, None));
         }
         Ok(out)
+    }
+
+    /// One source of a view, read as a read of that source: its records
+    /// its `where` covers, the parameters bound, and its measures, after
+    /// the principal is found to read every field they and the grouping
+    /// read (024).
+    fn view_source(
+        &self,
+        source: &TypeName,
+        filter: Option<&lakelands_api::expr::Condition>,
+        group_by: &[FieldName],
+        measures: &[lakelands_api::ontology::Measure],
+        literals: &BTreeMap<String, Literal>,
+    ) -> Result<Source> {
+        let source = self.ontology.ty(source)?.clone();
+        let bound = |e: Expr| expr::bind_params(&e, literals);
+        let mut probed: Vec<FieldName> = group_by.to_vec();
+        let where_ = filter
+            .map(|w| condition(w, Place::View, "view").map(bound))
+            .transpose()?;
+        if let Some(w) = &where_ {
+            probed.extend(core_derive::reads(w));
+        }
+        let measures: Vec<(FieldName, Expr)> = measures
+            .iter()
+            .map(|m| {
+                let e = condition(&m.expr, Place::Group, "measure")?;
+                Ok((m.name.clone(), bound(e)))
+            })
+            .collect::<Result<_>>()?;
+        for (_, m) in &measures {
+            probed.extend(
+                core_derive::reads(m)
+                    .into_iter()
+                    .filter(|f| source.fields.iter().any(|d| &d.name == f)),
+            );
+        }
+        rights::check_probe(self.who, &source, probed.iter())?;
+        // A `where` that read a parameter is evaluated here, never handed to
+        // an engine: a bound date is text, and its arithmetic is the
+        // evaluator's.
+        let members = if literals.is_empty() {
+            self.records(&source, where_.as_ref())?
+        } else {
+            let mut all = self.records(&source, None)?;
+            if let Some(w) = &where_ {
+                all.retain(|r| self.holds(w, &r.fields, Some(&r.meta)));
+            }
+            all
+        };
+        Ok((members, measures))
     }
 
     fn sort_values(order: &[Order], r: &StoredRecord) -> Vec<Value> {

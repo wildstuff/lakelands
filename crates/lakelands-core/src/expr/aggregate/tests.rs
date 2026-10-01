@@ -125,6 +125,7 @@ fn measures_see_the_measures_before_them() {
             ("margin".into(), parse("sum(rev) - sum(cost)").unwrap()),
             ("rate".into(), parse("margin / sum(rev)").unwrap()),
         ],
+        BTreeMap::new(),
         None,
         Timestamp(0),
     )

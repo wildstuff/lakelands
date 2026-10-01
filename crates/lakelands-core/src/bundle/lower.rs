@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{
     Assignment, EmbedDecl, FieldDecl, FieldType, Measure, RelationDecl, StorageKind, TriggerDecl,
-    TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, ViewDecl, ViewParam,
+    TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, ViewDecl, ViewParam, ViewSource,
 };
 use lakelands_api::write::{AnnotationFault, Declaration, FunctionDecl, ObjectSetDecl};
 use lakelands_api::{
@@ -451,13 +451,38 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
                 }
             })
             .collect();
+        let merge = v
+            .merge
+            .into_iter()
+            .map(|m| {
+                let at = format!("view, merged source `{}`", m.source);
+                ViewSource {
+                    source: l.type_ref(&at, &m.source),
+                    r#where: l.opt_cond(&format!("{at}, `where`"), m.filter),
+                    group_by: l.names("group_by field", m.group_by.0),
+                    measures: m
+                        .measures
+                        .0
+                        .into_iter()
+                        .map(|(name, expr)| {
+                            l.name("measure", &name);
+                            let expr = l.cond(&format!("{at}, measure `{name}`"), expr);
+                            Measure {
+                                name: FieldName::new(name),
+                                expr,
+                            }
+                        })
+                        .collect(),
+                }
+            })
+            .collect();
         ViewDecl {
             source,
             r#where: filter,
             group_by,
             measures,
             params,
-            merge: Default::default(),
+            merge,
         }
     });
     let t = TypeDecl {

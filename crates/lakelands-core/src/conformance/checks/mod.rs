@@ -58,6 +58,7 @@ mod values;
 mod vector_index;
 mod verbs_on_type;
 mod versions;
+mod view_merge;
 mod view_params;
 mod views;
 mod vocabulary;
@@ -111,6 +112,11 @@ pub const ALL: &[Check] = &[
     view_params::PATTERN_START_BINDS,
     view_params::CURSOR_KEEPS_PARAMS,
     view_params::FORMAT_8,
+    view_merge::MERGED_ON_KEY,
+    view_merge::KEYS_MEET_BY_IDENTITY,
+    view_merge::PARAMS_BIND_EVERY_SOURCE,
+    view_merge::MERGE_DECLARED_STRICTLY,
+    view_merge::MERGE_PROBES_EACH_SOURCE,
     views::VIEW_FIELD_NOT_SEARCHED,
     views::VIEW_NOT_SEARCHED,
     views::SOURCE_CYCLE_REFUSED,

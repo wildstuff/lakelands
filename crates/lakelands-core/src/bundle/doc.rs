@@ -168,6 +168,22 @@ pub(super) struct ViewDoc {
     #[serde(default)]
     pub group_by: OneOrMany,
     pub measures: Named<Cond>,
+    /// Further sources merged on the view's key.
+    #[serde(default)]
+    pub merge: Vec<MergeDoc>,
+}
+
+/// A further source of a view: grouped by fields of its own, in the
+/// view's key order, with measures of its own.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct MergeDoc {
+    pub source: String,
+    #[serde(default, rename = "where")]
+    pub filter: Option<Cond>,
+    #[serde(default)]
+    pub group_by: OneOrMany,
+    pub measures: Named<Cond>,
 }
 
 /// `verbs/<name>.yaml`. Exactly one of `set` (the verb writes fields of

@@ -2,7 +2,7 @@ use lakelands_api::expr::{Condition, Expr, Literal};
 use lakelands_api::ontology::{
     Assignment, Authority, Cardinality, FieldDecl, FieldType, Measure, OnInputChange, RelationDecl,
     Risk, StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, VerbScope,
-    ViewDecl,
+    ViewDecl, ViewSource,
 };
 use lakelands_api::write::{Declaration, FunctionDecl, ObjectSetDecl};
 use lakelands_api::{FieldName, RelationName, TypeName, ValueTypeName, VerbName};
@@ -39,6 +39,12 @@ fn one(fs: &[(&str, &str)], problem: Problem) -> BundleError {
 const PARTNER: (&str, &str) = (
     "types/partner.yaml",
     "name: partner\nkey: id\nfields:\n  id: text\n",
+);
+
+/// The type the documented merge reads beside the invoices.
+const PAYMENT: (&str, &str) = (
+    "types/payment.yaml",
+    "name: payment\nfields:\n  payer: reference(partner)\n  amount: decimal\n",
 );
 
 fn field(name: &str, ty: FieldType) -> FieldDecl {
@@ -656,7 +662,7 @@ fn the_documented_examples_load() {
         .map(|l| l.strip_prefix(' ').unwrap_or(l))
         .collect::<Vec<_>>()
         .join("\n");
-    let mut fs = vec![PARTNER];
+    let mut fs = vec![PARTNER, PAYMENT];
     let mut owned = Vec::new();
     for block in doc.split("```yaml\n").skip(1) {
         let body = block.split("```").next().unwrap_or_default();
@@ -678,7 +684,7 @@ fn the_documented_examples_load() {
         };
         owned.push((format!("{lane}/{}.yaml", owned.len()), body.to_owned()));
     }
-    assert_eq!(owned.len(), 10, "every documented example is found");
+    assert_eq!(owned.len(), 11, "every documented example is found");
     fs.extend(owned.iter().map(|(p, c)| (p.as_str(), c.as_str())));
     load(&fs).expect("the documented examples load");
 }
@@ -1373,5 +1379,41 @@ fn a_view_parameter_of_no_storage_kind_is_refused_naming_it() {
     assert!(
         e.message.contains("`until`") && e.message.contains("`date`"),
         "{e}"
+    );
+}
+
+#[test]
+fn a_views_merged_source_arrives_whole() {
+    let view = (
+        "types/paid.yaml",
+        "name: paid\nfields:\n  partner: reference(partner)\n  invoices: number\n  paid: decimal\n\
+         view:\n  source: invoice\n  group_by: partner\n  measures:\n    invoices: \"count()\"\n  \
+         merge:\n    - source: payment\n      where: \"amount > 0\"\n      group_by: payer\n      \
+         measures:\n        paid: \"sum(amount)\"\n",
+    );
+    let invoice = (
+        "types/invoice.yaml",
+        "name: invoice\nfields:\n  partner: reference(partner)\n",
+    );
+    let bundle = load(&[PARTNER, PAYMENT, invoice, view]).expect("a view with a merge loads");
+    let merge = bundle
+        .declarations
+        .iter()
+        .find_map(|d| match d {
+            Declaration::Type(t) if t.name == "paid" => t.view.as_ref().map(|v| v.merge.clone()),
+            _ => None,
+        })
+        .expect("the view is declared");
+    assert_eq!(
+        merge,
+        [ViewSource {
+            source: TypeName::new("payment"),
+            r#where: Some(text("amount > 0")),
+            group_by: vec![FieldName::new("payer")],
+            measures: vec![Measure {
+                name: FieldName::new("paid"),
+                expr: text("sum(amount)"),
+            }],
+        }]
     );
 }
