@@ -17,7 +17,10 @@
 //! - **7**: an event whose declaration calls `retired` in any expression
 //!   it keeps, in the same places.
 //! - **8**: an event whose declaration is a view with `params`, or calls
-//!   `param` in any expression it keeps, in the same places.
+//!   `param` in any expression it keeps, in the same places; and a verb
+//!   on its type: declared with `scope: type` (a `declared` event, a
+//!   proposed `declare`), called (`verb_called` without `key`) or proposed
+//!   (a `call` without `key`).
 //!
 //! The store appends each event at the greatest of the lake's version and
 //! the one [`needed`] answers, and refuses, when it reads the log, an
@@ -25,13 +28,13 @@
 
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::expr::{Condition, Expr, Func};
-use lakelands_api::ontology::VerbEffect;
+use lakelands_api::ontology::{VerbEffect, VerbScope};
 use lakelands_api::write::{Declaration, ProposedWrite};
 
 /// The lowest format version that can carry `body`, with `upstream` or
 /// without it.
 pub fn needed(body: &EventBody, upstream: bool) -> u32 {
-    if declares_view_params(body) {
+    if declares_view_params(body) || declares_a_verb_on_its_type(body) || calls_with_no_key(body) {
         return 8;
     }
     if calls_retired(body) {
@@ -112,6 +115,27 @@ pub fn declares_view_params(body: &EventBody) -> bool {
     })
 }
 
+/// Whether a declaration the event carries is a verb on its type.
+pub fn declares_a_verb_on_its_type(body: &EventBody) -> bool {
+    any_declaration(
+        body,
+        |d| matches!(d, Declaration::Verb(v) if v.scope == VerbScope::Type),
+    )
+}
+
+/// Whether the event is a call of a verb on its type, made or proposed:
+/// `verb_called`, or a proposed `call`, without a key.
+pub fn calls_with_no_key(body: &EventBody) -> bool {
+    matches!(
+        body,
+        EventBody::VerbCalled { key: None, .. }
+            | EventBody::WriteProposed {
+                write: ProposedWrite::Call { key: None, .. },
+                ..
+            }
+    )
+}
+
 /// Whether a declaration the event carries is a trigger with `max_depth`.
 pub fn caps_a_trigger(body: &EventBody) -> bool {
     any_declaration(
@@ -127,7 +151,11 @@ pub fn below(event: &Event) -> Option<String> {
     if event.v >= need {
         return None;
     }
-    let what = if need == 8 {
+    let what = if need == 8 && declares_a_verb_on_its_type(&event.body) {
+        "declares a verb on its type".to_owned()
+    } else if need == 8 && calls_with_no_key(&event.body) {
+        "calls a verb with no key".to_owned()
+    } else if need == 8 {
         "declares a view's parameters".to_owned()
     } else if need == 7 {
         "declares a call of `retired`".to_owned()

@@ -10,7 +10,7 @@ and reads exactly as before. Version 3 adds the envelope member
 the proposal of a declaration or a migration. Version 5 adds a
 declaration's `annotations`. Version 6 adds a derived relation and a trigger's `max_depth`.
 Version 7 adds a call of `retired` in a declaration. Version 8 adds a
-view's `params` and a call of `param`. §6 says
+view's `params` and a call of `param`, and a verb called on its type. §6 says
 which event needs which version.
 
 A lake's event log is its truth (`docs/decisions/001-the-log-is-the-truth.md`).
@@ -312,7 +312,7 @@ the rules are deterministic, so a replay reproduces them.
 
 | Kind | Payload | Fold |
 |---|---|---|
-| `verb_called` | `verb`, `key`, `payload` | A verb ran. Its writes follow as `record_upserted` events with `cause` set to this position and `procedure` naming the verb. |
+| `verb_called` | `verb`, `key`, `payload` | A verb ran. Its writes follow as `record_upserted` events with `cause` set to this position and `procedure` naming the verb. From version 8 on, a verb declared on its type (`scope: type`) is called with no record, and `key` is left out. |
 | `write_proposed` | `proposal`, `write`, `why` | A write was recorded as a proposal instead of being applied (`docs/decisions/013-verbs-run-by-declared-risk.md`). `write.write` is `upsert`, `retire` or `call`, with that write's arguments; from version 4 on also `declare`, a set of declarations, or `migrate`, a migration with its preflight's report (Appendix A). |
 | `write_accepted` | `proposal` | The proposal was accepted. Its write follows in the same append, with `cause` set to this position and the proposer as `writer`: for `declare` the `declared` events, for `migrate` the `migrated` event (the link types the store derives keep `system:lakelands` as writer). |
 | `write_rejected` | `proposal`, `reason` | The proposal was rejected; nothing else is written. |
@@ -330,7 +330,8 @@ kind>:<function>`, `embed:<model>` or `verb:<executor>:<verb>`. `input`
 is the SHA-256 of the canonical bytes of everything the seam received
 except the lake (which the event already names): for a function,
 `{ "function", "inputs", "config" }`; for an embedding, `{ "texts" }`;
-for a verb, `{ "verb", "record", "payload", "position" }`. Two calls with
+for a verb, `{ "verb", "record", "payload", "position" }`, `record`
+null for a verb called on its type. Two calls with
 the same `seam` and `input` are the same call, and a replay reads the
 recorded output for it.
 
@@ -579,7 +580,7 @@ carries a lower `v` than the event before it.
 | 5 | A declaration's `annotations` (Appendix A): on a type, a field or a relation, anywhere in the declaration a `declared` event carries, in a `migrated` event's `to`, or in a proposed `declare` or `migrate`. A lake writes the version it had until its first event whose declaration holds a non-empty `annotations`, which carries `v` 5, as does every event after it; a version-4 (or older) event that carries annotations is refused, naming them. A version-4 reader refuses the version-5 events rather than refusing a member it does not know. An annotation is never part of the schema hash (§2.2). |
 | 6 | A derived relation, a relation declaration's `derived`, and a trigger's `max_depth` (Appendix A). A lake writes the version it had until its first event whose declaration holds a relation with `derived` or is a trigger with `max_depth` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`), which carries `v` 6, as does every event after it; a version-5 (or older) event that carries one is refused, naming it. A version-5 reader refuses the version-6 events rather than refusing a member it does not know. `derived` is never part of the schema hash (§2.2). Version 6 took both members while it was untagged; a tagged version is closed. |
 | 7 | A call of `retired` in a declaration's expressions (Appendix B): in a trigger's `when`, the one place it means something. A lake writes the version it had until its first event whose declaration calls `retired` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`), which carries `v` 7, as does every event after it; a version-6 (or older) event that calls it is refused, naming it. A version-6 reader refuses the version-7 events rather than reading a guard it cannot evaluate, which would never fire. |
-| 8 | A view's `params` and a call of `param` in a declaration's expressions (Appendix A, Appendix B): a view may declare parameters, which a read binds and its `where` and measures read with `param('name')`. A lake writes the version it had until its first event whose declaration is a view with a non-empty `params`, or calls `param` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`), which carries `v` 8, as does every event after it; a version-7 (or older) event that carries either is refused, naming it. A version-7 reader refuses the version-8 events rather than computing a view whose parameters it cannot bind. `params` is part of the schema hash only when it is not empty (§2.2). |
+| 8 | A view's `params` and a call of `param` in a declaration's expressions (Appendix A, Appendix B): a view may declare parameters, which a read binds and its `where` and measures read with `param('name')`. A lake writes the version it had until its first event whose declaration is a view with a non-empty `params`, or calls `param` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`), which carries `v` 8, as does every event after it; a version-7 (or older) event that carries either is refused, naming it. A version-7 reader refuses the version-8 events rather than computing a view whose parameters it cannot bind. `params` is part of the schema hash only when it is not empty (§2.2). The same version adds a verb called on its type (`docs/decisions/013-verbs-run-by-declared-risk.md`, extended): a verb declaration's `scope: type` (in a `declared` event or a proposed `declare`); a `verb_called` without `key`; and a proposed `call` without `key`. A lake writes the version it had until its first such event, which carries `v` 8, and a version-7 (or older) event that carries one is refused, naming it. Version 8 took both while it was untagged. |
 
 ## Appendix A. Encodings
 
@@ -597,6 +598,7 @@ below; no other spelling is read.
 | a relation's `cardinality` | `one_to_one`, `one_to_many`, `many_to_one`, `many_to_many` |
 | a verb's `risk` | `low`, `medium`, `high` |
 | a verb's `effect` | `write` (with `set`), `external` (with `executor`) |
+| a verb's `scope` (version 8; default `record`, which is never written) | `record`, `type` |
 | `declaration.declare` | `type`, `value_type`, `verb`, `trigger`, `object_set`, `function` |
 | a proposal's `write.write` | `upsert`, `retire`, `call` |
 
@@ -639,7 +641,8 @@ declaration, the members of a `type` declaration without `declare`;
 
 `write_proposed.write` is the proposed write with its arguments:
 `upsert` carries `type`, `key`, `patch`; `retire` carries `type`, `key`;
-`call` carries `verb`, `key`, `payload`. Each also carries `opts`
+`call` carries `verb`, `key`, `payload`, and from version 8 on leaves
+`key` out for a verb called on its type. Each also carries `opts`
 (default `{}`), with `expected_version` and `idempotency_key` when given.
 From version 4 on, `declare` carries `declarations`, a list of
 declarations as `declared` carries one each; `migrate` carries

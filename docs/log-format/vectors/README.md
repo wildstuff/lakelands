@@ -22,10 +22,12 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `v8.json`: one version-8 event after `v7.json`'s position 16: a
+- `v8.json`: three version-8 events after `v7.json`'s position 16: a
   `declared` view over `slip` whose `where` reads a parameter,
-  `param('shelf')`; and `negative`, the same event written as version 7,
-  which a reader refuses.
+  `param('shelf')`; a `declared` verb on the type `slip`
+  (`scope: type`); and its `verb_called`, with no `key`. `negative` is
+  the first written as version 7, `negative_verb` the second and
+  `negative_call` the third, each of which a reader refuses.
 - `v7.json`: one version-7 event after `v6.json`'s position 15: a
   `declared` trigger whose guard is `retired()`; and `negative`, the same
   event written as version 6, which a reader refuses.

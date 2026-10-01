@@ -1,7 +1,8 @@
 use lakelands_api::expr::{Condition, Expr, Literal};
 use lakelands_api::ontology::{
     Assignment, Authority, Cardinality, FieldDecl, FieldType, Measure, OnInputChange, RelationDecl,
-    Risk, StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, ViewDecl,
+    Risk, StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, VerbScope,
+    ViewDecl,
 };
 use lakelands_api::write::{Declaration, FunctionDecl, ObjectSetDecl};
 use lakelands_api::{FieldName, RelationName, TypeName, ValueTypeName, VerbName};
@@ -1122,6 +1123,38 @@ fn a_verb_needs_exactly_one_effect() {
             ),
         ],
         Problem::Contradiction,
+    );
+}
+
+#[test]
+fn a_verb_doc_carries_its_scope() {
+    let verb = |body: &str| {
+        let b = load(&[PARTNER, ("verbs/v.yaml", body)]).unwrap();
+        b.declarations
+            .into_iter()
+            .find_map(|d| match d {
+                Declaration::Verb(v) => Some(v),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let on_type = verb("name: v\non: partner\nscope: type\nrisk: low\nexecutor: crm\n");
+    assert_eq!(on_type.scope, VerbScope::Type);
+    let on_record = verb("name: v\non: partner\nrisk: low\nexecutor: crm\n");
+    assert_eq!(
+        on_record.scope,
+        VerbScope::Record,
+        "a record is the default"
+    );
+    one(
+        &[
+            PARTNER,
+            (
+                "verbs/v.yaml",
+                "name: v\non: partner\nscope: table\nrisk: low\nexecutor: crm\n",
+            ),
+        ],
+        Problem::Malformed,
     );
 }
 

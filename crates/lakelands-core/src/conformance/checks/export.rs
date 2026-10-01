@@ -601,8 +601,8 @@ fn import_seams() -> lakelands_api::seam::Seams {
 /// writer (a second lease, a greater fence), a re-key (version 2), a
 /// restricted and a retired invoice, an annotated type with a derived
 /// relation (version 6) and a derived `date_bucket` field, a trigger whose
-/// guard calls `retired` (version 7), a view with a parameter (version 8),
-/// a record ingested with an upstream,
+/// guard calls `retired` (version 7), a view with a parameter and a verb
+/// called on its type (version 8), a record ingested with an upstream,
 /// a second checkpoint and more invoices.
 /// Answers the
 /// second writer's handle and a position before the second checkpoint.
@@ -676,6 +676,24 @@ async fn exported_lake(
     cat.declare(&own, up_to)
         .await
         .must("declaring a view with a parameter")?;
+    // Format version 8 too: a verb on its type, called with no key.
+    let print: lakelands_api::write::Declaration = serde_json::from_value(json!({
+        "declare": "verb", "name": "print_stamp", "on": "stamp", "scope": "type",
+        "risk": "low", "effect": "external", "executor": crate::conformance::backing::EXECUTOR
+    }))
+    .expect("a declaration");
+    cat.declare(&own, print)
+        .await
+        .must("declaring a verb on its type")?;
+    cat.call(
+        &own,
+        &"print_stamp".into(),
+        None,
+        Default::default(),
+        lakelands_api::WriteOpts::default(),
+    )
+    .await
+    .must("calling `print_stamp` on its type")?;
     let mut read_from = crate::conformance::fixture::source_record(
         "stamp",
         "s1",

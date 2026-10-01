@@ -104,3 +104,42 @@ moved. A change the head no longer admits refuses the accept, naming
 why, and the proposal stays pending. What the accept declares is logged
 in its append as the proposer's write, caused by the acceptance, and
 takes the next versions and schema hashes there, not at the proposal.
+
+## Extended: a verb called on its type (lakelands#277)
+
+An effect that creates something outside the lake has no record to be
+called on yet: a payment made in another system, a ticket opened, a
+customer registered upstream before the lake holds them. Calling such a
+verb on some other record would take its grants from the wrong type and
+file the effect in the wrong history. Running it outside the lake would
+lose the declared risk, the proposal, the idempotency and the recorded
+output. So a verb may be declared on its type, `scope: type`, and it is
+called with no key.
+
+- **Grants.** They are its type's, as for any external verb: write
+  access to `on`.
+- **Risk.** It decides as it does for every verb. `low` runs at once;
+  anything else becomes a proposal whose call carries no key, and
+  accepting it runs the verb as the proposer.
+- **The log.** `verb_called` carries no key. The executor is handed no
+  record, and its answer is recorded as for any external verb, caused by
+  the event that made it due. A retry with the same idempotency key
+  answers the first outcome and runs nothing again.
+- **Only an external effect.** A verb on its type reaches outside the
+  lake. A `write` effect sets fields of a record, and `requires` reads
+  one, so a declaration with either is refused as invalid, naming the
+  verb. Creating a record in the lake needs no anchor: it is `upsert`,
+  or a proposal of one.
+- **The key must fit the scope.** A key passed to a verb on its type, no
+  key passed to a verb on a record, and an expected version with no key
+  (there is no record version to compare) are each refused as invalid,
+  naming the verb. This is checked before grants are read or anything is
+  appended.
+- **A redeclaration between a proposal and its acceptance.** A pending
+  proposal can outlive a change of the verb's declaration. Accepting
+  checks the scope at the head again, and a mismatch refuses the accept
+  with the same text; the proposal stays pending.
+
+The default scope, `record`, is never written, so every declaration made
+before keeps its bytes.
+

@@ -657,11 +657,23 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
         }
         Declaration::Verb(v) => {
             name("verb", v.name.as_str())?;
+            // A verb on its type has no record: nothing for a write effect
+            // to set, nothing for `requires` to read (013, extended).
             if v.scope == VerbScope::Type {
-                return Err(invalid(format!(
-                    "verb `{}` is declared on its type, which this store does not take yet",
-                    v.name
-                )));
+                if matches!(v.effect, VerbEffect::Write { .. }) {
+                    return Err(invalid(format!(
+                        "verb `{}` is declared on the type `{}`, and a write effect sets \
+                         fields of a record it does not have",
+                        v.name, v.on
+                    )));
+                }
+                if v.requires.is_some() {
+                    return Err(invalid(format!(
+                        "verb `{}` is declared on the type `{}`; `requires` reads a record it \
+                         does not have",
+                        v.name, v.on
+                    )));
+                }
             }
             let t = o.ty(&v.on).map_err(|_| {
                 invalid(format!(

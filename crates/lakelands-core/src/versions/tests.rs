@@ -220,3 +220,62 @@ fn a_view_with_parameters_needs_format_8_and_says_so_below_it() {
         Some("a format 7 event declares a view's parameters, which format 8 added")
     );
 }
+
+#[test]
+fn a_verb_on_its_type_needs_format_8_declared_called_or_proposed() {
+    let verb = |scope: Option<&str>| {
+        let mut v = json!({"declare": "verb", "name": "create", "on": "payment",
+                           "risk": "low", "effect": "external", "executor": "erp"});
+        if let Some(s) = scope {
+            v["scope"] = json!(s);
+        }
+        declaration(v)
+    };
+    let declared = |d: Declaration| EventBody::Declared {
+        declaration: d,
+        schema_hash: None,
+        version: 1,
+    };
+    assert_eq!(needed(&declared(verb(Some("type"))), false), 8);
+    assert_eq!(needed(&declared(verb(None)), false), 1);
+    let called = |key: Option<&str>| EventBody::VerbCalled {
+        verb: "create".into(),
+        key: key.map(Into::into),
+        payload: Default::default(),
+    };
+    assert_eq!(needed(&called(None), false), 8);
+    assert_eq!(needed(&called(Some("k")), false), 1);
+    let proposed = |key: Option<&str>| EventBody::WriteProposed {
+        proposal: "p".into(),
+        write: ProposedWrite::Call {
+            verb: "create".into(),
+            key: key.map(Into::into),
+            payload: Default::default(),
+            opts: Default::default(),
+        },
+        why: String::new(),
+    };
+    assert_eq!(needed(&proposed(None), false), 8);
+    assert_eq!(needed(&proposed(Some("k")), false), 1);
+    let event = |body: EventBody| -> Event {
+        let mut e: Event = serde_json::from_value(json!({
+            "v": 7, "lake": "l", "position": 1, "id": "0".repeat(32),
+            "prev": "0".repeat(64), "known_at": "2026-01-01T00:00:00.000000Z",
+            "writer": "system:lakelands", "origin": "system",
+            "context": {"origin": "direct", "depth": 0}, "fence": 1,
+            "body": {"kind": "checkpoint", "through": 0, "hash": "0".repeat(64), "segments": []},
+            "hash": "0".repeat(64)
+        }))
+        .unwrap();
+        e.body = body;
+        e
+    };
+    assert_eq!(
+        below(&event(declared(verb(Some("type"))))).as_deref(),
+        Some("a format 7 event declares a verb on its type, which format 8 added")
+    );
+    assert_eq!(
+        below(&event(called(None))).as_deref(),
+        Some("a format 7 event calls a verb with no key, which format 8 added")
+    );
+}
