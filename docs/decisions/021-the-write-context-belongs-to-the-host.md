@@ -87,3 +87,15 @@ trigger's ceiling names the firing. Suppressing the firing itself past
 the ceiling would need no cause, but it would drop the durable fact the
 feed promises (004). So the firing is always appended, and the reaction
 is what is refused.
+
+## Extended: an effect without a record (lakelands#277)
+
+A verb called on its type
+(`docs/decisions/013-verbs-run-by-declared-risk.md`, extended) has no
+record to anchor its effect. Lineage needs no new mechanism for it. The
+host's `cause` lands on the call's first event, its `verb_called`, as on
+any other. A record the host writes afterwards, as the result of the
+effect (the payment it created, the ticket it opened), names that
+`verb_called` as its own `cause`. So the record's history leads back to
+the call, and the call to whatever the host said caused it.
+

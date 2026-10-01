@@ -268,6 +268,7 @@ pub fn fixture() -> Vec<Declaration> {
         Declaration::Verb(VerbDecl {
             name: "approve".into(),
             on: INVOICE.into(),
+            scope: Default::default(),
             payload: Vec::new(),
             risk: Risk::Low,
             requires: None,
@@ -277,6 +278,7 @@ pub fn fixture() -> Vec<Declaration> {
         Declaration::Verb(VerbDecl {
             name: "pay".into(),
             on: INVOICE.into(),
+            scope: Default::default(),
             payload: vec![text("reference")],
             risk: Risk::High,
             requires: Some(Condition::from("status = 'approved'")),
@@ -1009,6 +1011,7 @@ pub async fn a_verb_tool_says_what_its_risk_does(store: Arc<dyn LakeStore>) {
         let verb = VerbDecl {
             name: name.into(),
             on: INVOICE.into(),
+            scope: Default::default(),
             payload: Vec::new(),
             risk,
             requires: None,
@@ -1055,7 +1058,7 @@ pub async fn a_low_risk_verb_runs_at_once(store: Arc<dyn LakeStore>) {
         .call(
             &f.cast.clerk,
             &VerbName::from("approve"),
-            &key("INV-1"),
+            Some(&key("INV-1")),
             Patch::new(),
             WriteOpts::default(),
         )
@@ -1079,7 +1082,7 @@ pub async fn a_riskier_verb_is_proposed_and_accept_applies_it(store: Arc<dyn Lak
         .call(
             &f.cast.clerk,
             &VerbName::from("pay"),
-            &key("INV-1"),
+            Some(&key("INV-1")),
             patch(&[("reference", json!("TX-9"))]),
             WriteOpts::default(),
         )
@@ -1148,7 +1151,7 @@ pub async fn a_rejected_proposal_writes_nothing_and_stays_decided(store: Arc<dyn
         .call(
             &f.cast.clerk,
             &VerbName::from("pay"),
-            &key("INV-1"),
+            Some(&key("INV-1")),
             Patch::new(),
             WriteOpts::default(),
         )
@@ -1182,7 +1185,7 @@ pub async fn only_a_reviewer_decides_proposals(store: Arc<dyn LakeStore>) {
         .call(
             &f.cast.clerk,
             &VerbName::from("pay"),
-            &key("INV-1"),
+            Some(&key("INV-1")),
             Patch::new(),
             WriteOpts::default(),
         )
@@ -1277,7 +1280,7 @@ pub async fn a_proposer_sees_only_its_own_proposals(store: Arc<dyn LakeStore>) {
                 .call(
                     &who,
                     &VerbName::from("pay"),
-                    &key("INV-1"),
+                    Some(&key("INV-1")),
                     Patch::new(),
                     WriteOpts::default(),
                 )
@@ -2604,7 +2607,7 @@ pub async fn schema_hashes_and_proposal_ids_have_the_stores_form(store: Arc<dyn 
         };
         async move {
             match cat
-                .call(&clerk, &"pay".into(), &key("INV-1"), patch(&[]), opts)
+                .call(&clerk, &"pay".into(), Some(&key("INV-1")), patch(&[]), opts)
                 .await
                 .expect("pay is proposed")
             {

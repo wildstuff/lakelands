@@ -16,7 +16,7 @@ use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 
 use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::ontology::{
-    Annotations, Authority, Cardinality, OnInputChange, Risk, StorageKind,
+    Annotations, Authority, Cardinality, OnInputChange, Risk, StorageKind, VerbScope,
 };
 
 /// `value_types/<name>.yaml`.
@@ -174,6 +174,8 @@ pub(super) struct ViewDoc {
 pub(super) struct VerbDoc {
     pub name: String,
     pub on: String,
+    #[serde(default)]
+    pub scope: VerbScope,
     pub risk: Risk,
     #[serde(default)]
     pub payload: Named<FieldDoc>,

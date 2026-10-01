@@ -104,8 +104,9 @@ pub struct VerbInvocation {
     /// The record it was called on, whole and unmasked: the executor is
     /// the host's own code, not a caller, and receives the record as the
     /// store holds it by design. What it may release is the host's to
-    /// decide.
-    pub record: Record,
+    /// decide. `None` for a verb called on its type, which has no record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<Record>,
     /// The payload.
     pub payload: Patch,
     /// The position of the `VerbCalled` (or `WriteAccepted`) event that

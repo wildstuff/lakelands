@@ -214,10 +214,20 @@ impl Catalog for RemoteCatalog {
         &self,
         who: &Principal,
         verb: &VerbName,
-        key: &RecordKey,
+        key: Option<&RecordKey>,
         payload: Patch,
         opts: WriteOpts,
     ) -> Result<Outcome> {
+        // A verb on its type takes the keyless route, which the server's
+        // REST door does not serve yet (lakelands#277, the door half).
+        let key = key.ok_or_else(|| Error::Refused {
+            field: None,
+            reason: Refusal::Invalid {
+                message: format!(
+                    "verb `{verb}` is called without a key, which this client does not send yet"
+                ),
+            },
+        })?;
         let path = format!(
             "verbs/{}/{}",
             seg(verb.as_str(), "the verb")?,

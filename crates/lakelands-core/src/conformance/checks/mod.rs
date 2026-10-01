@@ -56,6 +56,7 @@ mod triggers;
 mod value_types;
 mod values;
 mod vector_index;
+mod verbs_on_type;
 mod versions;
 mod view_params;
 mod views;
@@ -321,6 +322,12 @@ pub const ALL: &[Check] = &[
     embeddings::EMBED_RULES,
     embeddings::EMBED_BATCH,
     proposals::EXECUTOR_RECORDED,
+    verbs_on_type::ON_TYPE_RUNS,
+    verbs_on_type::ON_TYPE_PROPOSED,
+    verbs_on_type::ON_TYPE_GRANTS,
+    verbs_on_type::ON_TYPE_IDEMPOTENT,
+    verbs_on_type::ON_TYPE_KEY,
+    verbs_on_type::ON_TYPE_DECLARED,
     concurrency::WRITES_LAND_ONCE,
     concurrency::DECLARATION_ORDERED,
     concurrency::READS_AT_A_POSITION,

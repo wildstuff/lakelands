@@ -66,6 +66,7 @@ async fn rest_lake(backend: Backend) -> Arc<dyn LakeStore> {
             Declaration::Verb(VerbDecl {
                 name: "notify".into(),
                 on: "invoice".into(),
+                scope: Default::default(),
                 payload: Vec::new(),
                 risk: Risk::Low,
                 requires: None,

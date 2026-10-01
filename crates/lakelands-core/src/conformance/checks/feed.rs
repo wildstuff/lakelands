@@ -431,7 +431,7 @@ async fn a_feed_filtered_by_key_answers_that_records_events_only(
     cat.call(
         own,
         &"approve".into(),
-        &"INV-1".into(),
+        Some(&"INV-1".into()),
         crate::conformance::fixture::patch(json!({})),
         lakelands_api::WriteOpts::default(),
     )

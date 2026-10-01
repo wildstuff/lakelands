@@ -102,7 +102,7 @@ impl Catalog for DownCatalog {
         relation: &'life4 lakelands_api::RelationName, to: &'life5 RecordKey, opts: WriteOpts
     ) -> Outcome);
     refuse!(call<'life1, 'life2, 'life3>(
-        who: &'life1 Principal, verb: &'life2 VerbName, key: &'life3 RecordKey,
+        who: &'life1 Principal, verb: &'life2 VerbName, key: Option<&'life3 RecordKey>,
         payload: Patch, opts: WriteOpts
     ) -> Outcome);
     refuse!(query<'life1>(who: &'life1 Principal, pattern: Pattern) -> Reply<QueryResult>);

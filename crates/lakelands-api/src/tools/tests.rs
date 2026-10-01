@@ -147,6 +147,7 @@ fn a_verb_is_one_tool_and_says_whether_it_runs() {
     let pay = VerbDescription {
         name: "pay_invoice".into(),
         on: "invoice".into(),
+        scope: Default::default(),
         payload: vec![field(
             "amount",
             StorageKind::Decimal,
@@ -386,6 +387,7 @@ fn the_generator_refuses_collisions_and_overlong_or_empty_names_itself() {
     let empty = VerbDescription {
         name: "".into(),
         on: "invoice".into(),
+        scope: Default::default(),
         payload: vec![],
         risk: Risk::Low,
         external: false,
@@ -402,6 +404,7 @@ fn a_verb_payload_offers_only_fields_the_principal_may_write() {
     let verb = VerbDescription {
         name: "settle".into(),
         on: "invoice".into(),
+        scope: Default::default(),
         payload: vec![
             field(
                 "amount",

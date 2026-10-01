@@ -74,6 +74,33 @@ fn invalid(message: impl Into<String>) -> Error {
     }
 }
 
+/// The record a call names, checked against the verb's scope before
+/// anything is read (013, extended): a verb on a record needs its key, a
+/// verb on its type takes none, and with no record there is no version
+/// to compare.
+fn scoped<'k>(
+    verb: &VerbDecl,
+    key: Option<&'k RecordKey>,
+    expected: Option<Version>,
+) -> Result<Option<&'k RecordKey>> {
+    use lakelands_api::ontology::VerbScope as On;
+    match (verb.scope, key) {
+        (On::Type, Some(_)) => Err(invalid(format!(
+            "verb `{}` is called on the type `{}`, not on a record: it takes no key",
+            verb.name, verb.on
+        ))),
+        (On::Record, None) => Err(invalid(format!(
+            "verb `{}` is called on a `{}` record: it needs that record's key",
+            verb.name, verb.on
+        ))),
+        (On::Type, None) if expected.is_some() => Err(invalid(format!(
+            "verb `{}` is called on the type `{}`: there is no record version to compare",
+            verb.name, verb.on
+        ))),
+        _ => Ok(key),
+    }
+}
+
 fn not_granted() -> Error {
     Error::Refused {
         field: None,
@@ -1009,7 +1036,8 @@ impl Call<'_> {
     /// The events a verb's call appends when it runs: `verb_called`, and
     /// for a write effect the record write it causes; then, apart, the
     /// triggers and object-set changes that write causes, as for any other
-    /// write. `n` drafts precede.
+    /// write. `n` drafts precede. `key` is `None` for a verb on its type,
+    /// which reads no record and writes none.
     #[allow(clippy::too_many_arguments)]
     fn run_verb(
         &self,
@@ -1017,13 +1045,27 @@ impl Call<'_> {
         view: &dyn ProjectionView,
         pending: &mut Pending,
         verb: &VerbDecl,
-        key: &RecordKey,
+        key: Option<&RecordKey>,
         payload: Patch,
         expected: Option<Version>,
         now: Timestamp,
         n: usize,
         as_whom: &Principal,
     ) -> Result<(Vec<Draft>, Vec<Draft>)> {
+        let called = self.draft(
+            now,
+            Origin::Authored,
+            EventBody::VerbCalled {
+                verb: verb.name.clone(),
+                key: key.cloned(),
+                payload: payload.clone(),
+            },
+        );
+        // A verb on its type is external and declares no `requires`: it
+        // reads no record and writes none.
+        let Some(key) = key else {
+            return Ok((vec![called], Vec::new()));
+        };
         let record = view
             .get(&verb.on, key)?
             .filter(|r| !r.retired)
@@ -1056,15 +1098,6 @@ impl Call<'_> {
                 });
             }
         }
-        let called = self.draft(
-            now,
-            Origin::Authored,
-            EventBody::VerbCalled {
-                verb: verb.name.clone(),
-                key: key.clone(),
-                payload: payload.clone(),
-            },
-        );
         let called_at = position_after(w, n);
         let mut drafts = vec![called];
         let mut reactions = Vec::new();
@@ -1142,7 +1175,7 @@ impl Call<'_> {
     pub fn call(
         &self,
         verb: &VerbName,
-        key: &RecordKey,
+        key: Option<&RecordKey>,
         payload: Patch,
         opts: WriteOpts,
     ) -> Result<(Outcome, Option<External>)> {
@@ -1160,6 +1193,7 @@ impl Call<'_> {
             .ok_or_else(|| Error::NotFound {
                 missing: Missing::Verb { name: verb.clone() },
             })?;
+        let key = scoped(&decl, key, opts.expected_version)?;
         if !self.verb_callable(&decl) {
             return Err(not_granted());
         }
@@ -1193,14 +1227,16 @@ impl Call<'_> {
             drafts.extend(reactions);
             drafts
         } else {
-            view.get(&decl.on, key)?
-                .filter(|r| !r.retired)
-                .ok_or_else(|| Error::NotFound {
-                    missing: Missing::Record {
-                        ty: decl.on.clone(),
-                        key: key.clone(),
-                    },
-                })?;
+            if let Some(key) = key {
+                view.get(&decl.on, key)?
+                    .filter(|r| !r.retired)
+                    .ok_or_else(|| Error::NotFound {
+                        missing: Missing::Record {
+                            ty: decl.on.clone(),
+                            key: key.clone(),
+                        },
+                    })?;
+            }
             let position = position_after(&w, 0);
             let id = opts.idempotency_key.as_ref().map_or_else(
                 || log::positional_id(&self.lake.id, position),
@@ -1217,7 +1253,7 @@ impl Call<'_> {
                     proposal: ProposalId::from(id.0.as_str()),
                     write: ProposedWrite::Call {
                         verb: verb.clone(),
-                        key: key.clone(),
+                        key: key.cloned(),
                         payload: payload.clone(),
                         opts: opts.clone(),
                     },
@@ -1238,7 +1274,7 @@ impl Call<'_> {
                     executor: executor.clone(),
                     verb: verb.clone(),
                     ty: decl.on.clone(),
-                    key: key.clone(),
+                    key: key.cloned(),
                     payload,
                     position: events[0].position,
                 })
@@ -1332,6 +1368,7 @@ impl Call<'_> {
                     .ok_or_else(|| Error::NotFound {
                         missing: Missing::Verb { name: verb.clone() },
                     })?;
+                scoped(&decl, key.as_ref(), opts.expected_version)?;
                 if !self.verb_callable(&decl) {
                     return Err(not_granted());
                 }
@@ -1342,7 +1379,7 @@ impl Call<'_> {
                         view.as_ref(),
                         &mut Pending::default(),
                         &decl,
-                        &key,
+                        key.as_ref(),
                         payload.clone(),
                         opts.expected_version,
                         now,
@@ -1537,6 +1574,10 @@ impl Call<'_> {
                     .ok_or_else(|| Error::NotFound {
                         missing: Missing::Verb { name: verb.clone() },
                     })?;
+                // The verb may have been declared again since: its scope at
+                // the head must still fit the proposal, or the accept is
+                // refused and the proposal stays pending.
+                let key = scoped(&decl, key.as_ref(), opts.expected_version)?;
                 if let VerbEffect::External { executor } = &decl.effect {
                     if !self
                         .lake
@@ -1553,7 +1594,7 @@ impl Call<'_> {
                         executor: executor.clone(),
                         verb: verb.clone(),
                         ty: decl.on.clone(),
-                        key: key.clone(),
+                        key: key.cloned(),
                         payload: payload.clone(),
                         position: accepted_at,
                     });
@@ -2547,8 +2588,8 @@ pub struct External {
     pub verb: VerbName,
     /// The record's type.
     pub ty: TypeName,
-    /// The record's key.
-    pub key: RecordKey,
+    /// The record's key; `None` for a verb called on its type.
+    pub key: Option<RecordKey>,
     /// The payload.
     pub payload: Patch,
     /// The position of the event that made it due.

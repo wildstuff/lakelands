@@ -73,6 +73,17 @@ fn bound(decl: &TypeDecl, given: &lakelands_api::Params) -> Result<()> {
     }
 }
 
+/// The record a verb is called on. A call without a key is refused here
+/// until the mock takes a verb called on its type (lakelands#277, the door
+/// half).
+fn keyed<'k>(verb: &VerbName, key: Option<&'k RecordKey>) -> Result<&'k RecordKey> {
+    key.ok_or_else(|| {
+        invalid(format!(
+            "verb `{verb}` is called without a key, which the in-memory mock does not take yet"
+        ))
+    })
+}
+
 fn invalid(message: impl Into<String>) -> Error {
     refused(Refusal::Invalid {
         message: message.into(),
@@ -984,6 +995,7 @@ fn describe_lake(lake: &LakeId, st: &State, who: &Principal) -> LakeDescription 
             .map(|v| VerbDescription {
                 name: v.name.clone(),
                 on: v.on.clone(),
+                scope: v.scope,
                 payload: v
                     .payload
                     .iter()
@@ -1618,7 +1630,7 @@ fn plan_run(
         Origin::Authored,
         EventBody::VerbCalled {
             verb: v.name.clone(),
-            key: key.clone(),
+            key: Some(key.clone()),
             payload,
         },
     );
@@ -1659,7 +1671,7 @@ fn plan_propose(
         ProposedWrite::Call {
             verb, key, payload, ..
         } => {
-            check_call(st, who, verb, key, payload)?;
+            check_call(st, who, verb, keyed(verb, key.as_ref())?, payload)?;
         }
         // A change of the ontology is checked as its door would check it;
         // the proposer needs no `schema` grant.
@@ -2174,11 +2186,12 @@ impl Catalog for MockCatalog {
         &self,
         who: &Principal,
         verb: &VerbName,
-        key: &RecordKey,
+        key: Option<&RecordKey>,
         payload: Patch,
         opts: WriteOpts,
     ) -> Result<Outcome> {
         self.admit_write(who)?;
+        let key = keyed(verb, key)?;
         let mut log = self.log();
         let (_, st) = self.state_at(&log, None)?;
         if let Some(o) = remembered(&st, who, &opts) {
@@ -2216,7 +2229,7 @@ impl Catalog for MockCatalog {
             let key_ = opts.idempotency_key.clone();
             let write = ProposedWrite::Call {
                 verb: verb.clone(),
-                key: key.clone(),
+                key: Some(key.clone()),
                 payload,
                 opts,
             };
@@ -2671,9 +2684,10 @@ impl Catalog for MockCatalog {
                 payload,
                 opts,
             } => {
-                let v = check_call(&st, &proposer, &verb, &key, &payload)?.clone();
-                check_version(&st, &v.on, &key, &opts)?;
-                Some(plan_run(&by, &mut batch, &v, &key, payload, &opts)?)
+                let key = keyed(&verb, key.as_ref())?;
+                let v = check_call(&st, &proposer, &verb, key, &payload)?.clone();
+                check_version(&st, &v.on, key, &opts)?;
+                Some(plan_run(&by, &mut batch, &v, key, payload, &opts)?)
             }
             // Checked again on the head; a refusal leaves the proposal
             // pending, since nothing is committed.

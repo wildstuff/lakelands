@@ -258,6 +258,7 @@ fn invoice_with_verbs() -> Vec<Declaration> {
     let write = |name: &str, risk, value: &str| VerbDecl {
         name: name.into(),
         on: "invoice".into(),
+        scope: Default::default(),
         payload: vec![field("note", StorageKind::Text)],
         risk,
         requires: None,
@@ -272,6 +273,7 @@ fn invoice_with_verbs() -> Vec<Declaration> {
     let pay = VerbDecl {
         name: "pay".into(),
         on: "invoice".into(),
+        scope: Default::default(),
         payload: vec![],
         risk: Risk::Low,
         requires: None,
@@ -315,7 +317,7 @@ async fn a_low_verb_runs_a_high_one_waits_for_acceptance_and_an_unbound_one_is_r
         .call(
             &o,
             &"settle".into(),
-            &"i1".into(),
+            Some(&"i1".into()),
             patch(json!({"note": "cash"})),
             Default::default(),
         )
@@ -349,7 +351,7 @@ async fn a_low_verb_runs_a_high_one_waits_for_acceptance_and_an_unbound_one_is_r
         .call(
             &o,
             &"write_off".into(),
-            &"i1".into(),
+            Some(&"i1".into()),
             patch(json!({})),
             Default::default(),
         )
@@ -389,7 +391,7 @@ async fn a_low_verb_runs_a_high_one_waits_for_acceptance_and_an_unbound_one_is_r
         .call(
             &o,
             &"pay".into(),
-            &"i1".into(),
+            Some(&"i1".into()),
             patch(json!({})),
             Default::default(),
         )
@@ -1181,8 +1183,8 @@ impl lakelands_api::seam::VerbExecutor for Bank {
         &self,
         invocation: &lakelands_api::seam::VerbInvocation,
     ) -> lakelands_api::Result<serde_json::Value> {
-        match invocation.record.key.as_str() {
-            "i1" => Ok(json!({"paid": true})),
+        match invocation.record.as_ref().map(|r| r.key.as_str()) {
+            Some("i1") => Ok(json!({"paid": true})),
             _ => Err(Error::Unavailable {
                 message: "the bank is closed".into(),
             }),
@@ -1225,7 +1227,7 @@ async fn an_external_verb_answers_its_executors_output_or_its_failure() {
             cat.call(
                 &o,
                 &"pay".into(),
-                &k.into(),
+                Some(&k.into()),
                 patch(json!({})),
                 Default::default(),
             )
@@ -1328,7 +1330,7 @@ async fn a_retried_external_verb_answers_its_first_position_and_output() {
             cat.call(
                 &o,
                 &"pay".into(),
-                &"i1".into(),
+                Some(&"i1".into()),
                 patch(json!({})),
                 WriteOpts {
                     idempotency_key: Some("pay-i1".into()),
@@ -1531,9 +1533,10 @@ impl lakelands_api::seam::VerbExecutor for Echo {
         &self,
         invocation: &lakelands_api::seam::VerbInvocation,
     ) -> lakelands_api::Result<serde_json::Value> {
+        let record = invocation.record.as_ref().expect("a verb on a record");
         Ok(json!({
-            "fields": invocation.record.fields,
-            "masked": invocation.record.masked,
+            "fields": record.fields,
+            "masked": record.masked,
         }))
     }
 }
@@ -1579,7 +1582,7 @@ async fn an_executor_receives_the_record_unmasked() {
         .call(
             &caller,
             &"pay".into(),
-            &"i1".into(),
+            Some(&"i1".into()),
             patch(json!({})),
             Default::default(),
         )
@@ -2402,7 +2405,7 @@ async fn retry_past_the_reach() {
     let first = {
         let (cat, o, key) = (cat.clone(), o.clone(), key.clone());
         tokio::spawn(async move {
-            cat.call(&o, &"pay".into(), &"i1".into(), patch(json!({})), key)
+            cat.call(&o, &"pay".into(), Some(&"i1".into()), patch(json!({})), key)
                 .await
                 .unwrap()
         })
@@ -2435,7 +2438,7 @@ async fn retry_past_the_reach() {
         "the call answers its output"
     );
     let again = cat
-        .call(&o, &"pay".into(), &"i1".into(), patch(json!({})), key)
+        .call(&o, &"pay".into(), Some(&"i1".into()), patch(json!({})), key)
         .await
         .unwrap();
     assert!(

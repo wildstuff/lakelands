@@ -582,6 +582,60 @@ fn the_version_8_view_with_parameters_recomputes_and_a_version_7_one_is_refused(
     );
 }
 
+#[test]
+fn the_version_8_verb_on_its_type_recomputes_and_a_version_7_one_is_refused() {
+    let v8 = read_json("v8.json");
+    let mut prev = v8["hashes"][0].as_str().unwrap().to_owned();
+    for (i, what) in [
+        (1, "declares a verb on its type"),
+        (2, "calls a verb with no key"),
+    ] {
+        let line = v8["lines"][i].as_str().unwrap();
+        let value: Value = serde_json::from_str(line).unwrap();
+        assert_eq!(
+            canonical::to_vec(&value),
+            line.as_bytes(),
+            "the line is canonical"
+        );
+        let event: Event = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(
+            canonical::of(&event),
+            line.as_bytes(),
+            "the contract writes it as the line"
+        );
+        let mut body = value;
+        body.as_object_mut().unwrap().remove("hash");
+        assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
+        assert_eq!(event.hash.0, v8["hashes"][i].as_str().unwrap());
+        assert_eq!(event.prev.0, prev, "it follows the event before it");
+        assert_eq!(event.v, 8);
+        assert_eq!(lakelands_core::versions::needed(&event.body, false), 8);
+        prev = event.hash.0.clone();
+        let name = if i == 1 {
+            "negative_verb"
+        } else {
+            "negative_call"
+        };
+        let negative: Event = serde_json::from_str(v8[name].as_str().unwrap()).unwrap();
+        assert_eq!(negative.v, 7);
+        let why = lakelands_core::versions::below(&negative).expect("refused");
+        assert!(
+            why.contains(what) && why.contains("format 8 added"),
+            "{why}"
+        );
+    }
+    let lakelands_api::event::EventBody::Declared {
+        declaration: Declaration::Verb(verb),
+        ..
+    } = &serde_json::from_str::<Event>(v8["lines"][1].as_str().unwrap())
+        .unwrap()
+        .body
+    else {
+        panic!("position 18 declares a verb");
+    };
+    assert_eq!(verb.scope, lakelands_api::ontology::VerbScope::Type);
+}
+
 /// The negative vector `negative/known-at-goes-back`: the first segment
 /// of the vectors with the last event's `known_at` set before the one
 /// before it, its hash made right. `export::verify` refuses it at that

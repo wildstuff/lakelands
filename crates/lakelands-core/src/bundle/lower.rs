@@ -496,6 +496,7 @@ pub(super) fn verb(l: &mut Lower<'_>, doc: VerbDoc) -> VerbDecl {
     let v = VerbDecl {
         name: VerbName::new(doc.name),
         on,
+        scope: doc.scope,
         payload,
         risk: doc.risk,
         requires,

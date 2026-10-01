@@ -160,7 +160,7 @@ pub(crate) async fn run(
         }
         Door::Call { verb } => {
             let w: Write = args(label, &a)?;
-            to_json(&c.call(who, verb, &w.key, w.payload, w.opts).await?)
+            to_json(&c.call(who, verb, Some(&w.key), w.payload, w.opts).await?)
         }
         Door::Describe => {
             #[derive(Deserialize)]

@@ -840,7 +840,8 @@ if declared `low`, on acceptance otherwise, as
 the store hands the executor a `VerbInvocation`: the lake, the verb, the
 record as it stands at the head when the executor is called, after the
 append that made the verb due and the function calls that append made
-due, whole and **unmasked**, the payload, and
+due, whole and **unmasked** (none for a verb called on its type, which
+has no record), the payload, and
 the position of the event that made it due. The lake and that position
 are the executor's dedup key. The executor is the host's code, bound by
 the host, and decides what it returns; the caller sees only the outcome

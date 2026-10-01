@@ -251,7 +251,7 @@ impl Catalog for Doors {
         &self,
         who: &Principal,
         verb: &VerbName,
-        key: &RecordKey,
+        key: Option<&RecordKey>,
         payload: Patch,
         opts: WriteOpts,
     ) -> Result<Outcome> {

@@ -13,7 +13,8 @@ export or a SQLite lake directory holds it instead, reading only
 feed, positions consecutive from 0 and naming their files in 20 digits,
 the hash chain from 64 zeros, every checkpoint against the position,
 the hash and the files before it, format versions from 1 to 8 that
-never go down, a derived relation only from version 6 on, a declaration's `annotations` only from version 5 on, a proposed declaration or migration only from version 4 on, `upstream` only from version 3 on and only on a
+never go down, a verb on its type (declared with `scope: type`, called or
+proposed with no `key`) only from version 8 on, a derived relation only from version 6 on, a declaration's `annotations` only from version 5 on, a proposed declaration or migration only from version 4 on, `upstream` only from version 3 on and only on a
 `record_ingested` event, and every `known_at` in its one form and never before
 the `known_at` before it (log-format §1.3). It prints one line
 per file and the last position and hash, or the position where the
@@ -148,6 +149,27 @@ def derives(body):
         d.get("declare") == "trigger" and "max_depth" in d for d in decls)
 
 
+def on_type(body):
+    """Whether the event body is a verb on its type, which version 8
+    added: declared with `scope: type` (in a `declared` event or a proposed
+    `declare`), or called (`verb_called`) or proposed (a `call`) without a
+    `key`."""
+    kind = body.get("kind")
+    if kind == "declared":
+        decls = [body["declaration"]]
+    elif kind == "write_proposed" and body.get("write", {}).get("write") == "declare":
+        decls = body["write"]["declarations"]
+    else:
+        decls = []
+    if any(d.get("declare") == "verb" and d.get("scope") == "type" for d in decls):
+        return True
+    if kind == "verb_called":
+        return "key" not in body
+    if kind == "write_proposed" and body.get("write", {}).get("write") == "call":
+        return "key" not in body["write"]
+    return False
+
+
 def annotated(body):
     """Whether a declaration the event body carries holds a non-empty
     `annotations`: on a type, its fields, its relations and their link
@@ -208,6 +230,8 @@ def verify_dir(root):
             proposed = event["body"].get("write", {}).get("write") if event["body"].get("kind") == "write_proposed" else None
             need(proposed not in ("declare", "migrate") or v >= 4,
                  f"a format {v} event proposes a declaration or a migration, which format 4 added")
+            need(not on_type(event["body"]) or v >= 8,
+                 f"a format {v} event declares or calls a verb on its type, which format 8 added")
             need(not derives(event["body"]) or v >= 6,
                  f"a format {v} event declares a derived relation or a trigger's `max_depth`, which format 6 added")
             need(not annotated(event["body"]) or v >= 5,
@@ -399,8 +423,9 @@ def main():
     for line, want in zip(v8["lines"], v8["hashes"]):
         event = json.loads(line)
         check(canonical(event) == line.encode("utf-8"), f"v8.json: position {event['position']} is canonical")
-        check(event["v"] == 8 and event["body"]["declaration"]["view"]["params"],
-              f"v8.json: position {event['position']} is a format 8 view with parameters")
+        check(event["v"] == 8 and (on_type(event["body"])
+                                   or event["body"]["declaration"]["view"]["params"]),
+              f"v8.json: position {event['position']} is a format 8 view with parameters or verb on its type")
         body = {k: v for k, v in event.items() if k != "hash"}
         check(sha(canonical(body)) == event["hash"] == want, f"v8.json: hash {want[:12]}…")
         check(event["prev"] == prev, f"v8.json: position {event['position']} follows the one before it")
@@ -410,6 +435,12 @@ def main():
     check(sha(canonical(body)) == negative8["hash"], "v8.json: the negative line's hash is its own")
     check(negative8["v"] == 7 and negative8["body"]["declaration"]["view"]["params"],
           "v8.json: the negative line declares a view's parameters in format 7, which a reader refuses")
+    for name in ("negative_verb", "negative_call"):
+        negative = json.loads(v8[name])
+        body = {k: v for k, v in negative.items() if k != "hash"}
+        check(sha(canonical(body)) == negative["hash"], f"v8.json: the {name} line's hash is its own")
+        check(negative["v"] == 7 and on_type(negative["body"]),
+              f"v8.json: the {name} line is a verb on its type in format 7, which a reader refuses")
     misplaced5 = json.loads(v5["misplaced"])
     body = {k: v for k, v in misplaced5.items() if k != "hash"}
     check(sha(canonical(body)) == misplaced5["hash"], "v5.json: the misplaced line's hash is its own")

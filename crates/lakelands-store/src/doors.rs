@@ -151,26 +151,33 @@ impl Doors {
             .ok_or_else(|| Error::Unbound {
                 seam: format!("the verb executor `{}`", ext.executor),
             })?;
-        let get = Get {
-            key: ext.key.clone(),
-            with_meta: false,
-            at: ReadAt::default(),
-            params: Default::default(),
-        };
         // The executor is the host's own code: it receives the record whole,
         // unmasked by the grants of whoever made the verb due. The caller
-        // sees only the outcome and the recorded output.
-        let host = Principal {
-            kind: lakelands_api::PrincipalKind::System,
-            id: "host".into(),
-            lake: self.lake.id.clone(),
-            grants: lakelands_api::Grants::owner(),
+        // sees only the outcome and the recorded output. A verb on its type
+        // has no record to hand it.
+        let record = match &ext.key {
+            Some(key) => {
+                let get = Get {
+                    key: key.clone(),
+                    with_meta: false,
+                    at: ReadAt::default(),
+                    params: Default::default(),
+                };
+                let host = Principal {
+                    kind: lakelands_api::PrincipalKind::System,
+                    id: "host".into(),
+                    lake: self.lake.id.clone(),
+                    grants: lakelands_api::Grants::owner(),
+                };
+                let ty = ext.ty.clone();
+                Some(
+                    self.read(&host, ReadAt::default(), move |r| r.get(&ty, &get))
+                        .await?
+                        .data,
+                )
+            }
+            None => None,
         };
-        let ty = ext.ty.clone();
-        let record = self
-            .read(&host, ReadAt::default(), move |r| r.get(&ty, &get))
-            .await?
-            .data;
         let invocation = VerbInvocation {
             lake: self.lake.id.clone(),
             verb: ext.verb.clone(),
@@ -311,14 +318,14 @@ impl Catalog for Doors {
         &self,
         who: &Principal,
         verb: &VerbName,
-        key: &RecordKey,
+        key: Option<&RecordKey>,
         payload: Patch,
         opts: WriteOpts,
     ) -> Result<Outcome> {
-        let (verb, key) = (verb.clone(), key.clone());
+        let (verb, key) = (verb.clone(), key.cloned());
         let seen = self.seen();
         let (outcome, external) = self
-            .write(who, move |c| c.call(&verb, &key, payload, opts))
+            .write(who, move |c| c.call(&verb, key.as_ref(), payload, opts))
             .await?;
         let outcome = self.settled(outcome, seen).await?;
         match external {
@@ -706,7 +713,7 @@ fn key_of(body: &EventBody) -> Option<&RecordKey> {
         | EventBody::RecordUnrestricted { key, .. }
         | EventBody::TriggerFired { key, .. }
         | EventBody::ObjectSetChanged { key, .. }
-        | EventBody::VerbCalled { key, .. } => Some(key),
+        | EventBody::VerbCalled { key: Some(key), .. } => Some(key),
         _ => None,
     }
 }
