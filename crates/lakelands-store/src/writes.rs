@@ -296,12 +296,31 @@ impl Call<'_> {
 }
 
 /// The outcome the first of an append's events stands for. A verb call or
-/// an acceptance answers what it caused: the write it made, followed along
-/// the causes (an accepted verb proposal: `write_accepted` causes
-/// `verb_called`, which causes the record write), so the outcome names the
+/// an acceptance answers what it wrote itself: an acceptance's own events
+/// follow it in its append (an accepted verb proposal: `write_accepted`,
+/// then `verb_called`, then the record write), so the outcome names the
 /// position the write is visible from and the record's new version.
+///
+/// `events` may run past the append, as a retry reads them, and a later
+/// write may name the call as its `cause` (a host's write of an effect's
+/// result, 021). So the call's own write is told by what the store wrote,
+/// never by `cause` alone: it is the very next event, caused by the call,
+/// with the verb as its `procedure` (which no door sets) and the call's
+/// writer. A verb with no write of its own answers at its own position.
 fn outcome_of(events: &[Event]) -> Outcome {
     let e = &events[0];
+    let wrote = match (&e.body, events.get(1)) {
+        // An acceptance always appends something after `write_accepted`.
+        (EventBody::WriteAccepted { .. }, Some(n)) => n.cause == Some(e.position),
+        (EventBody::VerbCalled { verb, .. }, Some(n)) => {
+            n.cause == Some(e.position)
+                && n.writer == e.writer
+                && n.procedure
+                    .as_ref()
+                    .is_some_and(|p| p.name == verb.as_str())
+        }
+        _ => false,
+    };
     match &e.body {
         EventBody::RecordUpserted { version, .. }
         | EventBody::RecordIngested { version, .. }
@@ -315,27 +334,8 @@ fn outcome_of(events: &[Event]) -> Outcome {
             proposal: proposal.clone(),
             why: why.clone(),
         },
-        EventBody::VerbCalled { .. } | EventBody::WriteAccepted { .. } => {
-            // What the call or the acceptance wrote: not a reaction to it,
-            // and not an external verb's recorded output, which answers at
-            // the verb's own position.
-            let caused = events.iter().skip(1).position(|n| {
-                n.cause == Some(e.position)
-                    && !matches!(
-                        n.body,
-                        EventBody::TriggerFired { .. }
-                            | EventBody::ObjectSetChanged { .. }
-                            | EventBody::OutputRecorded { .. }
-                    )
-            });
-            match caused {
-                Some(i) => outcome_of(&events[i + 1..]),
-                None => Outcome::Applied {
-                    position: e.position,
-                    version: None,
-                    output: None,
-                },
-            }
+        EventBody::VerbCalled { .. } | EventBody::WriteAccepted { .. } if wrote => {
+            outcome_of(&events[1..])
         }
         _ => Outcome::Applied {
             position: e.position,

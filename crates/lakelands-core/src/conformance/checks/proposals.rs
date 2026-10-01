@@ -575,3 +575,205 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
     );
     Ok(())
 }
+
+check!(
+    /// A retry answers the call's own outcome, not a later write naming
+    /// the call as its cause.
+    RETRY_EXTERNAL_PAST_HOST = a_retried_external_verb_answers_its_call_though_a_host_write_names_it,
+    "013 and 021, extended: a host write naming an external verb's `verb_called` as its cause does not become the call's outcome; a retry with the call's idempotency key answers the verb's position and its recorded output, for a verb on a record and one on its type"
+);
+
+check!(
+    /// A write verb's retry answers its own write.
+    RETRY_WRITE_PAST_HOST = a_retried_write_verb_answers_its_own_write_though_a_host_write_names_it,
+    "013 and 021, extended: a retry of a write verb answers the record write the verb itself made and its version, though a later host write names the verb's `verb_called` as its cause"
+);
+
+check!(
+    /// A retry of a proposed call answers the proposal, after its
+    /// acceptance too.
+    RETRY_PROPOSED_PAST_ACCEPT = a_retried_proposed_call_answers_its_proposal_after_it_is_accepted,
+    "013 and 015: a retry of a call that was proposed answers the proposal, its first outcome, after the proposal was accepted and a host write named the accepted call as its cause"
+);
+
+/// A host's write of `job` `key`, naming `cause` as what it follows from.
+async fn host_write(store: &dyn LakeStore, key: &str, cause: Position) -> Result<Outcome, Failure> {
+    use lakelands_api::principal::{WriteContext, WriteOrigin};
+    store
+        .catalog(WriteContext {
+            origin: WriteOrigin::Reactive,
+            depth: 1,
+            cause: Some(cause),
+        })
+        .upsert(
+            &owner(store),
+            &"job".into(),
+            &key.into(),
+            patch(json!({"status": "done"})),
+            WriteOpts::default(),
+        )
+        .await
+        .must("the host writing the effect's result, naming the call as its cause")
+}
+
+/// `job`, and the verbs on it: `ship` and `ship_any` external (the latter
+/// on its type) at `risk`, and `close` a write.
+async fn jobs(store: &dyn LakeStore, risk: &str) -> Result<Lake, Failure> {
+    use crate::conformance::backing::EXECUTOR;
+    let l = Lake::of(store);
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
+        .await?;
+    for verb in [
+        json!({"declare": "verb", "name": format!("ship_{risk}"), "on": "job", "risk": risk,
+               "effect": "external", "executor": EXECUTOR}),
+        json!({"declare": "verb", "name": format!("ship_any_{risk}"), "on": "job",
+               "scope": "type", "risk": risk, "effect": "external", "executor": EXECUTOR}),
+        json!({"declare": "verb", "name": "close", "on": "job", "risk": "low",
+               "effect": "write", "set": [{"field": "status", "value": "'closed'"}]}),
+    ] {
+        let d: Declaration = serde_json::from_value(verb)
+            .map_err(|e| Failure::new(format!("the check's verb does not read: {e}")))?;
+        cat.declare(own, d).await.must("declaring a verb")?;
+    }
+    Ok(l)
+}
+
+/// Call `verb` on `key` (or on its type) with the idempotency key `once`.
+async fn call_once(
+    l: &Lake,
+    verb: &str,
+    key: Option<&str>,
+    once: &str,
+) -> lakelands_api::Result<Outcome> {
+    let key = key.map(lakelands_api::RecordKey::from);
+    l.cat
+        .call(
+            &l.own,
+            &verb.into(),
+            key.as_ref(),
+            patch(json!({})),
+            WriteOpts {
+                idempotency_key: Some(lakelands_api::IdempotencyKey::from(once)),
+                ..WriteOpts::default()
+            },
+        )
+        .await
+}
+
+async fn a_retried_external_verb_answers_its_call_though_a_host_write_names_it(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = jobs(store.as_ref(), "low").await?;
+    l.upsert("job", "retry-ext", json!({"status": "open"}))
+        .await?;
+    for (verb, key) in [("ship_low", Some("retry-ext")), ("ship_any_low", None)] {
+        let once = format!("{verb}-once");
+        let first = call_once(&l, verb, key, &once)
+            .await
+            .must("calling the external verb")?;
+        let Outcome::Applied {
+            position,
+            output: Some(_),
+            ..
+        } = &first
+        else {
+            return Err(Failure::new(format!(
+                "`{verb}` answers `applied` with its output; it answered {first:?}"
+            )));
+        };
+        host_write(store.as_ref(), "retry-ext", *position).await?;
+        let again = call_once(&l, verb, key, &once)
+            .await
+            .must("retrying the external verb")?;
+        ensure!(
+            again == first,
+            "a retry of `{verb}` answers the first outcome, {first:?}, though a host write names \
+             the call as its cause; it answered {again:?}"
+        );
+    }
+    Ok(())
+}
+
+async fn a_retried_write_verb_answers_its_own_write_though_a_host_write_names_it(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = jobs(store.as_ref(), "low").await?;
+    l.upsert("job", "retry-write", json!({"status": "open"}))
+        .await?;
+    let first = call_once(&l, "close", Some("retry-write"), "close-once")
+        .await
+        .must("calling `close`")?;
+    let Outcome::Applied {
+        position,
+        version: Some(_),
+        ..
+    } = &first
+    else {
+        return Err(Failure::new(format!(
+            "`close` answers its write with the record's version; it answered {first:?}"
+        )));
+    };
+    let called = store
+        .feed()
+        .poll(Position(0), &FeedFilter::default(), 10_000)
+        .await
+        .must("reading the feed")?
+        .events
+        .into_iter()
+        .rev()
+        .find(|e| matches!(e.body, EventBody::VerbCalled { .. }) && e.position < *position)
+        .map(|e| e.position)
+        .ok_or_else(|| Failure::new("`close` appends `verb_called` before its write"))?;
+    host_write(store.as_ref(), "retry-write", called).await?;
+    let again = call_once(&l, "close", Some("retry-write"), "close-once")
+        .await
+        .must("retrying `close`")?;
+    ensure!(
+        again == first,
+        "a retry of `close` answers its own write, {first:?}, though a later host write names \
+         its `verb_called` at {called} as cause; it answered {again:?}"
+    );
+    Ok(())
+}
+
+async fn a_retried_proposed_call_answers_its_proposal_after_it_is_accepted(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = jobs(store.as_ref(), "medium").await?;
+    l.upsert("job", "retry-prop", json!({"status": "open"}))
+        .await?;
+    let first = call_once(&l, "ship_medium", Some("retry-prop"), "ship-medium-once")
+        .await
+        .must("calling `ship_medium`")?;
+    let (at, id) = proposal(&first)?;
+    let reviewer = principal(
+        store.as_ref(),
+        PrincipalKind::Human,
+        "reviewer",
+        Grants {
+            review: true,
+            ..Grants::default()
+        },
+    );
+    l.cat
+        .accept(&reviewer, &id)
+        .await
+        .must("the reviewer accepting the proposal")?;
+    let called = kinds_from(store.as_ref(), at)
+        .await?
+        .iter()
+        .position(|b| matches!(b, EventBody::VerbCalled { .. }))
+        .map(|i| Position(at.0 + i as u64))
+        .ok_or_else(|| Failure::new("accepting the proposal appends `verb_called`"))?;
+    host_write(store.as_ref(), "retry-prop", called).await?;
+    let again = call_once(&l, "ship_medium", Some("retry-prop"), "ship-medium-once")
+        .await
+        .must("retrying `ship_medium`")?;
+    ensure!(
+        again == first,
+        "a retry of a proposed call answers the proposal, {first:?}, after its acceptance and a \
+         host write naming the accepted call; it answered {again:?}"
+    );
+    Ok(())
+}
