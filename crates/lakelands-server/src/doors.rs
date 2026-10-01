@@ -81,21 +81,30 @@ fn read<T: DeserializeOwned>(
     })
 }
 
+/// An argument the catalog checks itself, before it reads anything, even
+/// where the tool's schema does not list it, so that its refusal says
+/// why: a read's `params` on a type that is not a view with parameters is
+/// refused saying the type declares none, and a `key` to a verb on its
+/// type naming the verb.
+fn catalog_answers(door: &Door, argument: &str) -> bool {
+    matches!(
+        (door, argument),
+        (Door::Find { .. } | Door::Get { .. }, "params") | (Door::Call { .. }, "key")
+    )
+}
+
 pub(crate) fn to_json<T: serde::Serialize>(v: &T) -> Value {
     serde_json::to_value(v).expect("contract types serialise")
 }
 
 /// Refuse an argument the door's input schema does not list, before
 /// anything runs: a misspelled `expected_version` must not turn a
-/// compare-and-set into an unconditional write. A read's `params` is the
-/// exception: the catalog lists it only for a view with parameters, and
-/// for any other type the store refuses it itself, before it reads
-/// anything, saying the type declares none.
+/// compare-and-set into an unconditional write. The exceptions are the
+/// catalog's to answer ([`catalog_answers`]).
 pub(crate) fn unknown_argument(spec: &ToolSpec, arguments: &Map<String, Value>) -> Option<Fault> {
     let listed = spec.input_schema["properties"].as_object();
-    let read = matches!(spec.door, Door::Find { .. } | Door::Get { .. });
     let key = arguments.keys().find(|k| {
-        !(read && k.as_str() == "params") && !listed.is_some_and(|p| p.contains_key(k.as_str()))
+        !catalog_answers(&spec.door, k) && !listed.is_some_and(|p| p.contains_key(k.as_str()))
     })?;
     Some(Fault::Arguments(
         format!(
@@ -122,6 +131,14 @@ pub(crate) async fn run(
         key: RecordKey,
         #[serde(default)]
         fields: Patch,
+        #[serde(flatten)]
+        opts: WriteOpts,
+    }
+    // A call's key is optional: a verb on its type takes none.
+    #[derive(Deserialize)]
+    struct Called {
+        #[serde(default)]
+        key: Option<RecordKey>,
         #[serde(default)]
         payload: Patch,
         #[serde(flatten)]
@@ -159,8 +176,8 @@ pub(crate) async fn run(
             to_json(&c.unlink(who, ty, &l.key, relation, &l.to, l.opts).await?)
         }
         Door::Call { verb } => {
-            let w: Write = args(label, &a)?;
-            to_json(&c.call(who, verb, Some(&w.key), w.payload, w.opts).await?)
+            let w: Called = args(label, &a)?;
+            to_json(&c.call(who, verb, w.key.as_ref(), w.payload, w.opts).await?)
         }
         Door::Describe => {
             #[derive(Deserialize)]

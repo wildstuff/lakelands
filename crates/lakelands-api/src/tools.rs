@@ -780,23 +780,31 @@ fn verb_tool(verb: &VerbDescription, lake: &LakeDescription) -> ToolSpec {
         .filter(|f| f.required)
         .map(|f| f.name.to_string())
         .collect();
-    let mut p = props([
-        (
-            "key",
-            json!({"type": "string",
-                       "description": format!("The key of the `{}` record.", verb.on)}),
-        ),
-        (
-            "payload",
-            json!({"type": "object", "properties": payload,
-                           "required": required, "additionalProperties": false}),
-        ),
-    ]);
+    let mut p = props([(
+        "payload",
+        json!({"type": "object", "properties": payload,
+                       "required": required, "additionalProperties": false}),
+    )]);
     write_opts(&mut p);
-    let what = verb
-        .description
-        .clone()
-        .unwrap_or_else(|| format!("Call `{}` on a `{}` record.", verb.name, verb.on));
+    // A verb on its type takes no key, and has no record version to
+    // compare: it takes neither.
+    let on_record = verb.scope.is_record();
+    if on_record {
+        p.insert(
+            "key".into(),
+            json!({"type": "string",
+                   "description": format!("The key of the `{}` record.", verb.on)}),
+        );
+    } else {
+        p.remove("expected_version");
+    }
+    let what = verb.description.clone().unwrap_or_else(|| {
+        if on_record {
+            format!("Call `{}` on a `{}` record.", verb.name, verb.on)
+        } else {
+            format!("Call `{}` on the type `{}`.", verb.name, verb.on)
+        }
+    });
     // By the risk alone: a `low` verb runs at once, an external one too.
     let how = match verb.risk {
         crate::ontology::Risk::Low => "It runs at once.",
@@ -805,7 +813,14 @@ fn verb_tool(verb: &VerbDescription, lake: &LakeDescription) -> ToolSpec {
     ToolSpec {
         name: tool_base(verb.name.as_str()),
         description: format!("{what} {how}"),
-        input_schema: obj(p, &["key", "payload"]),
+        input_schema: obj(
+            p,
+            if on_record {
+                &["key", "payload"]
+            } else {
+                &["payload"]
+            },
+        ),
         output_schema: outcome_schema(),
         door: Door::Call {
             verb: verb.name.clone(),

@@ -16,7 +16,7 @@ use lakelands_api::id::{
     VerbName, Version,
 };
 use lakelands_api::ontology::{
-    Authority, FieldDecl, Risk, TypeDecl, VerbDecl, VerbEffect, ViewDecl,
+    Authority, FieldDecl, Risk, TypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl,
 };
 use lakelands_api::principal::{Access, Principal, PrincipalKind, WriteContext};
 use lakelands_api::query::{Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Walk};
@@ -73,13 +73,38 @@ fn bound(decl: &TypeDecl, given: &lakelands_api::Params) -> Result<()> {
     }
 }
 
-/// The record a verb is called on. A call without a key is refused here
-/// until the mock takes a verb called on its type (lakelands#277, the door
-/// half).
-fn keyed<'k>(verb: &VerbName, key: Option<&'k RecordKey>) -> Result<&'k RecordKey> {
-    key.ok_or_else(|| {
+/// The key a call passes, held to the verb's scope, as the store holds
+/// it before anything else is read: a verb on its type takes no key and
+/// no record version to compare, and a verb on a record needs its key.
+fn scoped<'k>(
+    v: &VerbDecl,
+    key: Option<&'k RecordKey>,
+    opts: &WriteOpts,
+) -> Result<Option<&'k RecordKey>> {
+    match (v.scope, key) {
+        (VerbScope::Type, Some(_)) => Err(invalid(format!(
+            "verb `{}` is called on the type `{}`, not on a record: it takes no key",
+            v.name, v.on
+        ))),
+        (VerbScope::Type, None) if opts.expected_version.is_some() => Err(invalid(format!(
+            "verb `{}` is called on the type `{}`: there is no record version to compare",
+            v.name, v.on
+        ))),
+        (VerbScope::Record, None) => Err(invalid(format!(
+            "verb `{}` is called on a `{}` record: it needs that record's key",
+            v.name, v.on
+        ))),
+        (_, key) => Ok(key),
+    }
+}
+
+/// The record key of a call that runs a write, which only a verb on a
+/// record has: its scope was checked when it was called.
+fn record_key<'k>(v: &VerbDecl, key: Option<&'k RecordKey>) -> Result<&'k RecordKey> {
+    scoped(v, key, &WriteOpts::default())?.ok_or_else(|| {
         invalid(format!(
-            "verb `{verb}` is called without a key, which the in-memory mock does not take yet"
+            "verb `{}` is called on the type `{}`; only a verb on a record writes",
+            v.name, v.on
         ))
     })
 }
@@ -663,6 +688,22 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
         other => {
             let target = match other {
                 Declaration::Verb(v) => {
+                    // As the store: a verb on its type has no record, so
+                    // nothing for a write effect to set or `requires` to read.
+                    if v.scope == VerbScope::Type {
+                        if matches!(v.effect, VerbEffect::Write { .. }) {
+                            return Err(invalid(format!(
+                                "verb `{}` is declared on the type `{}`, and a write effect sets fields of a record it does not have",
+                                v.name, v.on
+                            )));
+                        }
+                        if v.requires.is_some() {
+                            return Err(invalid(format!(
+                                "verb `{}` is declared on the type `{}`; `requires` reads a record it does not have",
+                                v.name, v.on
+                            )));
+                        }
+                    }
                     // A revision of a verb the lake holds is not a second name.
                     if !verbs.contains(&v.name) {
                         verbs.push(v.name.clone());
@@ -1540,18 +1581,24 @@ fn check_call<'a>(
     st: &'a State,
     who: &Principal,
     verb: &VerbName,
-    key: &RecordKey,
+    key: Option<&RecordKey>,
     payload: &Patch,
+    opts: &WriteOpts,
 ) -> Result<&'a VerbDecl> {
     let v = st.verbs.get(verb).ok_or_else(|| Error::NotFound {
         missing: Missing::Verb { name: verb.clone() },
     })?;
+    // The key against the scope comes before anything else is read.
+    let key = scoped(v, key, opts)?;
     // A declared verb the caller may not call is refused, as the store
     // refuses it; only an undeclared one is not found.
     if !callable(st, who, v) {
         return Err(refused(Refusal::NotGranted));
     }
-    let rec = st.live(&v.on, key).ok_or_else(|| no_record(&v.on, key))?;
+    let rec = match key {
+        Some(key) => Some(st.live(&v.on, key).ok_or_else(|| no_record(&v.on, key))?),
+        None => None,
+    };
     for (name, val) in payload {
         let f = v.payload.iter().find(|f| &f.name == name).ok_or_else(|| {
             on(
@@ -1577,7 +1624,8 @@ fn check_call<'a>(
             ));
         }
     }
-    if let Some(req) = &v.requires {
+    // A verb on its type declares no `requires`: declaring refuses it.
+    if let (Some(req), Some(rec), Some(key)) = (&v.requires, rec, key) {
         let scope = Scope {
             ty: v.on.as_str(),
             fields: &rec.fields,
@@ -1669,9 +1717,12 @@ fn plan_propose(
             st.live(ty, key).ok_or_else(|| no_record(ty, key))?;
         }
         ProposedWrite::Call {
-            verb, key, payload, ..
+            verb,
+            key,
+            payload,
+            opts,
         } => {
-            check_call(st, who, verb, keyed(verb, key.as_ref())?, payload)?;
+            check_call(st, who, verb, key.as_ref(), payload, opts)?;
         }
         // A change of the ontology is checked as its door would check it;
         // the proposer needs no `schema` grant.
@@ -2191,13 +2242,12 @@ impl Catalog for MockCatalog {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         self.admit_write(who)?;
-        let key = keyed(verb, key)?;
         let mut log = self.log();
         let (_, st) = self.state_at(&log, None)?;
         if let Some(o) = remembered(&st, who, &opts) {
             return Ok(o);
         }
-        let v = check_call(&st, who, verb, key, &payload)?.clone();
+        let v = check_call(&st, who, verb, key, &payload, &opts)?.clone();
         // The mock binds no executor, so a verb that reaches outside the
         // lake is refused when called, as the store refuses one whose
         // executor its host did not bind.
@@ -2206,6 +2256,8 @@ impl Catalog for MockCatalog {
                 seam: format!("the verb executor `{executor}`"),
             });
         }
+        // Past the executor, only a verb on a record is left.
+        let key = record_key(&v, key)?;
         check_version(&st, &v.on, key, &opts)?;
         let mut batch = Batch::at(&log);
         let runs = v.risk == Risk::Low && matches!(v.effect, VerbEffect::Write { .. });
@@ -2684,8 +2736,10 @@ impl Catalog for MockCatalog {
                 payload,
                 opts,
             } => {
-                let key = keyed(&verb, key.as_ref())?;
-                let v = check_call(&st, &proposer, &verb, key, &payload)?.clone();
+                // The scope is checked again at the head: the verb may have
+                // been declared again while the proposal waited.
+                let v = check_call(&st, &proposer, &verb, key.as_ref(), &payload, &opts)?.clone();
+                let key = record_key(&v, key.as_ref())?;
                 check_version(&st, &v.on, key, &opts)?;
                 Some(plan_run(&by, &mut batch, &v, key, payload, &opts)?)
             }

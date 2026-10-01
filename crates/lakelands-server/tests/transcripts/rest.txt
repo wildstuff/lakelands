@@ -803,3 +803,50 @@
 < content-type: application/json
 < lakelands-position: 49
 < {"error":"refused","field":"value_type","reason":{"message":"a migration names a type (`to`) or a value type (`value_type`), not both","refusal":"invalid"},"todo":"correct the input and run the command again; nothing was written","what":"refused on `value_type`: a migration names a type (`to`) or a value type (`value_type`), not both"}
+
+# A verb declared on its type has no record: it is called without a key,
+# on `…/verbs/<verb>`. With no executor bound for it, the call is
+# unbound (501). A key to it, or no key to a verb on a record, is
+# invalid (422), naming the verb; a compare-and-set header on the keyless
+# route is invalid (400), naming the header and the verb.
+> POST /lakes/finance/schema/declare
+> authorization: Bearer k-owner
+> content-type: application/json
+> {"declaration":{"declare":"verb","name":"register","on":"partner","scope":"type","risk":"low","payload":[{"name":"name","type":{"kind":"text"}}],"effect":"external","executor":"crm"}}
+< 200
+< content-type: application/json
+< lakelands-position: 50
+< {"outcome":"applied","position":50}
+
+> POST /lakes/finance/verbs/register
+> authorization: Bearer k-owner
+> {"name":"Acme"}
+< 501
+< content-type: application/json
+< lakelands-position: 50
+< {"error":"unbound","seam":"the verb executor `crm`","todo":"bind it in the host's configuration","what":"nothing is bound for the verb executor `crm`"}
+
+> POST /lakes/finance/verbs/register/P-1
+> authorization: Bearer k-owner
+> {"name":"Acme"}
+< 422
+< content-type: application/json
+< lakelands-position: 50
+< {"error":"refused","reason":{"message":"verb `register` is called on the type `partner`, not on a record: it takes no key","refusal":"invalid"},"todo":"correct the input and run the command again; nothing was written","what":"refused: verb `register` is called on the type `partner`, not on a record: it takes no key"}
+
+> POST /lakes/finance/verbs/register
+> authorization: Bearer k-owner
+> if-match: 1
+> {"name":"Acme"}
+< 400
+< content-type: application/json
+< lakelands-position: 50
+< {"error":"refused","reason":{"message":"`POST …/verbs/register` takes no `If-Match`: verb `register` is called on its type, which has no record version","refusal":"invalid"},"todo":"send it without the header","what":"`POST …/verbs/register` takes no `If-Match`: verb `register` is called on its type, which has no record version"}
+
+> POST /lakes/finance/verbs/approve
+> authorization: Bearer k-owner
+> {}
+< 422
+< content-type: application/json
+< lakelands-position: 50
+< {"error":"refused","reason":{"message":"verb `approve` is called on a `invoice` record: it needs that record's key","refusal":"invalid"},"todo":"correct the input and run the command again; nothing was written","what":"refused: verb `approve` is called on a `invoice` record: it needs that record's key"}
