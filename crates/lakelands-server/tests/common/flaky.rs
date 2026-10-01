@@ -63,25 +63,39 @@ impl futures_core::Stream for Late {
     }
 }
 
-fn behind(n: &AtomicUsize, at: Option<Position>) -> Result<()> {
-    match n.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)) {
-        Ok(_) => Err(Error::Refused {
-            field: None,
-            reason: lakelands_api::error::Refusal::OutOfRange {
-                head: Position(at.map_or(0, |p| p.0.saturating_sub(1))),
-            },
-        }),
-        Err(_) => Ok(()),
+/// Take one fault from `n` unless none is left: whether one was taken.
+/// A compare-and-swap loop, since `fetch_update` is deprecated from 1.99
+/// and its successor `try_update` is newer than the MSRV.
+fn take(n: &AtomicUsize) -> bool {
+    let mut left = n.load(Ordering::SeqCst);
+    while let Some(after) = left.checked_sub(1) {
+        match n.compare_exchange_weak(left, after, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return true,
+            Err(now) => left = now,
+        }
     }
+    false
+}
+
+fn behind(n: &AtomicUsize, at: Option<Position>) -> Result<()> {
+    if !take(n) {
+        return Ok(());
+    }
+    Err(Error::Refused {
+        field: None,
+        reason: lakelands_api::error::Refusal::OutOfRange {
+            head: Position(at.map_or(0, |p| p.0.saturating_sub(1))),
+        },
+    })
 }
 
 fn fail(n: &AtomicUsize) -> Result<()> {
-    match n.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)) {
-        Ok(_) => Err(Error::Unavailable {
-            message: "the lake is busy for a moment".into(),
-        }),
-        Err(_) => Ok(()),
+    if !take(n) {
+        return Ok(());
     }
+    Err(Error::Unavailable {
+        message: "the lake is busy for a moment".into(),
+    })
 }
 
 pub struct Store {
