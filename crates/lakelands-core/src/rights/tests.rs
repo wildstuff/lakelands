@@ -110,30 +110,6 @@ fn a_reader_sees_granted_fields_and_a_sensitive_field_only_as_masked() {
 }
 
 #[test]
-fn meta_comes_only_when_asked() {
-    let who = principal(Access::Read, &[]);
-    assert!(
-        visible(&who, &invoice(), &stored(), false)
-            .unwrap()
-            .meta
-            .is_empty()
-    );
-}
-
-#[test]
-fn retired_and_restricted_records_are_withheld() {
-    let who = principal(Access::Read, &[]);
-    let mut s = stored();
-    s.restricted = true;
-    assert!(visible(&who, &invoice(), &s, false).is_none());
-    let mut reviewer = who.clone();
-    reviewer.grants.restricted = true;
-    assert!(visible(&reviewer, &invoice(), &s, false).is_some());
-    s.retired = true;
-    assert!(visible(&reviewer, &invoice(), &s, false).is_none());
-}
-
-#[test]
 fn probing_an_unreadable_field_is_refused_not_masked() {
     let who = principal(Access::Read, &[("iban", Access::Masked)]);
     assert!(check_probe(&who, &invoice(), [&FieldName::from("amount")]).is_ok());

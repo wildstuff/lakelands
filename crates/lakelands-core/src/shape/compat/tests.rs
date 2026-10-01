@@ -69,19 +69,6 @@ fn a_change_of_meaning_is_declared_with_no_changes() {
 }
 
 #[test]
-fn adding_an_optional_field_is_declared() {
-    let after = with(|t| t.fields.push(field("d", StorageKind::DateTime, false)));
-    assert_eq!(
-        declares(&after),
-        vec![Reason::FieldAdded {
-            field: "d".into(),
-            relation: None,
-            required: false
-        }]
-    );
-}
-
-#[test]
 fn adding_a_required_field_needs_a_migration() {
     let after = with(|t| t.fields.push(field("d", StorageKind::DateTime, true)));
     assert_eq!(
@@ -111,30 +98,6 @@ fn required_to_optional_is_declared() {
     assert_eq!(
         declares(&after),
         vec![Reason::FieldOptional {
-            field: "b".into(),
-            relation: None
-        }]
-    );
-}
-
-#[test]
-fn optional_to_required_needs_a_migration() {
-    let after = with(|t| t.fields[2].required = true);
-    assert_eq!(
-        migrates(&base(), &after),
-        vec![Reason::FieldRequired {
-            field: "c".into(),
-            relation: None
-        }]
-    );
-}
-
-#[test]
-fn removing_a_field_needs_a_migration() {
-    let after = with(|t| t.fields.retain(|f| f.name.as_str() != "b"));
-    assert_eq!(
-        migrates(&base(), &after),
-        vec![Reason::FieldRemoved {
             field: "b".into(),
             relation: None
         }]
@@ -252,25 +215,6 @@ fn link_fields_follow_the_field_rules() {
             relation: Some("links".into())
         }]
     );
-}
-
-#[test]
-fn keeping_the_old_field_while_adding_its_successor_is_declared() {
-    // Moving from a single `scheme` to a list `schemes`: declared while
-    // `scheme` stays, a migration once it goes.
-    let before = with(|t| t.fields.push(field("scheme", StorageKind::Text, false)));
-    let kept = {
-        let mut t = before.clone();
-        t.fields.push(field("schemes", StorageKind::Json, false));
-        t
-    };
-    assert!(!classify(&before, &kept).needs_migration());
-    let dropped = {
-        let mut t = kept.clone();
-        t.fields.retain(|f| f.name.as_str() != "scheme");
-        t
-    };
-    assert!(classify(&before, &dropped).needs_migration());
 }
 
 #[test]

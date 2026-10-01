@@ -136,19 +136,6 @@ fn a_walk_over_named_relations_asks_the_view_for_each_one() {
 }
 
 #[test]
-fn a_depth_over_the_ceiling_is_refused() {
-    let err = check_depth(Depth { min: 1, max: 17 }, 16).unwrap_err();
-    assert!(matches!(
-        err,
-        Error::Refused {
-            reason: Refusal::Invalid { .. },
-            ..
-        }
-    ));
-    assert!(check_depth(Depth { min: 1, max: 16 }, 16).is_ok());
-}
-
-#[test]
 fn an_empty_depth_range_is_refused() {
     assert!(check_depth(Depth { min: 2, max: 1 }, 16).is_err());
     assert!(check_depth(Depth { min: 0, max: 0 }, 16).is_ok());

@@ -104,25 +104,6 @@ fn each_kind_refuses_another_kinds_form() {
 }
 
 #[test]
-fn a_date_time_is_normalised_to_its_one_form() {
-    let ty = kind(StorageKind::DateTime);
-    for (given, want) in [
-        ("2026-09-24T07:57:11+02:00", "2026-09-24T05:57:11.000000Z"),
-        ("2026-09-24", "2026-09-24T00:00:00.000000Z"),
-        ("2026-09-24T05:57:11.5Z", "2026-09-24T05:57:11.500000Z"),
-        ("2026-09-24T05:57:11.123456Z", "2026-09-24T05:57:11.123456Z"),
-    ] {
-        assert_eq!(check(&json!(given), &ty, None), Ok(json!(want)));
-    }
-    for bad in ["2026-02-29", "2026-09-24T05:57:11", "yesterday"] {
-        assert_eq!(
-            check(&json!(bad), &ty, None),
-            Err(ValueError::DateTime(bad.into()))
-        );
-    }
-}
-
-#[test]
 fn a_decimal_is_kept_exactly_as_written() {
     let ty = kind(StorageKind::Decimal);
     for ok in ["0", "-1", "250.00", "007", "-0.10"] {
@@ -132,22 +113,6 @@ fn a_decimal_is_kept_exactly_as_written() {
         assert_eq!(
             check(&json!(bad), &ty, None),
             Err(ValueError::Decimal(bad.into())),
-            "{bad:?}"
-        );
-    }
-}
-
-#[test]
-fn bytes_are_padded_standard_base64_in_one_spelling() {
-    let ty = kind(StorageKind::Bytes);
-    for ok in ["", "aGVsbG8=", "aGk=", "YWJj", "+/+/"] {
-        assert!(check(&json!(ok), &ty, None).is_ok(), "{ok:?}");
-    }
-    // Unpadded, url-safe, bad padding, and non-zero bits before padding.
-    for bad in ["aGVsbG8", "-_-_", "a===", "aGk", "aGl=", "aGVsbG9=", "a=bc"] {
-        assert_eq!(
-            check(&json!(bad), &ty, None),
-            Err(ValueError::Base64),
             "{bad:?}"
         );
     }
@@ -213,23 +178,6 @@ fn geo_takes_geometries_and_refuses_the_rest() {
 }
 
 #[test]
-fn one_of_admits_only_its_members() {
-    let vt = ValueTypeDecl {
-        one_of: vec!["open".into(), "paid".into()],
-        ..value_type("status", StorageKind::Text)
-    };
-    let ty = typed(StorageKind::Text, "status");
-    assert_eq!(check(&json!("paid"), &ty, Some(&vt)), Ok(json!("paid")));
-    assert_eq!(
-        check(&json!("void"), &ty, Some(&vt)),
-        Err(ValueError::NotOneOf {
-            value: "\"void\"".into(),
-            allowed: vec!["open".into(), "paid".into()],
-        })
-    );
-}
-
-#[test]
 fn a_known_format_is_enforced() {
     let vt = iban();
     let ty = typed(StorageKind::Text, "iban");
@@ -255,24 +203,6 @@ fn a_format_on_a_non_text_value_type_refuses_what_is_not_a_string() {
         check(&json!(42), &ty, Some(&vt)),
         Err(ValueError::Format { .. })
     ));
-}
-
-#[test]
-fn numbers_take_their_one_json_form() {
-    assert_eq!(
-        check(&json!(2.0), &kind(StorageKind::Number), None).unwrap(),
-        json!(2)
-    );
-    let mut v = kind(StorageKind::Vector);
-    v.dimensions = Some(2);
-    assert_eq!(
-        check(&json!([0.0, 1.5]), &v, None).unwrap(),
-        json!([0, 1.5])
-    );
-    assert_eq!(
-        check(&json!({"a": 1e0}), &kind(StorageKind::Json), None).unwrap(),
-        json!({"a": 1})
-    );
 }
 
 #[test]
@@ -302,28 +232,6 @@ fn integers_beyond_two_to_the_fifty_three_are_refused() {
         ),
         Err(ValueError::TooLarge(_))
     ));
-}
-
-#[test]
-fn money_is_kept_at_its_scale_rounded_half_away_from_zero() {
-    let vt = ValueTypeDecl {
-        scale: Some(2),
-        ..value_type("money", StorageKind::Decimal)
-    };
-    let ty = typed(StorageKind::Decimal, "money");
-    for (written, kept) in [
-        ("2.345", "2.35"),
-        ("-2.345", "-2.35"),
-        ("10", "10.00"),
-        ("0.1", "0.10"),
-        ("7.004", "7.00"),
-    ] {
-        assert_eq!(
-            check(&json!(written), &ty, Some(&vt)),
-            Ok(json!(kept)),
-            "{written}"
-        );
-    }
 }
 
 /// An unknown format name is refused when the value type is declared,

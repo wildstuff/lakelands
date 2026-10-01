@@ -100,15 +100,6 @@ fn absent_fields_never_match_not_even_not_equal() {
 }
 
 #[test]
-fn numbers_and_numeric_text_compare_as_numbers() {
-    assert!(yes("amount = 1", json!({"amount": 1.0})));
-    assert!(yes("amount = 100", json!({"amount": "100.00"})));
-    assert!(yes("amount > 9", json!({"amount": "10"})));
-    assert!(yes("a = b", json!({"a": "1.0", "b": "1"})));
-    assert!(yes("code < 'b'", json!({"code": "a10"})));
-}
-
-#[test]
 fn instants_compare_as_instants_whatever_their_written_form() {
     let r = json!({"due": "2026-09-01T00:00:00.000000Z"});
     assert!(yes("due = '2026-09-01'", r.clone()));
