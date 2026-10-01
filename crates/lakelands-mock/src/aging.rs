@@ -94,8 +94,8 @@ pub(crate) fn check(
     })
 }
 
-/// Whether an expression reads `changed` or `previous`, which have
-/// meaning only in a write.
+/// Whether an expression reads `changed`, `previous` or `retired`, which
+/// have meaning only in a write.
 fn writes_only(e: &Expr) -> bool {
     match e {
         Expr::Lit { .. } | Expr::Path { .. } => false,
@@ -104,7 +104,8 @@ fn writes_only(e: &Expr) -> bool {
         }
         Expr::Neg { arg } | Expr::Not { arg } | Expr::IsNull { arg } => writes_only(arg),
         Expr::Call { func, args } => {
-            matches!(func, Func::Changed | Func::Previous) || args.iter().any(writes_only)
+            matches!(func, Func::Changed | Func::Previous | Func::Retired)
+                || args.iter().any(writes_only)
         }
         Expr::And { args } | Expr::Or { args } => args.iter().any(writes_only),
         Expr::In { arg, list } => writes_only(arg) || list.iter().any(writes_only),

@@ -142,3 +142,40 @@ fn a_triggers_max_depth_needs_format_6() {
     assert_eq!(needed(&trigger(json!(1)), false), 6);
     assert_eq!(needed(&trigger(serde_json::Value::Null), false), 1);
 }
+
+#[test]
+fn a_declaration_calling_retired_needs_format_7_and_says_so_below_it() {
+    let guard = |when: &str| {
+        declaration(json!({
+            "declare": "trigger", "name": "t", "on": "job", "when": when
+        }))
+    };
+    let declared = |d: Declaration| EventBody::Declared {
+        declaration: d,
+        schema_hash: None,
+        version: 1,
+    };
+    assert_eq!(needed(&declared(guard("not retired()")), false), 7);
+    assert_eq!(needed(&declared(guard("status = 'retired'")), false), 1);
+    let proposed = EventBody::WriteProposed {
+        proposal: "p".into(),
+        write: ProposedWrite::Declare {
+            declarations: vec![guard("retired()")],
+        },
+        why: String::new(),
+    };
+    assert_eq!(needed(&proposed, false), 7, "a proposal keeps it too");
+    let event: Event = serde_json::from_value(json!({
+        "v": 6, "lake": "l", "position": 1, "id": "0".repeat(32),
+        "prev": "0".repeat(64), "known_at": "2026-01-01T00:00:00.000000Z",
+        "writer": "system:lakelands", "origin": "system",
+        "context": {"origin": "direct", "depth": 0}, "fence": 1,
+        "body": {"kind": "declared", "declaration": guard("retired()"), "version": 1},
+        "hash": "0".repeat(64)
+    }))
+    .unwrap();
+    assert_eq!(
+        below(&event).as_deref(),
+        Some("a format 6 event declares a call of `retired`, which format 7 added")
+    );
+}

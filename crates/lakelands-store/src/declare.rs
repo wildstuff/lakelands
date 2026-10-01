@@ -637,7 +637,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 ))
             })?;
             if let Some(w) = &t.when {
-                declared(w, Place::Write, &format!("trigger `{}`", t.name))?;
+                declared(w, Place::Guard, &format!("trigger `{}`", t.name))?;
             }
         }
         Declaration::ObjectSet(s) => {

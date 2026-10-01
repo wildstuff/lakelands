@@ -77,10 +77,14 @@ fn a_member_in_another_written_form_is_refused_even_with_a_matching_hash() {
 fn a_newer_format_is_refused_by_name() {
     let (_, mut stored) = created();
     let mut v: serde_json::Value = serde_json::from_slice(&stored.bytes).unwrap();
-    v["v"] = json!(7);
+    let known = lakelands_api::event::LOG_FORMAT_VERSION;
+    v["v"] = json!(known + 1);
     stored.bytes = canonical::to_vec(&v);
     let e = open(&stored).unwrap_err().to_string();
-    assert!(e.contains("format 7") && e.contains("format 6"), "{e}");
+    assert!(
+        e.contains(&format!("format {}", known + 1)) && e.contains(&format!("format {known}")),
+        "{e}"
+    );
 }
 
 /// A version-2 event carrying what version 3 added is refused, naming

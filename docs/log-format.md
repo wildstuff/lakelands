@@ -1,6 +1,6 @@
 # The log format
 
-**Format version 6.** Reviewed so that a verifier can be written from
+**Format version 7.** Reviewed so that a verifier can be written from
 this document alone (lakelands#14). `0.1.0` is tagged, so every change
 to the format bumps the version, and a lake writes the version it had
 until an event needs a newer one (§6). Version 2 adds one member,
@@ -8,7 +8,8 @@ until an event needs a newer one (§6). Version 2 adds one member,
 and reads exactly as before. Version 3 adds the envelope member
 `upstream` and a call of `date_bucket` in a declaration. Version 4 adds
 the proposal of a declaration or a migration. Version 5 adds a
-declaration's `annotations`. Version 6 adds a derived relation and a trigger's `max_depth`. §6 says
+declaration's `annotations`. Version 6 adds a derived relation and a trigger's `max_depth`.
+Version 7 adds a call of `retired` in a declaration. §6 says
 which event needs which version.
 
 A lake's event log is its truth (`docs/decisions/001-the-log-is-the-truth.md`).
@@ -571,7 +572,8 @@ carries a lower `v` than the event before it.
 | 3 | The envelope member `upstream` (§1.1, §2.3) and a call of `date_bucket` in a declaration's expressions (Appendix B). A lake writes the version it had until its first event that carries `upstream`, or that declares (in a `declared` or `migrated` event) an expression calling `date_bucket`; that event carries `v` 3, as does every event after it. A version-2 (or 1) event that carries either is refused, naming it. A version-2 reader refuses the version-3 events rather than misreading them. |
 | 4 | A proposal of a declaration or a migration: `write_proposed` whose `write` is `declare` or `migrate` (§2.4, Appendix A). A lake writes the version it had until its first such proposal, which carries `v` 4, as does every event after it; a version-3 (or older) event that carries one is refused, naming it. A version-3 reader refuses the version-4 events rather than failing on a write it does not know. |
 | 5 | A declaration's `annotations` (Appendix A): on a type, a field or a relation, anywhere in the declaration a `declared` event carries, in a `migrated` event's `to`, or in a proposed `declare` or `migrate`. A lake writes the version it had until its first event whose declaration holds a non-empty `annotations`, which carries `v` 5, as does every event after it; a version-4 (or older) event that carries annotations is refused, naming them. A version-4 reader refuses the version-5 events rather than refusing a member it does not know. An annotation is never part of the schema hash (§2.2). |
-| 6 | A derived relation, a relation declaration's `derived`, and a trigger's `max_depth` (Appendix A). A lake writes the version it had until its first event whose declaration holds a relation with `derived` or is a trigger with `max_depth` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`), which carries `v` 6, as does every event after it; a version-5 (or older) event that carries one is refused, naming it. A version-5 reader refuses the version-6 events rather than refusing a member it does not know. `derived` is never part of the schema hash (§2.2). Version 6 is not tagged yet, so it took both members; a tagged version is closed. |
+| 6 | A derived relation, a relation declaration's `derived`, and a trigger's `max_depth` (Appendix A). A lake writes the version it had until its first event whose declaration holds a relation with `derived` or is a trigger with `max_depth` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`), which carries `v` 6, as does every event after it; a version-5 (or older) event that carries one is refused, naming it. A version-5 reader refuses the version-6 events rather than refusing a member it does not know. `derived` is never part of the schema hash (§2.2). Version 6 took both members while it was untagged; a tagged version is closed. |
+| 7 | A call of `retired` in a declaration's expressions (Appendix B): in a trigger's `when`, the one place it means something. A lake writes the version it had until its first event whose declaration calls `retired` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`), which carries `v` 7, as does every event after it; a version-6 (or older) event that calls it is refused, naming it. A version-6 reader refuses the version-7 events rather than reading a guard it cannot evaluate, which would never fire. |
 
 ## Appendix A. Encodings
 
@@ -707,7 +709,8 @@ arguments are the value and its unit as a string literal (`day`, `week`,
 `month`, `quarter` or `year`), answering the instant at which the UTC
 bucket holding the value starts (the week from Monday, as ISO counts
 weeks). A read may call `date_bucket` in any version; a declaration from
-version 3 on (§6).
+version 3 on (§6). From version 7 on, `retired`, with no arguments: true
+when the write retires the record, in a trigger's guard only (§6).
 
 **From text to typed form.**
 

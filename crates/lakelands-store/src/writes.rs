@@ -206,6 +206,8 @@ impl Call<'_> {
         }
     }
 
+    /// [`check_context`] for this call's context: call before taking the
+    /// writer, so a refused context waits on no other write.
     fn check_context(&self) -> Result<()> {
         check_context(self.lake, &self.context)
     }
@@ -720,10 +722,12 @@ impl Call<'_> {
             let fires = match &t.when {
                 None => true,
                 Some(c) => {
-                    let e = declare::condition(c, Place::Write, "trigger")?;
+                    let e = declare::condition(c, Place::Guard, "trigger")?;
+                    let live = before.filter(|b| !b.retired);
                     let scope = WriteScope {
                         after: &after.fields,
-                        before: before.filter(|b| !b.retired).map(|b| &b.fields),
+                        before: live.map(|b| &b.fields),
+                        retiring: live.is_some() && after.retired,
                         meta: Some(&after.meta),
                         settings: Some(&w.settings),
                         now,

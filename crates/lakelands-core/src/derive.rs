@@ -191,6 +191,7 @@ pub fn apply(
         let scope = WriteScope {
             after: fields,
             before: write.before,
+            retiring: false,
             meta: None,
             settings: write.settings,
             now: write.now,

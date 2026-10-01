@@ -235,6 +235,10 @@ pub enum Func {
     Setting,
     /// `changed(field)`: in a guard, whether the write changes the field.
     Changed,
+    /// `retired()`: in a trigger's guard, whether the write retires the
+    /// record (live before it, retired after it). Format 7
+    /// (`docs/log-format.md` §6).
+    Retired,
     /// `coalesce(a, b, …)`: the first operand that is not null.
     Coalesce,
     /// `if(cond, then, else)`.
