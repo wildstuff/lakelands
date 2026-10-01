@@ -22,5 +22,6 @@ fn block_on<F: Future>(f: F) -> F::Output {
 
 lakelands_mock::door_checks!(
     || Arc::new(MockLake::new("finance")) as Arc<dyn LakeStore>,
-    block_on
+    block_on,
+    mock
 );

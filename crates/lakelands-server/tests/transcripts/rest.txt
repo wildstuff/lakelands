@@ -91,7 +91,7 @@
 < 400
 < content-type: application/json
 < lakelands-position: 9
-< {"error":"refused","reason":{"message":"`GET …/types/<type>/records` takes no parameter `expect_version`; nothing was done","refusal":"invalid"},"todo":"use only `where`, `order_by`, `limit`, `cursor`, `after`, `aggregate`, `with_meta`, `as_of`, `valid_at`","what":"`GET …/types/<type>/records` takes no parameter `expect_version`; nothing was done"}
+< {"error":"refused","reason":{"message":"`GET …/types/<type>/records` takes no parameter `expect_version`; nothing was done","refusal":"invalid"},"todo":"use only `where`, `order_by`, `limit`, `cursor`, `after`, `aggregate`, `with_meta`, `params`, `as_of`, `valid_at`","what":"`GET …/types/<type>/records` takes no parameter `expect_version`; nothing was done"}
 
 > GET /lakes/finance/types/invoice/records?limit=ten
 > authorization: Bearer k-clerk
