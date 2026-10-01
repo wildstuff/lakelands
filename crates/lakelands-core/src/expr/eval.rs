@@ -315,6 +315,9 @@ pub enum Place {
     /// Over a group of records: a view measure, where aggregates have
     /// meaning.
     Group,
+    /// Over one source record of a view: its `where`, or an aggregate's
+    /// argument in a measure. Like `Record`, and `param` has meaning.
+    View,
 }
 
 /// The units `date_bucket` knows.
@@ -414,16 +417,97 @@ pub fn check(e: &Expr, place: Place) -> Result<()> {
                         "{name}() folds a set of records and has no meaning here"
                     ));
                 }
+                Func::Param if !matches!(place, Place::View | Place::Group) => {
+                    return err(
+                        "param() is read only in a view's `where` and `measures`, where the \
+                         view declares its parameters",
+                    );
+                }
                 _ => {}
             }
-            // An aggregate's argument is evaluated per record.
+            // An aggregate's argument is evaluated per source record.
             let inner = if func.is_aggregate() {
-                Place::Record
+                Place::View
             } else {
                 place
             };
             args.iter().try_for_each(|a| check(a, inner))
         }
+    }
+}
+
+/// `e` with every `param('name')` replaced by the literal `values` holds
+/// for that name; a name it does not hold is left as the call, which reads
+/// null.
+pub fn bind_params(e: &Expr, values: &BTreeMap<String, Literal>) -> Expr {
+    let b = |x: &Expr| Box::new(bind_params(x, values));
+    let all = |xs: &[Expr]| xs.iter().map(|x| bind_params(x, values)).collect();
+    match e {
+        Expr::Call {
+            func: Func::Param,
+            args,
+        } => match args.first() {
+            Some(Expr::Lit {
+                value: Literal::Text(name),
+            }) if values.contains_key(name) => Expr::Lit {
+                value: values[name].clone(),
+            },
+            _ => e.clone(),
+        },
+        Expr::Call { func, args } => Expr::Call {
+            func: *func,
+            args: all(args),
+        },
+        Expr::Cmp { cmp, lhs, rhs } => Expr::Cmp {
+            cmp: *cmp,
+            lhs: b(lhs),
+            rhs: b(rhs),
+        },
+        Expr::Arith { arith, lhs, rhs } => Expr::Arith {
+            arith: *arith,
+            lhs: b(lhs),
+            rhs: b(rhs),
+        },
+        Expr::Neg { arg } => Expr::Neg { arg: b(arg) },
+        Expr::Not { arg } => Expr::Not { arg: b(arg) },
+        Expr::IsNull { arg } => Expr::IsNull { arg: b(arg) },
+        Expr::And { args } => Expr::And { args: all(args) },
+        Expr::Or { args } => Expr::Or { args: all(args) },
+        Expr::In { arg, list } => Expr::In {
+            arg: b(arg),
+            list: all(list),
+        },
+        Expr::Lit { .. } | Expr::Path { .. } => e.clone(),
+    }
+}
+
+/// The names every `param('name')` in `e` reads, added to `out`.
+pub fn params_read(e: &Expr, out: &mut std::collections::BTreeSet<String>) {
+    match e {
+        Expr::Call {
+            func: Func::Param,
+            args,
+        } => {
+            if let Some(Expr::Lit {
+                value: Literal::Text(name),
+            }) = args.first()
+            {
+                out.insert(name.clone());
+            }
+        }
+        Expr::Call { args, .. } | Expr::And { args } | Expr::Or { args } => {
+            args.iter().for_each(|a| params_read(a, out));
+        }
+        Expr::Cmp { lhs, rhs, .. } | Expr::Arith { lhs, rhs, .. } => {
+            params_read(lhs, out);
+            params_read(rhs, out);
+        }
+        Expr::Neg { arg } | Expr::Not { arg } | Expr::IsNull { arg } => params_read(arg, out),
+        Expr::In { arg, list } => {
+            params_read(arg, out);
+            list.iter().for_each(|a| params_read(a, out));
+        }
+        Expr::Lit { .. } | Expr::Path { .. } => {}
     }
 }
 

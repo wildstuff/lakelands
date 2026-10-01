@@ -50,6 +50,29 @@ fn on(field: &FieldName, reason: Refusal) -> Error {
     }
 }
 
+/// The names a read binds against the view parameters `decl` declares:
+/// none unknown and none missing, as the store refuses them. The mock
+/// computes no view, so it checks no value's kind.
+fn bound(decl: &TypeDecl, given: &lakelands_api::Params) -> Result<()> {
+    let declared = decl.view.as_ref().map_or(&[][..], |v| &v.params[..]);
+    if let Some(k) = given
+        .keys()
+        .find(|k| !declared.iter().any(|p| &p.name == *k))
+    {
+        return Err(invalid(format!(
+            "`{}` declares no parameter `{k}`",
+            decl.name
+        )));
+    }
+    match declared.iter().find(|p| !given.contains_key(&p.name)) {
+        Some(p) => Err(invalid(format!(
+            "view `{}` needs parameter `{}`",
+            decl.name, p.name
+        ))),
+        None => Ok(()),
+    }
+}
+
 fn invalid(message: impl Into<String>) -> Error {
     refused(Refusal::Invalid {
         message: message.into(),
@@ -1902,6 +1925,7 @@ impl Catalog for MockCatalog {
         };
         let (position, st) = self.state_at(&self.log(), pinned)?;
         let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
+        bound(&t.decl, &find.params)?;
         let after = find
             .after
             .as_ref()
@@ -1971,6 +1995,7 @@ impl Catalog for MockCatalog {
         self.admit(who)?;
         let (position, st) = self.state_at(&self.log(), get.at.as_of)?;
         let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
+        bound(&t.decl, &get.params)?;
         let r = st
             .live(ty, &get.key)
             .filter(|r| !r.restricted || who.grants.restricted)
@@ -2222,6 +2247,7 @@ impl Catalog for MockCatalog {
         let t = st
             .visible(who, &start.ty)
             .ok_or_else(|| no_type(&start.ty))?;
+        bound(&t.decl, &start.params)?;
         if start.search.is_some() || pattern.to.is_some() {
             return Err(invalid(
                 "the in-memory mock starts a pattern from a key or a filter only",

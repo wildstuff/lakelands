@@ -88,12 +88,18 @@ pub fn view_shape(view: &ViewDecl) -> Result<Value, ViewConditionError> {
             Ok(json!({ "name": m.name, "expr": expr }))
         })
         .collect::<Result<Vec<_>, ViewConditionError>>()?;
-    Ok(json!({
+    let mut shape = json!({
         "source": view.source,
         "where": filter,
         "group_by": view.group_by,
         "measures": measures,
-    }))
+    });
+    // Parameters join the shape only when declared, so a view without
+    // them keeps the hash it had before views could take them.
+    if !view.params.is_empty() {
+        shape["params"] = json!(view.params);
+    }
+    Ok(shape)
 }
 
 fn fields(list: &[FieldDecl]) -> Vec<Value> {

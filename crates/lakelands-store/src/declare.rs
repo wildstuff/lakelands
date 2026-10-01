@@ -76,6 +76,62 @@ fn declared(c: &Condition, place: Place, at: &str) -> Result<Expr> {
     condition(c, place, at)
 }
 
+/// A view's parameters: each named by the rule every name follows, once,
+/// of a scalar kind, and read by its `where` or a measure; and every
+/// `param('name')` they hold, `read`, names one of them.
+fn view_params(
+    owner: &str,
+    v: &lakelands_api::ontology::ViewDecl,
+    read: &std::collections::BTreeSet<String>,
+) -> Result<()> {
+    for (i, p) in v.params.iter().enumerate() {
+        name("parameter", p.name.as_str())?;
+        if v.params[..i].iter().any(|q| q.name == p.name) {
+            return Err(invalid(format!(
+                "{owner}: its view declares the parameter `{}` twice",
+                p.name
+            )));
+        }
+        if !matches!(
+            p.kind,
+            StorageKind::Text
+                | StorageKind::Number
+                | StorageKind::Decimal
+                | StorageKind::Boolean
+                | StorageKind::DateTime
+        ) {
+            return Err(invalid(format!(
+                "{owner}: its view's parameter `{}` is of kind {}; a parameter is text, \
+                 number, decimal, boolean or date_time",
+                p.name,
+                lakelands_core::value::kind_name(p.kind)
+            )));
+        }
+        if !read.contains(p.name.as_str()) {
+            return Err(invalid(format!(
+                "{owner}: its view declares the parameter `{}`, which neither its `where` nor \
+                 its measures read, so a reader would bind a value that changes nothing",
+                p.name
+            )));
+        }
+    }
+    if let Some(unknown) = read
+        .iter()
+        .find(|n| !v.params.iter().any(|p| p.name.as_str() == n.as_str()))
+    {
+        let declared: Vec<String> = v.params.iter().map(|p| format!("`{}`", p.name)).collect();
+        return Err(invalid(format!(
+            "{owner}: its view reads param('{unknown}'), which it does not declare; {}",
+            if declared.is_empty() {
+                "it declares no parameters".to_owned()
+            } else {
+                format!("its parameters are {}", declared.join(", "))
+            }
+        )));
+    }
+    Ok(())
+}
+
 /// A condition in its typed form, checked for its place.
 pub fn condition(c: &Condition, place: Place, at: &str) -> Result<Expr> {
     let e = match c {
@@ -320,8 +376,10 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
                 v.source
             ))
         })?;
+        let mut read = std::collections::BTreeSet::new();
         if let Some(w) = &v.r#where {
-            declared(w, Place::Record, &format!("{owner}, view `where`"))?;
+            let e = declared(w, Place::View, &format!("{owner}, view `where`"))?;
+            lakelands_core::expr::params_read(&e, &mut read);
         }
         for g in &v.group_by {
             let Some(f) = source.fields.iter().find(|f| &f.name == g) else {
@@ -339,12 +397,14 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
         }
         for m in &v.measures {
             name("measure", m.name.as_str())?;
-            declared(
+            let e = declared(
                 &m.expr,
                 Place::Group,
                 &format!("{owner}, measure `{}`", m.name),
             )?;
+            lakelands_core::expr::params_read(&e, &mut read);
         }
+        view_params(&owner, v, &read)?;
     }
     // Order the fields as the fold will compute them: a field computed by
     // a function reads what that function's expression reads, so it is

@@ -48,13 +48,13 @@ use std::rc::Rc;
 
 use lakelands_api::describe::{LakeDescription, TypeDescription};
 use lakelands_api::engine::{After, ProjectionView, Scan};
-use lakelands_api::expr::{Expr, Func};
-use lakelands_api::ontology::{MatchPair, RelationDecl, TypeDecl};
+use lakelands_api::expr::{Expr, Func, Literal};
+use lakelands_api::ontology::{FieldType, MatchPair, RelationDecl, StorageKind, TypeDecl};
 use lakelands_api::query::{
     Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Walk,
 };
 use lakelands_api::read::{
-    After as ReadAfter, Aggregate, Direction, Find, Found, Get, Order, OrderBy, ReadAt,
+    After as ReadAfter, Aggregate, Direction, Find, Found, Get, Order, OrderBy, Params, ReadAt,
 };
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::{Proposal, ProposalFilter};
@@ -112,9 +112,16 @@ pub struct Reader<'a> {
     /// The records of each view this read has computed, so that a walk
     /// meeting a view many times computes it once.
     computed: RefCell<BTreeMap<TypeName, Rc<Vec<StoredRecord>>>>,
+    /// The parameters this read binds, by the view they bind: as given, in
+    /// canonical form, and as the literals `param()` is replaced by.
+    bound: RefCell<BTreeMap<TypeName, Bound>>,
 }
 
 mod measures;
+
+/// A view's parameters as one read binds them: as given, in canonical
+/// form, and as the literals `param()` is replaced by.
+type Bound = (Params, BTreeMap<String, Literal>);
 
 /// A row's sort values and its tiebreak.
 type SortKey = (Vec<Value>, RecordKey);
@@ -127,10 +134,32 @@ struct CursorState {
     after: Option<(Vec<Value>, RecordKey)>,
     #[serde(default)]
     offset: u64,
+    /// The view parameters the first page was read with: a page read
+    /// with others would continue a different answer.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    params: Params,
 }
 
 fn encode(c: &CursorState) -> Cursor {
     Cursor(canonical::hex(&canonical::of(c)))
+}
+
+/// The offset a page continues at: none without a cursor, and refused
+/// when the cursor was handed out for other view parameters.
+fn offset(c: Option<&Cursor>, params: &Params) -> Result<usize> {
+    let Some(c) = c else { return Ok(0) };
+    let state = decode(c)?;
+    if &state.params != params {
+        return Err(other_params());
+    }
+    Ok(state.offset as usize)
+}
+
+fn other_params() -> Error {
+    invalid(
+        "the cursor was handed out for other parameters; continue with the parameters its \
+         first page was read with",
+    )
 }
 
 fn decode(c: &Cursor) -> Result<CursorState> {
@@ -194,6 +223,7 @@ impl<'a> Reader<'a> {
             valid_at: at.valid_at,
             now: now(),
             computed: RefCell::default(),
+            bound: RefCell::default(),
         })
     }
 
@@ -251,6 +281,74 @@ impl<'a> Reader<'a> {
             .borrow_mut()
             .insert(ty.clone(), Rc::clone(&all));
         Ok(Some(all))
+    }
+
+    /// The parameters this read bound for `ty`, in canonical form.
+    fn bound_params(&self, ty: &TypeName) -> Params {
+        self.bound
+            .borrow()
+            .get(ty)
+            .map(|(p, _)| p.clone())
+            .unwrap_or_default()
+    }
+
+    /// Binds the parameters a read gives for `decl`: refused as invalid,
+    /// naming it, when one is unknown, missing or not of its declared kind
+    /// (a type that is not a view declares none). Answers them in their
+    /// canonical form, as a cursor carries them.
+    fn bind_params(&self, decl: &TypeDecl, given: &Params) -> Result<Params> {
+        let ty = &decl.name;
+        let declared = decl.view.as_ref().map_or(&[][..], |v| &v.params[..]);
+        if let Some(k) = given
+            .keys()
+            .find(|k| !declared.iter().any(|p| &p.name == *k))
+        {
+            let names: Vec<String> = declared.iter().map(|p| format!("`{}`", p.name)).collect();
+            return Err(invalid(if names.is_empty() {
+                format!("`{ty}` declares no parameters, so `{k}` binds nothing")
+            } else {
+                format!(
+                    "view `{ty}` declares no parameter `{k}`; its parameters are {}",
+                    names.join(", ")
+                )
+            }));
+        }
+        let mut canonical = Params::new();
+        let mut literals = BTreeMap::new();
+        for p in declared {
+            let kind = lakelands_core::value::kind_name(p.kind);
+            let Some(v) = given.get(&p.name) else {
+                return Err(invalid(format!(
+                    "view `{ty}` needs parameter `{}` ({kind})",
+                    p.name
+                )));
+            };
+            let wrong = || {
+                invalid(format!(
+                    "parameter `{}` of view `{ty}` is {kind}, and {v} is not one",
+                    p.name
+                ))
+            };
+            let v = lakelands_core::value::check(v, &FieldType::kind(p.kind), None)
+                .ok()
+                .filter(|v| !v.is_null())
+                .ok_or_else(wrong)?;
+            let literal = match &v {
+                Value::Bool(b) => Literal::Bool(*b),
+                Value::Number(n) => Literal::Number(n.to_string()),
+                Value::String(s) if p.kind == StorageKind::Decimal => Literal::Number(s.clone()),
+                Value::String(s) => Literal::Text(s.clone()),
+                _ => return Err(wrong()),
+            };
+            literals.insert(p.name.to_string(), literal);
+            canonical.insert(p.name.clone(), v);
+        }
+        if !declared.is_empty() {
+            self.bound
+                .borrow_mut()
+                .insert(ty.clone(), (canonical.clone(), literals));
+        }
+        Ok(canonical)
     }
 
     fn declared(&self) -> Vec<lakelands_api::engine::Declared> {
@@ -441,10 +539,26 @@ impl<'a> Reader<'a> {
     ) -> Result<Vec<StoredRecord>> {
         let source = self.ontology.ty(&v.source)?.clone();
         let mut probed: Vec<FieldName> = v.group_by.clone();
+        let literals = match self.bound.borrow().get(&decl.name) {
+            Some((_, literals)) => literals.clone(),
+            None if v.params.is_empty() => BTreeMap::new(),
+            // A view reached by no read that binds it: a walk's step, a
+            // search.
+            None => {
+                return Err(invalid(format!(
+                    "view `{}` needs parameter `{}` ({}), and only a read that names the view \
+                     binds it",
+                    decl.name,
+                    v.params[0].name,
+                    lakelands_core::value::kind_name(v.params[0].kind)
+                )));
+            }
+        };
+        let bound = |e: Expr| expr::bind_params(&e, &literals);
         let where_ = v
             .r#where
             .as_ref()
-            .map(|w| condition(w, Place::Record, "view"))
+            .map(|w| condition(w, Place::View, "view").map(bound))
             .transpose()?;
         if let Some(w) = &where_ {
             probed.extend(core_derive::reads(w));
@@ -452,7 +566,10 @@ impl<'a> Reader<'a> {
         let measures: Vec<(FieldName, Expr)> = v
             .measures
             .iter()
-            .map(|m| Ok((m.name.clone(), condition(&m.expr, Place::Group, "measure")?)))
+            .map(|m| {
+                let e = condition(&m.expr, Place::Group, "measure")?;
+                Ok((m.name.clone(), bound(e)))
+            })
             .collect::<Result<_>>()?;
         for (_, m) in &measures {
             probed.extend(
@@ -462,7 +579,18 @@ impl<'a> Reader<'a> {
             );
         }
         rights::check_probe(self.who, &source, probed.iter())?;
-        let members = self.records(&source, where_.as_ref())?;
+        // A `where` that read a parameter is evaluated here, never handed to
+        // an engine: a bound date is text, and its arithmetic is the
+        // evaluator's.
+        let members = if literals.is_empty() {
+            self.records(&source, where_.as_ref())?
+        } else {
+            let mut all = self.records(&source, None)?;
+            if let Some(w) = &where_ {
+                all.retain(|r| self.holds(w, &r.fields, Some(&r.meta)));
+            }
+            all
+        };
         // A view record is keyed like any record: its group_by values, in
         // declared order, by the one key rule.
         let keyed_by = TypeDecl {
@@ -571,6 +699,7 @@ impl<'a> Reader<'a> {
     /// `find`.
     pub fn find(&self, ty: &TypeName, find: &Find) -> Result<Found> {
         let decl = self.visible_type(ty)?.clone();
+        let params = self.bind_params(&decl, &find.params)?;
         for o in &find.order_by {
             if let Some((field, message)) = o.misfit() {
                 return Err(Error::Refused {
@@ -626,7 +755,13 @@ impl<'a> Reader<'a> {
         }
         let limit = self.limit(find.limit)?;
         let after = match &find.cursor {
-            Some(c) => decode(c)?.after,
+            Some(c) => {
+                let state = decode(c)?;
+                if state.params != params {
+                    return Err(other_params());
+                }
+                state.after
+            }
             None => asked,
         };
         let mut keyed: Vec<((Vec<Value>, RecordKey), StoredRecord)> = if decl.view.is_some() {
@@ -655,6 +790,7 @@ impl<'a> Reader<'a> {
                     at: self.position,
                     after: Some(k.clone()),
                     offset: 0,
+                    params: params.clone(),
                 })
             })
         } else {
@@ -771,6 +907,7 @@ impl<'a> Reader<'a> {
     /// `get`.
     pub fn get(&self, ty: &TypeName, get: &Get) -> Result<Record> {
         let decl = self.visible_type(ty)?.clone();
+        self.bind_params(&decl, &get.params)?;
         let missing = || Error::NotFound {
             missing: Missing::Record {
                 ty: ty.clone(),
@@ -925,6 +1062,7 @@ impl<'a> Reader<'a> {
                 at: self.position,
                 after: None,
                 offset: (offset + k) as u64,
+                params: Params::new(),
             })
         });
         Ok(Hits {
@@ -1011,6 +1149,7 @@ impl<'a> Reader<'a> {
     /// `query`: the one pattern query.
     pub fn query(&self, p: &Pattern) -> Result<QueryResult> {
         let start_decl = self.visible_type(&p.start.ty)?.clone();
+        let params = self.bind_params(&start_decl, &p.start.params)?;
         let limit = self.limit(p.limit)?;
         let max_depth = self.lake.limits.max_depth;
         if measures::is_measure(&p.project) {
@@ -1069,7 +1208,7 @@ impl<'a> Reader<'a> {
                     key: key.clone(),
                     with_meta: false,
                     at: ReadAt::default(),
-                    params: Default::default(),
+                    params: p.start.params.clone(),
                 },
             ) {
                 Ok(_) => self.get_one(&p.start.ty, key)?.into_iter().collect(),
@@ -1232,10 +1371,7 @@ impl<'a> Reader<'a> {
             })
             .collect();
         keyed.sort_by(|a, b| Self::compare(&order, &a.0, &b.0));
-        let offset = match &p.cursor {
-            Some(c) => decode(c)?.offset as usize,
-            None => 0,
-        };
+        let offset = offset(p.cursor.as_ref(), &params)?;
         let more = keyed.len() > offset + limit;
         let rows = keyed
             .into_iter()
@@ -1248,6 +1384,7 @@ impl<'a> Reader<'a> {
                 at: self.position,
                 after: None,
                 offset: (offset + limit) as u64,
+                params,
             })
         });
         Ok(QueryResult::Rows { rows, next_cursor })

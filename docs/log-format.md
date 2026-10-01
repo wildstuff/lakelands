@@ -191,7 +191,11 @@ this object:
 - `view` is `{ "source", "where", "group_by", "measures" }` with every
   member present: `where` is `null` when absent, `group_by` is `[]` when
   empty. `group_by` and `measures` keep their declared order: a measure
-  may read the measures before it, so their order is meaning.
+  may read the measures before it, so their order is meaning. A view
+  that declares parameters has a fifth member, `params`, the list of
+  `{ "name", "kind" }` in declared order; a view without them has no
+  `params` member, so its hash is the one it had before views could take
+  parameters.
 - All four members are always present: an empty `key`, `fields` or
   `relations` is written `[]`, and a type that is not a view has
   `"view": null`.
@@ -604,7 +608,7 @@ with that declaration's members beside it. Every member not marked
 | a field (in `fields`, a relation's `fields`, a verb's `payload`, a function's `inputs`) | `name` and `type` (required), `required` (`false`), `authority` (`authored`), `derived` (none), `depends_on` (`[]`), `on_input_change` (`keep`), `sensitive` (`false`), `searchable` (`false`), `description`, `label` (none), `annotations` (`{}`, version 5) |
 | a field's `type` | `kind` (required), `value_type`, `target`, `dimensions` (none) |
 | a relation | `name` and `target` (required), `cardinality` (`many_to_one`), `authority` (`authored`; who writes its links, when it has no `via`), `inverse`, `via` (none), `fields` (`[]`), `description` (none), `annotations` (`{}`, version 5), `derived` (none, version 6: `{ "match": [ { "from", "to" } ] }`, a field of the owner and one of the target per pair) |
-| a `view` | `source` and `measures` (required; each measure `{ "name", "expr" }`), `where` (none), `group_by` (`[]`) |
+| a `view` | `source` and `measures` (required; each measure `{ "name", "expr" }`), `where` (none), `group_by` (`[]`), `params` (`[]`, version 8: each `{ "name", "kind" }`, a kind of `text`, `number`, `decimal`, `boolean` or `date_time`) |
 | `value_type` | `name` and `kind` (required), `constraint` (none), `one_of` (`[]`), `format`, `scale`, `description` (none) |
 | `verb` | `name`, `on`, `risk` and `effect` (required), `payload` (`[]`), `requires` (none), `description` (none); `effect: write` carries `set`, a list of `{ "field", "value" }`; `effect: external` carries `executor` |
 | `trigger` | `name` and `on` (required), `when`, `description` (none), `max_depth` (none, version 6: an integer at most the lake's `max_reactive_depth`) |

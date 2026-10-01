@@ -377,6 +377,37 @@ fn props(pairs: impl IntoIterator<Item = (&'static str, Value)>) -> Map<String, 
     pairs.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()
 }
 
+/// A view's parameters as one required object of the read's input, each
+/// parameter required and of its kind's schema. Answers whether the view
+/// declares any.
+fn view_params(ty: &TypeDescription, lake: &LakeDescription, p: &mut Map<String, Value>) -> bool {
+    let Some(params) = ty
+        .view
+        .as_ref()
+        .map(|v| &v.params)
+        .filter(|ps| !ps.is_empty())
+    else {
+        return false;
+    };
+    let properties: Map<String, Value> = params
+        .iter()
+        .map(|q| {
+            (
+                q.name.to_string(),
+                field_schema(&FieldType::kind(q.kind), lake),
+            )
+        })
+        .collect();
+    let names: Vec<&str> = params.iter().map(|q| q.name.as_str()).collect();
+    p.insert(
+        "params".into(),
+        json!({"type": "object",
+               "description": "The view's parameters, every one bound; a date alone means midnight UTC.",
+               "properties": properties, "required": names, "additionalProperties": false}),
+    );
+    true
+}
+
 fn time_axes(p: &mut Map<String, Value>) {
     p.insert(
         "as_of".into(),
@@ -576,13 +607,14 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
             ("with_meta", json!({"type": "boolean"})),
         ]);
         time_axes(&mut p);
+        let params = view_params(ty, lake, &mut p);
         out.push(ToolSpec {
             name: format!("{base}_find"),
             description: format!(
                 "Find {} records: filter with `where`, sort, page with `cursor` or resume after a row with `after`, or aggregate. Every answer carries the position it was read at.",
                 label(ty)
             ),
-            input_schema: obj(p, &[]),
+            input_schema: obj(p, if params { &["params"] } else { &[] }),
             output_schema: reply_schema(json!({
                 "type": "object",
                 "properties": {"shape": {"enum": ["records", "groups"]},
@@ -598,10 +630,11 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
             ("with_meta", json!({"type": "boolean"})),
         ]);
         time_axes(&mut p);
+        let params = view_params(ty, lake, &mut p);
         out.push(ToolSpec {
             name: format!("{base}_get"),
             description: format!("Get one {} record by key.", label(ty)),
-            input_schema: obj(p, &["key"]),
+            input_schema: obj(p, if params { &["key", "params"] } else { &["key"] }),
             output_schema: reply_schema(record.clone()),
             door: Door::Get {
                 ty: ty.name.clone(),
@@ -891,7 +924,9 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                 "start",
                 json!({"type": "object", "properties": {
                     "type": names(|t| t.may.find), "key": {"type": "string"},
-                    "where": {"type": "string"}, "search": {"type": "object"}},
+                    "where": {"type": "string"}, "search": {"type": "object"},
+                    "params": {"type": "object",
+                               "description": "The parameters of a view the pattern starts on, by name."}},
                     "required": ["type"]}),
             ),
             (
