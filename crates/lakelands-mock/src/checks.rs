@@ -27,7 +27,7 @@ use lakelands_api::id::{
 };
 use lakelands_api::ontology::{
     Assignment, Authority, FieldDecl, FieldType, Measure, OnInputChange, RelationDecl, Risk,
-    StorageKind, TriggerDecl, TypeDecl, VerbDecl, VerbEffect, ViewDecl, ViewParam,
+    StorageKind, TriggerDecl, TypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl, ViewParam,
 };
 use lakelands_api::principal::{Access, Grants, Principal, PrincipalKind, TypeGrants};
 use lakelands_api::query::{Pattern, Search, SearchMode, Step, Walk};
@@ -93,6 +93,8 @@ macro_rules! door_checks {
             a_masked_field_is_named_but_its_value_is_absent,
             the_tools_follow_the_grants,
             a_verb_tool_says_what_its_risk_does,
+            a_verb_on_its_type_has_a_tool_without_a_key,
+            a_verb_on_its_type_is_called_without_a_key,
             a_low_risk_verb_runs_at_once,
             a_riskier_verb_is_proposed_and_accept_applies_it,
             a_rejected_proposal_writes_nothing_and_stays_decided,
@@ -999,6 +1001,134 @@ pub async fn the_tools_follow_the_grants(store: Arc<dyn LakeStore>) {
 
     let reviewer = doors(f.cast.reviewer.clone()).await;
     assert!(reviewer.iter().any(|t| t.door == Door::Accept));
+}
+
+/// `register` on the type `partner`: an external verb with no record, whose
+/// executor no lake in these checks binds.
+async fn declare_register(f: &Fixture) {
+    let register = VerbDecl {
+        name: "register".into(),
+        on: PARTNER.into(),
+        scope: VerbScope::Type,
+        payload: vec![text("name")],
+        risk: Risk::Low,
+        requires: None,
+        effect: VerbEffect::External {
+            executor: "crm".into(),
+        },
+        description: None,
+    };
+    f.catalog
+        .declare(&f.cast.owner, Declaration::Verb(register))
+        .await
+        .expect("the owner declares a verb on a type");
+}
+
+/// The tool of a verb on its type takes no `key` and no
+/// `expected_version`, since it has no record and no record version, and
+/// says it is called on the type; a verb on a record keeps both.
+pub async fn a_verb_on_its_type_has_a_tool_without_a_key(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    declare_register(&f).await;
+    let d = f
+        .catalog
+        .describe(&f.cast.owner, ReadAt::default())
+        .await
+        .unwrap();
+    let tools = tools(&d.data).expect("the fixture's names are valid");
+    let tool = |verb: &str| {
+        tools
+            .iter()
+            .find(|t| t.door == Door::Call { verb: verb.into() })
+            .unwrap_or_else(|| panic!("the owner has the tool of `{verb}`"))
+    };
+    let register = tool("register");
+    let props = register.input_schema["properties"].as_object().unwrap();
+    for absent in ["key", "expected_version"] {
+        assert!(
+            !props.contains_key(absent),
+            "`register` takes no `{absent}`"
+        );
+    }
+    for present in ["payload", "idempotency_key"] {
+        assert!(props.contains_key(present), "`register` takes `{present}`");
+    }
+    assert_eq!(register.input_schema["required"], json!(["payload"]));
+    assert!(
+        register
+            .description
+            .starts_with("Call `register` on the type `partner`."),
+        "{:?}",
+        register.description
+    );
+    let approve = tool("approve");
+    let props = approve.input_schema["properties"].as_object().unwrap();
+    for present in ["key", "expected_version"] {
+        assert!(props.contains_key(present), "`approve` takes `{present}`");
+    }
+}
+
+/// A call's key is held to the verb's scope before anything else is read:
+/// a key, or a record version to compare, given to a verb on its type is
+/// `invalid`, and so is no key to a verb on a record, each naming the
+/// verb. Without a key, a principal who may not write the type is
+/// `not_granted`, and with no executor bound the call is `unbound`.
+/// Nothing is appended.
+pub async fn a_verb_on_its_type_is_called_without_a_key(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    f.write(&f.cast.clerk, "INV-1", &[("status", json!("open"))])
+        .await;
+    declare_register(&f).await;
+    let head = f.head().await;
+    let owner = &f.cast.owner;
+    let payload = || Patch::from([("name".into(), json!("Acme"))]);
+    let call = |who: Principal, verb: &'static str, k: Option<&'static str>, opts: WriteOpts| {
+        let c = f.catalog.clone();
+        async move {
+            c.call(&who, &verb.into(), k.map(key).as_ref(), payload(), opts)
+                .await
+        }
+    };
+    let pinned = WriteOpts {
+        expected_version: Some(Version(0)),
+        ..WriteOpts::default()
+    };
+    for (verb, k, opts, what) in [
+        (
+            "register",
+            Some("P-1"),
+            WriteOpts::default(),
+            "a key to a verb on its type",
+        ),
+        ("register", None, pinned, "a version to a verb on its type"),
+        (
+            "approve",
+            None,
+            WriteOpts::default(),
+            "no key to a verb on a record",
+        ),
+    ] {
+        let e = call(owner.clone(), verb, k, opts).await.expect_err(what);
+        let (_, reason) = refusal(&e);
+        let Refusal::Invalid { message } = reason else {
+            panic!("{what}: expected invalid, got {e:?}");
+        };
+        assert!(message.contains(verb), "{what}: {message:?} names `{verb}`");
+    }
+    let e = call(
+        f.cast.stranger.clone(),
+        "register",
+        None,
+        WriteOpts::default(),
+    )
+    .await
+    .expect_err("the stranger may not write partners");
+    assert_eq!(refusal(&e).1, &Refusal::NotGranted, "{e:?}");
+    let e = call(owner.clone(), "register", None, WriteOpts::default())
+        .await
+        .expect_err("no lake here binds the executor `crm`");
+    assert!(matches!(e, Error::Unbound { .. }), "{e:?}");
+    assert_eq!(f.head().await, head, "nothing is appended");
 }
 
 /// A verb's tool says what a call does by the verb's risk alone: a `low`

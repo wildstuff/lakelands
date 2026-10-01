@@ -361,6 +361,9 @@ struct Route {
 enum Writes {
     /// None: it does not write a record.
     No,
+    /// `Idempotency-Key` alone: a verb called on its type has no record
+    /// version to compare.
+    Once,
     /// `If-Match` and `Idempotency-Key`.
     Cas,
     /// Those, and `If-None-Match: *` for a record that must not exist.
@@ -507,6 +510,16 @@ fn matched(method: &Method, rest: &[String]) -> Option<Target> {
             &[],
             BodyAs::Nothing,
             Writes::Cas,
+        ),
+        (["verbs", verb], Method::POST) => r(
+            Door::Call {
+                verb: (*verb).into(),
+            },
+            "POST …/verbs/<verb>",
+            none,
+            &[],
+            BodyAs::One("payload", false),
+            Writes::Once,
         ),
         (["verbs", verb, key], Method::POST) => r(
             Door::Call {
@@ -719,6 +732,31 @@ fn write_headers(h: &HeaderMap, new: bool, a: &mut Map<String, Value>) -> Result
     Ok(())
 }
 
+/// The idempotency header of a call with no record version to compare,
+/// a verb's on its type: a compare-and-set header is refused, naming the
+/// header and the verb.
+fn once_headers(h: &HeaderMap, door: &Door, a: &mut Map<String, Value>) -> Result<(), Stop> {
+    let verb = match door {
+        Door::Call { verb } => verb.as_str(),
+        _ => "",
+    };
+    for (name, lower) in [("If-Match", "if-match"), ("If-None-Match", "if-none-match")] {
+        if header(h, lower).is_some() {
+            return Err(invalid(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "`POST …/verbs/{verb}` takes no `{name}`: verb `{verb}` is called on its type, which has no record version"
+                ),
+                "send it without the header",
+            ));
+        }
+    }
+    if let Some(k) = header(h, "idempotency-key") {
+        a.insert("idempotency_key".into(), json!(k));
+    }
+    Ok(())
+}
+
 async fn door(
     store: &Arc<dyn LakeStore>,
     who: &Principal,
@@ -727,8 +765,12 @@ async fn door(
 ) -> Result<Answer, Stop> {
     let mut a = r.path;
     a.extend(query_args(req.uri().query(), r.query, r.label)?);
-    if r.writes != Writes::No {
-        write_headers(req.headers(), r.writes == Writes::CasOrNew, &mut a)?;
+    match r.writes {
+        Writes::No => {}
+        Writes::Once => once_headers(req.headers(), &r.door, &mut a)?,
+        Writes::Cas | Writes::CasOrNew => {
+            write_headers(req.headers(), r.writes == Writes::CasOrNew, &mut a)?
+        }
     }
     let catalog = store.catalog(WriteContext::default());
     match r.body {

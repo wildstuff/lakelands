@@ -73,7 +73,8 @@ key may hold any character.
 | `DELETE …/types/<type>/records/<key>` | retire | `If-Match`, `Idempotency-Key` |
 | `PUT …/types/<type>/records/<key>/links/<relation>/<to>` | link | body: the link's own fields (none is `{}` or no body); `If-Match`, `If-None-Match`, `Idempotency-Key` |
 | `DELETE …/types/<type>/records/<key>/links/<relation>/<to>` | unlink | `If-Match`, `Idempotency-Key` |
-| `POST …/verbs/<verb>/<key>` | a declared verb | body: its payload (none is `{}`); `If-Match`, `Idempotency-Key` |
+| `POST …/verbs/<verb>/<key>` | a verb declared on a record | body: its payload (none is `{}`); `If-Match`, `Idempotency-Key` |
+| `POST …/verbs/<verb>` | a verb declared on its type | body: its payload (none is `{}`); `Idempotency-Key` |
 | `POST …/query` | the pattern query | body: the query tool's arguments |
 | `POST …/search` | search | body: the search tool's arguments |
 | `GET …/describe` | describe the lake | query: `as_of`, `valid_at` |
@@ -96,6 +97,13 @@ anything runs, so a misspelling never turns a compare-and-set into an
 unconditional write. `params` is the exception on the two reads: on a
 type that is not a view with parameters the store refuses it itself, as
 `invalid` (422), saying the type declares none.
+
+A verb declared on its type (`scope: type`) is called without a key, on
+`POST …/verbs/<verb>`: it has no record, so no record version either,
+and `If-Match` or `If-None-Match` there is `invalid` (400), naming the
+header and the verb. Either route with the other kind of verb is
+`invalid` (422), naming the verb: a key to a verb on its type, or none
+to a verb on a record.
 
 The link doors (`link`, `unlink`,
 `docs/decisions/035-a-link-is-a-record.md`) are served under the record
