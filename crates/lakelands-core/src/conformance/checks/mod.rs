@@ -52,6 +52,7 @@ mod search;
 mod search_fields;
 mod settings;
 mod streaming;
+mod triggers;
 mod value_types;
 mod values;
 mod vector_index;
@@ -326,6 +327,9 @@ pub const ALL: &[Check] = &[
     host_cause::CAUSE_ON_OWN_EVENTS,
     host_cause::CAUSE_PAST_HEAD,
     host_cause::DEPTH_ON_EVERY_DOOR,
+    triggers::TRANSITION,
+    triggers::PER_TRIGGER_DEPTH,
+    triggers::TRIGGER_CEILING,
     after::AFTER_RESUMES,
     describe::DESCRIBE_IS_THE_DECLARATION,
 ];

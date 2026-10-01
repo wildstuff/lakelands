@@ -95,6 +95,29 @@ pub fn check_context(lake: &Lake, context: &WriteContext) -> Result<()> {
             reason: Refusal::TooDeep { max },
         });
     }
+    // A reaction that names a trigger's firing as its cause is bound by
+    // that trigger's own ceiling too, as the head declares it (021). Any
+    // other cause binds nothing more.
+    let Some(cause) = context.cause else {
+        return Ok(());
+    };
+    let Some(stored) = lake.engine.read(cause, 1)?.into_iter().next() else {
+        return Ok(());
+    };
+    if let EventBody::TriggerFired { trigger, .. } = crate::log::open(&stored)?.body
+        && let Some(m) = lake
+            .writer()
+            .ontology
+            .triggers
+            .get(trigger.as_str())
+            .and_then(|e| e.decl.max_depth)
+        && context.depth > m
+    {
+        return Err(Error::Refused {
+            field: Some(trigger.as_str().into()),
+            reason: Refusal::TooDeep { max: m },
+        });
+    }
     Ok(())
 }
 
@@ -1620,6 +1643,16 @@ impl Call<'_> {
     /// A function computed outside the store is declared only where a
     /// backing of its kind is bound; replay never asks.
     fn check_bound(&self, d: &Declaration) -> Result<()> {
+        // A trigger's ceiling lies within the lake's (021).
+        if let Declaration::Trigger(t) = d
+            && let Some(m) = t.max_depth
+            && m > self.lake.limits.max_reactive_depth
+        {
+            return Err(invalid(format!(
+                "trigger `{}`: its `max_depth` {m} is above the lake's `max_reactive_depth` {}",
+                t.name, self.lake.limits.max_reactive_depth
+            )));
+        }
         if let Declaration::Function(f) = d
             && crate::backed::is_backed(f)
             && !self

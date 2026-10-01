@@ -646,10 +646,18 @@ pub struct TriggerDecl {
     pub name: TriggerName,
     /// The type whose writes it watches.
     pub on: TypeName,
-    /// A guard over the written record; `changed(f)` is available.
+    /// A guard over the written record; `changed(f)` and `previous(f)`
+    /// (the value before the write, null for a record the write creates)
+    /// are available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<Condition>,
     /// What the trigger is for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// How deep a reaction to this trigger's firing may be: a reactive
+    /// write whose `cause` names a firing of it, deeper than this, is
+    /// refused `too_deep`. At most the lake's `max_reactive_depth`
+    /// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_depth: Option<u32>,
 }

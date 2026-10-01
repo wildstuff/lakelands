@@ -197,6 +197,8 @@ pub(super) struct TriggerDoc {
     pub when: Option<Cond>,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
+    pub max_depth: Option<u32>,
 }
 
 /// `object_sets/<name>.yaml`.

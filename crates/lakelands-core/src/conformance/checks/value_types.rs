@@ -598,6 +598,7 @@ async fn a_trigger_or_set_on_a_value_the_type_no_longer_admits_never_holds(
     let Lake { cat, own } = &l;
     for d in [
         Declaration::Trigger(TriggerDecl {
+            max_depth: None,
             name: "went_late".into(),
             on: "invoice".into(),
             when: Some(Condition::from("status = 'late'")),

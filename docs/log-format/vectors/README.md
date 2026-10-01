@@ -22,9 +22,10 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
-- `v6.json`: one version-6 event after `v5.json`'s position 13: a
+- `v6.json`: two version-6 events after `v5.json`'s position 13: a
   `declared` type whose relation is derived from matching values, whose
-  schema hash is the same type's with the relation carried by links; and
+  schema hash is the same type's with the relation carried by links, and
+  a `declared` trigger with `max_depth`; and
   `negative`, the same event written as version 5, which a reader
   refuses.
 - `v5.json`: one version-5 event after `v4.json`'s position 12: a

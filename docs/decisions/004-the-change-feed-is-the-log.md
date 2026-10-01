@@ -74,3 +74,15 @@ would carry every write back to the consumer that made it. Each
 delivery would then make more of the log that consumers read. It would
 also make one consumer's progress part of every other reader's lake,
 which is the coupling this record keeps out.
+
+## Extended: what a trigger's guard sees, and how deep its reactions go
+
+A trigger's guard reads the write: the record's new values, `changed(f)`,
+and `previous(f)`, the value before the write, which is null for a record
+the write creates (or revives from retirement). A transition is a guard,
+`previous(status) = 'open' and status = 'closed'`, and fires on that
+transition only. A guard reads no other record. A trigger may also cap
+the depth of the reactions that name its firing as their cause
+(`docs/decisions/021-the-write-context-belongs-to-the-host.md`, extended).
+The firing is appended whatever the depth, since it is the durable fact a
+host reacts to.

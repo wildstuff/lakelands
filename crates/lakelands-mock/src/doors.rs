@@ -262,13 +262,28 @@ impl MockCatalog {
         if self.context.depth > max {
             return Err(refused(Refusal::TooDeep { max }));
         }
-        // A host's cause names an event the log holds.
+        // A host's cause names an event the log holds; a trigger's firing
+        // binds the reaction by that trigger's own ceiling too (021).
         if let Some(cause) = self.context.cause {
-            let head = Shared::head(&self.log());
+            let log = self.log();
+            let head = Shared::head(&log);
             if cause > head {
                 return Err(refused(Refusal::Invalid {
                     message: format!("the cause {cause} is past the lake's head {head}"),
                 }));
+            }
+            if let EventBody::TriggerFired { trigger, .. } = &log.events[cause.0 as usize].body
+                && let Some(m) = State::fold(&log.events)
+                    .triggers
+                    .iter()
+                    .find(|t| &t.name == trigger)
+                    .and_then(|t| t.max_depth)
+                && self.context.depth > m
+            {
+                return Err(Error::Refused {
+                    field: Some(trigger.as_str().into()),
+                    reason: Refusal::TooDeep { max: m },
+                });
             }
         }
         Ok(())
@@ -303,6 +318,7 @@ impl MockCatalog {
     ) -> Result<Position> {
         let (_, st) = self.state_at(log, None)?;
         check_declaration(&st, who, &declaration)?;
+        trigger_ceiling(&declaration, self.shared.limits.max_reactive_depth)?;
         let (schema_hash, version) = identity_version(&st, &declaration);
         let links = link_drafts(&st, who, &declaration);
         let mut batch = Batch::at(log);
@@ -2557,6 +2573,11 @@ impl Catalog for MockCatalog {
         {
             return Err(refused(Refusal::WrongDoor));
         }
+        if let ProposedWrite::Declare { declarations } = &write {
+            for d in declarations {
+                trigger_ceiling(d, self.shared.limits.max_reactive_depth)?;
+            }
+        }
         let mut log = self.log();
         let (_, st) = self.state_at(&log, None)?;
         let mut batch = Batch::at(&log);
@@ -2622,6 +2643,9 @@ impl Catalog for MockCatalog {
             // pending, since nothing is committed.
             ProposedWrite::Declare { declarations } => {
                 check_set(&st, &proposer, &declarations)?;
+                for d in &declarations {
+                    trigger_ceiling(d, self.shared.limits.max_reactive_depth)?;
+                }
                 for mut d in set_drafts(&st, &proposer, declarations) {
                     d.cause = Some(accepted);
                     batch.push(d);
@@ -2772,6 +2796,9 @@ impl Catalog for MockCatalog {
         let mut log = self.log();
         let (_, st) = self.state_at(&log, None)?;
         check_set(&st, who, &declarations)?;
+        for d in &declarations {
+            trigger_ceiling(d, self.shared.limits.max_reactive_depth)?;
+        }
         // One append at consecutive positions; the answer names the last.
         let mut batch = Batch::at(&log);
         let mut position = batch.peek();
@@ -3221,4 +3248,18 @@ fn derived_pairs(
         }
     }
     Ok(())
+}
+
+/// A trigger's `max_depth` lies within the lake's ceiling (021).
+fn trigger_ceiling(d: &Declaration, ceiling: u32) -> Result<()> {
+    match d {
+        Declaration::Trigger(t) if t.max_depth.is_some_and(|m| m > ceiling) => {
+            Err(invalid(format!(
+                "trigger `{}`: its `max_depth` {} is above the lake's `max_reactive_depth` {ceiling}",
+                t.name,
+                t.max_depth.unwrap_or_default()
+            )))
+        }
+        _ => Ok(()),
+    }
 }

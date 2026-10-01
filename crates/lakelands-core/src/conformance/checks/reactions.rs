@@ -49,6 +49,7 @@ async fn a_trigger_fires_on_a_verbs_write(store: Arc<dyn LakeStore>) -> Result<(
             description: None,
         }),
         Declaration::Trigger(TriggerDecl {
+            max_depth: None,
             name: "paid".into(),
             on: "invoice".into(),
             when: Some(Condition::from("status = 'paid'")),

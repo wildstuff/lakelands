@@ -332,6 +332,7 @@ fn complete_declarations() -> Vec<Declaration> {
             description: None,
         }),
         Declaration::Trigger(TriggerDecl {
+            max_depth: None,
             name: "invoice_paid".into(),
             on: TypeName::new("invoice"),
             when: Some(text("changed(status) and status = 'paid'")),
@@ -1289,4 +1290,22 @@ fn a_derived_relation_lowers_from_its_yaml_match() {
     assert_eq!(d.pairs.len(), 1);
     assert_eq!(d.pairs[0].from.as_str(), "partner_id");
     assert_eq!(d.pairs[0].to.as_str(), "id");
+}
+
+#[test]
+fn a_triggers_max_depth_lowers_from_its_yaml() {
+    let trigger = (
+        "triggers/once.yaml",
+        "name: once\non: partner\nmax_depth: 1\n",
+    );
+    let bundle = load(&[PARTNER, trigger]).expect("the bundle loads");
+    let t = bundle
+        .declarations
+        .iter()
+        .find_map(|d| match d {
+            Declaration::Trigger(t) => Some(t),
+            _ => None,
+        })
+        .expect("the trigger is declared");
+    assert_eq!(t.max_depth, Some(1));
 }

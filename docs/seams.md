@@ -1377,7 +1377,10 @@ each event the write itself appends; events it derives from those keep
 their own cause, which chains back
 (`docs/decisions/021-the-write-context-belongs-to-the-host.md`, extended;
 suite: `a_reactive_write_with_a_cause_carries_it_on_each_of_its_events`,
-`a_cause_past_the_head_is_refused_and_appends_nothing`).
+`a_cause_past_the_head_is_refused_and_appends_nothing`). A cause that names
+a firing of a trigger with `max_depth` binds the write by that trigger's
+ceiling too: deeper than it, the write is refused `too_deep` naming the
+trigger (suite: `a_reaction_past_its_triggers_max_depth_is_refused_naming_it`).
 
 `LakeStore::head` answers the last position the projection has folded:
 a position a read can be answered at at once, on every engine. An
