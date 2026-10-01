@@ -1175,8 +1175,7 @@ impl<'a> Reader<'a> {
                     return Ok(true);
                 };
                 Ok(self
-                    .view
-                    .get(&node.0, &node.1)?
+                    .get_one(&node.0, &node.1)?
                     .is_some_and(|r| self.holds(f, &r.fields, Some(&r.meta))))
             };
             let t = graph::traverse(&hidden, &from, &p.steps, max_depth, usize::MAX, keep)?;

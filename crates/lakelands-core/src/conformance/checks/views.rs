@@ -61,7 +61,7 @@ check!(
 check!(
     /// A walk reaches a view over a derived relation.
     WALK_REACHES_A_VIEW = a_walk_over_a_derived_relation_reaches_a_views_records_both_ways,
-    "018, 026 and 044: a derived relation between a stored type and a view connects their records by matching values like any other, so a walk out from the stored type reaches the view's records and a walk in from the view reaches the stored ones"
+    "018, 026 and 044: a derived relation between a stored type and a view connects their records by matching values like any other, so a walk out from the stored type reaches the view's records, a step's `where` keeps those of them it holds for, and a walk in from the view reaches the stored ones"
 );
 
 check!(
@@ -495,26 +495,46 @@ async fn a_walk_over_a_derived_relation_reaches_a_views_records_both_ways(
     }
     write_invoice(store.as_ref(), own, "i1", "p1", "10.00").await?;
     write_invoice(store.as_ref(), own, "i2", "p2", "3.00").await?;
-    let step = |walk| Step {
+    let step = |walk, filter: Option<&str>| Step {
         relation: "totals".into(),
         walk,
         ty: None,
-        filter: None,
+        filter: filter.map(Into::into),
         depth: Depth::default(),
     };
-    for (start, key, walk, far, want) in [
+    let to_totals = "partner_totals";
+    for (start, key, walk, filter, far, want) in [
         (
             "partner",
             "p1",
             Walk::Out,
-            "partner_totals",
+            None,
+            to_totals,
             vec!["partner_totals:p1"],
         ),
-        ("partner", "p3", Walk::Out, "partner_totals", vec![]),
+        ("partner", "p3", Walk::Out, None, to_totals, vec![]),
+        // A step's `where` reads the view's records it reached.
+        (
+            "partner",
+            "p1",
+            Walk::Out,
+            Some("total > 5"),
+            to_totals,
+            vec!["partner_totals:p1"],
+        ),
+        (
+            "partner",
+            "p2",
+            Walk::Out,
+            Some("total > 5"),
+            to_totals,
+            vec![],
+        ),
         (
             "partner_totals",
             "p2",
             Walk::In,
+            None,
             "partner",
             vec!["partner:p2"],
         ),
@@ -522,14 +542,15 @@ async fn a_walk_over_a_derived_relation_reaches_a_views_records_both_ways(
         let got = nodes(
             store.as_ref(),
             own,
-            pattern(start, Some(key), None, vec![step(walk)]),
+            pattern(start, Some(key), None, vec![step(walk, filter)]),
             far,
         )
         .await?;
         ensure!(
             got == want,
-            "walking `totals` {walk:?} from {start} `{key}` must reach {want:?}, the records \
-             whose matched value is the same; it reaches {got:?}"
+            "walking `totals` {walk:?} from {start} `{key}` (step where {filter:?}) must reach \
+             {want:?}, the records whose matched value is the same and that the step's where \
+             holds for; it reaches {got:?}"
         );
     }
     Ok(())
