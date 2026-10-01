@@ -264,6 +264,7 @@ fn complete_declarations() -> Vec<Declaration> {
                     expr: text("sum(net)"),
                 }],
                 params: Default::default(),
+                merge: Default::default(),
             })),
             fields: vec![
                 field(

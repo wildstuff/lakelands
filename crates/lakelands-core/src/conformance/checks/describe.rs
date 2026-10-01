@@ -105,6 +105,7 @@ fn by_title(name: &str, measure: &str, over: &str) -> TypeDecl {
             expr: Condition::from(format!("sum({over})").as_str()),
         }],
         params: Default::default(),
+        merge: Default::default(),
     }));
     ty.description = Some(format!("the ledger's {over} by title"));
     ty

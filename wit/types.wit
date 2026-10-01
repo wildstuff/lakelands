@@ -215,6 +215,17 @@ interface types {
         where: option<condition>,
         group-by: list<field-name>,
         measures: list<measure>,
+        /// Further sources merged on the view's key.
+        merge: list<view-source>,
+    }
+
+    /// A further source of a view, grouped by its own fields in the
+    /// view's key order.
+    record view-source {
+        source: type-name,
+        where: option<condition>,
+        group-by: list<field-name>,
+        measures: list<measure>,
     }
 
     record type-decl {

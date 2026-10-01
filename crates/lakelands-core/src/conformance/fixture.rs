@@ -243,6 +243,7 @@ pub fn partner_totals(name: &str, total: StorageKind) -> TypeDecl {
                 measure("invoices", "count()"),
             ],
             params: Default::default(),
+            merge: Default::default(),
         })),
         ..type_decl(
             name,

@@ -2704,6 +2704,7 @@ pub async fn schema_hashes_and_proposal_ids_have_the_stores_form(store: Arc<dyn 
                 },
             ],
             params: Default::default(),
+            merge: Default::default(),
         })),
         valid_from: None,
         valid_to: None,
@@ -3920,6 +3921,7 @@ pub async fn an_order_by_latest_takes_no_field_and_no_view(store: Arc<dyn LakeSt
                 expr: "count()".into(),
             }],
             params: Default::default(),
+            merge: Default::default(),
         })),
         valid_from: None,
         valid_to: None,
@@ -3977,6 +3979,7 @@ pub async fn a_view_reads_the_parameters_each_read_binds(store: Arc<dyn LakeStor
                 name: "count".into(),
                 expr: "count()".into(),
             }],
+            merge: Default::default(),
         })),
         field_meta: true,
         ..Default::default()

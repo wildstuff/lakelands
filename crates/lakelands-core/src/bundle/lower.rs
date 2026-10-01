@@ -457,6 +457,7 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
             group_by,
             measures,
             params,
+            merge: Default::default(),
         }
     });
     let t = TypeDecl {

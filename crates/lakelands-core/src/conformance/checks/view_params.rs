@@ -90,6 +90,7 @@ fn account_window() -> TypeDecl {
                     "count(if(date > param('anchor') - 1d, amount, null))",
                 ),
             ],
+            merge: Default::default(),
         })),
         ..type_decl(
             "account_window",

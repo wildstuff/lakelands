@@ -1051,6 +1051,7 @@ fn tally_view(name: &str, source: &str) -> lakelands_api::ontology::TypeDecl {
             name: "n".into(),
             expr: "count()".into(),
         }],
+        merge: Default::default(),
     }));
     t
 }

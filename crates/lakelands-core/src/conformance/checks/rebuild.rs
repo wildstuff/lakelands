@@ -103,6 +103,7 @@ async fn a_rebuilt_projection_answers_every_read_as_the_live_one_did(
             expr: "sum(amount)".into(),
         }],
         params: Default::default(),
+        merge: Default::default(),
     }));
 
     let mut positions = Vec::new();
