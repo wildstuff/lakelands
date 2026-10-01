@@ -160,6 +160,9 @@ pub(super) struct RelationDoc {
 #[serde(deny_unknown_fields)]
 pub(super) struct ViewDoc {
     pub source: String,
+    /// The parameters a read binds: name to storage kind, in order.
+    #[serde(default)]
+    pub params: Named<String>,
     #[serde(default, rename = "where")]
     pub filter: Option<Cond>,
     #[serde(default)]
