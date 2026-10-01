@@ -14,6 +14,8 @@
 //!   `declare` or `migrate`.
 //! - **6**: an event whose declaration holds a relation with `derived`,
 //!   or is a trigger with `max_depth`, in the same places.
+//! - **7**: an event whose declaration calls `retired` in any expression
+//!   it keeps, in the same places.
 //!
 //! The store appends each event at the greatest of the lake's version and
 //! the one [`needed`] answers, and refuses, when it reads the log, an
@@ -27,6 +29,9 @@ use lakelands_api::write::{Declaration, ProposedWrite};
 /// The lowest format version that can carry `body`, with `upstream` or
 /// without it.
 pub fn needed(body: &EventBody, upstream: bool) -> u32 {
+    if calls_retired(body) {
+        return 7;
+    }
     if derives_a_relation(body) || caps_a_trigger(body) {
         return 6;
     }
@@ -88,6 +93,11 @@ pub fn derives_a_relation(body: &EventBody) -> bool {
     )
 }
 
+/// Whether a declaration the event carries calls `retired`.
+pub fn calls_retired(body: &EventBody) -> bool {
+    any_declaration(body, |d| declares_call(d, Func::Retired))
+}
+
 /// Whether a declaration the event carries is a trigger with `max_depth`.
 pub fn caps_a_trigger(body: &EventBody) -> bool {
     any_declaration(
@@ -103,7 +113,9 @@ pub fn below(event: &Event) -> Option<String> {
     if event.v >= need {
         return None;
     }
-    let what = if need == 6 && caps_a_trigger(&event.body) {
+    let what = if need == 7 {
+        "declares a call of `retired`".to_owned()
+    } else if need == 6 && caps_a_trigger(&event.body) {
         "declares a trigger's `max_depth`".to_owned()
     } else if need == 6 {
         "declares a derived relation".to_owned()
@@ -155,11 +167,17 @@ fn event_kind(body: &EventBody) -> String {
 }
 
 /// Whether a declaration calls `date_bucket` in any expression the log
-/// keeps: a field's derivation, a view's `where` and measures, a value
-/// type's constraint, a verb's `requires` and assignments, a trigger's
-/// `when`, an object set's filter, and an expression function's body. A
-/// condition in text form that does not parse calls nothing.
+/// keeps.
 pub fn calls_date_bucket(declaration: &Declaration) -> bool {
+    declares_call(declaration, Func::DateBucket)
+}
+
+/// Whether a declaration calls `f` in any expression the log keeps: a
+/// field's derivation, a view's `where` and measures, a value type's
+/// constraint, a verb's `requires` and assignments, a trigger's `when`, an
+/// object set's filter, and an expression function's body. A condition in
+/// text form that does not parse calls nothing.
+pub fn declares_call(declaration: &Declaration, f: Func) -> bool {
     let mut conditions: Vec<&Condition> = Vec::new();
     match declaration {
         Declaration::Type(t) => {
@@ -181,10 +199,8 @@ pub fn calls_date_bucket(declaration: &Declaration) -> bool {
         Declaration::Function(f) => conditions.extend(f.expr.as_ref()),
     }
     conditions.into_iter().any(|c| match c {
-        Condition::Expr(e) => calls(e, Func::DateBucket),
-        Condition::Text(t) => {
-            lakelands_api::expr::parse(t).is_ok_and(|e| calls(&e, Func::DateBucket))
-        }
+        Condition::Expr(e) => calls(e, f),
+        Condition::Text(t) => lakelands_api::expr::parse(t).is_ok_and(|e| calls(&e, f)),
     })
 }
 

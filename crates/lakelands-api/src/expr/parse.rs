@@ -62,6 +62,7 @@ pub fn func_name(f: Func) -> &'static str {
         Func::Previous => "previous",
         Func::Setting => "setting",
         Func::Changed => "changed",
+        Func::Retired => "retired",
         Func::Coalesce => "coalesce",
         Func::If => "if",
         Func::Lower => "lower",
@@ -85,7 +86,7 @@ pub fn func_name(f: Func) -> &'static str {
     }
 }
 
-const FUNCS: [Func; 27] = [
+const FUNCS: [Func; 28] = [
     Func::Now,
     Func::Today,
     Func::KnownAt,
@@ -93,6 +94,7 @@ const FUNCS: [Func; 27] = [
     Func::Previous,
     Func::Setting,
     Func::Changed,
+    Func::Retired,
     Func::Coalesce,
     Func::If,
     Func::Lower,
@@ -123,7 +125,7 @@ fn func_by_name(name: &str) -> Option<Func> {
 /// `None`.
 pub fn arity(f: Func) -> (usize, Option<usize>) {
     match f {
-        Func::Now | Func::Today => (0, Some(0)),
+        Func::Now | Func::Today | Func::Retired => (0, Some(0)),
         Func::KnownAt
         | Func::SeenAt
         | Func::Previous

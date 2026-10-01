@@ -111,6 +111,11 @@ pub trait Scope {
         false
     }
 
+    /// In a guard: whether the write retires the record.
+    fn retiring(&self) -> bool {
+        false
+    }
+
     /// The provenance of a field, when the scope carries it.
     fn meta(&self, _field: &FieldName) -> Option<FieldMeta> {
         None
@@ -165,6 +170,10 @@ pub struct WriteScope<'a> {
     pub after: &'a BTreeMap<FieldName, Value>,
     /// The record's fields before the write; `None` for a create.
     pub before: Option<&'a BTreeMap<FieldName, Value>>,
+    /// Whether the write retires the record: live before, retired after.
+    /// A retirement keeps the fields, so only this tells it from an
+    /// update.
+    pub retiring: bool,
     /// Per-field provenance after the write, if kept.
     pub meta: Option<&'a BTreeMap<FieldName, FieldMeta>>,
     /// The lake's settings, by key.
@@ -184,6 +193,10 @@ impl Scope for WriteScope<'_> {
 
     fn in_write(&self) -> bool {
         true
+    }
+
+    fn retiring(&self) -> bool {
+        self.retiring
     }
 
     fn meta(&self, field: &FieldName) -> Option<FieldMeta> {
@@ -288,9 +301,11 @@ pub fn eval(e: &Expr, scope: &dyn Scope) -> Result<Val> {
 pub enum Place {
     /// Over one record, outside a write: a filter, a constraint.
     Record,
-    /// Over one record in a write: a guard, a derived field, where
-    /// `changed` and `previous` have meaning.
+    /// Over one record in a write: a derived field, where `changed` and
+    /// `previous` have meaning.
     Write,
+    /// A trigger's guard: a write, where `retired` has meaning as well.
+    Guard,
     /// Over a group of records: a view measure, where aggregates have
     /// meaning.
     Group,
@@ -382,8 +397,11 @@ pub fn check(e: &Expr, place: Place) -> Result<()> {
                         ));
                     }
                 }
-                Func::Previous | Func::Changed if place != Place::Write => {
+                Func::Previous | Func::Changed if !matches!(place, Place::Write | Place::Guard) => {
                     return err(format!("{name}() has meaning only in a guard over a write"));
+                }
+                Func::Retired if place != Place::Guard => {
+                    return err("retired() has meaning only in a trigger's guard");
                 }
                 f if f.is_aggregate() && place != Place::Group => {
                     return err(format!(
@@ -667,6 +685,12 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
             };
             return Ok(Val::Bool(!same));
         }
+        Func::Retired => {
+            if !scope.in_write() {
+                return err("retired() has meaning only in a trigger's guard");
+            }
+            return Ok(Val::Bool(scope.retiring()));
+        }
         Func::Count | Func::Sum | Func::Min | Func::Max | Func::Avg => {
             if let Some(v) = scope.aggregate(func, args) {
                 return v;
@@ -748,6 +772,7 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
         | Func::SeenAt
         | Func::Previous
         | Func::Changed
+        | Func::Retired
         | Func::Count
         | Func::Sum
         | Func::Min

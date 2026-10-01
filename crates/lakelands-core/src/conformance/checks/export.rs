@@ -596,12 +596,13 @@ fn import_seams() -> lakelands_api::seam::Seams {
     }
 }
 
-/// A lake with two writers, two sealed segments and four format
+/// A lake with two writers, two sealed segments and five format
 /// versions: invoices, a checkpoint, the lake opened again by a second
 /// writer (a second lease, a greater fence), a re-key (version 2), a
 /// restricted and a retired invoice, an annotated type with a derived
-/// relation (version 6) and a derived `date_bucket` field, a record
-/// ingested with an upstream, a second checkpoint and more invoices.
+/// relation (version 6) and a derived `date_bucket` field, a trigger whose
+/// guard calls `retired` (version 7), a record ingested with an upstream,
+/// a second checkpoint and more invoices.
 /// Answers the
 /// second writer's handle and a position before the second checkpoint.
 async fn exported_lake(
@@ -653,6 +654,14 @@ async fn exported_lake(
     cat.declare(&own, stamp)
         .await
         .must("declaring an annotated type with a derived field calling date_bucket")?;
+    // Format version 7: a trigger whose guard calls `retired`.
+    let gone: lakelands_api::write::Declaration = serde_json::from_value(json!({
+        "declare": "trigger", "name": "stamp_retired", "on": "stamp", "when": "retired()"
+    }))
+    .expect("a declaration");
+    cat.declare(&own, gone)
+        .await
+        .must("declaring a trigger whose guard calls retired")?;
     let mut read_from = crate::conformance::fixture::source_record(
         "stamp",
         "s1",

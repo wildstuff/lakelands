@@ -24,8 +24,9 @@ use crate::write::{Declaration, Migration, ProposedWrite};
 /// by guessing. Version 2 adds `migrated.rekeyed`; version 3 the member
 /// `upstream` and `date_bucket` in a declaration; version 4 a proposed
 /// declaration or migration; version 5 a declaration's `annotations`;
-/// version 6 a derived relation (`docs/log-format.md` §6).
-pub const LOG_FORMAT_VERSION: u32 = 6;
+/// version 6 a derived relation; version 7 a call of `retired` in a
+/// declaration (`docs/log-format.md` §6).
+pub const LOG_FORMAT_VERSION: u32 = 7;
 
 /// The version a lake is created with and writes until it needs a newer
 /// one: a lake that never re-keys a type stays at version 1, byte for

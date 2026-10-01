@@ -183,6 +183,11 @@ fn check_places_guard_functions_and_aggregates() {
         "an aggregate's argument is per record"
     );
     assert!(c("status in ('a')", Place::Record).is_ok());
+    assert!(c("changed(status)", Place::Guard).is_ok());
+    assert!(c("retired()", Place::Guard).is_ok());
+    assert!(c("retired()", Place::Write).is_err(), "a derived field");
+    assert!(c("retired()", Place::Record).is_err());
+    assert!(parse("retired(status)").is_err(), "it takes no argument");
 }
 
 #[test]
@@ -328,6 +333,7 @@ fn changed_and_previous_read_the_write() {
     let scope = WriteScope {
         after: &after,
         before: Some(&before),
+        retiring: false,
         meta: None,
         settings: None,
         now: Timestamp(0),
@@ -346,6 +352,37 @@ fn changed_and_previous_read_the_write() {
     };
     assert!(holds(&parse("changed(status)").unwrap(), &created).unwrap());
     assert!(holds(&parse("previous(status) is null").unwrap(), &created).unwrap());
+}
+
+#[test]
+fn retired_reads_whether_the_write_retires() {
+    let fields = at(json!({"status": "closed"}));
+    let update = WriteScope {
+        after: &fields,
+        before: Some(&fields),
+        retiring: false,
+        meta: None,
+        settings: None,
+        now: Timestamp(0),
+    };
+    let retire = WriteScope {
+        retiring: true,
+        ..update
+    };
+    let holds_in = |t: &str, s: &WriteScope| holds(&parse(t).unwrap(), s).unwrap();
+    assert!(!holds_in("retired()", &update));
+    assert!(holds_in("retired()", &retire));
+    assert!(holds_in("status = 'closed' and not retired()", &update));
+    assert!(!holds_in("status = 'closed' and not retired()", &retire));
+    let scope = RecordScope {
+        fields: &fields,
+        settings: None,
+        now: Timestamp(0),
+    };
+    assert!(
+        eval(&parse("retired()").unwrap(), &scope).is_err(),
+        "outside a write it has no meaning"
+    );
 }
 
 #[test]
@@ -376,6 +413,7 @@ fn settings_and_provenance_come_from_the_scope() {
     let scope = WriteScope {
         after: &after,
         before: None,
+        retiring: false,
         meta: Some(&meta),
         settings: Some(&settings),
         now: Timestamp(0),

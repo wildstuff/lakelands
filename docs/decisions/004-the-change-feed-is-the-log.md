@@ -86,3 +86,30 @@ the depth of the reactions that name its firing as their cause
 (`docs/decisions/021-the-write-context-belongs-to-the-host.md`, extended).
 The firing is appended whatever the depth, since it is the durable fact a
 host reacts to.
+
+## Extended: a guard tells a retirement from an update (lakelands#271)
+
+A retirement keeps the record's fields as they were and only retires it.
+A guard over fields alone therefore holds on a retirement exactly when
+it held before it, and `changed` and `previous` cannot tell the two
+apart. A guard reads it through `retired()`: true when the write retires
+the record (live before it, retired after it), false on any other write.
+`status = 'closed' and not retired()` fires on closing a record and not
+on retiring a closed one; `retired()` alone fires on retirements only.
+It holds on every door that retires: `retire`, an accepted retire and a
+source's purge.
+
+A trigger without `retired()` fires as before, on retirements too.
+Leaving retirements out by default was the other way to do this. It
+would have taken away firings this record promises, from triggers whose
+declarations did not change. A firing is a durable fact a host may
+already depend on.
+
+`retired()` belongs to a trigger's guard alone, since only a guard reads
+a write. In a derived field, a filter, a verb's `requires` or an
+object set it is refused as invalid. A revival, an upsert of a retired
+record, is a creation to a guard: `previous` is null, `changed` is true
+and `retired()` is false. A declaration calling `retired` is written in
+log format 7 (`docs/log-format.md` §6), so a reader that does not know
+the function refuses the log instead of keeping a trigger it cannot
+evaluate, which would never fire.
