@@ -89,6 +89,12 @@ check!(
 );
 
 check!(
+    /// A measure read by name is no source field.
+    MEASURE_BY_NAME_DESCRIBED = a_view_whose_measure_reads_another_is_described_to_its_readers,
+    "024 and 018: `describe` answers a view's definition to a principal who reads every field of its source that it names; a measure that reads an earlier measure by name names no field, so it keeps the definition from no one, while a name inside an aggregate is the source's field, even where a measure has the same name"
+);
+
+check!(
     /// Ingest keeps a view current.
     CURRENT_AFTER_INGEST = a_view_over_an_ingested_source_is_current_once_the_ingest_is_committed,
     "016 and the ontology: both write doors are folded by the same rules, so a view over ingested records is kept like any other"
@@ -778,5 +784,97 @@ async fn a_view_declares_exactly_the_fields_it_computes(
     }
     l.declare(partner_totals("totals", StorageKind::Decimal))
         .await?;
+    Ok(())
+}
+
+async fn a_view_whose_measure_reads_another_is_described_to_its_readers(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use lakelands_api::principal::TypeGrants;
+    use lakelands_api::{Access, Grants, PrincipalKind};
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, .. } = &l;
+    l.declare(invoices(Authority::Authored)).await?;
+    let mut averaged = partner_totals("averaged", StorageKind::Decimal);
+    averaged.fields.push(field("mean", StorageKind::Decimal));
+    if let Some(v) = averaged.view.as_mut() {
+        v.measures.push(Measure {
+            name: FieldName::from("mean"),
+            expr: "total / invoices".into(),
+        });
+    }
+    l.declare(averaged).await?;
+    // A measure with the name of the source field it sums: the name inside
+    // the aggregate is the source's field, and reading it is still asked.
+    let mut summed = type_decl(
+        "summed",
+        vec![
+            field("partner", StorageKind::Text),
+            field("amount", StorageKind::Decimal),
+        ],
+    );
+    summed.key = vec![FieldName::from("partner")];
+    summed.view = Some(Box::new(ViewDecl {
+        source: TypeName::from("invoice"),
+        params: Vec::new(),
+        r#where: None,
+        group_by: vec![FieldName::from("partner")],
+        measures: vec![Measure {
+            name: FieldName::from("amount"),
+            expr: "sum(amount)".into(),
+        }],
+    }));
+    l.declare(summed).await?;
+    let reader = |id: &str, amount: Access| {
+        let mut types = BTreeMap::new();
+        types.insert(
+            TypeName::from("invoice"),
+            TypeGrants {
+                default: None,
+                fields: [(FieldName::from("amount"), amount)].into(),
+            },
+        );
+        crate::conformance::fixture::principal(
+            store.as_ref(),
+            PrincipalKind::Agent,
+            id,
+            Grants {
+                default: Access::Read,
+                types,
+                ..Grants::default()
+            },
+        )
+    };
+    for (who, sees) in [
+        (reader("reader", Access::Read), true),
+        (reader("blind", Access::None), false),
+    ] {
+        let d = cat
+            .describe(&who, Default::default())
+            .await
+            .must("describing the lake")?
+            .data;
+        for (view, how) in [
+            (
+                "averaged",
+                "whose measure `mean` reads the measures `total` and `invoices` by name",
+            ),
+            (
+                "summed",
+                "whose measure `amount` sums the source field of that name",
+            ),
+        ] {
+            let shown = d.types.iter().any(|t| t.name == view && t.view.is_some());
+            ensure!(
+                shown == sees,
+                "`{}` reads `invoice.amount`: {}; `describe` must {} the view definition of \
+                 `{view}`, {how}, and it {}",
+                who.id,
+                sees,
+                if sees { "answer" } else { "leave out" },
+                if shown { "answers it" } else { "leaves it out" }
+            );
+        }
+    }
     Ok(())
 }
