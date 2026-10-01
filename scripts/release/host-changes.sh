@@ -7,17 +7,25 @@
 #
 # The findings are cargo-semver-checks' (checked against the rules of a
 # minor release: under 0.x the tool reads 0.5 -> 0.6 as a major step and
-# would report nothing), plus two checks of its own over the public
-# traits of `lakelands-api`, which the tool does not make for them: a
-# method without a default that was added, which every implementer must
-# add, and a method whose signature changed while its parameter count did
-# not, which every implementer must follow. A method a line already names
-# is not reported twice. With nothing found it says so. It exits 0
+# would report nothing), plus checks of its own that the tool does not
+# make: over the public traits of `lakelands-api`, a method without a
+# default that was added, which every implementer must add, and a method
+# whose signature changed while its parameter count did not, which every
+# implementer must follow; and over both crates, a named field of a
+# public struct or of a public enum's variant whose type changed, which a
+# literal, a pattern or a read of it must follow. An item a line already
+# names is not reported twice. With nothing found it says so. It exits 0
 # whatever it finds, and 2 when it cannot run.
+#
+# Not compared, so a release reviewer reads them by hand: the fields of a
+# tuple struct or a tuple variant (positional), the items of a public
+# struct or enum declared anywhere but at column 0 or with a `where`
+# clause before its brace, and `pub(crate)` items, which reach no host.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 CRATES=(lakelands-api lakelands-client)
+FIELD_DIRS=(crates/lakelands-api/src crates/lakelands-client/src)
 TRAIT_FILES=(crates/lakelands-api/src/engine.rs crates/lakelands-api/src/catalog.rs
     crates/lakelands-api/src/seam.rs)
 
@@ -144,8 +152,9 @@ methods() {
         function done(kind) {
             gsub(/[ \t]+/, " ", sig)
             sub(/^ /, "", sig); sub(/ $/, "", sig)
-            gsub(/\( /, "(", sig); gsub(/ \)/, ")", sig)
-            gsub(/,\)/, ")", sig); gsub(/, >/, ">", sig); gsub(/,>/, ">", sig)
+            gsub(/\( /, "(", sig); gsub(/ \)/, ")", sig); gsub(/< /, "<", sig); gsub(/ >/, ">", sig)
+            gsub(/\[ /, "[", sig); gsub(/ \]/, "]", sig)
+            gsub(/,\)/, ")", sig); gsub(/,>/, ">", sig)
             print t "::" name "\t" kind "\t" sig "\t" unnamed(sig)
             sig = ""; reading = 0
         }
@@ -167,11 +176,12 @@ methods() {
     '
 }
 
-# Whether a line of the report already names `Trait::method`, and not
-# only a longer name it begins (`get` in `get_many`).
+# Whether a line of the report already names `Trait::method` or
+# `Type.field`, and not only a longer name it begins (`get` in
+# `get_many`).
 named() {
     [ "${#lines[@]}" -gt 0 ] &&
-        printf '%s\n' "${lines[@]}" | grep -Eq "(^|[^A-Za-z0-9_:])$1([^A-Za-z0-9_]|$)"
+        printf '%s\n' "${lines[@]}" | grep -Eq "(^|[^A-Za-z0-9_:.])${1//./\\.}([^A-Za-z0-9_]|$)"
 }
 
 for f in "${TRAIT_FILES[@]}"; do
@@ -196,6 +206,94 @@ for f in "${TRAIT_FILES[@]}"; do
         <(printf '%s\n' "$base" | sed '/^$/d' | LC_ALL=C sort -t $'\t' -k1,1) \
         <(printf '%s\n' "$head" | sed '/^$/d' | LC_ALL=C sort -t $'\t' -k1,1))
 done
+
+# Every named field of a public struct (its `pub` fields) and of a
+# public enum's struct variants, one line each, fields apart by a tab:
+# `Type.field` or `Enum::Variant.field`, then its type. A type runs to the
+# comma that ends it outside every bracket, over as many lines as it
+# takes; comments and attribute lines are left out, and the whitespace is
+# collapsed as for a signature.
+fields() {
+    awk '
+        function depth(s,    i, n, c, d) {
+            d = 0; n = length(s)
+            for (i = 1; i <= n; i++) {
+                c = substr(s, i, 1)
+                if (c == "-" && substr(s, i + 1, 1) == ">") { i++; continue }
+                if (c == "(" || c == "[" || c == "<") d++
+                else if (c == ")" || c == "]" || c == ">") d--
+            }
+            return d
+        }
+        function done() {
+            ty = typ; sub(/,[ \t]*$/, "", ty)
+            gsub(/[ \t]+/, " ", ty); sub(/^ /, "", ty); sub(/ $/, "", ty)
+            gsub(/\( /, "(", ty); gsub(/ \)/, ")", ty); gsub(/< /, "<", ty); gsub(/ >/, ">", ty)
+            gsub(/\[ /, "[", ty); gsub(/ \]/, "]", ty)
+            gsub(/,\)/, ")", ty); gsub(/,>/, ">", ty)
+            print field "\t" ty
+            reading = 0; typ = ""
+        }
+        /^pub struct [A-Za-z_]/ && /\{[ \t]*$/ {
+            item = $3; sub(/[^A-Za-z0-9_].*/, "", item); kind = "struct"; inside = 1; next
+        }
+        /^pub enum [A-Za-z_]/ && /\{[ \t]*$/ {
+            item = $3; sub(/[^A-Za-z0-9_].*/, "", item); kind = "enum"; inside = 1; variant = ""; next
+        }
+        !inside { next }
+        /^\}/ { inside = 0; variant = ""; reading = 0; next }
+        {
+            line = $0
+            if (line ~ /^[ \t]*(#\[|\/\/)/) next
+            sub(/[ \t]*\/\/.*$/, "", line)
+        }
+        reading {
+            typ = typ " " line
+            if (depth(typ) == 0 && typ ~ /,[ \t]*$/) done()
+            next
+        }
+        kind == "struct" && line ~ /^    pub [a-z_][a-z0-9_]*: / {
+            field = line; sub(/^    pub /, "", field); sub(/:.*/, "", field); field = item "." field
+            typ = line; sub(/^    pub [a-z_][a-z0-9_]*: /, "", typ); reading = 1
+            if (depth(typ) == 0 && typ ~ /,[ \t]*$/) done()
+            next
+        }
+        kind == "enum" && line ~ /^    [A-Z][A-Za-z0-9_]* \{[ \t]*$/ {
+            variant = line; sub(/^    /, "", variant); sub(/ .*/, "", variant); next
+        }
+        kind == "enum" && line ~ /^    \}/ { variant = ""; next }
+        kind == "enum" && variant != "" && line ~ /^        [a-z_][a-z0-9_]*: / {
+            field = line; sub(/^        /, "", field); sub(/:.*/, "", field)
+            field = item "::" variant "." field
+            typ = line; sub(/^        [a-z_][a-z0-9_]*: /, "", typ); reading = 1
+            if (depth(typ) == 0 && typ ~ /,[ \t]*$/) done()
+            next
+        }
+    '
+}
+
+# In both trees, with another type: a host that builds, matches or reads
+# the field must follow. Test files hold no public items.
+while read -r f; do
+    [ -f "$f" ] || continue
+    case "$f" in */tests.rs | */tests/*) continue ;; esac
+    crate="${f#crates/}"; crate="${crate%%/*}"
+    while IFS=$'\t' read -r k was now; do
+        [ "$was" != "$now" ] || continue
+        named "$k" && continue
+        # The tool names a variant's field `field <f> of variant <E>::<V>`.
+        case "$k" in
+        *::*) named "${k##*.} of variant ${k%.*}" && continue ;;
+        esac
+        case "$k" in
+        *::*) lint=enum_variant_field_type_changed ;;
+        *) lint=struct_field_type_changed ;;
+        esac
+        lines+=("\`$crate\`: field $k: a literal, a pattern or a read of the field must follow: was \`$was\`, now \`$now\` ($lint)")
+    done < <(LC_ALL=C join -t $'\t' -o 1.1,1.2,2.2 \
+        <(git show "$baseline:$f" 2>/dev/null | fields | LC_ALL=C sort -t $'\t' -k1,1) \
+        <(fields < "$f" | LC_ALL=C sort -t $'\t' -k1,1))
+done < <(git ls-tree -r --name-only "$baseline" -- "${FIELD_DIRS[@]}" | grep '\.rs$')
 
 echo "Changes a host must make, since $baseline:"
 echo
