@@ -1,0 +1,3 @@
+{"type": "order", "key": "O-1", "fields": {"id": "O-1", "customer_no": "C-1", "amount": "120.00", "ordered_on": "2026-09-21", "status": "open"}}
+{"type": "order", "key": "O-2", "fields": {"id": "O-2", "customer_no": "C-2", "amount": "80.00", "ordered_on": "2026-09-24", "status": "open"}}
+{"type": "order", "key": "O-3", "fields": {"id": "O-3", "customer_no": "C-1", "amount": "45.50", "ordered_on": "2026-09-30", "status": "open"}}

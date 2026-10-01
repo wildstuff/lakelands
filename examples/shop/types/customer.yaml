@@ -1,0 +1,6 @@
+name: customer
+description: A customer of the shop, as its order system knows it.
+key: number
+fields:
+  number: { type: text, authority: source }
+  name: { type: text, authority: source }

@@ -1,0 +1,16 @@
+name: revenue_7d
+description: What each customer paid in the seven days up to a date the reader gives.
+key: customer_no
+fields:
+  customer_no: text
+  total: decimal
+  payments: number
+view:
+  source: payment
+  params:
+    anchor: date_time
+  where: "paid_on > param('anchor') - 7d and paid_on <= param('anchor')"
+  group_by: customer_no
+  measures:
+    total: "sum(amount)"
+    payments: "count()"

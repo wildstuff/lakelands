@@ -139,6 +139,11 @@ walk's page lists every call and the answer it must give.
   what `0.4.0` adds: a lake moved by export and import, a mirror between
   two lakes that names the source's position, and degree and components
   over links, refused past the lake's ceiling.
+- [`docs/walks/walk-4.md`](docs/walks/walk-4.md): the fourth walk, over
+  what `0.7.0` adds: a procedure from an order to its payment, through a
+  derived relation, a transition guard, a host's reaction calling a verb
+  on its type with its cause named, the lineage read back, a retirement
+  that fires nothing, and a view bound to a reader's date.
 
 ## What it is not
 

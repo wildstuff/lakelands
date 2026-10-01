@@ -1,0 +1,7 @@
+name: payment
+description: A payment the ledger created for a paid order.
+fields:
+  order_id: text
+  customer_no: text
+  amount: decimal
+  paid_on: date_time

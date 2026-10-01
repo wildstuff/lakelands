@@ -1,0 +1,5 @@
+name: order_paid
+on: order
+when: "previous(status) = 'open' and status = 'paid'"
+max_depth: 1
+description: An open order has just been paid; the host creates its payment.
