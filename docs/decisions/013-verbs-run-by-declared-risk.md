@@ -74,6 +74,15 @@ position; a retry is a new call and a new position. So the log holds, for
 every external verb, either what the outside world answered or that it
 did not.
 
+A retry with the call's idempotency key is not a new call. It answers
+the first outcome: the verb's position and its recorded output, or the
+write the verb made. What a call wrote itself is told by what the store
+appended with it, the write right after its `verb_called` carrying the
+verb as its procedure. It is never told by a later write that names the
+call as its cause, as a host's write of the effect's result does
+(`docs/decisions/021-the-write-context-belongs-to-the-host.md`,
+lakelands#305).
+
 ## Extended: who sees which proposals
 
 A principal with the review grant lists every proposal and may accept
