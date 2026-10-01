@@ -75,25 +75,22 @@ of changes without polling, `propose`, `proposals`, `accept` and
 `add_field` and `migrate` for the schema. Served over MCP (stdio and
 HTTP) and REST from one catalog. Agents never write a query language.
 
-> **Status: `0.6.0`.** Lakelands `0.6.0` is the `lakelands` CLI, its MCP
+> **Status: `0.6.1`.** Lakelands `0.6.1` is the `lakelands` CLI, its MCP
 > server (stdio and streamable HTTP) and its REST door over the SQLite,
 > in-memory and PostgreSQL engines, all three passing the whole
 > conformance suite (274 checks through the doors and 54 through the
 > engine seam), with 44 decision records and the event log at format
-> version 6, installable from the release. Its budgets: the store facade
+> version 7, installable from the release. Its budgets: the store facade
 > and engine traits hold 53 of 110 methods, the core crates' product
-> code 34 289 of 36 000 lines and their specification 35 999 of 40 000,
-> and 2 of 20 `cfg(feature)` sites. Beside what `0.5.0` held, a relation
-> can be derived from matching values: the lake connects two records
-> whose fields are equal when it reads, with no stored edge. A host can
-> name the cause of a reactive write, so the log answers which reaction
-> wrote a record; every write path obeys the lake's depth ceiling, and a
-> trigger can cap the depth of the reactions to it. A walk over a whole
-> type on PostgreSQL reads its edges a page of records at a time, and a
-> mirror restarted in one process no longer meets its own lock. The
-> declaration and description structs build from their defaults, so a
-> member added to one no longer breaks a host that does, and a release
-> names every change a host must make. Views over more than one source
+> code 34 395 of 36 000 lines and their specification 36 537 of 40 000,
+> and 2 of 20 `cfg(feature)` sites. Beside what `0.6.0` held, a trigger's
+> guard can tell a retirement from an update with `retired()`, so a
+> trigger can fire on closing a record and not again when the closed
+> record is retired; a declaration calling it is log format 7. A pattern
+> started on a view finds the view's records instead of answering as if
+> it were empty; a step with `where` that reaches a view is fixed after.
+> A low verb that reaches outside the lake says in its tool that it runs
+> at once. The build follows Rust 1.99. Views over more than one source
 > come after.
 
 ## Try it
