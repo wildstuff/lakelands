@@ -16,7 +16,7 @@ use lakelands_api::{Error, FieldName, LakeStore, Params, Refusal, Value};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, field, type_decl};
+use crate::conformance::fixture::{Lake, Must, field, log_events, type_decl};
 
 check!(
     /// Two anchors, two windows.
@@ -46,6 +46,12 @@ check!(
     /// A pattern binds the view it starts on.
     PATTERN_START_BINDS = a_pattern_started_on_a_view_binds_its_parameters,
     "018 and 026: a pattern that starts on a view binds its parameters with the start, by key and by `where`, and its nodes are the window `find` answers; a start that leaves one out is refused, naming it"
+);
+
+check!(
+    /// A view's parameters are written in format 8.
+    FORMAT_8 = a_view_with_parameters_is_written_in_log_format_8,
+    "log format §6 and 018: the event that declares a view with parameters is written in format 8, as is every event after it; a view without them leaves the lake's format where it was"
 );
 
 check!(
@@ -487,5 +493,49 @@ async fn a_pattern_started_on_a_view_binds_its_parameters(
         "a pattern started on `account_window` without its `anchor` must be refused as \
          invalid, naming it; it answered {r:?}"
     );
+    Ok(())
+}
+
+async fn a_view_with_parameters_is_written_in_log_format_8(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    l.declare(payment()).await?;
+    let mut plain = account_window();
+    plain.name = "account_totals".into();
+    if let Some(v) = plain.view.as_mut() {
+        v.params.clear();
+        v.r#where = None;
+        v.measures.truncate(1);
+    }
+    plain.fields.truncate(2);
+    l.declare(plain).await?;
+    let before = log_events(store.as_ref()).await?;
+    let highest = before.iter().map(|e| e.v).max().unwrap_or(0);
+    ensure!(
+        highest < 8,
+        "a view without parameters needs no format 8, yet the lake writes {highest}"
+    );
+    let declared = l.declare(account_window()).await?.position();
+    l.upsert(
+        "payment",
+        "p1",
+        json!({"account": "a", "date": "2026-06-30", "amount": "1.00"}),
+    )
+    .await?;
+    for e in log_events(store.as_ref()).await? {
+        let want = if e.position >= declared {
+            8
+        } else {
+            e.v.min(7)
+        };
+        ensure!(
+            e.v == want,
+            "the event at {} is written in format {}; the one declaring a view with \
+             parameters and every one after it must be 8, and none before it",
+            e.position,
+            e.v
+        );
+    }
     Ok(())
 }

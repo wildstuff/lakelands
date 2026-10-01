@@ -109,6 +109,7 @@ pub const ALL: &[Check] = &[
     view_params::PARAMS_DECLARED_STRICTLY,
     view_params::PATTERN_START_BINDS,
     view_params::CURSOR_KEEPS_PARAMS,
+    view_params::FORMAT_8,
     ingest::SAME_CONTENT_TWICE,
     ingest::SAME_KEY_TWICE,
     ingest::FOREIGN_FIELD_REFUSED,

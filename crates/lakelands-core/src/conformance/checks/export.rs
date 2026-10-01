@@ -596,12 +596,13 @@ fn import_seams() -> lakelands_api::seam::Seams {
     }
 }
 
-/// A lake with two writers, two sealed segments and five format
+/// A lake with two writers, two sealed segments and six format
 /// versions: invoices, a checkpoint, the lake opened again by a second
 /// writer (a second lease, a greater fence), a re-key (version 2), a
 /// restricted and a retired invoice, an annotated type with a derived
 /// relation (version 6) and a derived `date_bucket` field, a trigger whose
-/// guard calls `retired` (version 7), a record ingested with an upstream,
+/// guard calls `retired` (version 7), a view with a parameter (version 8),
+/// a record ingested with an upstream,
 /// a second checkpoint and more invoices.
 /// Answers the
 /// second writer's handle and a position before the second checkpoint.
@@ -662,6 +663,19 @@ async fn exported_lake(
     cat.declare(&own, gone)
         .await
         .must("declaring a trigger whose guard calls retired")?;
+    // Format version 8: a view with a parameter.
+    let up_to: lakelands_api::write::Declaration = serde_json::from_value(json!({
+        "declare": "type", "name": "stamps_up_to", "key": ["month"],
+        "fields": [{"name": "month", "type": {"kind": "date_time"}},
+                   {"name": "stamps", "type": {"kind": "number"}}],
+        "view": {"source": "stamp", "params": [{"name": "until", "kind": "date_time"}],
+                 "where": "at <= param('until')", "group_by": ["month"],
+                 "measures": [{"name": "stamps", "expr": "count()"}]}
+    }))
+    .expect("a declaration");
+    cat.declare(&own, up_to)
+        .await
+        .must("declaring a view with a parameter")?;
     let mut read_from = crate::conformance::fixture::source_record(
         "stamp",
         "s1",

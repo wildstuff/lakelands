@@ -236,7 +236,8 @@ pub enum Func {
     /// that key, as it stood at the position being read or folded.
     Setting,
     /// `param('name')`: the value a read binds to the view's parameter of
-    /// that name. Only a view's `where` and `measures` may call it.
+    /// that name. Only a view's `where` and `measures` may call it. Format 8
+    /// (`docs/log-format.md` §6).
     Param,
     /// `changed(field)`: in a guard, whether the write changes the field.
     Changed,

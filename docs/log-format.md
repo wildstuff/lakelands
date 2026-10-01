@@ -1,6 +1,6 @@
 # The log format
 
-**Format version 7.** Reviewed so that a verifier can be written from
+**Format version 8.** Reviewed so that a verifier can be written from
 this document alone (lakelands#14). `0.1.0` is tagged, so every change
 to the format bumps the version, and a lake writes the version it had
 until an event needs a newer one (§6). Version 2 adds one member,
@@ -9,7 +9,8 @@ and reads exactly as before. Version 3 adds the envelope member
 `upstream` and a call of `date_bucket` in a declaration. Version 4 adds
 the proposal of a declaration or a migration. Version 5 adds a
 declaration's `annotations`. Version 6 adds a derived relation and a trigger's `max_depth`.
-Version 7 adds a call of `retired` in a declaration. §6 says
+Version 7 adds a call of `retired` in a declaration. Version 8 adds a
+view's `params` and a call of `param`. §6 says
 which event needs which version.
 
 A lake's event log is its truth (`docs/decisions/001-the-log-is-the-truth.md`).
@@ -578,6 +579,7 @@ carries a lower `v` than the event before it.
 | 5 | A declaration's `annotations` (Appendix A): on a type, a field or a relation, anywhere in the declaration a `declared` event carries, in a `migrated` event's `to`, or in a proposed `declare` or `migrate`. A lake writes the version it had until its first event whose declaration holds a non-empty `annotations`, which carries `v` 5, as does every event after it; a version-4 (or older) event that carries annotations is refused, naming them. A version-4 reader refuses the version-5 events rather than refusing a member it does not know. An annotation is never part of the schema hash (§2.2). |
 | 6 | A derived relation, a relation declaration's `derived`, and a trigger's `max_depth` (Appendix A). A lake writes the version it had until its first event whose declaration holds a relation with `derived` or is a trigger with `max_depth` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`), which carries `v` 6, as does every event after it; a version-5 (or older) event that carries one is refused, naming it. A version-5 reader refuses the version-6 events rather than refusing a member it does not know. `derived` is never part of the schema hash (§2.2). Version 6 took both members while it was untagged; a tagged version is closed. |
 | 7 | A call of `retired` in a declaration's expressions (Appendix B): in a trigger's `when`, the one place it means something. A lake writes the version it had until its first event whose declaration calls `retired` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`), which carries `v` 7, as does every event after it; a version-6 (or older) event that calls it is refused, naming it. A version-6 reader refuses the version-7 events rather than reading a guard it cannot evaluate, which would never fire. |
+| 8 | A view's `params` and a call of `param` in a declaration's expressions (Appendix A, Appendix B): a view may declare parameters, which a read binds and its `where` and measures read with `param('name')`. A lake writes the version it had until its first event whose declaration is a view with a non-empty `params`, or calls `param` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`), which carries `v` 8, as does every event after it; a version-7 (or older) event that carries either is refused, naming it. A version-7 reader refuses the version-8 events rather than computing a view whose parameters it cannot bind. `params` is part of the schema hash only when it is not empty (§2.2). |
 
 ## Appendix A. Encodings
 
@@ -714,7 +716,10 @@ arguments are the value and its unit as a string literal (`day`, `week`,
 bucket holding the value starts (the week from Monday, as ISO counts
 weeks). A read may call `date_bucket` in any version; a declaration from
 version 3 on (§6). From version 7 on, `retired`, with no arguments: true
-when the write retires the record, in a trigger's guard only (§6).
+when the write retires the record, in a trigger's guard only (§6). From
+version 8 on, `param`, with one argument, a parameter's name as a string
+literal: the value the read binds to that parameter of the view, in a
+view's `where` and measures only (§6).
 
 **From text to typed form.**
 
