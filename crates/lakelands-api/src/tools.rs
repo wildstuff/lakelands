@@ -764,8 +764,9 @@ fn verb_tool(verb: &VerbDescription, lake: &LakeDescription) -> ToolSpec {
         .description
         .clone()
         .unwrap_or_else(|| format!("Call `{}` on a `{}` record.", verb.name, verb.on));
+    // By the risk alone: a `low` verb runs at once, an external one too.
     let how = match verb.risk {
-        crate::ontology::Risk::Low if !verb.external => "It runs at once.",
+        crate::ontology::Risk::Low => "It runs at once.",
         _ => "It is recorded as a proposal and runs when accepted.",
     };
     ToolSpec {

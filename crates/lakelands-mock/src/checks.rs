@@ -84,6 +84,7 @@ macro_rules! door_checks {
             describe_answers_the_declaration_whole,
             a_masked_field_is_named_but_its_value_is_absent,
             the_tools_follow_the_grants,
+            a_verb_tool_says_what_its_risk_does,
             a_low_risk_verb_runs_at_once,
             a_riskier_verb_is_proposed_and_accept_applies_it,
             a_rejected_proposal_writes_nothing_and_stays_decided,
@@ -978,6 +979,52 @@ pub async fn the_tools_follow_the_grants(store: Arc<dyn LakeStore>) {
 
     let reviewer = doors(f.cast.reviewer.clone()).await;
     assert!(reviewer.iter().any(|t| t.door == Door::Accept));
+}
+
+/// A verb's tool says what a call does by the verb's risk alone: a `low`
+/// verb runs at once, whether its effect writes fields or reaches outside
+/// the lake; a riskier one is recorded as a proposal.
+pub async fn a_verb_tool_says_what_its_risk_does(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    for (name, risk) in [("notify", Risk::Low), ("escalate", Risk::Medium)] {
+        let verb = VerbDecl {
+            name: name.into(),
+            on: INVOICE.into(),
+            payload: Vec::new(),
+            risk,
+            requires: None,
+            effect: VerbEffect::External {
+                executor: "mailer".into(),
+            },
+            description: None,
+        };
+        f.catalog
+            .declare(owner, Declaration::Verb(verb))
+            .await
+            .unwrap();
+    }
+    let d = f.catalog.describe(owner, ReadAt::default()).await.unwrap();
+    let tools = tools(&d.data).expect("the fixture's names are valid");
+    let says = |verb: &str| {
+        tools
+            .iter()
+            .find(|t| t.door == Door::Call { verb: verb.into() })
+            .unwrap_or_else(|| panic!("the owner has the tool of `{verb}`"))
+            .description
+            .clone()
+    };
+    let runs = "It runs at once.";
+    let proposed = "It is recorded as a proposal and runs when accepted.";
+    for (verb, how) in [
+        ("approve", runs),
+        ("notify", runs),
+        ("pay", proposed),
+        ("escalate", proposed),
+    ] {
+        let said = says(verb);
+        assert!(said.ends_with(how), "`{verb}`'s tool says {said:?}");
+    }
 }
 
 /// A `low`-risk verb whose effect writes authored fields runs at once.
