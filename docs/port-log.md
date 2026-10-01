@@ -118,6 +118,18 @@ Lakelands has no work-queue types and no guard on their status, so it
 does not apply. Every root holds the same files it held at `ff72cdfed4`.
 **The list is closed for `0.6.1` as of `8be8edf0d1`.**
 
+**Checked on 2026-10-01, before the `0.7.0` tag**, against the source's
+mainline at `2ffca4d46d`: the 12 commits after `8be8edf0d1` (876 after
+the freeze in all), checked the same way, the moved `{types}` files in
+their new crate included. None of them touches a root. Two merges do
+show changes under the roots when compared with their side parent; each
+brings a branch up to a mainline that already held `3ab89a5271`, and
+their changes under the roots are exactly that commit's. The roots are
+byte for byte what they were at `8be8edf0d1`, and every root holds the
+same files. No row is added. **The list is closed for `0.7.0` as of
+`2ffca4d46d`.** If the mainline moves before the tag, only the commits
+after it are checked.
+
 | Source commit | Behaviour, in one line | Ported in, or not applicable and why |
 |---|---|---|
 | `5914084de9` | One German user-interface sentence in the capabilities module changes its form of address from formal to informal. | Not applicable: the capabilities module was not carried (cut in O2: there is no capability negotiation; see `docs/import-ledger.md`), and no storage behaviour changes: no event, no fold rule, no signature, no stored byte. |
