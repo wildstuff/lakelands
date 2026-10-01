@@ -130,6 +130,13 @@ same files. No row is added. **The list is closed for `0.7.0` as of
 `2ffca4d46d`.** If the mainline moves before the tag, only the commits
 after it are checked.
 
+**Checked again on 2026-10-02, the day of the `0.7.0` tag**, against the
+source's mainline at `ce764acbd7`: the 15 commits after `2ffca4d46d` (891
+after the freeze in all), checked the same way. None of them touches a
+root, no merge shows a change under one, and every root holds the files
+it held at `2ffca4d46d`. No row is added. **The list is closed for
+`0.7.0` as of `ce764acbd7`.**
+
 | Source commit | Behaviour, in one line | Ported in, or not applicable and why |
 |---|---|---|
 | `5914084de9` | One German user-interface sentence in the capabilities module changes its form of address from formal to informal. | Not applicable: the capabilities module was not carried (cut in O2: there is no capability negotiation; see `docs/import-ledger.md`), and no storage behaviour changes: no event, no fold rule, no signature, no stored byte. |
