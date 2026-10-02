@@ -16,19 +16,19 @@ use crate::conformance::Failure;
 use crate::conformance::backing::EXECUTOR;
 use crate::conformance::fixture::{
     Lake, Must, doors, field, field_writer, head_unmoved, outputs_from, owner, patch, read, reason,
-    reviewer, type_decl, value,
+    refused_on, reviewer, type_decl, value,
 };
 
 check!(
     /// A verb runs or waits by its declared risk.
     VERB_BY_RISK = a_low_verb_runs_and_a_higher_one_is_proposed,
-    "013: a `low` verb that writes authored fields runs at once; any other risk is recorded as a proposal and runs only when accepted"
+    "013: a `low` verb that writes authored fields runs at once; any other risk is recorded as a proposal and runs only when accepted; a call is refused for its payload before its record, for its record before its version, and a retry answers before the grants (013, extended)"
 );
 
 check!(
     /// A verb that reaches outside needs its executor.
     EXTERNAL_UNBOUND = an_external_verb_without_an_executor_is_unbound,
-    "013 and 015: a verb whose effect reaches outside the lake runs only through a bound executor; without one, calling it at any risk or proposing a call of it answers `unbound` naming the executor, and nothing is appended"
+    "013 and 015: a verb whose effect reaches outside the lake runs only through a bound executor; without one, calling it at any risk or proposing a call of it answers `unbound` naming the executor, after the grant and before the payload (013, extended), and nothing is appended"
 );
 
 check!(
@@ -58,7 +58,7 @@ check!(
 check!(
     /// Reviewers decide; proposers see their own.
     WHO_DECIDES = only_a_reviewer_decides_and_a_proposer_sees_its_own_proposals,
-    "006, 013 and Catalog::proposals: accept and reject need the review grant; without it, `proposals` lists only the principal's own"
+    "006, 013 and Catalog::proposals: accept and reject need the review grant, checked before the proposal is looked up (013, extended); without it, `proposals` lists only the principal's own"
 );
 
 check!(
@@ -186,6 +186,47 @@ async fn a_low_verb_runs_and_a_higher_one_is_proposed(
          position holds {:?}",
         logged.iter().map(EventBody::kind).collect::<Vec<_>>()
     );
+    // In call's order (013, extended): the payload before the record, the
+    // record before the version, and a retry before the grants.
+    let approve = |who: &lakelands_api::Principal, key: &str, payload, opts| {
+        let (cat, who, key) = (
+            l.cat.clone(),
+            who.clone(),
+            lakelands_api::RecordKey::from(key),
+        );
+        async move {
+            cat.call(&who, &"approve".into(), Some(&key), patch(payload), opts)
+                .await
+        }
+    };
+    let at = WriteOpts {
+        expected_version: Some(Version(3)),
+        ..WriteOpts::default()
+    };
+    let payload = approve(own, "gone", json!({"bogus": 1}), WriteOpts::default()).await;
+    let record = approve(own, "gone", json!({}), at).await;
+    let once = WriteOpts {
+        idempotency_key: Some("once".into()),
+        ..WriteOpts::default()
+    };
+    let first = approve(own, "i", json!({}), once.clone())
+        .await
+        .must("approving `i` once")?;
+    let bare = lakelands_api::Principal {
+        grants: Default::default(),
+        ..own.clone()
+    };
+    let retry = approve(&bare, "i", json!({}), once).await;
+    ensure!(
+        matches!(
+            refused_on(&payload),
+            Some(("bogus", Refusal::Invalid { .. }))
+        ) && matches!(record, Err(Error::NotFound { .. }))
+            && retry.as_ref().ok() == Some(&first),
+        "a payload `approve` does not take, on a key never written, answered {payload:?}; \
+         a call there at a version answered {record:?}; a retry without grants answered \
+         {retry:?} where the first was {first:?}"
+    );
     Ok(())
 }
 
@@ -200,16 +241,30 @@ async fn an_external_verb_without_an_executor_is_unbound(
     .await?;
     let Lake { own, cat } = &l;
     let before = store.head().await.must("reading the head")?;
-    let proposed = |verb: &str| ProposedWrite::Call {
+    let proposed = |verb: &str, payload| ProposedWrite::Call {
         verb: verb.into(),
         key: Some("i".into()),
-        payload: patch(json!({})),
+        payload: patch(payload),
         opts: WriteOpts::default(),
     };
+    let nobody = lakelands_api::Principal {
+        grants: Default::default(),
+        ..own.clone()
+    };
+    let ungranted = call(store.as_ref(), &nobody, "remind", json!({})).await;
+    ensure!(
+        matches!(reason(&ungranted), Some(Refusal::NotGranted)),
+        "the grant comes before the executor: `remind` called with no grant answered \
+         {ungranted:?}"
+    );
     for (what, answer) in [
         (
             "calling the low-risk `remind`",
             call(store.as_ref(), own, "remind", json!({})).await,
+        ),
+        (
+            "calling `remind` with a payload it does not take, judged after the executor",
+            call(store.as_ref(), own, "remind", json!({"bogus": 1})).await,
         ),
         (
             "calling the high-risk `chase`, which would be proposed",
@@ -217,11 +272,18 @@ async fn an_external_verb_without_an_executor_is_unbound(
         ),
         (
             "proposing a call of `remind`",
-            cat.propose(own, proposed("remind"), "later".into()).await,
+            cat.propose(own, proposed("remind", json!({})), "later".into())
+                .await,
+        ),
+        (
+            "proposing `remind` with a payload it does not take",
+            cat.propose(own, proposed("remind", json!({"bogus": 1})), "later".into())
+                .await,
         ),
         (
             "proposing a call of `chase`",
-            cat.propose(own, proposed("chase"), "later".into()).await,
+            cat.propose(own, proposed("chase", json!({})), "later".into())
+                .await,
         ),
     ] {
         ensure!(
@@ -569,6 +631,16 @@ async fn only_a_reviewer_decides_and_a_proposer_sees_its_own_proposals(
         matches!(reason(&err), Some(Refusal::NotGranted)),
         "accepting without the review grant must be refused as not granted; it failed \
          with {err:?}"
+    );
+    // The review grant before the proposal is looked up (013, extended).
+    let unknown = ProposalId::from("none");
+    let accept = cat.accept(&clerk, &unknown).await;
+    let reject = cat.reject(&clerk, &unknown, "no".into()).await;
+    ensure!(
+        matches!(reason(&accept), Some(Refusal::NotGranted))
+            && matches!(reason(&reject), Some(Refusal::NotGranted)),
+        "deciding a proposal that does not exist, without the review grant, answers \
+         {accept:?} and {reject:?}"
     );
 
     let ids = |who: lakelands_api::Principal| {
