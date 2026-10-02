@@ -122,6 +122,16 @@ impl Ontology {
             })
     }
 
+    /// The declaration of a verb, or `NotFound`.
+    pub fn verb(&self, name: &VerbName) -> Result<&VerbDecl, Error> {
+        self.verbs
+            .get(name)
+            .map(|e| &e.decl)
+            .ok_or_else(|| Error::NotFound {
+                missing: Missing::Verb { name: name.clone() },
+            })
+    }
+
     /// The value types, as a list.
     pub fn value_type_list(&self) -> Vec<ValueTypeDecl> {
         self.value_types.values().map(|e| e.decl.clone()).collect()
