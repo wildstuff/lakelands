@@ -24,8 +24,8 @@ use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all, doors, field, field_writer, head_unmoved, patch, pattern, principal, reason,
-    refused_on, source_record, step, type_decl,
+    Lake, Must, all, doors, field, field_writer, head_unmoved, no_such_field, patch, pattern,
+    principal, reason, refused_on, source_record, step, type_decl,
 };
 use crate::links::{link_key, link_type_name};
 
@@ -354,10 +354,11 @@ async fn a_link_that_would_break_the_relations_cardinality_is_refused(
     );
     let ungranted = link(cat.as_ref(), &nobody, "i1", "p2", json!({})).await;
     ensure!(
-        matches!(reason(&ungranted), Some(Refusal::NotGranted)),
-        "a principal with no grant links i1 to p2: it is refused not_granted before the \
-         cardinality reads i1's link to p1, which it must not learn of; it answered \
-         {ungranted:?}"
+        matches!(reason(&ungranted), Some(Refusal::NotGranted))
+            || no_such_field(&ungranted, "from"),
+        "a principal with no grant links i1 to p2: it is refused before the cardinality reads \
+         i1's link to p1, which it must not learn of, as not granted or as for a field it may \
+         not know of; it answered {ungranted:?}"
     );
     head_unmoved(store.as_ref(), before, "a link against the cardinality").await?;
     Ok(())

@@ -364,6 +364,7 @@ fn access_seen<'d>(
     seen: &mut Vec<&'d FieldName>,
 ) -> Access {
     let mut a = who.grants.access(&decl.name, &f.name);
+    let mut from_source = false;
     seen.push(&f.name);
     let sources = f
         .depends_on
@@ -378,13 +379,19 @@ fn access_seen<'d>(
                 s if s.reads() => a,
                 Access::Masked if a.reads() => Access::Masked,
                 Access::Masked => a,
-                _ => Access::None,
+                _ => {
+                    from_source = true;
+                    Access::None
+                }
             };
         }
     }
     seen.pop();
+    // `sensitive` shows a field nobody granted or denied by name as masked;
+    // a `none` given by name, or handed down by a source, hides it.
+    let named = (who.grants.types.get(&decl.name)).is_some_and(|t| t.fields.contains_key(&f.name));
     match a {
-        Access::None if f.sensitive => Access::Masked,
+        Access::None if f.sensitive && !named && !from_source => Access::Masked,
         a => a,
     }
 }

@@ -13,13 +13,13 @@ use lakelands_api::ontology::{
 use lakelands_api::query::{Pattern, Projection, QueryResult, Walk};
 use lakelands_api::read::ReadAt;
 use lakelands_api::write::{Declaration, WriteOpts};
-use lakelands_api::{Access, Catalog, LakeStore, Position, Principal, Refusal, Value};
+use lakelands_api::{Access, Catalog, LakeStore, Position, Principal, Value};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, doors, field, field_access, invalid_naming, owner, patch, pattern, reason, step,
-    type_decl,
+    Lake, Must, doors, field, field_access, invalid_naming, no_such_field, owner, patch, pattern,
+    step, type_decl,
 };
 
 check!(
@@ -43,7 +43,7 @@ check!(
 check!(
     /// A walk probes the matched fields on both sides.
     PROBES_BOTH_SIDES = a_principal_without_read_on_a_matched_field_is_refused_naming_it,
-    "024 and 044: a walk over a derived relation, a step and a measure alike, is refused not_granted, naming the field, when the principal may not read a matched field on either side"
+    "024, 044 and 006: a walk over a derived relation, a step and a measure alike, is answered as for a field the type does not declare, naming the field, when the principal may not know of a matched field on either side"
 );
 
 check!(
@@ -304,21 +304,12 @@ async fn a_principal_without_read_on_a_matched_field_is_refused_naming_it(
     ];
     for (who, p, field) in cases {
         let what = format!("{:?} over `{}`", p.project, p.steps[0].relation);
-        match cat.query(&who, p).await {
-            Err(e) if matches!(reason(&e), Some(Refusal::NotGranted)) => {
-                let why = e.to_string();
-                ensure!(
-                    why.contains(field),
-                    "{what} must be refused naming `{field}`; it said: {why}"
-                );
-            }
-            other => {
-                return Err(Failure::new(format!(
-                    "{what} without read on `{field}` must be refused not_granted; it answered \
-                     {other:?}"
-                )));
-            }
-        }
+        let r = cat.query(&who, p).await;
+        ensure!(
+            no_such_field(&r, field),
+            "{what} by a principal who may not know of `{field}` is answered as for a field \
+             the type does not declare, naming it; it answered {r:?}"
+        );
     }
     Ok(())
 }

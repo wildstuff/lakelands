@@ -35,3 +35,25 @@ each writes only the fields it is granted.
   store is called, by the resolver.
 - It is not partial success. A write is never applied with the
   forbidden fields silently dropped.
+
+## Extended: `none` hides a field, `masked` withholds its value (lakelands#394)
+
+The two grants that withhold a value say different things. `masked`
+tells the principal that the field exists and withholds its value:
+the field is listed as masked, described by its shape, and a read that
+probes it or a write that carries it is refused as not granted, naming
+it. `none` says the field does not exist for that principal. It is
+absent from answers, from the masked list and from metadata, from
+`describe` and from every generated tool. A probe or a write that names
+it gets the answer for a field the type does not declare: the same
+kind, the same sentence, the same field named. Any other answer would
+let a single refusal reveal what every answer hides. A search that
+names no fields reads only the searchable fields the principal knows
+of.
+
+`sensitive` raises only an *inherited* `none`, from the type's or the
+lake's default for a field the grants do not name, to `masked`, so a
+field nobody thought about is shown as withheld rather than silently
+dropped. A `none` given to the field by name always hides it, and so
+does a `none` that a field built from another inherits from its source
+(024).

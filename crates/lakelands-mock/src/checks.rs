@@ -470,6 +470,13 @@ fn applied(o: &Outcome) -> (Position, Option<Version>) {
     }
 }
 
+/// Whether an error is the answer for a field the type does not declare,
+/// naming `name`: also the answer for one the principal may not know of.
+fn no_field(e: &Error, name: &str) -> bool {
+    matches!(refusal(e), (Some(f), Refusal::Invalid { message })
+        if f.as_str() == name && message.contains("has no field"))
+}
+
 fn refusal(e: &Error) -> (&Option<FieldName>, &Refusal) {
     match e {
         Error::Refused { field, reason } => (field, reason),
@@ -959,11 +966,39 @@ pub async fn a_masked_field_is_named_but_its_value_is_absent(store: Arc<dyn Lake
         )
         .await
         .unwrap_err();
-    assert_eq!(
-        refusal(&e).1,
-        &Refusal::NotGranted,
-        "a filter cannot probe a hidden field"
+    assert!(
+        no_field(&e, "secret"),
+        "a filter cannot probe a hidden field, and is answered as for a field the type does \
+         not declare: {e:?}"
     );
+    let w = f
+        .catalog
+        .upsert(
+            &f.cast.clerk,
+            &ty(INVOICE),
+            &key("INV-1"),
+            patch(&[("secret", json!("x"))]),
+            WriteOpts::default(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        no_field(&w, "secret"),
+        "nor is a hidden field written: {w:?}"
+    );
+    // A sensitive field nobody named for the stranger, whose type default
+    // is none, is listed as masked rather than left out.
+    let ssn: FieldDecl =
+        serde_json::from_value(json!({"name": "ssn", "type": {"kind": "text"}, "sensitive": true}))
+            .expect("a field");
+    f.catalog
+        .add_field(&f.cast.owner, &ty(INVOICE), ssn)
+        .await
+        .expect("the owner adds `ssn`");
+    f.write(&f.cast.owner, "INV-1", &[("ssn", json!("1"))])
+        .await;
+    let r = f.read(&f.cast.stranger, "INV-1").await;
+    assert!(r.masked.contains(&"ssn".into()), "{r:?}");
 }
 
 /// A field derived from one the principal may not read is read as that
@@ -989,10 +1024,10 @@ pub async fn a_field_built_from_a_hidden_one_is_hidden_too(store: Arc<dyn LakeSt
         .find(&f.cast.clerk, &ty(INVOICE), find)
         .await
         .unwrap_err();
-    assert_eq!(
-        refusal(&e),
-        (&Some(FieldName::from("g")), &Refusal::NotGranted),
-        "a filter on `g`, derived from the hidden `secret`, probes `secret`"
+    assert!(
+        no_field(&e, "g"),
+        "a filter on `g`, derived from the hidden `secret`, is answered as for a field the \
+         type does not declare: {e:?}"
     );
     let d = f
         .catalog
@@ -3639,7 +3674,8 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
         ),
         "{proposed:?}"
     );
-    // Who may not write the link type is not granted.
+    // Who may not write the link type is refused: not granted, or, for a
+    // link field it may not know of, as for an undeclared field.
     let stranger = c
         .link(
             &cast.stranger,
@@ -3658,7 +3694,7 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
                 reason: Refusal::NotGranted,
                 ..
             })
-        ),
+        ) || stranger.as_ref().is_err_and(|e| no_field(e, "from")),
         "{stranger:?}"
     );
     // So is one that would break the cardinality, by a principal that

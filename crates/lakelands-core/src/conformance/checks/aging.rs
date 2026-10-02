@@ -18,8 +18,8 @@ use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, count_view, declare, derived, field, field_access, head_unmoved, read, refused_on,
-    sourced, trigger_on, type_decl, upsert,
+    Lake, Must, count_view, declare, derived, field, field_access, head_unmoved, no_such_field,
+    read, refused_on, sourced, trigger_on, type_decl, upsert,
 };
 
 check!(
@@ -79,7 +79,7 @@ check!(
 check!(
     /// A rule carries its author's rights.
     RULE_AUTHORITY = a_rule_needs_write_on_its_field_and_read_on_what_when_reads,
-    "036 and 024: a rule is refused as not granted, naming the field, unless its author may write the field it moves and read every field its `when` reads; the run carries that authority"
+    "036, 024 and 006: a rule is refused, naming the field, unless its author may write the field it moves and read every field its `when` reads: as not granted, or as for an undeclared field where its author may not know of the field; the run carries that authority"
 );
 
 check!(
@@ -627,10 +627,16 @@ async fn a_rule_needs_write_on_its_field_and_read_on_what_when_reads(
             )
             .await
             .must_fail(&format!("writing a rule as `{}`", who.writer()))?;
+        // `score` is hidden from `blind`, so it is answered as a field the
+        // type does not declare; `status` it sees, so writing it is not granted.
+        let answered = match at {
+            "score" => no_such_field(&e, at),
+            _ => matches!(refused_on(&e), Some((f, Refusal::NotGranted)) if f == at),
+        };
         ensure!(
-            matches!(refused_on(&e), Some((f, Refusal::NotGranted)) if f == at),
-            "`{}` wrote a rule over `{at}` and was refused as {e:?}; not granted, naming \
-             `{at}`, was expected",
+            answered,
+            "`{}` wrote a rule over `{at}` and was refused as {e:?}; a refusal naming `{at}` \
+             was expected, as not granted or, for a field it may not know of, as undeclared",
             who.writer()
         );
     }

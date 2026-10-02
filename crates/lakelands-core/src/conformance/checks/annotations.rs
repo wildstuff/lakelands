@@ -272,17 +272,17 @@ async fn a_masked_field_is_described_without_its_annotations(
     cat.declare(own, Declaration::Type(shelf.clone()))
         .await
         .must("declaring `shelf`")?;
-    // Reads everything but `secret` (masked: it is sensitive) and the
-    // link field `note`.
+    // Reads everything but `secret` and the link field `note`, which it
+    // sees masked.
     let mut clerk = field_access(
         store.as_ref(),
         "clerk",
         "shelf",
-        &[("secret", Access::None)],
+        &[("secret", Access::Masked)],
     );
     let note = lakelands_api::principal::TypeGrants {
         default: None,
-        fields: [("note".into(), Access::None)].into(),
+        fields: [("note".into(), Access::Masked)].into(),
     };
     clerk
         .grants

@@ -184,9 +184,10 @@ fn one_type<'a>(d: &'a LakeDescription, name: &str) -> Result<&'a TypeDescriptio
         .ok_or_else(|| Failure::new(format!("describe does not list type `{name}`")))
 }
 
-/// Reads everything but the ledger's salary, and holds no schema grant.
+/// Reads everything but the ledger's salary, which it sees masked, and
+/// holds no schema grant.
 fn clerk(store: &dyn LakeStore) -> Principal {
-    field_access(store, "clerk", "ledger", &[("salary", Access::None)])
+    field_access(store, "clerk", "ledger", &[("salary", Access::Masked)])
 }
 
 async fn describe_at(
