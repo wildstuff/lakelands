@@ -912,6 +912,15 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     v.name, v.on
                 ))
             })?;
+            // A verb on a record of a view could never act: there is no
+            // stored record to write or to hand an executor.
+            if t.view.is_some() && v.scope == VerbScope::Record {
+                return Err(invalid(format!(
+                    "verb `{}` is declared on a record of `{}`, a view, whose records are \
+                     computed and never written",
+                    v.name, v.on
+                )));
+            }
             for f in &v.payload {
                 field_type(o, &format!("verb `{}`, payload", v.name), f, &v.on)?;
             }

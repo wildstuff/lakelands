@@ -126,6 +126,12 @@ check!(
     "016 and the ontology: both write doors are folded by the same rules, so a view over ingested records is kept like any other"
 );
 
+check!(
+    /// Every door refuses a view alike.
+    REFUSED_ALIKE = every_door_that_writes_or_holds_a_record_refuses_a_view_alike,
+    "018, extended (lakelands#370): upsert, retire, link, unlink, ingest, propose, restrict and unrestrict each refuse a view as invalid naming it, as upsert does; declaring a verb on a record of a view is refused naming both, while a verb on the view's type that reaches outside is taken"
+);
+
 /// The source type, its `partner` and `amount` written by `authority`.
 fn invoices(authority: Authority) -> TypeDecl {
     let mut partner = field("partner", StorageKind::Text);
@@ -1135,5 +1141,111 @@ async fn an_ungrouped_view_holds_one_record_keyed_all_even_over_none(
         "a view without `group_by` holds no record but `{UNGROUPED}`, so `get` of `p1` is \
          not_found; it answered {other:?}"
     );
+    Ok(())
+}
+
+async fn every_door_that_writes_or_holds_a_record_refuses_a_view_alike(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(invoices(Authority::Authored)).await?;
+    l.declare(partner_totals("pt", StorageKind::Decimal))
+        .await?;
+    write_invoice(store.as_ref(), own, "i1", "p1", "10.00").await?;
+    let (pt, p1) = (TypeName::from("pt"), lakelands_api::RecordKey::from("p1"));
+    let opts = lakelands_api::write::WriteOpts::default;
+    let fields = || crate::conformance::fixture::patch(json!({"total": "1"}));
+    let proposed = |write| cat.propose(own, write, "why".into());
+    let head = store.head().await.must("reading the head")?;
+    let mut red = Vec::new();
+    let mut must = |what: &str, view: &str, got: lakelands_api::Result<()>| match &got {
+        Err(
+            e @ Error::Refused {
+                reason: Refusal::Invalid { .. },
+                ..
+            },
+        ) if e.to_string().contains(&format!("`{view}`")) => {}
+        _ => red.push(format!("{what} answered {got:?}")),
+    };
+    let upsert = cat.upsert(own, &pt, &p1, fields(), opts()).await;
+    must("upsert", "pt", upsert.map(drop));
+    must(
+        "retire",
+        "pt",
+        cat.retire(own, &pt, &p1, opts()).await.map(drop),
+    );
+    let r = "r".into();
+    let link = cat.link(own, &pt, &p1, &r, &p1, fields(), opts()).await;
+    must("link", "pt", link.map(drop));
+    must(
+        "unlink",
+        "pt",
+        cat.unlink(own, &pt, &p1, &r, &p1, opts()).await.map(drop),
+    );
+    let ingested = crate::conformance::fixture::ingest(
+        cat.as_ref(),
+        own,
+        "feed",
+        vec![source_record("pt", "p1", json!({"total": "1"}))],
+    )
+    .await;
+    must("ingest", "pt", ingested.map(drop));
+    use lakelands_api::write::ProposedWrite::{Retire, Upsert};
+    let up = proposed(Upsert {
+        ty: pt.clone(),
+        key: p1.clone(),
+        patch: fields(),
+        opts: opts(),
+    });
+    must("propose upsert", "pt", up.await.map(drop));
+    let down = proposed(Retire {
+        ty: pt.clone(),
+        key: p1.clone(),
+        opts: opts(),
+    });
+    must("propose retire", "pt", down.await.map(drop));
+    must(
+        "restrict",
+        "pt",
+        store.restrict(&pt, &p1, "hold".into()).await.map(drop),
+    );
+    must(
+        "unrestrict",
+        "pt",
+        store.unrestrict(&pt, &p1).await.map(drop),
+    );
+    let on_record = l
+        .cat
+        .declare(
+            own,
+            serde_json::from_value(json!({"declare": "verb", "name": "nudge", "on": "pt",
+                                          "risk": "low", "effect": "external",
+                                          "executor": "x"}))
+            .expect("a verb declaration"),
+        )
+        .await;
+    match &on_record {
+        Err(
+            e @ Error::Refused {
+                reason: Refusal::Invalid { .. },
+                ..
+            },
+        ) if e.to_string().contains("`nudge`") && e.to_string().contains("`pt`") => {}
+        _ => red.push(format!(
+            "declaring `nudge` on a record of `pt` answered {on_record:?}"
+        )),
+    }
+    ensure!(
+        red.is_empty(),
+        "every door that writes or holds a record refuses a view as invalid naming it: {}",
+        red.join("; ")
+    );
+    head_unmoved(store.as_ref(), head, "every refusal of a view").await?;
+    l.declare_json(
+        json!({"declare": "verb", "name": "announce", "on": "pt", "scope": "type",
+                          "risk": "low", "effect": "external", "executor": "x"}),
+    )
+    .await?;
     Ok(())
 }

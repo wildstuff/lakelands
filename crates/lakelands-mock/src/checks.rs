@@ -112,6 +112,7 @@ macro_rules! door_checks {
             add_field_without_the_schema_grant_tells_nothing_of_the_type,
             an_embedding_is_unbound_where_no_backend_is_bound,
             a_link_to_no_live_record_or_over_no_link_relation_is_refused,
+            every_door_refuses_a_view_alike,
             a_retired_record_leaves_reads_but_not_its_past,
             a_narrow_writer_cannot_retire,
             a_proposer_sees_only_its_own_proposals,
@@ -1305,6 +1306,70 @@ pub async fn propose_shows_each_writes_shape(store: Arc<dyn LakeStore>) {
         .await
         .unwrap();
     assert!(matches!(o, Outcome::Proposed { .. }), "{o:?}");
+}
+
+/// A view is refused alike at every door that writes or holds a record,
+/// as invalid naming it; a verb on a record of a view is refused when it
+/// is declared, and one on the view's type that reaches outside is taken
+/// (018, extended).
+pub async fn every_door_refuses_a_view_alike(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let c = &f.catalog;
+    c.declare(owner, Declaration::Type(partner_totals_view()))
+        .await
+        .unwrap();
+    let head = f.head().await;
+    let (pt, p1) = (ty("partner_totals"), key("p1"));
+    let fields = || patch(&[("count", json!("1"))]);
+    let names_it = |what: &str, e: Error| {
+        assert!(
+            matches!(refusal(&e).1, Refusal::Invalid { .. })
+                && e.to_string().contains("`partner_totals`"),
+            "{what}: {e:?}"
+        );
+    };
+    let opts = WriteOpts::default;
+    names_it(
+        "upsert",
+        c.upsert(owner, &pt, &p1, fields(), opts())
+            .await
+            .unwrap_err(),
+    );
+    names_it(
+        "retire",
+        c.retire(owner, &pt, &p1, opts()).await.unwrap_err(),
+    );
+    let r = "r".into();
+    names_it(
+        "link",
+        c.link(owner, &pt, &p1, &r, &p1, fields(), opts())
+            .await
+            .unwrap_err(),
+    );
+    names_it(
+        "unlink",
+        c.unlink(owner, &pt, &p1, &r, &p1, opts())
+            .await
+            .unwrap_err(),
+    );
+    let verb = |scope: &str| {
+        serde_json::from_value::<Declaration>(
+            json!({"declare": "verb", "name": format!("on_{scope}"),
+            "on": "partner_totals", "scope": scope, "risk": "low", "effect": "external",
+            "executor": "x"}),
+        )
+        .unwrap()
+    };
+    let e = c.declare(owner, verb("record")).await.unwrap_err();
+    assert!(
+        matches!(refusal(&e).1, Refusal::Invalid { .. }) && e.to_string().contains("`on_record`"),
+        "a verb on a record of a view: {e:?}"
+    );
+    assert_eq!(f.head().await, head, "nothing is appended");
+    c.declare(owner, verb("type"))
+        .await
+        .expect("a verb on the view's type that reaches outside is taken");
 }
 
 /// `partner_totals`, a view counting each partner's invoices.

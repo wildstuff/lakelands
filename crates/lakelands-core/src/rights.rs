@@ -219,12 +219,7 @@ pub fn check_write(
     if door == Door::Source && !who.grants.ingest {
         return Err(refused(None, Refusal::NotGranted));
     }
-    if decl.view.is_some() {
-        return Err(crate::invalid(format!(
-            "`{}` is a view; it is computed, never written",
-            decl.name
-        )));
-    }
+    not_a_view(decl)?;
     for name in patch.keys() {
         let field = field_of(decl, name)?;
         if !door.admits(field.authority) {
@@ -233,6 +228,18 @@ pub fn check_write(
         if !who.grants.access(&decl.name, name).writes() {
             return Err(refused(Some(name), Refusal::NotGranted));
         }
+    }
+    Ok(())
+}
+
+/// Refuse a view at a door that writes or holds a record: its records are
+/// computed, never written. Every such door says it in these words.
+pub fn not_a_view(decl: &TypeDecl) -> Result<(), Error> {
+    if decl.view.is_some() {
+        return Err(crate::invalid(format!(
+            "`{}` is a view; it is computed, never written",
+            decl.name
+        )));
     }
     Ok(())
 }

@@ -158,3 +158,26 @@ Components hold every record they reach, so the lake bounds them by its
 `max_graph_nodes`; past it they are refused `too_large`, naming the
 ceiling, for the reason a step too deep is refused: a partition of part
 of the graph would look like the whole of it.
+
+## Extended: a view is refused alike at every door (lakelands#370)
+
+A view's records are computed, never written, so every door that writes
+or holds a record refuses a view in the same words, as `invalid` naming
+it: `upsert`, `retire`, `link` and `unlink` from a view, `ingest`, a
+proposal of an upsert or a retirement, the host's `restrict` and
+`unrestrict`, and a call of a verb on a record of a view. Each door
+refuses it where it first knows the type: after the type is looked up,
+before its grants or any record. Until 0.8.0 `retire` answered
+`not_granted` to the owner and `restrict` answered `not_found` for a
+record `get` returns, each telling the caller something untrue.
+
+A verb on a record of a view is refused when it is declared, naming the
+verb and the view, because it could never act: a write effect has
+nothing to write, and an external effect finds no stored record to hand
+its executor. Handing it a computed record would be a new capability,
+not a fix. A verb on the view's type that reaches outside the lake can
+act: it holds no record and writes nothing to the view. It is taken, as
+it was before. A lake declared before 0.8.0 may still hold a verb on a
+record of a view, since replay does not judge a declaration again; a
+call of it is refused at the door as above.
+
