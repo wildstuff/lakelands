@@ -1467,6 +1467,17 @@ pub async fn a_view_is_never_migrated(store: Arc<dyn LakeStore>) {
         .declare(owner, Declaration::Type(narrowed))
         .await
         .expect("a view changes by being declared again");
+    // And becomes a stored type by being declared as one, with a required
+    // field it never computed: it stored nothing, so nothing is reshaped.
+    let mut stored = stored("partner_totals");
+    stored.fields.push(FieldDecl {
+        required: true,
+        ..text("owner")
+    });
+    f.catalog
+        .declare(owner, Declaration::Type(stored))
+        .await
+        .expect("a view becomes a stored type by being declared as one");
 }
 
 /// A view reads its source's shape after a migration as before: a

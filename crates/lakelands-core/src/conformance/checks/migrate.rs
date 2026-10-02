@@ -200,7 +200,7 @@ check!(
 check!(
     /// A view is never migrated.
     VIEW_NOT_MIGRATED = a_view_is_never_migrated,
-    "027, extended: a migration reshapes stored records, and a view stores none, so a migration that would turn a stored type into a view, or a view into a stored type, is refused as invalid naming the type, at the preflight or when applied, and nothing is appended; a view changes by being declared again"
+    "027, extended: a migration reshapes stored records, and a view stores none, so a migration that would turn a stored type into a view, or a view into a stored type, is refused as invalid naming the type, at the preflight or when applied, and nothing is appended; a view changes, and becomes a stored type whatever its fields become, by being declared again"
 );
 
 async fn a_view_is_never_migrated(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
@@ -261,6 +261,21 @@ async fn a_view_is_never_migrated(store: Arc<dyn LakeStore>) -> Result<(), Failu
     let mut narrowed = count_view("pt", "invoice", "partner");
     narrowed.view.as_mut().expect("a view").r#where = Some("amount > 0".into());
     l.declare(narrowed).await?;
+    // And becomes a stored type by being declared as one, with a required
+    // field it never computed: it stored nothing, so nothing is reshaped.
+    let mut stored = type_decl(
+        "pt",
+        vec![
+            field("partner", StorageKind::Text),
+            field("n", StorageKind::Number),
+            lakelands_api::ontology::FieldDecl {
+                required: true,
+                ..field("owner", StorageKind::Text)
+            },
+        ],
+    );
+    stored.key = vec!["partner".into()];
+    l.declare(stored).await?;
     Ok(())
 }
 

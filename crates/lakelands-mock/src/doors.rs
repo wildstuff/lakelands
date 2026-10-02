@@ -136,15 +136,15 @@ fn no_record(ty: &TypeName, key: &RecordKey) -> Error {
 /// a new field required; the key changed; a relation removed or
 /// retargeted, or its cardinality narrowed; a stored type turned into a
 /// view. A change of meaning, an added optional field or relation, a
-/// loosened requirement or cardinality, a view ceasing to be one, is a
-/// declaration; and between two views nothing is stored, so every change
-/// is.
+/// loosened requirement or cardinality, is a declaration; and a view
+/// stores nothing, so every change of one is, a view ceasing to be one
+/// included.
 fn reshapes(
     old: &lakelands_api::ontology::TypeDecl,
     new: &lakelands_api::ontology::TypeDecl,
 ) -> bool {
     use lakelands_api::ontology::Cardinality;
-    if old.view.is_some() && new.view.is_some() {
+    if old.view.is_some() {
         return false;
     }
     if old.view.is_none() && new.view.is_some() {

@@ -141,8 +141,9 @@ to make the change:
 - A view that changes (its source, `where`, grouping, measures or
   parameters) is declared again with `declare` or `apply`. Nothing is
   stored, so nothing is reshaped.
-- A view that becomes a stored type is declared as one. It stored
-  nothing, so the new type starts empty.
+- A view that becomes a stored type is declared as one, whatever its
+  fields become. It stored nothing, so nothing is reshaped, and the new
+  type starts empty.
 - A stored type never becomes a view. Its stored records would linger
   beside the records the view computes, and a type's declaration is
   never retired, so `declare` refuses that change too. The view is
