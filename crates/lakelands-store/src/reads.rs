@@ -65,29 +65,13 @@ use lakelands_api::{
 use lakelands_core::expr::{self, Place, RecordScope, aggregate};
 use lakelands_core::graph::{self, EdgeSource};
 use lakelands_core::{
-    canonical, derive as core_derive, describe, engines as core_engines, rights, valid_time,
+    canonical, derive as core_derive, describe, engines as core_engines, invalid, rights,
+    valid_time,
 };
 
 use crate::declare::condition;
 use crate::lake::{Lake, settings_in};
 use crate::ontology::Ontology;
-
-fn invalid(message: impl Into<String>) -> Error {
-    Error::Refused {
-        field: None,
-        reason: Refusal::Invalid {
-            message: message.into(),
-        },
-    }
-}
-
-fn now() -> Timestamp {
-    let micros = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_micros() as i64)
-        .unwrap_or(0);
-    Timestamp(micros)
-}
 
 /// Everything one read sees.
 pub struct Reader<'a> {
@@ -184,26 +168,14 @@ fn decode(c: &Cursor) -> Result<CursorState> {
 /// the clock, the settings, per-field provenance, or a pattern match,
 /// which is never handed to an engine (`docs/seams.md`, `scan`).
 fn needs_store(e: &Expr) -> bool {
-    match e {
-        Expr::Call { func, args } => {
-            matches!(
-                func,
-                Func::Now
-                    | Func::Today
-                    | Func::Setting
-                    | Func::KnownAt
-                    | Func::SeenAt
-                    | Func::Matches
-            ) || args.iter().any(needs_store)
+    use Func::*;
+    matches!(
+        e,
+        Expr::Call {
+            func: Now | Today | Setting | KnownAt | SeenAt | Matches,
+            ..
         }
-        Expr::Cmp { lhs, rhs, .. } | Expr::Arith { lhs, rhs, .. } => {
-            needs_store(lhs) || needs_store(rhs)
-        }
-        Expr::Neg { arg } | Expr::Not { arg } | Expr::IsNull { arg } => needs_store(arg),
-        Expr::And { args } | Expr::Or { args } => args.iter().any(needs_store),
-        Expr::In { arg, list } => needs_store(arg) || list.iter().any(needs_store),
-        Expr::Lit { .. } | Expr::Path { .. } => false,
-    }
+    ) || expr::children(e).any(needs_store)
 }
 
 impl<'a> Reader<'a> {
@@ -226,7 +198,7 @@ impl<'a> Reader<'a> {
             at_head: at.as_of.is_none(),
             position,
             valid_at: at.valid_at,
-            now: now(),
+            now: crate::lake::wall_clock(),
             computed: RefCell::default(),
             bound: RefCell::default(),
             computing: RefCell::default(),
@@ -945,11 +917,9 @@ impl<'a> Reader<'a> {
         }
         let mut values = Vec::with_capacity(a.values.len());
         for (i, (v, o)) in a.values.iter().zip(&find.order_by).enumerate() {
-            let unfit = |why: String| Error::Refused {
-                field: Some(o.field.clone()),
-                reason: Refusal::Invalid {
-                    message: format!("`after.values[{i}]` does not fit `{}`: {why}", o.field),
-                },
+            let unfit = |why: String| {
+                let message = format!("`after.values[{i}]` does not fit `{}`: {why}", o.field);
+                crate::declare::invalid_field(&o.field, message)
             };
             let v = match (o.by, v) {
                 (_, Value::Null) => Value::Null,

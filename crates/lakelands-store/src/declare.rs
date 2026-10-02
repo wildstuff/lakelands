@@ -43,20 +43,12 @@ use lakelands_api::{Error, FieldName, Refusal, RelationName, Result, TypeName, V
 use lakelands_core::expr::{Place, check, parse};
 use lakelands_core::rights::is_system;
 use lakelands_core::shape::{self, Change};
-use lakelands_core::{derive, links, names, value};
+use lakelands_core::{derive, invalid, links, names, value};
 
 use crate::ontology::Ontology;
 
-fn invalid(message: impl Into<String>) -> Error {
-    Error::Refused {
-        field: None,
-        reason: Refusal::Invalid {
-            message: message.into(),
-        },
-    }
-}
-
-fn invalid_field(field: &FieldName, message: impl Into<String>) -> Error {
+/// A refusal of `field`'s value as not well-formed.
+pub(crate) fn invalid_field(field: &FieldName, message: impl Into<String>) -> Error {
     Error::Refused {
         field: Some(field.clone()),
         reason: Refusal::Invalid {
@@ -128,8 +120,6 @@ fn source_cycle(
         None => String::new(),
     })
 }
-
-const AGGREGATES: [Func; 5] = [Func::Count, Func::Sum, Func::Min, Func::Max, Func::Avg];
 
 /// The field `g` of `source` a view groups by, one a key may be, since the
 /// grouping values are the view record's key; refused naming it at `at`.
@@ -222,10 +212,7 @@ fn merged_sources(
             )?;
             // A merged measure measures its source's group; one with no
             // aggregate would read nothing of it.
-            if !AGGREGATES
-                .into_iter()
-                .any(|f| lakelands_core::versions::calls(&e, f))
-            {
+            if !lakelands_core::versions::calls(&e, &Func::is_aggregate) {
                 return Err(invalid(format!(
                     "{at}, measure `{}`: it calls no aggregate, so it measures nothing of `{}`",
                     x.name, m.source
@@ -936,17 +923,15 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     .find(|r| r.name == relation)
                     .and_then(|r| r.via.as_ref())
             {
-                return Err(Error::Refused {
-                    field: Some("on".into()),
-                    reason: Refusal::Invalid {
-                        message: format!(
-                            "trigger `{}` watches `{}`, but `{relation}` is carried by the \
-                             reference field `{via}`, not by link records; watch `{owner}` \
-                             with `changed({via})`",
-                            t.name, t.on
-                        ),
-                    },
-                });
+                return Err(invalid_field(
+                    &"on".into(),
+                    format!(
+                        "trigger `{}` watches `{}`, but `{relation}` is carried by the reference \
+                         field `{via}`, not by link records; watch `{owner}` with \
+                         `changed({via})`",
+                        t.name, t.on
+                    ),
+                ));
             }
             o.ty(&t.on).map_err(|_| {
                 invalid(format!(

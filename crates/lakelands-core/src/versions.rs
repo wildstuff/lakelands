@@ -58,14 +58,8 @@ pub fn needed(body: &EventBody, upstream: bool) -> u32 {
     {
         return 4;
     }
-    let declares_bucket = match body {
-        EventBody::Declared { declaration, .. } => calls_date_bucket(declaration),
-        EventBody::Migrated { migration, .. } => {
-            calls_date_bucket(&Declaration::Type(migration.to.clone()))
-        }
-        _ => false,
-    };
-    if upstream || declares_bucket {
+    // A proposed declare or migrate returned 4 above.
+    if upstream || any_declaration(body, calls_date_bucket) {
         return 3;
     }
     match body {
@@ -260,21 +254,15 @@ pub fn declares_call(declaration: &Declaration, f: Func) -> bool {
         Declaration::Function(f) => conditions.extend(f.expr.as_ref()),
     }
     conditions.into_iter().any(|c| match c {
-        Condition::Expr(e) => calls(e, f),
-        Condition::Text(t) => lakelands_api::expr::parse(t).is_ok_and(|e| calls(&e, f)),
+        Condition::Expr(e) => calls(e, &|g| g == f),
+        Condition::Text(t) => lakelands_api::expr::parse(t).is_ok_and(|e| calls(&e, &|g| g == f)),
     })
 }
 
-/// Whether an expression calls `f` anywhere.
-pub fn calls(e: &Expr, f: Func) -> bool {
-    match e {
-        Expr::Lit { .. } | Expr::Path { .. } => false,
-        Expr::Cmp { lhs, rhs, .. } | Expr::Arith { lhs, rhs, .. } => calls(lhs, f) || calls(rhs, f),
-        Expr::Neg { arg } | Expr::Not { arg } | Expr::IsNull { arg } => calls(arg, f),
-        Expr::And { args } | Expr::Or { args } => args.iter().any(|a| calls(a, f)),
-        Expr::In { arg, list } => calls(arg, f) || list.iter().any(|a| calls(a, f)),
-        Expr::Call { func, args } => *func == f || args.iter().any(|a| calls(a, f)),
-    }
+/// Whether an expression calls, anywhere, a function `f` accepts.
+pub fn calls(e: &Expr, f: &dyn Fn(Func) -> bool) -> bool {
+    matches!(e, Expr::Call { func, .. } if f(*func))
+        || crate::expr::children(e).any(|c| calls(c, f))
 }
 
 #[cfg(test)]

@@ -124,10 +124,7 @@ fn reads_all<'a>(
 
 /// The fields a condition names; `None` when it does not parse.
 fn named(c: &Condition) -> Option<std::collections::BTreeSet<FieldName>> {
-    match c {
-        Condition::Expr(e) => Some(crate::derive::reads(e)),
-        Condition::Text(t) => crate::expr::parse(t).ok().map(|e| crate::derive::reads(&e)),
-    }
+    parsed(c).map(|e| crate::derive::reads(&e))
 }
 
 /// Whether a condition over type `ty` may be shown to `who`.
@@ -177,25 +174,10 @@ fn view_visible(v: &ViewDecl, declared: &[Declared], who: &Principal) -> bool {
 fn aggregated(e: &Expr, inside: bool, out: &mut std::collections::BTreeSet<FieldName>) {
     match e {
         Expr::Path { path } if inside => out.extend(path.first().cloned()),
-        Expr::Path { .. } | Expr::Lit { .. } => {}
-        Expr::Call { func, args } => {
-            let inside = inside || func.is_aggregate();
-            args.iter().for_each(|a| aggregated(a, inside, out));
+        Expr::Call { func, .. } if func.is_aggregate() => {
+            crate::expr::children(e).for_each(|a| aggregated(a, true, out));
         }
-        Expr::Cmp { lhs, rhs, .. } | Expr::Arith { lhs, rhs, .. } => {
-            aggregated(lhs, inside, out);
-            aggregated(rhs, inside, out);
-        }
-        Expr::Neg { arg } | Expr::Not { arg } | Expr::IsNull { arg } => {
-            aggregated(arg, inside, out);
-        }
-        Expr::And { args } | Expr::Or { args } => {
-            args.iter().for_each(|a| aggregated(a, inside, out));
-        }
-        Expr::In { arg, list } => {
-            aggregated(arg, inside, out);
-            list.iter().for_each(|a| aggregated(a, inside, out));
-        }
+        _ => crate::expr::children(e).for_each(|a| aggregated(a, inside, out)),
     }
 }
 
