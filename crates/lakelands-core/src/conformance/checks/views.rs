@@ -85,6 +85,12 @@ check!(
 );
 
 check!(
+    /// A relation on a view is derived.
+    VIEW_RELATIONS_DERIVED = a_relation_on_a_view_is_derived_or_refused,
+    "018, extended, and 035: a view's records are computed and never written, so `declare` and `apply` refuse a relation on a view carried by link records or by a `via` field, which could never hold an edge, naming the view and the relation; a relation derived from matching values is taken"
+);
+
+check!(
     /// A view is not searched.
     VIEW_NOT_SEARCHED = a_search_on_a_view_is_refused_naming_it,
     "018: a view's records are computed on read and no index holds them, so a lexical, vector or hybrid search on a view is refused as invalid, naming the view, never answered empty"
@@ -663,6 +669,64 @@ async fn a_trigger_or_object_set_on_a_view_is_refused(
         "an object set over the view `pt` must be refused by apply too; it answered {r:?}"
     );
     head_unmoved(store.as_ref(), before, "every declaration on a view").await
+}
+
+async fn a_relation_on_a_view_is_derived_or_refused(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use lakelands_api::write::Declaration;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(invoices(Authority::Authored)).await?;
+    let with = |relation: RelationDecl| {
+        let mut view = partner_totals("pt", StorageKind::Decimal);
+        view.relations = vec![relation];
+        view
+    };
+    let linked = RelationDecl {
+        cardinality: Cardinality::ManyToMany,
+        ..RelationDecl::to("seen", "invoice")
+    };
+    let carried = RelationDecl {
+        via: Some("partner".into()),
+        ..RelationDecl::to("by", "invoice")
+    };
+    let names_both = |r: &lakelands_api::Result<lakelands_api::write::Outcome>, relation: &str| {
+        matches!(reason(r), Some(Refusal::Invalid { message })
+            if message.contains("pt") && message.contains(relation))
+    };
+    let before = store.head().await.must("reading the head")?;
+    for (relation, name) in [(linked.clone(), "seen"), (carried, "by")] {
+        let r = cat.declare(own, Declaration::Type(with(relation))).await;
+        ensure!(
+            names_both(&r, name),
+            "a relation `{name}` on the view `pt` that is not derived could never hold an edge \
+             and must be refused as invalid, naming `pt` and `{name}`; declare answered {r:?}"
+        );
+    }
+    let r = cat.apply(own, vec![Declaration::Type(with(linked))]).await;
+    ensure!(
+        names_both(&r, "seen"),
+        "apply must refuse the link relation `seen` on the view `pt` too; it answered {r:?}"
+    );
+    head_unmoved(
+        store.as_ref(),
+        before,
+        "every relation on a view not derived",
+    )
+    .await?;
+    // A relation derived from matching values is taken.
+    let derived = RelationDecl {
+        derived: Some(Derived {
+            pairs: vec![MatchPair {
+                from: "partner".into(),
+                to: "partner".into(),
+            }],
+        }),
+        ..RelationDecl::to("billed", "invoice")
+    };
+    l.declare(with(derived)).await?;
+    Ok(())
 }
 
 async fn a_search_on_a_view_is_refused_naming_it(store: Arc<dyn LakeStore>) -> Result<(), Failure> {

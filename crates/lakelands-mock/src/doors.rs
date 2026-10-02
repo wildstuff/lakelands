@@ -644,6 +644,21 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
                 }
             }
             for r in &t.relations {
+                // As the store: a view's records are computed, so only a
+                // relation derived from matching values starts from one.
+                if t.view.is_some() && r.derived.is_none() {
+                    let carrier = if r.via.is_some() {
+                        "a `via` field"
+                    } else {
+                        "link records"
+                    };
+                    return Err(invalid(format!(
+                        "type `{}`, relation `{}`: `{}` is a view, whose records are computed \
+                         and never written, so a relation carried by {carrier} could never hold \
+                         an edge; a relation on a view is derived from matching values",
+                        t.name, r.name, t.name
+                    )));
+                }
                 if !known(&r.target, Some(&t.name)) {
                     return Err(invalid(format!(
                         "type `{}`, relation `{}`: `{}` is not a declared type",

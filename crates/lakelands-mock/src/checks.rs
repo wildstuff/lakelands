@@ -95,6 +95,7 @@ macro_rules! door_checks {
             the_tools_follow_the_grants,
             a_verb_tool_says_what_its_risk_does,
             nothing_that_never_acts_is_declared_on_a_view,
+            a_relation_on_a_view_is_derived,
             a_tools_key_says_what_to_pass,
             propose_shows_each_writes_shape,
             a_verb_on_its_type_has_a_tool_without_a_key,
@@ -1303,13 +1304,9 @@ pub async fn propose_shows_each_writes_shape(store: Arc<dyn LakeStore>) {
     assert!(matches!(o, Outcome::Proposed { .. }), "{o:?}");
 }
 
-/// A view is never written: a trigger on one would never fire, and an
-/// object set holds stored records, so `declare` refuses both, naming
-/// the declaration and the view, on the mock as on the store.
-pub async fn nothing_that_never_acts_is_declared_on_a_view(store: Arc<dyn LakeStore>) {
-    let f = setup(store).await;
-    let owner = &f.cast.owner;
-    let totals = TypeDecl {
+/// `partner_totals`, a view counting each partner's invoices.
+fn partner_totals_view() -> TypeDecl {
+    TypeDecl {
         annotations: Default::default(),
         name: "partner_totals".into(),
         key: vec!["partner".into()],
@@ -1332,7 +1329,16 @@ pub async fn nothing_that_never_acts_is_declared_on_a_view(store: Arc<dyn LakeSt
         language: None,
         description: None,
         label: None,
-    };
+    }
+}
+
+/// A view is never written: a trigger on one would never fire, and an
+/// object set holds stored records, so `declare` refuses both, naming
+/// the declaration and the view, on the mock as on the store.
+pub async fn nothing_that_never_acts_is_declared_on_a_view(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let totals = partner_totals_view();
     f.catalog
         .declare(owner, Declaration::Type(totals))
         .await
@@ -1360,6 +1366,39 @@ pub async fn nothing_that_never_acts_is_declared_on_a_view(store: Arc<dyn LakeSt
         assert!(
             matches!(&e, Error::Refused { field: Some(at), reason: Refusal::Invalid { message } }
                 if at.as_str() == field && message.contains(name) && message.contains("partner_totals")),
+            "{e:?}"
+        );
+    }
+    assert_eq!(f.head().await, head, "nothing is appended");
+}
+
+/// A view's records are computed, so a relation on a view carried by link
+/// records or by a `via` field could never hold an edge: `declare`
+/// refuses it, naming the view and the relation, on the mock as on the
+/// store.
+pub async fn a_relation_on_a_view_is_derived(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let head = f.head().await;
+    for (relation, name) in [
+        (RelationDecl::to("seen", INVOICE), "seen"),
+        (
+            RelationDecl {
+                via: Some("partner".into()),
+                ..RelationDecl::to("by", INVOICE)
+            },
+            "by",
+        ),
+    ] {
+        let mut view = partner_totals_view();
+        view.relations = vec![relation];
+        let e = f
+            .catalog
+            .declare(&f.cast.owner, Declaration::Type(view))
+            .await
+            .expect_err("a relation on a view that is not derived");
+        assert!(
+            matches!(&e, Error::Refused { reason: Refusal::Invalid { message }, .. }
+                if message.contains(name) && message.contains("partner_totals")),
             "{e:?}"
         );
     }

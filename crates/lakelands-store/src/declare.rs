@@ -516,6 +516,19 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
     }
     for r in &t.relations {
         name("relation", r.name.as_str())?;
+        // A view's records are computed, never written: no link names one
+        // as its live `from`, and it has no stored field for `via` to
+        // read. Only a relation derived from matching values reaches out.
+        if t.view.is_some() && r.derived.is_none() {
+            return Err(invalid(format!(
+                "{owner}, relation `{}`: `{}` is a view, whose records are computed and never \
+                 written, so a relation carried by {} could never hold an edge; a relation on a \
+                 view is derived from matching values",
+                r.name,
+                t.name,
+                carrier(r)
+            )));
+        }
         // A relation is carried by its `via` field or by link records,
         // never both (`docs/decisions/035-a-link-is-a-record.md`).
         if r.via.is_some() && !r.fields.is_empty() {

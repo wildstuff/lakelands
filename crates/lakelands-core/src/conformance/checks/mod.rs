@@ -122,6 +122,7 @@ pub const ALL: &[Check] = &[
     view_merge::FORMAT_9,
     views::VIEW_FIELD_NOT_SEARCHED,
     views::NO_TRIGGER_OR_SET_ON_A_VIEW,
+    views::VIEW_RELATIONS_DERIVED,
     views::VIEW_NOT_SEARCHED,
     views::SOURCE_CYCLE_REFUSED,
     views::MEASURE_BY_NAME_DESCRIBED,
