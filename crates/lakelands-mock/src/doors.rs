@@ -753,6 +753,38 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
                         _ => format!("`{ty}` is not declared"),
                     }));
                 }
+                // As the store: a view is never written, so a trigger on
+                // one never fires, and an object set holds stored records.
+                if st.types.get(ty).is_some_and(|o| o.decl.view.is_some()) {
+                    match other {
+                        Declaration::Trigger(t) => {
+                            return Err(Error::Refused {
+                                field: Some("on".into()),
+                                reason: Refusal::Invalid {
+                                    message: format!(
+                                        "trigger `{}` watches `{ty}`, a view; a view is never \
+                                         written, so no write of it fires a trigger",
+                                        t.name
+                                    ),
+                                },
+                            });
+                        }
+                        Declaration::ObjectSet(s) => {
+                            return Err(Error::Refused {
+                                field: Some("of".into()),
+                                reason: Refusal::Invalid {
+                                    message: format!(
+                                        "object set `{}` holds `{ty}`, a view; a view's records \
+                                         are computed on read, and an object set holds stored \
+                                         records only",
+                                        s.name
+                                    ),
+                                },
+                            });
+                        }
+                        _ => {}
+                    }
+                }
                 // As the store: a trigger may watch any declared type, the
                 // link types of relations carried by link records among them.
                 if reserved(ty.as_str(), who) && !matches!(other, Declaration::Trigger(_)) {

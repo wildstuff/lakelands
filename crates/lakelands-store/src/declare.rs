@@ -933,24 +933,48 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     ),
                 ));
             }
-            o.ty(&t.on).map_err(|_| {
+            let on = o.ty(&t.on).map_err(|_| {
                 invalid(format!(
                     "trigger `{}` watches `{}`, which is not declared",
                     t.name, t.on
                 ))
             })?;
+            // A view is computed on read and never written, so no write
+            // of it can fire a trigger: a trigger on one could never act.
+            if on.view.is_some() {
+                return Err(invalid_field(
+                    &"on".into(),
+                    format!(
+                        "trigger `{}` watches `{}`, a view; a view is never written, so no \
+                         write of it fires a trigger",
+                        t.name, t.on
+                    ),
+                ));
+            }
             if let Some(w) = &t.when {
                 declared(w, Place::Guard, &format!("trigger `{}`", t.name))?;
             }
         }
         Declaration::ObjectSet(s) => {
             name("object set", &s.name)?;
-            o.ty(&s.of).map_err(|_| {
+            let of = o.ty(&s.of).map_err(|_| {
                 invalid(format!(
                     "object set `{}` holds `{}`, which is not declared",
                     s.name, s.of
                 ))
             })?;
+            // A set holds stored records; a view's are computed on read,
+            // and no set is evaluated over them.
+            if of.view.is_some() {
+                return Err(invalid_field(
+                    &"of".into(),
+                    format!(
+                        "object set `{}` holds `{}`, a view; a view's records are computed on \
+                         read, and an object set holds stored records only",
+                        s.name, s.of
+                    ),
+                ));
+            }
             declared(
                 &s.filter,
                 Place::Record,

@@ -94,6 +94,7 @@ macro_rules! door_checks {
             a_masked_field_is_named_but_its_value_is_absent,
             the_tools_follow_the_grants,
             a_verb_tool_says_what_its_risk_does,
+            nothing_that_never_acts_is_declared_on_a_view,
             a_tools_key_says_what_to_pass,
             propose_shows_each_writes_shape,
             a_verb_on_its_type_has_a_tool_without_a_key,
@@ -1300,6 +1301,69 @@ pub async fn propose_shows_each_writes_shape(store: Arc<dyn LakeStore>) {
         .await
         .unwrap();
     assert!(matches!(o, Outcome::Proposed { .. }), "{o:?}");
+}
+
+/// A view is never written: a trigger on one would never fire, and an
+/// object set holds stored records, so `declare` refuses both, naming
+/// the declaration and the view, on the mock as on the store.
+pub async fn nothing_that_never_acts_is_declared_on_a_view(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let totals = TypeDecl {
+        annotations: Default::default(),
+        name: "partner_totals".into(),
+        key: vec!["partner".into()],
+        fields: vec![text("partner"), text("count")],
+        relations: Vec::new(),
+        view: Some(Box::new(ViewDecl {
+            source: INVOICE.into(),
+            r#where: None,
+            group_by: vec!["partner".into()],
+            measures: vec![Measure {
+                name: "count".into(),
+                expr: "count()".into(),
+            }],
+            params: Default::default(),
+            merge: Default::default(),
+        })),
+        valid_from: None,
+        valid_to: None,
+        field_meta: true,
+        language: None,
+        description: None,
+        label: None,
+    };
+    f.catalog
+        .declare(owner, Declaration::Type(totals))
+        .await
+        .expect("the view is declared");
+    let head = f.head().await;
+    let trigger = Declaration::Trigger(TriggerDecl {
+        max_depth: None,
+        name: "grew".into(),
+        on: "partner_totals".into(),
+        when: None,
+        description: None,
+    });
+    let set = Declaration::ObjectSet(ObjectSetDecl {
+        name: "busy".into(),
+        of: "partner_totals".into(),
+        filter: "count > 0".into(),
+        description: None,
+    });
+    for (d, name, field) in [(trigger, "grew", "on"), (set, "busy", "of")] {
+        let e = f
+            .catalog
+            .declare(owner, d)
+            .await
+            .expect_err("nothing that never acts is declared on a view");
+        assert!(
+            matches!(&e, Error::Refused { field: Some(at), reason: Refusal::Invalid { message } }
+                if at.as_str() == field && message.contains(name) && message.contains("partner_totals")),
+            "{e:?}"
+        );
+    }
+    assert_eq!(f.head().await, head, "nothing is appended");
 }
 
 /// A `low`-risk verb whose effect writes authored fields runs at once.

@@ -81,7 +81,11 @@ view is not searched: the indexes a search reads hold stored records
 only, so a search of computed records could only answer nothing. A view
 field that is searchable, carries an embedding or is a vector is
 refused when the view is declared, and a search on a view is refused,
-naming it; neither is answered empty.
+naming it; neither is answered empty. For the same reason a declaration
+that could never act on a view is refused when declared, naming both.
+A trigger on a view would never fire, since no write has the view's
+type. An object set holds stored records, and a set evaluated over
+computed records would be a feature of its own.
 
 ## Extended: a view may take parameters bound at read
 

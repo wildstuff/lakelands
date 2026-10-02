@@ -26,8 +26,8 @@ use serde_json::json;
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, all, all_found, count_view, dec, decimal, doors, field, field_access, get_at,
-    measure, partner_totals, pattern, reason, source_record, step, type_decl, upsert, value,
-    view_of, windows_reach_head,
+    head_unmoved, measure, partner_totals, pattern, reason, source_record, step, type_decl, upsert,
+    value, view_of, windows_reach_head,
 };
 
 check!(
@@ -76,6 +76,12 @@ check!(
     /// A view's field asks for no search.
     VIEW_FIELD_NOT_SEARCHED = a_view_field_that_asks_to_be_searched_or_embedded_is_refused,
     "018: a view is not searched, so `declare` refuses a view field that is searchable, carries an embedding or is a vector, naming the view and the field"
+);
+
+check!(
+    /// Nothing that could never act is declared on a view.
+    NO_TRIGGER_OR_SET_ON_A_VIEW = a_trigger_or_object_set_on_a_view_is_refused,
+    "018, extended: a view is never written, so `declare` and `apply` refuse a trigger on a view, which no write would fire, and an object set over one, which holds stored records, naming both; nothing is appended"
 );
 
 check!(
@@ -590,6 +596,73 @@ async fn a_view_field_that_asks_to_be_searched_or_embedded_is_refused(
         );
     }
     Ok(())
+}
+
+async fn a_trigger_or_object_set_on_a_view_is_refused(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use lakelands_api::expr::Condition;
+    use lakelands_api::ontology::TriggerDecl;
+    use lakelands_api::write::{Declaration, ObjectSetDecl};
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(invoices(Authority::Authored)).await?;
+    l.declare(partner_totals("pt", StorageKind::Decimal))
+        .await?;
+    let trigger = |on: &str| {
+        Declaration::Trigger(TriggerDecl {
+            max_depth: None,
+            name: "grew".into(),
+            on: on.into(),
+            when: Some(Condition::from("total > 0")),
+            description: None,
+        })
+    };
+    let set = Declaration::ObjectSet(ObjectSetDecl {
+        name: "busy".into(),
+        of: "pt".into(),
+        filter: Condition::from("total > 0"),
+        description: None,
+    });
+    let names_both =
+        |r: &lakelands_api::Result<lakelands_api::write::Outcome>, what: &str, on: &str| {
+            matches!(r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
+            if message.contains(what) && message.contains(on))
+        };
+    let before = store.head().await.must("reading the head")?;
+    let r = cat.declare(own, trigger("pt")).await;
+    ensure!(
+        names_both(&r, "grew", "pt"),
+        "a trigger on the view `pt` can never fire and must be refused as invalid, naming \
+         `grew` and `pt`; declare answered {r:?}"
+    );
+    let r = cat.declare(own, set.clone()).await;
+    ensure!(
+        names_both(&r, "busy", "pt"),
+        "an object set over the view `pt` must be refused as invalid, naming `busy` and \
+         `pt`; declare answered {r:?}"
+    );
+    // The view and its trigger in one set: refused as a whole.
+    let r = cat
+        .apply(
+            own,
+            vec![
+                Declaration::Type(partner_totals("pt2", StorageKind::Decimal)),
+                trigger("pt2"),
+            ],
+        )
+        .await;
+    ensure!(
+        names_both(&r, "grew", "pt2"),
+        "a trigger on a view declared in the same set must be refused, naming `grew` and \
+         `pt2`; apply answered {r:?}"
+    );
+    let r = cat.apply(own, vec![set]).await;
+    ensure!(
+        names_both(&r, "busy", "pt"),
+        "an object set over the view `pt` must be refused by apply too; it answered {r:?}"
+    );
+    head_unmoved(store.as_ref(), before, "every declaration on a view").await
 }
 
 async fn a_search_on_a_view_is_refused_naming_it(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
