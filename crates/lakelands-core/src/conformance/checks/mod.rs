@@ -342,6 +342,7 @@ pub const ALL: &[Check] = &[
     proposals::RETRY_PROPOSED_PAST_ACCEPT,
     verbs_on_type::ON_TYPE_RUNS,
     verbs_on_type::ON_TYPE_PROPOSED,
+    verbs_on_type::VERB_EVENTS_UNTYPED,
     verbs_on_type::ON_TYPE_GRANTS,
     verbs_on_type::ON_TYPE_IDEMPOTENT,
     verbs_on_type::ON_TYPE_KEY,

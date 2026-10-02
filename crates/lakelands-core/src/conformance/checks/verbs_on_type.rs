@@ -14,7 +14,7 @@ use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{StorageKind, VerbScope};
 use lakelands_api::principal::{Access, TypeGrants};
 use lakelands_api::seam::FeedFilter;
-use lakelands_api::write::{Declaration, ProposedWrite};
+use lakelands_api::write::{Declaration, ProposalFilter, ProposedWrite};
 use lakelands_api::{
     Grants, IdempotencyKey, LakeStore, Outcome, Position, Principal, PrincipalKind, ReadAt,
     Refusal, TypeName, Version, WriteOpts,
@@ -27,6 +27,12 @@ use crate::conformance::fixture::{
     Lake, Must, field, head_unmoved, invalid_naming, owner, patch, principal, reason, reviewer,
     type_decl,
 };
+
+check!(
+    /// A verb's events name no type.
+    VERB_EVENTS_UNTYPED = a_feed_filtered_by_type_passes_none_of_a_verbs_events,
+    "004 and seams §ChangeFeed: a verb's events name no type, even for a verb on its type, so a feed filtered by that type passes none of `verb_called`, `write_proposed`, `write_accepted` and `output_recorded`, which a feed with no types passes; `proposals` filtered by the type lists the proposed call"
+);
 
 check!(
     /// A verb on its type runs under its type's grants and records its
@@ -410,5 +416,75 @@ async fn a_verb_on_its_type_with_a_write_effect_or_requires_is_refused(
         invalid_naming(what, l.cat.declare(&own, d).await, &[&name])?;
         head_unmoved(store.as_ref(), before, what).await?;
     }
+    Ok(())
+}
+
+async fn a_feed_filtered_by_type_passes_none_of_a_verbs_events(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = ledger(store.as_ref(), "open_ticket", "medium").await?;
+    let from = store.head().await.must("reading the head")?.next();
+    let proposed = on_type(&l, &l.own, "open_ticket", json!({"amount": 3}))
+        .await
+        .must("calling `open_ticket` on its type")?;
+    let Outcome::Proposed { proposal, .. } = &proposed else {
+        return Err(Failure::new(format!(
+            "a medium verb on its type is proposed; it answered {proposed:?}"
+        )));
+    };
+    let filter = ProposalFilter {
+        ty: Some("payment".into()),
+        ..ProposalFilter::default()
+    };
+    let listed = l
+        .cat
+        .proposals(&l.own, filter)
+        .await
+        .must("listing `payment`'s proposals")?
+        .data;
+    ensure!(
+        listed.iter().any(|p| &p.id == proposal),
+        "proposals filtered by `payment` list the call of `open_ticket`, a verb on it; they \
+         listed {listed:?}"
+    );
+    l.cat
+        .accept(&reviewer(store.as_ref(), false), proposal)
+        .await
+        .must("accepting the call")?;
+    let kinds = |types: Vec<TypeName>| {
+        let store = store.clone();
+        async move {
+            let filter = FeedFilter {
+                types,
+                ..FeedFilter::default()
+            };
+            let batch = store.feed().poll(from, &filter, 100).await;
+            Ok::<_, Failure>(
+                batch
+                    .must("reading the feed")?
+                    .events
+                    .iter()
+                    .map(|e| e.body.kind())
+                    .collect::<Vec<_>>(),
+            )
+        }
+    };
+    let verbs = [
+        "write_proposed",
+        "write_accepted",
+        "verb_called",
+        "output_recorded",
+    ];
+    let all = kinds(Vec::new()).await?;
+    ensure!(
+        verbs.iter().all(|k| all.contains(k)),
+        "a feed with no types passes all four of the call's events {verbs:?}; it passed {all:?}"
+    );
+    let typed = kinds(vec!["payment".into()]).await?;
+    ensure!(
+        typed.iter().all(|k| !verbs.contains(k)),
+        "a verb's events name no type, so a feed filtered by `payment` passes none of \
+         {verbs:?}; it passed {typed:?}"
+    );
     Ok(())
 }
