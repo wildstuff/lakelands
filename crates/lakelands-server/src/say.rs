@@ -77,7 +77,12 @@ impl From<Error> for Failure {
             Error::Conflict { .. } => {
                 "read the record again and retry against its current version".to_owned()
             }
-            Error::Unbound { .. } => "bind it in the host's configuration".to_owned(),
+            // The caller may not be the operator: say that nothing was
+            // written, and who can make it run.
+            Error::Unbound { .. } => {
+                "nothing was written; this cannot run until the lake's operator binds it in the host's configuration"
+                    .to_owned()
+            }
             Error::Unavailable { .. } => {
                 "wait and retry, or check that no other process holds the lake".to_owned()
             }

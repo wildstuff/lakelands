@@ -152,6 +152,15 @@ the ledger. It runs at once." The answer's next step addresses an
 operator, not the caller. The agent stopped rightly, but nothing told it
 that before it called. **Finding:** #349.
 
+Since #349:
+- the tool says "Create the payment of a paid order in the ledger. It
+  runs at once, through an executor the lake's host binds; where none is
+  bound, a call is refused and writes nothing.";
+- the answer's next step reads "nothing was written; this cannot run
+  until the lake's operator binds it in the host's configuration".
+
+`walk_5.rs` pins the new step.
+
 The answer to step 11:
 
 ```json

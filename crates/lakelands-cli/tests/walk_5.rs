@@ -132,8 +132,12 @@ fn feed(root: &str) -> Vec<Value> {
         .collect()
 }
 
+// Since #349, the next step tells a caller that nothing was written and
+// who can make it run; the walk's run read "bind it in the host's
+// configuration".
 const UNBOUND: &str = "error: nothing is bound for the verb executor `ledger`\n  \
-                       what to do: bind it in the host's configuration\n";
+                       what to do: nothing was written; this cannot run until the lake's \
+                       operator binds it in the host's configuration\n";
 const NOT_GRANTED: &str = "error: refused on `paid_on`: you hold no grant for this\n  \
                            what to do: act as a principal whose grants allow it, or ask \
                            the lake's owner for a grant\n";

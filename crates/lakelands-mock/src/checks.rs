@@ -1145,9 +1145,11 @@ pub async fn a_verb_on_its_type_is_called_without_a_key(store: Arc<dyn LakeStore
     assert_eq!(f.head().await, head, "nothing is appended");
 }
 
-/// A verb's tool says what a call does by the verb's risk alone: a `low`
-/// verb runs at once, whether its effect writes fields or reaches outside
-/// the lake; a riskier one is recorded as a proposal.
+/// A verb's tool says what a call does by the verb's risk: a `low` verb
+/// runs at once, whether its effect writes fields or reaches outside the
+/// lake; a riskier one is recorded as a proposal. A verb that reaches
+/// outside the lake also says that it runs through an executor its host
+/// binds, and that a call is refused, writing nothing, where none is.
 pub async fn a_verb_tool_says_what_its_risk_does(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let owner = &f.cast.owner;
@@ -1179,16 +1181,21 @@ pub async fn a_verb_tool_says_what_its_risk_does(store: Arc<dyn LakeStore>) {
             .description
             .clone()
     };
-    let runs = "It runs at once.";
-    let proposed = "It is recorded as a proposal and runs when accepted.";
-    for (verb, how) in [
-        ("approve", runs),
-        ("notify", runs),
-        ("pay", proposed),
-        ("escalate", proposed),
+    let runs = "It runs at once";
+    let proposed = "It is recorded as a proposal and runs when accepted";
+    let through = ", through an executor the lake's host binds; where none is bound, a call is \
+                   refused and writes nothing.";
+    for (verb, how, end) in [
+        ("approve", runs, "."),
+        ("notify", runs, through),
+        ("pay", proposed, "."),
+        ("escalate", proposed, through),
     ] {
         let said = says(verb);
-        assert!(said.ends_with(how), "`{verb}`'s tool says {said:?}");
+        assert!(
+            said.ends_with(&format!("{how}{end}")),
+            "`{verb}`'s tool says {said:?}"
+        );
     }
 }
 
