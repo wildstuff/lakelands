@@ -141,8 +141,15 @@ fn a_scan_sorted_by_keys_answers_what_cmp_places_orders() {
 }
 
 /// Walks `scan` page by page through [`scan_in_field_order`] over an
-/// index kept in a vector, continuing after each page's last row.
-fn walk_by_index(decl: &TypeDecl, records: &[StoredRecord], scan: &Scan) -> Vec<String> {
+/// index of `records` kept in a vector, continuing after each page's last
+/// row; with `changed`, through [`scan_in_field_order_at`], `records`
+/// being the head.
+fn walk_by_index(
+    decl: &TypeDecl,
+    records: &[StoredRecord],
+    changed: Option<&Changed>,
+    scan: &Scan,
+) -> Vec<String> {
     let first = &scan.order_by[0];
     let mut index: Vec<(Vec<u8>, &StoredRecord)> = records
         .iter()
@@ -172,27 +179,27 @@ fn walk_by_index(decl: &TypeDecl, records: &[StoredRecord], scan: &Scan) -> Vec<
     let mut keys = Vec::new();
     let mut page = scan.clone();
     loop {
-        let rows = scan_in_field_order::<()>(
-            Some(decl),
-            &page,
-            |from, n| {
-                let from = from.map(|(k, r)| position(k, r));
-                Ok(index
-                    .iter()
-                    .filter(|row| from.as_ref().is_none_or(|f| past(row, f)))
-                    .take(n as usize)
-                    .map(|(k, r)| (k.clone(), (*r).clone()))
-                    .collect())
-            },
-            |after, n| {
-                Ok(missing
-                    .iter()
-                    .filter(|r| after.is_none_or(|a| r.key.as_str() > a))
-                    .take(n as usize)
-                    .map(|r| (*r).clone())
-                    .collect())
-            },
-        )
+        let sorted = |from: Option<(&[u8], &str)>, n: u32| {
+            let from = from.map(|(k, r)| position(k, r));
+            Ok(index
+                .iter()
+                .filter(|row| from.as_ref().is_none_or(|f| past(row, f)))
+                .take(n as usize)
+                .map(|(k, r)| (k.clone(), (*r).clone()))
+                .collect())
+        };
+        let unsorted = |after: Option<&str>, n: u32| {
+            Ok(missing
+                .iter()
+                .filter(|r| after.is_none_or(|a| r.key.as_str() > a))
+                .take(n as usize)
+                .map(|r| (*r).clone())
+                .collect())
+        };
+        let rows: Vec<StoredRecord> = match changed {
+            None => scan_in_field_order::<()>(Some(decl), &page, sorted, unsorted),
+            Some(c) => scan_in_field_order_at::<()>(Some(decl), &page, c, sorted, unsorted),
+        }
         .unwrap();
         let Some(last) = rows.last() else { break };
         page.after = Some(After {
@@ -267,9 +274,96 @@ fn a_walk_in_index_order_answers_what_a_whole_sort_answers() {
                 .map(|r| r.key.to_string())
                 .collect();
                 assert_eq!(
-                    walk_by_index(&decl, &records, &scan),
+                    walk_by_index(&decl, &records, None, &scan),
                     whole,
                     "{order_by:?} with {filter:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_walk_at_an_earlier_position_answers_what_a_whole_sort_there_answers() {
+    let decl: TypeDecl = serde_json::from_value(json!({
+        "name": "t", "fields": [
+            {"name": "v", "type": {"kind": "text"}},
+            {"name": "w", "type": {"kind": "text"}}
+        ]
+    }))
+    .unwrap();
+    let corpus = sort_corpus();
+    let record = |i: usize, v: Option<serde_json::Value>, retired: bool| {
+        let mut fields = BTreeMap::new();
+        if let Some(v) = v {
+            fields.insert(FieldName::from("v"), v);
+        }
+        fields.insert(FieldName::from("w"), json!(format!("w{}", i % 3)));
+        StoredRecord {
+            ty: TypeName::from("t"),
+            key: RecordKey::from(format!("k{:04}", (i * 37) % 1009)),
+            version: lakelands_api::Version(1),
+            fields,
+            meta: BTreeMap::new(),
+            position: lakelands_api::Position(1),
+            retired,
+            restricted: false,
+        }
+    };
+    let n = corpus.len() + 40;
+    let value = |i: usize| (!i.is_multiple_of(5)).then(|| corpus[i % corpus.len()].clone());
+    // At the position: every record but the last ten.
+    let at: Vec<StoredRecord> = (0..n - 10).map(|i| record(i, value(i), false)).collect();
+    // At the head: every third changed its `v` (some lose it, some gain
+    // one), every eleventh retired, and ten records written after.
+    let head: Vec<StoredRecord> = (0..n)
+        .map(|i| match i {
+            _ if i >= n - 10 => record(i, value(i), false),
+            _ if i.is_multiple_of(3) => record(i, value(i + 7), false),
+            _ if i.is_multiple_of(11) => record(i, value(i), true),
+            _ => record(i, value(i), false),
+        })
+        .collect();
+    let keys: BTreeSet<RecordKey> = (0..n)
+        .filter(|i| *i >= n - 10 || i.is_multiple_of(3) || i.is_multiple_of(11))
+        .map(|i| record(i, None, false).key)
+        .collect();
+    let changed = Changed {
+        states: at
+            .iter()
+            .filter(|r| keys.contains(&r.key))
+            .cloned()
+            .collect(),
+        keys,
+    };
+    let order = |field: &str, dir| order(field, OrderBy::Value, dir);
+    for dir in [Direction::Asc, Direction::Desc] {
+        for order_by in [
+            vec![order("v", dir)],
+            vec![order("v", dir), order("w", Direction::Desc)],
+        ] {
+            for retired in [false, true] {
+                let scan = Scan {
+                    order_by: order_by.clone(),
+                    retired,
+                    limit: 3,
+                    ..Default::default()
+                };
+                let whole: Vec<String> = super::scan(
+                    Some(&decl),
+                    &at,
+                    &Scan {
+                        limit: u32::MAX,
+                        ..scan.clone()
+                    },
+                )
+                .into_iter()
+                .map(|r| r.key.to_string())
+                .collect();
+                assert_eq!(
+                    walk_by_index(&decl, &head, Some(&changed), &scan),
+                    whole,
+                    "{order_by:?}, retired {retired}"
                 );
             }
         }
