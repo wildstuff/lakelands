@@ -35,7 +35,7 @@ check!(
 check!(
     /// A source record carrying an authored field is refused.
     FOREIGN_FIELD_REFUSED = an_ingested_record_carrying_a_field_the_source_does_not_write_is_refused_whole,
-    "016 and the log format: ingest writes only source and shared fields; a record carrying any other is refused whole, never trimmed"
+    "016 and the log format: ingest writes only source and shared fields; a record carrying any other is refused whole, never trimmed, and a record whose key is empty is refused as invalid before its fields are judged, as `upsert` orders it"
 );
 
 check!(
@@ -206,7 +206,29 @@ async fn an_ingested_record_carrying_a_field_the_source_does_not_write_is_refuse
         "the refused record was written in part: `k1` reads {missing:?}. A record \
          carrying a field the source does not write is refused whole, never trimmed"
     );
-    Ok(())
+    let keyless = vec![source_record(
+        "feed",
+        "",
+        json!({"body": "text", "verdict": "approved"}),
+    )];
+    let err = l.ingest("bank", keyless).await;
+    ensure!(
+        matches!(
+            &err,
+            Err(Error::Refused {
+                reason: Refusal::Invalid { .. },
+                field: None
+            })
+        ),
+        "a source record with an empty key that carries `verdict` is refused for its key \
+         first, as invalid naming no field; it answered {err:?}"
+    );
+    head_unmoved(
+        store.as_ref(),
+        before,
+        "ingesting a record with an empty key",
+    )
+    .await
 }
 
 async fn an_upsert_carrying_a_field_only_a_source_writes_is_refused_as_the_wrong_door(

@@ -16,13 +16,15 @@ use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{Assignment, Authority, Risk, StorageKind, VerbDecl, VerbEffect};
 use lakelands_api::principal::{WriteContext, WriteOrigin};
 use lakelands_api::write::{Declaration, Migration, ProposedWrite};
-use lakelands_api::{Catalog, LakeStore, Position, Refusal, TypeName, WriteOpts};
+use lakelands_api::{
+    Catalog, Grants, LakeStore, Position, PrincipalKind, RecordKey, Refusal, TypeName, WriteOpts,
+};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, doors, events_from, field, head_unmoved, ingest, limits, owner, patch, reason,
-    source_record, trigger_on, type_decl,
+    Lake, Must, doors, events_from, field, head_unmoved, ingest, limits, owner, patch, principal,
+    reason, source_record, trigger_on, type_decl,
 };
 
 check!(
@@ -41,6 +43,12 @@ check!(
     /// The ceiling holds on every door that writes.
     DEPTH_ON_EVERY_DOOR = the_reactive_ceiling_holds_on_every_door_that_writes,
     "021, as extended on 2026-09-25 (lakelands#257): a context deeper than the lake's max_reactive_depth is refused as too_deep naming that ceiling, appending nothing, through ingest, accept, reject, declare, apply, add_field, migrate_apply and migrate_value_type_apply as through the record doors"
+);
+
+check!(
+    /// The context comes first on every door.
+    CONTEXT_FIRST = every_write_door_checks_the_context_before_anything_else,
+    "021, extended (lakelands#344): a context past the ceiling is refused as too_deep before anything else a door checks, so a request that also breaks the door's own first rule (a principal without grants, a link type at an ordinary door, an undeclared type, relation, verb or proposal) is refused as too_deep on every write door"
 );
 
 fn host(depth: u32, cause: Option<Position>) -> WriteContext {
@@ -406,4 +414,119 @@ async fn the_reactive_ceiling_holds_on_every_door_that_writes(
     )
     .await?;
     Ok(())
+}
+
+async fn every_write_door_checks_the_context_before_anything_else(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    // Nothing is declared and nobody holds a grant: every door would
+    // refuse each request below for its own reasons, after the context.
+    let nobody = principal(
+        store.as_ref(),
+        PrincipalKind::Agent,
+        "nobody",
+        Grants::default(),
+    );
+    let deep = store.catalog(host(limits().max_reactive_depth + 1, None));
+    let (lt, ty, key): (TypeName, TypeName, RecordKey) =
+        ("sys.link.job.owner".into(), "nothing".into(), "k".into());
+    let opts = WriteOpts::default;
+    let vt = lakelands_api::ontology::ValueTypeDecl {
+        name: "code".into(),
+        kind: StorageKind::Text,
+        constraint: None,
+        one_of: vec!["a".into()],
+        format: None,
+        scale: None,
+        description: None,
+    };
+    let declared = || Declaration::Type(type_decl("job", vec![field("n", StorageKind::Number)]));
+    let migration = Migration {
+        to: type_decl("nothing", vec![]),
+        renames: vec![],
+    };
+    let proposed = ProposedWrite::Upsert {
+        ty: lt.clone(),
+        key: key.clone(),
+        patch: patch(json!({"n": 1})),
+        opts: opts(),
+    };
+    let head = store.head().await.must("reading the head")?;
+    let d = deep.as_ref();
+    let p = &nobody;
+    let tries: Vec<(&str, lakelands_api::Result<()>)> = vec![
+        (
+            "upsert",
+            d.upsert(p, &lt, &key, patch(json!({"n": 1})), opts())
+                .await
+                .map(drop),
+        ),
+        ("retire", d.retire(p, &lt, &key, opts()).await.map(drop)),
+        (
+            "link",
+            d.link(p, &ty, &key, &"r".into(), &key, patch(json!({})), opts())
+                .await
+                .map(drop),
+        ),
+        (
+            "unlink",
+            d.unlink(p, &ty, &key, &"r".into(), &key, opts())
+                .await
+                .map(drop),
+        ),
+        (
+            "call",
+            d.call(p, &"none".into(), Some(&key), patch(json!({})), opts())
+                .await
+                .map(drop),
+        ),
+        (
+            "propose",
+            d.propose(p, proposed, "why".into()).await.map(drop),
+        ),
+        ("accept", d.accept(p, &"none".into()).await.map(drop)),
+        (
+            "reject",
+            d.reject(p, &"none".into(), "no".into()).await.map(drop),
+        ),
+        ("declare", d.declare(p, declared()).await.map(drop)),
+        ("apply", d.apply(p, vec![declared()]).await.map(drop)),
+        (
+            "add_field",
+            d.add_field(p, &ty, field("n", StorageKind::Number))
+                .await
+                .map(drop),
+        ),
+        (
+            "migrate_apply",
+            d.migrate_apply(p, migration, "r").await.map(drop),
+        ),
+        (
+            "migrate_value_type_apply",
+            d.migrate_value_type_apply(p, vt, "r").await.map(drop),
+        ),
+        (
+            "ingest",
+            ingest(
+                d,
+                p,
+                "meter",
+                vec![source_record("nothing", "r1", json!({"n": 1}))],
+            )
+            .await
+            .map(drop),
+        ),
+    ];
+    let red: Vec<String> = tries
+        .into_iter()
+        .filter(|(_, answer)| !matches!(reason(answer), Some(Refusal::TooDeep { .. })))
+        .map(|(door, answer)| format!("`{door}` answered {answer:?}"))
+        .collect();
+    ensure!(
+        red.is_empty(),
+        "through a context past the ceiling, every write door refuses as too_deep before \
+         anything else it checks: {}",
+        red.join("; ")
+    );
+    head_unmoved(store.as_ref(), head, "the writes past the ceiling").await
 }

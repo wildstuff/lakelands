@@ -125,8 +125,9 @@ pub(crate) fn granted(ok: bool) -> Result<()> {
 /// Refuse a write whose context the lake does not take: deeper than its
 /// reactive ceiling, whatever the origin names
 /// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`). Every
-/// write path calls it before it takes the writer, so a refused context
-/// waits on no other write; a host's `cause` is checked against the head
+/// write door calls it first, before any other check and before it takes
+/// the writer, so a refused context waits on no other write and every
+/// door refuses it alike; a host's `cause` is checked against the head
 /// where the write appends ([`crate::lake::Lake::append_after`]).
 pub fn check_context(lake: &Lake, context: &WriteContext) -> Result<()> {
     let max = lake.limits.max_reactive_depth;
@@ -526,7 +527,8 @@ fn check_key_agrees(
     }
 }
 
-fn check_key(key: &RecordKey) -> Result<()> {
+/// Refuse a key that is empty or holds a NUL character.
+pub(crate) fn check_key(key: &RecordKey) -> Result<()> {
     if key.as_str().is_empty() || key.as_str().contains('\0') {
         return Err(invalid(
             "a record key is not empty and holds no NUL character",
@@ -872,13 +874,15 @@ impl Call<'_> {
         patch: Patch,
         opts: WriteOpts,
     ) -> Result<Outcome> {
+        check_context(self.lake, &self.context)?;
         ordinary_door(ty)?;
         self.write_record(ty, key, patch, opts, |_, _| Ok(()))
     }
 
-    /// An authored write of one record, as `upsert` and `link` make it;
-    /// `check` refuses it, under the writer's lock, after the record's own
-    /// checks: it reads other records, so the grants come first (024).
+    /// An authored write of one record, as `upsert` and `link` make it,
+    /// their context already checked; `check` refuses it, under the
+    /// writer's lock, after the record's own checks: it reads other
+    /// records, so the grants come first (024).
     fn write_record(
         &self,
         ty: &TypeName,
@@ -887,7 +891,6 @@ impl Call<'_> {
         opts: WriteOpts,
         check: impl FnOnce(&Writer, &dyn ProjectionView) -> Result<()>,
     ) -> Result<Outcome> {
-        check_context(self.lake, &self.context)?;
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
         if let Some(o) = self.replay(&opts.idempotency_key, view.as_ref())? {
@@ -931,6 +934,7 @@ impl Call<'_> {
 
     /// `retire`.
     pub fn retire(&self, ty: &TypeName, key: &RecordKey, opts: WriteOpts) -> Result<Outcome> {
+        check_context(self.lake, &self.context)?;
         ordinary_door(ty)?;
         self.retire_record(ty, key, opts)
     }
@@ -946,6 +950,7 @@ impl Call<'_> {
         fields: Patch,
         opts: WriteOpts,
     ) -> Result<Outcome> {
+        check_context(self.lake, &self.context)?;
         let (lt, r) = link_relation(&self.lake.writer(), ty, relation)?;
         if r.authority != Authority::Authored {
             return Err(Error::Refused {
@@ -980,13 +985,14 @@ impl Call<'_> {
         to: &RecordKey,
         opts: WriteOpts,
     ) -> Result<Outcome> {
+        check_context(self.lake, &self.context)?;
         let (lt, _) = link_relation(&self.lake.writer(), ty, relation)?;
         self.retire_record(&lt, &links::link_key(key, to), opts)
     }
 
-    /// A retirement of one record, as `retire` and `unlink` make it.
+    /// A retirement of one record, as `retire` and `unlink` make it, their
+    /// context already checked.
     fn retire_record(&self, ty: &TypeName, key: &RecordKey, opts: WriteOpts) -> Result<Outcome> {
-        check_context(self.lake, &self.context)?;
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
         if let Some(o) = self.replay(&opts.idempotency_key, view.as_ref())? {
@@ -1653,6 +1659,11 @@ impl Call<'_> {
     pub fn declare(&self, declaration: Declaration) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         granted(self.who.grants.schema)?;
+        self.declare_granted(declaration)
+    }
+
+    /// `declare`, its context and the `schema` grant already checked.
+    fn declare_granted(&self, declaration: Declaration) -> Result<Outcome> {
         let mut w = self.lake.writer();
         declare::check_declaration(&w.ontology, &declaration, false)?;
         self.check_bound(&declaration)?;
@@ -1800,6 +1811,7 @@ impl Call<'_> {
         ty: &TypeName,
         field: lakelands_api::ontology::FieldDecl,
     ) -> Result<Outcome> {
+        check_context(self.lake, &self.context)?;
         granted(self.who.grants.schema)?;
         let mut t = self.lake.writer().ontology.ty(ty)?.clone();
         if t.fields.iter().any(|f| f.name == field.name) {
@@ -1809,7 +1821,7 @@ impl Call<'_> {
             ));
         }
         t.fields.push(field);
-        self.declare(Declaration::Type(t))
+        self.declare_granted(Declaration::Type(t))
     }
 
     /// The preflight of a migration over every stored record of the type,

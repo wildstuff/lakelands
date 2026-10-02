@@ -99,3 +99,14 @@ effect (the payment it created, the ticket it opened), names that
 `verb_called` as its own `cause`. So the record's history leads back to
 the call, and the call to whatever the host said caused it.
 
+## Extended: the context is checked first (lakelands#344)
+
+Every write door checks the context first, after it has made sure the
+principal belongs to the lake: before its grants, before it looks up a
+type, relation, verb or proposal, and before it takes the lake's
+writer. So a context past a ceiling is refused as `too_deep` alike on
+every door, whatever else the request would break, and a refused
+context waits on no other write. `ingest` checks it when it is called,
+before it takes the stream, and each window checks it again against
+the head it reads. A host's `cause` is the exception: it is judged
+against the head where the write appends, after every other check.

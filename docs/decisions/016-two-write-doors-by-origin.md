@@ -68,3 +68,12 @@ extended). The ingest door takes it from the ingesting principal as it
 takes `seen_at`, and no grant decides it. It is not in the event's id,
 so a window delivered again stays one event whatever it names, and no
 duplicate rule changes (lakelands#174).
+
+## Extended: a record's key first, an empty record after the duplicate test (lakelands#344)
+
+Within a window, a record's key form (not empty, no NUL character) is
+checked before its fields, as `upsert` checks it. A record that carries
+no field is judged after the duplicate test, on purpose. For a key the
+lake holds live, it changes nothing, so it counts as a duplicate, as
+any re-import that changes nothing does. For a key the lake does not
+hold live, it is refused as invalid, as an empty `upsert` is.
