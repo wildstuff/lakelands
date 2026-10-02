@@ -93,6 +93,7 @@ macro_rules! door_checks {
             describe_answers_the_declaration_whole,
             a_masked_field_is_named_but_its_value_is_absent,
             a_field_built_from_a_hidden_one_is_hidden_too,
+            a_write_only_field_is_written_and_never_shown,
             the_tools_follow_the_grants,
             a_verb_tool_says_what_its_risk_does,
             a_step_to_an_unbound_view_is_refused,
@@ -347,6 +348,8 @@ pub struct Cast {
     pub importer: Principal,
     /// Reads `status` of invoices and nothing else.
     pub stranger: Principal,
+    /// Writes `status`, and writes `secret` without reading it.
+    pub keeper: Principal,
 }
 
 impl Cast {
@@ -397,6 +400,15 @@ impl Cast {
                 PrincipalKind::Agent,
                 "stranger",
                 invoice_grants(Access::None, &[("status", Access::Read)]),
+            ),
+            keeper: principal(
+                lake,
+                PrincipalKind::Agent,
+                "keeper",
+                invoice_grants(
+                    Access::None,
+                    &[("status", Access::Write), ("secret", Access::WriteOnly)],
+                ),
             ),
         }
     }
@@ -933,6 +945,65 @@ pub async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) {
     assert_eq!(d.functions, [shout], "`hush` reads the note");
     assert_eq!(d.triggers, [opened], "`noted` names the note");
     assert_eq!(d.object_sets, [open_set], "`with_b` names the note");
+}
+
+/// A field granted `write_only` is written like a writable one and never
+/// shown: absent from `get` (not masked), refused as not granted when a
+/// filter probes it, and described with its access (006, extended).
+pub async fn a_write_only_field_is_written_and_never_shown(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let keeper = f.cast.keeper.clone();
+    let written = f
+        .catalog
+        .upsert(
+            &keeper,
+            &ty(INVOICE),
+            &key("INV-1"),
+            patch(&[("status", json!("open")), ("secret", json!("s3"))]),
+            WriteOpts::default(),
+        )
+        .await
+        .expect("a write-only field is written");
+    assert!(
+        matches!(written, Outcome::Applied { output: None, .. }),
+        "{written:?}"
+    );
+    assert_eq!(
+        f.read(&f.cast.owner, "INV-1").await.fields.get("secret"),
+        Some(&json!("s3"))
+    );
+    let seen = f.read(&keeper, "INV-1").await;
+    assert!(
+        !seen.fields.contains_key("secret") && !seen.masked.iter().any(|m| m.as_str() == "secret"),
+        "{seen:?}"
+    );
+    let probe = Find {
+        filter: Some("secret = 's3'".into()),
+        ..Find::default()
+    };
+    let e = f
+        .catalog
+        .find(&keeper, &ty(INVOICE), probe)
+        .await
+        .unwrap_err();
+    let (field, reason) = refusal(&e);
+    assert!(
+        field.as_ref().is_some_and(|f| f.as_str() == "secret") && *reason == Refusal::NotGranted,
+        "{e:?}"
+    );
+    let d = f
+        .catalog
+        .describe_type(&keeper, &ty(INVOICE), ReadAt::default())
+        .await
+        .unwrap()
+        .data;
+    assert!(
+        d.fields
+            .iter()
+            .any(|x| x.name.as_str() == "secret" && x.access == Access::WriteOnly),
+        "{:?}",
+        d.fields
+    );
 }
 
 /// A masked field is named in the answer; its value is not in it, and

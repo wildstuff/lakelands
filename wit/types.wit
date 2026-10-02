@@ -65,7 +65,7 @@ interface types {
 
     enum principal-kind { human, agent, service, system }
 
-    enum access { none, masked, read, write }
+    enum access { none, masked, read, write, write-only }
 
     /// A field's access, one entry of a type's grants.
     record field-access {

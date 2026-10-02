@@ -57,3 +57,36 @@ field nobody thought about is shown as withheld rather than silently
 dropped. A `none` given to the field by name always hides it, and so
 does a `none` that a field built from another inherits from its source
 (024).
+
+## Extended: write without read (lakelands#393)
+
+A host that acts for a model must keep some values from the model, and
+it does so with the model's read grants. Withholding the read must not
+withhold the write: a tool the model calls may carry a whole record
+from a source, that field included, without the model ever seeing the
+value. Until 0.8.0 access was one ladder, `none < masked < read <
+write`, so a grant that withheld the read withheld the write too.
+
+A field may now be granted `write_only`. For reading it is as `none`:
+absent from `fields`, `masked` and `meta`, from every read schema, from
+`describe`'s derivation and meaning, and from the names a host's watch
+shows. For writing it is as `write`: `upsert`, `ingest` under its
+door's authority, a verb's effect, a proposal, and `retire` when every
+other field is writable too.
+
+- **Nothing flows back.** A write answers what it answers today, its
+  position and version, never the value or the field's provenance, and
+  a retry answers the same. A refusal of the write may name the field
+  the caller sent; it never shows a stored value.
+- **A probe is not granted.** A write-only principal knows the field
+  exists, so a filter, order or search on it is refused `not_granted`,
+  naming it, as for any field the principal may not read; it is not
+  answered as an undeclared field.
+- **The schemas say it.** `describe` lists the field with its access
+  `write_only`, and the generated tools put it among the writable fields
+  of `<type>_upsert` and of `propose`'s record writes, and in no read
+  schema.
+- **Access is not ordered.** No code decides access by comparing
+  values; it asks whether a grant reads, writes, or appears in a read
+  answer. A host that matches on the access enum gains one arm.
+

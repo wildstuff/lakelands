@@ -392,6 +392,12 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
     Ok(())
 }
 
+check!(
+    /// A write-only field is written and never read.
+    WRITE_ONLY = a_write_only_field_is_written_and_never_shown,
+    "006, extended (lakelands#393): a field granted write_only is written by upsert and retire like a writable one, while get, find, query, search, describe and the tools' read schemas never show it, a filter or a search that probes it is refused not_granted naming it, and the write answers no value; a writable field built from one the principal may not read, write-only or masked, is write-only in turn: written, and probed as not granted, never as undeclared"
+);
+
 async fn a_masked_field_is_listed_masked_and_an_ungranted_one_is_absent(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
@@ -503,6 +509,207 @@ async fn a_masked_field_is_listed_masked_and_an_ungranted_one_is_absent(
             && writable.get("diagnosis").is_none()
             && writable.get("salary").is_none(),
         "the clerk's upsert tool must offer only `name`; it offers {writable}"
+    );
+    Ok(())
+}
+
+async fn a_write_only_field_is_written_and_never_shown(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    let text = |name: &str| FieldDecl {
+        searchable: true,
+        ..field(name, StorageKind::Text)
+    };
+    // `summary` and `gist` are written from `note` (write-only) and
+    // `secret` (masked): writable, so write-only in turn.
+    let from = |name: &str, source: &str| FieldDecl {
+        depends_on: vec![source.into()],
+        ..field(name, StorageKind::Text)
+    };
+    let fields = vec![
+        text("name"),
+        text("note"),
+        field("secret", StorageKind::Text),
+        from("summary", "note"),
+        from("gist", "secret"),
+    ];
+    l.declare(type_decl("patient", fields)).await?;
+    let ty = TypeName::from("patient");
+    let intake = field_access(
+        store.as_ref(),
+        "intake",
+        "patient",
+        &[
+            ("name", Access::Write),
+            ("note", Access::WriteOnly),
+            ("secret", Access::Masked),
+            ("summary", Access::Write),
+            ("gist", Access::Write),
+        ],
+    );
+    let opts = lakelands_api::write::WriteOpts::default;
+    // `summary` and `gist` fold to write-only: written, not undeclared.
+    let fields = json!({"name": "Ada", "note": "kept", "summary": "s", "gist": "g"});
+    let fields = crate::conformance::fixture::patch(fields);
+    let written = cat.upsert(&intake, &ty, &"p".into(), fields, opts()).await;
+    let mut red = Vec::new();
+    if !matches!(
+        written,
+        Ok(lakelands_api::Outcome::Applied { output: None, .. })
+    ) {
+        red.push(format!("the write answered {written:?}"));
+    }
+    let stored = read(cat.as_ref(), own, "patient", "p").await.ok();
+    if stored.and_then(|r| r.fields.get("note").cloned()) != Some(json!("kept")) {
+        red.push("the owner does not read the `note` written".into());
+    }
+    let search = |fields: Option<Vec<FieldName>>| Search {
+        ty: ty.clone(),
+        mode: SearchMode::Lexical {
+            text: "Ada".into(),
+            fields,
+        },
+        k: 5,
+        cursor: None,
+        filter: None,
+        with_meta: true,
+        at: ReadAt::default(),
+    };
+    // What `intake` reads never names `note`.
+    let rows = pattern(
+        "patient",
+        Some("p"),
+        vec![],
+        Projection::Rows { fields: vec![] },
+    );
+    let answers = [
+        (
+            "get",
+            json!(read(cat.as_ref(), &intake, "patient", "p").await.ok()),
+        ),
+        (
+            "find",
+            json!(
+                all_found(cat.as_ref(), &intake, "patient", Find::default())
+                    .await
+                    .ok()
+            ),
+        ),
+        (
+            "query",
+            json!(cat.query(&intake, rows).await.map(|r| r.data).ok()),
+        ),
+        (
+            "search in `name`",
+            json!(
+                cat.search(&intake, search(Some(vec!["name".into()])))
+                    .await
+                    .ok()
+                    .map(|h| h.data.hits)
+            ),
+        ),
+    ];
+    for (what, answer) in answers {
+        let shown = answer.to_string();
+        if answer.is_null()
+            || ["note", "summary", "gist"]
+                .iter()
+                .any(|f| shown.contains(f))
+            || !shown.contains("Ada")
+        {
+            red.push(format!("{what} as `intake` answered {answer}"));
+        }
+    }
+    // A probe of it is not granted, naming it.
+    let probe = Find {
+        filter: Some("note = 'kept'".into()),
+        ..Find::default()
+    };
+    let filtered = cat.find(&intake, &ty, probe).await.map(drop);
+    let searched = cat.search(&intake, search(None)).await.map(drop);
+    let gist = Find {
+        filter: Some("gist = 'g'".into()),
+        ..Find::default()
+    };
+    let folded = cat.find(&intake, &ty, gist).await.map(drop);
+    for (what, field, answer) in [
+        ("a filter on `note`", "note", filtered),
+        ("a search of every field", "note", searched),
+        ("a filter on `gist`", "gist", folded),
+    ] {
+        if !matches!(
+            refused_on(&answer),
+            Some((f, lakelands_api::Refusal::NotGranted)) if f == field
+        ) {
+            red.push(format!("{what} answered {answer:?}"));
+        }
+    }
+    let d = cat
+        .describe_type(&intake, &ty, ReadAt::default())
+        .await
+        .must("describing `patient`")?;
+    let write_only = |name: &str| {
+        d.data
+            .fields
+            .iter()
+            .any(|f| f.name.as_str() == name && f.access == Access::WriteOnly)
+    };
+    if !["note", "summary", "gist"].iter().all(|f| write_only(f)) {
+        red.push(format!("`describe` lists {:?}", d.data.fields));
+    }
+    let lake = cat
+        .describe(&intake, ReadAt::default())
+        .await
+        .must("describing the lake")?;
+    let generated = tools(&lake.data).map_err(|p| Failure::new(format!("no tools: {p:?}")))?;
+    let schema = |door: Door| {
+        generated
+            .iter()
+            .find(|t| t.door == door)
+            .map(|t| (t.input_schema.to_string(), t.output_schema.to_string()))
+    };
+    let get = schema(Door::Get {
+        ty: "patient".into(),
+    })
+    .map(|(_, out)| out);
+    let upsert = schema(Door::Upsert {
+        ty: "patient".into(),
+    })
+    .map(|(input, _)| input);
+    let offers = |u: &String| {
+        ["note", "summary", "gist"]
+            .iter()
+            .all(|f| u.contains(&format!("\"{f}\"")))
+    };
+    if get
+        .as_ref()
+        .is_none_or(|g| g.contains("note") || g.contains("gist"))
+        || upsert.as_ref().is_none_or(|u| !offers(u))
+    {
+        red.push(format!(
+            "the get tool answers {get:?}, the upsert tool takes {upsert:?}"
+        ));
+    }
+    // Retiring takes write on every field: write-only counts.
+    let mut keeper = intake.clone();
+    let grants = keeper
+        .grants
+        .types
+        .get_mut(&ty)
+        .expect("granted on `patient`");
+    grants.fields.insert("secret".into(), Access::WriteOnly);
+    let retired = cat.retire(&keeper, &ty, &"p".into(), opts()).await;
+    if retired.is_err() {
+        red.push(format!(
+            "`retire`, every field writable, answered {retired:?}"
+        ));
+    }
+    ensure!(
+        red.is_empty(),
+        "a write-only field is written like a writable one and never shown: {}",
+        red.join("; ")
     );
     Ok(())
 }

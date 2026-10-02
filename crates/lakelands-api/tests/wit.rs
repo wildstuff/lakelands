@@ -1129,7 +1129,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
         PrincipalKind,
         [Human, Agent, Service, System]
     );
-    units!("access", Access, [None, Masked, Read, Write]);
+    units!("access", Access, [None, Masked, Read, Write, WriteOnly]);
     units!("write_origin", WriteOrigin, [Direct, Reactive, Scheduled]);
     units!("walk", Walk, [Out, In, Both]);
 
