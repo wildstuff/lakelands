@@ -164,7 +164,7 @@ impl Reader<'_> {
                 key: key.clone(),
                 with_meta: false,
                 at: ReadAt::default(),
-                params: Default::default(),
+                params: p.start.params.clone(),
             };
             return match self.get(&ty, &get) {
                 Ok(_) => each((ty, key.clone())),
