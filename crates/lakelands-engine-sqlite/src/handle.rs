@@ -527,7 +527,7 @@ fn truncate_journal(conn: &Connection) -> Result<bool> {
 
 /// The vector index: each field's vectors in one table, searched by
 /// brute force with the one cosine every engine uses
-/// (`lakelands_core::engines::cosine`), so its answers are those of every
+/// (`lakelands_api::query::cosine`), so its answers are those of every
 /// other engine to the last bit. A query steps through every vector of
 /// the field and keeps only the best `k`
 /// (`lakelands_core::engines::TopK`), so its cost grows linearly with them
@@ -587,7 +587,7 @@ impl VectorIndex for SqliteLake {
             }
             top.push(
                 &RecordKey::from(key),
-                lakelands_core::engines::cosine(query, &v),
+                lakelands_api::query::cosine(query, &v),
             );
         }
         Ok(top.into_ranked())

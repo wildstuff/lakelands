@@ -36,9 +36,10 @@ use lakelands_api::engine::{
 use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
+use lakelands_api::query::cosine;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
-use lakelands_core::engines::{self, cosine, vector_bytes, vector_of};
+use lakelands_core::engines::{self, vector_bytes, vector_of};
 
 use crate::connect::{self, Db, Target};
 use crate::projection::{self, Buffer, HeadTypes, Names, PROJECTION_TABLES};
@@ -549,7 +550,7 @@ fn size(db: &mut Db, schema: &str, tables: &[&str]) -> Result<u64> {
 
 /// The vector index: each field's vectors in one table, searched by brute
 /// force with the one cosine every engine uses
-/// (`lakelands_core::engines::cosine`), so its answers are those of every
+/// (`lakelands_api::query::cosine`), so its answers are those of every
 /// other engine to the last bit. A query streams every vector of the
 /// field from the server a row at a time and keeps only the best `k`
 /// (`lakelands_core::engines::TopK`), so its cost grows linearly with them

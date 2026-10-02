@@ -150,7 +150,7 @@ fn reference(
             let seen = if earlier { p.then } else { Some(p.group) };
             seen.is_some_and(|g| group.is_none_or(|want| g == want))
         })
-        .map(|(p, v)| (p.key.as_str().into(), crate::engines::cosine(q, v)))
+        .map(|(p, v)| (p.key.as_str().into(), lakelands_api::query::cosine(q, v)))
         .collect();
     crate::engines::rank(&mut all, k);
     all.into_iter().map(|(key, _)| key.0).collect()
@@ -290,7 +290,7 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
                         let head = by_key
                             .get(key.as_str())
                             .and_then(|p| p.vector.as_ref())
-                            .map(|v| crate::engines::cosine(&q, v).to_bits());
+                            .map(|v| lakelands_api::query::cosine(&q, v).to_bits());
                         ensure!(
                             head == Some(*bits),
                             "{what}, query {qi}: `{key}` must score the one cosine of its vector \
