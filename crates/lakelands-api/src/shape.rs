@@ -26,7 +26,8 @@ use serde_json::{Value, json};
 
 use crate::canonical;
 use crate::expr::{Condition, ParseError};
-use crate::ontology::{FieldDecl, RelationDecl, TypeDecl, ViewDecl};
+use crate::id::{FieldName, TypeName};
+use crate::ontology::{FieldDecl, Measure, RelationDecl, TypeDecl, ViewDecl};
 
 /// A condition inside a view that does not parse, so its typed form (the
 /// form the schema hash covers) does not exist.
@@ -76,30 +77,59 @@ pub fn shape(ty: &TypeDecl) -> Result<Value, ViewConditionError> {
 /// A view's shape: its source, its conditions in typed form, its
 /// grouping and its measures.
 pub fn view_shape(view: &ViewDecl) -> Result<Value, ViewConditionError> {
-    let filter = match &view.r#where {
-        Some(c) => typed(c, || "view.where".to_owned())?,
+    let mut shape = source_shape(
+        &view.source,
+        view.r#where.as_ref(),
+        &view.group_by,
+        &view.measures,
+        "view".to_owned(),
+    )?;
+    // Parameters and merged sources join the shape only when declared, so
+    // a view without them keeps the hash it had before views could take
+    // them.
+    if !view.params.is_empty() {
+        shape["params"] = json!(view.params);
+    }
+    if !view.merge.is_empty() {
+        let merge = view
+            .merge
+            .iter()
+            .map(|m| {
+                let at = format!("view.merge.{}", m.source);
+                source_shape(&m.source, m.r#where.as_ref(), &m.group_by, &m.measures, at)
+            })
+            .collect::<Result<Vec<_>, ViewConditionError>>()?;
+        shape["merge"] = json!(merge);
+    }
+    Ok(shape)
+}
+
+/// One source of a view: its type, its condition in typed form, its
+/// grouping and its measures, each typed.
+fn source_shape(
+    source: &TypeName,
+    filter: Option<&Condition>,
+    group_by: &[FieldName],
+    measures: &[Measure],
+    at: String,
+) -> Result<Value, ViewConditionError> {
+    let filter = match filter {
+        Some(c) => typed(c, || format!("{at}.where"))?,
         None => Value::Null,
     };
-    let measures = view
-        .measures
+    let measures = measures
         .iter()
         .map(|m| {
             let expr = typed(&m.expr, || format!("view.measures.{}", m.name))?;
             Ok(json!({ "name": m.name, "expr": expr }))
         })
         .collect::<Result<Vec<_>, ViewConditionError>>()?;
-    let mut shape = json!({
-        "source": view.source,
+    Ok(json!({
+        "source": source,
         "where": filter,
-        "group_by": view.group_by,
+        "group_by": group_by,
         "measures": measures,
-    });
-    // Parameters join the shape only when declared, so a view without
-    // them keeps the hash it had before views could take them.
-    if !view.params.is_empty() {
-        shape["params"] = json!(view.params);
-    }
-    Ok(shape)
+    }))
 }
 
 fn fields(list: &[FieldDecl]) -> Vec<Value> {

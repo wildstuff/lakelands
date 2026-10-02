@@ -160,6 +160,32 @@
 //!     invoices: "count()"
 //! ```
 //!
+//! A view may `merge` further sources on its key: each groups its own
+//! records by fields of its own that line up with the view's `group_by`
+//! in order, and has measures of its own, which the view's measures read
+//! by name. A key one source lacks is measured over its empty group, so a
+//! sum there is 0:
+//!
+//! ```yaml
+//! name: payments_against_invoices
+//! fields:
+//!   partner: reference(partner)
+//!   invoiced: decimal
+//!   paid: decimal
+//!   open: decimal
+//! view:
+//!   source: invoice
+//!   group_by: partner
+//!   measures:
+//!     invoiced: "sum(net)"
+//!     open: "invoiced - paid"
+//!   merge:
+//!     - source: payment
+//!       group_by: payer
+//!       measures:
+//!         paid: "sum(amount)"
+//! ```
+//!
 //! A function, `functions/gross.yaml`. The backing is `expr` unless
 //! named; an `expr` function carries `expr`, any other backing carries
 //! `config` (any YAML) and no `expr`:

@@ -475,6 +475,7 @@ async fn a_rule_that_does_not_fit_is_refused_naming_its_field(
             expr: "count()".into(),
         }],
         params: Default::default(),
+        merge: Default::default(),
     }));
     l.declare(counts).await?;
     let before = store.head().await.must("reading the head")?;

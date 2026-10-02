@@ -345,6 +345,7 @@ async fn a_view_record_is_keyed_by_its_group_by_fields(
             expr: "count()".into(),
         }],
         params: Default::default(),
+        merge: Default::default(),
     }));
     l.declare(view).await?;
     for (k, partner, region) in [
@@ -696,6 +697,7 @@ fn counted(name: &str, source: &str) -> TypeDecl {
             name: FieldName::from("n"),
             expr: "count()".into(),
         }],
+        merge: Default::default(),
     }));
     t
 }
@@ -823,6 +825,7 @@ async fn a_view_whose_measure_reads_another_is_described_to_its_readers(
             name: FieldName::from("amount"),
             expr: "sum(amount)".into(),
         }],
+        merge: Default::default(),
     }));
     l.declare(summed).await?;
     let reader = |id: &str, amount: Access| {

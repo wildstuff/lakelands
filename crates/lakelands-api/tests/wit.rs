@@ -30,7 +30,7 @@ use lakelands_api::location::Limits;
 use lakelands_api::ontology::{
     Assignment, Authority, Cardinality, EmbedDecl, FieldDecl, FieldType, Measure, OnInputChange,
     RelationDecl, Risk, StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
-    VerbScope, ViewDecl, ViewParam,
+    VerbScope, ViewDecl, ViewParam, ViewSource,
 };
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{
@@ -302,6 +302,16 @@ fn view_decl() -> ViewDecl {
         group_by: vec!["f".into()],
         measures: vec![measure()],
         params: vec![view_param()],
+        merge: vec![view_source()],
+    }
+}
+
+fn view_source() -> ViewSource {
+    ViewSource {
+        source: "payment".into(),
+        r#where: Some(cond()),
+        group_by: vec!["f".into()],
+        measures: vec![measure()],
     }
 }
 
@@ -609,6 +619,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
         ("relation_decl", members(&relation_decl())),
         ("measure", members(&measure())),
         ("view_param", members(&view_param())),
+        ("view_source", members(&view_source())),
         ("view_decl", members(&view_decl())),
         ("type_decl", members(&type_decl())),
         (

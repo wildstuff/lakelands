@@ -301,15 +301,17 @@ pub fn aggregate(
 }
 
 /// One group's measures, each computed in declaration order and visible to
-/// the measures after it.
+/// the measures after it, as are the values `given` (a merged source's
+/// measures), which the answer holds too.
 pub fn measures(
     members: &[&BTreeMap<FieldName, Value>],
     by: &BTreeMap<FieldName, Value>,
     measures: &[(FieldName, Expr)],
+    given: BTreeMap<FieldName, Value>,
     settings: Option<&BTreeMap<String, Value>>,
     now: Timestamp,
 ) -> Result<BTreeMap<FieldName, Value>> {
-    let mut earlier = BTreeMap::new();
+    let mut earlier = given;
     for (name, expr) in measures {
         let scope = GroupScope {
             rows: members,

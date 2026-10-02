@@ -279,3 +279,40 @@ fn a_verb_on_its_type_needs_format_8_declared_called_or_proposed() {
         Some("a format 7 event calls a verb with no key, which format 8 added")
     );
 }
+
+#[test]
+fn a_view_that_merges_sources_needs_format_9_and_says_so_below_it() {
+    let view = |merge: serde_json::Value| {
+        declaration(json!({
+            "declare": "type", "name": "balance", "key": ["day"],
+            "fields": [{"name": "day", "type": {"kind": "date_time"}},
+                       {"name": "kin", "type": {"kind": "number"}},
+                       {"name": "kout", "type": {"kind": "number"}}],
+            "view": {"source": "food", "group_by": ["day"],
+                     "measures": [{"name": "kin", "expr": "count()"}],
+                     "merge": merge}
+        }))
+    };
+    let declared = |d: Declaration| EventBody::Declared {
+        declaration: d,
+        schema_hash: None,
+        version: 1,
+    };
+    let merged = view(json!([{"source": "workout", "group_by": ["date"],
+                             "measures": [{"name": "kout", "expr": "count()"}]}]));
+    assert_eq!(needed(&declared(merged.clone()), false), 9);
+    assert_eq!(needed(&declared(view(json!([]))), false), 1);
+    let event: Event = serde_json::from_value(json!({
+        "v": 8, "lake": "l", "position": 1, "id": "0".repeat(32),
+        "prev": "0".repeat(64), "known_at": "2026-01-01T00:00:00.000000Z",
+        "writer": "system:lakelands", "origin": "system",
+        "context": {"origin": "direct", "depth": 0}, "fence": 1,
+        "body": {"kind": "declared", "declaration": merged, "version": 1},
+        "hash": "0".repeat(64)
+    }))
+    .unwrap();
+    assert_eq!(
+        below(&event).as_deref(),
+        Some("a format 8 event declares a view that merges sources, which format 9 added")
+    );
+}

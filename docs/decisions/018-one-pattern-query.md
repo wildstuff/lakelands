@@ -102,6 +102,29 @@ read with, and continuing it with others is refused, since the pages
 would belong to two answers. Views are computed on read, so nothing is
 kept per binding.
 
+## Extended: a view may merge sources on its key
+
+A view may read more than one type: beside its `source` it may `merge`
+further sources, each with its own `where`, its own aggregate measures,
+and a `group_by` of its own fields that lines up with the view's by
+position. An energy balance reads meals and workouts, which know nothing
+of each other, and nets them by day. The groups of the sources meet where
+their keys are identical, by the identity of the values, as a derived
+relation's match does (044), not by 017's `=`: the text `010` and the
+text `10` are two keys, and a date written as a day and as midnight of
+that day is one.
+
+Every key any source holds is a record of the view. A source that lacks
+a key measures its empty group by the aggregates' own rules, so a sum
+there is 0 and a minimum is none; a balance has a day with meals and no
+workout without a declared default. The view's own measures come after
+the merged ones and read them by name. The view's parameters bind every
+source, and each source is read as a read of that source, so a field a
+principal may not read refuses the view, naming it (024). A source may
+not be a view with parameters, since only a read that names a view binds
+them, and a view may not read itself through any of its sources. A view
+that merges is written in log format 9.
+
 ## Extended: a whole-graph measure is a projection
 
 Degree centrality and connected components are two more projections of

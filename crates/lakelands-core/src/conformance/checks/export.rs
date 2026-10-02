@@ -603,13 +603,14 @@ fn import_seams() -> lakelands_api::seam::Seams {
     }
 }
 
-/// A lake with two writers, two sealed segments and six format
+/// A lake with two writers, two sealed segments and seven format
 /// versions: invoices, a checkpoint, the lake opened again by a second
 /// writer (a second lease, a greater fence), a re-key (version 2), a
 /// restricted and a retired invoice, an annotated type with a derived
 /// relation (version 6) and a derived `date_bucket` field, a trigger whose
 /// guard calls `retired` (version 7), a view with a parameter and a verb
-/// called on its type (version 8), a record ingested with an upstream,
+/// called on its type (version 8), a view that merges a second source
+/// (version 9), a record ingested with an upstream,
 /// a second checkpoint and more invoices.
 /// Answers the
 /// second writer's handle and a position before the second checkpoint.
@@ -683,6 +684,25 @@ async fn exported_lake(
     cat.declare(&own, up_to)
         .await
         .must("declaring a view with a parameter")?;
+    // Format version 9: a view that merges a second source on its key.
+    let ticks: Vec<lakelands_api::write::Declaration> = serde_json::from_value(json!([
+        {"declare": "type", "name": "tick",
+         "fields": [{"name": "at", "type": {"kind": "date_time"}}]},
+        {"declare": "type", "name": "stamps_and_ticks", "key": ["month"],
+         "fields": [{"name": "month", "type": {"kind": "date_time"}},
+                    {"name": "stamps", "type": {"kind": "number"}},
+                    {"name": "ticks", "type": {"kind": "number"}}],
+         "view": {"source": "stamp", "group_by": ["month"],
+                  "measures": [{"name": "stamps", "expr": "count()"}],
+                  "merge": [{"source": "tick", "group_by": ["at"],
+                             "measures": [{"name": "ticks", "expr": "count()"}]}]}}
+    ]))
+    .expect("declarations");
+    for d in ticks {
+        cat.declare(&own, d)
+            .await
+            .must("declaring a view that merges a second source")?;
+    }
     // Format version 8 too: a verb on its type, called with no key.
     let print: lakelands_api::write::Declaration = serde_json::from_value(json!({
         "declare": "verb", "name": "print_stamp", "on": "stamp", "scope": "type",
@@ -1051,6 +1071,7 @@ fn tally_view(name: &str, source: &str) -> lakelands_api::ontology::TypeDecl {
             name: "n".into(),
             expr: "count()".into(),
         }],
+        merge: Default::default(),
     }));
     t
 }
