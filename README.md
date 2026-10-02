@@ -153,6 +153,9 @@ walk's page lists every call and the answer it must give.
   derived relation, a transition guard, a host's reaction calling a verb
   on its type with its cause named, the lineage read back, a retirement
   that fires nothing, and a view bound to a reader's date.
+- [`docs/walks/walk-5.md`](docs/walks/walk-5.md): the fifth walk, by a
+  blind LLM agent that sees only the MCP door: a clerk's tasks, and the
+  common refusals, each with what the agent changed after it.
 
 ## What it is not
 

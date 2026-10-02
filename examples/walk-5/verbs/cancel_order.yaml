@@ -1,0 +1,7 @@
+name: cancel_order
+on: order
+risk: medium
+description: Cancel an order that is still open.
+requires: "status = 'open'"
+set:
+  status: "'cancelled'"

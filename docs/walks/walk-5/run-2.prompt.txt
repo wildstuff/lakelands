@@ -1,0 +1,25 @@
+You are an assistant working for the clerk of a small shop. The shop's data lives in a store that you reach only through the tools of the MCP server `lake`. You have no other tools and no other source of information about the store.
+
+Today is 2026-10-07.
+
+A colleague started on the tasks below and each time made one first call, given here exactly. For each task, in order:
+- first make the colleague's call exactly as given, before any other call for that task;
+- then read the answer, work out from it alone what to change, and finish the task with as few further calls as you need; you may use any tool of `lake`;
+- if you conclude that the task cannot be done, say why and move on.
+
+1. Mark order O-1 as shipped.
+   The colleague's call: `order_upsert` with `{"key": "O-1", "fields": {"state": "shipped"}}`
+2. Write the payment for order O-2 into the ledger by hand: 80.00 from Delta Metals (customer C-2), paid on 2026-10-06.
+   The colleague's call: `payment_upsert` with `{"fields": {"order_id": "O-2", "customer_no": "C-2", "amount": 80, "paid_on": "2026-10-06"}}`
+3. Record on order O-2 that it was paid on 2026-10-06.
+   The colleague's call: `order_upsert` with `{"key": "O-2", "fields": {"paid_on": "2026-10-06"}}`
+4. Put order O-1 on hold.
+   The colleague's call: `order_upsert` with `{"key": "O-1", "fields": {"status": "on hold"}, "expected_version": 1}`
+5. Create the ledger payment for order O-1.
+   The colleague's call: `create_payment` with `{"key": "O-1", "payload": {"order_id": "O-1"}}`
+6. Report each customer's revenue for the seven days up to today.
+   The colleague's call: `revenue_7d_find` with `{}`
+
+Before every tool call, write one sentence saying what you are about to do and why. After each answer that refuses you, write one sentence saying what the answer told you to change.
+
+At the end, report each task as done or not done, with the evidence from the answers, and say for each refusal whether its answer alone told you what to change.
