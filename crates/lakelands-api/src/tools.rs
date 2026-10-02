@@ -549,6 +549,31 @@ fn label(ty: &TypeDescription) -> String {
     }
 }
 
+/// The `key` argument of a type's tools, described so that a caller
+/// knows what to pass: the key fields' values for a keyed type, `all` for
+/// a view without key fields, and for a type that declares no key, the
+/// caller's own choice when it writes, and the key it wrote under after.
+fn key_schema(ty: &TypeDescription, writes: bool) -> Value {
+    let name = &ty.name;
+    let fields: Vec<String> = ty.access.key.iter().map(|f| format!("`{f}`")).collect();
+    let description = match fields.as_slice() {
+        [] if ty.lineage.view_of.is_some() => format!(
+            "`{}`: `{name}` is a view without key fields, so it holds one record, under this key.",
+            crate::key::UNGROUPED
+        ),
+        [] if writes => format!(
+            "`{name}` declares no key, so the key is yours to choose. It names this record from now on, and a later write with the same key changes it."
+        ),
+        [] => format!("The key the `{name}` record was written under."),
+        [one] => format!("The key of the `{name}` record: the value of its {one}."),
+        many => format!(
+            "The key of the `{name}` record: the values of its {} joined by `:`, with `%` written `%25` and `:` written `%3A`.",
+            many.join(", ")
+        ),
+    };
+    json!({"type": "string", "description": description})
+}
+
 fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
     let base = tool_base(ty.name.as_str());
     let record = record_schema(ty, lake);
@@ -616,7 +641,7 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
     }
     if ty.may.get {
         let mut p = props([
-            ("key", json!({"type": "string"})),
+            ("key", key_schema(ty, false)),
             ("with_meta", json!({"type": "boolean"})),
         ]);
         time_axes(&mut p);
@@ -642,7 +667,7 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
             })
             .collect();
         let mut p = props([
-            ("key", json!({"type": "string"})),
+            ("key", key_schema(ty, true)),
             (
                 "fields",
                 json!({"type": "object", "properties": writable, "additionalProperties": false,
@@ -653,7 +678,7 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
         out.push(ToolSpec {
             name: format!("{base}_upsert"),
             description: format!(
-                "Create or change a {} record. Answers `applied` with the new position, or `proposed` if the write waits for review.",
+                "Create or change a record of {}. Answers `applied` with the new position, or `proposed` if the write waits for review.",
                 label(ty)
             ),
             input_schema: obj(p, &["key", "fields"]),
@@ -662,12 +687,12 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
         });
     }
     if ty.may.retire {
-        let mut p = props([("key", json!({"type": "string"}))]);
+        let mut p = props([("key", key_schema(ty, false))]);
         write_opts(&mut p);
         out.push(ToolSpec {
             name: format!("{base}_retire"),
             description: format!(
-                "Retire a {} record. Its history stays in the lake.",
+                "Retire a record of {}. Its history stays in the lake.",
                 label(ty)
             ),
             input_schema: obj(p, &["key"]),
@@ -783,7 +808,7 @@ fn verb_tool(verb: &VerbDescription, lake: &LakeDescription) -> ToolSpec {
     }
     let what = verb.description.clone().unwrap_or_else(|| {
         if on_record {
-            format!("Call `{}` on a `{}` record.", verb.name, verb.on)
+            format!("Call `{}` on a record of `{}`.", verb.name, verb.on)
         } else {
             format!("Call `{}` on the type `{}`.", verb.name, verb.on)
         }

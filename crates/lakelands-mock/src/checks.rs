@@ -94,6 +94,7 @@ macro_rules! door_checks {
             a_masked_field_is_named_but_its_value_is_absent,
             the_tools_follow_the_grants,
             a_verb_tool_says_what_its_risk_does,
+            a_tools_key_says_what_to_pass,
             a_verb_on_its_type_has_a_tool_without_a_key,
             a_verb_on_its_type_is_called_without_a_key,
             a_low_risk_verb_runs_at_once,
@@ -1196,6 +1197,50 @@ pub async fn a_verb_tool_says_what_its_risk_does(store: Arc<dyn LakeStore>) {
         assert!(
             said.ends_with(&format!("{how}{end}")),
             "`{verb}`'s tool says {said:?}"
+        );
+    }
+}
+
+/// A type's tools describe their `key`: for a keyed type, the field whose
+/// value it is; for a type that declares none, that the writer chooses it,
+/// and on a read or a retirement, that it is the key written under.
+pub async fn a_tools_key_says_what_to_pass(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let d = f
+        .catalog
+        .describe(&f.cast.owner, ReadAt::default())
+        .await
+        .unwrap();
+    let tools = tools(&d.data).expect("the fixture's names are valid");
+    let key = |door: Door| {
+        tools
+            .iter()
+            .find(|t| t.door == door)
+            .unwrap_or_else(|| panic!("the owner has the tool of {door:?}"))
+            .input_schema["properties"]["key"]["description"]
+            .clone()
+    };
+    let invoice = || INVOICE.into();
+    let setting = || lakelands_api::seam::SETTING_TYPE.into();
+    assert_eq!(
+        key(Door::Upsert { ty: invoice() }),
+        json!(
+            "`invoice` declares no key, so the key is yours to choose. It names this record \
+             from now on, and a later write with the same key changes it."
+        )
+    );
+    for read in [Door::Get { ty: invoice() }, Door::Retire { ty: invoice() }] {
+        assert_eq!(
+            key(read.clone()),
+            json!("The key the `invoice` record was written under."),
+            "{read:?}"
+        );
+    }
+    for door in [Door::Upsert { ty: setting() }, Door::Get { ty: setting() }] {
+        assert_eq!(
+            key(door.clone()),
+            json!("The key of the `sys.setting` record: the value of its `key`."),
+            "{door:?}"
         );
     }
 }
