@@ -2601,6 +2601,16 @@ impl Catalog for MockCatalog {
         let Projection::Rows { fields } = &pattern.project else {
             return Err(invalid("the in-memory mock projects patterns as rows only"));
         };
+        // Rows are ordered by their paths, `type.field`: each probes its
+        // field as `find`'s order does (024). The mock answers its rows in
+        // walk order whatever the order asks for.
+        for o in &pattern.order_by {
+            if let Some((ty, field)) = o.field.as_str().rsplit_once('.')
+                && let Some(ot) = st.types.get(&TypeName::from(ty))
+            {
+                readable(&st, who, ot, &FieldName::from(field))?;
+            }
+        }
         let e = filter(&st, who, t, start.filter.as_ref())?;
         let mut paths: Vec<Vec<&StoredRecord>> = candidates(&st, who, t, pattern.at, e.as_ref())?
             .into_iter()
