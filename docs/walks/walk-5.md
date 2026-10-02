@@ -205,6 +205,11 @@ own convention turns out to be different, that record may need
 re-keying". **Not first try right.** Nothing told it what the key of a
 type without one is. **Finding:** #350.
 
+Since #350, `payment_upsert`'s `key` says: "`payment` declares no key,
+so the key is yours to choose. It names this record from now on, and a
+later write with the same key changes it." A keyed type's names the
+field whose value it is (`order`: "the value of its `id`").
+
 ### 3. A field the clerk may not write
 
 `order_upsert {"key": "O-2", "fields": {"paid_on": "2026-10-06"}}`:
