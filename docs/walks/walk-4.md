@@ -284,11 +284,19 @@ cargo run -q -p lakelands-server --example mcp_call -- --server "lakelands serve
   tools/call revenue_7d_find '{}'
 ```
 
-**10.** Refused, and `mcp_call` stops with
+**10.** Refused. `mcp_call` prints the tool error whole, its two
+sentences and the error as JSON, and exits 1:
 
 ```
 error: refused: view `revenue_7d` needs parameter `anchor` (date_time)
   what to do: correct the input and run the command again; nothing was written
+{
+  "error": "refused",
+  "reason": {
+    "message": "view `revenue_7d` needs parameter `anchor` (date_time)",
+    "refusal": "invalid"
+  }
+}
 ```
 
 **The agent's answer:**
