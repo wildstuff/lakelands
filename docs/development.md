@@ -40,7 +40,11 @@ Each slot carries two files that are never committed:
 
 - `.claude/settings.local.json` — the agent's environment: its own
   `CARGO_TARGET_DIR` and a `CARGO_BUILD_JOBS` cap, so that five agents
-  compiling at once do not starve the machine.
+  compiling at once do not starve the machine, and `CARGO_INCREMENTAL`
+  off. Incremental data grows by the tens of gigabytes per target
+  directory, and a full run, which rebuilds after every change anyway,
+  gains little from it; five slots with it on once filled the cache
+  disk.
 - `CLAUDE.local.md` — instructions for this slot that don't belong in
   the repository: the slot's name, where the developer keeps the source
   material the organs are imported from, the commit they are read at,
@@ -106,7 +110,8 @@ cat > "$dir/.claude/settings.local.json" <<JSON
 {
   "env": {
     "CARGO_TARGET_DIR": "$HOME/.cache/cargo-target-lakelands-agent-$slot",
-    "CARGO_BUILD_JOBS": "$JOBS"
+    "CARGO_BUILD_JOBS": "$JOBS",
+    "CARGO_INCREMENTAL": "0"
   }
 }
 JSON
