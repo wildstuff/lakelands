@@ -846,8 +846,8 @@ impl Call<'_> {
     }
 
     /// An authored write of one record, as `upsert` and `link` make it;
-    /// `check` refuses it, under the writer's lock, before anything is
-    /// planned.
+    /// `check` refuses it, under the writer's lock, after the record's own
+    /// checks: it reads other records, so the grants come first (024).
     fn write_record(
         &self,
         ty: &TypeName,
@@ -862,7 +862,6 @@ impl Call<'_> {
         if let Some(o) = self.replay(&opts.idempotency_key, view.as_ref())? {
             return Ok(o);
         }
-        check(&w, view.as_ref())?;
         let now = self.lake.clock(&mut w);
         let mut pending = Pending::default();
         let mut plan = self.plan_record(
@@ -878,6 +877,7 @@ impl Call<'_> {
             0,
             self.who,
         )?;
+        check(&w, view.as_ref())?;
         if let Some(k) = &opts.idempotency_key {
             plan.draft.id = Some(log::authored_id(&self.who.writer(), k));
             plan.draft.idempotency_key = Some(k.clone());
@@ -1056,6 +1056,8 @@ impl Call<'_> {
             return Ok((vec![called], Vec::new()));
         };
         let record = live_record(view, &verb.on, key)?;
+        // The version before anything is judged on the record (024).
+        cas(expected, Some(&record))?;
         if let Some(r) = &verb.requires {
             let e = declare::condition(r, Place::Record, "requires")?;
             if !expr::holds(
@@ -1780,6 +1782,7 @@ impl Call<'_> {
         ty: &TypeName,
         field: lakelands_api::ontology::FieldDecl,
     ) -> Result<Outcome> {
+        granted(self.who.grants.schema)?;
         let mut t = self.lake.writer().ontology.ty(ty)?.clone();
         if t.fields.iter().any(|f| f.name == field.name) {
             return Err(invalid_field(

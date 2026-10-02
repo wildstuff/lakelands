@@ -10,13 +10,19 @@ use std::sync::Arc;
 use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl};
 use lakelands_api::tools::{Door, GENERIC_TOOLS, tools};
 use lakelands_api::write::Declaration;
-use lakelands_api::{Error, LakeStore, ReadAt, Refusal, TypeName};
+use lakelands_api::{Error, Grants, LakeStore, PrincipalKind, ReadAt, Refusal, TypeName};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, doors, field, head_unmoved, owner, reason, type_decl,
+    Lake, Must, doors, field, head_unmoved, owner, principal, reason, type_decl,
 };
+
+check!(
+    /// add_field asks for the schema grant before it looks.
+    ADD_FIELD_GRANT_FIRST = add_field_without_the_schema_grant_is_refused_before_it_looks_at_the_type,
+    "006 and 024, extended: add_field without the schema grant is refused not_granted whether the type is undeclared or already has the field, so the refusal tells nothing about the ontology"
+);
 
 check!(
     /// The schema hash is the log format's, byte for byte.
@@ -307,4 +313,46 @@ async fn redeclaring_a_type_with_its_fields_reordered_keeps_its_schema_hash(
         version + 1
     );
     Ok(())
+}
+
+async fn add_field_without_the_schema_grant_is_refused_before_it_looks_at_the_type(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl("note", vec![field("text", StorageKind::Text)]))
+        .await?;
+    let writer = principal(
+        store.as_ref(),
+        PrincipalKind::Agent,
+        "writer",
+        Grants {
+            schema: false,
+            ..Grants::owner()
+        },
+    );
+    let before = store.head().await.must("reading the head")?;
+    let mut red = Vec::new();
+    for (what, ty) in [
+        ("an undeclared type", "nothing"),
+        ("a field `note` has", "note"),
+    ] {
+        let got = l
+            .cat
+            .add_field(
+                &writer,
+                &TypeName::from(ty),
+                field("text", StorageKind::Text),
+            )
+            .await;
+        if !matches!(reason(&got), Some(Refusal::NotGranted)) {
+            red.push(format!("add_field of {what} answered {got:?}"));
+        }
+    }
+    ensure!(
+        red.is_empty(),
+        "add_field by a principal without the schema grant is refused not_granted before \
+         the type is looked up: {}",
+        red.join("; ")
+    );
+    head_unmoved(store.as_ref(), before, "add_field without the schema grant").await
 }
