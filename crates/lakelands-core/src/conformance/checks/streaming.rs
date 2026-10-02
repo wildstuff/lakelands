@@ -115,7 +115,7 @@ use lakelands_api::ontology::{
 };
 use lakelands_api::query::{Pattern, Projection, QueryResult, Search, SearchMode, Walk};
 use lakelands_api::read::{Direction, OrderBy};
-use lakelands_api::seam::{FeedFilter, Seams};
+use lakelands_api::seam::{FeedFilter, SETTING_TYPE, Seams};
 use lakelands_api::{
     Find, Found, LakeStore, Position, Principal, ReadAt, RecordKey, SourceId, SourceRecord,
     TypeName,
@@ -125,8 +125,8 @@ use sha2::{Digest as _, Sha256};
 
 use crate::conformance::backing::EMBED_MODEL;
 use crate::conformance::fixture::{
-    Must, declare, doors, embedding, limits, order, owner, pattern, pause, reason, sourced, step,
-    type_decl,
+    Lake, Must, declare, doors, embedding, limits, order, owner, pattern, pause, reason,
+    source_record, sourced, step, type_decl,
 };
 use crate::conformance::{Failure, Given, Meter, backing, next};
 use crate::export;
@@ -219,19 +219,21 @@ fn note(i: u64) -> String {
 }
 
 /// Record `i` of the source, as first delivered.
-fn content(i: u64, value: f64) -> SourceRecord {
-    SourceRecord {
-        upstream: None,
-        ty: TypeName::from(TY),
-        key: key(i),
-        fields: crate::conformance::fixture::patch(json!({
-            "seq": i,
-            "site": format!("site-{}", i % 97),
-            "value": value,
-            "note": note(i),
-        })),
-        seen_at: None,
+/// The seams a reopened or imported lake is given: the suite's backings,
+/// embedder and executors.
+fn seams() -> Seams {
+    Seams {
+        backings: backing::backings(),
+        embed: Some(backing::embedder()),
+        executors: backing::executors(),
+        ..Seams::default()
     }
+}
+
+fn content(i: u64, value: f64) -> SourceRecord {
+    let fields =
+        json!({"seq": i, "site": format!("site-{}", i % 97), "value": value, "note": note(i)});
+    source_record(TY, key(i).as_str(), fields)
 }
 
 fn first_value(i: u64) -> f64 {
@@ -343,15 +345,9 @@ impl Stream for Links {
             self.at += 1;
             let first = self.first;
             self.ahead = follows(i, first)
-                .map(|t| SourceRecord {
-                    upstream: None,
-                    ty: link.clone(),
-                    key: link_key(&key(i), &key(t)),
-                    fields: crate::conformance::fixture::patch(json!({
-                        "from": key(i).as_str(),
-                        "to": key(t).as_str(),
-                    })),
-                    seen_at: None,
+                .map(|t| {
+                    let fields = json!({"from": key(i).as_str(), "to": key(t).as_str()});
+                    source_record(link.as_str(), link_key(&key(i), &key(t)).as_str(), fields)
                 })
                 .collect();
         }
@@ -761,14 +757,8 @@ impl Size<'_> {
         // The export imported as a new lake of the engine (lakelands#215):
         // on the memory engine the imported lake stays on the heap by
         // design, so, as for ingest, what it held beyond what it leaves.
-        let seams = lakelands_api::seam::Seams {
-            backings: crate::conformance::backing::backings(),
-            embed: Some(crate::conformance::backing::embedder()),
-            executors: crate::conformance::backing::executors(),
-            ..lakelands_api::seam::Seams::default()
-        };
         let m = Measure::start(&self.given.meter, true);
-        let imported = (self.given.import)(dir.to_path_buf(), store.lake().clone(), None, seams)
+        let imported = (self.given.import)(dir.to_path_buf(), store.lake().clone(), None, seams())
             .await
             .map_err(|e| Failure::new(format!("importing {}: {e}", dir.display())))?
             .store;
@@ -932,32 +922,12 @@ impl Size<'_> {
             Claim::Reported("lakelands#193"),
         )
         .await?;
-        doors(store)
-            .upsert(
-                &self.own,
-                &TypeName::from(lakelands_api::seam::SETTING_TYPE),
-                &RecordKey::from("sort_index.reading"),
-                [
-                    ("key".into(), json!("sort_index.reading")),
-                    ("value".into(), json!(["note"])),
-                ]
-                .into(),
-                lakelands_api::WriteOpts::default(),
-            )
-            .await
-            .must("asking for the order index on `note`")?;
+        let l = Lake::of(store);
+        l.set("sort_index.reading", json!(["note"])).await?;
         self.sorted_walk(store, records, "find-sorted", Claim::Held)
             .await?;
         // Retired, so the next size's first walk sorts again.
-        doors(store)
-            .retire(
-                &self.own,
-                &TypeName::from(lakelands_api::seam::SETTING_TYPE),
-                &RecordKey::from("sort_index.reading"),
-                lakelands_api::WriteOpts::default(),
-            )
-            .await
-            .must("retiring the order index on `note`")?;
+        l.retire(SETTING_TYPE, "sort_index.reading").await?;
         Ok(())
     }
 
@@ -1067,36 +1037,12 @@ impl Size<'_> {
     /// setting is retired again, so the lake grows without the index.
     async fn searches(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
         self.search(store, records, "search", "hybrid").await?;
-        self.ask_vector_index(store, json!(["vec"]))
-            .await
-            .must("asking for the vector index on `vec`")?;
+        let l = Lake::of(store);
+        l.set("vector_index.reading", json!(["vec"])).await?;
         self.search(store, records, "search-indexed", "hybrid (index)")
             .await?;
-        self.ask_vector_index(store, json!([]))
-            .await
-            .must("asking for no vector index again")?;
+        l.set("vector_index.reading", json!([])).await?;
         Ok(())
-    }
-
-    /// Write the setting `vector_index.reading` with `value`.
-    async fn ask_vector_index(
-        &self,
-        store: &dyn LakeStore,
-        value: serde_json::Value,
-    ) -> lakelands_api::Result<lakelands_api::Outcome> {
-        doors(store)
-            .upsert(
-                &self.own,
-                &TypeName::from(lakelands_api::seam::SETTING_TYPE),
-                &RecordKey::from("vector_index.reading"),
-                [
-                    ("key".into(), json!("vector_index.reading")),
-                    ("value".into(), value),
-                ]
-                .into(),
-                lakelands_api::WriteOpts::default(),
-            )
-            .await
     }
 
     /// One hybrid search for the note of [`SOUGHT`], reported as `phase`;
@@ -1431,14 +1377,8 @@ impl Size<'_> {
     ) -> Result<Arc<dyn LakeStore>, Failure> {
         let head = store.head().await.must("reading the head")?;
         let before = answers(store.as_ref(), &self.own).await?;
-        let seams = Seams {
-            backings: backing::backings(),
-            embed: Some(backing::embedder()),
-            executors: backing::executors(),
-            ..Seams::default()
-        };
         let m = Measure::start(&self.given.meter, false);
-        let store = (self.given.reopen)(store, seams)
+        let store = (self.given.reopen)(store, seams())
             .await
             .map_err(|e| Failure::new(format!("opening the large lake again failed: {e}")))?;
         let measured = m.stop();

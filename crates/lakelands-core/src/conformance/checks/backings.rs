@@ -89,7 +89,7 @@ async fn lookup(store: &dyn LakeStore, input: &str, config: Value) -> Result<Lak
 
 /// Declares `lookup`, a function of the suite's backing that echoes its
 /// input `code`, and the type `place`, whose `name` it computes.
-async fn places(store: &dyn LakeStore, config: Value) -> Result<Lake, Failure> {
+pub(super) async fn places(store: &dyn LakeStore, config: Value) -> Result<Lake, Failure> {
     let l = lookup(store, "code", config).await?;
     let name = computed_by("name", StorageKind::Text, "lookup", &["code"]);
     l.declare(type_decl(

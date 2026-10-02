@@ -6,16 +6,16 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::{
-    Authority, Cardinality, FieldDecl, FieldType, RelationDecl, StorageKind,
-};
+use lakelands_api::ontology::{Authority, Cardinality, RelationDecl, StorageKind};
 use lakelands_api::read::{Direction, OrderBy};
 use lakelands_api::write::WriteOpts;
-use lakelands_api::{Find, LakeStore, Position, ReadAt};
+use lakelands_api::{Find, LakeStore, Position};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, field, order, patch, source_record, type_decl};
+use crate::conformance::fixture::{
+    Lake, Must, field, order, patch, read_at, reference, source_record, sourced, type_decl,
+};
 
 check!(
     /// `latest` orders by each record's last event.
@@ -42,17 +42,8 @@ async fn find_ordered_by_latest_lists_records_by_their_last_event(
         vec![
             field("amount", StorageKind::Decimal),
             field("note", StorageKind::Text),
-            FieldDecl {
-                authority: Authority::Source,
-                ..field("seen", StorageKind::Text)
-            },
-            FieldDecl {
-                ty: FieldType {
-                    target: Some("partner".into()),
-                    ..FieldType::kind(StorageKind::Reference)
-                },
-                ..field("billed", StorageKind::Text)
-            },
+            sourced("seen", StorageKind::Text),
+            reference("billed", "partner"),
         ],
     );
     let relation = |name: &str, via: Option<&str>| RelationDecl {
@@ -149,10 +140,7 @@ async fn find_ordered_by_latest_lists_records_by_their_last_event(
         l.all_found(
             "invoice",
             Find {
-                at: ReadAt {
-                    as_of: Some(Position(noted.0)),
-                    valid_at: None,
-                },
+                at: read_at(Some(Position(noted.0))),
                 ..latest(Direction::Desc)
             },
         )

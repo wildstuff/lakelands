@@ -179,6 +179,13 @@ impl Lake {
         }
     }
 
+    /// Writes the setting `key` as the owner.
+    pub async fn set(&self, key: &str, value: Value) -> Result<Outcome, Failure> {
+        let setting = serde_json::json!({"key": key, "value": value});
+        self.upsert(lakelands_api::seam::SETTING_TYPE, key, setting)
+            .await
+    }
+
     /// Declares a type as the owner.
     pub async fn declare(&self, ty: TypeDecl) -> Result<Outcome, Failure> {
         declare(self.cat.as_ref(), &self.own, ty).await
@@ -334,6 +341,23 @@ pub fn embedding(name: &str, dims: u32, from: &[&str], model: &str) -> FieldDecl
             model: model.into(),
         }),
         ..vector(name, dims)
+    }
+}
+
+/// A type whose records are keyed by the writer, of plain fields, each a
+/// name and its kind.
+pub fn type_of(name: &str, fields: &[(&str, StorageKind)]) -> TypeDecl {
+    type_decl(name, fields.iter().map(|(n, k)| field(n, *k)).collect())
+}
+
+/// A field that refers to a record of `target`.
+pub fn reference(name: &str, target: &str) -> FieldDecl {
+    FieldDecl {
+        ty: lakelands_api::ontology::FieldType {
+            target: Some(target.into()),
+            ..lakelands_api::ontology::FieldType::kind(StorageKind::Reference)
+        },
+        ..field(name, StorageKind::Text)
     }
 }
 
@@ -551,11 +575,25 @@ pub fn get_at(key: &str, as_of: Option<Position>) -> Get {
     Get {
         key: RecordKey::from(key),
         with_meta: true,
-        at: ReadAt {
-            as_of,
-            valid_at: None,
-        },
+        at: read_at(as_of),
         params: Default::default(),
+    }
+}
+
+/// A read at `as_of` (the head when `None`), with no valid time.
+pub fn read_at(as_of: Option<Position>) -> ReadAt {
+    ReadAt {
+        as_of,
+        valid_at: None,
+    }
+}
+
+/// A `find` of every record, with provenance, at `as_of`.
+pub fn find_at(as_of: Option<Position>) -> Find {
+    Find {
+        with_meta: true,
+        at: read_at(as_of),
+        ..Find::default()
     }
 }
 

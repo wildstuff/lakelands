@@ -11,13 +11,13 @@
 use std::sync::Arc;
 
 use lakelands_api::ontology::StorageKind;
-use lakelands_api::{Find, LakeStore, Position, Principal, ReadAt, Record, TypeName};
+use lakelands_api::{LakeStore, Position, Principal, ReadAt, Record, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all_found, derived, doors, field, find_where, get_at, owner, pattern, step,
-    type_decl, vector, view_of,
+    Lake, Must, all_found, derived, doors, field, find_at, find_where, get_at, owner, pattern,
+    reference, step, type_decl, type_of, vector, view_of,
 };
 
 check!(
@@ -42,22 +42,14 @@ async fn snapshot(
     let cat = doors(store);
     let mut out = Vec::new();
     for ty in ["invoice", "partner_totals"] {
-        let find = Find {
-            with_meta: true,
-            ..Find::default()
-        };
-        out.push((ty.to_owned(), all_found(cat.as_ref(), who, ty, find).await?));
+        out.push((
+            ty.to_owned(),
+            all_found(cat.as_ref(), who, ty, find_at(None)).await?,
+        ));
     }
     for at in positions {
-        let find = Find {
-            with_meta: true,
-            at: ReadAt {
-                as_of: Some(*at),
-                valid_at: None,
-            },
-            ..Find::default()
-        };
         let label = format!("invoice as of {at}");
+        let find = find_at(Some(*at));
         out.push((label, all_found(cat.as_ref(), who, "invoice", find).await?));
         let got = cat
             .get(who, &TypeName::from("invoice"), get_at("i1", Some(*at)))
@@ -146,12 +138,9 @@ async fn migrations(store: &dyn LakeStore) -> Result<Vec<Position>, Failure> {
     use lakelands_api::write::Migration;
     let l = Lake::of(store);
     let Lake { cat, own } = &l;
-    let memo = type_decl(
+    let memo = type_of(
         "memo",
-        vec![
-            field("title", StorageKind::Text),
-            field("pages", StorageKind::Number),
-        ],
+        &[("title", StorageKind::Text), ("pages", StorageKind::Number)],
     );
     l.declare(memo.clone()).await?;
     for (k, pages) in [("a", 3), ("b", 12)] {
@@ -200,16 +189,11 @@ async fn migrated_snapshot(
             &["memo", "account", "payment"]
         };
         for ty in types {
-            let find = Find {
-                with_meta: true,
-                at: ReadAt {
-                    as_of: Some(*at),
-                    valid_at: None,
-                },
-                ..Find::default()
-            };
             let label = format!("{ty} as of {at}");
-            out.push((label, all_found(cat.as_ref(), who, ty, find).await?));
+            out.push((
+                label,
+                all_found(cat.as_ref(), who, ty, find_at(Some(*at))).await?,
+            ));
         }
     }
     Ok(out)
@@ -245,19 +229,13 @@ check!(
 async fn after_a_rebuild_every_index_answers_as_before(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    use lakelands_api::ontology::{FieldType, RelationDecl};
+    use lakelands_api::ontology::RelationDecl;
     use lakelands_api::query::{Projection, Search, SearchMode, Walk};
     let l = Lake::of(store.as_ref());
     let mut text = field("text", StorageKind::Text);
     text.searchable = true;
     let embedding = vector("embedding", 2);
-    let parent = lakelands_api::ontology::FieldDecl {
-        ty: FieldType {
-            target: Some("note".into()),
-            ..FieldType::kind(StorageKind::Reference)
-        },
-        ..field("parent", StorageKind::Text)
-    };
+    let parent = reference("parent", "note");
     let mut ty = type_decl("note", vec![text, embedding, parent]);
     ty.language = Some("en".into());
     ty.relations = vec![RelationDecl {
@@ -391,15 +369,7 @@ async fn a_number_and_a_vector_read_back_in_their_one_json_form_before_and_after
     )
     .await?;
     let text = |store: Arc<dyn LakeStore>| async move {
-        let r = doors(store.as_ref())
-            .get(
-                &owner(store.as_ref()),
-                &TypeName::from("sample"),
-                get_at("s", None),
-            )
-            .await
-            .must("reading `s`")?
-            .data;
+        let r = Lake::of(store.as_ref()).read("sample", "s").await?;
         Ok::<_, Failure>(serde_json::to_string(&r.fields).unwrap_or_default())
     };
     let canonical = r#"{"m":1.5,"n":2,"v":[0,1,0.25]}"#;

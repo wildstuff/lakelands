@@ -4,13 +4,13 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::StorageKind;
+use lakelands_api::ontology::StorageKind::{self, Decimal, Text};
 use lakelands_api::{Access, Error, LakeStore, ReadAt, Refusal, TypeName, WriteOpts};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, field, field_writer, get_at, head_unmoved, reason, refused_on, sourced, type_decl,
+    Lake, Must, field_writer, get_at, head_unmoved, reason, refused_on, sourced, type_decl, type_of,
 };
 
 check!(
@@ -81,14 +81,8 @@ async fn a_principal_who_may_write_only_some_fields_cannot_retire(
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
     let Lake { cat, .. } = &l;
-    l.declare(type_decl(
-        "invoice",
-        vec![
-            field("status", StorageKind::Text),
-            field("amount", StorageKind::Decimal),
-        ],
-    ))
-    .await?;
+    l.declare(type_of("invoice", &[("status", Text), ("amount", Decimal)]))
+        .await?;
     l.upsert("invoice", "i", json!({"status": "open", "amount": "1.00"}))
         .await?;
     let clerk = field_writer(store.as_ref(), "clerk", "invoice", &["status"]);
@@ -143,11 +137,7 @@ async fn a_record_retired_at_a_position_is_readable_just_before_it(
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
     let Lake { cat, .. } = &l;
-    l.declare(type_decl(
-        "invoice",
-        vec![field("status", StorageKind::Text)],
-    ))
-    .await?;
+    l.declare(type_of("invoice", &[("status", Text)])).await?;
     l.upsert("invoice", "i1", json!({"status": "open"})).await?;
     let reader = field_writer(store.as_ref(), "reader", "invoice", &[]);
     let invoice = TypeName::from("invoice");

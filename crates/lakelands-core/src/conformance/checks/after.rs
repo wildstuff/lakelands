@@ -12,14 +12,13 @@ use std::sync::Arc;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::read::{Aggregate, Direction, Order, OrderBy};
 use lakelands_api::{
-    After, Catalog, Find, Found, LakeStore, Position, Principal, ReadAt, Record, Refusal, TypeName,
-    Value,
+    After, Catalog, Find, Found, LakeStore, Position, Principal, Record, Refusal, TypeName, Value,
 };
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all_found, declare, field, reason, refused_on, type_decl, upsert, value,
+    Lake, Must, all_found, read_at, reason, refused_on, type_of, upsert, value,
 };
 
 check!(
@@ -139,17 +138,10 @@ async fn item(
 async fn after_resumes_where_the_cursor_would(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
     let (cat, own) = (l.cat.as_ref(), &l.own);
-    declare(
-        cat,
-        own,
-        type_decl(
-            "item",
-            vec![
-                field("n", StorageKind::Number),
-                field("s", StorageKind::Text),
-            ],
-        ),
-    )
+    l.declare(type_of(
+        "item",
+        &[("n", StorageKind::Number), ("s", StorageKind::Text)],
+    ))
     .await?;
     // Ties on `n`, ties on `(n, s)`, and records without either, written
     // out of key order.
@@ -189,10 +181,7 @@ async fn after_resumes_where_the_cursor_would(store: Arc<dyn LakeStore>) -> Resu
                         filter: filter.map(Into::into),
                         order_by: order(dir, two),
                         limit: Some(LIMIT),
-                        at: ReadAt {
-                            as_of,
-                            valid_at: None,
-                        },
+                        at: read_at(as_of),
                         ..Find::default()
                     };
                     let cursor = by_cursor(cat, own, find.clone()).await?;
