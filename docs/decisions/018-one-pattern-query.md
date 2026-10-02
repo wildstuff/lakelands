@@ -120,6 +120,15 @@ read with, and continuing it with others is refused, since the pages
 would belong to two answers. Views are computed on read, so nothing is
 kept per binding.
 
+A pattern binds only the view it starts on. Suppose one of its steps, in
+rows or in a measure, arrives at a view with parameters other than its
+start. That view has nothing to read it with, so the pattern is refused
+before any record is read, naming the view and the relation. Refusing
+only once the walk had reached a record would make the answer depend on
+the data, an empty answer with no records and a refusal with some
+(029). A derived relation to or from such a view stays declarable: a
+pattern that starts on the view binds it, and may step out and back.
+
 ## Extended: a view may merge sources on its key
 
 A view may read more than one type: beside its `source` it may `merge`

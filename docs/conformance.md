@@ -241,6 +241,7 @@ belongs in the suite, not beside one engine:
 - `a_pattern_started_on_a_view_binds_its_parameters` — 018 and 026: a pattern that starts on a view binds its parameters with the start, by key and by `where`, and its nodes are the window `find` answers; a `degree` started on it by key answers that key's row of the whole view's; a start that leaves one out is refused, naming it
 - `a_cursor_continues_only_with_the_parameters_it_was_handed_out_for` — 018 and 029: a page of a view continues only with the parameters its first page was read with; with others it is refused, since it would continue a different answer
 - `a_view_with_parameters_is_written_in_log_format_8` — log format §6 and 018: the event that declares a view with parameters is written in format 8, as is every event after it; a view without them leaves the lake's format where it was
+- `a_step_arriving_at_a_view_with_parameters_is_refused_before_reading` — 018 and 029: a view's parameters are bound only by a read that names it, so a pattern (rows or a measure) whose step arrives at a view with parameters other than its start is refused as invalid before any record is read, naming the view and the relation, the same with no records and with some; a pattern started on that view with its parameters, stepping out, is answered
 
 **view merge**
 

@@ -115,6 +115,7 @@ pub const ALL: &[Check] = &[
     view_params::PATTERN_START_BINDS,
     view_params::CURSOR_KEEPS_PARAMS,
     view_params::FORMAT_8,
+    view_params::STEP_TO_UNBOUND_VIEW,
     view_merge::MERGED_ON_KEY,
     view_merge::KEYS_MEET_BY_IDENTITY,
     view_merge::PARAMS_BIND_EVERY_SOURCE,

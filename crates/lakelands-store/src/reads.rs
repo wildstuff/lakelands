@@ -1347,6 +1347,22 @@ impl<'a> Reader<'a> {
             }
             let reached = reached.or_else(|| step.ty.clone()).unwrap_or(here);
             let decl = self.visible_type(&reached)?.clone();
+            // A view with parameters is bound only by a read that names it
+            // (018): a step that arrives at one other than the start has no
+            // values to read it with, whatever records the walk would reach,
+            // so the pattern is refused before any record is read.
+            if reached != start_decl.name
+                && let Some(param) = decl.view.as_ref().and_then(|v| v.params.first())
+            {
+                return Err(invalid(format!(
+                    "step {} over `{}` arrives at view `{reached}`, which needs parameter `{}` \
+                     ({}), and only a read that names the view binds it",
+                    i + 1,
+                    step.relation,
+                    param.name,
+                    lakelands_core::value::kind_name(param.kind)
+                )));
+            }
             let f = step
                 .filter
                 .as_ref()
