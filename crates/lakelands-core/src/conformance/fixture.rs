@@ -189,6 +189,14 @@ impl Lake {
         upsert(self.cat.as_ref(), &self.own, ty, key, fields).await
     }
 
+    /// Declares, as the owner, the declaration `json` describes.
+    pub async fn declare_json(&self, json: Value) -> Result<Outcome, Failure> {
+        let what = format!("declaring {json}");
+        let d: Declaration = serde_json::from_value(json)
+            .map_err(|e| Failure::new(format!("the check's declaration does not read: {e}")))?;
+        self.cat.declare(&self.own, d).await.must(&what)
+    }
+
     /// Retires one record as the owner.
     pub async fn retire(&self, ty: &str, key: &str) -> Result<Outcome, Failure> {
         let (t, k) = (TypeName::from(ty), RecordKey::from(key));
@@ -229,6 +237,20 @@ pub fn principal(
         lake: store.lake().clone(),
         grants,
     }
+}
+
+/// A reviewer holding `review`, and `schema` when asked.
+pub fn reviewer(store: &dyn LakeStore, schema: bool) -> Principal {
+    principal(
+        store,
+        PrincipalKind::Human,
+        if schema { "architect" } else { "reviewer" },
+        Grants {
+            review: true,
+            schema,
+            ..Grants::default()
+        },
+    )
 }
 
 /// An agent `id` that reads everything but holds `fields` of `ty`, each
@@ -390,6 +412,18 @@ pub fn agg(name: &str, func: AggFunc, field: Option<&str>) -> AggMeasure {
         func,
         field: field.map(FieldName::from),
     }
+}
+
+/// The trigger `name` on `on`, firing when `when` holds (on every change
+/// without one), with no ceiling and no description.
+pub fn trigger_on(name: &str, on: &str, when: Option<&str>) -> Declaration {
+    Declaration::Trigger(lakelands_api::ontology::TriggerDecl {
+        max_depth: None,
+        name: name.into(),
+        on: on.into(),
+        when: when.map(Into::into),
+        description: None,
+    })
 }
 
 /// One hop over `relation`, in the direction `walk`.

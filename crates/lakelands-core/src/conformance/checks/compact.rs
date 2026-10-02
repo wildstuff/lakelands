@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use lakelands_api::ontology::{FieldDecl, StorageKind, ValueTypeDecl};
 use lakelands_api::query::{Projection, Search, SearchMode, Walk};
-use lakelands_api::write::{CompactReport, Declaration, ProposalFilter, ProposedWrite};
+use lakelands_api::write::{CompactReport, ProposalFilter, ProposedWrite};
 use lakelands_api::{
     Catalog, Find, Found, IdempotencyKey, LakeStore, Outcome, Position, Principal, ReadAt,
     RecordKey, TypeName, WriteOpts,
@@ -115,15 +115,12 @@ async fn keyed(cat: &dyn Catalog, who: &Principal) -> Result<Outcome, Failure> {
 /// under the check's own `token`, and `place`, whose `name` it computes.
 async fn places(l: &Lake, token: &str) -> Result<(), Failure> {
     let (cat, own) = (l.cat.as_ref(), &l.own);
-    let function: Declaration = serde_json::from_value(json!({
+    l.declare_json(json!({
         "declare": "function", "name": "lookup", "backing": KIND,
         "inputs": [{"name": "code", "type": {"kind": "text"}}],
         "config": {"token": token, "echo": "code"}
     }))
-    .map_err(|e| Failure::new(format!("the check's function does not read: {e}")))?;
-    cat.declare(own, function)
-        .await
-        .must("declaring `lookup`, backed by the suite's backing")?;
+    .await?;
     let name = computed_by("name", StorageKind::Text, "lookup", &["code"]);
     declare(
         cat,

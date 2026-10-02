@@ -13,19 +13,16 @@ use std::sync::Arc;
 
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::expr::Condition;
-use lakelands_api::ontology::{
-    Assignment, Authority, Risk, StorageKind, TriggerDecl, VerbDecl, VerbEffect,
-};
+use lakelands_api::ontology::{Assignment, Authority, Risk, StorageKind, VerbDecl, VerbEffect};
 use lakelands_api::principal::{WriteContext, WriteOrigin};
-use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::{Declaration, Migration, ProposedWrite};
 use lakelands_api::{Catalog, LakeStore, Position, Refusal, TypeName, WriteOpts};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, doors, field, head_unmoved, ingest, limits, owner, patch, reason, source_record,
-    type_decl,
+    Lake, Must, doors, events_from, field, head_unmoved, ingest, limits, owner, patch, reason,
+    source_record, trigger_on, type_decl,
 };
 
 check!(
@@ -56,12 +53,7 @@ fn host(depth: u32, cause: Option<Position>) -> WriteContext {
 
 /// The events after `after`, as the feed tells them.
 async fn events_after(store: &dyn LakeStore, after: Position) -> Result<Vec<Event>, Failure> {
-    Ok(store
-        .feed()
-        .poll(after.next(), &FeedFilter::default(), 10_000)
-        .await
-        .must("reading the feed")?
-        .events)
+    events_from(store, after.next()).await
 }
 
 async fn a_reactive_write_with_a_cause_carries_it_on_each_of_its_events(
@@ -74,13 +66,7 @@ async fn a_reactive_write_with_a_cause_carries_it_on_each_of_its_events(
     for d in [
         Declaration::Type(type_decl("job", vec![field("status", StorageKind::Text)])),
         Declaration::Type(reading),
-        Declaration::Trigger(TriggerDecl {
-            max_depth: None,
-            name: "opened".into(),
-            on: "job".into(),
-            when: None,
-            description: None,
-        }),
+        trigger_on("opened", "job", None),
         Declaration::Verb(VerbDecl {
             name: "close".into(),
             on: "job".into(),

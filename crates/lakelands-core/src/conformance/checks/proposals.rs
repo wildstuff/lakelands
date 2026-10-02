@@ -8,17 +8,14 @@ use std::sync::Arc;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::seam::FeedFilter;
-use lakelands_api::write::{Declaration, ProposalFilter, ProposalState, ProposedWrite};
-use lakelands_api::{
-    Error, Grants, LakeStore, Outcome, Position, PrincipalKind, ProposalId, Refusal, Version,
-    WriteOpts,
-};
+use lakelands_api::write::{ProposalFilter, ProposalState, ProposedWrite};
+use lakelands_api::{Error, LakeStore, Outcome, Position, ProposalId, Refusal, Version, WriteOpts};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, doors, field, field_writer, head_unmoved, outputs_from, owner, patch, principal,
-    read, reason, type_decl, value,
+    Lake, Must, doors, field, field_writer, head_unmoved, outputs_from, owner, patch, read, reason,
+    reviewer, type_decl, value,
 };
 
 check!(
@@ -59,7 +56,6 @@ check!(
 
 async fn ledger(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
-    let Lake { cat, own } = &l;
     let ty = type_decl(
         "invoice",
         vec![
@@ -78,9 +74,7 @@ async fn ledger(store: &dyn LakeStore) -> Result<Lake, Failure> {
         json!({"declare": "verb", "name": "remind", "on": "invoice", "risk": "low",
                "effect": "external", "executor": "mailer"}),
     ] {
-        let d: Declaration = serde_json::from_value(verb)
-            .map_err(|e| Failure::new(format!("the check's verb does not read: {e}")))?;
-        cat.declare(own, d).await.must("declaring a verb")?;
+        l.declare_json(verb).await?;
     }
     l.upsert("invoice", "i", json!({"status": "open"})).await?;
     Ok(l)
@@ -206,15 +200,7 @@ async fn accepting_a_proposal_applies_its_write_as_the_proposers(
     ledger(store.as_ref()).await?;
     let cat = doors(store.as_ref());
     let clerk = field_writer(store.as_ref(), "clerk", "invoice", &["status", "paid_ref"]);
-    let reviewer = principal(
-        store.as_ref(),
-        PrincipalKind::Human,
-        "reviewer",
-        Grants {
-            review: true,
-            ..Grants::default()
-        },
-    );
+    let reviewer = reviewer(store.as_ref(), false);
     let (at, id) = proposal(
         &call(store.as_ref(), &clerk, "pay", json!({"reference": "TX-9"}))
             .await
@@ -441,12 +427,11 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
     let Lake { cat, own } = &l;
     l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
         .await?;
-    let verb: Declaration = serde_json::from_value(json!({
+    l.declare_json(json!({
         "declare": "verb", "name": "dispatch", "on": "job", "risk": "low",
         "payload": [{"name": "fail", "type": {"kind": "boolean"}}],
         "effect": "external", "executor": EXECUTOR}))
-    .map_err(|e| Failure::new(format!("the check's verb does not read: {e}")))?;
-    cat.declare(own, verb).await.must("declaring `dispatch`")?;
+        .await?;
     let key = "executor-job";
     l.upsert("job", key, json!({"status": "open"})).await?;
     let dispatch = |payload: serde_json::Value, opts: WriteOpts| {
@@ -585,7 +570,6 @@ async fn host_write(store: &dyn LakeStore, key: &str, cause: Position) -> Result
 async fn jobs(store: &dyn LakeStore, risk: &str) -> Result<Lake, Failure> {
     use crate::conformance::backing::EXECUTOR;
     let l = Lake::of(store);
-    let Lake { cat, own } = &l;
     l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
         .await?;
     for verb in [
@@ -596,9 +580,7 @@ async fn jobs(store: &dyn LakeStore, risk: &str) -> Result<Lake, Failure> {
         json!({"declare": "verb", "name": "close", "on": "job", "risk": "low",
                "effect": "write", "set": [{"field": "status", "value": "'closed'"}]}),
     ] {
-        let d: Declaration = serde_json::from_value(verb)
-            .map_err(|e| Failure::new(format!("the check's verb does not read: {e}")))?;
-        cat.declare(own, d).await.must("declaring a verb")?;
+        l.declare_json(verb).await?;
     }
     Ok(l)
 }
@@ -711,15 +693,7 @@ async fn a_retried_proposed_call_answers_its_proposal_after_it_is_accepted(
         .await
         .must("calling `ship_medium`")?;
     let (at, id) = proposal(&first)?;
-    let reviewer = principal(
-        store.as_ref(),
-        PrincipalKind::Human,
-        "reviewer",
-        Grants {
-            review: true,
-            ..Grants::default()
-        },
-    );
+    let reviewer = reviewer(store.as_ref(), false);
     l.cat
         .accept(&reviewer, &id)
         .await

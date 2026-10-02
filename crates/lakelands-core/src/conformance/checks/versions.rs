@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::{
-    Error, IdempotencyKey, LakeStore, Outcome, PrincipalKind, TypeName, Version, WriteOpts,
+    Catalog, Error, IdempotencyKey, LakeStore, Outcome, Principal, PrincipalKind, TypeName,
+    Version, WriteOpts,
 };
 use serde_json::json;
 
@@ -34,6 +35,19 @@ check!(
     IDEMPOTENT_RETRY = a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_appends_nothing,
     "016 and the log format: one idempotency key from one principal is one write in the whole lake"
 );
+
+/// Writes `n` to the `counter` record `key` as `who`, with `opts`.
+async fn put(
+    cat: &dyn Catalog,
+    who: &Principal,
+    key: &str,
+    n: u64,
+    opts: WriteOpts,
+) -> lakelands_api::Result<Outcome> {
+    let counter = TypeName::from("counter");
+    cat.upsert(who, &counter, &key.into(), patch(json!({"n": n})), opts)
+        .await
+}
 
 fn version_of(outcome: &Outcome) -> Option<Version> {
     match outcome {
@@ -84,40 +98,20 @@ async fn a_write_expecting_a_superseded_version_is_refused_as_a_conflict(
 ) -> Result<(), Failure> {
     let l = counter(store.as_ref()).await?;
     let Lake { cat, own } = &l;
-    let counter = TypeName::from("counter");
     let expecting = |v: u64| WriteOpts {
         expected_version: Some(Version(v)),
         idempotency_key: None,
     };
 
-    cat.upsert(
-        own,
-        &counter,
-        &"k".into(),
-        patch(json!({"n": 1})),
-        expecting(0),
-    )
-    .await
-    .must("creating `k` expecting version 0 (no such record yet)")?;
-    cat.upsert(
-        own,
-        &counter,
-        &"k".into(),
-        patch(json!({"n": 2})),
-        expecting(1),
-    )
-    .await
-    .must("writing `k` expecting its current version 1")?;
+    put(cat.as_ref(), own, "k", 1, expecting(0))
+        .await
+        .must("creating `k` expecting version 0 (no such record yet)")?;
+    put(cat.as_ref(), own, "k", 2, expecting(1))
+        .await
+        .must("writing `k` expecting its current version 1")?;
 
     let before = store.head().await.must("reading the head")?;
-    let err = cat
-        .upsert(
-            own,
-            &counter,
-            &"k".into(),
-            patch(json!({"n": 3})),
-            expecting(1),
-        )
+    let err = put(cat.as_ref(), own, "k", 3, expecting(1))
         .await
         .must_fail("writing `k` expecting version 1 after it moved to 2")?;
     head_unmoved(
@@ -135,14 +129,7 @@ async fn a_write_expecting_a_superseded_version_is_refused_as_a_conflict(
          (expected 1, actual 2); it failed with {err:?}"
     );
     let before = store.head().await.must("reading the head")?;
-    let err = cat
-        .upsert(
-            own,
-            &counter,
-            &"k".into(),
-            patch(json!({"n": 4})),
-            expecting(0),
-        )
+    let err = put(cat.as_ref(), own, "k", 4, expecting(0))
         .await
         .must_fail("creating `k` expecting version 0 when it already exists")?;
     head_unmoved(
@@ -182,14 +169,12 @@ async fn a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_app
         idempotency_key: Some(IdempotencyKey::from("retry-1")),
     };
 
-    let first = cat
-        .upsert(own, &counter, &"k".into(), patch(json!({"n": 1})), keyed())
+    let first = put(cat.as_ref(), own, "k", 1, keyed())
         .await
         .must("writing `k` with idempotency key `retry-1`")?;
     let head = store.head().await.must("reading the head")?;
 
-    let retry = cat
-        .upsert(own, &counter, &"k".into(), patch(json!({"n": 1})), keyed())
+    let retry = put(cat.as_ref(), own, "k", 1, keyed())
         .await
         .must("retrying the same write with the same key")?;
     ensure!(
@@ -197,14 +182,7 @@ async fn a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_app
         "a retry with the same idempotency key must answer the first write's outcome \
          {first:?}; it answered {retry:?}"
     );
-    let other = cat
-        .upsert(
-            own,
-            &counter,
-            &"other".into(),
-            patch(json!({"n": 5})),
-            keyed(),
-        )
+    let other = put(cat.as_ref(), own, "other", 5, keyed())
         .await
         .must("writing another record with the same key")?;
     ensure!(
@@ -230,14 +208,7 @@ async fn a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_app
         "someone-else",
         lakelands_api::Grants::owner(),
     );
-    let theirs = cat
-        .upsert(
-            &someone,
-            &counter,
-            &"k".into(),
-            patch(json!({"n": 9})),
-            keyed(),
-        )
+    let theirs = put(cat.as_ref(), &someone, "k", 9, keyed())
         .await
         .must("another principal writing with the same key")?;
     ensure!(
@@ -268,14 +239,7 @@ async fn a_write_expecting_the_version_before_a_retirement_is_a_conflict(
     l.upsert("counter", "k", json!({"n": 1})).await?;
     l.retire(counter.as_str(), "k").await?;
     let before = store.head().await.must("reading the head")?;
-    let err = cat
-        .upsert(
-            own,
-            &counter,
-            &"k".into(),
-            patch(json!({"n": 5})),
-            expecting(1),
-        )
+    let err = put(cat.as_ref(), own, "k", 5, expecting(1))
         .await
         .must_fail("writing `k` expecting version 1 after its retirement moved it to 2")?;
     head_unmoved(
@@ -293,14 +257,7 @@ async fn a_write_expecting_the_version_before_a_retirement_is_a_conflict(
          conflict reporting the retired record's version (expected 1, actual 2); 0 is \
          only for a key never written; it failed with {err:?}"
     );
-    let again = cat
-        .upsert(
-            own,
-            &counter,
-            &"k".into(),
-            patch(json!({"n": 3})),
-            expecting(2),
-        )
+    let again = put(cat.as_ref(), own, "k", 3, expecting(2))
         .await
         .must("re-creating `k` expecting the retired record's version 2")?;
     ensure!(
@@ -308,14 +265,7 @@ async fn a_write_expecting_the_version_before_a_retirement_is_a_conflict(
         "a write expecting the retired record's version must re-create it and continue \
          its count at 3; it answered {again:?}"
     );
-    let err = cat
-        .upsert(
-            own,
-            &counter,
-            &"k".into(),
-            patch(json!({"n": 9})),
-            expecting(1),
-        )
+    let err = put(cat.as_ref(), own, "k", 9, expecting(1))
         .await
         .must_fail("writing the re-created `k` expecting its first life's version 1")?;
     ensure!(

@@ -10,8 +10,7 @@
 use std::sync::Arc;
 
 use lakelands_api::event::{EventBody, Procedure};
-use lakelands_api::expr::Condition;
-use lakelands_api::ontology::{StorageKind, TriggerDecl};
+use lakelands_api::ontology::StorageKind;
 use lakelands_api::seam::{AGING_RULE_TYPE, FeedFilter};
 use lakelands_api::write::{AgeReport, Declaration};
 use lakelands_api::{Catalog, LakeStore, Origin, Principal, Refusal, Timestamp, WriteOrigin};
@@ -20,7 +19,7 @@ use serde_json::{Value, json};
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, count_view, declare, derived, field, field_access, head_unmoved, read, refused_on,
-    sourced, type_decl, upsert,
+    sourced, trigger_on, type_decl, upsert,
 };
 
 check!(
@@ -119,6 +118,12 @@ async fn rule(
     .await
 }
 
+/// Writes the rule `name` that moves an open invoice to overdue when
+/// `when` holds.
+async fn overdue(l: &Lake, name: &str, when: &str) -> Result<(), Failure> {
+    rule(l, name, "invoice.status", "open", "overdue", when).await
+}
+
 /// Writes one aging rule as `who`.
 #[allow(clippy::too_many_arguments)]
 async fn rule_as(
@@ -190,15 +195,7 @@ async fn a_rule_moves_only_the_records_holding_from_whose_condition_holds(
         .restrict(&"invoice".into(), &"held".into(), "a retention hold".into())
         .await
         .must("restricting `held`")?;
-    rule(
-        &l,
-        "overdue",
-        "invoice.status",
-        "open",
-        "overdue",
-        "amount > 100",
-    )
-    .await?;
+    overdue(&l, "overdue", "amount > 100").await?;
     let report = age(store.as_ref(), date(2026, 3, 1)).await?;
     for (key, want) in [
         ("due", "overdue"),
@@ -233,15 +230,7 @@ async fn aging_a_date_twice_appends_nothing_the_second_time(
     invoices(&l).await?;
     l.upsert("invoice", "i1", json!({"status": "open", "amount": 200}))
         .await?;
-    rule(
-        &l,
-        "overdue",
-        "invoice.status",
-        "open",
-        "overdue",
-        "amount > 100",
-    )
-    .await?;
+    overdue(&l, "overdue", "amount > 100").await?;
     let first = age(store.as_ref(), date(2026, 3, 1)).await?;
     ensure!(
         first.transitions == 1,
@@ -284,15 +273,7 @@ async fn today_in_a_rule_is_the_date_aged_not_the_clock(
         json!({"status": "open", "due_on": "2020-01-01T00:00:00Z"}),
     )
     .await?;
-    rule(
-        &l,
-        "overdue",
-        "invoice.status",
-        "open",
-        "overdue",
-        "due_on < today() - 30d",
-    )
-    .await?;
+    overdue(&l, "overdue", "due_on < today() - 30d").await?;
     // The clock is years past the due date; the date handed in is not.
     let early = age(store.as_ref(), date(2020, 1, 15)).await?;
     ensure!(
@@ -321,15 +302,7 @@ async fn a_condition_that_cannot_be_evaluated_leaves_the_record(
         )
         .await?;
     }
-    rule(
-        &l,
-        "overdue",
-        "invoice.status",
-        "open",
-        "overdue",
-        "amount / divisor > 10",
-    )
-    .await?;
+    overdue(&l, "overdue", "amount / divisor > 10").await?;
     let report = age(store.as_ref(), date(2026, 3, 1)).await?;
     ensure!(
         status(&l, "b").await? == json!("open"),
@@ -356,13 +329,7 @@ async fn a_move_is_written_by_the_system_as_its_rule(
     invoices(&l).await?;
     cat.declare(
         own,
-        Declaration::Trigger(TriggerDecl {
-            max_depth: None,
-            name: "went_overdue".into(),
-            on: "invoice".into(),
-            when: Some(Condition::from("status = 'overdue'")),
-            description: None,
-        }),
+        trigger_on("went_overdue", "invoice", Some("status = 'overdue'")),
     )
     .await
     .must("declaring the trigger `went_overdue`")?;
@@ -370,15 +337,7 @@ async fn a_move_is_written_by_the_system_as_its_rule(
         .await?;
     // Written twice, so the rule record's version is 2.
     for threshold in ["1000", "100"] {
-        rule(
-            &l,
-            "overdue",
-            "invoice.status",
-            "open",
-            "overdue",
-            &format!("amount > {threshold}"),
-        )
-        .await?;
+        overdue(&l, "overdue", &format!("amount > {threshold}")).await?;
     }
     let before = store.head().await.must("reading the head")?;
     age(store.as_ref(), date(2026, 3, 1)).await?;
@@ -519,7 +478,7 @@ async fn rules_run_in_name_order_one_append_each(store: Arc<dyn LakeStore>) -> R
     }
     // Written in the other order: the name orders them.
     rule(&l, "b_second", "invoice.status", "overdue", "late", "true").await?;
-    rule(&l, "a_first", "invoice.status", "open", "overdue", "true").await?;
+    overdue(&l, "a_first", "true").await?;
     let before = store.head().await.must("reading the head")?;
     let report = age(store.as_ref(), date(2026, 3, 1)).await?;
     let names: Vec<&str> = report.rules.iter().map(|r| r.rule.as_str()).collect();
@@ -580,15 +539,7 @@ async fn a_rule_that_no_longer_fits_is_skipped_and_named(
     l.upsert("invoice", "i1", json!({"status": "open"})).await?;
     l.upsert("ticket", "t1", json!({"state": "new"})).await?;
     rule(&l, "a_tickets", "ticket.state", "new", "stale", "true").await?;
-    rule(
-        &l,
-        "b_invoices",
-        "invoice.status",
-        "open",
-        "overdue",
-        "true",
-    )
-    .await?;
+    overdue(&l, "b_invoices", "true").await?;
     // `state` becomes the source's: the rule written for it no longer fits.
     let state = sourced("state", StorageKind::Text);
     l.declare(type_decl("ticket", vec![state])).await?;
@@ -757,15 +708,7 @@ async fn a_rule_under_a_retention_hold_is_live_and_runs(
     invoices(&l).await?;
     l.upsert("invoice", "i1", json!({"status": "open", "amount": 200}))
         .await?;
-    rule(
-        &l,
-        "held_rule",
-        "invoice.status",
-        "open",
-        "overdue",
-        "amount > 100",
-    )
-    .await?;
+    overdue(&l, "held_rule", "amount > 100").await?;
     store
         .restrict(
             &AGING_RULE_TYPE.into(),

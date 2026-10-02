@@ -20,7 +20,8 @@ use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, field, head_unmoved, log_events, principal, reason, refused_on, type_decl,
+    Lake, Must, field, head_unmoved, log_events, principal, reason, refused_on, trigger_on,
+    type_decl,
 };
 
 check!(
@@ -576,18 +577,12 @@ async fn a_trigger_or_set_on_a_value_the_type_no_longer_admits_never_holds(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     use lakelands_api::expr::Condition;
-    use lakelands_api::ontology::TriggerDecl;
+
     use lakelands_api::write::ObjectSetDecl;
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     for d in [
-        Declaration::Trigger(TriggerDecl {
-            max_depth: None,
-            name: "went_late".into(),
-            on: "invoice".into(),
-            when: Some(Condition::from("status = 'late'")),
-            description: None,
-        }),
+        trigger_on("went_late", "invoice", Some("status = 'late'")),
         Declaration::ObjectSet(ObjectSetDecl {
             name: "late_ones".into(),
             of: "invoice".into(),

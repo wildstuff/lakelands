@@ -26,7 +26,7 @@
 //! ([`embedded`]); a check uses texts of its own.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use async_trait::async_trait;
 use lakelands_api::seam::{EmbedBackend, FunctionBacking, FunctionCall};
@@ -39,6 +39,11 @@ pub const KIND: &str = "conformance";
 struct Calls {
     made: BTreeMap<String, usize>,
     unplugged: BTreeSet<String>,
+}
+
+/// The guard of `m`, also when a check that panicked poisoned it.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 fn calls() -> &'static Mutex<Calls> {
@@ -62,7 +67,7 @@ impl FunctionBacking for Scripted {
     async fn call(&self, call: &FunctionCall) -> Result<Value> {
         let token = call.config["token"].as_str().unwrap_or_default().to_owned();
         {
-            let mut c = calls().lock().unwrap_or_else(|p| p.into_inner());
+            let mut c = lock(calls());
             *c.made.entry(token.clone()).or_default() += 1;
             if c.unplugged.contains(&token) {
                 return Err(fail(format!("the backing for `{token}` is unplugged")));
@@ -84,31 +89,17 @@ pub fn backings() -> Vec<Arc<dyn FunctionBacking>> {
 
 /// How many calls were made with a token.
 pub fn made(token: &str) -> usize {
-    calls()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .made
-        .get(token)
-        .copied()
-        .unwrap_or(0)
+    lock(calls()).made.get(token).copied().unwrap_or(0)
 }
 
 /// Make every later call with a token fail.
 pub fn unplug(token: &str) {
-    calls()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .unplugged
-        .insert(token.to_owned());
+    lock(calls()).unplugged.insert(token.to_owned());
 }
 
 /// Undo [`unplug`]: later calls with the token are answered again.
 pub fn plug(token: &str) {
-    calls()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .unplugged
-        .remove(token);
+    lock(calls()).unplugged.remove(token);
 }
 
 /// The model the suite's embedding backend names.
@@ -148,7 +139,7 @@ impl EmbedBackend for Embedder {
     }
 
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        let mut e = embeds().lock().unwrap_or_else(|p| p.into_inner());
+        let mut e = lock(embeds());
         e.calls += 1;
         e.sizes
             .entry(self.model.clone())
@@ -201,49 +192,29 @@ pub fn embedder_as(model: &str, dimensions: u32) -> Arc<dyn EmbedBackend> {
 
 /// How many texts each call to a model carried, in order.
 pub fn embed_call_sizes(model: &str) -> Vec<usize> {
-    embeds()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .sizes
-        .get(model)
-        .cloned()
-        .unwrap_or_default()
+    lock(embeds()).sizes.get(model).cloned().unwrap_or_default()
 }
 
 /// How many calls the suite's embedding backend has received, in this
 /// process. The suite runs its checks one at a time, so a check reads
 /// its own calls as the difference.
 pub fn embed_calls() -> usize {
-    embeds().lock().unwrap_or_else(|p| p.into_inner()).calls
+    lock(embeds()).calls
 }
 
 /// How many times a text was sent to the suite's embedding backend.
 pub fn embedded(text: &str) -> usize {
-    embeds()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .texts
-        .get(text)
-        .copied()
-        .unwrap_or(0)
+    lock(embeds()).texts.get(text).copied().unwrap_or(0)
 }
 
 /// Make every later call carrying this text fail.
 pub fn unplug_text(text: &str) {
-    embeds()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .unplugged
-        .insert(text.to_owned());
+    lock(embeds()).unplugged.insert(text.to_owned());
 }
 
 /// Undo [`unplug_text`].
 pub fn plug_text(text: &str) {
-    embeds()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .unplugged
-        .remove(text);
+    lock(embeds()).unplugged.remove(text);
 }
 
 /// A host's system vocabulary, as a check scripts it: it adds `types` and
@@ -301,9 +272,7 @@ impl lakelands_api::seam::VerbExecutor for Executor {
             .record
             .as_ref()
             .map(|r| r.key.as_str().to_owned());
-        *executions()
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+        *lock(executions())
             .entry(
                 key.clone()
                     .unwrap_or_else(|| invocation.verb.as_str().to_owned()),
@@ -324,10 +293,5 @@ pub fn executors() -> Vec<Arc<dyn lakelands_api::seam::VerbExecutor>> {
 /// How many times the executor ran for a record key, or for a verb
 /// called on its type.
 pub fn executed(key: &str) -> usize {
-    executions()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .get(key)
-        .copied()
-        .unwrap_or(0)
+    lock(executions()).get(key).copied().unwrap_or(0)
 }
