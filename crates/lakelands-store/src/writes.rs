@@ -1507,6 +1507,19 @@ impl Call<'_> {
                 if key.is_some() {
                     rights::not_a_view(w.ontology.ty(&decl.on)?)?;
                 }
+                // The reviewer applies what was checked: a verb declared
+                // differently since the call was proposed refuses the
+                // accept, and the proposal stays pending (013).
+                let then = self.lake.engine.view(Some(p.position))?.declarations()?;
+                if !then
+                    .iter()
+                    .any(|d| matches!(&d.declaration, Declaration::Verb(v) if *v == decl))
+                {
+                    return Err(invalid(format!(
+                        "verb `{verb}` was declared again, differently, after this call was \
+                         proposed; propose the call again"
+                    )));
+                }
                 if let VerbEffect::External { executor } = &decl.effect {
                     self.check_executor(executor)?;
                     external = Some(External {

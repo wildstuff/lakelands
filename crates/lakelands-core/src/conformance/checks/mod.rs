@@ -191,6 +191,7 @@ pub const ALL: &[Check] = &[
     proposals::VERB_BY_RISK,
     proposals::EXTERNAL_UNBOUND,
     proposals::NOT_PROPOSED_IF_IT_COULD_NOT_RUN,
+    proposals::ACCEPT_AFTER_REDECLARE,
     proposals::ACCEPT_APPLIES,
     proposals::REJECT_AND_DECIDED,
     proposals::WHO_DECIDES,

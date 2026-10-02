@@ -2941,7 +2941,18 @@ impl Catalog for MockCatalog {
                 opts,
             } => {
                 // The scope is checked again at the head: the verb may have
-                // been declared again while the proposal waited.
+                // been declared again while the proposal waited. Declared
+                // differently since, it is not what was checked (013).
+                if let Some(now) = st.verbs.get(&verb) {
+                    scoped(now, key.as_ref(), &opts)?;
+                    let (_, then) = self.state_at(&log, Some(p.position))?;
+                    if then.verbs.get(&verb) != Some(now) {
+                        return Err(invalid(format!(
+                            "verb `{verb}` was declared again, differently, after this call \
+                             was proposed; propose the call again"
+                        )));
+                    }
+                }
                 let v = check_call(&st, &proposer, &verb, key.as_ref(), &payload, &opts)?.clone();
                 let key = record_key(&v, key.as_ref())?;
                 check_version(&st, &v.on, key, &opts)?;
