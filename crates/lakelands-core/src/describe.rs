@@ -141,31 +141,37 @@ fn condition_visible(
 /// Whether a view may be shown whole to `who`: every source field it names
 /// is read.
 fn view_visible(v: &ViewDecl, declared: &[Declared], who: &Principal) -> bool {
-    // Each source is read as a read of it (024): its `where`, its grouping,
-    // and what its measures aggregate.
     who.grants.schema
-        || std::iter::once((&v.source, v.r#where.as_ref(), &v.group_by, &v.measures))
-            .chain(
-                v.merge
-                    .iter()
-                    .map(|m| (&m.source, m.r#where.as_ref(), &m.group_by, &m.measures)),
-            )
-            .all(|(source, filter, group_by, measures)| {
-                let mut names: std::collections::BTreeSet<FieldName> =
-                    group_by.iter().cloned().collect();
-                match filter.map(named) {
-                    Some(Some(n)) => names.extend(n),
-                    Some(None) => return false,
-                    None => {}
-                }
-                for m in measures {
-                    match parsed(&m.expr) {
-                        Some(e) => aggregated(&e, false, &mut names),
-                        None => return false,
-                    }
-                }
-                reads_all(&names, source, declared, who)
-            })
+        || view_reads(v).is_some_and(|reads| {
+            reads
+                .iter()
+                .all(|(source, names)| reads_all(names, source, declared, who))
+        })
+}
+
+/// The fields a view reads from each of its sources, its own and the
+/// merged ones in order: a source is read as a read of it (024), so its
+/// `where`, its grouping and what its measures aggregate. `None` when one
+/// of its conditions does not parse.
+pub fn view_reads(v: &ViewDecl) -> Option<Vec<(TypeName, std::collections::BTreeSet<FieldName>)>> {
+    std::iter::once((&v.source, v.r#where.as_ref(), &v.group_by, &v.measures))
+        .chain(
+            v.merge
+                .iter()
+                .map(|m| (&m.source, m.r#where.as_ref(), &m.group_by, &m.measures)),
+        )
+        .map(|(source, filter, group_by, measures)| {
+            let mut names: std::collections::BTreeSet<FieldName> =
+                group_by.iter().cloned().collect();
+            if let Some(f) = filter {
+                names.extend(named(f)?);
+            }
+            for m in measures {
+                aggregated(&parsed(&m.expr)?, false, &mut names);
+            }
+            Some((source.clone(), names))
+        })
+        .collect()
 }
 
 /// The fields a measure reads from its source's records: the paths inside

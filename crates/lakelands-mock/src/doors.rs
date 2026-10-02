@@ -1916,6 +1916,48 @@ fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationRepor
             "the in-memory mock does not re-key: `{ty}` keeps its key fields here"
         )));
     }
+    // As the store: a view over the type, as its source or a merged one,
+    // reads the shape the migration leaves, so every field it reads
+    // (grouping, `where`, what its measures aggregate) must remain.
+    for o in st.types.values() {
+        let Some(v) = o.decl.view.as_deref() else {
+            continue;
+        };
+        let sources = std::iter::once((&v.source, v.r#where.as_ref(), &v.group_by, &v.measures))
+            .chain(
+                v.merge
+                    .iter()
+                    .map(|s| (&s.source, s.r#where.as_ref(), &s.group_by, &s.measures)),
+            );
+        for (source, filter, group_by, measures) in sources {
+            if source != ty {
+                continue;
+            }
+            let mut reads: Vec<FieldName> = group_by.clone();
+            if let Some(n) = filter.and_then(named) {
+                reads.extend(n);
+            }
+            for m in measures {
+                if let Ok(e) = expr::typed(&m.expr) {
+                    expr::aggregated(&e, false, &mut reads);
+                }
+            }
+            if let Some(gone) = reads
+                .iter()
+                .find(|n| !m.to.fields.iter().any(|f| &f.name == *n))
+            {
+                let how = match m.renames.iter().find(|(from, _)| from == gone) {
+                    Some((_, to)) => format!("renames to `{to}`"),
+                    None => "drops".to_owned(),
+                };
+                return Err(invalid(format!(
+                    "after the migration of `{ty}`, view `{}` reads `{gone}` of `{ty}`, which \
+                     the migration {how}",
+                    o.decl.name
+                )));
+            }
+        }
+    }
     let renamed = |old: &FieldName| -> FieldName {
         m.renames
             .iter()

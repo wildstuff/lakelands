@@ -57,6 +57,33 @@ pub(crate) fn paths(e: &Expr, out: &mut Vec<Vec<FieldName>>) {
     }
 }
 
+/// The fields a view's measure reads from its source: the paths inside an
+/// aggregate's arguments. A name outside an aggregate is a measure or a
+/// grouping field, as the store reads it.
+pub(crate) fn aggregated(e: &Expr, inside: bool, out: &mut Vec<FieldName>) {
+    match e {
+        Expr::Path { path } if inside => out.extend(path.first().cloned()),
+        Expr::Lit { .. } | Expr::Path { .. } => {}
+        Expr::Call { func, args } => args
+            .iter()
+            .for_each(|a| aggregated(a, inside || func.is_aggregate(), out)),
+        Expr::Cmp { lhs, rhs, .. } | Expr::Arith { lhs, rhs, .. } => {
+            aggregated(lhs, inside, out);
+            aggregated(rhs, inside, out);
+        }
+        Expr::Neg { arg } | Expr::Not { arg } | Expr::IsNull { arg } => {
+            aggregated(arg, inside, out)
+        }
+        Expr::And { args } | Expr::Or { args } => {
+            args.iter().for_each(|a| aggregated(a, inside, out))
+        }
+        Expr::In { arg, list } => {
+            aggregated(arg, inside, out);
+            list.iter().for_each(|a| aggregated(a, inside, out));
+        }
+    }
+}
+
 /// What a path may name while an expression is evaluated.
 pub(crate) struct Scope<'a> {
     /// The record's type name, so that `<type>.<field>` resolves.

@@ -11,7 +11,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, count_view, declare, doors, field, head_unmoved, owner, reason, type_decl, value,
+    Lake, Must, count_view, declare, doors, field, head_unmoved, measure, owner, reason, type_decl,
+    value,
 };
 
 check!(
@@ -256,6 +257,141 @@ async fn a_view_is_never_migrated(store: Arc<dyn LakeStore>) -> Result<(), Failu
         );
         head_unmoved(store.as_ref(), before, &format!("migrating `{ty}`")).await?;
     }
+    Ok(())
+}
+
+check!(
+    /// A migration leaves every view over the type readable.
+    VIEW_SOURCE_KEPT = a_migration_taking_a_field_a_view_reads_is_refused,
+    "027 and 028, extended: a view over a type, as its source or a merged one, reads the shape a migration leaves, so the preflight refuses a migration that removes or renames a field the view reads, naming the view and the field as `declare` would refuse the view against the new shape; a field no view reads migrates as before"
+);
+
+async fn a_migration_taking_a_field_a_view_reads_is_refused(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use lakelands_api::ontology::{ViewDecl, ViewSource};
+    use lakelands_api::{FieldName, TypeName};
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    let invoice = type_decl(
+        "invoice",
+        vec![
+            field("partner", StorageKind::Text),
+            field("amount", StorageKind::Decimal),
+            field("note", StorageKind::Text),
+        ],
+    );
+    let credit = type_decl(
+        "credit",
+        vec![
+            field("partner", StorageKind::Text),
+            field("amount", StorageKind::Decimal),
+        ],
+    );
+    l.declare(invoice.clone()).await?;
+    l.declare(credit.clone()).await?;
+    l.upsert(
+        "invoice",
+        "i1",
+        json!({"partner": "p1", "amount": "10.00", "note": "n"}),
+    )
+    .await?;
+    l.upsert("credit", "c1", json!({"partner": "p1", "amount": "2.00"}))
+        .await?;
+    let by_partner = vec![FieldName::from("partner")];
+    l.declare(TypeDecl {
+        key: by_partner.clone(),
+        view: Some(Box::new(ViewDecl {
+            source: TypeName::from("invoice"),
+            params: Vec::new(),
+            r#where: None,
+            group_by: by_partner.clone(),
+            measures: vec![measure("total", "sum(amount)"), measure("n", "count()")],
+            merge: vec![ViewSource {
+                source: TypeName::from("credit"),
+                r#where: None,
+                group_by: by_partner,
+                measures: vec![measure("credited", "sum(amount)")],
+            }],
+        })),
+        ..type_decl(
+            "pt",
+            vec![
+                field("partner", StorageKind::Text),
+                field("total", StorageKind::Decimal),
+                field("n", StorageKind::Number),
+                field("credited", StorageKind::Decimal),
+            ],
+        )
+    })
+    .await?;
+    let renamed = |t: &TypeDecl, from: &str, to: &str| {
+        let mut t = t.clone();
+        for f in &mut t.fields {
+            if f.name.as_str() == from {
+                f.name = to.into();
+            }
+        }
+        Migration {
+            to: t,
+            renames: vec![(from.into(), to.into())],
+        }
+    };
+    let dropped = |t: &TypeDecl, name: &str| {
+        let mut t = t.clone();
+        t.fields.retain(|f| f.name.as_str() != name);
+        Migration {
+            to: t,
+            renames: Vec::new(),
+        }
+    };
+    let migrated = |m: Migration| async move {
+        match cat.migrate(own, m.clone()).await {
+            Err(e) => Err(e),
+            Ok(report) => cat
+                .migrate_apply(own, m, &report.data.report_id)
+                .await
+                .map(|_| ()),
+        }
+    };
+    for (what, m, read) in [
+        (
+            "renaming `partner` of `invoice`",
+            renamed(&invoice, "partner", "counterparty"),
+            "partner",
+        ),
+        (
+            "dropping `amount` of `invoice`",
+            dropped(&invoice, "amount"),
+            "amount",
+        ),
+        (
+            "renaming `partner` of `credit`",
+            renamed(&credit, "partner", "who"),
+            "partner",
+        ),
+        (
+            "dropping `amount` of `credit`",
+            dropped(&credit, "amount"),
+            "amount",
+        ),
+    ] {
+        let before = store.head().await.must("reading the head")?;
+        let answer = migrated(m).await;
+        ensure!(
+            matches!(reason(&answer), Some(Refusal::Invalid { message })
+                if message.contains("pt") && message.contains(read)),
+            "{what}, which the view `pt` reads, must be refused as invalid, naming `pt` and \
+             `{read}`; it answered {answer:?}"
+        );
+        head_unmoved(store.as_ref(), before, what).await?;
+    }
+    // A field no view reads migrates as before.
+    let answer = migrated(dropped(&invoice, "note")).await;
+    ensure!(
+        answer.is_ok(),
+        "dropping `note`, which no view reads, must migrate; it answered {answer:?}"
+    );
     Ok(())
 }
 

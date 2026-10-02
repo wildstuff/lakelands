@@ -140,3 +140,17 @@ type into a view, a view into a stored type, or one view into another.
 Each is refused as invalid, naming the type. The way there is to retire
 the one and declare the other. Otherwise a stored type's records would
 linger beside the records the view computes.
+
+## Extended: a migration keeps what a view reads
+
+A view reads its sources' shape on every read. A view over a type, as
+its source or a merged one, would refuse every read once a migration
+took away a field it reads. So the preflight refuses a migration that
+drops or renames such a field, naming the view and the field. A field
+counts when the view groups by it, reads it in its `where`, or
+aggregates it in a measure. A name outside an aggregate is a measure or
+a grouping field. This is the rule `describe` uses to decide who may
+see a view's definition, and one function holds it for both. The view
+is also checked as `declare` would check it against the new shape, so a
+grouping field whose kind no key is made of is refused too. A field no
+view reads migrates as before.

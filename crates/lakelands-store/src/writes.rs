@@ -53,7 +53,7 @@ use lakelands_api::{
 };
 use lakelands_core::expr::{self, Place, RecordScope, Scope, WriteScope};
 use lakelands_core::rights::{self, Door};
-use lakelands_core::{invalid, links, shape, value};
+use lakelands_core::{describe, invalid, links, shape, value};
 
 use crate::backed::Outputs;
 use crate::declare::{self, invalid_field};
@@ -1878,6 +1878,56 @@ impl Call<'_> {
                 _ => Err(e),
             },
         )?;
+        // A view over the type, as its source or a merged one, reads the
+        // shape the migration leaves: `declare` must still take each such
+        // view against it, or the view would refuse every read after.
+        let mut after = probe.clone();
+        after.types.remove(&m.to.name);
+        after.put(Declaration::Type(m.to.clone()), 0, None);
+        for reader in w.ontology.types.values().map(|e| &e.decl) {
+            let Some(v) = reader.view.as_deref() else {
+                continue;
+            };
+            if v.source != m.to.name && !v.merge.iter().any(|s| s.source == m.to.name) {
+                continue;
+            }
+            declare::check_declaration(&after, &Declaration::Type(reader.clone()), false).map_err(
+                |e| match e {
+                    Error::Refused {
+                        field,
+                        reason: Refusal::Invalid { message },
+                    } => Error::Refused {
+                        field,
+                        reason: Refusal::Invalid {
+                            message: format!("after the migration of `{}`, {message}", m.to.name),
+                        },
+                    },
+                    other => other,
+                },
+            )?;
+            // `declare` checks a view's grouping against its sources; the
+            // fields its `where` and measures read are checked here, by the
+            // rule `describe` uses to show a view.
+            for (source, names) in describe::view_reads(v).unwrap_or_default() {
+                if source != m.to.name {
+                    continue;
+                }
+                if let Some(gone) = names
+                    .iter()
+                    .find(|n| !m.to.fields.iter().any(|f| &f.name == *n))
+                {
+                    let how = match m.renames.iter().find(|(from, _)| from == gone) {
+                        Some((_, to)) => format!("renames to `{to}`"),
+                        None => "drops".to_owned(),
+                    };
+                    return Err(invalid(format!(
+                        "after the migration of `{}`, view `{}` reads `{gone}` of `{source}`, \
+                         which the migration {how}",
+                        m.to.name, reader.name
+                    )));
+                }
+            }
+        }
         let records: Vec<StoredRecord> = view
             .scan(&before.name, &every(true))?
             .into_iter()

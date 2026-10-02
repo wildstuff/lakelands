@@ -94,6 +94,7 @@ macro_rules! door_checks {
             a_masked_field_is_named_but_its_value_is_absent,
             the_tools_follow_the_grants,
             a_verb_tool_says_what_its_risk_does,
+            a_migration_keeps_what_a_view_reads,
             a_view_is_never_migrated,
             nothing_that_never_acts_is_declared_on_a_view,
             a_relation_on_a_view_is_derived,
@@ -1455,6 +1456,73 @@ pub async fn a_view_is_never_migrated(store: Arc<dyn LakeStore>) {
         assert!(
             matches!(&e, Error::Refused { reason: Refusal::Invalid { message }, .. }
                 if message.contains(name)),
+            "{e:?}"
+        );
+    }
+}
+
+/// A view reads its source's shape after a migration as before: a
+/// migration that drops or renames a field the view groups by or
+/// aggregates is refused at the preflight, naming the view and the field,
+/// on the mock as on the store.
+pub async fn a_migration_keeps_what_a_view_reads(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let by_status = TypeDecl {
+        name: "status_totals".into(),
+        key: vec!["status".into()],
+        fields: vec![
+            text("status"),
+            FieldDecl {
+                ty: FieldType::kind(StorageKind::Decimal),
+                ..text("total")
+            },
+        ],
+        field_meta: true,
+        view: Some(Box::new(ViewDecl {
+            source: INVOICE.into(),
+            r#where: None,
+            group_by: vec!["status".into()],
+            measures: vec![Measure {
+                name: "total".into(),
+                expr: "sum(amount)".into(),
+            }],
+            params: Default::default(),
+            merge: Default::default(),
+        })),
+        ..TypeDecl::named("status_totals")
+    };
+    f.catalog
+        .declare(owner, Declaration::Type(by_status))
+        .await
+        .expect("the view is declared");
+    let invoice = fixture()
+        .into_iter()
+        .find_map(|d| match d {
+            Declaration::Type(t) if t.name.as_str() == INVOICE => Some(t),
+            _ => None,
+        })
+        .expect("the fixture declares `invoice`");
+    let mut dropped = invoice.clone();
+    dropped.fields.retain(|x| x.name.as_str() != "amount");
+    let mut renamed = invoice;
+    for x in &mut renamed.fields {
+        if x.name.as_str() == "status" {
+            x.name = "state".into();
+        }
+    }
+    for (to, renames, read) in [
+        (dropped, vec![], "amount"),
+        (renamed, vec![("status".into(), "state".into())], "status"),
+    ] {
+        let e = f
+            .catalog
+            .migrate(owner, lakelands_api::write::Migration { to, renames })
+            .await
+            .expect_err("a field a view reads stays");
+        assert!(
+            matches!(&e, Error::Refused { reason: Refusal::Invalid { message }, .. }
+                if message.contains("status_totals") && message.contains(read)),
             "{e:?}"
         );
     }
