@@ -52,7 +52,7 @@ prompt asks.
 | File | What it holds |
 |---|---|
 | `run-N.prompt.txt` | the prompt of run N, word for word |
-| `run-N.jsonl` | every message of run N as `stream-json` wrote it: the agent's thinking, its text and its calls, and every answer. The harness's own lines (session set-up, rate limits, usage) are left out |
+| `run-N.jsonl` | every message of run N as `stream-json` wrote it: the agent's thinking, its text and its calls, and every answer, in order. Calls, arguments and answers are word for word. Left out, because they say nothing about the walk and this repository is public: the harness's own lines (session set-up, rate limits, usage); the session, message and request ids; the encrypted signature of each thinking block, and the thinking blocks with no text; token counts; and the harness's copies of each call and answer |
 | `run-N.txt` | the same, rendered as text by `render.py` |
 | `tools.json` | the tool list the clerk sees, with every description and schema |
 
