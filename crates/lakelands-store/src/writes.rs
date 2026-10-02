@@ -978,6 +978,7 @@ impl Call<'_> {
             return Ok(o);
         }
         let decl = w.ontology.ty(ty)?;
+        rights::not_a_view(decl)?;
         granted(rights::may_retire(self.who, decl))?;
         let before = live_record(view.as_ref(), ty, key)?;
         cas(opts.expected_version, Some(&before))?;
@@ -1164,6 +1165,9 @@ impl Call<'_> {
         }
         let decl = w.ontology.verb(verb)?.clone();
         let key = scoped(&decl, key, opts.expected_version)?;
+        if key.is_some() {
+            rights::not_a_view(w.ontology.ty(&decl.on)?)?;
+        }
         granted(self.verb_callable(&decl))?;
         if let VerbEffect::External { executor } = &decl.effect {
             self.check_executor(executor)?;
@@ -1296,7 +1300,9 @@ impl Call<'_> {
                 }
             }
             ProposedWrite::Retire { ty, key, opts } => {
-                granted(rights::may_retire(self.who, w.ontology.ty(&ty)?))?;
+                let decl = w.ontology.ty(&ty)?;
+                rights::not_a_view(decl)?;
+                granted(rights::may_retire(self.who, decl))?;
                 let before = live_record(view.as_ref(), &ty, &key)?;
                 cas(opts.expected_version, Some(&before))?;
                 ProposedWrite::Retire { ty, key, opts }
@@ -1308,7 +1314,9 @@ impl Call<'_> {
                 opts,
             } => {
                 let decl = w.ontology.verb(&verb)?.clone();
-                scoped(&decl, key.as_ref(), opts.expected_version)?;
+                if scoped(&decl, key.as_ref(), opts.expected_version)?.is_some() {
+                    rights::not_a_view(w.ontology.ty(&decl.on)?)?;
+                }
                 granted(self.verb_callable(&decl))?;
                 // A call that could not run when accepted is not proposed (013).
                 if let VerbEffect::External { executor } = &decl.effect {
@@ -1496,6 +1504,9 @@ impl Call<'_> {
                 // the head must still fit the proposal, or the accept is
                 // refused and the proposal stays pending.
                 let key = scoped(&decl, key.as_ref(), opts.expected_version)?;
+                if key.is_some() {
+                    rights::not_a_view(w.ontology.ty(&decl.on)?)?;
+                }
                 if let VerbEffect::External { executor } = &decl.effect {
                     self.check_executor(executor)?;
                     external = Some(External {
@@ -2351,6 +2362,7 @@ fn link_relation(
     relation: &RelationName,
 ) -> Result<(TypeName, RelationDecl)> {
     let decl = w.ontology.ty(ty)?;
+    rights::not_a_view(decl)?;
     let r = decl
         .relations
         .iter()
@@ -2493,7 +2505,7 @@ pub fn restrict(
     reason: Option<String>,
 ) -> Result<Position> {
     let mut w = lake.writer();
-    w.ontology.ty(ty)?;
+    rights::not_a_view(w.ontology.ty(ty)?)?;
     let view = lake.engine.view(None)?;
     let before = live_record(view.as_ref(), ty, key)?;
     let version = Version(before.version.0 + 1);

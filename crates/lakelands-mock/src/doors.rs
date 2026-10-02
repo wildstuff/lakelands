@@ -434,6 +434,7 @@ fn link_relation(
     // not carry by link records is invalid; one the principal may not
     // write the links of is not granted.
     let t = st.types.get(ty).ok_or_else(|| no_type(ty))?;
+    not_a_view(&t.decl)?;
     let r = t
         .decl
         .relations
@@ -449,6 +450,18 @@ fn link_relation(
         return Err(refused(Refusal::NotGranted));
     }
     Ok(r)
+}
+
+/// As the store: a view at a door that writes or holds a record is
+/// refused in one sentence.
+fn not_a_view(decl: &TypeDecl) -> Result<()> {
+    match decl.view {
+        Some(_) => Err(invalid(format!(
+            "`{}` is a view; it is computed, never written",
+            decl.name
+        ))),
+        None => Ok(()),
+    }
 }
 
 /// The relation's cardinality over live links, the link from `from` to
@@ -814,6 +827,14 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
                                     ),
                                 },
                             });
+                        }
+                        // A verb on a record of a view could never act.
+                        Declaration::Verb(v) if v.scope == VerbScope::Record => {
+                            return Err(invalid(format!(
+                                "verb `{}` is declared on a record of `{ty}`, a view, whose \
+                                 records are computed and never written",
+                                v.name
+                            )));
                         }
                         _ => {}
                     }
@@ -1267,9 +1288,7 @@ fn check_patch<'a>(
     // Records of a `sys.` type are written under grants like any other;
     // only declaring such a type is reserved.
     let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
-    if t.decl.view.is_some() {
-        return Err(invalid(format!("`{ty}` is a view and is never written")));
-    }
+    not_a_view(&t.decl)?;
     for (name, v) in patch {
         let f = field(&t.decl, name).ok_or_else(|| {
             on(
@@ -1619,6 +1638,7 @@ fn plan_retire(
 ) -> Result<Version> {
     let By { st, who, cause } = *by;
     let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
+    not_a_view(&t.decl)?;
     if !may_retire(who, t) {
         return Err(refused(Refusal::NotGranted));
     }
@@ -1655,6 +1675,12 @@ fn check_call<'a>(
     })?;
     // The key against the scope comes before anything else is read.
     let key = scoped(v, key, opts)?;
+    // A record of a view is computed, never written or acted on.
+    if key.is_some()
+        && let Some(t) = st.types.get(&v.on)
+    {
+        not_a_view(&t.decl)?;
+    }
     // A declared verb the caller may not call is refused, as the store
     // refuses it; only an undeclared one is not found.
     if !callable(st, who, v) {
