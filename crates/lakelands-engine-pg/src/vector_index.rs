@@ -140,17 +140,12 @@ fn literal(s: &str) -> String {
 
 /// The name of `ty.field`'s index: stable, and short enough for an
 /// identifier whatever the names. `CREATE INDEX` takes it bare (the index
-/// goes in its table's schema); [`index_name`] qualifies it.
+/// goes in its table's schema); [`Names::t`] qualifies it.
 fn index_bare(ty: &TypeName, field: &str) -> String {
     use sha2::{Digest as _, Sha256};
     let digest = Sha256::digest(format!("{ty}\0{field}").as_bytes());
     let hex: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
     format!("vindex_{hex}")
-}
-
-/// `ty.field`'s index, named with the lake's schema.
-fn index_name(names: &Names, ty: &TypeName, field: &str) -> String {
-    names.t(&index_bare(ty, field))
 }
 
 /// The vector fields of `decl` the lake asks an index for, with their
@@ -205,7 +200,7 @@ pub(crate) fn rebuild(
     for (field, _) in marked(db, names, ty)? {
         db.batch(&format!(
             "DROP INDEX IF EXISTS {}",
-            index_name(names, ty, &field)
+            names.t(&index_bare(ty, &field))
         ))?;
         if v.is_some() {
             db.execute(
@@ -230,7 +225,7 @@ pub(crate) fn rebuild(
         // An index a clear left without its mark goes too.
         db.batch(&format!(
             "DROP INDEX IF EXISTS {}",
-            index_name(names, ty, field.as_str())
+            names.t(&index_bare(ty, field.as_str()))
         ))?;
         db.batch(&format!(
             "CREATE INDEX {name} ON {vectors} USING hnsw ((unit::{vt}) {s}.vector_l2_ops) \
@@ -334,22 +329,18 @@ pub(crate) fn catch_up(
         let Some(folded) = projection::folded(db, names)? else {
             return Ok(());
         };
-        let asked: Vec<String> = db
-            .query(
-                &format!(
-                    "SELECT substr(key, $1) FROM {} WHERE ty = $2 AND left(key, $1 - 1) = $3 \
-                     AND until IS NULL",
-                    names.t("records"),
-                ),
-                &[
-                    &(VECTOR_INDEX_SETTING.len() as i32 + 1),
-                    &SETTING_TYPE,
-                    &VECTOR_INDEX_SETTING,
-                ],
-            )?
-            .iter()
-            .map(|r| r.get(0))
-            .collect();
+        let asked: Vec<String> = db.column(
+            &format!(
+                "SELECT substr(key, $1) FROM {} WHERE ty = $2 AND left(key, $1 - 1) = $3 \
+                 AND until IS NULL",
+                names.t("records"),
+            ),
+            &[
+                &(VECTOR_INDEX_SETTING.len() as i32 + 1),
+                &SETTING_TYPE,
+                &VECTOR_INDEX_SETTING,
+            ],
+        )?;
         let with_marks: Vec<String> = db
             .query(
                 &format!("SELECT k FROM {} WHERE k LIKE 'vindex.%'", names.t("meta")),
