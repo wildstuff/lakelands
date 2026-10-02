@@ -125,6 +125,7 @@ macro_rules! door_checks {
             ingest_is_content_addressed,
             a_cursor_keeps_its_page_set_while_writes_land,
             a_page_answers_its_total_and_jumps_by_offset,
+            a_cursor_continues_only_its_own_answer,
             after_walks_the_pages_the_cursor_walks,
             after_is_refused_naming_the_member,
             a_principal_of_another_lake_is_refused,
@@ -2810,6 +2811,60 @@ pub async fn a_page_answers_its_total_and_jumps_by_offset(store: Arc<dyn LakeSto
                 max: Limits::default().max_offset
             }
         )
+    );
+}
+
+/// A cursor continues only the answer it was handed out for: a cursor of
+/// `find` on `invoice` is refused by `find` on another type and by `query`,
+/// as invalid (018).
+pub async fn a_cursor_continues_only_its_own_answer(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    f.sortable().await;
+    let first = f
+        .catalog
+        .find(
+            &f.cast.owner,
+            &ty(INVOICE),
+            Find {
+                limit: Some(1),
+                ..Find::default()
+            },
+        )
+        .await
+        .unwrap();
+    let Found::Records {
+        next_cursor: Some(c),
+        ..
+    } = first.data
+    else {
+        panic!("a first page of one invoice hands out a cursor");
+    };
+    let elsewhere = f
+        .catalog
+        .find(
+            &f.cast.owner,
+            &ty(PARTNER),
+            Find {
+                cursor: Some(c.clone()),
+                ..Find::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(refusal(&elsewhere).1, Refusal::Invalid { .. }),
+        "{elsewhere:?}"
+    );
+    let mut p: Pattern = serde_json::from_value(json!({
+        "start": {"type": INVOICE},
+        "project": {"as": "rows"}
+    }))
+    .expect("a pattern");
+    p.cursor = Some(c);
+    let queried = f.catalog.query(&f.cast.owner, p).await.unwrap_err();
+    assert!(
+        matches!(refusal(&queried).1, Refusal::Invalid { .. }),
+        "{queried:?}"
     );
 }
 

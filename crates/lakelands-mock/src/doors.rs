@@ -190,14 +190,38 @@ fn reserved(name: &str, who: &Principal) -> bool {
 
 /// A page token: the position the first page was read at, and how many
 /// rows came before this page.
-fn cursor(p: Position, offset: usize) -> Cursor {
-    Cursor(format!("{}.{offset}", p.0))
+/// A cursor for the page at `offset` of an answer read at `p` through
+/// `door` on `ty`: it continues that answer and no other (018).
+fn cursor(p: Position, offset: usize, door: &str, ty: Option<&TypeName>) -> Cursor {
+    let ty = ty.map_or("", TypeName::as_str);
+    Cursor(format!("{}.{offset}.{door}.{ty}", p.0))
 }
 
-fn uncursor(c: &Cursor) -> Result<(Position, usize)> {
-    c.0.split_once('.')
-        .and_then(|(p, o)| Some((Position(p.parse().ok()?), o.parse().ok()?)))
-        .ok_or_else(|| invalid("the cursor was not issued by this lake"))
+/// A cursor's position and offset, when it was handed out for `door` on
+/// `ty`; any other use is refused, naming what differs.
+fn uncursor(c: &Cursor, door: &str, ty: Option<&TypeName>) -> Result<(Position, usize)> {
+    let mut parts = c.0.splitn(4, '.');
+    let (Some(p), Some(o), Some(d), Some(t)) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(invalid("the cursor was not issued by this lake"));
+    };
+    let (Ok(p), Ok(o)) = (p.parse(), o.parse()) else {
+        return Err(invalid("the cursor was not issued by this lake"));
+    };
+    let on = |door: &str, ty: &str| match ty {
+        "" => format!("`{door}`"),
+        ty => format!("`{door}` on `{ty}`"),
+    };
+    let here = ty.map_or("", TypeName::as_str);
+    if d != door || t != here {
+        return Err(invalid(format!(
+            "the cursor was handed out for {}, not {}; continue it there",
+            on(d, t),
+            on(door, here)
+        )));
+    }
+    Ok((Position(p), o))
 }
 
 /// The one order of `find`: sort values in turn, a missing value last in
@@ -294,10 +318,15 @@ fn resume_after(
 }
 
 /// A page of `rows` from `offset`, and the cursor after it.
-fn page<T>(rows: Vec<T>, at: Position, offset: usize, limit: usize) -> (Vec<T>, Option<Cursor>) {
+fn page<T>(
+    rows: Vec<T>,
+    (at, door, ty): (Position, &str, Option<&TypeName>),
+    offset: usize,
+    limit: usize,
+) -> (Vec<T>, Option<Cursor>) {
     let more = rows.len() > offset + limit;
     let rows: Vec<T> = rows.into_iter().skip(offset).take(limit).collect();
-    (rows, more.then(|| cursor(at, offset + limit)))
+    (rows, more.then(|| cursor(at, offset + limit, door, ty)))
 }
 
 impl MockCatalog {
@@ -2193,7 +2222,7 @@ impl Catalog for MockCatalog {
         self.admit(who)?;
         let (pinned, offset) = match &find.cursor {
             Some(c) => {
-                let (p, o) = uncursor(c)?;
+                let (p, o) = uncursor(c, "find", Some(ty))?;
                 (Some(p), o)
             }
             None => (find.at.as_of, 0),
@@ -2285,7 +2314,12 @@ impl Catalog for MockCatalog {
             .into_iter()
             .map(|r| st.read(who, r, find.with_meta))
             .collect();
-        let (rows, next_cursor) = page(rows, position, offset + skip, self.limit(find.limit));
+        let (rows, next_cursor) = page(
+            rows,
+            (position, "find", Some(ty)),
+            offset + skip,
+            self.limit(find.limit),
+        );
         Ok(Reply {
             position,
             data: Found::Records {
@@ -2546,7 +2580,7 @@ impl Catalog for MockCatalog {
         self.admit(who)?;
         let (pinned, offset) = match &pattern.cursor {
             Some(c) => {
-                let (p, o) = uncursor(c)?;
+                let (p, o) = uncursor(c, "query", Some(&pattern.start.ty))?;
                 (Some(p), o)
             }
             None => (pattern.at.as_of, 0),
@@ -2605,7 +2639,12 @@ impl Catalog for MockCatalog {
                 seeds,
                 self.shared.limits.max_graph_nodes,
             )?;
-            let (rows, next_cursor) = page(rows, position, offset, self.limit(pattern.limit));
+            let (rows, next_cursor) = page(
+                rows,
+                (position, "query", Some(&pattern.start.ty)),
+                offset,
+                self.limit(pattern.limit),
+            );
             return Ok(Reply {
                 position,
                 data: QueryResult::Rows { rows, next_cursor },
@@ -2763,7 +2802,12 @@ impl Catalog for MockCatalog {
                 row
             })
             .collect();
-        let (rows, next_cursor) = page(rows, position, offset, self.limit(pattern.limit));
+        let (rows, next_cursor) = page(
+            rows,
+            (position, "query", Some(&pattern.start.ty)),
+            offset,
+            self.limit(pattern.limit),
+        );
         Ok(Reply {
             position,
             data: QueryResult::Rows { rows, next_cursor },
@@ -2774,7 +2818,7 @@ impl Catalog for MockCatalog {
         self.admit(who)?;
         let (pinned, offset) = match &search.cursor {
             Some(c) => {
-                let (p, o) = uncursor(c)?;
+                let (p, o) = uncursor(c, "search", Some(&search.ty))?;
                 (Some(p), o)
             }
             None => (search.at.as_of, 0),
@@ -2925,7 +2969,12 @@ impl Catalog for MockCatalog {
                 score,
             })
             .collect();
-        let (hits, next_cursor) = page(hits, position, offset, search.k.max(1) as usize);
+        let (hits, next_cursor) = page(
+            hits,
+            (position, "search", Some(&search.ty)),
+            offset,
+            search.k.max(1) as usize,
+        );
         Ok(Reply {
             position,
             data: Hits {
@@ -3108,7 +3157,7 @@ impl Catalog for MockCatalog {
         self.admit(who)?;
         let (pinned, offset) = match &filter.cursor {
             Some(c) => {
-                let (p, o) = uncursor(c)?;
+                let (p, o) = uncursor(c, "proposals", None)?;
                 (Some(p), o)
             }
             None => (filter.at.as_of, 0),
@@ -3148,7 +3197,12 @@ impl Catalog for MockCatalog {
         if !asc {
             rows.reverse();
         }
-        let (rows, _) = page(rows, position, offset, self.limit(filter.limit));
+        let (rows, _) = page(
+            rows,
+            (position, "proposals", None),
+            offset,
+            self.limit(filter.limit),
+        );
         Ok(Reply {
             position,
             data: rows,

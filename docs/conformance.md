@@ -406,6 +406,7 @@ belongs in the suite, not beside one engine:
 **cursors**
 
 - `a_cursor_stays_on_the_position_of_its_first_page` — the glossary: a cursor is bound to the position its first page was read at, so a page set is stable while the lake is written
+- `a_cursor_continues_only_the_answer_it_was_handed_out_for` — 018 and 029: a page continues only the answer its cursor was handed out for, the same door and the same type: a cursor of `find` on one type continues that `find`, and is refused as invalid by `find` on another type, by `query` and by `search`, naming where it belongs; a cursor of `query` or `search` is refused by `find` alike
 
 **feed**
 
