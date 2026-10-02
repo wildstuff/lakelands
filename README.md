@@ -75,22 +75,31 @@ of changes without polling, `propose`, `proposals`, `accept` and
 `add_field` and `migrate` for the schema. Served over MCP (stdio and
 HTTP) and REST from one catalog. Agents never write a query language.
 
-> **Status: `0.6.1`.** Lakelands `0.6.1` is the `lakelands` CLI, its MCP
+> **Status: `0.7.0`.** Lakelands `0.7.0` is the `lakelands` CLI, its MCP
 > server (stdio and streamable HTTP) and its REST door over the SQLite,
 > in-memory and PostgreSQL engines, all three passing the whole
 > conformance suite (296 checks through the doors and 54 through the
 > engine seam), with 44 decision records and the event log at format
-> version 7, installable from the release. Its budgets: the store facade
+> version 8, installable from the release. Its budgets: the store facade
 > and engine traits hold 53 of 110 methods, the core crates' product
-> code 34 395 of 36 000 lines and their specification 36 537 of 40 000,
-> and 2 of 20 `cfg(feature)` sites. Beside what `0.6.0` held, a trigger's
-> guard can tell a retirement from an update with `retired()`, so a
-> trigger can fire on closing a record and not again when the closed
-> record is retired; a declaration calling it is log format 7. A pattern
-> started on a view finds the view's records instead of answering as if
-> it were empty; a step with `where` that reaches a view is fixed after.
-> A low verb that reaches outside the lake says in its tool that it runs
-> at once. The build follows Rust 1.99. Views over more than one source
+> code 35 189 of 36 000 lines and their specification 38 495 of 40 000,
+> and 2 of 20 `cfg(feature)` sites. Beside what `0.6.1` held, a view
+> declares parameters that a read binds, so its window can be anchored
+> on a business date, and a bundle declares them too. A verb can be
+> called on its type, with no record, so an effect that creates
+> something outside the lake runs under its type's grants, by its
+> declared risk, with its answer recorded. Both are log format 8. A
+> pattern step's `where` keeps the view records it reaches, a view is
+> refused where it would be searched silently empty, and a cycle of
+> views over `source` is refused when declared instead of overflowing
+> on read. The fourth walk ran a procedure on the lake, from an order to
+> its payment and its lineage, and what it found is fixed: a retried
+> verb answers its own call, not a host write that names it; a view
+> declares exactly the fields it computes; a bundle can declare a
+> view's parameters; and the log format says that a version is raised
+> for the whole append that needs it. `describe` answers a view whose
+> measure reads another. A release names every changed trait method
+> and field type a host must follow. Views over more than one source
 > come after.
 
 ## Try it
