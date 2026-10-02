@@ -588,6 +588,37 @@ pub(crate) fn retired(
     )
 }
 
+/// Refuse a verb whose `requires` does not hold on `record`.
+fn requires(
+    w: &Writer,
+    verb: &VerbDecl,
+    key: &RecordKey,
+    record: &StoredRecord,
+    now: Timestamp,
+) -> Result<()> {
+    let Some(r) = &verb.requires else {
+        return Ok(());
+    };
+    let e = declare::condition(r, Place::Record, "requires")?;
+    let scope = RecordScope {
+        fields: &record.fields,
+        settings: Some(&w.settings),
+        now,
+    };
+    if expr::holds(&e, &scope).unwrap_or(false) {
+        return Ok(());
+    }
+    Err(Error::Refused {
+        field: None,
+        reason: Refusal::Precondition {
+            message: format!(
+                "verb `{}` requires what `{}` `{key}` does not hold",
+                verb.name, verb.on
+            ),
+        },
+    })
+}
+
 /// The scope a verb's assignments see: the record's fields, and
 /// `payload.<name>` for the call's payload.
 struct VerbScope<'a> {
@@ -1058,29 +1089,7 @@ impl Call<'_> {
         let record = live_record(view, &verb.on, key)?;
         // The version before anything is judged on the record (024).
         cas(expected, Some(&record))?;
-        if let Some(r) = &verb.requires {
-            let e = declare::condition(r, Place::Record, "requires")?;
-            if !expr::holds(
-                &e,
-                &RecordScope {
-                    fields: &record.fields,
-                    settings: Some(&w.settings),
-                    now,
-                },
-            )
-            .unwrap_or(false)
-            {
-                return Err(Error::Refused {
-                    field: None,
-                    reason: Refusal::Precondition {
-                        message: format!(
-                            "verb `{}` requires what `{}` `{key}` does not hold",
-                            verb.name, verb.on
-                        ),
-                    },
-                });
-            }
-        }
+        requires(w, verb, key, &record, now)?;
         let called_at = position_after(w, n);
         let mut drafts = vec![called];
         let mut reactions = Vec::new();
@@ -1192,8 +1201,13 @@ impl Call<'_> {
             drafts.extend(reactions);
             drafts
         } else {
+            // A call that could not run now is not proposed: the version,
+            // then `requires`, as when it runs; accepting it judges the
+            // record again (013).
             if let Some(key) = key {
-                live_record(view.as_ref(), &decl.on, key)?;
+                let record = live_record(view.as_ref(), &decl.on, key)?;
+                cas(opts.expected_version, Some(&record))?;
+                requires(&w, &decl, key, &record, now)?;
             }
             let position = position_after(&w, 0);
             let id = opts.idempotency_key.as_ref().map_or_else(
@@ -1329,6 +1343,10 @@ impl Call<'_> {
                         1,
                         self.who,
                     )?;
+                } else if let Some(key) = &key {
+                    let record = live_record(view.as_ref(), &decl.on, key)?;
+                    cas(opts.expected_version, Some(&record))?;
+                    requires(&w, &decl, key, &record, now)?;
                 }
                 ProposedWrite::Call {
                     verb,

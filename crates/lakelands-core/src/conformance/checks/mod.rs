@@ -185,6 +185,7 @@ pub const ALL: &[Check] = &[
     search_fields::FIELDS_KEEP_THE_EMBED_PROBE,
     proposals::VERB_BY_RISK,
     proposals::EXTERNAL_UNBOUND,
+    proposals::NOT_PROPOSED_IF_IT_COULD_NOT_RUN,
     proposals::ACCEPT_APPLIES,
     proposals::REJECT_AND_DECIDED,
     proposals::WHO_DECIDES,

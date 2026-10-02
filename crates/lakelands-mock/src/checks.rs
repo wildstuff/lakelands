@@ -98,6 +98,7 @@ macro_rules! door_checks {
             a_verb_on_its_type_is_called_without_a_key,
             a_low_risk_verb_runs_at_once,
             a_riskier_verb_is_proposed_and_accept_applies_it,
+            a_call_that_could_not_run_now_is_neither_run_nor_proposed,
             a_rejected_proposal_writes_nothing_and_stays_decided,
             only_a_reviewer_decides_proposals,
             sys_types_cannot_be_declared,
@@ -1220,6 +1221,66 @@ pub async fn a_low_risk_verb_runs_at_once(store: Arc<dyn LakeStore>) {
     assert_eq!(f.head().await, p);
     let r = f.read(&f.cast.clerk, "INV-1").await;
     assert_eq!(field(&r, "status"), Some(&json!("approved")));
+}
+
+/// A call that could not run now is neither run nor proposed, at any risk
+/// and through `call` or `propose`: at a stale version it is a conflict,
+/// the version first; with a `requires` that does not hold on the record,
+/// a precondition (013 and 024, extended).
+pub async fn a_call_that_could_not_run_now_is_neither_run_nor_proposed(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    for risk in ["low", "high"] {
+        let d = json!({"declare": "verb", "name": format!("settle_{risk}"), "on": INVOICE,
+                       "risk": risk, "requires": "status = 'open'", "effect": "write",
+                       "set": [{"field": "status", "value": "'settled'"}]});
+        let d = serde_json::from_value::<Declaration>(d).unwrap();
+        f.catalog.declare(owner, d).await.unwrap();
+    }
+    f.write(owner, "INV-1", &[("status", json!("open"))]).await;
+    f.write(owner, "INV-1", &[("status", json!("closed"))])
+        .await;
+    let head = f.head().await;
+    for verb in ["settle_low", "settle_high"] {
+        for (version, proposed) in [
+            (None, false),
+            (Some(1), false),
+            (None, true),
+            (Some(1), true),
+        ] {
+            let opts = WriteOpts {
+                expected_version: version.map(Version),
+                ..WriteOpts::default()
+            };
+            let e = if proposed {
+                let write = ProposedWrite::Call {
+                    verb: verb.into(),
+                    key: Some(key("INV-1")),
+                    payload: Patch::new(),
+                    opts,
+                };
+                f.catalog.propose(owner, write, "later".into()).await
+            } else {
+                let k = key("INV-1");
+                f.catalog
+                    .call(owner, &verb.into(), Some(&k), Patch::new(), opts)
+                    .await
+            }
+            .expect_err("`INV-1` is closed, at version 2");
+            match version {
+                Some(_) => assert!(
+                    matches!(e, Error::Conflict { expected, actual }
+                        if expected == Version(1) && actual == Version(2)),
+                    "`{verb}` at version 1, proposed {proposed}: {e:?}"
+                ),
+                None => assert!(
+                    matches!(refusal(&e).1, Refusal::Precondition { .. }),
+                    "`{verb}`, proposed {proposed}: {e:?}"
+                ),
+            }
+        }
+    }
+    assert_eq!(f.head().await, head, "nothing is appended");
 }
 
 /// A verb above `low` risk is proposed, not run; accepting the proposal
