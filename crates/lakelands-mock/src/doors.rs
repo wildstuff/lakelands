@@ -955,6 +955,7 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
                 // its shape alone, as a type's own field is.
                 let link = crate::links::link_type(&d.name, r);
                 let mut r = r.clone();
+                r.fields.retain(|f| access(who, &link, f) != Access::None);
                 for f in &mut r.fields {
                     if !access(who, &link, f).reads() {
                         f.derived = None;
@@ -1203,18 +1204,23 @@ fn filter(
 
 /// Refuse a field the type does not declare or the principal may not read.
 fn readable(_: &State, who: &Principal, t: &DeclaredType, name: &FieldName) -> Result<()> {
-    let f = field(&t.decl, name).ok_or_else(|| {
-        on(
-            name,
-            Refusal::Invalid {
-                message: format!("`{}` has no field `{name}`", t.decl.name),
-            },
-        )
-    })?;
-    if !access(who, &t.decl, f).reads() {
-        return Err(on(name, Refusal::NotGranted));
+    let f = field(&t.decl, name).ok_or_else(|| no_field(&t.decl.name, name))?;
+    match access(who, &t.decl, f) {
+        Access::None => Err(no_field(&t.decl.name, name)),
+        a if !a.reads() => Err(on(name, Refusal::NotGranted)),
+        _ => Ok(()),
     }
-    Ok(())
+}
+
+/// The answer for a field the type does not declare, which is also the
+/// answer for one the principal may not know of.
+fn no_field(ty: &TypeName, name: &FieldName) -> Error {
+    on(
+        name,
+        Refusal::Invalid {
+            message: format!("`{ty}` has no field `{name}`"),
+        },
+    )
 }
 
 /// Whether a record is valid at a business instant.
@@ -1296,6 +1302,9 @@ fn check_patch<'a>(
                 },
             )
         })?;
+        if access(who, &t.decl, f) == Access::None {
+            return Err(no_field(&t.decl.name, name));
+        }
         if !door_writes(door, f.authority) {
             return Err(on(name, Refusal::WrongDoor));
         }
@@ -1401,6 +1410,9 @@ fn with_key_fields(
                 _ => Value::String(part),
             };
             let v = value::canonical(&f.ty, &v);
+            if access(who, &t.decl, f) == Access::None {
+                return Err(no_field(&t.decl.name, name));
+            }
             if !door_writes(door, f.authority) {
                 return Err(on(name, Refusal::WrongDoor));
             }
@@ -2745,11 +2757,13 @@ impl Catalog for MockCatalog {
             .into_iter()
             .flat_map(|e| e.from.iter());
         let searched: Vec<&FieldName> = match text_fields {
+            // Naming none, it reads the searchable fields the caller knows
+            // of; one it may not know of is never searched.
             None => t
                 .decl
                 .fields
                 .iter()
-                .filter(|f| f.searchable)
+                .filter(|f| f.searchable && access(who, &t.decl, f) != Access::None)
                 .map(|f| &f.name)
                 .collect(),
             Some([]) => return Err(invalid("`fields` names no field")),
@@ -2772,8 +2786,8 @@ impl Catalog for MockCatalog {
         for name in searched
             .iter()
             .copied()
-            .chain(vector_field)
             .chain(embedded_from)
+            .chain(vector_field)
         {
             readable(&st, who, t, name)?;
         }

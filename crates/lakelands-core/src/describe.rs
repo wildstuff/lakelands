@@ -340,6 +340,9 @@ fn type_description(
 fn relation_description(t: &TypeName, r: &RelationDecl, who: &Principal) -> RelationDecl {
     let link = crate::links::link_type(t, r);
     let mut r = r.clone();
+    // A link field the principal may not know of is not described at all.
+    r.fields
+        .retain(|f| field_access(who, &link, f) != Access::None);
     for f in &mut r.fields {
         if !field_access(who, &link, f).reads() {
             f.derived = None;

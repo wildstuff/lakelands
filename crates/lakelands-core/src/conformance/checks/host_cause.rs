@@ -23,8 +23,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, doors, events_from, field, head_unmoved, ingest, limits, owner, patch, principal,
-    reason, refused_on, source_record, trigger_on, type_decl,
+    Lake, Must, doors, events_from, field, head_unmoved, ingest, limits, no_such_field, owner,
+    patch, principal, reason, refused_on, source_record, trigger_on, type_decl,
 };
 
 check!(
@@ -606,7 +606,9 @@ async fn a_triggers_ceiling_is_read_with_the_cause_at_the_append(
                 Some(("once", Refusal::TooDeep { max: 0 }))
             )
         } else {
-            matches!(reason(&late), Some(Refusal::NotGranted))
+            // Nobody may know of `n`, so its write is answered as for a
+            // field the type does not declare (006).
+            no_such_field(&late, "n")
         };
         if !ok {
             red.push(format!("{what} answered {late:?}"));
@@ -616,7 +618,7 @@ async fn a_triggers_ceiling_is_read_with_the_cause_at_the_append(
         red.is_empty(),
         "a reaction at depth 1 naming the firing of `once` (max_depth 0) is refused too_deep \
          naming `once`, read at the append after the door's own checks, so one without a \
-         grant is refused not_granted first: {}",
+         grant is refused by those first: {}",
         red.join("; ")
     );
     head_unmoved(

@@ -146,6 +146,7 @@ pub const ALL: &[Check] = &[
     provenance::FIELD_PROVENANCE,
     masking::MASKED_AND_ABSENT,
     masking::BUILT_FROM_HIDDEN,
+    masking::NONE_HIDES,
     values::DATE_TIME_CANONICAL,
     values::BYTES_ONE_SPELLING,
     values::VECTOR_LENGTH,

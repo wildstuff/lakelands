@@ -74,6 +74,14 @@ pub fn refused_on(a: &impl Answer) -> Option<(&str, &Refusal)> {
     }
 }
 
+/// Whether an answer is the one for a field the type does not declare,
+/// naming `name`: also the answer for a field the principal may not know
+/// of (`docs/decisions/006-grants-not-roles.md`).
+pub fn no_such_field(a: &impl Answer, name: &str) -> bool {
+    matches!(refused_on(a), Some((f, Refusal::Invalid { message }))
+        if f == name && message.contains("has no field"))
+}
+
 /// Whether an answer is a refusal as invalid.
 pub fn is_invalid(a: &impl Answer) -> bool {
     matches!(reason(a), Some(Refusal::Invalid { .. }))

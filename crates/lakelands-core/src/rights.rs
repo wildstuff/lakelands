@@ -40,9 +40,12 @@ pub fn is_system(ty: &TypeName) -> bool {
 /// One principal's access to one declared field of `decl`: the grant,
 /// read no further than every field it is computed or embedded from
 /// (`depends_on`, `embed.from`, and theirs in turn), since such a field
-/// hands out what it is built from; a `sensitive` field is shown masked
-/// rather than dropped when that gives no read
+/// hands out what it is built from
 /// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
+/// A field that resolves to none does not exist for the principal. A
+/// `sensitive` field nobody granted or denied by name is shown masked
+/// rather than dropped; a `none` given by name, or handed down by a
+/// source, hides it (`docs/decisions/006-grants-not-roles.md`).
 pub fn field_access(who: &Principal, decl: &TypeDecl, field: &FieldDecl) -> Access {
     access_of(who, decl, field, &mut Vec::new())
 }
@@ -53,22 +56,27 @@ fn access_of<'d>(
     field: &'d FieldDecl,
     seen: &mut Vec<&'d FieldName>,
 ) -> Access {
-    match built_from(who, decl, field, seen) {
-        Access::None if field.sensitive => Access::Masked,
+    let (access, from_source) = built_from(who, decl, field, seen);
+    let named =
+        (who.grants.types.get(&decl.name)).is_some_and(|t| t.fields.contains_key(&field.name));
+    match access {
+        Access::None if field.sensitive && !named && !from_source => Access::Masked,
         a => a,
     }
 }
 
 /// A field's grant, lowered by each field it is built from that the
 /// principal may not read: to masked by a masked one, to none by any
-/// other. `seen` guards a cycle a declaration could not hold anyway.
+/// other, and whether a source hid it. `seen` guards a cycle a
+/// declaration could not hold anyway.
 fn built_from<'d>(
     who: &Principal,
     decl: &'d TypeDecl,
     field: &'d FieldDecl,
     seen: &mut Vec<&'d FieldName>,
-) -> Access {
+) -> (Access, bool) {
     let mut access = who.grants.access(&decl.name, &field.name);
+    let mut from_source = false;
     seen.push(&field.name);
     let sources = field
         .depends_on
@@ -85,11 +93,14 @@ fn built_from<'d>(
             s if s.reads() => access,
             Access::Masked if access.reads() => Access::Masked,
             Access::Masked => access,
-            _ => Access::None,
+            _ => {
+                from_source = true;
+                Access::None
+            }
         };
     }
     seen.pop();
-    access
+    (access, from_source)
 }
 
 /// Whether the principal may retire records of a type: every field of the
@@ -182,8 +193,10 @@ pub fn check_probe<'a>(
 ) -> Result<(), Error> {
     for name in probed {
         let field = field_of(decl, name)?;
-        if !field_access(who, decl, field).reads() {
-            return Err(refused(Some(name), Refusal::NotGranted));
+        match field_access(who, decl, field) {
+            Access::None => return Err(no_field(decl, name)),
+            a if !a.reads() => return Err(refused(Some(name), Refusal::NotGranted)),
+            _ => {}
         }
     }
     Ok(())
@@ -212,7 +225,7 @@ pub fn check_search(
         .into_iter()
         .flat_map(|e| e.from.iter());
     let Some(named) = text_fields else {
-        let searched = decl.fields.iter().filter(|f| f.searchable).map(|f| &f.name);
+        let searched = searched_fields(who, decl);
         return check_probe(who, decl, searched.chain(embedded_from).chain(vector_field));
     };
     if named.is_empty() {
@@ -229,6 +242,18 @@ pub fn check_search(
         }
     }
     check_probe(who, decl, embedded_from.chain(vector_field))
+}
+
+/// The searchable fields a search that names none reads: those the
+/// principal knows of. A field it may not know of is never searched, so
+/// the search neither refuses nor names it; a masked one is still probed.
+pub fn searched_fields<'d>(
+    who: &Principal,
+    decl: &'d TypeDecl,
+) -> impl Iterator<Item = &'d FieldName> {
+    (decl.fields.iter())
+        .filter(move |f| f.searchable && field_access(who, decl, f) != Access::None)
+        .map(|f| &f.name)
 }
 
 /// The door a write comes through.
@@ -267,6 +292,9 @@ pub fn check_write(
     not_a_view(decl)?;
     for name in patch.keys() {
         let field = field_of(decl, name)?;
+        if field_access(who, decl, field) == Access::None {
+            return Err(no_field(decl, name));
+        }
         if !door.admits(field.authority) {
             return Err(refused(Some(name), Refusal::WrongDoor));
         }
@@ -296,9 +324,15 @@ fn refused(field: Option<&FieldName>, reason: Refusal) -> Error {
 
 /// The field `decl` declares as `name`, or a refusal naming it.
 fn field_of<'d>(decl: &'d TypeDecl, name: &FieldName) -> Result<&'d FieldDecl, Error> {
-    let message = || format!("`{}` has no field `{name}`", decl.name);
     let field = decl.fields.iter().find(|f| &f.name == name);
-    field.ok_or_else(|| refused(Some(name), Refusal::Invalid { message: message() }))
+    field.ok_or_else(|| no_field(decl, name))
+}
+
+/// The answer for a field `decl` does not declare, which is also the
+/// answer for one the principal may not know of.
+fn no_field(decl: &TypeDecl, name: &FieldName) -> Error {
+    let message = format!("`{}` has no field `{name}`", decl.name);
+    refused(Some(name), Refusal::Invalid { message })
 }
 
 #[cfg(test)]

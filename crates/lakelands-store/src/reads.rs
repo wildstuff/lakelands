@@ -62,7 +62,7 @@ use lakelands_api::read::{
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::{Proposal, ProposalFilter};
 use lakelands_api::{
-    Cursor, Error, FieldName, Missing, Position, Principal, Record, RecordKey, Refusal,
+    Access, Cursor, Error, FieldName, Missing, Position, Principal, Record, RecordKey, Refusal,
     RelationName, Result, Timestamp, TypeName, Value,
 };
 use lakelands_core::expr::{self, Place, RecordScope, aggregate};
@@ -1134,6 +1134,18 @@ impl<'a> Reader<'a> {
             SearchMode::Vector { .. } => None,
         };
         rights::check_search(self.who, &decl, text_fields, vector_field.as_ref())?;
+        // A search that names no fields reads only the searchable fields
+        // the principal knows of (024); none hidden, it reads them all.
+        let known: Vec<FieldName>;
+        let hidden = (decl.fields.iter())
+            .any(|f| f.searchable && rights::field_access(self.who, &decl, f) == Access::None);
+        let text_fields = match text_fields {
+            None if hidden => {
+                known = rights::searched_fields(self.who, &decl).cloned().collect();
+                Some(known.as_slice())
+            }
+            named => named,
+        };
         let filter = s
             .filter
             .as_ref()

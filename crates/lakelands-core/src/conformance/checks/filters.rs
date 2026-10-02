@@ -12,8 +12,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, agg, all_found, declare, doors, field, field_writer, find_where, order, owner,
-    refused_on, source_record, type_decl, windows_reach_head,
+    Lake, Must, agg, all_found, declare, doors, field, field_writer, find_where, no_such_field,
+    order, owner, refused_on, source_record, type_decl, windows_reach_head,
 };
 
 check!(
@@ -37,7 +37,7 @@ check!(
 check!(
     /// A read may not probe a field its principal may not read.
     PROBING_REFUSED = probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggregate,
-    "024: filtering, ordering or aggregating over a field the principal may not read is refused, naming the field"
+    "024 and 006: filtering, ordering or aggregating over a field the principal sees masked is refused as not granted, naming the field; over one it may not see at all, it is answered as for a field the type does not declare"
 );
 
 check!(
@@ -166,55 +166,62 @@ async fn probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggre
     l.upsert("line", "a", json!({"qty": 1, "note": "secret"}))
         .await?;
 
-    // Reads everything but `note`, which it may not see at all.
-    let mut reader = field_writer(store.as_ref(), "reader", "line", &[]);
-    reader
-        .grants
-        .types
-        .get_mut(&lakelands_api::TypeName::from("line"))
-        .expect("field_writer grants the type")
-        .fields
-        .insert("note".into(), lakelands_api::Access::None);
     let line = "line".into();
+    for access in [lakelands_api::Access::None, lakelands_api::Access::Masked] {
+        // Reads everything but `note`, which it sees masked or not at all.
+        let mut reader = field_writer(store.as_ref(), "reader", "line", &[]);
+        reader
+            .grants
+            .types
+            .get_mut(&lakelands_api::TypeName::from("line"))
+            .expect("field_writer grants the type")
+            .fields
+            .insert("note".into(), access);
 
-    let probes: [(&str, Find); 3] = [
-        ("a filter", find_where("note = 'secret'")),
-        (
-            "an order",
-            Find {
-                order_by: vec![Order {
-                    field: "note".into(),
-                    by: OrderBy::Value,
-                    dir: Default::default(),
-                }],
-                ..Find::default()
-            },
-        ),
-        (
-            "an aggregate",
-            Find {
-                aggregate: Some(Aggregate {
-                    measures: vec![agg("n", AggFunc::Count, None)],
-                    group_by: vec!["note".into()],
-                }),
-                ..Find::default()
-            },
-        ),
-    ];
-    for (how, find) in probes {
-        let err = cat
-            .find(&reader, &line, find)
+        let probes: [(&str, Find); 3] = [
+            ("a filter", find_where("note = 'secret'")),
+            (
+                "an order",
+                Find {
+                    order_by: vec![Order {
+                        field: "note".into(),
+                        by: OrderBy::Value,
+                        dir: Default::default(),
+                    }],
+                    ..Find::default()
+                },
+            ),
+            (
+                "an aggregate",
+                Find {
+                    aggregate: Some(Aggregate {
+                        measures: vec![agg("n", AggFunc::Count, None)],
+                        group_by: vec!["note".into()],
+                    }),
+                    ..Find::default()
+                },
+            ),
+        ];
+        for (how, find) in probes {
+            let err = cat
+                .find(&reader, &line, find)
+                .await
+                .must_fail(&format!("probing the unreadable `note` with {how}"))?;
+            let answered = match access {
+                lakelands_api::Access::None => no_such_field(&err, "note"),
+                _ => matches!(refused_on(&err), Some(("note", Refusal::NotGranted))),
+            };
+            ensure!(
+                answered,
+                "probing `note` ({access:?}) with {how} must be refused naming `note`: as not \
+             granted where it is masked, as for an undeclared field where it is hidden; it \
+             failed with {err:?}"
+            );
+        }
+        cat.find(&reader, &line, find_where("qty = 1"))
             .await
-            .must_fail(&format!("probing the unreadable `note` with {how}"))?;
-        ensure!(
-            matches!(refused_on(&err), Some(("note", Refusal::NotGranted))),
-            "probing `note` with {how} must be refused as not granted, naming `note`; \
-             it failed with {err:?}"
-        );
+            .must("filtering on the readable `qty`")?;
     }
-    cat.find(&reader, &line, find_where("qty = 1"))
-        .await
-        .must("filtering on the readable `qty`")?;
     Ok(())
 }
 

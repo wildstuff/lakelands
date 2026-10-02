@@ -249,7 +249,7 @@ belongs in the suite, not beside one engine:
 - `keys_from_two_sources_meet_only_when_their_values_are_identical` — 018 and 044: merged keys meet by the identity of their values, as a derived relation's do, so the text '010' and the text '10' are two keys, where 017's `=` would call them equal
 - `a_views_parameters_bind_every_source_it_merges` — 018: a view's parameters are bound by the read and read by every source's `where` and measures, the merged ones too
 - `a_merge_declared_badly_is_refused_naming_it` — 028 and 018: `declare` refuses a merged source that is not declared, read twice, grouped by another number of fields or a field of another kind than the one it lines up with, a measure named twice, a merged measure with no declared field or one that calls no aggregate, a view with parameters as any source, and a merge that closes a cycle of views, naming it
-- `a_merged_sources_fields_are_probed_as_a_read_of_it` — 024 and 018: a view reads each of its sources as a read of that source, so a principal who may not read a field a merged source's measures aggregate is not answered the view's definition by describe and is refused not_granted, naming it, when it reads the view
+- `a_merged_sources_fields_are_probed_as_a_read_of_it` — 024 and 018: a view reads each of its sources as a read of that source, so a principal who may not read a field a merged source's measures aggregate is not answered the view's definition by describe, and a read of the view is answered as for a field that source does not declare, naming it (006)
 - `a_view_that_merges_is_written_in_log_format_9` — log format §6 and 018: the event that declares a view merging sources is written in format 9, as is every event after it; a view without a merge leaves the lake's format where it was
 
 **ingest**
@@ -274,7 +274,7 @@ belongs in the suite, not beside one engine:
 - `absent_fields_never_match_not_even_not_equal` — 023: a comparison with an absent or null operand is false, `!=` included; `is null` is how absence is asked about
 - `numbers_and_numeric_text_compare_as_numbers` — 023: when both sides read as numbers, a JSON number or a decimal string, they compare exactly as numbers, never as text
 - `values_of_kinds_that_do_not_compare_match_nothing_and_fail_nothing` — 023: text that is not a number against a number, a boolean against text: every operator is false, and the read does not fail
-- `probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggregate` — 024: filtering, ordering or aggregating over a field the principal may not read is refused, naming the field
+- `probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggregate` — 024 and 006: filtering, ordering or aggregating over a field the principal sees masked is refused as not granted, naming the field; over one it may not see at all, it is answered as for a field the type does not declare
 - `a_filter_and_an_order_can_read_when_a_source_saw_a_value` — 010 and 017: `seen_at(f)` reads a field's provenance in `where`, and `order_by` may order by it
 - `a_cleared_field_matches_nothing_but_its_record_is_found_by_another` — 012 and 023: a field set to null is absent, so no comparison on it holds, and the record is found by its other fields as before
 
@@ -286,7 +286,8 @@ belongs in the suite, not beside one engine:
 **masking**
 
 - `a_masked_field_is_listed_masked_and_an_ungranted_one_is_absent` — 006 and 014: a field the principal may not read is masked (named, no value) or absent from get, find, describe and the tools' schemas
-- `a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field` — 024 and 006: a derived field, one derived from it in turn, and a vector embedded from a field are read as the field they are built from: absent where it is absent and masked where it is masked, on get, find, a pattern's rows and describe, which shows a definition only where every field it names is read; a filter, an order or an aggregate over them is refused not_granted naming them
+- `a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field` — 024 and 006: a derived field, one derived from it in turn, and a vector embedded from a field are read as the field they are built from: absent where it is absent and masked where it is masked, on get, find, a pattern's rows and describe, which shows a definition only where every field it names is read; a filter, an order or an aggregate over them is refused naming them, as not granted where they are masked and as for an undeclared field where they are hidden
+- `a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared` — 006 and 024: a field whose grant is none by name, sensitive or not, does not exist for that principal: it is absent from get, find, describe (a relation's link field too) and the tools, a search that names no fields never searches it, and a filter, an order, a pattern's `where`, a search's `fields`, an upsert and an ingest that name it are answered as for a field the type does not declare; a sensitive field whose none is inherited is listed as masked, and a filter on it is refused as not granted
 
 **values**
 
@@ -462,7 +463,7 @@ belongs in the suite, not beside one engine:
 - `a_walk_over_a_derived_relation_finds_exactly_the_matching_records_both_ways` — 044: a pattern step over a derived relation reaches exactly the records whose matched fields hold the same value, out and in, over one pair and over two, at the head and as_of an earlier position; `'010'` does not match `'10'`
 - `changing_a_matched_field_moves_the_edge_at_that_position` — 044 and 009: changing a matched field moves the edge at the position of that write: as_of before it the old record is reached, from it on the new one
 - `a_null_never_matches` — 044: a matched field that is null or absent on either side connects nothing, a null to a null included
-- `a_principal_without_read_on_a_matched_field_is_refused_naming_it` — 024 and 044: a walk over a derived relation, a step and a measure alike, is refused not_granted, naming the field, when the principal may not read a matched field on either side
+- `a_principal_without_read_on_a_matched_field_is_refused_naming_it` — 024, 044 and 006: a walk over a derived relation, a step and a measure alike, is answered as for a field the type does not declare, naming the field, when the principal may not know of a matched field on either side
 - `degree_and_components_over_a_derived_relation_equal_those_over_the_same_links` — 026 and 044: `degree` and `components` over a derived relation answer what they answer over the same connections written as link records
 - `a_derived_relation_is_declared_not_migrated_and_never_moves_carrier` — 007, 027, 035 and 044: changing a derived relation's match is taken by `declare` and leaves the schema hash byte-identical; a relation carried by link records or by `via` is not redeclared as derived, nor a derived one as carried, each refused naming the relation
 - `a_match_pair_of_two_kinds_is_refused_naming_both` — 044: `declare` refuses a match pair whose fields are of different storage kinds, naming both fields, since identity would never match; a derived relation with `via` or fields of its own is refused too
@@ -507,7 +508,7 @@ belongs in the suite, not beside one engine:
 - `rules_run_in_name_order_one_append_each` — seams: `age` runs the rules in rule-name order, each rule's moves one append, and reports them in that order
 - `age_at_a_time_other_than_midnight_is_refused` — seams: `age` is handed a date, at UTC midnight; any other time is refused as invalid, naming `today`, and appends nothing
 - `a_rule_that_no_longer_fits_is_skipped_and_named` — seams: a rule the lake's shape no longer fits is skipped, named in the report with its reason, while the other rules run
-- `a_rule_needs_write_on_its_field_and_read_on_what_when_reads` — 036 and 024: a rule is refused as not granted, naming the field, unless its author may write the field it moves and read every field its `when` reads; the run carries that authority
+- `a_rule_needs_write_on_its_field_and_read_on_what_when_reads` — 036, 024 and 006: a rule is refused, naming the field, unless its author may write the field it moves and read every field its `when` reads: as not granted, or as for an undeclared field where its author may not know of the field; the run carries that authority
 - `a_move_the_store_would_refuse_leaves_the_record` — 036: a move the store would refuse for a record (its `to` a reference no longer live) leaves the record, is counted as a failed guard, and the other rules run
 - `a_rule_under_a_retention_hold_is_live_and_runs` — 036 and seams, SystemVocabulary: a hold withholds a record from reads, it does not stop it; a restricted rule record runs
 - `a_rule_reads_the_setting_at_its_run_and_a_replay_reads_its_moves` — seams, SystemVocabulary: setting() in `when` reads the lake's settings as a filter does, with no grant on sys.setting asked of the rule's author, as of the head at the run; the move is an event, so a replay never evaluates `when` again

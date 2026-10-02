@@ -15,7 +15,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, field, field_access, log_events, measure, reason, type_decl,
+    Lake, field, field_access, log_events, measure, no_such_field, reason, type_decl,
 };
 
 check!(
@@ -51,7 +51,7 @@ check!(
 check!(
     /// Each source is read as a read of it.
     MERGE_PROBES_EACH_SOURCE = a_merged_sources_fields_are_probed_as_a_read_of_it,
-    "024 and 018: a view reads each of its sources as a read of that source, so a principal who may not read a field a merged source's measures aggregate is not answered the view's definition by describe and is refused not_granted, naming it, when it reads the view"
+    "024 and 018: a view reads each of its sources as a read of that source, so a principal who may not read a field a merged source's measures aggregate is not answered the view's definition by describe, and a read of the view is answered as for a field that source does not declare, naming it (006)"
 );
 
 fn log(name: &str, day: &str) -> TypeDecl {
@@ -393,22 +393,12 @@ async fn a_merged_sources_fields_are_probed_as_a_read_of_it(
         .cat
         .find(&blind, &"energy_balance".into(), Find::default())
         .await;
-    match r {
-        Err(e) if matches!(reason(&e), Some(Refusal::NotGranted)) => {
-            let why = e.to_string();
-            ensure!(
-                why.contains("kcal"),
-                "a read of the balance by a principal who may not read `workout_log.kcal` \
-                 must be refused naming `kcal`; it said: {why}"
-            );
-        }
-        other => {
-            return Err(Failure::new(format!(
-                "a read of the balance by a principal who may not read `workout_log.kcal` \
-                 must be refused not_granted; it answered {other:?}"
-            )));
-        }
-    }
+    ensure!(
+        no_such_field(&r, "kcal"),
+        "a read of the balance by a principal who may not know of `workout_log.kcal` is \
+         answered as for a field `workout_log` does not declare, naming `kcal`; it answered \
+         {r:?}"
+    );
     Ok(())
 }
 
