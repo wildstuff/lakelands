@@ -95,6 +95,7 @@ macro_rules! door_checks {
             the_tools_follow_the_grants,
             a_verb_tool_says_what_its_risk_does,
             a_tools_key_says_what_to_pass,
+            propose_shows_each_writes_shape,
             a_verb_on_its_type_has_a_tool_without_a_key,
             a_verb_on_its_type_is_called_without_a_key,
             a_low_risk_verb_runs_at_once,
@@ -1243,6 +1244,62 @@ pub async fn a_tools_key_says_what_to_pass(store: Arc<dyn LakeStore>) {
             "{door:?}"
         );
     }
+}
+
+/// `propose` shows the members each kind of write takes, as the store
+/// reads them (a record write's fields under `patch`), and says that a
+/// proposed record write or call needs the grants it would need applied.
+pub async fn propose_shows_each_writes_shape(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let d = f
+        .catalog
+        .describe(&f.cast.owner, ReadAt::default())
+        .await
+        .unwrap();
+    let tools = tools(&d.data).expect("the fixture's names are valid");
+    let propose = tools
+        .iter()
+        .find(|t| t.door == Door::Propose)
+        .expect("the owner may propose");
+    assert!(
+        propose
+            .description
+            .contains("a proposal waits for review, it does not lift a grant"),
+        "{}",
+        propose.description
+    );
+    let kinds = propose.input_schema["properties"]["write"]["oneOf"]
+        .as_array()
+        .expect("one schema per kind of write");
+    let required = |write: &str| {
+        kinds
+            .iter()
+            .find(|k| k["properties"]["write"]["const"] == json!(write))
+            .unwrap_or_else(|| panic!("a schema for `{write}`"))["required"]
+            .clone()
+    };
+    for (write, members) in [
+        ("upsert", json!(["write", "type", "key", "patch"])),
+        ("retire", json!(["write", "type", "key"])),
+        ("call", json!(["write", "verb", "payload"])),
+        ("declare", json!(["write", "declarations"])),
+        ("migrate", json!(["write", "migration"])),
+    ] {
+        assert_eq!(required(write), members, "{write}");
+    }
+    // A proposal in the shape shown is read as the store reads it.
+    let o = f
+        .catalog
+        .propose(
+            &f.cast.owner,
+            serde_json::from_value(json!({"write": "upsert", "type": INVOICE, "key": "INV-9",
+                                          "patch": {"status": "open"}}))
+            .expect("the shown shape reads as a proposed write"),
+            "the shape the tool shows".into(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(o, Outcome::Proposed { .. }), "{o:?}");
 }
 
 /// A `low`-risk verb whose effect writes authored fields runs at once.
