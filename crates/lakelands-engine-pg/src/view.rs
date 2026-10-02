@@ -35,12 +35,13 @@ pub(crate) struct PgView<'a> {
     pub(crate) at: Option<Position>,
 }
 
-/// One read: a connection in a read transaction, and whether the view's
-/// position is the head in the state it sees.
+/// One read: a connection in a read transaction, the head in the state it
+/// sees, and whether the view's position is that head.
 struct Read<'c> {
     db: &'c mut Db,
     names: &'c Names,
     at: i64,
+    folded: Option<i64>,
     head: bool,
 }
 
@@ -66,6 +67,7 @@ impl PgView<'_> {
                 db: &mut db,
                 names,
                 at: at.0 as i64,
+                folded: folded.as_deref().and_then(|f| f.parse().ok()),
                 head: folded == Some(at.0.to_string()),
             })
         });
@@ -83,6 +85,7 @@ impl PgView<'_> {
             db: &mut self.lake.reader(),
             names: self.lake.names(),
             at: at.0 as i64,
+            folded: None,
             head: false,
         })
     }
@@ -165,10 +168,10 @@ impl Read<'_> {
     }
 
     /// The fields of `ty` whose order index answers this read, in one round
-    /// trip: none but at the head, and only while the index is kept
-    /// through it.
+    /// trip: none unless the index is kept through the head. At an earlier
+    /// position it is read with the keys changed since ([`Read::changed`]).
     fn sorted_fields(&mut self, ty: &TypeName, decl: Option<&TypeDecl>) -> Result<Vec<FieldName>> {
-        let Some(decl) = decl.filter(|_| self.head) else {
+        let Some(decl) = decl.filter(|_| self.folded.is_some()) else {
             return Ok(Vec::new());
         };
         let row = self.db.query_one(
@@ -184,7 +187,7 @@ impl Read<'_> {
                 &engines::sort_index_key(ty),
             ],
         )?;
-        if row.get::<_, Option<i64>>(0) != Some(self.at) {
+        if row.get::<_, Option<i64>>(0) != self.folded {
             return Ok(Vec::new());
         }
         let setting = row
@@ -270,6 +273,37 @@ impl Read<'_> {
         let args: [&(dyn ToSql + Sync); 4] = [&ty.as_str(), &field.as_str(), &limit, &after];
         self.db
             .records(&query, &args[..3 + usize::from(after.is_some())])
+    }
+
+    /// The keys of `ty` with a state put or ended after the view's
+    /// position, and their states there; `None` past `ceiling` states put
+    /// or keys ended. Two range reads, one into `records_since` for the
+    /// states put, one into `records_at` for the states that held at the
+    /// position and ended.
+    fn changed(&mut self, ty: &TypeName, ceiling: usize) -> Result<Option<engines::Changed>> {
+        let records = self.names.t("records");
+        let args: [&(dyn ToSql + Sync); 3] = [&ty.as_str(), &self.at, &(ceiling as i64 + 1)];
+        let put: Vec<String> = self.db.column(
+            &format!(
+                "SELECT key FROM {records} WHERE ty = $1 AND since > $2 ORDER BY since LIMIT $3"
+            ),
+            &args,
+        )?;
+        let ended: Vec<String> = self.db.column(
+            &format!(
+                "SELECT key FROM {records} WHERE ty = $1 AND until > $2 AND since <= $2 \
+                 ORDER BY until LIMIT $3"
+            ),
+            &args,
+        )?;
+        let keys: BTreeSet<String> = put.iter().chain(&ended).cloned().collect();
+        if put.len().max(ended.len()).max(keys.len()) > ceiling {
+            return Ok(None);
+        }
+        Ok(Some(engines::Changed {
+            states: self.records_by_key(ty, keys.clone())?,
+            keys: keys.into_iter().map(RecordKey::from).collect(),
+        }))
     }
 
     /// Records of a type by their keys, at the view's position, in key
@@ -433,15 +467,41 @@ impl ProjectionView for PgView<'_> {
                     let sorted = r.sorted_fields(ty, decl.as_ref())?;
                     match engines::by_order_index(decl.as_ref(), &sorted, scan) {
                         Some(first) => {
+                            // At an earlier position, the head's index with
+                            // the keys changed since; past the ceiling, the
+                            // sort.
+                            let changed = if r.head {
+                                None
+                            } else {
+                                let ceiling = engines::changed_ceiling(scan.limit);
+                                let Some(changed) = r.changed(ty, ceiling)? else {
+                                    let records = r.records(ty)?;
+                                    return Ok(engines::scan(decl.as_ref(), &records, scan));
+                                };
+                                Some(changed)
+                            };
                             let r = std::cell::RefCell::new(r);
-                            return engines::scan_in_field_order(
-                                decl.as_ref(),
-                                scan,
-                                |from, n| r.borrow_mut().sorted_after(ty, first, from, n),
-                                |after, n| {
-                                    r.borrow_mut().unsorted_after(ty, &first.field, after, n)
-                                },
-                            );
+                            let sorted = |from: Option<(&[u8], &str)>, n| {
+                                r.borrow_mut().sorted_after(ty, first, from, n)
+                            };
+                            let missing = |after: Option<&str>, n| {
+                                r.borrow_mut().unsorted_after(ty, &first.field, after, n)
+                            };
+                            return match &changed {
+                                None => engines::scan_in_field_order(
+                                    decl.as_ref(),
+                                    scan,
+                                    sorted,
+                                    missing,
+                                ),
+                                Some(c) => engines::scan_in_field_order_at(
+                                    decl.as_ref(),
+                                    scan,
+                                    c,
+                                    sorted,
+                                    missing,
+                                ),
+                            };
                         }
                         None => r.records(ty)?,
                     }

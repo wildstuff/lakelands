@@ -32,11 +32,12 @@ pub(crate) struct SqliteView<'a> {
     pub(crate) at: Option<Position>,
 }
 
-/// One read: a connection in a read transaction, and whether the view's
-/// position is the head in the state it sees.
+/// One read: a connection in a read transaction, the head in the state it
+/// sees, and whether the view's position is that head.
 struct Read<'c> {
     conn: &'c Connection,
     at: Position,
+    folded: Option<Position>,
     head: bool,
 }
 
@@ -58,6 +59,7 @@ impl SqliteView<'_> {
             f(&Read {
                 conn: &conn,
                 at,
+                folded,
                 head: folded == Some(at),
             })
         });
@@ -140,13 +142,44 @@ impl Read<'_> {
         Ok(counted.first().map_or(0, |n| n.unsigned_abs()))
     }
 
-    /// The fields of `ty` whose order index answers this read: none but at
-    /// the head, and only while the index is kept through it.
+    /// The fields of `ty` whose order index answers this read: none unless
+    /// the index is kept through the head. At an earlier position it is
+    /// read with the keys changed since ([`Read::changed`]).
     fn sorted_fields(&self, ty: &TypeName, decl: Option<&TypeDecl>) -> Result<Vec<FieldName>> {
-        if !self.head || projection::sorted(self.conn, ty)? != Some(self.at) {
+        if self.folded.is_none() || projection::sorted(self.conn, ty)? != self.folded {
             return Ok(Vec::new());
         }
         projection::sorted_fields(self.conn, ty, decl)
+    }
+
+    /// The keys of `ty` with a state put or ended after the view's
+    /// position, and their states there; `None` past `ceiling` states put
+    /// or keys ended. Two range reads, one into `records_since` for the
+    /// states put, one into `records_at` for the states that held at the
+    /// position and ended: a `UNION` of the two is planned as a merge in
+    /// key order, which reads the type.
+    fn changed(&self, ty: &TypeName, ceiling: usize) -> Result<Option<engines::Changed>> {
+        let args = params![ty.as_str(), self.at(), ceiling as i64 + 1];
+        let put: Vec<String> = column(
+            self.conn,
+            "SELECT key FROM records WHERE ty = ?1 AND since > ?2 ORDER BY since LIMIT ?3",
+            args,
+            Ok,
+        )?;
+        let ended: Vec<String> = column(
+            self.conn,
+            "SELECT key FROM records WHERE ty = ?1 AND until > ?2 AND since <= ?2 ORDER BY until LIMIT ?3",
+            args,
+            Ok,
+        )?;
+        let keys: BTreeSet<String> = put.iter().chain(&ended).cloned().collect();
+        if put.len().max(ended.len()).max(keys.len()) > ceiling {
+            return Ok(None);
+        }
+        Ok(Some(engines::Changed {
+            states: self.records_by_key(ty, keys.clone())?,
+            keys: keys.into_iter().map(RecordKey::from).collect(),
+        }))
     }
 
     /// At most `n` head records of a type with a row in the order index for
@@ -368,7 +401,7 @@ impl ProjectionView for SqliteView<'_> {
                 None => {
                     let sorted = r.sorted_fields(ty, decl.as_ref())?;
                     match engines::by_order_index(decl.as_ref(), &sorted, scan) {
-                        Some(first) => {
+                        Some(first) if r.head => {
                             return engines::scan_in_field_order(
                                 decl.as_ref(),
                                 scan,
@@ -376,6 +409,20 @@ impl ProjectionView for SqliteView<'_> {
                                 |after, n| r.unsorted_after(ty, &first.field, after, n),
                             );
                         }
+                        // At an earlier position, the head's index with the
+                        // keys changed since; past the ceiling, the sort.
+                        Some(first) => match r.changed(ty, engines::changed_ceiling(scan.limit))? {
+                            Some(changed) => {
+                                return engines::scan_in_field_order_at(
+                                    decl.as_ref(),
+                                    scan,
+                                    &changed,
+                                    |from, n| r.sorted_after(ty, first, from, n),
+                                    |after, n| r.unsorted_after(ty, &first.field, after, n),
+                                );
+                            }
+                            None => r.records(ty)?,
+                        },
                         None => r.records(ty)?,
                     }
                 }

@@ -136,6 +136,9 @@ pub(crate) struct Projection {
     pub(crate) outputs: BTreeMap<(String, Digest), History<Value>>,
     pub(crate) applied: BTreeMap<EventId, Position>,
     pub(crate) folded: Option<Position>,
+    /// Per type, every record state put, by position and key: the keys a
+    /// page at an earlier position reads apart from the order index.
+    changes: BTreeMap<TypeName, BTreeSet<(Position, RecordKey)>>,
     /// The order index of the head (`engines::order_rows`): per type and
     /// declared field, the head records holding it, by sort key and key.
     pub(crate) sorted: BTreeMap<(TypeName, FieldName), SortedRows>,
@@ -232,6 +235,39 @@ impl Projection {
         }
         self.folded = Some(through);
         Ok(())
+    }
+
+    /// The keys of `ty` with a state put after `at`, and their states at
+    /// `at`; `None` past `ceiling` states put.
+    pub(crate) fn changed(
+        &self,
+        ty: &TypeName,
+        at: Position,
+        ceiling: usize,
+    ) -> Option<engines::Changed> {
+        let after = (Position(at.0 + 1), RecordKey::from(""));
+        let put = self
+            .changes
+            .get(ty)
+            .into_iter()
+            .flat_map(|c| c.range(after.clone()..));
+        let mut keys = BTreeSet::new();
+        for (n, (_, key)) in put.enumerate() {
+            if n >= ceiling {
+                return None;
+            }
+            keys.insert(key.clone());
+        }
+        let states = keys
+            .iter()
+            .filter_map(|k| {
+                self.records
+                    .get(&(ty.clone(), k.clone()))?
+                    .at(Some(at))
+                    .cloned()
+            })
+            .collect();
+        Some(engines::Changed { keys, states })
     }
 
     /// The fields of `ty` whose order index the lake keeps: those its
@@ -422,6 +458,10 @@ impl Projection {
             }
             Put::Record(r) => {
                 let from = r.position;
+                self.changes
+                    .entry(r.ty.clone())
+                    .or_default()
+                    .insert((from, r.key.clone()));
                 self.records
                     .entry((r.ty.clone(), r.key.clone()))
                     .or_default()
