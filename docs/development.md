@@ -245,3 +245,35 @@ reports the same list on every pull request, and never fails; a release
 pull request copies its report into its body. A
 pre-release `vX.Y.Z-<suffix>` may be tagged on any branch to rehearse
 one. Nothing is published to crates.io yet.
+
+### A patch release
+
+A minor release `vX.Y.0` is tagged on `develop`. A fix to it ships as
+`vX.Y.1` on `main`, so that `develop`, which already holds work for the
+next minor, does not ship with it.
+
+1. **`main` holds `vX.Y.0`.** If it does not yet, a pull request whose
+   head is exactly the tagged commit merges into `main`, and adds nothing
+   else.
+2. **The patch branch starts at the tag:**
+   `git switch -c release/X.Y.1 vX.Y.0`.
+3. **The fix is fitted to the release's tree.** The tree of `vX.Y.0` is
+   not `develop`'s, so the fix is written or adapted for it, with its own
+   test, red first. It does not take `develop`'s other changes with it.
+4. **The release commit** comes next, as on `develop`: the version in the
+   workspace, the lock file, the server transcripts' `serverInfo`, the
+   WIT package and the README status.
+5. **A pull request from `release/X.Y.1` to `main`.** CI runs on pull
+   requests to `main` as it does on those to `develop`. The gates read
+   the range from the pull request's base, so the DCO gate checks only
+   the commits the patch branch adds, not the history `main` already
+   holds.
+6. **The tag goes on `main`**, on the merge commit, signed off as above.
+   `check-tag.sh` accepts a release on `main`.
+   - The notes list the pull requests merged into `main` since
+     `vX.Y.0`: the one of step 1, if it was needed, and the patch's.
+   - "Changes a host must make" compares the same two tags.
+7. **`develop` gets the fix through its own pull request**, written
+   against `develop`'s tree, with the issue the fix closes. The patch
+   branch is never merged into `develop`. `develop` keeps its own version
+   until its next minor release.
