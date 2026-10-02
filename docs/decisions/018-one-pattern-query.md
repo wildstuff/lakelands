@@ -56,7 +56,17 @@ its `group_by` fields — whose values, in declared order, form the view
 record's key by the same rule as any record's key (`docs/log-format.md`
 §2.3), so a `group_by` field is of a kind a key field may be — and
 measured, each measure landing in the kind the view
-declares for it. A group with no member has no record. Keeping a view's
+declares for it. A group with no member has no record. A view without
+`group_by` is the exception: it is a total, and a total over nothing is
+zero rather than absent, so it always holds exactly one record, the
+measures over every source record its `where` keeps, even when it keeps
+none (a `count` and a `sum` of none are 0, a `min`, `max` or `avg`
+null, as for an aggregate). The key rule over no fields would make the
+empty string, which is no key, so that record's key is the reserved
+`all`, the same on every engine and at every position; `get` reads it
+by that key, and a host that must tell "nothing matched" from "summed to
+zero" declares a `count()`. Nothing is written, so the log format does
+not change. Keeping a view's
 records materialised is an engine's optimisation, never a rule: it may
 make a read faster and may never change its answer, and the conformance
 checks on views bind it. A view declares the fields it computes, one for each

@@ -36,9 +36,11 @@
 //! **Views** are computed on read: the source's records at the same
 //! position, filtered by the view's `where`, grouped by its `group_by`
 //! fields (whose values form the view record's key, in declared order, by
-//! the one key rule of `docs/log-format.md` §2.3) and measured. A group with no member has no record. Keeping a view's
-//! records materialised would be an engine's optimisation, and it could
-//! never change an answer. A walk reads a view's records from that
+//! the one key rule of `docs/log-format.md` §2.3) and measured. A group
+//! with no member has no record, except that a view without `group_by` is
+//! always one record, keyed [`lakelands_api::key::UNGROUPED`], whatever
+//! its `where` keeps. Keeping a view's records materialised would be an
+//! engine's optimisation, and it could never change an answer. A walk reads a view's records from that
 //! computation too, once per read, never from the engine.
 
 use std::cell::RefCell;
@@ -571,6 +573,16 @@ impl<'a> Reader<'a> {
             key: v.group_by.clone(),
             ..decl.clone()
         };
+        // A view without `group_by` is one total, kept over no records too,
+        // under the key reserved for it: the rule over no fields makes none.
+        let ungrouped = v.group_by.is_empty();
+        let key_of = |by: &BTreeMap<FieldName, Value>| {
+            if ungrouped {
+                Some(RecordKey::from(lakelands_api::key::UNGROUPED))
+            } else {
+                lakelands_core::log::record_key(&keyed_by, by)
+            }
+        };
         let rows: Vec<&BTreeMap<FieldName, Value>> = members.iter().map(|r| &r.fields).collect();
         type Group<'g> = (
             BTreeMap<FieldName, Value>,
@@ -581,9 +593,14 @@ impl<'a> Reader<'a> {
             if by.values().any(Value::is_null) {
                 continue;
             }
-            if let Some(key) = lakelands_core::log::record_key(&keyed_by, &by) {
+            if let Some(key) = key_of(&by) {
                 groups.insert(key, (by, group));
             }
+        }
+        if ungrouped {
+            groups
+                .entry(RecordKey::from(lakelands_api::key::UNGROUPED))
+                .or_default();
         }
         // One group's measures, seeing the values `given` by name.
         let measured = |rows: &[&BTreeMap<FieldName, Value>],
@@ -617,7 +634,7 @@ impl<'a> Reader<'a> {
                     .zip(&m.group_by)
                     .map(|(to, from)| (to.clone(), own[from].clone()))
                     .collect();
-                let Some(key) = lakelands_core::log::record_key(&keyed_by, &by) else {
+                let Some(key) = key_of(&by) else {
                     continue;
                 };
                 let values = measured(&group, &own, &measures, BTreeMap::new())?;
