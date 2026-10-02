@@ -25,6 +25,14 @@ fn event_json(v: u32, body: serde_json::Value) -> Event {
     .unwrap()
 }
 
+/// An event of log format `v` declaring `declaration`, at version 1.
+fn declared_event(v: u32, declaration: impl serde::Serialize) -> Event {
+    event_json(
+        v,
+        json!({"kind": "declared", "declaration": declaration, "version": 1}),
+    )
+}
+
 #[test]
 fn upstream_belongs_to_record_ingested_alone() {
     let line = |body: serde_json::Value| -> Event {
@@ -132,15 +140,11 @@ fn a_derived_relation_needs_format_6_and_a_carried_one_does_not() {
         if derived {
             r["derived"] = json!({"match": [{"from": "customer_no", "to": "no"}]});
         }
-        EventBody::Declared {
-            declaration: declaration(json!({
-                "declare": "type", "name": "invoice",
-                "fields": [{"name": "customer_no", "type": {"kind": "text"}}],
-                "relations": [r]
-            })),
-            schema_hash: None,
-            version: 1,
-        }
+        declared(declaration(json!({
+            "declare": "type", "name": "invoice",
+            "fields": [{"name": "customer_no", "type": {"kind": "text"}}],
+            "relations": [r]
+        })))
     };
     assert_eq!(needed(&with(true), false), 6);
     assert_eq!(needed(&with(false), false), 1);
@@ -148,12 +152,10 @@ fn a_derived_relation_needs_format_6_and_a_carried_one_does_not() {
 
 #[test]
 fn a_triggers_max_depth_needs_format_6() {
-    let trigger = |max_depth: serde_json::Value| EventBody::Declared {
-        declaration: declaration(json!({
+    let trigger = |max_depth: serde_json::Value| {
+        declared(declaration(json!({
             "declare": "trigger", "name": "t", "on": "job", "max_depth": max_depth
-        })),
-        schema_hash: None,
-        version: 1,
+        })))
     };
     assert_eq!(needed(&trigger(json!(1)), false), 6);
     assert_eq!(needed(&trigger(serde_json::Value::Null), false), 1);
@@ -176,10 +178,7 @@ fn a_declaration_calling_retired_needs_format_7_and_says_so_below_it() {
         why: String::new(),
     };
     assert_eq!(needed(&proposed, false), 7, "a proposal keeps it too");
-    let event: Event = event_json(
-        6,
-        json!({"kind": "declared", "declaration": guard("retired()"), "version": 1}),
-    );
+    let event = declared_event(6, guard("retired()"));
     assert_eq!(
         below(&event).as_deref(),
         Some("a format 6 event declares a call of `retired`, which format 7 added")
@@ -207,10 +206,7 @@ fn a_view_with_parameters_needs_format_8_and_says_so_below_it() {
         needed(&declared(view(json!([]), "date <= '2026-06-30'")), false),
         1
     );
-    let event: Event = event_json(
-        7,
-        json!({"kind": "declared", "declaration": anchored, "version": 1}),
-    );
+    let event = declared_event(7, anchored);
     assert_eq!(
         below(&event).as_deref(),
         Some("a format 7 event declares a view's parameters, which format 8 added")
@@ -283,10 +279,7 @@ fn a_view_that_merges_sources_needs_format_9_and_says_so_below_it() {
                              "measures": [{"name": "kout", "expr": "count()"}]}]));
     assert_eq!(needed(&declared(merged.clone()), false), 9);
     assert_eq!(needed(&declared(view(json!([]))), false), 1);
-    let event: Event = event_json(
-        8,
-        json!({"kind": "declared", "declaration": merged, "version": 1}),
-    );
+    let event = declared_event(8, merged);
     assert_eq!(
         below(&event).as_deref(),
         Some("a format 8 event declares a view that merges sources, which format 9 added")

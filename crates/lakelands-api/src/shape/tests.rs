@@ -28,14 +28,14 @@ fn with(edit: impl FnOnce(&mut TypeDecl)) -> TypeDecl {
     ty
 }
 
-fn a_view(filter: Condition, total: Condition) -> TypeDecl {
+fn a_view(filter: &str, total: &str) -> TypeDecl {
     serde_json::from_value(json!({
         "name": "revenue",
         "view": {
             "source": "invoice",
-            "where": filter,
+            "where": Condition::from(filter),
             "group_by": ["customer"],
-            "measures": [{ "name": "total", "expr": total }],
+            "measures": [{ "name": "total", "expr": Condition::from(total) }],
         },
     }))
     .unwrap()
@@ -56,7 +56,7 @@ fn the_hash_is_pinned_for_a_small_type() {
 #[test]
 fn the_hash_is_pinned_for_a_view() {
     assert_eq!(
-        hash(&a_view("status = 'open'".into(), "sum(amount)".into())),
+        hash(&a_view("status = 'open'", "sum(amount)")),
         "39bc4bc1ad9646574531399af2cc2e01245a57989f4e61280ec94c5c2ec3918b"
     );
 }
@@ -208,24 +208,21 @@ fn key_order_is_shape() {
 
 #[test]
 fn a_view_change_is_a_shape_change() {
-    let bare = hash(&a_view("amount > 0".into(), "sum(amount)".into()));
-    assert_ne!(
-        bare,
-        hash(&a_view("amount > 1".into(), "sum(amount)".into()))
-    );
-    assert_ne!(bare, hash(&a_view("amount > 0".into(), "count()".into())));
+    let bare = hash(&a_view("amount > 0", "sum(amount)"));
+    assert_ne!(bare, hash(&a_view("amount > 1", "sum(amount)")));
+    assert_ne!(bare, hash(&a_view("amount > 0", "count()")));
     let plain = with(|_| {});
     assert_ne!(hash(&plain), bare);
 }
 
 #[test]
 fn a_view_that_does_not_parse_has_no_hash() {
-    let broken = a_view("amount >".into(), "sum(amount)".into());
+    let broken = a_view("amount >", "sum(amount)");
     match schema_hash(&broken) {
         Err(ViewConditionError { at, .. }) => assert_eq!(at, "view.where"),
         other => panic!("expected a condition error, got {other:?}"),
     }
-    let broken = a_view("amount > 0".into(), "sum(".into());
+    let broken = a_view("amount > 0", "sum(");
     match schema_hash(&broken) {
         Err(ViewConditionError { at, .. }) => assert_eq!(at, "view.measures.total"),
         other => panic!("expected a condition error, got {other:?}"),

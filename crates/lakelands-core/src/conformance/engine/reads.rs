@@ -19,7 +19,7 @@ use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposalState,
 use lakelands_api::{Refusal, Timestamp};
 use serde_json::{Value, json};
 
-use super::projection::{fold, record, view};
+use super::projection::{fold, fold_one, record, view};
 use crate::conformance::Failure;
 use crate::conformance::fixture::{Must, order, reason};
 
@@ -173,12 +173,29 @@ fn scan_all() -> Scan {
     }
 }
 
+/// `scan_all()` with `edit` applied: the same value as the struct literal.
+fn scan_with(edit: impl FnOnce(&mut Scan)) -> Scan {
+    let mut scan = scan_all();
+    edit(&mut scan);
+    scan
+}
+
 fn by(field: &str, dir: Direction) -> Order {
     order(field, OrderBy::Value, dir)
 }
 
 fn declare(json: Value) -> Declaration {
     serde_json::from_value(json).expect("a declaration in the check is well-formed")
+}
+
+/// The `sort_index.t` setting asking for `fields`, as folded at `at`.
+fn sort_setting(fields: Value, at: u64) -> StoredRecord {
+    record(
+        lakelands_api::seam::SETTING_TYPE,
+        "sort_index.t",
+        json!({"key": "sort_index.t", "value": fields}),
+        at,
+    )
 }
 
 fn mixed_kinds_sort_the_same_on_every_engine(engine: &dyn LakeEngine) -> Result<(), Failure> {
@@ -217,14 +234,8 @@ fn mixed_kinds_sort_the_same_on_every_engine(engine: &dyn LakeEngine) -> Result<
         ),
     ] {
         let got = keys(
-            &at.scan(
-                &ty,
-                &Scan {
-                    order_by: vec![by("v", dir)],
-                    ..scan_all()
-                },
-            )
-            .must("scanning in order")?,
+            &at.scan(&ty, &scan_with(|s| s.order_by = vec![by("v", dir)]))
+                .must("scanning in order")?,
         );
         ensure!(
             got == expected,
@@ -407,14 +418,8 @@ fn scan_filters_exactly_as_the_evaluator_including_mixed_kinds_and_errors(
     ] {
         let expr = crate::expr::parse(filter).expect("the check's filters parse");
         let got = keys(
-            &at.scan(
-                &ty,
-                &Scan {
-                    filter: Some(expr.clone()),
-                    ..scan_all()
-                },
-            )
-            .must(&format!("scanning with `{filter}`"))?,
+            &at.scan(&ty, &scan_with(|s| s.filter = Some(expr.clone())))
+                .must(&format!("scanning with `{filter}`"))?,
         );
         let evaluator: Vec<String> = at
             .scan(&ty, &scan_all())
@@ -481,22 +486,14 @@ fn scan_honours_retired_restricted_and_valid_at(engine: &dyn LakeEngine) -> Resu
         "a scan without flags answered {live:?}; retired and restricted records come only when \
          asked for"
     );
-    let all = run(Scan {
-        retired: true,
-        restricted: true,
-        ..scan_all()
-    })
-    .must("scanning with both flags")?;
+    let all = run(scan_with(|s| (s.retired, s.restricted) = (true, true)))
+        .must("scanning with both flags")?;
     ensure!(
         all.len() == 5,
         "a scan with both flags answered {all:?}; it must answer all five records"
     );
     let july = Timestamp::parse("2026-07-01T00:00:00Z").expect("an instant");
-    let valid = run(Scan {
-        valid_at: Some(july),
-        ..scan_all()
-    })
-    .must("scanning at a valid time")?;
+    let valid = run(scan_with(|s| s.valid_at = Some(july))).must("scanning at a valid time")?;
     ensure!(
         valid == ["open"],
         "a scan valid at 2026-07-01 answered {valid:?}; `ended` stopped in June and `undated` \
@@ -551,48 +548,20 @@ fn a_count_is_the_number_of_records_its_scan_selects(
     let tagged = crate::expr::parse("tag = 'x'").expect("the check's filter parses");
     let scans = [
         ("no flags", scan_all()),
-        (
-            "retired",
-            Scan {
-                retired: true,
-                ..scan_all()
-            },
-        ),
-        (
-            "restricted",
-            Scan {
-                restricted: true,
-                ..scan_all()
-            },
-        ),
+        ("retired", scan_with(|s| s.retired = true)),
+        ("restricted", scan_with(|s| s.restricted = true)),
         (
             "both flags",
-            Scan {
-                retired: true,
-                restricted: true,
-                ..scan_all()
-            },
+            scan_with(|s| (s.retired, s.restricted) = (true, true)),
         ),
         (
             "valid at 2026-07-01",
-            Scan {
-                valid_at: Some(july),
-                ..scan_all()
-            },
+            scan_with(|s| s.valid_at = Some(july)),
         ),
-        (
-            "tag = 'x'",
-            Scan {
-                filter: Some(tagged),
-                ..scan_all()
-            },
-        ),
+        ("tag = 'x'", scan_with(|s| s.filter = Some(tagged))),
         (
             "tag exactly x",
-            Scan {
-                equal: vec![("tag".into(), json!("x"))],
-                ..scan_all()
-            },
+            scan_with(|s| s.equal = vec![("tag".into(), json!("x"))]),
         ),
         (
             "a page of 5 after b0500",
@@ -772,9 +741,11 @@ fn lexical_over_named_fields_is_the_pipelines_over_those_fields(
         }
         p.put_record(&record("doc", "note", json!({"note": "river"}), 1))
     })?;
-    fold(engine, 2, |p| {
-        p.put_record(&record("doc", "late", json!({"title": "river"}), 2))
-    })?;
+    fold_one(
+        engine,
+        2,
+        record("doc", "late", json!({"title": "river"}), 2),
+    )?;
     let ty = TypeName::from("doc");
     let title = [lakelands_api::id::FieldName::from("title")];
     let body = [lakelands_api::id::FieldName::from("body")];
@@ -1085,6 +1056,7 @@ fn proposal(id: &str, position: u64, write: ProposedWrite, state: ProposalState)
 }
 
 fn proposals_filter_by_state_and_type_newest_first(engine: &dyn LakeEngine) -> Result<(), Failure> {
+    use ProposalState::{Accepted, Pending};
     let verb = declare(json!({
         "declare": "verb", "name": "pay", "on": "invoice", "risk": "high",
         "effect": "write", "set": []
@@ -1102,24 +1074,12 @@ fn proposals_filter_by_state_and_type_newest_first(engine: &dyn LakeEngine) -> R
     };
     fold(engine, 3, |p| {
         p.put_declaration(&verb, 1, None, Position(0))?;
-        p.put_proposal(
-            &proposal("p1", 1, retire("invoice"), ProposalState::Pending),
-            Position(1),
-        )?;
-        p.put_proposal(
-            &proposal("p2", 2, retire("customer"), ProposalState::Pending),
-            Position(2),
-        )?;
-        p.put_proposal(
-            &proposal("p3", 3, call.clone(), ProposalState::Pending),
-            Position(3),
-        )
+        p.put_proposal(&proposal("p1", 1, retire("invoice"), Pending), Position(1))?;
+        p.put_proposal(&proposal("p2", 2, retire("customer"), Pending), Position(2))?;
+        p.put_proposal(&proposal("p3", 3, call.clone(), Pending), Position(3))
     })?;
     fold(engine, 4, |p| {
-        p.put_proposal(
-            &proposal("p3", 4, call, ProposalState::Accepted),
-            Position(4),
-        )
+        p.put_proposal(&proposal("p3", 4, call, Accepted), Position(4))
     })?;
     let at = view(engine, None)?;
     let ids = |f: ProposalFilter| {
@@ -1132,7 +1092,7 @@ fn proposals_filter_by_state_and_type_newest_first(engine: &dyn LakeEngine) -> R
         "all proposals came as {all:?}; newest first"
     );
     let pending = ids(ProposalFilter {
-        state: Some(ProposalState::Pending),
+        state: Some(Pending),
         ..Default::default()
     })
     .must("listing pending proposals")?;
@@ -1157,7 +1117,7 @@ fn proposals_filter_by_state_and_type_newest_first(engine: &dyn LakeEngine) -> R
     ensure!(one == ["p3"], "a limit of one answered {one:?}");
     let before = view(engine, Some(Position(3)))?
         .proposals(&ProposalFilter {
-            state: Some(ProposalState::Pending),
+            state: Some(Pending),
             ..Default::default()
         })
         .must("listing proposals at 3")?;
@@ -1403,14 +1363,6 @@ fn a_field_ordered_scan_walks_page_by_page_as_one_scan(
     // The lake asks for the order index on `v`, `w` and `x` after the
     // records are in, before any declaration names `x`; later it drops
     // `v`, so an order by `v` sorts again.
-    let setting = |fields: Value, at: u64| {
-        record(
-            lakelands_api::seam::SETTING_TYPE,
-            "sort_index.t",
-            json!({"key": "sort_index.t", "value": fields}),
-            at,
-        )
-    };
     fold(engine, 1, |p| {
         p.put_declaration(&two, 1, None, Position(0))?;
         (0..N).try_for_each(|i| p.put_record(&state(i, 1)))
@@ -1426,7 +1378,7 @@ fn a_field_ordered_scan_walks_page_by_page_as_one_scan(
                 p.put_record(&again)?;
                 p.put_record(&state(i, 2))
             })?;
-        p.put_record(&setting(json!(["v", "w", "x"]), 2))
+        p.put_record(&sort_setting(json!(["v", "w", "x"]), 2))
     })?;
     fold(engine, 3, |p| {
         p.put_declaration(&three, 2, None, Position(3))
@@ -1441,7 +1393,9 @@ fn a_field_ordered_scan_walks_page_by_page_as_one_scan(
         "at position 1",
     )?;
     walk_field_orders(engine, None, &three, 2, N, &state, "at the head")?;
-    fold(engine, 4, |p| p.put_record(&setting(json!(["w", "x"]), 4)))?;
+    fold(engine, 4, |p| {
+        p.put_record(&sort_setting(json!(["w", "x"]), 4))
+    })?;
     walk_field_orders(
         engine,
         None,
@@ -1560,14 +1514,6 @@ fn a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it
             )
         })
         .collect();
-    let setting = |fields: Value, at: u64| {
-        record(
-            lakelands_api::seam::SETTING_TYPE,
-            "sort_index.t",
-            json!({"key": "sort_index.t", "value": fields}),
-            at,
-        )
-    };
     fold(engine, 1, |p| {
         p.put_declaration(&decl, 1, None, Position(0))?;
         states.iter().try_for_each(|r| p.put_record(r))
@@ -1611,9 +1557,9 @@ fn a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it
     ] {
         if let Some(fields) = &asked {
             at += 1;
-            let mut state = setting(fields.clone(), at);
+            let mut state = sort_setting(fields.clone(), at);
             if fields.is_null() {
-                state.fields = setting(json!(["v"]), at).fields;
+                state.fields = sort_setting(json!(["v"]), at).fields;
                 state.retired = true;
             }
             fold(engine, at, |p| p.put_record(&state))?;
@@ -1748,9 +1694,7 @@ fn a_scan_with_equal_answers_exactly_the_identical_values(
         p.put_record(&record("t", "h", json!({}), 1))
     })?;
     // Later, `g` moves away: the head and position 1 differ.
-    fold(engine, 2, |p| {
-        p.put_record(&record("t", "g", json!({"v": "11"}), 2))
-    })?;
+    fold_one(engine, 2, record("t", "g", json!({"v": "11"}), 2))?;
     let ty = TypeName::from("t");
     for (at, head_g) in [(None, false), (Some(Position(1)), true)] {
         let v = view(engine, at)?;
@@ -1764,10 +1708,7 @@ fn a_scan_with_equal_answers_exactly_the_identical_values(
             let got = keys(
                 &v.scan(
                     &ty,
-                    &Scan {
-                        equal: vec![("v".into(), value.clone())],
-                        ..scan_all()
-                    },
+                    &scan_with(|s| s.equal = vec![("v".into(), value.clone())]),
                 )
                 .must(&format!("scanning for exactly {value} at {at:?}"))?,
             );

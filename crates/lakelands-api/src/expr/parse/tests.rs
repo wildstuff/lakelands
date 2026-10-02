@@ -6,10 +6,12 @@ fn path(p: &str) -> Expr {
     }
 }
 
+fn lit(value: Literal) -> Expr {
+    Expr::Lit { value }
+}
+
 fn num(n: &str) -> Expr {
-    Expr::Lit {
-        value: Literal::Number(n.into()),
-    }
+    lit(Literal::Number(n.into()))
 }
 
 #[test]
@@ -43,37 +45,15 @@ fn chains_flatten() {
 
 #[test]
 fn literals() {
-    assert_eq!(
-        parse("'it''s'").unwrap(),
-        Expr::Lit {
-            value: Literal::Text("it's".into())
-        }
-    );
+    assert_eq!(parse("'it''s'").unwrap(), lit(Literal::Text("it's".into())));
     assert_eq!(parse("12.50").unwrap(), num("12.50"));
     assert_eq!(
         parse("30d").unwrap(),
-        Expr::Lit {
-            value: Literal::Duration(30 * 86_400_000_000)
-        }
+        lit(Literal::Duration(30 * 86_400_000_000))
     );
-    assert_eq!(
-        parse("1.5s").unwrap(),
-        Expr::Lit {
-            value: Literal::Duration(1_500_000)
-        }
-    );
-    assert_eq!(
-        parse("null").unwrap(),
-        Expr::Lit {
-            value: Literal::Null
-        }
-    );
-    assert_eq!(
-        parse("true").unwrap(),
-        Expr::Lit {
-            value: Literal::Bool(true)
-        }
-    );
+    assert_eq!(parse("1.5s").unwrap(), lit(Literal::Duration(1_500_000)));
+    assert_eq!(parse("null").unwrap(), lit(Literal::Null));
+    assert_eq!(parse("true").unwrap(), lit(Literal::Bool(true)));
 }
 
 #[test]
