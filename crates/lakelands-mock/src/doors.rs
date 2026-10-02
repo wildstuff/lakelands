@@ -1722,7 +1722,15 @@ fn plan_propose(
             payload,
             opts,
         } => {
-            check_call(st, who, verb, key.as_ref(), payload, opts)?;
+            // The mock binds no executor: a call that could not run when
+            // accepted is not proposed.
+            if let VerbEffect::External { executor } =
+                &check_call(st, who, verb, key.as_ref(), payload, opts)?.effect
+            {
+                return Err(Error::Unbound {
+                    seam: format!("the verb executor `{executor}`"),
+                });
+            }
         }
         // A change of the ontology is checked as its door would check it;
         // the proposer needs no `schema` grant.

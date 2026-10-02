@@ -45,7 +45,8 @@ only thing that decides between running and proposing, whatever the
 effect.
 
 A verb that reaches outside the lake, of any risk, is refused as
-`unbound` at call time when no executor is bound for it: never faked,
+`unbound` when no executor is bound for it, whether it is called or a
+call of it is proposed through `propose` (lakelands#345): never faked,
 and never recorded as a proposal, because a proposal that could not run
 when accepted would be a promise the store cannot keep.
 

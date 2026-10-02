@@ -27,7 +27,7 @@ check!(
 check!(
     /// A verb that reaches outside needs its executor.
     EXTERNAL_UNBOUND = an_external_verb_without_an_executor_is_unbound,
-    "013 and 015: a verb whose effect reaches outside the lake runs only through a bound executor; without one the answer is `unbound`, and nothing is appended"
+    "013 and 015: a verb whose effect reaches outside the lake runs only through a bound executor; without one, calling it at any risk or proposing a call of it answers `unbound` naming the executor, and nothing is appended"
 );
 
 check!(
@@ -179,18 +179,45 @@ async fn a_low_verb_runs_and_a_higher_one_is_proposed(
 async fn an_external_verb_without_an_executor_is_unbound(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    ledger(store.as_ref()).await?;
-    let own = owner(store.as_ref());
+    let l = ledger(store.as_ref()).await?;
+    l.declare_json(
+        json!({"declare": "verb", "name": "chase", "on": "invoice", "risk": "high",
+                          "effect": "external", "executor": "mailer"}),
+    )
+    .await?;
+    let Lake { own, cat } = &l;
     let before = store.head().await.must("reading the head")?;
-    let err = call(store.as_ref(), &own, "remind", json!({}))
-        .await
-        .must_fail("calling `remind`, whose executor `mailer` is not bound")?;
-    head_unmoved(store.as_ref(), before, "calling an unbound external verb").await?;
-    ensure!(
-        matches!(err, Error::Unbound { .. }),
-        "calling an external verb with no executor bound must answer `unbound`; it \
-         failed with {err:?}"
-    );
+    let proposed = |verb: &str| ProposedWrite::Call {
+        verb: verb.into(),
+        key: Some("i".into()),
+        payload: patch(json!({})),
+        opts: WriteOpts::default(),
+    };
+    for (what, answer) in [
+        (
+            "calling the low-risk `remind`",
+            call(store.as_ref(), own, "remind", json!({})).await,
+        ),
+        (
+            "calling the high-risk `chase`, which would be proposed",
+            call(store.as_ref(), own, "chase", json!({})).await,
+        ),
+        (
+            "proposing a call of `remind`",
+            cat.propose(own, proposed("remind"), "later".into()).await,
+        ),
+        (
+            "proposing a call of `chase`",
+            cat.propose(own, proposed("chase"), "later".into()).await,
+        ),
+    ] {
+        ensure!(
+            matches!(&answer, Err(Error::Unbound { seam }) if seam.contains("mailer")),
+            "{what}, whose executor `mailer` is not bound, must answer `unbound` naming \
+             `mailer`, and never record a proposal that could not run; it answered {answer:?}"
+        );
+    }
+    head_unmoved(store.as_ref(), before, "the unbound external verbs").await?;
     Ok(())
 }
 
