@@ -50,7 +50,7 @@ mod view;
 use std::sync::{Mutex, MutexGuard};
 
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
-use lakelands_api::error::{Error, Refusal, Result};
+use lakelands_api::error::{Error, Result};
 use lakelands_api::location::{EngineConfig, Location};
 
 pub use connect::MIN_SERVER_VERSION;
@@ -66,22 +66,7 @@ pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// An error for a lake that cannot answer now.
-pub(crate) fn unavailable(message: impl Into<String>) -> Error {
-    Error::Unavailable {
-        message: message.into(),
-    }
-}
-
-/// An error for a request that does not fit the seam's contract.
-pub(crate) fn invalid(message: impl Into<String>) -> Error {
-    Error::Refused {
-        field: None,
-        reason: Refusal::Invalid {
-            message: message.into(),
-        },
-    }
-}
+pub(crate) use lakelands_core::{invalid, unavailable};
 
 /// A failed statement, for the host, with every cause the driver gives.
 pub(crate) fn sql(e: postgres::Error) -> Error {

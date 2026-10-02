@@ -38,8 +38,7 @@ pub(crate) fn create(db: &mut Db, names: &Names) -> Result<()> {
             names.t("segments")
         ),
         &[],
-    )?;
-    Ok(())
+    )
 }
 
 /// The last event's position and hash.
@@ -82,23 +81,18 @@ fn fenced(db: &mut Db, names: &Names, lease: &Lease, what: &str) -> Result<()> {
         &[],
     )?;
     let recorded = row.map(|r| (r.get::<_, i64>(0), r.get::<_, String>(1)));
-    match recorded {
-        Some((fence, _)) if fence == lease.fence as i64 => Ok(()),
-        Some((fence, holder)) if !holder.is_empty() => Err(unavailable(format!(
-            "the lease with fence {} is stale: `{holder}` holds the lake's writer lease with \
-             fence {fence}; nothing was {what}",
-            lease.fence
-        ))),
-        Some((fence, _)) => Err(unavailable(format!(
-            "the lease with fence {} is stale: the lease row records fence {fence} and no \
-             holder; nothing was {what}",
-            lease.fence
-        ))),
-        None => Err(unavailable(format!(
-            "the lease with fence {} is stale: the lake's lease row is gone; nothing was {what}",
-            lease.fence
-        ))),
-    }
+    let why = match recorded {
+        Some((fence, _)) if fence == lease.fence as i64 => return Ok(()),
+        Some((fence, holder)) if !holder.is_empty() => {
+            format!("`{holder}` holds the lake's writer lease with fence {fence}")
+        }
+        Some((fence, _)) => format!("the lease row records fence {fence} and no holder"),
+        None => "the lake's lease row is gone".to_owned(),
+    };
+    Err(unavailable(format!(
+        "the lease with fence {} is stale: {why}; nothing was {what}",
+        lease.fence
+    )))
 }
 
 /// Append `events` under `lease`, in one transaction that checks the
@@ -356,14 +350,10 @@ pub(crate) fn export(db: &mut Db, names: &Names, dir: &Path) -> Result<()> {
     let log = dir.join("log");
     std::fs::create_dir_all(&log)
         .map_err(|e| unavailable(format!("creating {} failed: {e}", log.display())))?;
-    let firsts: Vec<i64> = db
-        .query(
-            &format!("SELECT first FROM {} ORDER BY first", names.t("segments")),
-            &[],
-        )?
-        .iter()
-        .map(|r| r.get(0))
-        .collect();
+    let firsts: Vec<i64> = db.column(
+        &format!("SELECT first FROM {} ORDER BY first", names.t("segments")),
+        &[],
+    )?;
     for first in firsts {
         // Written as the rows arrive, under a temporary name that becomes
         // the file's once it is whole and synced: a failed export leaves
