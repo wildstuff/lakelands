@@ -23,10 +23,11 @@ use std::sync::Arc;
 
 use lakelands_api::ontology::{Authority, FieldDecl, StorageKind};
 use lakelands_api::query::{Search, SearchMode};
-use lakelands_api::{LakeStore, Position, Principal, ReadAt, SourceRecord, TypeName};
+use lakelands_api::{LakeStore, Position, Principal, SourceRecord, TypeName};
 use serde_json::json;
 
-use crate::conformance::fixture::{Lake, Must, doors, field, type_decl, vector};
+use super::search::doc_search;
+use crate::conformance::fixture::{self, Lake, Must, doors, field, read_at, type_decl, vector};
 use crate::conformance::{Failure, Given};
 
 check!(
@@ -110,13 +111,24 @@ struct Point {
 }
 
 fn source_record(key: &str, vector: Option<&[f32]>, group: u32) -> SourceRecord {
-    SourceRecord {
-        upstream: None,
-        ty: TypeName::from(TY),
-        key: key.into(),
-        fields: crate::conformance::fixture::patch(json!({"v": vector, "group": group})),
-        seen_at: None,
+    fixture::source_record(TY, key, json!({"v": vector, "group": group}))
+}
+
+/// The `i`th `point` of the corpus, as first written.
+fn corpus_point(i: u64) -> Point {
+    Point {
+        key: format!("p{i:05}"),
+        vector: Some(corpus_vector(i)),
+        group: (i % 4) as u32,
+        retired: false,
+        then: None,
     }
+}
+
+/// A search's hits as their keys and the bits of their scores.
+fn bits(h: &lakelands_api::query::Hits) -> Vec<(String, u64)> {
+    let hit = |h: &lakelands_api::query::Hit| (h.record.key.0.clone(), h.score.to_bits());
+    h.hits.iter().map(hit).collect()
 }
 
 async fn deliver(
@@ -169,15 +181,7 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
     let v = source(vector("v", DIMENSIONS as u32));
     let group = source(field("group", StorageKind::Number));
     l.declare(type_decl(TY, vec![v, group])).await?;
-    let mut points: Vec<Point> = (0..POINTS)
-        .map(|i| Point {
-            key: format!("p{i:05}"),
-            vector: Some(corpus_vector(i)),
-            group: (i % 4) as u32,
-            retired: false,
-            then: None,
-        })
-        .collect();
+    let mut points: Vec<Point> = (0..POINTS).map(corpus_point).collect();
     deliver(
         store.as_ref(),
         own,
@@ -187,12 +191,7 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
             .collect(),
     )
     .await?;
-    l.upsert(
-        lakelands_api::seam::SETTING_TYPE,
-        "vector_index.point",
-        json!({"key": "vector_index.point", "value": ["v"]}),
-    )
-    .await?;
+    l.set("vector_index.point", json!(["v"])).await?;
     let then = store.head().await.must("reading the head")?;
     for p in &mut points {
         p.then = Some(p.group);
@@ -219,13 +218,7 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
         }
     }
     for i in POINTS..POINTS + ADDED {
-        let p = Point {
-            key: format!("p{i:05}"),
-            vector: Some(corpus_vector(i)),
-            group: (i % 4) as u32,
-            retired: false,
-            then: None,
-        };
+        let p = corpus_point(i);
         changed.push(source_record(&p.key, p.vector.as_deref(), p.group));
         points.push(p);
     }
@@ -239,15 +232,10 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
                 &own,
                 Search {
                     ty: TypeName::from(TY),
-                    mode: SearchMode::vector("v", q),
                     k,
-                    cursor: None,
                     filter: group.map(|g| format!("group = {g}").as_str().into()),
-                    with_meta: false,
-                    at: ReadAt {
-                        as_of: earlier.then_some(Position(then.0)),
-                        valid_at: None,
-                    },
+                    at: read_at(earlier.then_some(Position(then.0))),
+                    ..doc_search(SearchMode::vector("v", q))
                 },
             )
             .await
@@ -281,11 +269,7 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
                          it said {:?}",
                         got.ranked_by
                     );
-                    let hits: Vec<(String, u64)> = got
-                        .hits
-                        .iter()
-                        .map(|h| (h.record.key.0.clone(), h.score.to_bits()))
-                        .collect();
+                    let hits = bits(&got);
                     for (key, bits) in &hits {
                         let head = by_key
                             .get(key.as_str())
@@ -316,11 +300,7 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
                         let again = search(q.clone(), k, group, earlier)
                             .await
                             .must(&format!("the same search again, {what}"))?;
-                        let again: Vec<(String, u64)> = again
-                            .hits
-                            .iter()
-                            .map(|h| (h.record.key.0.clone(), h.score.to_bits()))
-                            .collect();
+                        let again = bits(&again);
                         ensure!(
                             again == hits,
                             "{what}: the same search asked twice must answer the same bytes; \

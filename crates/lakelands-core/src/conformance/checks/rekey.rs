@@ -12,13 +12,14 @@ use std::sync::Arc;
 
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::query::{Projection, QueryResult, Walk};
-use lakelands_api::write::{Declaration, Migration, MigrationReport};
+use lakelands_api::write::{Migration, MigrationReport};
 use lakelands_api::{Catalog, Error, LakeStore, Position, Principal, Refusal, TypeName, WriteOpts};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, get_at, head_unmoved, log_events, patch, pattern, reason, step,
+    Lake, Must, events_after, get_at, head_unmoved, log_events, migration, patch, pattern, reason,
+    restrict, step,
 };
 
 check!(
@@ -105,10 +106,6 @@ check!(
     "027 and log-format §2.3: the ended keys a re-key leaves are no records: a later migration that keeps the key, a value-type tightening, and a second re-key over them all apply"
 );
 
-fn decl(v: Value) -> Declaration {
-    serde_json::from_value(v).expect("a declaration")
-}
-
 fn account(key: &str, iban_required: bool) -> Value {
     json!({"name": "account", "key": [key],
            "fields": [
@@ -160,9 +157,7 @@ pub(super) async fn lake(store: &dyn LakeStore, ibans: [Option<&str>; 4]) -> Res
                           {"name": "seq", "type": {"kind": "number"}, "required": true},
                           {"name": "memo", "type": {"kind": "text"}}]}),
     ] {
-        cat.declare(own, decl(d))
-            .await
-            .must("declaring the fixture")?;
+        l.declare_json(d).await?;
     }
     l.upsert("person", "x", json!({"name": "x"})).await?;
     for (i, iban) in ibans.iter().enumerate() {
@@ -175,10 +170,7 @@ pub(super) async fn lake(store: &dyn LakeStore, ibans: [Option<&str>; 4]) -> Res
         l.upsert("account", &n, fields).await?;
     }
     l.retire("account", "3").await?;
-    store
-        .restrict(&"account".into(), &"4".into(), "a retention hold".into())
-        .await
-        .must("restricting account 4")?;
+    restrict(store, "account", "4", "a retention hold").await?;
     l.upsert("payment", "p1", json!({"account": "1", "amount": 5}))
         .await?;
     l.upsert(
@@ -227,34 +219,32 @@ pub(super) async fn apply(store: &dyn LakeStore) -> Result<Position, Failure> {
 }
 
 async fn found(
-    cat: &dyn Catalog,
-    who: &Principal,
+    l: &Lake,
     ty: &str,
     key: &str,
     as_of: Option<Position>,
 ) -> Result<Option<lakelands_api::Record>, Failure> {
-    match cat.get(who, &TypeName::from(ty), get_at(key, as_of)).await {
+    match l
+        .cat
+        .get(&l.own, &TypeName::from(ty), get_at(key, as_of))
+        .await
+    {
         Ok(r) => Ok(Some(r.data)),
         Err(Error::NotFound { .. }) => Ok(None),
         Err(e) => Err(Failure::new(format!("reading `{ty}` `{key}`: {e}"))),
     }
 }
 
-async fn walked(
-    cat: &dyn Catalog,
-    who: &Principal,
-    ty: &str,
-    key: &str,
-    relation: &str,
-) -> Result<Vec<String>, Failure> {
+async fn walked(l: &Lake, ty: &str, key: &str, relation: &str) -> Result<Vec<String>, Failure> {
     let p = pattern(
         ty,
         Some(key),
         vec![step(relation, Walk::Out)],
         Projection::Graph,
     );
-    let reply = cat
-        .query(who, p)
+    let reply = l
+        .cat
+        .query(&l.own, p)
         .await
         .must(&format!("walking `{relation}` from `{ty}` `{key}`"))?;
     let QueryResult::Graph { nodes, .. } = reply.data else {
@@ -365,12 +355,11 @@ async fn a_rekey_moves_every_record_with_its_values_version_and_provenance(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref(), IBANS).await?;
-    let Lake { cat, own } = &l;
-    let old = found(cat.as_ref(), own, "account", "1", None)
+    let old = found(&l, "account", "1", None)
         .await?
         .ok_or_else(|| Failure::new("account 1 is not found before the re-key"))?;
     let at = apply(store.as_ref()).await?;
-    let moved = found(cat.as_ref(), own, "account", "DE1", Some(at))
+    let moved = found(&l, "account", "DE1", Some(at))
         .await?
         .ok_or_else(|| Failure::new("`DE1` is not found at the migration's position"))?;
     ensure!(
@@ -378,22 +367,14 @@ async fn a_rekey_moves_every_record_with_its_values_version_and_provenance(
         "account 1 moved to `DE1` changed: {old:?} became {moved:?}"
     );
     ensure!(
-        found(cat.as_ref(), own, "account", "1", Some(at))
-            .await?
-            .is_none()
-            && found(cat.as_ref(), own, "account", "1", None)
-                .await?
-                .is_none(),
+        found(&l, "account", "1", Some(at)).await?.is_none()
+            && found(&l, "account", "1", None).await?.is_none(),
         "the old key `1` is still found at or after the migration"
     );
     let earlier = Position(at.0 - 1);
     ensure!(
-        found(cat.as_ref(), own, "account", "1", Some(earlier))
-            .await?
-            .is_some()
-            && found(cat.as_ref(), own, "account", "DE1", Some(earlier))
-                .await?
-                .is_none(),
+        found(&l, "account", "1", Some(earlier)).await?.is_some()
+            && found(&l, "account", "DE1", Some(earlier)).await?.is_none(),
         "as of {earlier}, before the migration, `1` is found and `DE1` is not"
     );
     Ok(())
@@ -403,9 +384,8 @@ async fn a_reference_to_a_rekeyed_record_names_its_new_key(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref(), IBANS).await?;
-    let Lake { cat, own } = &l;
     apply(store.as_ref()).await?;
-    let p1 = found(cat.as_ref(), own, "payment", "p1", None)
+    let p1 = found(&l, "payment", "p1", None)
         .await?
         .ok_or_else(|| Failure::new("payment p1 is not found after the re-key"))?;
     ensure!(
@@ -413,7 +393,7 @@ async fn a_reference_to_a_rekeyed_record_names_its_new_key(
         "p1's account is {:?}; `DE1` was expected",
         p1.fields.get("account")
     );
-    let reached = walked(cat.as_ref(), own, "payment", "p1", "pays").await?;
+    let reached = walked(&l, "payment", "p1", "pays").await?;
     ensure!(
         reached == ["DE1"],
         "the walk over `pays` reached {reached:?}"
@@ -425,15 +405,14 @@ async fn a_link_to_a_rekeyed_record_is_rekeyed_and_walked(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref(), IBANS).await?;
-    let Lake { cat, own } = &l;
     apply(store.as_ref()).await?;
     let lt = "sys.link.account.owner";
     ensure!(
-        found(cat.as_ref(), own, lt, "DE1:x", None).await?.is_some()
-            && found(cat.as_ref(), own, lt, "1:x", None).await?.is_none(),
+        found(&l, lt, "DE1:x", None).await?.is_some()
+            && found(&l, lt, "1:x", None).await?.is_none(),
         "the link from account 1 to x was not moved to `DE1:x`"
     );
-    let reached = walked(cat.as_ref(), own, "account", "DE1", "owner").await?;
+    let reached = walked(&l, "account", "DE1", "owner").await?;
     ensure!(
         reached == ["x"],
         "the walk over `owner` from `DE1` reached {reached:?}"
@@ -445,16 +424,13 @@ async fn a_type_keyed_by_a_reference_to_a_rekeyed_type_is_rekeyed_with_it(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref(), IBANS).await?;
-    let Lake { cat, own } = &l;
     apply(store.as_ref()).await?;
-    let e = found(cat.as_ref(), own, "entry", "DE1:1", None).await?;
+    let e = found(&l, "entry", "DE1:1", None).await?;
     ensure!(
         e.as_ref()
             .is_some_and(|e| e.fields.get("account") == Some(&json!("DE1"))
                 && e.fields.get("memo") == Some(&json!("m")))
-            && found(cat.as_ref(), own, "entry", "1:1", None)
-                .await?
-                .is_none(),
+            && found(&l, "entry", "1:1", None).await?.is_none(),
         "the entry keyed by account 1 is not at `DE1:1` with its values: {e:?}"
     );
     Ok(())
@@ -465,7 +441,7 @@ async fn an_old_key_is_ended_and_a_new_write_follows_the_new_rule(
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref(), IBANS).await?;
     let Lake { cat, own } = &l;
-    let v = found(cat.as_ref(), own, "account", "1", None)
+    let v = found(&l, "account", "1", None)
         .await?
         .map(|r| r.version)
         .ok_or_else(|| Failure::new("account 1 is not found"))?;
@@ -488,9 +464,7 @@ async fn an_old_key_is_ended_and_a_new_write_follows_the_new_rule(
     );
     head_unmoved(store.as_ref(), before, "a write at an old key").await?;
     let at_new = l.upsert("account", "DE1", json!({"holder": "h"})).await?;
-    let now = found(cat.as_ref(), own, "account", "DE1", None)
-        .await?
-        .map(|r| r.version);
+    let now = found(&l, "account", "DE1", None).await?.map(|r| r.version);
     ensure!(
         now.is_some_and(|n| n.0 == v.0 + 1),
         "a write at `DE1` answered {at_new:?}; the moved record's version {} was to continue",
@@ -504,7 +478,7 @@ async fn an_old_key_is_ended_and_a_new_write_follows_the_new_rule(
         json!({"number": "9", "meta": {}, "holder": "new"}),
     )
     .await?;
-    let fresh = found(cat.as_ref(), own, "account", "1", None).await?;
+    let fresh = found(&l, "account", "1", None).await?;
     ensure!(
         fresh
             .as_ref()
@@ -519,11 +493,7 @@ async fn a_rekey_and_every_event_after_it_are_format_version_2(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref(), IBANS).await?;
-    let Lake { cat, own } = &l;
-    let read = |ty: &'static str, key: &'static str| {
-        let (cat, own) = (cat.clone(), own.clone());
-        async move { found(cat.as_ref(), &own, ty, key, None).await }
-    };
+    let read = |ty: &'static str, key: &'static str| found(&l, ty, key, None);
     let at = apply(store.as_ref()).await?;
     l.upsert("account", "DE2", json!({"holder": "after"}))
         .await?;
@@ -558,7 +528,6 @@ async fn a_lake_that_never_rekeys_writes_format_version_1(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref(), IBANS).await?;
-    let Lake { cat, own } = &l;
     // A migration that keeps the key.
     let mut to: serde_json::Map<String, Value> = account("number", false)
         .as_object()
@@ -568,14 +537,8 @@ async fn a_lake_that_never_rekeys_writes_format_version_1(
         .as_array_mut()
         .expect("fields")
         .push(json!({"name": "note", "type": {"kind": "text"}}));
-    let m = Migration {
-        to: serde_json::from_value(Value::Object(to)).expect("a type"),
-        renames: vec![],
-    };
-    let r = cat.migrate(own, m.clone()).await.must("a preflight")?.data;
-    cat.migrate_apply(own, m, &r.report_id)
-        .await
-        .must("a migration that keeps the key")?;
+    l.migrate(serde_json::from_value(Value::Object(to)).expect("a type"))
+        .await?;
     let newer: Vec<(u64, u32)> = log_events(store.as_ref())
         .await?
         .iter()
@@ -599,10 +562,7 @@ async fn a_migration_that_takes_every_key_field_away_is_refused(
         .cloned()
         .unwrap_or_default();
     to.insert("key".into(), json!([]));
-    let m = Migration {
-        to: serde_json::from_value(Value::Object(to)).expect("a type"),
-        renames: vec![],
-    };
+    let m = migration(serde_json::from_value(Value::Object(to)).expect("a type"));
     let before = store.head().await.must("reading the head")?;
     let e = cat
         .migrate(own, m)
@@ -628,16 +588,14 @@ async fn a_migration_that_takes_every_key_field_away_is_refused(
     }
     head_unmoved(store.as_ref(), before, "refused key changes").await?;
     // A view keyed by a reference to the type would be re-keyed with it.
-    cat.declare(
-        own,
-        decl(json!({"declare": "type", "name": "per_account", "key": ["account"],
-                    "fields": [{"name": "account", "type": {"kind": "reference", "target": "account"}},
-                               {"name": "n", "type": {"kind": "number"}}],
-                    "view": {"source": "payment", "group_by": ["account"],
-                             "measures": [{"name": "n", "expr": "count()"}]}})),
+    l.declare_json(
+        json!({"declare": "type", "name": "per_account", "key": ["account"],
+        "fields": [{"name": "account", "type": {"kind": "reference", "target": "account"}},
+                   {"name": "n", "type": {"kind": "number"}}],
+        "view": {"source": "payment", "group_by": ["account"],
+                 "measures": [{"name": "n", "expr": "count()"}]}}),
     )
-    .await
-    .must("declaring the view `per_account`")?;
+    .await?;
     let before = store.head().await.must("reading the head")?;
     let e = cat
         .migrate(own, to_iban())
@@ -685,16 +643,11 @@ async fn object_set_membership_moves_with_a_rekeyed_record(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref(), IBANS).await?;
-    let Lake { cat, own } = &l;
-    cat.declare(
-        own,
-        decl(
-            json!({"declare": "object_set", "name": "held", "of": "account",
-                    "where": "holder is not null"}),
-        ),
+    l.declare_json(
+        json!({"declare": "object_set", "name": "held", "of": "account",
+                          "where": "holder is not null"}),
     )
-    .await
-    .must("declaring the set `held`")?;
+    .await?;
     // Written again after the set exists, so account 1 is in it.
     l.upsert("account", "1", json!({"holder": "holder 1b"}))
         .await?;
@@ -702,11 +655,7 @@ async fn object_set_membership_moves_with_a_rekeyed_record(
     let before = store.head().await.must("reading the head")?;
     l.upsert("account", "DE1", json!({"holder": "still held"}))
         .await?;
-    let after_write: Vec<Event> = log_events(store.as_ref())
-        .await?
-        .into_iter()
-        .filter(|e| e.position > before)
-        .collect();
+    let after_write = events_after(store.as_ref(), before).await?;
     ensure!(
         set_changes(&after_write).is_empty(),
         "a write that keeps `DE1` in `held` changed the set: {:?}",
@@ -714,11 +663,7 @@ async fn object_set_membership_moves_with_a_rekeyed_record(
     );
     let before = store.head().await.must("reading the head")?;
     l.retire("account", "DE1").await?;
-    let after_retire: Vec<Event> = log_events(store.as_ref())
-        .await?
-        .into_iter()
-        .filter(|e| e.position > before)
-        .collect();
+    let after_retire = events_after(store.as_ref(), before).await?;
     ensure!(
         set_changes(&after_retire) == [("DE1".to_owned(), false)],
         "retiring `DE1` changed `held` as {:?}; it leaves it, at `DE1`",
@@ -779,7 +724,7 @@ async fn a_rekeyed_type_migrates_again(store: Arc<dyn LakeStore>) -> Result<(), 
     cat.migrate_apply(own, back, &r.report_id)
         .await
         .must("re-keying `account` back to `number`")?;
-    let one = found(cat.as_ref(), own, "account", "1", None).await?;
+    let one = found(&l, "account", "1", None).await?;
     ensure!(
         one.as_ref()
             .is_some_and(|r| r.fields.get("iban") == Some(&json!("DE1"))),

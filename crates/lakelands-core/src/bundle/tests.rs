@@ -1243,14 +1243,11 @@ fn a_json_field_may_not_carry_the_name_of_a_type() {
         Problem::Contradiction,
     );
     assert!(
-        parse(&[
+        load(&[
+            ("types/partner.yaml", "name: partner\nfields:\n  a: text\n"),
             (
-                "types/partner.yaml".into(),
-                "name: partner\nfields:\n  a: text\n".into()
-            ),
-            (
-                "types/t.yaml".into(),
-                "name: t\nfields:\n  partner: reference(partner)\n".into()
+                "types/t.yaml",
+                "name: t\nfields:\n  partner: reference(partner)\n"
             ),
         ])
         .is_ok(),
@@ -1338,13 +1335,9 @@ fn a_views_parameters_arrive_in_the_order_they_were_written() {
          measures:\n    invoices: \"count()\"\n",
     );
     let bundle = load(&[INVOICE, view]).expect("a view with parameters loads");
-    let params = bundle
-        .declarations
-        .iter()
-        .find_map(|d| match d {
-            Declaration::Type(t) if t.name == "window" => t.view.as_ref().map(|v| v.params.clone()),
-            _ => None,
-        })
+    let view = ty(&bundle, "window").view.as_ref();
+    let params = view
+        .map(|v| v.params.clone())
         .expect("the view is declared");
     let got: Vec<(&str, StorageKind)> = params.iter().map(|p| (p.name.as_str(), p.kind)).collect();
     assert_eq!(
@@ -1384,14 +1377,8 @@ fn a_views_merged_source_arrives_whole() {
         "name: invoice\nfields:\n  partner: reference(partner)\n",
     );
     let bundle = load(&[PARTNER, PAYMENT, invoice, view]).expect("a view with a merge loads");
-    let merge = bundle
-        .declarations
-        .iter()
-        .find_map(|d| match d {
-            Declaration::Type(t) if t.name == "paid" => t.view.as_ref().map(|v| v.merge.clone()),
-            _ => None,
-        })
-        .expect("the view is declared");
+    let view = ty(&bundle, "paid").view.as_ref();
+    let merge = view.map(|v| v.merge.clone()).expect("the view is declared");
     assert_eq!(
         merge,
         [ViewSource {

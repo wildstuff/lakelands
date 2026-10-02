@@ -11,15 +11,15 @@ use std::sync::Arc;
 
 use lakelands_api::event::{EventBody, Procedure};
 use lakelands_api::ontology::StorageKind;
-use lakelands_api::seam::{AGING_RULE_TYPE, FeedFilter};
+use lakelands_api::seam::AGING_RULE_TYPE;
 use lakelands_api::write::{AgeReport, Declaration};
 use lakelands_api::{Catalog, LakeStore, Origin, Principal, Refusal, Timestamp, WriteOrigin};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, count_view, declare, derived, field, field_access, head_unmoved, no_such_field,
-    read, refused_on, sourced, trigger_on, type_decl, upsert,
+    Lake, Must, count_view, derived, events_after, field, field_access, head_unmoved,
+    no_such_field, reference, refused_on, restrict, sourced, trigger_on, type_decl, upsert,
 };
 
 check!(
@@ -152,28 +152,19 @@ async fn age(store: &dyn LakeStore, today: Timestamp) -> Result<AgeReport, Failu
 }
 
 async fn status(l: &Lake, key: &str) -> Result<Value, Failure> {
-    let (cat, who) = (l.cat.as_ref(), &l.own);
-    let r = read(cat, who, "invoice", key).await?;
+    let r = l.read("invoice", key).await?;
     Ok(r.fields.get("status").cloned().unwrap_or(Value::Null))
 }
 
 /// `invoice` with `status` (text) and `amount` (number).
 async fn invoices(l: &Lake) -> Result<(), Failure> {
-    let (cat, who) = (l.cat.as_ref(), &l.own);
-    declare(
-        cat,
-        who,
-        type_decl(
-            "invoice",
-            vec![
-                field("status", StorageKind::Text),
-                field("amount", StorageKind::Number),
-                field("divisor", StorageKind::Number),
-                field("due_on", StorageKind::DateTime),
-            ],
-        ),
-    )
-    .await?;
+    let fields = vec![
+        field("status", StorageKind::Text),
+        field("amount", StorageKind::Number),
+        field("divisor", StorageKind::Number),
+        field("due_on", StorageKind::DateTime),
+    ];
+    l.declare(type_decl("invoice", fields)).await?;
     Ok(())
 }
 
@@ -191,10 +182,7 @@ async fn a_rule_moves_only_the_records_holding_from_whose_condition_holds(
         l.upsert("invoice", key, json!({"status": status, "amount": amount}))
             .await?;
     }
-    store
-        .restrict(&"invoice".into(), &"held".into(), "a retention hold".into())
-        .await
-        .must("restricting `held`")?;
+    restrict(store.as_ref(), "invoice", "held", "a retention hold").await?;
     overdue(&l, "overdue", "amount > 100").await?;
     let report = age(store.as_ref(), date(2026, 3, 1)).await?;
     for (key, want) in [
@@ -341,12 +329,7 @@ async fn a_move_is_written_by_the_system_as_its_rule(
     }
     let before = store.head().await.must("reading the head")?;
     age(store.as_ref(), date(2026, 3, 1)).await?;
-    let events = store
-        .feed()
-        .poll(before.next(), &FeedFilter::default(), 100)
-        .await
-        .must("reading the feed after the rule")?
-        .events;
+    let events = events_after(store.as_ref(), before).await?;
     let moved = events
         .iter()
         .find(|e| matches!(e.body, EventBody::RecordUpserted { .. }))
@@ -486,12 +469,7 @@ async fn rules_run_in_name_order_one_append_each(store: Arc<dyn LakeStore>) -> R
         names == ["a_first", "b_second"],
         "the report names the rules {names:?}, and name order was expected"
     );
-    let events = store
-        .feed()
-        .poll(before.next(), &FeedFilter::default(), 100)
-        .await
-        .must("reading the feed after the rules")?
-        .events;
+    let events = events_after(store.as_ref(), before).await?;
     let procedures: Vec<&str> = events
         .iter()
         .filter_map(|e| e.procedure.as_ref().map(|p| p.name.as_str()))
@@ -665,13 +643,11 @@ async fn a_move_the_store_would_refuse_leaves_the_record(
     let l = Lake::of(store.as_ref());
     l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))
         .await?;
-    let mut owner_field = field("owner", StorageKind::Reference);
-    owner_field.ty.target = Some("partner".into());
-    l.declare(type_decl(
-        "ticket",
-        vec![owner_field, field("state", StorageKind::Text)],
-    ))
-    .await?;
+    let fields = vec![
+        reference("owner", "partner"),
+        field("state", StorageKind::Text),
+    ];
+    l.declare(type_decl("ticket", fields)).await?;
     for p in ["p1", "p2"] {
         l.upsert("partner", p, json!({"name": p})).await?;
     }
@@ -715,14 +691,13 @@ async fn a_rule_under_a_retention_hold_is_live_and_runs(
     l.upsert("invoice", "i1", json!({"status": "open", "amount": 200}))
         .await?;
     overdue(&l, "held_rule", "amount > 100").await?;
-    store
-        .restrict(
-            &AGING_RULE_TYPE.into(),
-            &"held_rule".into(),
-            "a retention hold".into(),
-        )
-        .await
-        .must("restricting the rule record")?;
+    restrict(
+        store.as_ref(),
+        AGING_RULE_TYPE,
+        "held_rule",
+        "a retention hold",
+    )
+    .await?;
     let report = age(store.as_ref(), date(2026, 3, 1)).await?;
     ensure!(
         status(&l, "i1").await? == json!("overdue")
@@ -828,19 +803,15 @@ async fn a_rule_is_skipped_when_its_field_is_dropped_or_its_value_no_longer_admi
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     use lakelands_api::ontology::ValueTypeDecl;
-    use lakelands_api::write::Migration;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let stage_type = |one_of: &[&str]| -> Result<ValueTypeDecl, Failure> {
         serde_json::from_value(json!({"name": "stage", "kind": "text", "one_of": one_of}))
             .map_err(|e| Failure::new(format!("the check's value type does not read: {e}")))
     };
-    cat.declare(
-        own,
-        Declaration::ValueType(stage_type(&["open", "late", "closed"])?),
-    )
-    .await
-    .must("declaring the value type `stage`")?;
+    let stage = Declaration::ValueType(stage_type(&["open", "late", "closed"])?);
+    l.declare_as(stage, "declaring the value type `stage`")
+        .await?;
     let mut phase = field("phase", StorageKind::Text);
     phase.ty = lakelands_api::ontology::FieldType {
         value_type: Some("stage".into()),
@@ -856,18 +827,7 @@ async fn a_rule_is_skipped_when_its_field_is_dropped_or_its_value_no_longer_admi
     rule(&l, "b_late", "case.phase", "open", "late", "true").await?;
 
     // `note` holds no value, so dropping it is lossless.
-    let m = Migration {
-        to: type_decl("case", vec![phase]),
-        renames: Vec::new(),
-    };
-    let report = cat
-        .migrate(own, m.clone())
-        .await
-        .must("the preflight of dropping `note`")?
-        .data;
-    cat.migrate_apply(own, m, &report.report_id)
-        .await
-        .must("dropping `note`")?;
+    l.migrate(type_decl("case", vec![phase])).await?;
     // `late` leaves `stage`; every stored value (`open`) still fits.
     let tighter = stage_type(&["open", "closed"])?;
     let vt = cat

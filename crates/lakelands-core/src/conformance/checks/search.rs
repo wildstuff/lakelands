@@ -5,15 +5,15 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::{FieldDecl, StorageKind};
+use lakelands_api::ontology::StorageKind;
 use lakelands_api::query::{Hits, Search, SearchMode};
 use lakelands_api::{Access, Error, LakeStore, ReadAt, Refusal, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, declare, doors, embedding, field, field_writer, owner, refused_on, type_decl,
-    upsert, vector,
+    Lake, Must, doors, embedding, field, field_access, field_writer, get_at, owner, read_at,
+    refused_on, restrict, searchable, type_decl, vector,
 };
 
 check!(
@@ -35,30 +35,21 @@ check!(
 );
 
 async fn articles(store: &dyn LakeStore) -> Result<Lake, Failure> {
-    let cat = doors(store);
-    let mut ty = type_decl(
-        "article",
-        vec![FieldDecl {
-            searchable: true,
-            ..field("text", StorageKind::Text)
-        }],
-    );
+    let l = Lake::of(store);
+    let mut ty = type_decl("article", vec![searchable("text")]);
     // Stemming follows the type's language (025); without one, words are
     // only split and lower-cased.
     ty.language = Some("en".into());
-    declare(cat.as_ref(), &owner(store), ty).await?;
-    Ok(Lake::of(store))
+    l.declare(ty).await?;
+    Ok(l)
 }
 
 fn lexical(text: &str) -> Search {
+    let ty = TypeName::from("article");
     Search {
-        ty: TypeName::from("article"),
-        mode: SearchMode::lexical(text),
+        ty,
         k: 20,
-        cursor: None,
-        filter: None,
-        with_meta: false,
-        at: ReadAt::default(),
+        ..doc_search(SearchMode::lexical(text))
     }
 }
 
@@ -146,24 +137,12 @@ async fn search_is_ordered_by_score_then_key(store: Arc<dyn LakeStore>) -> Resul
 async fn searching_a_type_whose_searchable_field_is_unreadable_is_refused(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    articles(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    upsert(
-        cat.as_ref(),
-        &owner(store.as_ref()),
-        "article",
-        "a",
-        json!({"text": "secret plan"}),
-    )
-    .await?;
-    let mut reader = field_writer(store.as_ref(), "reader", "article", &[]);
-    reader
-        .grants
-        .types
-        .get_mut(&TypeName::from("article"))
-        .expect("field_writer grants the type")
-        .fields
-        .insert("text".into(), Access::Masked);
+    let l = articles(store.as_ref()).await?;
+    let cat = &l.cat;
+    l.upsert("article", "a", json!({"text": "secret plan"}))
+        .await?;
+    let masked = [("text", Access::Masked)];
+    let reader = field_access(store.as_ref(), "reader", "article", &masked);
     let err = cat
         .search(&reader, lexical("secret"))
         .await
@@ -191,15 +170,7 @@ check!(
 /// `reader` of `doc`, reading everything but `masked`, which it sees
 /// only masked.
 pub(super) fn masking(store: &dyn LakeStore, masked: &str) -> lakelands_api::Principal {
-    let mut reader = field_writer(store, "reader", "doc", &[]);
-    reader
-        .grants
-        .types
-        .get_mut(&TypeName::from("doc"))
-        .expect("field_writer grants the type")
-        .fields
-        .insert(masked.into(), Access::Masked);
-    reader
+    field_access(store, "reader", "doc", &[(masked, Access::Masked)])
 }
 
 /// `search` by `who` must be refused as not granted, naming `field`.
@@ -439,10 +410,7 @@ async fn a_retired_or_restricted_record_is_never_a_hit(
     }
     let article = TypeName::from("article");
     l.retire(article.as_str(), "gone").await?;
-    store
-        .restrict(&article, &"held".into(), "legal hold".into())
-        .await
-        .must("restricting `held`")?;
+    restrict(store.as_ref(), article.as_str(), "held", "legal hold").await?;
     let reader = field_writer(store.as_ref(), "reader", "article", &[]);
     let seen = cat
         .search(&reader, lexical("lake"))
@@ -480,15 +448,7 @@ async fn a_retired_record_or_a_cleared_vector_is_no_longer_a_nearest_neighbour(
         l.upsert("doc", k, json!({ "embedding": v })).await?;
     }
     let nearest = |store: Arc<dyn LakeStore>| async move {
-        let s = Search {
-            ty: TypeName::from("doc"),
-            mode: SearchMode::vector("embedding", vec![1.0, 0.0]),
-            k: 10,
-            cursor: None,
-            filter: None,
-            with_meta: false,
-            at: ReadAt::default(),
-        };
+        let s = doc_search(SearchMode::vector("embedding", vec![1.0, 0.0]));
         doors(store.as_ref())
             .search(&owner(store.as_ref()), s)
             .await
@@ -532,6 +492,17 @@ const DIRECTIONS: [[f32; 3]; 5] = [
 /// after the earlier position.
 const POINTS: usize = 240;
 const ADDED: usize = 20;
+
+/// The `i`th `point`, pointing along `vector`, in group `i % 4`.
+fn corpus_point(i: usize, vector: [f32; 3]) -> Point {
+    Point {
+        key: format!("p{i:03}"),
+        vector: Some(vector),
+        group: (i % 4) as u32,
+        retired: false,
+        then: None,
+    }
+}
 
 /// One `point` of the corpus as the check wrote it.
 #[derive(Clone)]
@@ -602,13 +573,7 @@ async fn a_vector_search_answers_the_brute_force_ranking_to_the_bit(
     let group = field("group", StorageKind::Number);
     l.declare(type_decl("point", vec![v, group])).await?;
     let mut points: Vec<Point> = (0..POINTS)
-        .map(|i| Point {
-            key: format!("p{i:03}"),
-            vector: Some(corpus_vector(i)),
-            group: (i % 4) as u32,
-            retired: false,
-            then: None,
-        })
+        .map(|i| corpus_point(i, corpus_vector(i)))
         .collect();
     for p in &points {
         l.upsert("point", &p.key, json!({"v": p.vector, "group": p.group}))
@@ -638,13 +603,7 @@ async fn a_vector_search_answers_the_brute_force_ranking_to_the_bit(
         }
     }
     for i in POINTS..POINTS + ADDED {
-        let p = Point {
-            key: format!("p{i:03}"),
-            vector: Some(if i % 2 == 0 { QUERY } else { corpus_vector(i) }),
-            group: (i % 4) as u32,
-            retired: false,
-            then: None,
-        };
+        let p = corpus_point(i, if i % 2 == 0 { QUERY } else { corpus_vector(i) });
         l.upsert("point", &p.key, json!({"v": p.vector, "group": p.group}))
             .await?;
         points.push(p);
@@ -663,15 +622,10 @@ async fn a_vector_search_answers_the_brute_force_ranking_to_the_bit(
             for k in [1, 10, 100] {
                 let s = Search {
                     ty: point.clone(),
-                    mode: SearchMode::vector("v", QUERY.to_vec()),
                     k,
-                    cursor: None,
                     filter: group.map(|g| format!("group = {g}").as_str().into()),
-                    with_meta: false,
-                    at: ReadAt {
-                        as_of: earlier.then_some(Position(then.0)),
-                        valid_at: None,
-                    },
+                    at: read_at(earlier.then_some(Position(then.0))),
+                    ..doc_search(SearchMode::vector("v", QUERY.to_vec()))
                 };
                 let what = format!(
                     "a vector search for {QUERY:?} with k = {k}{}{}",
@@ -710,12 +664,9 @@ async fn a_vector_search_answers_the_brute_force_ranking_to_the_bit(
 /// `quayside` and points north, `b` matches nothing and points east.
 async fn two_docs(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
-    let body = FieldDecl {
-        searchable: true,
-        ..field("body", StorageKind::Text)
-    };
     let v = vector("v", 2);
-    l.declare(type_decl("doc", vec![body, v])).await?;
+    l.declare(type_decl("doc", vec![searchable("body"), v]))
+        .await?;
     l.upsert("doc", "a", json!({"body": "quayside", "v": [0.0, 1.0]}))
         .await?;
     l.upsert("doc", "b", json!({"body": "harbour", "v": [1.0, 0.0]}))
@@ -825,7 +776,7 @@ check!(
 async fn every_hit_is_the_record_get_answers_in_its_declared_shape(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    use lakelands_api::{Get, RecordKey};
+    use lakelands_api::Get;
     let l = two_docs(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     // A field no search reads, written on one record only.
@@ -835,13 +786,7 @@ async fn every_hit_is_the_record_get_answers_in_its_declared_shape(
         .must("adding `note` to `doc`")?;
     l.upsert("doc", "a", json!({"note": "berth 4"})).await?;
     // A reader of `body` and `v` only: `note` is not in its shape.
-    let mut reader = field_writer(store.as_ref(), "reader", "doc", &[]);
-    let doc_grants = reader
-        .grants
-        .types
-        .get_mut(&TypeName::from("doc"))
-        .expect("field_writer grants the type");
-    doc_grants.fields.insert("note".into(), Access::None);
+    let reader = field_access(store.as_ref(), "reader", "doc", &[("note", Access::None)]);
 
     for who in [own, &reader] {
         for (what, mode) in [
@@ -865,10 +810,8 @@ async fn every_hit_is_the_record_get_answers_in_its_declared_shape(
                         who,
                         &TypeName::from("doc"),
                         Get {
-                            key: RecordKey::from(hit.record.key.as_str()),
                             with_meta: false,
-                            at: ReadAt::default(),
-                            params: Default::default(),
+                            ..get_at(hit.record.key.as_str(), None)
                         },
                     )
                     .await

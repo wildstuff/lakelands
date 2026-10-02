@@ -236,6 +236,21 @@ impl Lake {
         self.cat.declare(&self.own, d).await.must(&what)
     }
 
+    /// Declares a type as the owner, answering the store's raw result.
+    pub async fn try_declare(&self, ty: TypeDecl) -> lakelands_api::Result<Outcome> {
+        self.cat.declare(&self.own, Declaration::Type(ty)).await
+    }
+
+    /// Migrates a type to `to` as the owner: the preflight, then the apply
+    /// of the report it answered.
+    pub async fn migrate(&self, to: TypeDecl) -> Result<Outcome, Failure> {
+        let what = format!("migrating `{}`", to.name);
+        let report = self.cat.migrate(&self.own, migration(to.clone()));
+        let id = report.await.must(&what)?.data.report_id;
+        let applied = self.cat.migrate_apply(&self.own, migration(to), &id);
+        applied.await.must(&what)
+    }
+
     /// Retires one record as the owner.
     pub async fn retire(&self, ty: &str, key: &str) -> Result<Outcome, Failure> {
         let (t, k) = (TypeName::from(ty), RecordKey::from(key));
@@ -389,6 +404,14 @@ pub fn reference(name: &str, target: &str) -> FieldDecl {
             target: Some(target.into()),
             ..lakelands_api::ontology::FieldType::kind(StorageKind::Reference)
         },
+        ..field(name, StorageKind::Text)
+    }
+}
+
+/// A searchable text field.
+pub fn searchable(name: &str) -> FieldDecl {
+    FieldDecl {
+        searchable: true,
         ..field(name, StorageKind::Text)
     }
 }
@@ -609,6 +632,27 @@ pub fn value_type(name: &str, kind: StorageKind) -> lakelands_api::ontology::Val
 /// An agent of the lake that holds no grant at all.
 pub fn nobody(store: &dyn LakeStore) -> Principal {
     principal(store, PrincipalKind::Agent, "nobody", Grants::default())
+}
+
+/// An agent `id` that reads every field and writes none.
+pub fn reads_all(store: &dyn LakeStore, id: &str) -> Principal {
+    let grants = Grants {
+        default: Access::Read,
+        ..Grants::default()
+    };
+    principal(store, PrincipalKind::Agent, id, grants)
+}
+
+/// Restricts one record of `ty` for `why`, at the store's own door.
+pub async fn restrict(
+    store: &dyn LakeStore,
+    ty: &str,
+    key: impl Into<RecordKey>,
+    why: &str,
+) -> Result<Position, Failure> {
+    let (t, k) = (TypeName::from(ty), key.into());
+    let what = format!("restricting `{ty}` `{}`", k.as_str());
+    store.restrict(&t, &k, why.into()).await.must(&what)
 }
 
 /// The `output_recorded` events of the lake's log, oldest first.

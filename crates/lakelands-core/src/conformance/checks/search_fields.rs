@@ -5,14 +5,16 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::{FieldDecl, StorageKind};
+use lakelands_api::ontology::StorageKind;
 use lakelands_api::query::{Hits, SearchMode};
 use lakelands_api::{Error, LakeStore, Principal, Refusal};
 use serde_json::json;
 
 use super::search::{doc_search, keys, masking, refused};
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, doors, embedding, field, owner, type_decl, vector};
+use crate::conformance::fixture::{
+    Lake, Must, doors, embedding, field, owner, searchable, type_decl, vector,
+};
 
 check!(
     /// Named fields narrow the match and the ranking.
@@ -45,10 +47,6 @@ check!(
 /// searchable field; `b` holds both in `note`, `a` one, `c` none.
 async fn accounts(store: &dyn LakeStore) -> Result<(), Failure> {
     let l = Lake::of(store);
-    let searchable = |name| FieldDecl {
-        searchable: true,
-        ..field(name, StorageKind::Text)
-    };
     let w = vector("w", 2);
     l.declare(type_decl(
         "doc",
@@ -81,6 +79,17 @@ fn lexical_in(names: &[&str]) -> SearchMode {
     SearchMode::Lexical {
         text: "harbour quayside".into(),
         fields: named(names),
+    }
+}
+
+/// A hybrid search for `text` along `field`, its text half in `names`.
+fn hybrid_in(text: &str, field: &str, vector: Option<Vec<f32>>, names: &[&str]) -> SearchMode {
+    let (text, field, fields) = (text.into(), field.into(), named(names));
+    SearchMode::Hybrid {
+        text,
+        field,
+        vector,
+        fields,
     }
 }
 
@@ -149,12 +158,7 @@ async fn a_search_limited_to_named_fields_matches_and_ranks_in_those_only(
     let fallback = answer(
         store.as_ref(),
         &own,
-        SearchMode::Hybrid {
-            text: "harbour quayside".into(),
-            field: "w".into(),
-            vector: None,
-            fields: named(&["note"]),
-        },
+        hybrid_in("harbour quayside", "w", None, &["note"]),
         "a hybrid search in `note` without a vector",
     )
     .await?;
@@ -204,12 +208,7 @@ async fn a_search_limited_to_readable_fields_is_answered_beside_a_masked_one(
     let hybrid = answer(
         store.as_ref(),
         &reader,
-        SearchMode::Hybrid {
-            text: "harbour quayside".into(),
-            field: "w".into(),
-            vector: Some(vec![0.0, 1.0]),
-            fields: named(&["note"]),
-        },
+        hybrid_in("harbour quayside", "w", Some(vec![0.0, 1.0]), &["note"]),
         "the reader's hybrid search in `note` along `w`",
     )
     .await?;
@@ -294,15 +293,8 @@ async fn a_hybrid_search_limited_to_named_fields_still_probes_what_its_vector_is
 
     let l = Lake::of(store.as_ref());
     let vec = embedding("vec", 2, &["secret"], EMBED_MODEL);
-    let note = FieldDecl {
-        searchable: true,
-        ..field("note", StorageKind::Text)
-    };
-    l.declare(type_decl(
-        "doc",
-        vec![note, field("secret", StorageKind::Text), vec],
-    ))
-    .await?;
+    let fields = vec![searchable("note"), field("secret", StorageKind::Text), vec];
+    l.declare(type_decl("doc", fields)).await?;
     l.upsert(
         "doc",
         "a",
@@ -328,12 +320,7 @@ async fn a_hybrid_search_limited_to_named_fields_still_probes_what_its_vector_is
     refused(
         store.as_ref(),
         &reader,
-        doc_search(SearchMode::Hybrid {
-            text: "harbour".into(),
-            field: "vec".into(),
-            vector: Some(vec![1.0, 0.0]),
-            fields: named(&["note"]),
-        }),
+        doc_search(hybrid_in("harbour", "vec", Some(vec![1.0, 0.0]), &["note"])),
         "secret",
         "a hybrid search in `note` over `vec`, embedded from `secret`, by a reader who sees \
          `secret` only masked,",

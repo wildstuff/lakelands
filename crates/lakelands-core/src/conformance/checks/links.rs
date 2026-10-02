@@ -13,19 +13,18 @@
 use std::sync::Arc;
 
 use lakelands_api::ontology::{
-    Authority, Cardinality, FieldDecl, FieldType, RelationDecl, StorageKind, TypeDecl,
+    Authority, Cardinality, FieldDecl, RelationDecl, StorageKind, TypeDecl,
 };
 use lakelands_api::query::{Edge, Projection, QueryResult, Walk};
-use lakelands_api::write::{Declaration, Migration, Outcome, WriteOpts};
-use lakelands_api::{
-    Catalog, Error, Grants, LakeStore, Position, Principal, PrincipalKind, Refusal,
-};
+use lakelands_api::write::{Outcome, WriteOpts};
+use lakelands_api::{Catalog, Error, LakeStore, Position, Principal, Refusal};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all, doors, field, field_writer, head_unmoved, no_such_field, patch, pattern,
-    principal, reason, refused_on, source_record, step, type_decl,
+    Lake, Must, all, doors, field, field_writer, head_unmoved, migration, no_such_field, nobody,
+    patch, pattern, reads_all, reason, reference, refused_on, restrict, source_record, step,
+    type_decl,
 };
 use crate::links::{link_key, link_type_name};
 
@@ -141,6 +140,14 @@ fn approved_by(fields: Vec<FieldDecl>, authority: Authority) -> RelationDecl {
     }
 }
 
+/// `approved_by` as the lake declares it: authored, with a `since`.
+fn dated() -> RelationDecl {
+    approved_by(
+        vec![field("since", StorageKind::DateTime)],
+        Authority::Authored,
+    )
+}
+
 fn invoice(relations: Vec<RelationDecl>) -> TypeDecl {
     let mut t = type_decl("invoice", vec![field("amount", StorageKind::Decimal)]);
     t.relations = relations;
@@ -153,11 +160,7 @@ async fn lake(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
     l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))
         .await?;
-    l.declare(invoice(vec![approved_by(
-        vec![field("since", StorageKind::DateTime)],
-        Authority::Authored,
-    )]))
-    .await?;
+    l.declare(invoice(vec![dated()])).await?;
     for p in ["p1", "p2"] {
         l.upsert("partner", p, json!({"name": p})).await?;
     }
@@ -184,6 +187,21 @@ async fn link(
         WriteOpts::default(),
     )
     .await
+}
+
+/// Links `from` to `to` over `approved_by` as the owner.
+async fn link_ok(l: &Lake, from: &str, to: &str, fields: Value) -> Result<Outcome, Failure> {
+    let linked = link(l.cat.as_ref(), &l.own, from, to, fields).await;
+    linked.must(&format!("linking {from} to {to}"))
+}
+
+/// Unlinks `from` from `to` over `approved_by` as the owner.
+async fn unlink(l: &Lake, from: &str, to: &str) -> lakelands_api::Result<Outcome> {
+    let (ty, rel) = ("invoice".into(), "approved_by".into());
+    let opts = WriteOpts::default();
+    l.cat
+        .unlink(&l.own, &ty, &from.into(), &rel, &to.into(), opts)
+        .await
 }
 
 /// The edges a one-hop walk over `approved_by` answers from `key` of `ty`.
@@ -224,9 +242,7 @@ async fn a_link_is_written_and_walked_with_its_fields(
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
-    link(cat.as_ref(), own, "i1", "p1", json!({"since": SEPT}))
-        .await
-        .must("linking i1 to p1")?;
+    link_ok(&l, "i1", "p1", json!({"since": SEPT})).await?;
     let out = walked(cat.as_ref(), own, "invoice", "i1", Walk::Out, None).await?;
     ensure!(
         pairs(&out) == ["i1>p1"],
@@ -252,12 +268,8 @@ async fn writing_a_link_again_changes_its_fields_and_keeps_one_link(
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
-    link(cat.as_ref(), own, "i1", "p1", json!({"since": SEPT}))
-        .await
-        .must("linking i1 to p1")?;
-    let again = link(cat.as_ref(), own, "i1", "p1", json!({"since": OCT}))
-        .await
-        .must("linking i1 to p1 again")?;
+    link_ok(&l, "i1", "p1", json!({"since": SEPT})).await?;
+    let again = link_ok(&l, "i1", "p1", json!({"since": OCT})).await?;
     ensure!(
         matches!(again, Outcome::Applied { version: Some(v), .. } if v.0 == 2),
         "writing the same link again changes it: its version is 2; the answer was {again:?}"
@@ -281,20 +293,10 @@ async fn an_unlinked_link_leaves_the_walk_and_stays_in_its_history(
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
-    let linked = link(cat.as_ref(), own, "i1", "p1", json!({"since": SEPT}))
-        .await
-        .must("linking i1 to p1")?
+    let linked = link_ok(&l, "i1", "p1", json!({"since": SEPT}))
+        .await?
         .position();
-    cat.unlink(
-        own,
-        &"invoice".into(),
-        &"i1".into(),
-        &"approved_by".into(),
-        &"p1".into(),
-        WriteOpts::default(),
-    )
-    .await
-    .must("unlinking i1 from p1")?;
+    unlink(&l, "i1", "p1").await.must("unlinking i1 from p1")?;
     let now = walked(cat.as_ref(), own, "invoice", "i1", Walk::Out, None).await?;
     ensure!(
         now.is_empty(),
@@ -307,16 +309,7 @@ async fn an_unlinked_link_leaves_the_walk_and_stays_in_its_history(
         "as of the link's position ({linked}) the walk still follows it; it answered {:?}",
         pairs(&then)
     );
-    let missing = cat
-        .unlink(
-            own,
-            &"invoice".into(),
-            &"i1".into(),
-            &"approved_by".into(),
-            &"p1".into(),
-            WriteOpts::default(),
-        )
-        .await;
+    let missing = unlink(&l, "i1", "p1").await;
     ensure!(
         matches!(missing, Err(Error::NotFound { .. })),
         "unlinking a link that is not live is not found; it answered {missing:?}"
@@ -329,13 +322,9 @@ async fn a_link_that_would_break_the_relations_cardinality_is_refused(
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
-    link(cat.as_ref(), own, "i1", "p1", json!({}))
-        .await
-        .must("linking i1 to p1")?;
+    link_ok(&l, "i1", "p1", json!({})).await?;
     // Many invoices to one partner is fine.
-    link(cat.as_ref(), own, "i2", "p1", json!({}))
-        .await
-        .must("linking i2 to p1 as well")?;
+    link_ok(&l, "i2", "p1", json!({})).await?;
     let before = store.head().await.must("reading the head")?;
     let second = link(cat.as_ref(), own, "i1", "p2", json!({})).await;
     ensure!(
@@ -346,12 +335,7 @@ async fn a_link_that_would_break_the_relations_cardinality_is_refused(
         "`approved_by` is many_to_one: i1 already links to p1, so linking it to p2 is \
          refused as a constraint on `to`; it answered {second:?}"
     );
-    let nobody = principal(
-        store.as_ref(),
-        PrincipalKind::Agent,
-        "nobody",
-        Grants::default(),
-    );
+    let nobody = nobody(store.as_ref());
     let ungranted = link(cat.as_ref(), &nobody, "i1", "p2", json!({})).await;
     ensure!(
         matches!(reason(&ungranted), Some(Refusal::NotGranted))
@@ -403,9 +387,7 @@ async fn link_records_go_through_the_link_doors_and_ingest_only(
         matches!(reason(&upserted), Some(Refusal::WrongDoor)),
         "upsert on a link type is the wrong door; it answered {upserted:?}"
     );
-    link(cat.as_ref(), own, "i1", "p1", json!({}))
-        .await
-        .must("linking i1 to p1")?;
+    link_ok(&l, "i1", "p1", json!({})).await?;
     let retired = cat
         .retire(own, &LT.into(), &key, WriteOpts::default())
         .await;
@@ -413,15 +395,11 @@ async fn link_records_go_through_the_link_doors_and_ingest_only(
         matches!(reason(&retired), Some(Refusal::WrongDoor)),
         "retire on a link type is the wrong door; it answered {retired:?}"
     );
-    let declared = cat
-        .declare(
-            own,
-            Declaration::Type(type_decl(
-                "sys.link.invoice.forged",
-                vec![field("from", StorageKind::Text)],
-            )),
-        )
-        .await;
+    let forged = type_decl(
+        "sys.link.invoice.forged",
+        vec![field("from", StorageKind::Text)],
+    );
+    let declared = l.try_declare(forged).await;
     ensure!(
         matches!(reason(&declared), Some(Refusal::Reserved)),
         "a caller cannot declare a link type; it answered {declared:?}"
@@ -431,14 +409,7 @@ async fn link_records_go_through_the_link_doors_and_ingest_only(
     sourced.name = "vouched_by".into();
     sourced.inverse = None;
     sourced.cardinality = Cardinality::ManyToMany;
-    l.declare(invoice(vec![
-        approved_by(
-            vec![field("since", StorageKind::DateTime)],
-            Authority::Authored,
-        ),
-        sourced,
-    ]))
-    .await?;
+    l.declare(invoice(vec![dated(), sourced])).await?;
     let by_door = cat
         .link(
             own,
@@ -488,21 +459,14 @@ async fn a_relation_cannot_move_between_via_and_link_records(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref()).await?;
-    let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
     let mut moved = invoice(vec![RelationDecl {
         via: Some("approver".into()),
         fields: vec![],
         ..approved_by(vec![], Authority::Authored)
     }]);
-    moved.fields.push(FieldDecl {
-        ty: FieldType {
-            target: Some("partner".into()),
-            ..FieldType::kind(StorageKind::Reference)
-        },
-        ..field("approver", StorageKind::Text)
-    });
-    let answer = cat.declare(own, Declaration::Type(moved)).await;
+    moved.fields.push(reference("approver", "partner"));
+    let answer = l.try_declare(moved).await;
     ensure!(
         matches!(reason(&answer), Some(Refusal::Invalid { .. })),
         "`approved_by` is carried by link records; giving it `via` would move its links, and \
@@ -535,9 +499,7 @@ async fn a_relations_fields_are_declared_when_added_and_migrated_when_retyped(
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
-    link(cat.as_ref(), own, "i1", "p1", json!({"since": SEPT}))
-        .await
-        .must("linking i1 to p1")?;
+    link_ok(&l, "i1", "p1", json!({"since": SEPT})).await?;
     // An optional link field added: declared.
     let with = |weight: StorageKind| {
         invoice(vec![approved_by(
@@ -549,39 +511,16 @@ async fn a_relations_fields_are_declared_when_added_and_migrated_when_retyped(
         )])
     };
     l.declare(with(StorageKind::Number)).await?;
-    link(cat.as_ref(), own, "i2", "p1", json!({"weight": 1.5}))
-        .await
-        .must("linking i2 to p1 with the new `weight`")?;
+    link_ok(&l, "i2", "p1", json!({"weight": 1.5})).await?;
     // `weight` retyped to text, whose form is a string where a number's
     // was not: the links would reshape, so declaring is refused.
-    let refused = cat
-        .declare(own, Declaration::Type(with(StorageKind::Text)))
-        .await;
+    let refused = l.try_declare(with(StorageKind::Text)).await;
     ensure!(
         matches!(reason(&refused), Some(Refusal::Invalid { .. })),
         "retyping a link field reshapes the link records; declaring it is refused as a \
          migration; it answered {refused:?}"
     );
-    let report = cat
-        .migrate(
-            own,
-            Migration {
-                to: with(StorageKind::Text),
-                renames: vec![],
-            },
-        )
-        .await
-        .must("preflighting the migration of `invoice` with `weight` as text")?;
-    cat.migrate_apply(
-        own,
-        Migration {
-            to: with(StorageKind::Text),
-            renames: vec![],
-        },
-        &report.data.report_id,
-    )
-    .await
-    .must("applying the migration")?;
+    l.migrate(with(StorageKind::Text)).await?;
     let edges = walked(cat.as_ref(), own, "partner", "p1", Walk::In, None).await?;
     let weight = edges
         .iter()
@@ -601,9 +540,7 @@ async fn retiring_an_end_keeps_the_link_and_the_walk_skips_the_retired_end(
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
-    link(cat.as_ref(), own, "i1", "p1", json!({"since": SEPT}))
-        .await
-        .must("linking i1 to p1")?;
+    link_ok(&l, "i1", "p1", json!({"since": SEPT})).await?;
     l.retire("partner", "p1").await?;
     let p = pattern(
         "invoice",
@@ -638,14 +575,7 @@ async fn a_relation_that_allows_one_link_per_target_refuses_a_second(
     handled.name = "handled_by".into();
     handled.inverse = None;
     handled.cardinality = Cardinality::OneToMany;
-    l.declare(invoice(vec![
-        approved_by(
-            vec![field("since", StorageKind::DateTime)],
-            Authority::Authored,
-        ),
-        handled,
-    ]))
-    .await?;
+    l.declare(invoice(vec![dated(), handled])).await?;
     let handle = |from: &str| {
         let (cat, own, from) = (cat.clone(), own.clone(), from.to_owned());
         async move {
@@ -683,9 +613,7 @@ async fn a_relations_authority_changes_by_declaration_and_keeps_its_links(
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
-    link(cat.as_ref(), own, "i1", "p1", json!({}))
-        .await
-        .must("linking i1 to p1")?;
+    link_ok(&l, "i1", "p1", json!({})).await?;
     let sourced = FieldDecl {
         authority: Authority::Source,
         ..field("since", StorageKind::DateTime)
@@ -731,11 +659,7 @@ async fn ingest_holds_a_source_relations_cardinality_over_the_lake_and_the_windo
     let mut vouched = approved_by(vec![], Authority::Source);
     vouched.name = "vouched_by".into();
     vouched.inverse = None;
-    let base = approved_by(
-        vec![field("since", StorageKind::DateTime)],
-        Authority::Authored,
-    );
-    l.declare(invoice(vec![base, vouched])).await?;
+    l.declare(invoice(vec![dated(), vouched])).await?;
     let vt = link_type_name(&"invoice".into(), &"vouched_by".into());
     let record = |from: &str, to: &str, ends: bool| {
         let fields = if ends {
@@ -778,40 +702,15 @@ async fn a_relation_declared_again_with_another_target_is_a_migration(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref()).await?;
-    let Lake { cat, own } = &l;
-    link(cat.as_ref(), own, "i1", "p1", json!({}))
-        .await
-        .must("linking i1 to p1")?;
+    link_ok(&l, "i1", "p1", json!({})).await?;
     // The relation removed: a migration, which keeps its links.
-    let without = invoice(vec![]);
-    let report = cat
-        .migrate(
-            own,
-            Migration {
-                to: without.clone(),
-                renames: vec![],
-            },
-        )
-        .await
-        .must("preflighting `invoice` without `approved_by`")?;
-    cat.migrate_apply(
-        own,
-        Migration {
-            to: without,
-            renames: vec![],
-        },
-        &report.data.report_id,
-    )
-    .await
-    .must("migrating `approved_by` away")?;
+    l.migrate(invoice(vec![])).await?;
     // Declared again, pointing at invoices now: the kept links would
     // reshape.
     let mut retargeted = approved_by(vec![], Authority::Authored);
     retargeted.target = "invoice".into();
     let before = store.head().await.must("reading the head")?;
-    let answer = cat
-        .declare(own, Declaration::Type(invoice(vec![retargeted])))
-        .await;
+    let answer = l.try_declare(invoice(vec![retargeted])).await;
     ensure!(
         matches!(reason(&answer), Some(Refusal::Invalid { message }) if message.contains(LT)),
         "declaring `approved_by` again with another target would reshape the links \
@@ -831,26 +730,15 @@ async fn a_restricted_link_is_walked_only_with_the_restricted_grant(
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
-    link(cat.as_ref(), own, "i1", "p1", json!({"since": SEPT}))
-        .await
-        .must("linking i1 to p1")?;
-    store
-        .restrict(
-            &LT.into(),
-            &link_key(&"i1".into(), &"p1".into()),
-            "hold".into(),
-        )
-        .await
-        .must("restricting the link")?;
-    let reader = crate::conformance::fixture::principal(
+    link_ok(&l, "i1", "p1", json!({"since": SEPT})).await?;
+    restrict(
         store.as_ref(),
-        lakelands_api::PrincipalKind::Agent,
-        "reader",
-        lakelands_api::Grants {
-            default: lakelands_api::Access::Read,
-            ..lakelands_api::Grants::default()
-        },
-    );
+        LT,
+        link_key(&"i1".into(), &"p1".into()),
+        "hold",
+    )
+    .await?;
+    let reader = reads_all(store.as_ref(), "reader");
     let hidden = walked(cat.as_ref(), &reader, "invoice", "i1", Walk::Out, None).await?;
     ensure!(
         hidden.is_empty(),
@@ -873,27 +761,16 @@ async fn narrowing_a_relations_cardinality_is_refused_while_links_would_break(
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let with = |c: Cardinality| {
-        let mut r = approved_by(
-            vec![field("since", StorageKind::DateTime)],
-            Authority::Authored,
-        );
+        let mut r = dated();
         r.cardinality = c;
         invoice(vec![r])
     };
     l.declare(with(Cardinality::ManyToMany)).await?;
     for p in ["p1", "p2"] {
-        link(cat.as_ref(), own, "i1", p, json!({}))
-            .await
-            .must(&format!("linking i1 to {p}"))?;
+        link_ok(&l, "i1", p, json!({})).await?;
     }
     let preflight = cat
-        .migrate(
-            own,
-            Migration {
-                to: with(Cardinality::ManyToOne),
-                renames: vec![],
-            },
-        )
+        .migrate(own, migration(with(Cardinality::ManyToOne)))
         .await;
     ensure!(
         matches!(reason(&preflight), Some(Refusal::Constraint { .. })),
