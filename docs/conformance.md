@@ -203,7 +203,7 @@ belongs in the suite, not beside one engine:
 
 **backings**
 
-- `a_function_of_a_backing_kind_nobody_bound_is_refused_at_declare` — 022, extended: a function computed outside the store is declared only where the host bound a backing of its kind; otherwise the declaration is refused as unbound, naming the kind
+- `a_function_of_a_backing_kind_nobody_bound_is_refused_at_declare` — 022, extended: a function computed outside the store is declared only where the host bound a backing of its kind; otherwise the declaration is refused as unbound, naming the kind, after its own checks (028, extended)
 - `a_backed_field_is_filled_from_the_output_the_store_records` — 022, extended, and the log format: the store calls the backing after the write, records the answer as output_recorded naming the field, and the write answers the position the filled field is visible from
 - `the_same_input_is_never_sent_to_a_backing_twice` — 002 and 022, extended: an output recorded for a call is read back for every later call with the same input, across records and after the input changed and came back
 - `a_failing_backing_clears_the_field_and_records_the_failure` — 022 and 010, extended: a failure is recorded as {"error": …}, clears the field it fills, puts the reason in the field's metadata, and is not retried for the same input
@@ -317,8 +317,8 @@ belongs in the suite, not beside one engine:
 
 **migrate**
 
-- `migrate_apply_requires_the_report_it_was_shown` — 027: `migrate_apply` names the preflight's report; another report id, or a lake that moved since the report, is refused
-- `a_migration_that_would_lose_information_is_refused_with_its_report` — 027: a migration applies only when every stored value converts without loss; otherwise it is refused and the report names the records
+- `migrate_apply_requires_the_report_it_was_shown` — 027: `migrate_apply` names the preflight's report; another report id, or a lake that moved since the report, is refused, after the preflight's own refusals (027, extended)
+- `a_migration_that_would_lose_information_is_refused_with_its_report` — 027: a migration applies only when every stored value converts without loss; otherwise it is refused and the report names the records, after its report id is compared (027, extended)
 - `migrated_values_follow_the_conversion_table_and_renames_keep_them` — 027: a number becomes text in its canonical form, numeric text becomes the equal number, and a renamed field keeps its values
 - `a_migration_removing_the_field_a_relation_walks_is_refused` — 027 and 018: a relation is carried by its `via` field; a migration that removes that field would leave the relation dangling and is refused
 - `the_preflight_names_every_dropped_field_and_an_empty_type_migrates_cleanly` — 027 and MigrationReport.dropped: the preflight names every removed field with how many values it discards, and a type with no records reports nothing to lose
@@ -542,7 +542,7 @@ belongs in the suite, not beside one engine:
 - `applying_a_tightening_some_value_does_not_fit_is_refused` — 027: a value-type migration some stored value would not fit is refused as invalid, naming how many, and appends nothing
 - `a_tightening_every_value_fits_is_one_declared_version` — 027 and log-format: a value-type migration every stored value fits appends one `declared` at the next version and changes no record; later writes are checked against it
 - `a_value_type_report_from_before_the_lake_moved_is_refused` — 027: a value-type migration is applied only against the report of the lake as it stands; after the lake moved it is refused as invalid
-- `a_value_type_migration_needs_the_schema_grant` — 027 and 006: both the preflight and the apply of a value-type migration refuse a principal without the `schema` grant
+- `a_value_type_migration_needs_the_schema_grant` — 027 and 006: both the preflight and the apply of a value-type migration refuse a principal without the `schema` grant; migrate_apply, migrate_value_type_apply, declare and apply ask for it before they judge what they are given (028 and 027, extended)
 - `an_apply_that_loosens_one_value_type_and_tightens_another_is_refused_whole` — 028 and 027: `apply` of a set that loosens one value type and tightens another is refused whole, naming `migrate`, and appends nothing
 - `removing_a_constraint_or_a_format_is_declared_and_changing_a_constraint_is_refused` — 027 extended and seams: `declare` takes a value type whose `constraint` or `format` is removed, since no stored value can stop fitting it; a `constraint` changed may reject a stored value, so `declare` refuses it, naming `migrate`
 - `a_trigger_or_set_on_a_value_the_type_no_longer_admits_never_holds` — 027 extended and seams: the preflight checks stored values, not the conditions that mention them; a trigger's `when` or an object set's `where` comparing with a value a tightening removed stays declared and simply never holds afterwards

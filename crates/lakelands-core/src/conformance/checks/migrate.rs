@@ -18,13 +18,13 @@ use crate::conformance::fixture::{
 check!(
     /// A migration applies only against the report it was shown.
     APPLY_NEEDS_ITS_REPORT = migrate_apply_requires_the_report_it_was_shown,
-    "027: `migrate_apply` names the preflight's report; another report id, or a lake that moved since the report, is refused"
+    "027: `migrate_apply` names the preflight's report; another report id, or a lake that moved since the report, is refused, after the preflight's own refusals (027, extended)"
 );
 
 check!(
     /// A lossy migration is refused, with its report.
     LOSSY_REFUSED = a_migration_that_would_lose_information_is_refused_with_its_report,
-    "027: a migration applies only when every stored value converts without loss; otherwise it is refused and the report names the records"
+    "027: a migration applies only when every stored value converts without loss; otherwise it is refused and the report names the records, after its report id is compared (027, extended)"
 );
 
 check!(
@@ -92,6 +92,15 @@ async fn migrate_apply_requires_the_report_it_was_shown(
         .await
         .must_fail("applying the migration with a report id it was never shown")?;
     head_unmoved(store.as_ref(), before, "applying with another report id").await?;
+    // The preflight before the report: an undeclared type is not found
+    // whatever report is named (027, extended).
+    let missing = migration(lakelands_api::ontology::TypeDecl::named("nothing"));
+    let first = cat.migrate_apply(own, missing, "not-the-report").await;
+    ensure!(
+        matches!(first, Err(lakelands_api::Error::NotFound { .. })),
+        "a migration of an undeclared type is refused as not found before its report is \
+         compared; it answered {first:?}"
+    );
 
     // The lake moves; the report no longer describes it.
     l.upsert("memo", "b", json!({"pages": 5})).await?;
@@ -129,13 +138,17 @@ async fn a_migration_that_would_lose_information_is_refused_with_its_report(
     );
     let before = store.head().await.must("reading the head")?;
     let err = cat
-        .migrate_apply(own, m, &report.report_id)
+        .migrate_apply(own, m.clone(), &report.report_id)
         .await
         .must_fail("applying a lossy migration")?;
+    // The report before the loss: another report id is refused as such.
+    let other = cat.migrate_apply(own, m, "not-the-report").await;
     head_unmoved(store.as_ref(), before, "applying a lossy migration").await?;
     ensure!(
-        matches!(reason(&err), Some(Refusal::Migration { report: r }) if !r.lossless),
-        "a lossy migration must be refused with its report; it failed with {err:?}"
+        matches!(reason(&err), Some(Refusal::Migration { report: r }) if !r.lossless)
+            && matches!(reason(&other), Some(Refusal::Invalid { .. })),
+        "a lossy migration must be refused with its report, and under another report id \
+         for that id first (027, extended); it failed with {err:?} and {other:?}"
     );
     Ok(())
 }
