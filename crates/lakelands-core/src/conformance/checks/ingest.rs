@@ -23,7 +23,7 @@ use crate::conformance::fixture::{
 check!(
     /// The same content ingested twice is written once.
     SAME_CONTENT_TWICE = the_same_content_ingested_twice_appends_nothing_the_second_time,
-    "016 and the log format: ingest is content-addressed, so a redelivery of the same values appends nothing, within one delivery or across two"
+    "016 and the log format: ingest is content-addressed, so a redelivery of the same values appends nothing, within one delivery or across two; a record with no field counts as a duplicate for a live key, and is invalid for a new one (016, extended)"
 );
 
 check!(
@@ -35,7 +35,7 @@ check!(
 check!(
     /// A source record carrying an authored field is refused.
     FOREIGN_FIELD_REFUSED = an_ingested_record_carrying_a_field_the_source_does_not_write_is_refused_whole,
-    "016 and the log format: ingest writes only source and shared fields; a record carrying any other is refused whole, never trimmed, and a record whose key is empty is refused as invalid before its fields are judged, as `upsert` orders it"
+    "016 and the log format: ingest writes only source and shared fields; a record carrying any other is refused whole, never trimmed, and a record whose key is empty is refused as invalid before its fields are judged, as `upsert` orders it, after the ingest grant and the type; a field another authority writes is refused before any value is judged (016, extended)"
 );
 
 check!(
@@ -88,6 +88,23 @@ async fn the_same_content_ingested_twice_appends_nothing_the_second_time(
         after == head,
         "the redelivery moved the head from {head} to {after}; the same content appends \
          nothing"
+    );
+    // The duplicate test before an empty record (016, extended): for a live
+    // key it changes nothing and counts; for a new key it is invalid.
+    let empty = |k: &str| vec![source_record("feed", k, json!({}))];
+    let live = delivered(store.as_ref(), &l, "bank", empty("k1"), "an empty `k1`").await?;
+    let new = l.ingest("bank", empty("k9")).await;
+    ensure!(
+        committed(&live) == (0, 1)
+            && matches!(
+                new,
+                Err(Error::Refused {
+                    reason: Refusal::Invalid { .. },
+                    ..
+                })
+            ),
+        "a record with no field counts as a duplicate for the live `k1`, answered {live:?}, \
+         and is refused as invalid for the new `k9`, answered {new:?}"
     );
 
     let twice = vec![
@@ -190,6 +207,36 @@ async fn an_ingested_record_carrying_a_field_the_source_does_not_write_is_refuse
         ),
         "a source record with an empty key that carries `verdict` is refused for its key \
          first, as invalid naming no field; it answered {err:?}"
+    );
+    // The grant, then the type, then (after the key) the door before the
+    // values, whatever the fields' order (016, extended).
+    let no_ingest = lakelands_api::Principal {
+        grants: lakelands_api::Grants {
+            ingest: false,
+            ..lakelands_api::Grants::owner()
+        },
+        ..own.clone()
+    };
+    let nowhere = || vec![source_record("nothing", "", json!({"body": "x"}))];
+    let ungranted =
+        crate::conformance::fixture::ingest(cat.as_ref(), &no_ingest, "bank", nowhere()).await;
+    let untyped = l.ingest("bank", nowhere()).await;
+    let door = l
+        .ingest(
+            "bank",
+            vec![source_record(
+                "feed",
+                "k2",
+                json!({"body": 5, "verdict": "x"}),
+            )],
+        )
+        .await;
+    ensure!(
+        matches!(&ungranted, Err(e) if matches!(e, Error::Refused { reason: Refusal::NotGranted, .. }))
+            && matches!(untyped, Err(Error::NotFound { .. }))
+            && matches!(refused_on(&door), Some(("verdict", Refusal::WrongDoor))),
+        "ingest refuses for its grant, then the type, then the door before the values; it \
+         answered {ungranted:?}, {untyped:?} and {door:?}"
     );
     head_unmoved(
         store.as_ref(),

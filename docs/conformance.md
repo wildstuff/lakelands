@@ -256,9 +256,9 @@ belongs in the suite, not beside one engine:
 
 **ingest**
 
-- `the_same_content_ingested_twice_appends_nothing_the_second_time` — 016 and the log format: ingest is content-addressed, so a redelivery of the same values appends nothing, within one delivery or across two
+- `the_same_content_ingested_twice_appends_nothing_the_second_time` — 016 and the log format: ingest is content-addressed, so a redelivery of the same values appends nothing, within one delivery or across two; a record with no field counts as a duplicate for a live key, and is invalid for a new one (016, extended)
 - `the_same_key_twice_in_one_ingest_with_new_values_advances_the_version` — the log format: every event that changes a record moves its version by one, including two in one delivery
-- `an_ingested_record_carrying_a_field_the_source_does_not_write_is_refused_whole` — 016 and the log format: ingest writes only source and shared fields; a record carrying any other is refused whole, never trimmed, and a record whose key is empty is refused as invalid before its fields are judged, as `upsert` orders it
+- `an_ingested_record_carrying_a_field_the_source_does_not_write_is_refused_whole` — 016 and the log format: ingest writes only source and shared fields; a record carrying any other is refused whole, never trimmed, and a record whose key is empty is refused as invalid before its fields are judged, as `upsert` orders it, after the ingest grant and the type; a field another authority writes is refused before any value is judged (016, extended)
 - `an_ingested_record_carries_its_upstream_per_field` — 010, 016 and log-format §1.1 and §6: a record ingested with `upstream` names that lake and position on every field it sets, the event is written in format version 3, and the member is not in the event's id; a later write of a field without it leaves that field without it
 - `an_upsert_carrying_a_field_only_a_source_writes_is_refused_as_the_wrong_door` — 016 and 015: an author never overwrites a figure the source is the authority on; the patch is refused as the wrong door
 - `ingest_skips_redeliveries_and_unchanged_records_but_writes_a_revert` — 016 and the log format: an ingest that changes nothing appends nothing, and a record set back to an earlier value is a new change, not a redelivery

@@ -140,3 +140,15 @@ not a view (`invalid`), the principal may write every field of it
 (`not_granted`), the record is live (`not_found`), the expected version
 (`conflict`), the append.
 
+**`ingest`**: the lake, the context and the `ingest` grant
+(`not_granted`), when it is called, before it takes the stream; each
+window checks the context again. Then each record, in stream order: the
+type is declared (`not_found`); the key's form (`invalid`); the door and
+the grants, field by field (record check 4); every value fits (5); a
+link of a relation carried by link records holds its cardinality over
+the lake's live links, then over the window's earlier links
+(`constraint`, naming `to`); then the duplicate test, which counts a
+record and checks nothing further; then the record checks from the
+empty patch on, the expected version excepted. The two cardinality
+steps answer alike, and are stated, not checked.
+
