@@ -79,6 +79,14 @@ fn stored() -> StoredRecord {
     }
 }
 
+/// A refusal naming `field`, for `reason`.
+fn refused_on<T>(field: &str, reason: Refusal) -> Result<T, Error> {
+    Err(Error::Refused {
+        field: Some(field.into()),
+        reason,
+    })
+}
+
 #[test]
 fn a_reader_sees_granted_fields_and_a_sensitive_field_only_as_masked() {
     let who = principal(Access::None, &[("amount", Access::Read)]);
@@ -98,10 +106,7 @@ fn probing_an_unreadable_field_is_refused_not_masked() {
     assert!(check_probe(&who, &invoice(), [&FieldName::from("amount")]).is_ok());
     assert_eq!(
         check_probe(&who, &invoice(), [&FieldName::from("iban")]),
-        Err(Error::Refused {
-            field: Some("iban".into()),
-            reason: Refusal::NotGranted
-        })
+        refused_on("iban", Refusal::NotGranted)
     );
     assert!(matches!(
         check_probe(&who, &invoice(), [&FieldName::from("nope")]),
@@ -119,10 +124,7 @@ fn a_search_probes_every_searchable_field_and_the_vector_it_names() {
     let reader = principal(Access::Read, &[("iban", Access::Masked)]);
     assert_eq!(
         check_search(&reader, &decl, None, None),
-        Err(Error::Refused {
-            field: Some("iban".into()),
-            reason: Refusal::NotGranted
-        })
+        refused_on("iban", Refusal::NotGranted)
     );
     let granted = principal(Access::Read, &[]);
     assert!(check_search(&granted, &decl, None, None).is_ok());
@@ -195,10 +197,7 @@ fn a_search_over_an_embedded_vector_probes_the_fields_it_is_embedded_from() {
     let reader = principal(Access::Read, &[("note", Access::Masked)]);
     assert_eq!(
         check_search(&reader, &decl, None, Some(&vec)),
-        Err(Error::Refused {
-            field: Some("note".into()),
-            reason: Refusal::NotGranted
-        }),
+        refused_on("note", Refusal::NotGranted),
         "the vector is readable, but it encodes `note`"
     );
     assert!(
@@ -229,10 +228,7 @@ fn a_write_is_refused_whole_by_its_first_failing_field() {
             Door::Authored,
             &patch(json!({"verdict": "x", "amount": "1"}))
         ),
-        Err(Error::Refused {
-            field: Some("amount".into()),
-            reason: Refusal::WrongDoor
-        })
+        refused_on("amount", Refusal::WrongDoor)
     );
     assert_eq!(
         check_write(
@@ -241,10 +237,7 @@ fn a_write_is_refused_whole_by_its_first_failing_field() {
             Door::Authored,
             &patch(json!({"score": 1}))
         ),
-        Err(Error::Refused {
-            field: Some("score".into()),
-            reason: Refusal::WrongDoor
-        })
+        refused_on("score", Refusal::WrongDoor)
     );
     let limited = principal(Access::Read, &[("note", Access::Write)]);
     assert_eq!(
@@ -254,10 +247,7 @@ fn a_write_is_refused_whole_by_its_first_failing_field() {
             Door::Authored,
             &patch(json!({"note": "y", "verdict": "x"}))
         ),
-        Err(Error::Refused {
-            field: Some("verdict".into()),
-            reason: Refusal::NotGranted
-        })
+        refused_on("verdict", Refusal::NotGranted)
     );
 }
 

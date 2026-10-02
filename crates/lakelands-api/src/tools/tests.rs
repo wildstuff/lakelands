@@ -102,12 +102,7 @@ fn invoice() -> TypeDescription {
 
 #[test]
 fn a_type_gives_four_doors_and_the_generic_tools_follow_rights() {
-    let owner = LakeRights {
-        review: true,
-        schema: true,
-        ingest: true,
-    };
-    let t = tools_ok(&lake(vec![invoice()], vec![], owner));
+    let t = tools_ok(&lake(vec![invoice()], vec![], OWNER));
     assert_eq!(
         names(&t),
         [
@@ -337,15 +332,7 @@ fn a_link_relation_gets_link_and_unlink_tools_named_by_type_and_relation() {
 
 #[test]
 fn the_generator_is_deterministic() {
-    let l = lake(
-        vec![invoice()],
-        vec![],
-        LakeRights {
-            review: true,
-            schema: true,
-            ingest: true,
-        },
-    );
+    let l = lake(vec![invoice()], vec![], OWNER);
     assert_eq!(
         serde_json::to_string(&tools(&l).unwrap()).unwrap(),
         serde_json::to_string(&tools(&l).unwrap()).unwrap()
