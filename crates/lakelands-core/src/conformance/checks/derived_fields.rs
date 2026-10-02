@@ -12,13 +12,14 @@
 use std::sync::Arc;
 
 use lakelands_api::ontology::{Authority, FieldDecl, StorageKind};
+use lakelands_api::write::Declaration;
 use lakelands_api::{Error, LakeStore, Origin, Refusal, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, computed_by, dec, decimal, derived, field, get_at, head_unmoved, patch, refused_on,
-    type_decl, value,
+    refused_unmoved, source_record, try_upsert, type_decl, value,
 };
 
 check!(
@@ -109,22 +110,10 @@ async fn a_derived_field_written_through_a_door_is_refused_as_the_wrong_door(
     l.declare(ty).await?;
 
     let before = store.head().await.must("reading the head")?;
-    let err = cat
-        .upsert(
-            own,
-            &TypeName::from("invoice"),
-            &"i1".into(),
-            patch(json!({"amount": "100.00", "gross": "1.00"})),
-            Default::default(),
-        )
-        .await
-        .must_fail("the owner writing the derived field `gross`")?;
-    head_unmoved(
-        store.as_ref(),
-        before,
-        "the owner writing the derived field `gross`",
-    )
-    .await?;
+    let fields = json!({"amount": "100.00", "gross": "1.00"});
+    let answer = try_upsert(cat.as_ref(), own, "invoice", "i1", fields).await;
+    let what = "the owner writing the derived field `gross`";
+    let err = refused_unmoved(store.as_ref(), before, what, answer).await?;
     ensure!(
         matches!(refused_on(&err), Some(("gross", Refusal::WrongDoor))),
         "a patch carrying the derived field `gross` must be refused as the wrong door on \
@@ -191,33 +180,25 @@ check!(
 async fn a_derived_field_accepts_no_value_from_a_source_or_a_verb_either(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    use crate::conformance::fixture::{head_unmoved, patch, source_record};
-
-    use lakelands_api::write::Declaration;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let mut net = field("net", StorageKind::Decimal);
     net.authority = Authority::Shared;
     let gross = derived("gross", StorageKind::Decimal, "net * 2", &["net"]);
     l.declare(type_decl("bill", vec![net, gross])).await?;
-    let verb: Declaration = serde_json::from_value(serde_json::json!({
+    let verb: Declaration = serde_json::from_value(json!({
         "declare": "verb", "name": "inflate", "on": "bill", "risk": "low",
         "effect": "write", "set": [{"field": "gross", "value": "'99'"}]
     }))
     .map_err(|e| Failure::new(format!("the check's verb does not read: {e}")))?;
     let declared = cat.declare(own, verb).await;
-    l.upsert("bill", "b", serde_json::json!({"net": "1"}))
-        .await?;
+    l.upsert("bill", "b", json!({"net": "1"})).await?;
 
     let before = store.head().await.must("reading the head")?;
     let fed = l
         .ingest(
             "erp",
-            vec![source_record(
-                "bill",
-                "b",
-                serde_json::json!({"gross": "5"}),
-            )],
+            vec![source_record("bill", "b", json!({"gross": "5"}))],
         )
         .await;
     ensure!(
@@ -235,7 +216,7 @@ async fn a_derived_field_accepts_no_value_from_a_source_or_a_verb_either(
                 own,
                 &"inflate".into(),
                 Some(&"b".into()),
-                patch(serde_json::json!({})),
+                patch(json!({})),
                 Default::default(),
             )
             .await;
@@ -257,28 +238,24 @@ async fn a_derived_field_accepts_no_value_from_a_source_or_a_verb_either(
 async fn a_derived_field_reading_a_function_is_recomputed_when_the_function_changes(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    use lakelands_api::write::Declaration;
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
     let function = |expr: &str| -> Result<Declaration, Failure> {
-        serde_json::from_value(serde_json::json!({
+        serde_json::from_value(json!({
             "declare": "function", "name": "scaled", "backing": "expr",
             "inputs": [{"name": "net", "type": {"kind": "decimal"}}],
             "expr": expr
         }))
         .map_err(|e| Failure::new(format!("the check's function does not read: {e}")))
     };
-    cat.declare(own, function("net * 2")?)
-        .await
-        .must("declaring the function `scaled` as net * 2")?;
+    l.declare_as(function("net * 2")?, "declaring `scaled` as net * 2")
+        .await?;
     let scaled = computed_by("scaled", StorageKind::Decimal, "scaled", &["net"]);
     l.declare(type_decl(
         "bill",
         vec![field("net", StorageKind::Decimal), scaled],
     ))
     .await?;
-    l.upsert("bill", "b", serde_json::json!({"net": "3"}))
-        .await?;
+    l.upsert("bill", "b", json!({"net": "3"})).await?;
     let r = l.read("bill", "b").await?;
     ensure!(
         decimal(value(&r, "scaled")) == Some(dec("6")),
@@ -286,9 +263,8 @@ async fn a_derived_field_reading_a_function_is_recomputed_when_the_function_chan
         value(&r, "scaled")
     );
 
-    cat.declare(own, function("net * 3")?)
-        .await
-        .must("declaring `scaled` again as net * 3")?;
+    l.declare_as(function("net * 3")?, "declaring `scaled` as net * 3")
+        .await?;
     let r = l.read("bill", "b").await?;
     let meta = r
         .meta

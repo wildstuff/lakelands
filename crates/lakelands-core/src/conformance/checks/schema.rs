@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, doors, field, head_unmoved, owner, principal, reason, type_decl,
+    Lake, Must, field, head_unmoved, principal, reason, refused_unmoved, type_decl,
 };
 
 check!(
@@ -67,7 +67,6 @@ async fn the_schema_hash_of_the_log_formats_vector_is_the_one_it_pins(
 
     let l = Lake::of(store.as_ref());
 
-    let Lake { cat, own } = &l;
     // The view reads an invoice with the fields its measures name.
     let invoice = type_decl(
         "invoice",
@@ -81,11 +80,7 @@ async fn the_schema_hash_of_the_log_formats_vector_is_the_one_it_pins(
     l.declare(invoice).await?;
     let name = decl.name.clone();
     l.declare(decl).await?;
-    let d = cat
-        .describe_type(own, &name, ReadAt::default())
-        .await
-        .must(&format!("describing `{name}`"))?
-        .data;
+    let d = l.describe_type(name.as_str()).await?;
     ensure!(
         d.lifecycle.schema_hash == want,
         "`{name}` declared from the log format's vector describes schema hash {}, but \
@@ -96,11 +91,7 @@ async fn the_schema_hash_of_the_log_formats_vector_is_the_one_it_pins(
 }
 
 async fn hash_of(store: &dyn LakeStore, ty: &str) -> Result<(String, u32), Failure> {
-    let d = doors(store)
-        .describe_type(&owner(store), &TypeName::from(ty), ReadAt::default())
-        .await
-        .must(&format!("describing `{ty}`"))?
-        .data;
+    let d = Lake::of(store).describe_type(ty).await?;
     Ok((d.lifecycle.schema_hash, d.lifecycle.version))
 }
 
@@ -164,15 +155,9 @@ async fn declare_refuses_a_revision_that_reshapes_stored_records(
         ("requiring `title`", required),
     ] {
         let before = store.head().await.must("reading the head")?;
-        cat.declare(own, Declaration::Type(decl))
-            .await
-            .must_fail(&format!("redeclaring `memo` {what}"))?;
-        head_unmoved(
-            store.as_ref(),
-            before,
-            &format!("redeclaring `memo` {what}"),
-        )
-        .await?;
+        let answer = cat.declare(own, Declaration::Type(decl)).await;
+        let what = format!("redeclaring `memo` {what}");
+        refused_unmoved(store.as_ref(), before, &what, answer).await?;
     }
 
     let mut added = first;
@@ -240,11 +225,9 @@ async fn declare_refuses_bad_names_unknown_references_and_tool_name_collisions(
     cases.push((find_what, verb(&find_tool)?));
     for (what, decl) in cases {
         let before = store.head().await.must("reading the head")?;
-        let err = cat
-            .declare(own, decl)
-            .await
-            .must_fail(&format!("declaring {what}"))?;
-        head_unmoved(store.as_ref(), before, &format!("declaring {what}")).await?;
+        let answer = cat.declare(own, decl).await;
+        let err =
+            refused_unmoved(store.as_ref(), before, &format!("declaring {what}"), answer).await?;
         ensure!(
             matches!(err, Error::Refused { .. } | Error::NotFound { .. }),
             "declaring {what} must be refused; it failed with {err:?}"
@@ -259,14 +242,10 @@ async fn an_ordinary_principal_cannot_declare_a_sys_type(
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
-    let err = cat
-        .declare(
-            own,
-            Declaration::Type(type_decl("sys.mine", vec![field("v", StorageKind::Text)])),
-        )
-        .await
-        .must_fail("the owner declaring `sys.mine`")?;
-    head_unmoved(store.as_ref(), before, "the owner declaring `sys.mine`").await?;
+    let mine = type_decl("sys.mine", vec![field("v", StorageKind::Text)]);
+    let answer = cat.declare(own, Declaration::Type(mine)).await;
+    let what = "the owner declaring `sys.mine`";
+    let err = refused_unmoved(store.as_ref(), before, what, answer).await?;
     ensure!(
         matches!(reason(&err), Some(Refusal::Reserved)),
         "declaring `sys.mine` as the owner must be refused as reserved; it failed with {err:?}"
