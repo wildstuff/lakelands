@@ -42,6 +42,7 @@ use lakelands_api::record::{FieldMeta, Origin, StoredRecord};
 use lakelands_api::{Error, FieldName, Result, Value};
 use lakelands_core::derive;
 use lakelands_core::rights::Door;
+use lakelands_core::unavailable;
 
 use crate::backed::{self, Outputs};
 use crate::ontology::Ontology;
@@ -90,12 +91,10 @@ pub fn apply(
         }
         | EventBody::RecordUnrestricted { ty, key, version } => {
             let Some(mut r) = before.cloned() else {
-                return Err(Error::Unavailable {
-                    message: format!(
-                        "the log changes `{ty}` `{key}` at position {} before any event wrote it",
-                        event.position
-                    ),
-                });
+                return Err(unavailable(format!(
+                    "the log changes `{ty}` `{key}` at position {} before any event wrote it",
+                    event.position
+                )));
             };
             match &event.body {
                 EventBody::RecordRetired { .. } => r.retired = true,
@@ -335,11 +334,11 @@ fn compute(
                 now: event.known_at,
             },
         )
-        .map_err(|e| Error::Unavailable {
-            message: format!(
+        .map_err(|e| {
+            unavailable(format!(
                 "the fold cannot compute the derived fields of `{}`: {e}",
                 raw.name
-            ),
+            ))
         })?;
         for name in touched {
             meta.insert(name.clone(), derived_meta(event, raw, ontology, &name));

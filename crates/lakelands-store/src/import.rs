@@ -47,6 +47,7 @@ use lakelands_api::event::Digest;
 use lakelands_api::location::Location;
 use lakelands_api::seam::Seams;
 use lakelands_api::{Error, LakeId, Position, Result};
+use lakelands_core::unavailable;
 use sha2::{Digest as _, Sha256};
 
 use crate::lake::Lake;
@@ -73,12 +74,10 @@ pub struct Imported {
 }
 
 fn damaged(file: &Path, position: Position, why: impl std::fmt::Display) -> Error {
-    Error::Unavailable {
-        message: format!(
-            "the export is damaged in {} at position {position}: {why}; nothing was imported",
-            file.display()
-        ),
-    }
+    unavailable(format!(
+        "the export is damaged in {} at position {position}: {why}; nothing was imported",
+        file.display()
+    ))
 }
 
 /// A refusal of the import as asked: the export or the target is not
@@ -91,7 +90,7 @@ fn precondition(message: String) -> Error {
 }
 
 fn io(what: &str, path: &Path, e: std::io::Error) -> Error {
-    lakelands_core::unavailable(format!("cannot {what} {}: {e}", path.display()))
+    unavailable(format!("cannot {what} {}: {e}", path.display()))
 }
 
 /// What an import reads of a line beyond its bytes; the whole export was
@@ -122,11 +121,11 @@ fn events(path: &Path) -> Result<impl Iterator<Item = Result<(CanonicalEvent, En
     let file = fs::File::open(path).map_err(|e| io("open", path, e))?;
     Ok(BufReader::new(file).split(b'\n').map(move |line| {
         let line = line.map_err(|e| io("read", path, e))?;
-        let e: Envelope = serde_json::from_slice(&line).map_err(|err| Error::Unavailable {
-            message: format!(
+        let e: Envelope = serde_json::from_slice(&line).map_err(|err| {
+            unavailable(format!(
                 "{} holds a line that is not an event: {err}",
                 path.display()
-            ),
+            ))
         })?;
         let stored = CanonicalEvent {
             position: e.position,
@@ -203,11 +202,11 @@ pub fn import(location: &Location, seams: Seams, dir: &Path) -> Result<Imported>
         }
         carry(engine.as_ref(), &lease, &files, &digests, location)?;
         let lake = Lake::assemble(location, seams, engine.clone(), Some(lease.clone()));
-        lake.catch_up().map_err(|e| Error::Unavailable {
-            message: format!(
+        lake.catch_up().map_err(|e| {
+            unavailable(format!(
                 "every event was imported, and folding the projection failed: {e}; a writer's \
                  open folds it again"
-            ),
+            ))
         })
     })();
     let released = engine.release_lease(&lease);
@@ -233,14 +232,14 @@ fn carry(
 ) -> Result<()> {
     let window = BATCH;
     let mut reached = Position::GENESIS;
-    let stopped = |path: &Path, reached: Position, e: Error| Error::Unavailable {
-        message: format!(
+    let stopped = |path: &Path, reached: Position, e: Error| {
+        unavailable(format!(
             "the import stopped in {} at position {reached}: {e}; the lake `{}` holds the \
              export's events before that position, a true prefix that is not the exported lake, \
              and refuses another import; remove it (its file or schema) and import again",
             path.display(),
             location.lake
-        ),
+        ))
     };
     for (i, path) in files.iter().enumerate() {
         if i > 0 {
@@ -252,14 +251,12 @@ fn carry(
                 return Err(stopped(
                     path,
                     reached,
-                    Error::Unavailable {
-                        message: format!(
-                            "the engine sealed the segment before it with the digest {:?}, and \
+                    unavailable(format!(
+                        "the engine sealed the segment before it with the digest {:?}, and \
                              the file's is `{}`",
-                            sealed.map(|s| s.digest.0),
-                            before.0
-                        ),
-                    },
+                        sealed.map(|s| s.digest.0),
+                        before.0
+                    )),
                 ));
             }
         }

@@ -76,11 +76,7 @@ impl FunctionBacking for ExprBacking {
     }
 
     async fn call(&self, call: &FunctionCall) -> Result<Value> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| Timestamp(d.as_micros() as i64))
-            .unwrap_or(Timestamp(0));
-        ExprBacking::compute(call, now)
+        ExprBacking::compute(call, crate::lake::wall_clock())
     }
 }
 
