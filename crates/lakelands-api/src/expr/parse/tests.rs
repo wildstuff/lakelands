@@ -166,3 +166,50 @@ fn printing_adds_only_needed_parentheses() {
         "a and b and c".replace("b and c", "(b and c)")
     );
 }
+
+/// Every function of the contract. A function added to `Func` is added here.
+const ALL_FUNCS: [Func; 29] = [
+    Func::Now,
+    Func::Today,
+    Func::KnownAt,
+    Func::SeenAt,
+    Func::Previous,
+    Func::Setting,
+    Func::Param,
+    Func::Changed,
+    Func::Retired,
+    Func::Coalesce,
+    Func::If,
+    Func::Lower,
+    Func::Upper,
+    Func::Trim,
+    Func::Len,
+    Func::Concat,
+    Func::Substr,
+    Func::Contains,
+    Func::Replace,
+    Func::StartsWith,
+    Func::Matches,
+    Func::Abs,
+    Func::Round,
+    Func::DateBucket,
+    Func::Count,
+    Func::Sum,
+    Func::Min,
+    Func::Max,
+    Func::Avg,
+];
+
+#[test]
+fn a_function_is_parsed_by_the_name_it_is_printed_and_serialized_with() {
+    for f in ALL_FUNCS {
+        let name = func_name(f);
+        assert_eq!(serde_json::to_value(f).unwrap(), name, "{f:?}");
+        let arg = if takes_field(f) { "a" } else { "'k'" };
+        let text = format!("{name}({})", vec![arg; arity(f).0].join(", "));
+        match parse(&text) {
+            Ok(Expr::Call { func, .. }) => assert_eq!(func, f, "{text}"),
+            other => panic!("{text}: {other:?}"),
+        }
+    }
+}
