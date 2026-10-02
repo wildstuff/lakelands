@@ -304,7 +304,7 @@
 < 501
 < content-type: application/json
 < lakelands-position: 17
-< {"error":"unbound","seam":"the verb executor `mailer`","todo":"bind it in the host's configuration","what":"nothing is bound for the verb executor `mailer`"}
+< {"error":"unbound","seam":"the verb executor `mailer`","todo":"nothing was written; this cannot run until the lake's operator binds it in the host's configuration","what":"nothing is bound for the verb executor `mailer`"}
 
 # A write proposed outright, and rejected.
 > POST /lakes/finance/proposals
@@ -824,7 +824,7 @@
 < 501
 < content-type: application/json
 < lakelands-position: 50
-< {"error":"unbound","seam":"the verb executor `crm`","todo":"bind it in the host's configuration","what":"nothing is bound for the verb executor `crm`"}
+< {"error":"unbound","seam":"the verb executor `crm`","todo":"nothing was written; this cannot run until the lake's operator binds it in the host's configuration","what":"nothing is bound for the verb executor `crm`"}
 
 > POST /lakes/finance/verbs/register/P-1
 > authorization: Bearer k-owner
