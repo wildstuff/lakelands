@@ -274,7 +274,7 @@ belongs in the suite, not beside one engine:
 - `absent_fields_never_match_not_even_not_equal` — 023: a comparison with an absent or null operand is false, `!=` included; `is null` is how absence is asked about
 - `numbers_and_numeric_text_compare_as_numbers` — 023: when both sides read as numbers, a JSON number or a decimal string, they compare exactly as numbers, never as text
 - `values_of_kinds_that_do_not_compare_match_nothing_and_fail_nothing` — 023: text that is not a number against a number, a boolean against text: every operator is false, and the read does not fail
-- `probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggregate` — 024 and 006: filtering, ordering or aggregating over a field the principal sees masked is refused as not granted, naming the field; over one it may not see at all, it is answered as for a field the type does not declare
+- `probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggregate` — 024 and 006: filtering, ordering or aggregating over a field the principal sees masked, through `find` or through a pattern's rows and its aggregate, is refused as not granted, naming the field; over one it may not see at all, it is answered as for a field the type does not declare
 - `a_filter_and_an_order_can_read_when_a_source_saw_a_value` — 010 and 017: `seen_at(f)` reads a field's provenance in `where`, and `order_by` may order by it
 - `a_cleared_field_matches_nothing_but_its_record_is_found_by_another` — 012 and 023: a field set to null is absent, so no comparison on it holds, and the record is found by its other fields as before
 

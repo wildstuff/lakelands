@@ -986,6 +986,25 @@ pub async fn a_masked_field_is_named_but_its_value_is_absent(store: Arc<dyn Lake
         no_field(&w, "secret"),
         "nor is a hidden field written: {w:?}"
     );
+    // A pattern's rows ordered by a field probe it as a filter does.
+    for (path, field, hidden) in [
+        ("invoice.secret", "secret", true),
+        ("invoice.note", "note", false),
+    ] {
+        let p: Pattern = serde_json::from_value(json!({
+            "start": {"type": INVOICE},
+            "project": {"as": "rows"},
+            "order_by": [{"field": path}]
+        }))
+        .expect("a pattern");
+        let e = f.catalog.query(&f.cast.clerk, p).await.unwrap_err();
+        let answered = if hidden {
+            no_field(&e, field)
+        } else {
+            refusal(&e) == (&Some(FieldName::from(field)), &Refusal::NotGranted)
+        };
+        assert!(answered, "rows ordered by `{path}`: {e:?}");
+    }
     // A sensitive field nobody named for the stranger, whose type default
     // is none, is listed as masked rather than left out.
     let ssn: FieldDecl =

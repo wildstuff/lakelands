@@ -1495,6 +1495,23 @@ impl<'a> Reader<'a> {
             edges.dedup_by(|a, b| (&a.from, &a.relation, &a.to) == (&b.from, &b.relation, &b.to));
             return self.graph_result(nodes, edges, truncated);
         }
+        // Rows are ordered and measured by their paths, `type.field`: each
+        // probes its field as `find`'s order and aggregate do (024), so an
+        // answer is never computed over values the principal may not read.
+        let mut paths: Vec<String> = p.order_by.iter().map(|o| o.field.to_string()).collect();
+        if let Projection::Aggregate(a) = &p.project {
+            paths.extend(
+                a.measures
+                    .iter()
+                    .filter_map(|m| Some(m.field.as_ref()?.to_string())),
+            );
+            for key in &a.group_by {
+                if let lakelands_api::read::GroupKey::Field(f) = key {
+                    paths.push(f.to_string());
+                }
+            }
+        }
+        self.probe_rows(&paths)?;
         // Rows: one per match.
         let mut rows: Vec<BTreeMap<String, Value>> = Vec::new();
         let mut truncated_any = false;
@@ -1578,6 +1595,22 @@ impl<'a> Reader<'a> {
             })
         });
         Ok(QueryResult::Rows { rows, next_cursor })
+    }
+
+    /// Refuse an order or a measure over a path of a pattern's rows whose
+    /// field the principal may not read, or that the path's type does not
+    /// declare, as `find` refuses one (024, 006). A path that names no
+    /// declared type reads nothing and is left alone.
+    fn probe_rows(&self, paths: &[String]) -> Result<()> {
+        for path in paths {
+            let Some((ty, field)) = path.rsplit_once('.') else {
+                continue;
+            };
+            if let Ok(decl) = self.ontology.ty(&TypeName::from(ty)) {
+                rights::check_probe(self.who, decl, [&FieldName::from(field)])?;
+            }
+        }
+        Ok(())
     }
 
     /// The type a step over `relation` reaches from `here`, walking `walk`.

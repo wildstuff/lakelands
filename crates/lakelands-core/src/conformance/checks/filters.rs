@@ -6,13 +6,14 @@
 use std::sync::Arc;
 
 use lakelands_api::ontology::StorageKind;
+use lakelands_api::query::Projection;
 use lakelands_api::read::{AggFunc, Aggregate, OrderBy};
 use lakelands_api::{Find, LakeStore, Refusal, Timestamp};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, agg, field, field_writer, find_where, no_such_field, order, refused_on,
+    Lake, Must, agg, field, field_writer, find_where, no_such_field, order, pattern, refused_on,
     source_record, sourced, type_decl, windows_reach_head,
 };
 
@@ -37,7 +38,7 @@ check!(
 check!(
     /// A read may not probe a field its principal may not read.
     PROBING_REFUSED = probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggregate,
-    "024 and 006: filtering, ordering or aggregating over a field the principal sees masked is refused as not granted, naming the field; over one it may not see at all, it is answered as for a field the type does not declare"
+    "024 and 006: filtering, ordering or aggregating over a field the principal sees masked, through `find` or through a pattern's rows and its aggregate, is refused as not granted, naming the field; over one it may not see at all, it is answered as for a field the type does not declare"
 );
 
 check!(
@@ -195,6 +196,40 @@ async fn probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggre
                 },
             ),
         ];
+        // A pattern's rows ordered by `line.note`, and summed over it.
+        let mut ordered = pattern(
+            "line",
+            None,
+            Vec::new(),
+            Projection::Rows { fields: vec![] },
+        );
+        ordered.order_by = vec![order("line.note", OrderBy::Value, Default::default())];
+        let summed = Aggregate {
+            measures: vec![agg("s", AggFunc::Sum, Some("line.note"))],
+            group_by: Vec::new(),
+        };
+        let summed = pattern("line", None, Vec::new(), Projection::Aggregate(summed));
+        let answers = [
+            (
+                "a pattern's rows ordered by it",
+                cat.query(&reader, ordered).await.map(drop),
+            ),
+            (
+                "a pattern's sum of it",
+                cat.query(&reader, summed).await.map(drop),
+            ),
+        ];
+        for (how, r) in answers {
+            let answered = match access {
+                lakelands_api::Access::None => no_such_field(&r, "note"),
+                _ => matches!(refused_on(&r), Some(("note", Refusal::NotGranted))),
+            };
+            ensure!(
+                answered,
+                "probing `note` ({access:?}) with {how} is refused as `find` refuses it, never \
+                 answered as if complete; it answered {r:?}"
+            );
+        }
         for (how, find) in probes {
             let err = cat
                 .find(&reader, &line, find)
