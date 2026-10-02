@@ -17,13 +17,15 @@ use lakelands_api::ontology::{
 };
 use lakelands_api::query::{Edge, Projection, QueryResult, Walk};
 use lakelands_api::write::{Declaration, Migration, Outcome, WriteOpts};
-use lakelands_api::{Catalog, Error, LakeStore, Position, Principal, Refusal};
+use lakelands_api::{
+    Catalog, Error, Grants, LakeStore, Position, Principal, PrincipalKind, Refusal,
+};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all, doors, field, field_writer, head_unmoved, patch, pattern, reason, refused_on,
-    source_record, step, type_decl,
+    Lake, Must, all, doors, field, field_writer, head_unmoved, patch, pattern, principal, reason,
+    refused_on, source_record, step, type_decl,
 };
 use crate::links::{link_key, link_type_name};
 
@@ -48,7 +50,7 @@ check!(
 check!(
     /// Cardinality holds over live links.
     CARDINALITY = a_link_that_would_break_the_relations_cardinality_is_refused,
-    "§2.3: many_to_one allows one live link per `from`; a second is refused as a constraint and nothing is appended"
+    "§2.3 and 024, extended: many_to_one allows one live link per `from`; a second is refused as a constraint and nothing is appended, and a principal without write on the link type is refused not_granted before the links are read"
 );
 
 check!(
@@ -343,6 +345,19 @@ async fn a_link_that_would_break_the_relations_cardinality_is_refused(
         ),
         "`approved_by` is many_to_one: i1 already links to p1, so linking it to p2 is \
          refused as a constraint on `to`; it answered {second:?}"
+    );
+    let nobody = principal(
+        store.as_ref(),
+        PrincipalKind::Agent,
+        "nobody",
+        Grants::default(),
+    );
+    let ungranted = link(cat.as_ref(), &nobody, "i1", "p2", json!({})).await;
+    ensure!(
+        matches!(reason(&ungranted), Some(Refusal::NotGranted)),
+        "a principal with no grant links i1 to p2: it is refused not_granted before the \
+         cardinality reads i1's link to p1, which it must not learn of; it answered \
+         {ungranted:?}"
     );
     head_unmoved(store.as_ref(), before, "a link against the cardinality").await?;
     Ok(())

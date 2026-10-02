@@ -36,6 +36,12 @@ check!(
     "016 and the log format: one idempotency key from one principal is one write in the whole lake"
 );
 
+check!(
+    /// A stale version is a conflict before the record is judged.
+    STALE_BEFORE_REQUIRES = a_verb_called_at_a_stale_version_is_a_conflict_before_its_requires_is_judged,
+    "015 and 024, extended: a verb's call compares the expected version right after its record is found, so a call at a stale version is a conflict, never a precondition judged on a state the caller has not seen"
+);
+
 /// Writes `n` to the `counter` record `key` as `who`, with `opts`.
 async fn put(
     cat: &dyn Catalog,
@@ -277,4 +283,46 @@ async fn a_write_expecting_the_version_before_a_retirement_is_a_conflict(
          after it (expected 1, actual 3); it failed with {err:?}"
     );
     Ok(())
+}
+
+async fn a_verb_called_at_a_stale_version_is_a_conflict_before_its_requires_is_judged(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = counter(store.as_ref()).await?;
+    l.declare_json(
+        json!({"declare": "verb", "name": "reset", "on": "counter", "risk": "low",
+                          "requires": "n > 0", "effect": "write",
+                          "set": [{"field": "n", "value": "0"}]}),
+    )
+    .await?;
+    l.upsert("counter", "k", json!({"n": 1})).await?;
+    l.upsert("counter", "k", json!({"n": 0})).await?;
+    let before = store.head().await.must("reading the head")?;
+    let stale = WriteOpts {
+        expected_version: Some(Version(1)),
+        ..WriteOpts::default()
+    };
+    let got = l
+        .cat
+        .call(
+            &l.own,
+            &"reset".into(),
+            Some(&"k".into()),
+            patch(json!({})),
+            stale,
+        )
+        .await;
+    ensure!(
+        matches!(
+            got,
+            Err(Error::Conflict {
+                expected: Version(1),
+                actual: Version(2)
+            })
+        ),
+        "`reset` called at version 1 on `k`, which is at version 2 and no longer holds \
+         `n > 0`: the version is compared first, so it is a conflict naming 1 and 2; it \
+         answered {got:?}"
+    );
+    head_unmoved(store.as_ref(), before, "a call at a stale version").await
 }
