@@ -11,15 +11,14 @@ use lakelands_api::ontology::{
     Cardinality, Derived, MatchPair, RelationDecl, StorageKind, TypeDecl,
 };
 use lakelands_api::query::{Pattern, Projection, QueryResult, Walk};
-use lakelands_api::read::ReadAt;
-use lakelands_api::write::{Declaration, WriteOpts};
+use lakelands_api::write::WriteOpts;
 use lakelands_api::{Access, Catalog, LakeStore, Position, Principal, Value};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, doors, field, field_access, invalid_naming, no_such_field, owner, patch, pattern,
-    step, type_decl,
+    Lake, Must, doors, field, field_access, head_unmoved, invalid_naming, no_such_field, owner,
+    patch, pattern, step, type_decl, type_of,
 };
 
 check!(
@@ -80,12 +79,9 @@ fn derived(name: &str, target: &str, pairs: Vec<MatchPair>) -> RelationDecl {
 }
 
 fn customer() -> TypeDecl {
-    let mut t = type_decl(
+    let mut t = type_of(
         "customer",
-        vec![
-            field("no", StorageKind::Text),
-            field("region", StorageKind::Text),
-        ],
+        &[("no", StorageKind::Text), ("region", StorageKind::Text)],
     );
     t.key = vec!["no".into()];
     t
@@ -172,6 +168,23 @@ async fn reached(
     Ok(keys)
 }
 
+/// The keys a walk over `relation` from `key` reaches: out from an invoice
+/// to customers, in from a customer to invoices.
+async fn reach(
+    cat: &dyn Catalog,
+    who: &Principal,
+    key: &str,
+    relation: &str,
+    dir: Walk,
+    as_of: Option<Position>,
+) -> Result<Vec<String>, Failure> {
+    let (ty, far) = match dir {
+        Walk::In => ("customer", "invoice"),
+        _ => ("invoice", "customer"),
+    };
+    reached(cat, who, walk(ty, key, relation, dir, as_of), far).await
+}
+
 async fn a_walk_over_a_derived_relation_finds_exactly_the_matching_records_both_ways(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
@@ -209,38 +222,19 @@ async fn changing_a_matched_field_moves_the_edge_at_that_position(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     lake(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
-    cat.upsert(
-        &own,
-        &"invoice".into(),
-        &"i1".into(),
-        patch(json!({"customer_no": "20"})),
-        WriteOpts::default(),
-    )
-    .await
-    .must("moving i1 to customer 20")?;
-    for (as_of, want) in [(Some(before), vec!["10"]), (None, vec!["20"])] {
-        let got = reached(
-            cat.as_ref(),
-            &own,
-            walk("invoice", "i1", "customer", Walk::Out, as_of),
-            "customer",
-        )
+    l.upsert("invoice", "i1", json!({"customer_no": "20"}))
         .await?;
+    for (as_of, want) in [(Some(before), vec!["10"]), (None, vec!["20"])] {
+        let got = reach(cat.as_ref(), own, "i1", "customer", Walk::Out, as_of).await?;
         ensure!(
             got == want,
             "i1's customer as_of {as_of:?} must be {want:?}; the walk reached {got:?}"
         );
     }
-    let got = reached(
-        cat.as_ref(),
-        &own,
-        walk("customer", "20", "customer", Walk::In, None),
-        "invoice",
-    )
-    .await?;
+    let got = reach(cat.as_ref(), own, "20", "customer", Walk::In, None).await?;
     ensure!(
         got == ["i1", "i5"],
         "customer 20 must be reached from i1 and i5 after the move; it was from {got:?}"
@@ -254,26 +248,14 @@ async fn a_null_never_matches(store: Arc<dyn LakeStore>) -> Result<(), Failure> 
     let Lake { cat, own } = &l;
     // A customer without a region, and i4 without either field.
     l.upsert("customer", "30", json!({"no": "30"})).await?;
-    for (relation, want) in [("customer", "customer"), ("same_region", "customer")] {
-        let got = reached(
-            cat.as_ref(),
-            own,
-            walk("invoice", "i4", relation, Walk::Out, None),
-            want,
-        )
-        .await?;
+    for relation in ["customer", "same_region"] {
+        let got = reach(cat.as_ref(), own, "i4", relation, Walk::Out, None).await?;
         ensure!(
             got.is_empty(),
             "i4 holds no matched value, so `{relation}` must reach nothing; it reached {got:?}"
         );
     }
-    let got = reached(
-        cat.as_ref(),
-        own,
-        walk("customer", "30", "same_region", Walk::In, None),
-        "invoice",
-    )
-    .await?;
+    let got = reach(cat.as_ref(), own, "30", "same_region", Walk::In, None).await?;
     ensure!(
         got.is_empty(),
         "a null region never matches a null region; customer 30 was reached from {got:?}"
@@ -398,30 +380,16 @@ async fn a_derived_relation_is_declared_not_migrated_and_never_moves_carrier(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     lake(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    let hash = |d: lakelands_api::describe::TypeDescription| d.lifecycle.schema_hash;
-    let before = hash(
-        cat.describe_type(&own, &"invoice".into(), ReadAt::default())
-            .await
-            .must("describing invoice")?
-            .data,
-    );
+    let l = Lake::of(store.as_ref());
+    let before = l.describe_type("invoice").await?.lifecycle.schema_hash;
     let mut changed = invoice();
     changed.relations[2] = derived(
         "same_region",
         "customer",
         vec![pair("region", "region"), pair("customer_no", "no")],
     );
-    cat.declare(&own, Declaration::Type(changed.clone()))
-        .await
-        .must("declaring invoice with a changed match")?;
-    let after = hash(
-        cat.describe_type(&own, &"invoice".into(), ReadAt::default())
-            .await
-            .must("describing invoice again")?
-            .data,
-    );
+    l.declare(changed.clone()).await?;
+    let after = l.describe_type("invoice").await?.lifecycle.schema_hash;
     ensure!(
         before == after,
         "changing a derived relation's match must leave the schema hash byte-identical; it \
@@ -431,9 +399,7 @@ async fn a_derived_relation_is_declared_not_migrated_and_never_moves_carrier(
     let mut linked = invoice();
     linked.name = "order".into();
     linked.relations = vec![RelationDecl::to("customer", "customer")];
-    cat.declare(&own, Declaration::Type(linked.clone()))
-        .await
-        .must("declaring order with a linked relation")?;
+    l.declare(linked.clone()).await?;
     let mut to_derived = linked.clone();
     to_derived.relations = vec![derived(
         "customer",
@@ -450,12 +416,8 @@ async fn a_derived_relation_is_declared_not_migrated_and_never_moves_carrier(
         ),
     ] {
         let head = store.head().await.must("reading the head")?;
-        invalid_naming(
-            what,
-            cat.declare(&own, Declaration::Type(t)).await,
-            &["customer", "carrier"],
-        )?;
-        crate::conformance::fixture::head_unmoved(store.as_ref(), head, what).await?;
+        invalid_naming(what, l.try_declare(t).await, &["customer", "carrier"])?;
+        head_unmoved(store.as_ref(), head, what).await?;
     }
     Ok(())
 }
@@ -464,7 +426,6 @@ async fn a_match_pair_of_two_kinds_is_refused_naming_both(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
     l.declare(customer()).await?;
     let mut numbered = customer();
     numbered.name = "account".into();
@@ -503,8 +464,8 @@ async fn a_match_pair_of_two_kinds_is_refused_naming_both(
         ),
     ] {
         let head = store.head().await.must("reading the head")?;
-        invalid_naming(what, cat.declare(own, Declaration::Type(t)).await, &named)?;
-        crate::conformance::fixture::head_unmoved(store.as_ref(), head, what).await?;
+        invalid_naming(what, l.try_declare(t).await, &named)?;
+        head_unmoved(store.as_ref(), head, what).await?;
     }
     Ok(())
 }
