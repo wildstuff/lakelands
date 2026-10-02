@@ -4,32 +4,33 @@
 use rust_stemmers::{Algorithm, Stemmer};
 use unicode_normalization::UnicodeNormalization;
 
-use super::{Language, normalize, tokenize_lowercase};
+use super::{normalize, tokenize_lowercase};
 
-/// The Snowball algorithm for a language. The match is exhaustive, so a
-/// language added to [`Language`] cannot silently fall through to the
-/// wrong stemmer.
-fn algorithm(lang: Language) -> Algorithm {
-    match lang {
-        Language::Arabic => Algorithm::Arabic,
-        Language::Danish => Algorithm::Danish,
-        Language::Dutch => Algorithm::Dutch,
-        Language::English => Algorithm::English,
-        Language::Finnish => Algorithm::Finnish,
-        Language::French => Algorithm::French,
-        Language::German => Algorithm::German,
-        Language::Greek => Algorithm::Greek,
-        Language::Hungarian => Algorithm::Hungarian,
-        Language::Italian => Algorithm::Italian,
-        Language::Norwegian => Algorithm::Norwegian,
-        Language::Portuguese => Algorithm::Portuguese,
-        Language::Romanian => Algorithm::Romanian,
-        Language::Russian => Algorithm::Russian,
-        Language::Spanish => Algorithm::Spanish,
-        Language::Swedish => Algorithm::Swedish,
-        Language::Tamil => Algorithm::Tamil,
-        Language::Turkish => Algorithm::Turkish,
-    }
+/// The Snowball algorithm a BCP-47 tag selects, by its primary language
+/// subtag (case-insensitive). `None` when that language has no stemmer.
+pub(super) fn algorithm(tag: &str) -> Option<Algorithm> {
+    let primary = tag.split('-').next()?.to_ascii_lowercase();
+    Some(match primary.as_str() {
+        "ar" => Algorithm::Arabic,
+        "da" => Algorithm::Danish,
+        "nl" => Algorithm::Dutch,
+        "en" => Algorithm::English,
+        "fi" => Algorithm::Finnish,
+        "fr" => Algorithm::French,
+        "de" => Algorithm::German,
+        "el" => Algorithm::Greek,
+        "hu" => Algorithm::Hungarian,
+        "it" => Algorithm::Italian,
+        "no" | "nb" | "nn" => Algorithm::Norwegian,
+        "pt" => Algorithm::Portuguese,
+        "ro" => Algorithm::Romanian,
+        "ru" => Algorithm::Russian,
+        "es" => Algorithm::Spanish,
+        "sv" => Algorithm::Swedish,
+        "ta" => Algorithm::Tamil,
+        "tr" => Algorithm::Turkish,
+        _ => return None,
+    })
 }
 
 /// The whole token pipeline for the language of a BCP-47 tag: tokens,
@@ -46,9 +47,9 @@ fn algorithm(lang: Language) -> Algorithm {
 /// safe: an identifier such as `EK-2026-0102` stems the same way on the
 /// index and the query side, so an exact lookup still matches.
 pub fn stem_text(text: &str, tag: &str) -> String {
-    let stemmed = match Language::for_tag(tag) {
-        Some(lang) => {
-            let stemmer = Stemmer::create(algorithm(lang));
+    let stemmed = match algorithm(tag) {
+        Some(algorithm) => {
+            let stemmer = Stemmer::create(algorithm);
             normalize(text, |t| stemmer.stem(t).into_owned())
         }
         None => tokenize_lowercase(text),

@@ -117,20 +117,16 @@ impl fmt::Display for ValueError {
             ValueError::NotOneOf { value, allowed } => {
                 write!(f, "{value} is not one of {}", allowed.join(", "))
             }
-            ValueError::Format { value_type, format } => {
-                write!(
-                    f,
-                    "the value is not a well-formed {} ({value_type})",
-                    format.name()
-                )
-            }
+            ValueError::Format { value_type, format } => write!(
+                f,
+                "the value is not a well-formed {} ({value_type})",
+                format.name()
+            ),
             ValueError::UnknownValueType(name) => write!(f, "no value type named {name}"),
-            ValueError::UnknownFormat { value_type, format } => {
-                write!(
-                    f,
-                    "value type {value_type} names the unknown format `{format}`"
-                )
-            }
+            ValueError::UnknownFormat { value_type, format } => write!(
+                f,
+                "value type {value_type} names the unknown format `{format}`"
+            ),
             ValueError::KindMismatch {
                 field,
                 value_type,
@@ -253,32 +249,18 @@ fn check_kind(value: &Value, ty: &FieldType) -> Result<Value, ValueError> {
         expected,
     };
     match ty.kind {
-        StorageKind::Text | StorageKind::Reference => match value {
-            Value::String(_) => Ok(value.clone()),
-            _ => Err(wrong("a string")),
-        },
-        StorageKind::Number => match value {
-            Value::Number(_) => {
-                check_integers(value)?;
-                Ok(value.clone())
-            }
-            _ => Err(wrong("a number")),
-        },
-        StorageKind::Boolean => match value {
-            Value::Bool(_) => Ok(value.clone()),
-            _ => Err(wrong("true or false")),
-        },
-        StorageKind::Json => {
+        StorageKind::Text | StorageKind::Reference if !value.is_string() => Err(wrong("a string")),
+        StorageKind::Number if !value.is_number() => Err(wrong("a number")),
+        StorageKind::Boolean if !value.is_boolean() => Err(wrong("true or false")),
+        StorageKind::Text | StorageKind::Reference | StorageKind::Boolean => Ok(value.clone()),
+        StorageKind::Number | StorageKind::Json => {
             check_integers(value)?;
             Ok(value.clone())
         }
         StorageKind::Decimal => {
             let s = value.as_str().ok_or_else(|| wrong("a string of digits"))?;
-            if is_decimal(s) {
-                Ok(value.clone())
-            } else {
-                Err(ValueError::Decimal(s.to_owned()))
-            }
+            let decimal = is_decimal(s).then(|| value.clone());
+            decimal.ok_or_else(|| ValueError::Decimal(s.to_owned()))
         }
         StorageKind::DateTime => {
             let s = value.as_str().ok_or_else(|| wrong("a date-time string"))?;
@@ -287,11 +269,9 @@ fn check_kind(value: &Value, ty: &FieldType) -> Result<Value, ValueError> {
         }
         StorageKind::Bytes => {
             let s = value.as_str().ok_or_else(|| wrong("a base64 string"))?;
-            if is_base64(s) {
-                Ok(value.clone())
-            } else {
-                Err(ValueError::Base64)
-            }
+            is_base64(s)
+                .then(|| value.clone())
+                .ok_or(ValueError::Base64)
         }
         StorageKind::Vector => {
             check_integers(value)?;
@@ -344,16 +324,14 @@ fn is_base64(s: &str) -> bool {
 }
 
 fn check_vector(value: &Value, ty: &FieldType) -> Result<Value, ValueError> {
-    let items = value.as_array().ok_or(ValueError::WrongShape {
-        kind: StorageKind::Vector,
-        expected: "an array of numbers",
-    })?;
-    if !items.iter().all(Value::is_number) {
-        return Err(ValueError::WrongShape {
+    let numbers = |items: &&Vec<Value>| items.iter().all(Value::is_number);
+    let items = value
+        .as_array()
+        .filter(numbers)
+        .ok_or(ValueError::WrongShape {
             kind: StorageKind::Vector,
             expected: "an array of numbers",
-        });
-    }
+        })?;
     let expected = ty.dimensions.ok_or(ValueError::NoDimensions)?;
     if items.len() != expected as usize {
         return Err(ValueError::VectorLength {

@@ -17,14 +17,7 @@ pub use lakelands_api::key::{key_component, key_components, keyable, record_key}
 /// SHA-256 over the parts joined by `0x00`, as an event id: the first 16
 /// bytes, in lower-case hex.
 fn id_of(parts: &[&[u8]]) -> EventId {
-    let mut h = Sha256::new();
-    for (i, p) in parts.iter().enumerate() {
-        if i > 0 {
-            h.update([0u8]);
-        }
-        h.update(p);
-    }
-    EventId(canonical::hex(&h.finalize()[..16]))
+    EventId(canonical::hex(&Sha256::digest(parts.join(&0u8))[..16]))
 }
 
 /// The id of an ingested record: its source, type, key, the record's
