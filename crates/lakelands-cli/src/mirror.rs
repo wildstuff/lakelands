@@ -1022,7 +1022,10 @@ impl Mirror {
                     )
                     .await
                     .map_err(|e| format!("`{s}` cannot be read from the source: {e}"))?;
-                let Found::Records { rows, next_cursor } = reply.data else {
+                let Found::Records {
+                    rows, next_cursor, ..
+                } = reply.data
+                else {
                     break;
                 };
                 for row in rows {
@@ -1560,7 +1563,10 @@ impl Mirror {
                 )
                 .await
                 .map_err(|e| format!("`{MIRROR_TYPE}` cannot be read: {e}"))?;
-            let Found::Records { rows, next_cursor } = reply.data else {
+            let Found::Records {
+                rows, next_cursor, ..
+            } = reply.data
+            else {
                 break;
             };
             for row in rows {

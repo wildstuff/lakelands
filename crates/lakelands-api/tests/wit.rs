@@ -701,6 +701,8 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     limit: Some(1),
                     cursor: Some(Cursor("c".into())),
                     after: Some(after_row()),
+                    offset: Some(7),
+                    total: true,
                     aggregate: Some(aggregate()),
                     with_meta: true,
                     at: read_at(),
@@ -1039,6 +1041,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 max_reactive_depth: 4,
                 commit_window_events: 5,
                 max_graph_nodes: 6,
+                max_offset: 7,
             }),
         ),
         (
@@ -1316,6 +1319,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 Found::Records {
                     rows: vec![],
                     next_cursor: None,
+                    total: Some(3),
                 },
                 Found::Groups { rows: vec![] },
             ],

@@ -493,7 +493,10 @@ async fn answers(store: &dyn LakeStore, who: &Principal) -> Result<(u64, String)
             .find(who, &TypeName::from(TY), find.clone())
             .await
             .must("finding every `reading`")?;
-        let Found::Records { rows, next_cursor } = reply.data else {
+        let Found::Records {
+            rows, next_cursor, ..
+        } = reply.data
+        else {
             return Err(Failure::new(
                 "finding `reading` records without an aggregate answered groups",
             ));
@@ -833,6 +836,50 @@ impl Size<'_> {
         Ok(())
     }
 
+    /// Jump to the last page of `reading` with `offset`, asking for its
+    /// `total`, measured: the rows skipped are read and dropped a page at
+    /// a time, and the total counted a batch at a time, whatever the size
+    /// of the type (045).
+    async fn jump(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+        let cat = doors(store);
+        let head = store.head().await.must("reading the head")?;
+        let limit = 25u32;
+        let skip = self.live.saturating_sub(u64::from(limit));
+        let find = Find {
+            offset: Some(u32::try_from(skip).unwrap_or(u32::MAX)),
+            limit: Some(limit),
+            total: true,
+            ..Find::default()
+        };
+        let started = Instant::now();
+        let m = Measure::start(&self.given.meter, false);
+        let reply = cat
+            .find(&self.own, &TypeName::from(TY), find)
+            .await
+            .must(&format!("jumping {skip} rows into `reading`"))?;
+        let (heap, _) = m.stop();
+        let Found::Records { rows, total, .. } = reply.data else {
+            return Err(Failure::new("a page of `reading` answered groups"));
+        };
+        ensure!(
+            rows.len() as u64 == self.live - skip && total == Some(self.live),
+            "the page {skip} rows into `reading` holds its last {} records and a total of {}; \
+             it held {} and {total:?}",
+            self.live - skip,
+            self.live,
+            rows.len()
+        );
+        self.row(
+            "jump",
+            Claim::Held,
+            records,
+            head.0 + 1,
+            format!("a page {skip} rows in, with its total"),
+            (heap, started.elapsed()),
+        );
+        Ok(())
+    }
+
     /// Walk every `reading` through `find`, a page of `max_limit` at a
     /// time with the cursor, measuring each page on its own: a page holds
     /// its rows, whatever the size of the type.
@@ -864,6 +911,7 @@ impl Size<'_> {
             let Found::Records {
                 rows: page,
                 next_cursor,
+                ..
             } = reply.data
             else {
                 return Err(Failure::new(
@@ -965,7 +1013,10 @@ impl Size<'_> {
             {
                 worst = Some(h);
             }
-            let Found::Records { rows, next_cursor } = reply.data else {
+            let Found::Records {
+                rows, next_cursor, ..
+            } = reply.data
+            else {
                 return Err(Failure::new(
                     "finding `reading` records without an aggregate answered groups",
                 ));
@@ -1438,6 +1489,7 @@ async fn a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_doe
         size.export(store.as_ref(), records, &log, &dir).await?;
         size.find_walk(store.as_ref(), records).await?;
         size.counts(store.as_ref(), records).await?;
+        size.jump(store.as_ref(), records).await?;
         size.sorted_walks(store.as_ref(), records).await?;
         size.searches(store.as_ref(), records).await?;
         size.traverse(store.as_ref(), records).await?;

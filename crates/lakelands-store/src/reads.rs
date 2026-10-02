@@ -889,6 +889,7 @@ impl<'a> Reader<'a> {
             .as_ref()
             .map(|a| self.resume_after(&decl, find, a))
             .transpose()?;
+        let skip = self.offset(find)?;
         if let Some(a) = &find.aggregate {
             // Counting alone holds no record: the count answers it.
             let counts = a.group_by.is_empty()
@@ -930,8 +931,10 @@ impl<'a> Reader<'a> {
             if let Some(after) = &after {
                 keyed.retain(|(k, _)| Self::compare(&find.order_by, k, after) == Ordering::Greater);
             }
+            keyed.drain(..skip.min(keyed.len()));
             keyed
         } else {
+            let after = self.skipped(&decl, filter.as_ref(), &find.order_by, after, skip)?;
             self.page(&decl, filter.as_ref(), &find.order_by, after, limit + 1)?
                 .into_iter()
                 .map(|r| ((Self::sort_values(&find.order_by, &r), r.key.clone()), r))
@@ -955,7 +958,76 @@ impl<'a> Reader<'a> {
             .into_iter()
             .filter_map(|(_, r)| rights::visible(self.who, &decl, &r, find.with_meta))
             .collect();
-        Ok(Found::Records { rows, next_cursor })
+        // Counted at the same position, so every page of a walk agrees.
+        let total = (find.total)
+            .then(|| self.count(&decl, filter.as_ref()))
+            .transpose()?;
+        Ok(Found::Records {
+            rows,
+            next_cursor,
+            total,
+        })
+    }
+
+    /// The rows `find` skips before its page: none unless it names an
+    /// `offset`, which is refused beside a cursor, an `after` or an
+    /// aggregate (each already says where the answer starts, or has no
+    /// rows), and past the lake's `max_offset` as too large; `total` is
+    /// refused beside an aggregate too
+    /// (`docs/decisions/045-a-table-reads-a-page-and-its-total.md`).
+    fn offset(&self, find: &Find) -> Result<usize> {
+        if find.total && find.aggregate.is_some() {
+            return Err(invalid(
+                "`total` counts the records a page lists; an `aggregate` answers groups, so \
+                 give one",
+            ));
+        }
+        let Some(skip) = find.offset else {
+            return Ok(0);
+        };
+        let beside = [
+            (find.cursor.is_some(), "cursor"),
+            (find.after.is_some(), "after"),
+            (find.aggregate.is_some(), "aggregate"),
+        ];
+        if let Some((_, other)) = beside.iter().find(|(given, _)| *given) {
+            return Err(invalid(format!(
+                "`offset` and `{other}` both say where the answer starts; give one"
+            )));
+        }
+        let max = self.lake.limits.max_offset;
+        if skip > max {
+            return Err(Error::Refused {
+                field: Some("offset".into()),
+                reason: Refusal::TooLarge { max },
+            });
+        }
+        Ok(skip as usize)
+    }
+
+    /// The sort position after the first `skip` rows of a stored type in
+    /// `order` after `after`, read a page at a time and dropped, so an
+    /// offset holds a page whatever it skips.
+    fn skipped(
+        &self,
+        decl: &TypeDecl,
+        filter: Option<&Expr>,
+        order: &[Order],
+        mut after: Option<SortKey>,
+        mut skip: usize,
+    ) -> Result<Option<SortKey>> {
+        while skip > 0 {
+            let want = skip.min(COUNT_PAGE);
+            let rows = self.page(decl, filter, order, after.clone(), want)?;
+            if let Some(last) = rows.last() {
+                after = Some((Self::sort_values(order, last), last.key.clone()));
+            }
+            if rows.len() < want {
+                break;
+            }
+            skip -= want;
+        }
+        Ok(after)
     }
 
     /// The sort position a caller's `after` names, each value in its

@@ -83,6 +83,7 @@ pub const ALL: &[Check] = &[
     versions::STALE_BEFORE_REQUIRES,
     versions::IDEMPOTENT_RETRY,
     paging::EVERY_RECORD_ONCE,
+    paging::TOTAL_AND_OFFSET,
     paging::MISSING_SORT_VALUES_LAST,
     latest::LATEST_ORDER,
     decimals::AS_WRITTEN,

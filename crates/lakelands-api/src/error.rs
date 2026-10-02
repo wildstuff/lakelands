@@ -89,9 +89,10 @@ pub enum Refusal {
         max: u32,
     },
     /// A whole-graph measure would reach more records than the lake
-    /// allows; nothing partial is answered.
+    /// allows, or a `find` would skip more rows than it allows (the
+    /// refusal then names `offset`); nothing partial is answered.
     TooLarge {
-        /// The lake's `max_graph_nodes`.
+        /// The lake's `max_graph_nodes`, or its `max_offset`.
         max: u32,
     },
     /// A migration would lose information; the report says where.
@@ -154,6 +155,9 @@ impl fmt::Display for Error {
                     | Refusal::Precondition { message } => write!(f, ": {message}"),
                     Refusal::TooDeep { max } => {
                         write!(f, ": reactions may go {max} levels deep, no deeper")
+                    }
+                    Refusal::TooLarge { max } if field.as_ref().is_some_and(|f| f == "offset") => {
+                        write!(f, ": a page may skip {max} rows, no more")
                     }
                     Refusal::TooLarge { max } => {
                         write!(f, ": a graph measure may reach {max} records, no more")

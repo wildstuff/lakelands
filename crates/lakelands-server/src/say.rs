@@ -42,7 +42,7 @@ impl fmt::Display for Failure {
 impl From<Error> for Failure {
     fn from(e: Error) -> Failure {
         let todo = match &e {
-            Error::Refused { reason, .. } => match reason {
+            Error::Refused { field, reason } => match reason {
                 Refusal::NotGranted => {
                     "act as a principal whose grants allow it, or ask the lake's owner for a grant"
                         .to_owned()
@@ -60,6 +60,11 @@ impl From<Error> for Failure {
                 }
                 Refusal::TooDeep { .. } => {
                     "break the chain of reactions, or raise the lake's limit in its location".to_owned()
+                }
+                Refusal::TooLarge { .. } if field.as_ref().is_some_and(|f| f == "offset") => {
+                    "page on with the cursor from a nearer page, or raise the lake's `max_offset` \
+                     in its location"
+                        .to_owned()
                 }
                 Refusal::TooLarge { .. } => {
                     "start from fewer records, or raise the lake's `max_graph_nodes` in its location"

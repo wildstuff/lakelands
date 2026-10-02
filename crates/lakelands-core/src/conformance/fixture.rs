@@ -797,7 +797,9 @@ pub async fn all_found(
             .await
             .must(&format!("finding `{ty}` records"))?;
         match reply.data {
-            Found::Records { rows, next_cursor } => {
+            Found::Records {
+                rows, next_cursor, ..
+            } => {
                 out.extend(rows);
                 match next_cursor {
                     Some(cursor) => find.cursor = Some(cursor),

@@ -10,17 +10,28 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use lakelands_api::ontology::StorageKind;
-use lakelands_api::read::{Direction, OrderBy};
-use lakelands_api::{Find, LakeStore, Record};
+use lakelands_api::read::{After, AggFunc, Aggregate, Direction, Found, Order, OrderBy};
+use lakelands_api::{
+    Access, Catalog, Cursor, Find, Grants, LakeStore, Principal, PrincipalKind, Record, Refusal,
+};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, order, type_of, value};
+use crate::conformance::fixture::{
+    Lake, Must, agg, all_found, count_view, is_invalid, limits, order, principal, refused_on,
+    type_of, value,
+};
 
 check!(
     /// Walking the cursor visits each record once.
     EVERY_RECORD_ONCE = paging_through_find_visits_every_record_exactly_once,
     "the read contract: a cursor continues where its page ended, so a page set is a total order with no repeat and no gap"
+);
+
+check!(
+    /// A page answers its total and jumps by offset.
+    TOTAL_AND_OFFSET = a_page_answers_its_total_and_an_offset_jumps_to_the_walks_slice,
+    "045 and 029: `total` answers as many records as a full walk finds, for a filter the engine applies and one only the store evaluates, a view and a reader without `restricted`, the same on every page of a cursor walk while another writer writes; `offset` answers the full walk's slice from it, by key, by a field and by a field with an order index, a view too, and its cursor continues the walk; `offset` beside `cursor`, `after` or `aggregate`, and `total` beside `aggregate`, are refused as invalid, and an offset past `max_offset` as too_large naming it"
 );
 
 check!(
@@ -123,5 +134,208 @@ async fn records_without_the_sort_field_are_listed_last_in_either_direction(
              those without a value and lose none"
         );
     }
+    Ok(())
+}
+
+/// One page of `find`: its keys, its cursor and its total.
+async fn one_page(
+    cat: &dyn Catalog,
+    who: &Principal,
+    ty: &str,
+    find: Find,
+) -> Result<(Vec<String>, Option<Cursor>, Option<u64>), Failure> {
+    match cat
+        .find(who, &ty.into(), find)
+        .await
+        .must(&format!("a page of `{ty}`"))?
+        .data
+    {
+        Found::Records {
+            rows,
+            next_cursor,
+            total,
+        } => Ok((
+            rows.iter().map(|r| r.key.to_string()).collect(),
+            next_cursor,
+            total,
+        )),
+        Found::Groups { .. } => Err(Failure::new("a page of records answered groups")),
+    }
+}
+
+async fn a_page_answers_its_total_and_an_offset_jumps_to_the_walks_slice(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = counter(store.as_ref()).await?;
+    let Lake { cat, own } = &l;
+    let cat = cat.as_ref();
+    l.declare(count_view("by_tag", "counter", "tag")).await?;
+    for i in 0..30u32 {
+        let tag = if i % 3 == 0 { "a" } else { "b" };
+        l.upsert(
+            "counter",
+            &format!("c{i:02}"),
+            json!({"n": (i * 7) % 30, "tag": tag}),
+        )
+        .await?;
+    }
+    l.retire("counter", "c03").await?;
+    store
+        .restrict(&"counter".into(), &"c04".into(), "hold".into())
+        .await
+        .must("restricting c04")?;
+    let reader = Grants {
+        default: Access::Read,
+        ..Grants::default()
+    };
+    let reader = principal(store.as_ref(), PrincipalKind::Agent, "reader", reader);
+    let walk = |who, ty, find| async move {
+        let all = all_found(cat, who, ty, find).await?;
+        Ok::<Vec<String>, Failure>(all.iter().map(|r| r.key.to_string()).collect())
+    };
+    for who in [own, &reader] {
+        for (ty, filter) in [
+            ("counter", None),
+            ("counter", Some("n > 10")),
+            ("counter", Some("n > 10 and now() > now() - 1d")),
+            ("by_tag", None),
+        ] {
+            let find = || Find {
+                filter: filter.map(Into::into),
+                ..Find::default()
+            };
+            let all = walk(who, ty, find()).await?.len() as u64;
+            let asked = Find {
+                total: true,
+                limit: Some(5),
+                ..find()
+            };
+            let (_, _, total) = one_page(cat, who, ty, asked).await?;
+            ensure!(
+                total == Some(all),
+                "a page of `{ty}` where {filter:?} with `total` answers the {all} records a full \
+                 walk finds; it answered {total:?}"
+            );
+        }
+    }
+    let first = Find {
+        total: true,
+        limit: Some(5),
+        ..Find::default()
+    };
+    let (_, next, before) = one_page(cat, own, "counter", first.clone()).await?;
+    l.upsert("counter", "c30", json!({"n": 30, "tag": "a"}))
+        .await?;
+    let on = Find {
+        cursor: next.clone(),
+        ..first.clone()
+    };
+    let (_, _, pinned) = one_page(cat, own, "counter", on).await?;
+    let (_, _, head) = one_page(cat, own, "counter", first).await?;
+    ensure!(
+        pinned == before && head == before.map(|n| n + 1),
+        "a later page of a walk counts at the walk's position ({before:?}) while a write lands, \
+         and a page read anew counts the head; they counted {pinned:?} and {head:?}"
+    );
+    let by = |orders: Vec<Order>| Find {
+        order_by: orders,
+        ..Find::default()
+    };
+    let n = |dir| vec![order("n", OrderBy::Value, dir)];
+    let mut orders = vec![("key", Vec::new()), ("n descending", n(Direction::Desc))];
+    l.set("sort_index.counter", json!(["n"])).await?;
+    orders.push(("the indexed n", n(Direction::Asc)));
+    for (what, order_by) in orders {
+        let all = walk(own, "counter", by(order_by.clone())).await?;
+        let jump = Find {
+            offset: Some(7),
+            limit: Some(5),
+            ..by(order_by.clone())
+        };
+        let (page, next, _) = one_page(cat, own, "counter", jump).await?;
+        let on = Find {
+            cursor: next,
+            limit: Some(5),
+            ..by(order_by)
+        };
+        let (after, _, _) = one_page(cat, own, "counter", on).await?;
+        ensure!(
+            page == all[7..12] && after == all[12..17],
+            "ordered by {what}, an offset of 7 answers the walk's rows 7 to 11 and its cursor \
+             rows 12 to 16 ({:?}, {:?}); they answered {page:?} and {after:?}",
+            &all[7..12],
+            &all[12..17]
+        );
+    }
+    let all = walk(own, "by_tag", Find::default()).await?;
+    let jump = Find {
+        offset: Some(1),
+        ..Find::default()
+    };
+    let (page, _, _) = one_page(cat, own, "by_tag", jump).await?;
+    ensure!(
+        page == all[1..],
+        "a view skips by offset as a stored type does: {:?}; it answered {page:?}",
+        &all[1..]
+    );
+    let count = || Aggregate {
+        measures: vec![agg("n", AggFunc::Count, None)],
+        group_by: Vec::new(),
+    };
+    let jump = |find: Find| Find {
+        offset: Some(1),
+        ..find
+    };
+    for (what, find) in [
+        (
+            "`offset` beside a cursor",
+            jump(Find {
+                cursor: next,
+                ..Find::default()
+            }),
+        ),
+        (
+            "`offset` beside `after`",
+            jump(Find {
+                after: Some(After {
+                    values: Vec::new(),
+                    key: "c01".into(),
+                }),
+                ..Find::default()
+            }),
+        ),
+        (
+            "`offset` beside an aggregate",
+            jump(Find {
+                aggregate: Some(count()),
+                ..Find::default()
+            }),
+        ),
+        (
+            "`total` beside an aggregate",
+            Find {
+                total: true,
+                aggregate: Some(count()),
+                ..Find::default()
+            },
+        ),
+    ] {
+        let r = cat.find(own, &"counter".into(), find).await;
+        ensure!(
+            is_invalid(&r),
+            "{what} is refused as invalid; it answered {r:?}"
+        );
+    }
+    let max = limits().max_offset;
+    let far = Find {
+        offset: Some(max + 1),
+        ..Find::default()
+    };
+    let r = cat.find(own, &"counter".into(), far).await;
+    ensure!(
+        matches!(refused_on(&r), Some(("offset", Refusal::TooLarge { max: m })) if *m == max),
+        "an offset past the lake's {max} is refused as too_large, naming `offset`; it answered \
+         {r:?}"
+    );
     Ok(())
 }

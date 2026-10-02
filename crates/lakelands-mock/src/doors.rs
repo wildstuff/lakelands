@@ -2194,6 +2194,31 @@ impl Catalog for MockCatalog {
             .as_ref()
             .map(|a| resume_after(&st, t, &find, a))
             .transpose()?;
+        if find.total && find.aggregate.is_some() {
+            return Err(invalid(
+                "`total` counts the records a page lists; an `aggregate` answers groups, so give one",
+            ));
+        }
+        let skip = match find.offset {
+            None => 0,
+            Some(skip) => {
+                let beside = [
+                    (find.cursor.is_some(), "cursor"),
+                    (find.after.is_some(), "after"),
+                    (find.aggregate.is_some(), "aggregate"),
+                ];
+                if let Some((_, other)) = beside.iter().find(|(given, _)| *given) {
+                    return Err(invalid(format!(
+                        "`offset` and `{other}` both say where the answer starts; give one"
+                    )));
+                }
+                let max = self.shared.limits.max_offset;
+                if skip > max {
+                    return Err(on(&"offset".into(), Refusal::TooLarge { max }));
+                }
+                skip as usize
+            }
+        };
         if find.aggregate.is_some() {
             return Err(invalid("the in-memory mock does not aggregate"));
         }
@@ -2216,6 +2241,7 @@ impl Catalog for MockCatalog {
             }
         }
         let mut rows = candidates(&st, who, t, find.at, e.as_ref())?;
+        let total = find.total.then_some(rows.len() as u64);
         let sort_key = |r: &StoredRecord| -> Vec<Option<Value>> {
             find.order_by
                 .iter()
@@ -2247,10 +2273,14 @@ impl Catalog for MockCatalog {
             .into_iter()
             .map(|r| st.read(who, r, find.with_meta))
             .collect();
-        let (rows, next_cursor) = page(rows, position, offset, self.limit(find.limit));
+        let (rows, next_cursor) = page(rows, position, offset + skip, self.limit(find.limit));
         Ok(Reply {
             position,
-            data: Found::Records { rows, next_cursor },
+            data: Found::Records {
+                rows,
+                next_cursor,
+                total,
+            },
         })
     }
 

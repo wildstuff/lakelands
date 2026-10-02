@@ -57,7 +57,9 @@ async fn page(
         .await
         .must(what)?;
     match reply.data {
-        Found::Records { rows, next_cursor } => Ok((rows, next_cursor)),
+        Found::Records {
+            rows, next_cursor, ..
+        } => Ok((rows, next_cursor)),
         Found::Groups { .. } => Err(Failure::new(format!(
             "{what}: `find` without an aggregate answered groups"
         ))),
