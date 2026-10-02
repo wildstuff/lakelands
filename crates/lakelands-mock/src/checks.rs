@@ -101,6 +101,7 @@ macro_rules! door_checks {
             a_rejected_proposal_writes_nothing_and_stays_decided,
             only_a_reviewer_decides_proposals,
             sys_types_cannot_be_declared,
+            add_field_without_the_schema_grant_tells_nothing_of_the_type,
             an_embedding_is_unbound_where_no_backend_is_bound,
             a_link_to_no_live_record_or_over_no_link_relation_is_refused,
             a_retired_record_leaves_reads_but_not_its_past,
@@ -1452,6 +1453,26 @@ pub async fn a_proposer_sees_only_its_own_proposals(store: Arc<dyn LakeStore>) {
     assert_eq!(list(f.cast.clerk.clone()).await, vec![clerks.clone()]);
     assert!(list(f.cast.auditor.clone()).await.is_empty());
     assert_eq!(list(f.cast.reviewer.clone()).await, [owners, clerks]);
+}
+
+/// `add_field` without the schema grant is refused as not granted before
+/// the type is looked up, so the refusal tells nothing of the ontology:
+/// not whether the type exists, nor whether it has the field (024,
+/// extended).
+pub async fn add_field_without_the_schema_grant_tells_nothing_of_the_type(
+    store: Arc<dyn LakeStore>,
+) {
+    let f = setup(store).await;
+    let head = f.head().await;
+    for name in ["nothing", "invoice"] {
+        let e = f
+            .catalog
+            .add_field(&f.cast.clerk, &ty(name), text("status"))
+            .await
+            .expect_err("the clerk holds no schema grant");
+        assert_eq!(refusal(&e).1, &Refusal::NotGranted, "`{name}`: {e:?}");
+    }
+    assert_eq!(f.head().await, head, "nothing is appended");
 }
 
 /// An ordinary principal cannot declare a `sys.` type; records of one are
@@ -2968,6 +2989,30 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
             })
         ),
         "{stranger:?}"
+    );
+    // So is one that would break the cardinality, by a principal that
+    // reads the links but may not write them: the write's grants come
+    // before the links are read for the cardinality (024, extended).
+    let past = c
+        .link(
+            &cast.auditor,
+            &ty("doc"),
+            &key("d1"),
+            &"signed_by".into(),
+            &key("p2"),
+            Patch::new(),
+            WriteOpts::default(),
+        )
+        .await;
+    assert!(
+        matches!(
+            &past,
+            Err(Error::Refused {
+                reason: Refusal::NotGranted,
+                ..
+            })
+        ),
+        "{past:?}"
     );
     // A source relation's links arrive by ingest, its cardinality held in
     // one window as at the door.

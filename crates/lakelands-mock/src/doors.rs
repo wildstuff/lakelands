@@ -2175,7 +2175,6 @@ impl Catalog for MockCatalog {
             ));
         }
         let lt = links::name(ty, relation);
-        link_cardinality(&st, &lt, &r, key, to)?;
         let mut patch = fields;
         patch.insert(links::FROM.into(), Value::from(key.as_str()));
         patch.insert(links::TO.into(), Value::from(to.as_str()));
@@ -2193,6 +2192,8 @@ impl Catalog for MockCatalog {
             patch,
             &opts,
         )?;
+        // The cardinality reads other links: after the grants (024).
+        link_cardinality(&st, &lt, &r, key, to)?;
         let position = batch.peek().0 - 1;
         self.commit(&mut log, batch);
         Ok(Outcome::Applied {
