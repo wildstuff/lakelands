@@ -16,7 +16,7 @@ use crate::conformance::fixture::{Lake, Must, doors, field, log_events, owner, t
 check!(
     /// A key filter answers one record's events.
     BY_KEY = a_feed_filtered_by_key_answers_that_records_events_only,
-    "004 and lakelands#146: a feed filtered by types and keys answers exactly the events about those records, in log order, each once: its upserts, a verb called on it, a trigger it fired, its object-set changes, a restrict, an unrestrict and its retire; with types empty a key matches in any type and verb_called passes too; kinds narrow it further; no event that names no record passes"
+    "004 and lakelands#146: a feed filtered by types and keys answers exactly the events about those records, in log order, each once: its upserts, a trigger it fired, its object-set changes, a restrict, an unrestrict and its retire; with types empty a key matches in any type and verb_called passes too; kinds narrow it further; no event that names no record passes"
 );
 
 check!(

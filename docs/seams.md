@@ -890,7 +890,11 @@ once, possibly empty, never waiting for new events:
   trigger on a relation carried by link records watches its link type,
   `sys.link.<type>.<relation>`, so its `trigger_fired` events carry that
   type and the link's key; `docs/decisions/035-a-link-is-a-record.md`); an
-  event without one passes only a filter with no types. The kinds are
+  event without one passes only a filter with no types. A verb's events
+  name no type, even for a verb on its type: `verb_called`,
+  `write_proposed`, `write_accepted` and `output_recorded` pass no
+  filter that names types, while `proposals` filtered by type lists a
+  proposed call under its verb's type. The kinds are
   free strings, so a relay may name one a newer format adds;
   `lakelands_api::event::KINDS` lists the kinds of this format version.
   A non-empty `filter.keys` admits only events about a record with one
