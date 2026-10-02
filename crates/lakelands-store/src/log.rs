@@ -14,7 +14,7 @@ use lakelands_api::event::{
 use lakelands_api::principal::WriteContext;
 use lakelands_api::record::Origin;
 use lakelands_api::{Error, IdempotencyKey, LakeId, Position, Result, SourceId, Timestamp};
-use lakelands_core::canonical;
+use lakelands_core::{canonical, unavailable};
 
 /// Everything about an event the writer decides; the store fills in the
 /// rest (format version, lake, position, id, link, fence, hash).
@@ -140,9 +140,7 @@ pub fn seal_at(
 }
 
 fn corrupt(position: Position, why: impl std::fmt::Display) -> Error {
-    Error::Unavailable {
-        message: format!("the log is damaged at position {position}: {why}"),
-    }
+    unavailable(format!("the log is damaged at position {position}: {why}"))
 }
 
 /// Parse a stored event and verify it: the bytes are canonical, the hash

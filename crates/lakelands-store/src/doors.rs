@@ -27,7 +27,7 @@ use lakelands_api::{
     VerbName, Verification,
 };
 
-use lakelands_core::invalid;
+use lakelands_core::{invalid, unavailable};
 
 use crate::exec;
 use crate::ingest;
@@ -115,23 +115,22 @@ impl Doors {
     /// Make the calls of backed functions the write made due, and answer
     /// its outcome at the position of the last output recorded, from which
     /// the filled fields are visible.
-    async fn settled(&self, outcome: Outcome, seen: u64) -> Result<Outcome> {
+    async fn settled(&self, mut outcome: Outcome, seen: u64) -> Result<Outcome> {
         let last = crate::backed::settle(&self.lake, seen).await?;
-        Ok(match (outcome, last) {
-            (
-                Outcome::Applied {
-                    position,
-                    version,
-                    output,
-                },
-                Some(last),
-            ) => Outcome::Applied {
-                position: position.max(last),
-                version,
-                output,
-            },
-            (outcome, _) => outcome,
-        })
+        if let (Outcome::Applied { position, .. }, Some(last)) = (&mut outcome, last) {
+            *position = (*position).max(last);
+        }
+        Ok(outcome)
+    }
+
+    /// A write whose outcome is [`Doors::settled`].
+    async fn write_settled<F>(&self, who: &Principal, f: F) -> Result<Outcome>
+    where
+        F: FnOnce(&Call<'_>) -> Result<Outcome> + Send + 'static,
+    {
+        let seen = self.seen();
+        let outcome = self.write(who, f).await?;
+        self.settled(outcome, seen).await
     }
 
     /// Hand an external verb to its executor and record the answer; the
@@ -192,17 +191,11 @@ impl Doors {
 }
 
 /// An outcome with an external verb's recorded output in it.
-fn with_output(outcome: Outcome, recorded: serde_json::Value) -> Outcome {
-    match outcome {
-        Outcome::Applied {
-            position, version, ..
-        } => Outcome::Applied {
-            position,
-            version,
-            output: Some(recorded),
-        },
-        proposed => proposed,
+fn with_output(mut outcome: Outcome, recorded: serde_json::Value) -> Outcome {
+    if let Outcome::Applied { output, .. } = &mut outcome {
+        *output = Some(recorded);
     }
+    outcome
 }
 
 #[async_trait]
@@ -226,10 +219,7 @@ impl Catalog for Doors {
     }
 
     async fn find(&self, who: &Principal, ty: &TypeName, find: Find) -> Result<Reply<Found>> {
-        let mut at = find.at;
-        if let Some(c) = &find.cursor {
-            at.as_of = Some(cursor_position(c)?);
-        }
+        let at = cursor_at(find.at, find.cursor.as_ref())?;
         let ty = ty.clone();
         self.read(who, at, move |r| r.find(&ty, &find)).await
     }
@@ -248,11 +238,8 @@ impl Catalog for Doors {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         let (ty, key) = (ty.clone(), key.clone());
-        let seen = self.seen();
-        let outcome = self
-            .write(who, move |c| c.upsert(&ty, &key, patch, opts))
-            .await?;
-        self.settled(outcome, seen).await
+        self.write_settled(who, move |c| c.upsert(&ty, &key, patch, opts))
+            .await
     }
 
     async fn retire(
@@ -263,9 +250,8 @@ impl Catalog for Doors {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         let (ty, key) = (ty.clone(), key.clone());
-        let seen = self.seen();
-        let outcome = self.write(who, move |c| c.retire(&ty, &key, opts)).await?;
-        self.settled(outcome, seen).await
+        self.write_settled(who, move |c| c.retire(&ty, &key, opts))
+            .await
     }
 
     async fn link(
@@ -279,13 +265,10 @@ impl Catalog for Doors {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         let (ty, key, relation, to) = (ty.clone(), key.clone(), relation.clone(), to.clone());
-        let seen = self.seen();
-        let outcome = self
-            .write(who, move |c| {
-                c.link(&ty, &key, &relation, &to, fields, opts)
-            })
-            .await?;
-        self.settled(outcome, seen).await
+        self.write_settled(who, move |c| {
+            c.link(&ty, &key, &relation, &to, fields, opts)
+        })
+        .await
     }
 
     async fn unlink(
@@ -298,11 +281,8 @@ impl Catalog for Doors {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         let (ty, key, relation, to) = (ty.clone(), key.clone(), relation.clone(), to.clone());
-        let seen = self.seen();
-        let outcome = self
-            .write(who, move |c| c.unlink(&ty, &key, &relation, &to, opts))
-            .await?;
-        self.settled(outcome, seen).await
+        self.write_settled(who, move |c| c.unlink(&ty, &key, &relation, &to, opts))
+            .await
     }
 
     async fn call(
@@ -326,10 +306,7 @@ impl Catalog for Doors {
     }
 
     async fn query(&self, who: &Principal, pattern: Pattern) -> Result<Reply<QueryResult>> {
-        let mut at = pattern.at;
-        if let Some(c) = &pattern.cursor {
-            at.as_of = Some(cursor_position(c)?);
-        }
+        let at = cursor_at(pattern.at, pattern.cursor.as_ref())?;
         self.read(who, at, move |r| r.query(&pattern)).await
     }
 
@@ -378,28 +355,21 @@ impl Catalog for Doors {
                     .await
                     .map_err(|e| match e {
                         Error::Unavailable { message } => Error::Unavailable { message },
-                        other => Error::Unavailable {
-                            message: format!(
-                                "the embedding backend `{}` failed: {other}",
-                                embed.model()
-                            ),
-                        },
+                        other => unavailable(format!(
+                            "the embedding backend `{}` failed: {other}",
+                            embed.model()
+                        )),
                     })?;
             if vectors.len() != 1 {
-                return Err(Error::Unavailable {
-                    message: format!(
-                        "the embedding backend `{}` answered {} vectors for one text",
-                        embed.model(),
-                        vectors.len()
-                    ),
-                });
+                return Err(unavailable(format!(
+                    "the embedding backend `{}` answered {} vectors for one text",
+                    embed.model(),
+                    vectors.len()
+                )));
             }
             *vector = vectors.pop();
         }
-        let mut at = search.at;
-        if let Some(c) = &search.cursor {
-            at.as_of = Some(cursor_position(c)?);
-        }
+        let at = cursor_at(search.at, search.cursor.as_ref())?;
         self.read(who, at, move |r| r.search(&search)).await
     }
 
@@ -438,22 +408,19 @@ impl Catalog for Doors {
     }
 
     async fn declare(&self, who: &Principal, declaration: Declaration) -> Result<Outcome> {
-        let seen = self.seen();
-        let outcome = self.write(who, move |c| c.declare(declaration)).await?;
-        self.settled(outcome, seen).await
+        self.write_settled(who, move |c| c.declare(declaration))
+            .await
     }
 
     async fn apply(&self, who: &Principal, declarations: Vec<Declaration>) -> Result<Outcome> {
-        let seen = self.seen();
-        let outcome = self.write(who, move |c| c.apply(declarations)).await?;
-        self.settled(outcome, seen).await
+        self.write_settled(who, move |c| c.apply(declarations))
+            .await
     }
 
     async fn add_field(&self, who: &Principal, ty: &TypeName, field: FieldDecl) -> Result<Outcome> {
         let ty = ty.clone();
-        let seen = self.seen();
-        let outcome = self.write(who, move |c| c.add_field(&ty, field)).await?;
-        self.settled(outcome, seen).await
+        self.write_settled(who, move |c| c.add_field(&ty, field))
+            .await
     }
 
     async fn migrate(
@@ -479,11 +446,8 @@ impl Catalog for Doors {
         report_id: &str,
     ) -> Result<Outcome> {
         let id = report_id.to_owned();
-        let seen = self.seen();
-        let outcome = self
-            .write(who, move |c| c.migrate_apply(migration, &id))
-            .await?;
-        self.settled(outcome, seen).await
+        self.write_settled(who, move |c| c.migrate_apply(migration, &id))
+            .await
     }
 
     async fn migrate_value_type(
@@ -509,11 +473,8 @@ impl Catalog for Doors {
         report_id: &str,
     ) -> Result<Outcome> {
         let id = report_id.to_owned();
-        let seen = self.seen();
-        let outcome = self
-            .write(who, move |c| c.migrate_value_type_apply(to, &id))
-            .await?;
-        self.settled(outcome, seen).await
+        self.write_settled(who, move |c| c.migrate_value_type_apply(to, &id))
+            .await
     }
 
     async fn ingest(
@@ -534,7 +495,11 @@ impl Catalog for Doors {
     }
 }
 
-fn cursor_position(c: &lakelands_api::Cursor) -> Result<Position> {
+/// `at`, moved to the position a cursor names when there is one.
+fn cursor_at(mut at: ReadAt, cursor: Option<&lakelands_api::Cursor>) -> Result<ReadAt> {
+    let Some(c) = cursor else {
+        return Ok(at);
+    };
     #[derive(serde::Deserialize)]
     struct At {
         at: Position,
@@ -546,10 +511,12 @@ fn cursor_position(c: &lakelands_api::Cursor) -> Result<Position> {
                 .and_then(|h| u8::from_str_radix(h, 16).ok())
         })
         .collect();
-    bytes
-        .and_then(|b| serde_json::from_slice::<At>(&b).ok())
-        .map(|a| a.at)
-        .ok_or_else(|| invalid("the cursor is not one this lake handed out"))
+    let a = bytes.and_then(|b| serde_json::from_slice::<At>(&b).ok());
+    at.as_of = Some(
+        a.ok_or_else(|| invalid("the cursor is not one this lake handed out"))?
+            .at,
+    );
+    Ok(at)
 }
 
 #[async_trait]

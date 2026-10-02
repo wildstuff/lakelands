@@ -34,7 +34,7 @@ use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposalState}
 use lakelands_api::{
     Error, LakeId, Position, ProposalId, RecordKey, Result, Timestamp, TypeName, Value,
 };
-use lakelands_core::shape;
+use lakelands_core::{shape, unavailable};
 
 use crate::backed::{Due, Outputs};
 use crate::log::{self, Draft};
@@ -115,7 +115,7 @@ fn engine_name(config: &EngineConfig) -> String {
     }
 }
 
-fn wall_clock() -> Timestamp {
+pub(crate) fn wall_clock() -> Timestamp {
     let micros = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros() as i64)
@@ -211,8 +211,11 @@ impl Lake {
             }
             types.retain(|t| !w.ontology.types.contains_key(&t.name));
             for t in types {
-                let hash = shape::schema_hash(&t).map_err(|e| Error::Unavailable {
-                    message: format!("the system type `{}` has no schema hash: {e}", t.name),
+                let hash = shape::schema_hash(&t).map_err(|e| {
+                    unavailable(format!(
+                        "the system type `{}` has no schema hash: {e}",
+                        t.name
+                    ))
                 })?;
                 drafts.push(Draft::system(
                     now,
@@ -324,8 +327,6 @@ impl Lake {
             self.fold_from(&mut w, from)?;
             // Opening a lake never calls a backing.
             w.due.clear();
-        }
-        if w.lease.is_some() {
             self.publish(&w);
         } else {
             // A read-only handle reads what the writer folded: its head is
@@ -387,10 +388,9 @@ impl Lake {
         reads: Reads,
     ) -> Result<Vec<Event>> {
         let Some(lease) = w.lease.clone() else {
-            return Err(Error::Unavailable {
-                message: "this lake is open read-only here; another process holds its writer lease"
-                    .into(),
-            });
+            return Err(unavailable(
+                "this lake is open read-only here; another process holds its writer lease",
+            ));
         };
         // Nothing is appended while the projection is behind the log: a
         // fold that failed after its events were durable is done again
@@ -419,10 +419,8 @@ impl Lake {
             .fold(w.format, u32::max);
         let mut events = Vec::with_capacity(drafts.len());
         let mut stored: Vec<CanonicalEvent> = Vec::with_capacity(drafts.len());
-        let (mut prev_pos, mut prev_hash) = match &w.tip {
-            Some((p, h)) => (Some(*p), h.clone()),
-            None => (None, Digest::zero()),
-        };
+        let mut prev_pos = head;
+        let mut prev_hash = w.tip.as_ref().map_or_else(Digest::zero, |(_, h)| h.clone());
         for d in drafts {
             let position = prev_pos.map_or(Position::GENESIS, Position::next);
             // Position 0 is written before any lease exists in the lake.
@@ -521,17 +519,12 @@ impl Lake {
         for (ty, m) in &moves {
             let decl = w.ontology.ty(ty)?.clone();
             for (from, to) in m {
-                let r = match staged.record(view, ty, from)? {
-                    Some(r) => r,
-                    None => {
-                        return Err(Error::Unavailable {
-                            message: format!(
-                                "the migration at position {} moves `{ty}` `{from}`, which the \
-                                 lake does not hold",
-                                e.position
-                            ),
-                        });
-                    }
+                let Some(r) = staged.record(view, ty, from)? else {
+                    return Err(unavailable(format!(
+                        "the migration at position {} moves `{ty}` `{from}`, which the lake does \
+                         not hold",
+                        e.position
+                    )));
                 };
                 let fields = crate::rekey::rewritten(&decl, &r.fields, &moves);
                 moved.push((
@@ -776,23 +769,18 @@ impl Lake {
             } => {
                 let before = w.ontology.ty(&migration.to.name)?.clone();
                 let records = staged_scan(view, staged, &migration.to.name)?;
-                w.ontology.put(
-                    Declaration::Type(migration.to.clone()),
-                    *version,
-                    Some(schema_hash.clone()),
-                );
                 let decl = Declaration::Type(migration.to.clone());
+                w.ontology
+                    .put(decl.clone(), *version, Some(schema_hash.clone()));
                 projection.put_declaration(&decl, *version, Some(schema_hash), e.position)?;
                 for r in records.into_iter().filter(|r| !r.is_ended()) {
                     let converted = shape::migrate_record(&before, migration, &r.fields)
-                        .map_err(|err| Error::Unavailable {
-                            message: err.to_string(),
-                        })?
-                        .ok_or_else(|| Error::Unavailable {
-                            message: format!(
+                        .map_err(|err| unavailable(err.to_string()))?
+                        .ok_or_else(|| {
+                            unavailable(format!(
                                 "the migration at position {} cannot convert `{}` `{}`",
                                 e.position, r.ty, r.key
-                            ),
+                            ))
                         })?;
                     let mut meta = BTreeMap::new();
                     for (old, meta_of) in &r.meta {
@@ -833,14 +821,10 @@ impl Lake {
                     record::apply(&w.ontology, before.as_ref(), e, &w.settings, &mut outputs)?;
                 if let Some(after) = after {
                     if ty.as_str() == SETTING_TYPE {
-                        match (after.retired, after.fields.get("value")) {
-                            (false, Some(v)) => {
-                                w.settings.insert(key.to_string(), v.clone());
-                            }
-                            _ => {
-                                w.settings.remove(key.as_str());
-                            }
-                        }
+                        match after.fields.get("value").filter(|_| !after.retired) {
+                            Some(v) => w.settings.insert(key.to_string(), v.clone()),
+                            None => w.settings.remove(key.as_str()),
+                        };
                     }
                     projection.put_record(&after)?;
                     self.index_vectors(&w.ontology, &after)?;
@@ -900,29 +884,25 @@ impl Lake {
                 staged
                     .outputs
                     .insert((seam.clone(), input.clone()), output.clone());
-                if let Some((ty, key, name)) = field {
-                    let record = staged.record(view, ty, key)?;
-                    let next = match record {
-                        Some(r) => {
-                            let mut outputs = Outputs {
-                                view,
-                                staged: Some(&staged.outputs),
-                                due: Some(&mut w.due),
-                            };
-                            record::fill(
-                                &w.ontology,
-                                &r,
-                                name,
-                                seam,
-                                input,
-                                output,
-                                e,
-                                &w.settings,
-                                &mut outputs,
-                            )?
-                        }
-                        None => None,
+                if let Some((ty, key, name)) = field
+                    && let Some(r) = staged.record(view, ty, key)?
+                {
+                    let mut outputs = Outputs {
+                        view,
+                        staged: Some(&staged.outputs),
+                        due: Some(&mut w.due),
                     };
+                    let next = record::fill(
+                        &w.ontology,
+                        &r,
+                        name,
+                        seam,
+                        input,
+                        output,
+                        e,
+                        &w.settings,
+                        &mut outputs,
+                    )?;
                     if let Some(next) = next {
                         projection.put_record(&next)?;
                         self.index_vectors(&w.ontology, &next)?;
@@ -991,16 +971,13 @@ impl Lake {
         through: Option<Position>,
     ) -> Result<lakelands_api::Verification> {
         let from = from.unwrap_or(Position::GENESIS);
-        let (mut before, mut known): (Option<(Position, Digest)>, Option<Timestamp>) =
-            if from == Position::GENESIS {
-                (None, None)
-            } else {
-                let e = self.read_events(Position(from.0 - 1), 1)?;
-                (
-                    e.first().map(|e| (e.position, e.hash.clone())),
-                    e.first().map(|e| e.known_at),
-                )
-            };
+        let prev = if from == Position::GENESIS {
+            None
+        } else {
+            self.read_events(Position(from.0 - 1), 1)?.pop()
+        };
+        let mut before = prev.as_ref().map(|e| (e.position, e.hash.clone()));
+        let mut known = prev.map(|e| e.known_at);
         let segments = self.engine.segments()?;
         let mut last = None;
         let mut last_v = 0;
@@ -1012,26 +989,22 @@ impl Lake {
                 log::check_link(before.as_ref().map(|(p, h)| (p, h)), &e)?;
                 // Versions go only upward (`docs/log-format.md` §6).
                 if e.v < last_v {
-                    return Err(Error::Unavailable {
-                        message: format!(
-                            "the log is damaged at position {}: it is written in format {} after \
+                    return Err(unavailable(format!(
+                        "the log is damaged at position {}: it is written in format {} after \
                          an event in format {last_v}",
-                            e.position, e.v
-                        ),
-                    });
+                        e.position, e.v
+                    )));
                 }
                 last_v = e.v;
                 // `known_at` never goes back (`docs/log-format.md` §1.3).
                 if let Some(k) = known
                     && e.known_at < k
                 {
-                    return Err(Error::Unavailable {
-                        message: format!(
-                            "the log is damaged at position {}: its known_at {} is before the \
+                    return Err(unavailable(format!(
+                        "the log is damaged at position {}: its known_at {} is before the \
                              {k} of the event before it",
-                            e.position, e.known_at
-                        ),
-                    });
+                        e.position, e.known_at
+                    )));
                 }
                 known = Some(e.known_at);
                 if let EventBody::Checkpoint {
@@ -1064,16 +1037,15 @@ impl Lake {
     /// along the log (`docs/log-format.md` §1.3).
     pub fn position_at(&self, t: Timestamp) -> Result<Option<Position>> {
         let head = self.head();
-        let known_at = |p: u64| -> Result<Timestamp> {
-            self.read_events(Position(p), 1)?
+        let known_at =
+            |p: u64| -> Result<Timestamp> {
+                self.read_events(Position(p), 1)?
                 .first()
                 .map(|e| e.known_at)
-                .ok_or_else(|| Error::Unavailable {
-                    message: format!(
+                .ok_or_else(|| unavailable(format!(
                         "the log ends before position {p}, which is at or before the head {head}"
-                    ),
-                })
-        };
+                    )))
+            };
         if known_at(0)? > t {
             return Ok(None);
         }
@@ -1157,9 +1129,10 @@ impl Lake {
     /// Seal the active segment and write the checkpoint that opens the next.
     pub fn checkpoint(&self) -> Result<Position> {
         let mut w = self.writer();
-        let lease = w.lease.clone().ok_or_else(|| Error::Unavailable {
-            message: "this lake is open read-only here".into(),
-        })?;
+        let lease = w
+            .lease
+            .clone()
+            .ok_or_else(|| unavailable("this lake is open read-only here"))?;
         // A segment is sealed only over events the projection has folded.
         if w.behind {
             self.refold(&mut w)?;
@@ -1193,9 +1166,7 @@ impl Lake {
     pub fn compact(&self) -> Result<lakelands_api::write::CompactReport> {
         let w = self.writer();
         if w.lease.is_none() {
-            return Err(Error::Unavailable {
-                message: "this lake is open read-only here".into(),
-            });
+            return Err(unavailable("this lake is open read-only here"));
         }
         let reclaimed = self.engine.projection().compact()?;
         Ok(lakelands_api::write::CompactReport {
@@ -1244,9 +1215,7 @@ impl Drop for Lake {
 }
 
 fn broken(at: Position, what: String) -> Error {
-    Error::Unavailable {
-        message: format!("the checkpoint at position {at} is broken: {what}"),
-    }
+    unavailable(format!("the checkpoint at position {at} is broken: {what}"))
 }
 
 /// A checkpoint's own claims (`docs/log-format.md` §2.6, §4.3): it follows
@@ -1295,25 +1264,15 @@ fn check_checkpoint(
 
 fn check_segments(listed: &[SegmentDigest], kept: &[SegmentDigest], at: Position) -> Result<()> {
     for s in listed {
-        match kept.iter().find(|k| k.first == s.first) {
-            Some(k) if k == s => {}
-            Some(_) => {
-                return Err(Error::Unavailable {
-                    message: format!(
-                        "the segment from position {} differs from what the checkpoint at {at} recorded",
-                        s.first
-                    ),
-                });
-            }
-            None => {
-                return Err(Error::Unavailable {
-                    message: format!(
-                        "the segment from position {} is missing; the checkpoint at {at} records it",
-                        s.first
-                    ),
-                });
-            }
-        }
+        let why = match kept.iter().find(|k| k.first == s.first) {
+            Some(k) if k == s => continue,
+            Some(_) => format!("differs from what the checkpoint at {at} recorded"),
+            None => format!("is missing; the checkpoint at {at} records it"),
+        };
+        return Err(unavailable(format!(
+            "the segment from position {} {why}",
+            s.first
+        )));
     }
     Ok(())
 }
@@ -1347,14 +1306,12 @@ impl Iterator for Pages<'_> {
 
     fn next(&mut self) -> Option<Result<Vec<Event>>> {
         let at = self.at.take()?;
-        match self.lake.read_events(at, PAGE) {
-            Ok(page) => {
-                let last = page.last()?;
-                self.at = Some(last.position.next());
-                Some(Ok(page))
-            }
-            Err(e) => Some(Err(e)),
-        }
+        let page = match self.lake.read_events(at, PAGE) {
+            Ok(page) => page,
+            Err(e) => return Some(Err(e)),
+        };
+        self.at = Some(page.last()?.position.next());
+        Some(Ok(page))
     }
 }
 
@@ -1418,11 +1375,6 @@ pub struct Staged {
 }
 
 impl Staged {
-    /// A record written earlier in this append.
-    pub fn get(&self, ty: &TypeName, key: &RecordKey) -> Option<&StoredRecord> {
-        self.records.get(&(ty.clone(), key.clone()))
-    }
-
     /// A record as this append leaves it so far: written earlier in it,
     /// or else as the projection holds it. What the append wrote always
     /// comes first; a read kept from before it never answers over it.
@@ -1432,7 +1384,7 @@ impl Staged {
         ty: &TypeName,
         key: &RecordKey,
     ) -> Result<Option<StoredRecord>> {
-        match self.get(ty, key) {
+        match self.records.get(&(ty.clone(), key.clone())) {
             Some(r) => Ok(Some(r.clone())),
             None => self.reads.get(view, ty, key),
         }
