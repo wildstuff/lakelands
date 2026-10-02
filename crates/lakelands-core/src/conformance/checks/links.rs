@@ -61,7 +61,7 @@ check!(
 check!(
     /// Links go through their own doors.
     OWN_DOORS = link_records_go_through_the_link_doors_and_ingest_only,
-    "035 and §2.3: upsert and retire refuse a link type's records, a caller cannot declare a link type, the link door refuses a relation whose links arrive by ingest, and ingest writes them"
+    "035 and §2.3: upsert and retire refuse a link type's records, before a retry under the key of a link; a caller cannot declare a link type; the link door refuses a relation whose links arrive by ingest, before `from` among the fields, `from` among the fields before a retry, and a retry before the record checks (035, extended); and ingest writes them"
 );
 
 check!(
@@ -395,6 +395,42 @@ async fn link_records_go_through_the_link_doors_and_ingest_only(
         matches!(reason(&retired), Some(Refusal::WrongDoor)),
         "retire on a link type is the wrong door; it answered {retired:?}"
     );
+    // In link's order (035, extended): `from` among the fields before the
+    // retry, the retry before the record checks; and an ordinary door
+    // refuses a link type before it looks for a retry.
+    let once = WriteOpts {
+        idempotency_key: Some("once".into()),
+        ..WriteOpts::default()
+    };
+    let link_once = |who: Principal, fields: Value| {
+        let (cat, once) = (cat.clone(), once.clone());
+        async move {
+            let (i2, p1, r) = ("i2".into(), "p1".into(), "approved_by".into());
+            cat.link(&who, &"invoice".into(), &i2, &r, &p1, patch(fields), once)
+                .await
+        }
+    };
+    let first = link_once(own.clone(), json!({}))
+        .await
+        .must("linking i2 to p1 once")?;
+    let bare = Principal {
+        grants: Default::default(),
+        ..own.clone()
+    };
+    let retry = link_once(bare, json!({})).await;
+    let named = link_once(own.clone(), json!({"from": "i2"})).await;
+    let i2_p1 = link_key(&"i2".into(), &"p1".into());
+    let upsert = cat
+        .upsert(own, &LT.into(), &i2_p1, patch(json!({"to": "p1"})), once)
+        .await;
+    ensure!(
+        retry.as_ref().ok() == Some(&first)
+            && matches!(refused_on(&named), Some(("from", Refusal::Invalid { .. })))
+            && matches!(reason(&upsert), Some(Refusal::WrongDoor)),
+        "a retry of a link without grants answers {retry:?} (the first was {first:?}); one \
+         naming `from` answers {named:?}; an upsert of its link record under its key \
+         answers {upsert:?}"
+    );
     let forged = type_decl(
         "sys.link.invoice.forged",
         vec![field("from", StorageKind::Text)],
@@ -421,10 +457,25 @@ async fn link_records_go_through_the_link_doors_and_ingest_only(
             WriteOpts::default(),
         )
         .await;
+    // `from` among the fields too: the authority is judged first.
+    let (i1, p2, vouched) = ("i1".into(), "p2".into(), "vouched_by".into());
+    let named = patch(json!({"from": "i1"}));
+    let both = cat
+        .link(
+            own,
+            &"invoice".into(),
+            &i1,
+            &vouched,
+            &p2,
+            named,
+            WriteOpts::default(),
+        )
+        .await;
     ensure!(
-        matches!(reason(&by_door), Some(Refusal::WrongDoor)),
-        "`vouched_by` takes its links from a source, so the link door refuses it; it \
-         answered {by_door:?}"
+        matches!(reason(&by_door), Some(Refusal::WrongDoor))
+            && matches!(reason(&both), Some(Refusal::WrongDoor)),
+        "`vouched_by` takes its links from a source, so the link door refuses it, before \
+         `from` among the fields; it answered {by_door:?}, and with `from` {both:?}"
     );
     let vt = link_type_name(&"invoice".into(), &"vouched_by".into());
     l.ingest(

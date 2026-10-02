@@ -129,7 +129,7 @@ check!(
 check!(
     /// Every door refuses a view alike.
     REFUSED_ALIKE = every_door_that_writes_or_holds_a_record_refuses_a_view_alike,
-    "018, extended (lakelands#370): upsert, retire, link, unlink, ingest, propose, restrict and unrestrict each refuse a view as invalid naming it, as upsert does; declaring a verb on a record of a view is refused naming both, while a verb on the view's type that reaches outside is taken"
+    "018, extended (lakelands#370): upsert, retire, link, unlink, ingest, propose, restrict and unrestrict each refuse a view as invalid naming it, as upsert does, before the grants; declaring a verb on a record of a view is refused naming both, while a verb on the view's type that reaches outside is taken"
 );
 
 /// The source type, its `partner` and `amount` written by `authority`.
@@ -1175,6 +1175,13 @@ async fn every_door_that_writes_or_holds_a_record_refuses_a_view_alike(
         "pt",
         cat.retire(own, &pt, &p1, opts()).await.map(drop),
     );
+    // Before the grants: a principal with none is told it is a view.
+    let nobody = lakelands_api::Principal {
+        grants: Default::default(),
+        ..own.clone()
+    };
+    let bare = cat.retire(&nobody, &pt, &p1, opts()).await;
+    must("retire with no grant", "pt", bare.map(drop));
     let r = "r".into();
     let link = cat.link(own, &pt, &p1, &r, &p1, fields(), opts()).await;
     must("link", "pt", link.map(drop));

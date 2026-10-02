@@ -20,6 +20,12 @@ use crate::conformance::fixture::{
 };
 
 check!(
+    /// The record checks refuse in their order.
+    RECORD_CHECKS_IN_ORDER = a_write_breaking_two_record_checks_is_refused_by_the_earlier,
+    "016, extended (lakelands#338): a record write that breaks two adjacent record checks is refused by the earlier: the type before an empty patch, the key before the fields, field by field in name order with the door before the grant, the grant before the value, the value before the key fill, the key's agreement before a reference, a reference before the version, the version before a required field; a retry answers its first outcome before any of them"
+);
+
+check!(
     /// Writer A's rewrite leaves writer B's field standing.
     REWRITE_LEAVES_OTHER_WRITERS_FIELDS = a_rewrite_by_one_writer_leaves_another_writers_fields_alone,
     "012: a patch is merged per field, so a writer that sends only its own fields cannot erase anyone else's"
@@ -343,6 +349,152 @@ async fn a_patch_with_an_undeclared_field_is_refused_whole(
     ensure!(
         matches!(missing, Err(Error::NotFound { .. })),
         "the refused patch to the new key `m2` created the record anyway: {missing:?}"
+    );
+    Ok(())
+}
+
+async fn a_write_breaking_two_record_checks_is_refused_by_the_earlier(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use lakelands_api::write::WriteOpts;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    let required = |name: &str| lakelands_api::ontology::FieldDecl {
+        required: true,
+        ..field(name, StorageKind::Text)
+    };
+    let mut part = field("part", StorageKind::Reference);
+    part.ty.target = Some("o".into());
+    let src = crate::conformance::fixture::sourced("src", StorageKind::Number);
+    let mut o = type_decl(
+        "o",
+        vec![
+            required("code"),
+            required("need"),
+            field("qty", StorageKind::Number),
+            src,
+            part,
+        ],
+    );
+    o.key = vec!["code".into()];
+    l.declare(o).await?;
+    for k in ["k2", "k3"] {
+        l.upsert("o", k, json!({"code": k, "need": "n"})).await?;
+    }
+    // Writes `code`, `need` and `part`; neither `qty` nor `src`.
+    let narrow = field_writer(store.as_ref(), "narrow", "o", &["code", "need", "part"]);
+    // type, key, patch, an expected version (0: none), as `narrow`, what
+    // is due: the earlier of the two checks each row breaks.
+    let rows = [
+        ("none", "k", "{}", 0, false, "not_found"),
+        ("o", "", r#"{"bogus": 1}"#, 0, false, "invalid"),
+        ("o", "k1", r#"{"src": 1}"#, 0, true, "wrong_door src"),
+        (
+            "o",
+            "k1",
+            r#"{"qty": 1, "zzz": 1}"#,
+            0,
+            true,
+            "not_granted qty",
+        ),
+        ("o", "k1", r#"{"qty": "x"}"#, 0, true, "not_granted qty"),
+        (
+            "o",
+            "a:b",
+            r#"{"qty": "x", "need": "n"}"#,
+            0,
+            false,
+            "constraint qty",
+        ),
+        (
+            "o",
+            "k1",
+            r#"{"code": "x", "need": "n", "part": "none"}"#,
+            0,
+            false,
+            "invalid",
+        ),
+        (
+            "o",
+            "k2",
+            r#"{"part": "none"}"#,
+            9,
+            false,
+            "constraint part",
+        ),
+        ("o", "k3", r#"{"need": null}"#, 9, false, "conflict"),
+    ];
+    let head = store.head().await.must("reading the head")?;
+    let mut red = Vec::new();
+    for (ty, key, fields, v, as_narrow, due) in rows {
+        let who = if as_narrow { &narrow } else { own };
+        let expected_version = (v > 0).then_some(lakelands_api::Version(v));
+        let opts = WriteOpts {
+            expected_version,
+            ..WriteOpts::default()
+        };
+        let patch = serde_json::from_str(fields).expect("a patch");
+        let got = cat.upsert(who, &ty.into(), &key.into(), patch, opts).await;
+        let e = got
+            .as_ref()
+            .err()
+            .map(|e| serde_json::to_value(e).unwrap_or_default());
+        let kind = e
+            .as_ref()
+            .map(|e| e["reason"]["refusal"].as_str().or(e["error"].as_str()));
+        let field = e
+            .as_ref()
+            .and_then(|e| e["field"].as_str())
+            .map(|f| format!(" {f}"));
+        let answered = format!(
+            "{}{}",
+            kind.flatten().unwrap_or("?"),
+            field.unwrap_or_default()
+        );
+        if answered != due {
+            red.push(format!(
+                "{ty} `{key}` {fields}: `{due}` was due; it answered {got:?}"
+            ));
+        }
+    }
+    head_unmoved(
+        store.as_ref(),
+        head,
+        "the writes breaking two record checks",
+    )
+    .await?;
+    // A retry answers before any record check: the same writer, now with
+    // no grant, sends an empty patch under the first write's key.
+    let once = WriteOpts {
+        idempotency_key: Some("once".into()),
+        ..WriteOpts::default()
+    };
+    let first = json!({"code": "k4", "need": "n"});
+    let applied = cat
+        .upsert(
+            own,
+            &"o".into(),
+            &"k4".into(),
+            crate::conformance::fixture::patch(first),
+            once.clone(),
+        )
+        .await;
+    let bare = lakelands_api::Principal {
+        grants: Default::default(),
+        ..own.clone()
+    };
+    let retried = cat
+        .upsert(&bare, &"o".into(), &"k4".into(), Default::default(), once)
+        .await;
+    if applied.is_err() || retried != applied {
+        red.push(format!(
+            "a retry under `once` answered {retried:?}; the first write {applied:?}"
+        ));
+    }
+    ensure!(
+        red.is_empty(),
+        "a write breaking two record checks is refused by the earlier: {}",
+        red.join("; ")
     );
     Ok(())
 }

@@ -72,6 +72,7 @@ pub const ALL: &[Check] = &[
     fields::UNGRANTED_FIELD_REFUSES_WHOLE_PATCH,
     fields::SPARSE_PATCH,
     fields::UNDECLARED_FIELD_REFUSES_WHOLE_PATCH,
+    fields::RECORD_CHECKS_IN_ORDER,
     positions::EVERY_REPLY_CARRIES_ITS_POSITION,
     positions::AS_OF_SEES_THE_STATE_THERE,
     positions::AS_OF_BEFORE_A_WRITE,

@@ -77,3 +77,66 @@ no field is judged after the duplicate test, on purpose. For a key the
 lake holds live, it changes nothing, so it counts as a duplicate, as
 any re-import that changes nothing does. For a key the lake does not
 hold live, it is refused as invalid, as an empty `upsert` is.
+
+## Extended: the order of refusals (lakelands#338)
+
+When a write breaks more than one rule, the caller is told the first
+the store checks, and a host or a model acts on that answer. So the
+order is part of the contract, stated here for the record writes and
+in the record of each other door, and held by the conformance suite: a
+request that breaks two adjacent rules is answered with the earlier.
+Where the two refusals cannot be told apart by kind, field and the
+names a refusal must mention (015, extended), the order is stated and
+not checked.
+
+**Every write door** opens and closes the same way:
+
+1. **The lake.** A principal of another lake is `not_granted`.
+2. **The context.** A depth above the lake's ceiling is `too_deep`
+   (021, extended). It reads nothing and comes before the writer is
+   taken.
+3. *The door's own checks, in the order below.* A door that takes an
+   idempotency key answers a retry with the first write's outcome where
+   its order names "the retry"; nothing it checks after that point can
+   refuse a retry.
+4. **The append**, under the writer: a handle opened read-only is
+   `unavailable`; a host's cause past the head is `invalid`; a cause
+   that names a firing is `too_deep` when the depth is above that
+   trigger's ceiling (021, extended).
+
+**The record checks** decide every record a write makes, by `upsert`, a
+verb's effect, a proposal and its acceptance, and `ingest`:
+
+1. the type is declared: `not_found`;
+2. the patch is not empty: `invalid`;
+3. the key is not empty and holds no NUL: `invalid`;
+4. the door and the grants: a view is `invalid` (018, extended); then
+   field by field, in name order, a field the type does not declare is
+   `invalid`, one another authority writes is `wrong_door`, and one the
+   principal may not write is `not_granted`, each naming the field, so
+   the first offending field by name is the one named;
+5. every value fits its field, in name order: `constraint`, naming it;
+6. on a create, the key fields the patch leaves out are filled from the
+   key: a key that does not split into them is `invalid`; a filled
+   field is granted and fits as in 4 and 5;
+7. the key and the key fields agree: `invalid`;
+8. every reference names a live record, in name order: `constraint`;
+9. the expected version: `conflict`;
+10. every required field holds a value after the write: `constraint`;
+11. a `sys.aging` rule or a `sys.setting` index setting is well formed:
+    `invalid`, naming the field.
+
+What the request says on its own comes first (1 to 5), then what it
+says against the head (6 to 9), then the record it would make (10 and
+11). Steps 2 and 3, and 6 and 7, answer the same kind with no field, so
+their order is stated, not checked.
+
+**`upsert`**: the lake, the context, a link type at the ordinary door
+(`wrong_door`), the retry, the record checks, the append.
+
+**`retire`**: the lake, the context, a link type at the ordinary door
+(`wrong_door`), the retry, the type is declared (`not_found`), it is
+not a view (`invalid`), the principal may write every field of it
+(`not_granted`), the record is live (`not_found`), the expected version
+(`conflict`), the append.
+
