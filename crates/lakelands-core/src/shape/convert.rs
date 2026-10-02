@@ -41,6 +41,7 @@ use serde_json::Value;
 
 use super::{ShapeError, schema_hash};
 use crate::canonical;
+use crate::value::{check_geo, is_decimal};
 
 /// The outcome of converting one value to a new field type.
 #[derive(Clone, Debug, PartialEq)]
@@ -103,7 +104,7 @@ pub fn fits(ty: &FieldType, value: &Value) -> bool {
             items.iter().all(Value::is_number)
                 && ty.dimensions.is_none_or(|d| items.len() == d as usize)
         }),
-        StorageKind::Geo => is_geometry(value),
+        StorageKind::Geo => check_geo(value).is_ok(),
     }
 }
 
@@ -346,16 +347,6 @@ impl Tally {
 
 // ---- the JSON forms ------------------------------------------------------
 
-/// `-?[0-9]+(\.[0-9]+)?`: the decimal form of log format §5.
-fn is_decimal(s: &str) -> bool {
-    let digits = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
-    let unsigned = s.strip_prefix('-').unwrap_or(s);
-    match unsigned.split_once('.') {
-        Some((int, frac)) => digits(int) && digits(frac),
-        None => digits(unsigned),
-    }
-}
-
 /// Standard base64 with padding.
 fn is_base64(s: &str) -> bool {
     let b = s.as_bytes();
@@ -367,11 +358,6 @@ fn is_base64(s: &str) -> bool {
         && b[..b.len() - pad]
             .iter()
             .all(|c| c.is_ascii_alphanumeric() || *c == b'+' || *c == b'/')
-}
-
-/// A GeoJSON geometry object, by the rule a patch is checked with.
-fn is_geometry(v: &Value) -> bool {
-    crate::value::check_geo(v).is_ok()
 }
 
 // ---- the conversions -----------------------------------------------------

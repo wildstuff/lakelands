@@ -56,7 +56,7 @@ use lakelands_core::rights::{self, Door};
 use lakelands_core::{invalid, links, shape, value};
 
 use crate::backed::Outputs;
-use crate::declare;
+use crate::declare::{self, invalid_field};
 use crate::lake::{AGING_RULE_TYPE, Lake, SETTING_TYPE, Writer, every, find_proposal};
 use crate::log::{self, Draft};
 use crate::record;
@@ -99,16 +99,6 @@ fn one_per(c: lakelands_api::ontology::Cardinality) -> (bool, bool) {
         matches!(c, ManyToOne | OneToOne),
         matches!(c, OneToMany | OneToOne),
     )
-}
-
-/// A refusal of `field`'s value as not well-formed.
-fn invalid_field(field: FieldName, message: impl Into<String>) -> Error {
-    Error::Refused {
-        field: Some(field),
-        reason: Refusal::Invalid {
-            message: message.into(),
-        },
-    }
 }
 
 /// A refusal of what a constraint does not allow, at `field` if one is named.
@@ -384,12 +374,10 @@ pub fn check_values(
 ) -> Result<Patch> {
     let mut out = Patch::new();
     for (name, v) in patch {
-        let f = fields.iter().find(|f| &f.name == name).ok_or_else(|| {
-            invalid_field(
-                name.clone(),
-                format!("`{}` has no field `{name}`", decl.name),
-            )
-        })?;
+        let f = fields
+            .iter()
+            .find(|f| &f.name == name)
+            .ok_or_else(|| invalid_field(name, format!("`{}` has no field `{name}`", decl.name)))?;
         let vt =
             f.ty.value_type
                 .as_ref()
@@ -740,14 +728,14 @@ impl Call<'_> {
         record::check_required(decl, &after.fields)?;
         if ty.as_str() == AGING_RULE_TYPE {
             let rule = crate::aging::check(&w.ontology, &after.fields)
-                .map_err(|(field, message)| invalid_field(field, message))?;
+                .map_err(|(field, message)| invalid_field(&field, message))?;
             crate::aging::check_authority(who, &w.ontology, &rule)?;
         }
         if ty.as_str() == SETTING_TYPE {
             let decl = lakelands_api::seam::index_setting_type(key.as_str())
                 .and_then(|t| w.ontology.ty(&TypeName::from(t)).ok());
             lakelands_api::seam::check_index_setting(key.as_str(), after.fields.get("value"), decl)
-                .map_err(|(field, message)| invalid_field(field, message))?;
+                .map_err(|(field, message)| invalid_field(&field, message))?;
         }
         Ok(RecordPlan {
             draft,
@@ -937,7 +925,7 @@ impl Call<'_> {
         for name in [links::FROM, links::TO] {
             if fields.contains_key(name) {
                 return Err(invalid_field(
-                    name.into(),
+                    &name.into(),
                     format!("a link's `{name}` is given as `key` and `to`, not among its fields"),
                 ));
             }
@@ -1791,7 +1779,7 @@ impl Call<'_> {
         let mut t = self.lake.writer().ontology.ty(ty)?.clone();
         if t.fields.iter().any(|f| f.name == field.name) {
             return Err(invalid_field(
-                field.name.clone(),
+                &field.name,
                 format!("`{ty}` already has a field `{}`", field.name),
             ));
         }
@@ -1838,7 +1826,7 @@ impl Call<'_> {
             for k in &m.to.key {
                 if !m.to.fields.iter().any(|f| &f.name == k && f.required) {
                     return Err(invalid_field(
-                        k.clone(),
+                        k,
                         format!(
                             "`{}`: the key field `{k}` is a required field of the type",
                             m.to.name

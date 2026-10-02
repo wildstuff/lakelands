@@ -88,7 +88,7 @@ impl std::error::Error for EvalError {}
 /// The result of an evaluation.
 pub type Result<T> = std::result::Result<T, EvalError>;
 
-fn err<T>(msg: impl Into<String>) -> Result<T> {
+pub(crate) fn err<T>(msg: impl Into<String>) -> Result<T> {
     Err(EvalError(msg.into()))
 }
 

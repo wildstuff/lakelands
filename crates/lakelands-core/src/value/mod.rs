@@ -285,8 +285,8 @@ fn check_kind(value: &Value, ty: &FieldType) -> Result<Value, ValueError> {
     }
 }
 
-/// `-?[0-9]+(\.[0-9]+)?`.
-fn is_decimal(s: &str) -> bool {
+/// `-?[0-9]+(\.[0-9]+)?`: the decimal form of log format §5.
+pub(crate) fn is_decimal(s: &str) -> bool {
     let digits = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
     let unsigned = s.strip_prefix('-').unwrap_or(s);
     match unsigned.split_once('.') {
