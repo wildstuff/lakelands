@@ -94,6 +94,7 @@ macro_rules! door_checks {
             a_masked_field_is_named_but_its_value_is_absent,
             the_tools_follow_the_grants,
             a_verb_tool_says_what_its_risk_does,
+            a_view_is_never_migrated,
             nothing_that_never_acts_is_declared_on_a_view,
             a_relation_on_a_view_is_derived,
             a_tools_key_says_what_to_pass,
@@ -1403,6 +1404,60 @@ pub async fn a_relation_on_a_view_is_derived(store: Arc<dyn LakeStore>) {
         );
     }
     assert_eq!(f.head().await, head, "nothing is appended");
+}
+
+/// A migration reshapes stored records, and a view stores none: turning
+/// a stored type into a view, or a view into a stored type, is refused at
+/// the preflight, naming the type, on the mock as on the store.
+pub async fn a_view_is_never_migrated(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let stored = |name: &str| TypeDecl {
+        name: name.into(),
+        key: vec!["partner".into()],
+        fields: vec![text("partner"), text("count")],
+        field_meta: true,
+        ..TypeDecl::named(name)
+    };
+    let view = |name: &str| TypeDecl {
+        view: Some(Box::new(ViewDecl {
+            source: INVOICE.into(),
+            r#where: None,
+            group_by: vec!["partner".into()],
+            measures: vec![Measure {
+                name: "count".into(),
+                expr: "count()".into(),
+            }],
+            params: Default::default(),
+            merge: Default::default(),
+        })),
+        ..stored(name)
+    };
+    for d in [stored("tally"), view("partner_totals")] {
+        f.catalog
+            .declare(owner, Declaration::Type(d))
+            .await
+            .expect("declared");
+    }
+    for (name, to) in [
+        ("tally", view("tally")),
+        ("partner_totals", stored("partner_totals")),
+    ] {
+        let m = lakelands_api::write::Migration {
+            to,
+            renames: vec![],
+        };
+        let e = f
+            .catalog
+            .migrate(owner, m)
+            .await
+            .expect_err("a view is never migrated");
+        assert!(
+            matches!(&e, Error::Refused { reason: Refusal::Invalid { message }, .. }
+                if message.contains(name)),
+            "{e:?}"
+        );
+    }
 }
 
 /// A `low`-risk verb whose effect writes authored fields runs at once.

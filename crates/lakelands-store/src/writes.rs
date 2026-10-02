@@ -1831,6 +1831,21 @@ impl Call<'_> {
         m: &Migration,
     ) -> Result<(MigrationReport, Vec<lakelands_api::write::Rekey>)> {
         let before = w.ontology.ty(&m.to.name)?.clone();
+        // A view is computed and never stored, so no migration turns a
+        // stored type into one, or one into a stored type, or reshapes
+        // one: that is retiring the type and declaring the other.
+        if before.view.is_some() || m.to.view.is_some() {
+            return Err(invalid(format!(
+                "`{}` {}; a migration reshapes a stored type, and a view is retired and \
+                 declared, never migrated",
+                m.to.name,
+                if before.view.is_some() {
+                    "is a view"
+                } else {
+                    "would become a view"
+                }
+            )));
+        }
         if !before.key.is_empty() && m.to.key.is_empty() {
             return Err(invalid(format!(
                 "the migration takes every key field of `{}` away, and leaves no rule to make \

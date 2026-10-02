@@ -11,7 +11,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, declare, doors, field, head_unmoved, owner, reason, type_decl, value,
+    Lake, Must, count_view, declare, doors, field, head_unmoved, owner, reason, type_decl, value,
 };
 
 check!(
@@ -195,6 +195,69 @@ check!(
     DROPPED_REPORTED = the_preflight_names_every_dropped_field_and_an_empty_type_migrates_cleanly,
     "027 and MigrationReport.dropped: the preflight names every removed field with how many values it discards, and a type with no records reports nothing to lose"
 );
+
+check!(
+    /// A view is never migrated.
+    VIEW_NOT_MIGRATED = a_view_is_never_migrated,
+    "027, extended: a migration reshapes stored records, and a view stores none, so a migration that would turn a stored type into a view, or a view into a stored type, is refused as invalid naming the type, at the preflight or when applied; nothing is appended"
+);
+
+async fn a_view_is_never_migrated(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl(
+        "invoice",
+        vec![
+            field("partner", StorageKind::Text),
+            field("amount", StorageKind::Decimal),
+        ],
+    ))
+    .await?;
+    let mut tally = type_decl(
+        "tally",
+        vec![
+            field("partner", StorageKind::Text),
+            field("n", StorageKind::Number),
+        ],
+    );
+    tally.key = vec!["partner".into()];
+    l.declare(tally.clone()).await?;
+    l.upsert("tally", "zz", json!({"partner": "zz", "n": 1}))
+        .await?;
+    l.declare(count_view("pt", "invoice", "partner")).await?;
+    let mut stored_pt = type_decl(
+        "pt",
+        vec![
+            field("partner", StorageKind::Text),
+            field("n", StorageKind::Number),
+        ],
+    );
+    stored_pt.key = vec!["partner".into()];
+    for (ty, to) in [
+        ("tally", count_view("tally", "invoice", "partner")),
+        ("pt", stored_pt),
+    ] {
+        let m = Migration {
+            to,
+            renames: Vec::new(),
+        };
+        let before = store.head().await.must("reading the head")?;
+        let answer = match cat.migrate(own, m.clone()).await {
+            Err(e) => Err(e),
+            Ok(report) => cat
+                .migrate_apply(own, m, &report.data.report_id)
+                .await
+                .map(|_| ()),
+        };
+        ensure!(
+            matches!(reason(&answer), Some(Refusal::Invalid { message }) if message.contains(ty)),
+            "a migration of `{ty}` across a view and a stored type must be refused as invalid, \
+             naming `{ty}`; it answered {answer:?}"
+        );
+        head_unmoved(store.as_ref(), before, &format!("migrating `{ty}`")).await?;
+    }
+    Ok(())
+}
 
 async fn a_migration_removing_the_field_a_relation_walks_is_refused(
     store: Arc<dyn LakeStore>,

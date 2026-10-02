@@ -228,6 +228,7 @@ pub const ALL: &[Check] = &[
     derived_fields::FUNCTION_VERSION_RECOMPUTES,
     migrate::VIA_REMOVAL_REFUSED,
     migrate::DROPPED_REPORTED,
+    migrate::VIEW_NOT_MIGRATED,
     schema::REORDERED_FIELDS,
     aggregates::EMPTY_AGGREGATE,
     date_bucket::GROUPS,

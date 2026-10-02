@@ -1899,6 +1899,18 @@ fn risk_word(r: Risk) -> &'static str {
 fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationReport> {
     let ty = &m.to.name;
     let t = st.types.get(ty).ok_or_else(|| no_type(ty))?;
+    // As the store: a view is retired and declared, never migrated.
+    if t.decl.view.is_some() || m.to.view.is_some() {
+        return Err(invalid(format!(
+            "`{ty}` {}; a migration reshapes a stored type, and a view is retired and declared, \
+             never migrated",
+            if t.decl.view.is_some() {
+                "is a view"
+            } else {
+                "would become a view"
+            }
+        )));
+    }
     if t.decl.key != m.to.key {
         return Err(invalid(format!(
             "the in-memory mock does not re-key: `{ty}` keeps its key fields here"
