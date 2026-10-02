@@ -1022,26 +1022,44 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
     if lake.types.iter().any(|t| t.may.upsert || t.may.retire) || !lake.verbs.is_empty() {
         // Beside the record writes it may make, a writer may propose
         // declarations and migrations, which a reviewer holding the
-        // `schema` grant accepts.
-        let kinds = ["upsert", "retire", "call", "declare", "migrate"];
+        // `schema` grant accepts. Each kind of write has its own members,
+        // so a caller sees the shape the store reads.
+        let opts = json!({"type": "object", "properties": {
+            "expected_version": {"type": "integer", "minimum": 0},
+            "idempotency_key": {"type": "string"}}});
+        let kind = |write: &str, members: Value, required: &[&str]| {
+            let mut members = members;
+            members["write"] = json!({"const": write});
+            let mut required = required.to_vec();
+            required.insert(0, "write");
+            json!({"type": "object", "properties": members, "required": required})
+        };
+        let verbs = one_of(lake.verbs.iter().map(|v| v.name.to_string()));
+        let write = json!({"oneOf": [
+            kind("upsert", json!({"type": names(|t| t.may.upsert), "key": {"type": "string"},
+                                  "patch": {"type": "object",
+                                            "description": "The fields to write, as `<type>_upsert` takes them under `fields`."},
+                                  "opts": opts}), &["type", "key", "patch"]),
+            kind("retire", json!({"type": names(|t| t.may.retire), "key": {"type": "string"},
+                                  "opts": opts}), &["type", "key"]),
+            kind("call", json!({"verb": verbs, "key": {"type": "string",
+                                "description": "The record's key; left out for a verb called on its type."},
+                                "payload": {"type": "object"}, "opts": opts}), &["verb", "payload"]),
+            kind("declare", json!({"declarations": {"type": "array", "items": {"type": "object"}}}),
+                 &["declarations"]),
+            kind("migrate", json!({"migration": {"type": "object"}}), &["migration"]),
+        ]});
         out.push(ToolSpec {
             name: PROPOSE.into(),
             description: "Record a write as a proposal for review instead of applying it: a \
                 record write, a verb call, declarations (as apply takes them) or a migration \
-                (as migrate takes it); a declaration or migration is accepted by a reviewer \
-                holding the schema grant."
+                (as migrate takes it). A record write or a verb call needs the grants it would \
+                need applied: a proposal waits for review, it does not lift a grant. \
+                Declarations and a migration need no `schema` grant to propose; a reviewer \
+                holding it accepts them."
                 .into(),
             input_schema: obj(
-                props([
-                    (
-                        "write",
-                        json!({"type": "object", "properties": {
-                        "write": {"enum": kinds},
-                        "declarations": {"type": "array", "items": {"type": "object"}},
-                        "migration": {"type": "object"}}, "required": ["write"]}),
-                    ),
-                    ("why", json!({"type": "string"})),
-                ]),
+                props([("write", write), ("why", json!({"type": "string"}))]),
                 &["write", "why"],
             ),
             output_schema: outcome_schema(),

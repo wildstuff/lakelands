@@ -235,6 +235,12 @@ not doable from this session. The refusal itself was **clear**. But
 `propose` showed neither the shape of a record write nor that it never
 lifts a grant, which cost two calls. **Finding:** #351.
 
+Since #351, `propose`'s `write` has one schema per kind: an upsert takes
+`type`, `key` and `patch`, a call `verb` and `payload`. Its description
+says: "A record write or a verb call needs the grants it would need
+applied: a proposal waits for review, it does not lift a grant."
+Declarations and a migration still need no `schema` grant to propose.
+
 ### 4. A stale version
 
 `order_upsert {"key": "O-1", "fields": {"status": "on hold"}, "expected_version": 1}`:
