@@ -14,8 +14,9 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
-use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl};
+use lakelands_api::ontology::{FieldDecl, Measure, StorageKind, TypeDecl, ViewDecl};
 use lakelands_api::principal::TypeGrants;
+use lakelands_api::query::{Depth, Pattern, Projection, Start, Step, Walk};
 use lakelands_api::write::Declaration;
 use lakelands_api::{
     Access, Catalog, Committed, Error, FieldName, Find, Found, Get, Grants, LakeStore, Outcome,
@@ -254,6 +255,80 @@ pub fn type_decl(name: &str, fields: Vec<FieldDecl>) -> TypeDecl {
     }
 }
 
+/// A view's measure: `name`, computed as `expr`.
+pub fn measure(name: &str, expr: &str) -> Measure {
+    Measure {
+        name: FieldName::from(name),
+        expr: expr.into(),
+    }
+}
+
+/// A view `name` over `source`, keyed and grouped by `by`, declaring
+/// `fields` and computing `measures`, each a name and its expression.
+pub fn view_of(
+    name: &str,
+    source: &str,
+    by: &[&str],
+    fields: Vec<FieldDecl>,
+    measures: &[(&str, &str)],
+) -> TypeDecl {
+    let by: Vec<FieldName> = by.iter().map(|f| FieldName::from(*f)).collect();
+    TypeDecl {
+        key: by.clone(),
+        view: Some(Box::new(ViewDecl {
+            source: TypeName::from(source),
+            params: Vec::new(),
+            r#where: None,
+            group_by: by,
+            measures: measures.iter().map(|(n, e)| measure(n, e)).collect(),
+            merge: Vec::new(),
+        })),
+        ..type_decl(name, fields)
+    }
+}
+
+/// A view `name` counting the records of `source` by the text field `by`,
+/// into `n`.
+pub fn count_view(name: &str, source: &str, by: &str) -> TypeDecl {
+    let fields = vec![
+        field(by, StorageKind::Text),
+        field("n", StorageKind::Number),
+    ];
+    view_of(name, source, &[by], fields, &[("n", "count()")])
+}
+
+/// One hop over `relation`, in the direction `walk`.
+pub fn step(relation: &str, walk: Walk) -> Step {
+    Step {
+        relation: relation.into(),
+        walk,
+        ty: None,
+        filter: None,
+        depth: Depth::default(),
+    }
+}
+
+/// A pattern from the records of `ty`, or the one at `key`, over `steps`,
+/// answering `project`; no filter, order, limit or time axis.
+pub fn pattern(ty: &str, key: Option<&str>, steps: Vec<Step>, project: Projection) -> Pattern {
+    Pattern {
+        start: Start {
+            ty: ty.into(),
+            key: key.map(Into::into),
+            filter: None,
+            search: None,
+            params: Default::default(),
+        },
+        steps,
+        to: None,
+        project,
+        order_by: Vec::new(),
+        limit: None,
+        cursor: None,
+        at: ReadAt::default(),
+    }
+}
+
 /// Declares a type as `who`.
 pub async fn declare(cat: &dyn Catalog, who: &Principal, ty: TypeDecl) -> Result<Outcome, Failure> {
     let what = format!("declaring type `{}`", ty.name);
@@ -299,33 +374,13 @@ pub async fn recorded_outputs(
 /// the partner's `amount`s, as a field of kind `total`, and `invoices`
 /// their count.
 pub fn partner_totals(name: &str, total: StorageKind) -> TypeDecl {
-    use lakelands_api::ontology::{Measure, ViewDecl};
-    let measure = |name: &str, expr: &str| Measure {
-        name: FieldName::from(name),
-        expr: expr.into(),
-    };
-    TypeDecl {
-        key: vec![FieldName::from("partner")],
-        view: Some(Box::new(ViewDecl {
-            source: TypeName::from("invoice"),
-            r#where: None,
-            group_by: vec![FieldName::from("partner")],
-            measures: vec![
-                measure("total", "sum(amount)"),
-                measure("invoices", "count()"),
-            ],
-            params: Default::default(),
-            merge: Default::default(),
-        })),
-        ..type_decl(
-            name,
-            vec![
-                field("partner", StorageKind::Text),
-                field("total", total),
-                field("invoices", StorageKind::Number),
-            ],
-        )
-    }
+    let fields = vec![
+        field("partner", StorageKind::Text),
+        field("total", total),
+        field("invoices", StorageKind::Number),
+    ];
+    let measures = [("total", "sum(amount)"), ("invoices", "count()")];
+    view_of(name, "invoice", &["partner"], fields, &measures)
 }
 
 /// A patch from a JSON object; anything but an object is an empty patch.

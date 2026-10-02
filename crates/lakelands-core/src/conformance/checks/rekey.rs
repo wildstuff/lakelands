@@ -11,15 +11,15 @@
 use std::sync::Arc;
 
 use lakelands_api::event::{Event, EventBody};
-use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Step, Walk};
+use lakelands_api::query::{Projection, QueryResult, Walk};
 use lakelands_api::write::{Declaration, Migration, MigrationReport};
-use lakelands_api::{
-    Catalog, Error, LakeStore, Position, Principal, ReadAt, RecordKey, Refusal, TypeName, WriteOpts,
-};
+use lakelands_api::{Catalog, Error, LakeStore, Position, Principal, Refusal, TypeName, WriteOpts};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, get_at, head_unmoved, log_events, patch, reason};
+use crate::conformance::fixture::{
+    Lake, Must, get_at, head_unmoved, log_events, patch, pattern, reason, step,
+};
 
 check!(
     /// The preflight counts everything a re-key moves.
@@ -249,19 +249,12 @@ async fn walked(
     key: &str,
     relation: &str,
 ) -> Result<Vec<String>, Failure> {
-    let mut p = Pattern::traverse(
-        TypeName::from(ty),
-        RecordKey::from(key),
-        vec![Step {
-            relation: relation.into(),
-            walk: Walk::Out,
-            ty: None,
-            filter: None,
-            depth: Depth { min: 1, max: 1 },
-        }],
+    let p = pattern(
+        ty,
+        Some(key),
+        vec![step(relation, Walk::Out)],
+        Projection::Graph,
     );
-    p.project = Projection::Graph;
-    p.at = ReadAt::default();
     let reply = cat
         .query(who, p)
         .await

@@ -71,12 +71,10 @@ async fn org(store: &dyn LakeStore) -> Result<Lake, Failure> {
 }
 
 fn step(relation: &str, walk: Walk, min: u32, max: u32) -> Step {
+    let depth = Depth { min, max };
     Step {
-        relation: relation.into(),
-        walk,
-        ty: None,
-        filter: None,
-        depth: Depth { min, max },
+        depth,
+        ..crate::conformance::fixture::step(relation, walk)
     }
 }
 

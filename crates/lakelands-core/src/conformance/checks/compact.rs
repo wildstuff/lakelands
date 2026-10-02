@@ -31,7 +31,7 @@ use std::sync::Arc;
 use lakelands_api::ontology::{
     Authority, EmbedDecl, FieldDecl, FieldType, StorageKind, ValueTypeDecl,
 };
-use lakelands_api::query::{Depth, Pattern, Projection, Search, SearchMode, Step, Walk};
+use lakelands_api::query::{Projection, Search, SearchMode, Walk};
 use lakelands_api::write::{CompactReport, Declaration, ProposalFilter, ProposedWrite};
 use lakelands_api::{
     Catalog, Find, Found, IdempotencyKey, LakeStore, Outcome, Position, Principal, ReadAt,
@@ -45,7 +45,7 @@ use crate::conformance::Failure;
 use crate::conformance::backing::{EMBED_MODEL, KIND, made, plug, unplug};
 use crate::conformance::fixture::{
     Caller, Lake, Must, declare, doors, field, join_all, log_events, owner, partner_totals, patch,
-    read, type_decl, upsert,
+    pattern, read, step, type_decl, upsert,
 };
 use crate::export;
 
@@ -321,18 +321,12 @@ async fn answers(
             said(cat.search(own, vector).await),
         ));
         for key in ["1", "DE1"] {
-            let mut walk = Pattern::traverse(
-                TypeName::from("account"),
-                RecordKey::from(key),
-                vec![Step {
-                    relation: "owner".into(),
-                    walk: Walk::Out,
-                    ty: None,
-                    filter: None,
-                    depth: Depth { min: 1, max: 1 },
-                }],
+            let mut walk = pattern(
+                "account",
+                Some(key),
+                vec![step("owner", Walk::Out)],
+                Projection::Graph,
             );
-            walk.project = Projection::Graph;
             walk.at = at;
             out.push((
                 format!("a walk from account `{key}` at {p}"),

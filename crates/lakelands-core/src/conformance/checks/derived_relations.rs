@@ -12,7 +12,7 @@ use lakelands_api::ontology::{
     Cardinality, Derived, MatchPair, RelationDecl, StorageKind, TypeDecl,
 };
 use lakelands_api::principal::TypeGrants;
-use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Start, Step, Walk};
+use lakelands_api::query::{Pattern, Projection, QueryResult, Walk};
 use lakelands_api::read::ReadAt;
 use lakelands_api::write::{Declaration, WriteOpts};
 use lakelands_api::{
@@ -23,7 +23,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, declare, doors, field, invalid_naming, owner, patch, principal, reason, type_decl, upsert,
+    Must, declare, doors, field, invalid_naming, owner, patch, pattern, principal, reason, step,
+    type_decl, upsert,
 };
 
 check!(
@@ -154,36 +155,11 @@ async fn lake(store: &dyn LakeStore) -> Result<Position, Failure> {
     Ok(before)
 }
 
-fn step(relation: &str, walk: Walk) -> Step {
-    Step {
-        relation: relation.into(),
-        walk,
-        ty: None,
-        filter: None,
-        depth: Depth::default(),
-    }
-}
-
 fn walk(ty: &str, key: &str, relation: &str, dir: Walk, as_of: Option<Position>) -> Pattern {
-    Pattern {
-        start: Start {
-            ty: ty.into(),
-            key: Some(key.into()),
-            filter: None,
-            search: None,
-            params: Default::default(),
-        },
-        steps: vec![step(relation, dir)],
-        to: None,
-        project: Projection::Rows { fields: vec![] },
-        order_by: Vec::new(),
-        limit: None,
-        cursor: None,
-        at: ReadAt {
-            as_of,
-            valid_at: None,
-        },
-    }
+    let rows = Projection::Rows { fields: vec![] };
+    let mut p = pattern(ty, Some(key), vec![step(relation, dir)], rows);
+    p.at.as_of = as_of;
+    p
 }
 
 /// The keys of `far` a walk reaches, sorted.
@@ -210,99 +186,29 @@ async fn reached(
     Ok(keys)
 }
 
-/// A walk to check: its start type and key, relation, direction, `as_of`,
-/// the far type, and the far keys it must reach.
-type Case<'a> = (
-    &'a str,
-    &'a str,
-    &'a str,
-    Walk,
-    Option<Position>,
-    &'a str,
-    Vec<&'a str>,
-);
-
 async fn a_walk_over_a_derived_relation_finds_exactly_the_matching_records_both_ways(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let before = lake(store.as_ref()).await?;
     let cat = doors(store.as_ref());
     let own = owner(store.as_ref());
-    let cases: Vec<Case> = vec![
-        (
-            "invoice",
-            "i1",
-            "customer",
-            Walk::Out,
-            None,
-            "customer",
-            vec!["10"],
-        ),
-        (
-            "invoice",
-            "i3",
-            "customer",
-            Walk::Out,
-            None,
-            "customer",
-            vec!["010"],
-        ),
-        (
-            "customer",
-            "10",
-            "customer",
-            Walk::In,
-            None,
-            "invoice",
-            vec!["i1", "i2"],
-        ),
-        (
-            "customer",
-            "010",
-            "customer",
-            Walk::In,
-            None,
-            "invoice",
-            vec!["i3"],
-        ),
-        (
-            "customer",
-            "10",
-            "customer",
-            Walk::In,
-            Some(before),
-            "invoice",
-            vec!["i1"],
-        ),
-        (
-            "invoice",
-            "i1",
-            "local_customer",
-            Walk::Out,
-            None,
-            "customer",
-            vec!["10"],
-        ),
-        (
-            "invoice",
-            "i2",
-            "local_customer",
-            Walk::Out,
-            None,
-            "customer",
-            vec![],
-        ),
-        (
-            "customer",
-            "10",
-            "local_customer",
-            Walk::In,
-            None,
-            "invoice",
-            vec!["i1"],
-        ),
-    ];
-    for (ty, key, relation, dir, as_of, far, want) in cases {
+    // A walk to check: its start key, relation, direction, `as_of`, and the
+    // far keys it must reach. Out walks from an invoice to a customer, In
+    // the other way.
+    for (key, relation, dir, as_of, want) in [
+        ("i1", "customer", Walk::Out, None, vec!["10"]),
+        ("i3", "customer", Walk::Out, None, vec!["010"]),
+        ("10", "customer", Walk::In, None, vec!["i1", "i2"]),
+        ("010", "customer", Walk::In, None, vec!["i3"]),
+        ("10", "customer", Walk::In, Some(before), vec!["i1"]),
+        ("i1", "local_customer", Walk::Out, None, vec!["10"]),
+        ("i2", "local_customer", Walk::Out, None, vec![]),
+        ("10", "local_customer", Walk::In, None, vec!["i1"]),
+    ] {
+        let (ty, far) = match dir {
+            Walk::In => ("customer", "invoice"),
+            _ => ("invoice", "customer"),
+        };
         let got = reached(cat.as_ref(), &own, walk(ty, key, relation, dir, as_of), far).await?;
         ensure!(
             got == want,
@@ -414,22 +320,8 @@ async fn a_principal_without_read_on_a_matched_field_is_refused_naming_it(
             },
         )
     };
-    let degree = Pattern {
-        start: Start {
-            ty: "customer".into(),
-            key: None,
-            filter: None,
-            search: None,
-            params: Default::default(),
-        },
-        steps: vec![step("local_customer", Walk::In)],
-        to: None,
-        project: Projection::Degree,
-        order_by: Vec::new(),
-        limit: None,
-        cursor: None,
-        at: ReadAt::default(),
-    };
+    let in_local = vec![step("local_customer", Walk::In)];
+    let degree = pattern("customer", None, in_local, Projection::Degree);
     let cases = [
         (
             blind("invoice", "customer_no"),
@@ -501,21 +393,8 @@ async fn degree_and_components_over_a_derived_relation_equal_those_over_the_same
         .must(&format!("linking {b} to {c}"))?;
     }
     upsert(cat.as_ref(), &own, "bill", "i4", json!({"note": "i4"})).await?;
-    let measure = |ty: &str, project: Projection, walk: Walk| Pattern {
-        start: Start {
-            ty: ty.into(),
-            key: None,
-            filter: None,
-            search: None,
-            params: Default::default(),
-        },
-        steps: vec![step("customer", walk)],
-        to: None,
-        project,
-        order_by: Vec::new(),
-        limit: None,
-        cursor: None,
-        at: ReadAt::default(),
+    let measure = |ty: &str, project: Projection, walk: Walk| {
+        pattern(ty, None, vec![step("customer", walk)], project)
     };
     let rows = |r: QueryResult| -> Vec<String> {
         match r {

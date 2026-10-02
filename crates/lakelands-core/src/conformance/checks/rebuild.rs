@@ -10,13 +10,14 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::{Authority, Measure, StorageKind, ViewDecl};
+use lakelands_api::ontology::{Authority, StorageKind};
 use lakelands_api::{FieldName, Find, LakeStore, Position, Principal, ReadAt, Record, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all_found, declare, doors, field, get_at, owner, type_decl, upsert,
+    Lake, Must, all_found, declare, doors, field, get_at, owner, pattern, step, type_decl, upsert,
+    view_of,
 };
 
 check!(
@@ -86,25 +87,12 @@ async fn a_rebuilt_projection_answers_every_read_as_the_live_one_did(
         ],
     );
     l.declare(invoice).await?;
-    let mut view = type_decl(
-        "partner_totals",
-        vec![
-            field("partner", StorageKind::Text),
-            field("total", StorageKind::Decimal),
-        ],
-    );
-    view.key = vec![FieldName::from("partner")];
-    view.view = Some(Box::new(ViewDecl {
-        source: TypeName::from("invoice"),
-        r#where: None,
-        group_by: vec![FieldName::from("partner")],
-        measures: vec![Measure {
-            name: FieldName::from("total"),
-            expr: "sum(amount)".into(),
-        }],
-        params: Default::default(),
-        merge: Default::default(),
-    }));
+    let fields = vec![
+        field("partner", StorageKind::Text),
+        field("total", StorageKind::Decimal),
+    ];
+    let measures = [("total", "sum(amount)")];
+    let view = view_of("partner_totals", "invoice", &["partner"], fields, &measures);
 
     let mut positions = Vec::new();
     for (nr, partner, amount) in [("i1", "p1", "10.00"), ("i2", "p1", "5.50")] {
@@ -269,7 +257,7 @@ async fn after_a_rebuild_every_index_answers_as_before(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     use lakelands_api::ontology::{FieldType, RelationDecl};
-    use lakelands_api::query::{Projection, Search, SearchMode, Step, Walk};
+    use lakelands_api::query::{Projection, Search, SearchMode, Walk};
     let cat = doors(store.as_ref());
     let own = owner(store.as_ref());
     let mut text = field("text", StorageKind::Text);
@@ -358,18 +346,12 @@ async fn after_a_rebuild_every_index_answers_as_before(
             .await
             .must("searching near (0, 1)")?
             .data;
-        let mut walk = lakelands_api::query::Pattern::traverse(
-            TypeName::from("note"),
-            "leaf".into(),
-            vec![Step {
-                relation: "under".into(),
-                walk: Walk::Out,
-                ty: None,
-                filter: None,
-                depth: Default::default(),
-            }],
+        let walk = pattern(
+            "note",
+            Some("leaf"),
+            vec![step("under", Walk::Out)],
+            Projection::Graph,
         );
-        walk.project = Projection::Graph;
         let graph = cat
             .query(&own, walk)
             .await

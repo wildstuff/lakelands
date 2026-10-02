@@ -16,8 +16,7 @@ use std::collections::BTreeMap;
 use lakelands_api::describe::{FieldDescription, LakeDescription, TypeDescription};
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{
-    Authority, EmbedDecl, FieldDecl, FieldType, Measure, StorageKind, TriggerDecl, TypeDecl,
-    ViewDecl,
+    Authority, EmbedDecl, FieldDecl, FieldType, StorageKind, TriggerDecl, TypeDecl,
 };
 use lakelands_api::write::{Declaration, FunctionDecl, ObjectSetDecl};
 use std::sync::Arc;
@@ -29,7 +28,7 @@ use lakelands_api::{
 
 use crate::conformance::Failure;
 use crate::conformance::backing::EMBED_MODEL;
-use crate::conformance::fixture::{Must, doors, field, owner, principal, type_decl};
+use crate::conformance::fixture::{Must, doors, field, owner, principal, type_decl, view_of};
 
 check!(
     /// `describe` answers the declaration whole.
@@ -88,25 +87,12 @@ fn ledger() -> TypeDecl {
 
 /// A view over the ledger, grouped by title, of one measure.
 fn by_title(name: &str, measure: &str, over: &str) -> TypeDecl {
-    let mut ty = type_decl(
-        name,
-        vec![
-            field("title", StorageKind::Text),
-            field(measure, StorageKind::Number),
-        ],
-    );
-    ty.key = vec![FieldName::from("title")];
-    ty.view = Some(Box::new(ViewDecl {
-        source: TypeName::from("ledger"),
-        r#where: None,
-        group_by: vec![FieldName::from("title")],
-        measures: vec![Measure {
-            name: FieldName::from(measure),
-            expr: Condition::from(format!("sum({over})").as_str()),
-        }],
-        params: Default::default(),
-        merge: Default::default(),
-    }));
+    let fields = vec![
+        field("title", StorageKind::Text),
+        field(measure, StorageKind::Number),
+    ];
+    let sum = format!("sum({over})");
+    let mut ty = view_of(name, "ledger", &["title"], fields, &[(measure, &sum)]);
     ty.description = Some(format!("the ledger's {over} by title"));
     ty
 }

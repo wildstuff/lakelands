@@ -10,18 +10,18 @@ use std::sync::Arc;
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{Authority, Cardinality, RelationDecl, StorageKind, TriggerDecl};
-use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Step, Walk};
+use lakelands_api::query::{Projection, QueryResult, Walk};
 use lakelands_api::seam::{AGING_RULE_TYPE, FeedFilter};
 use lakelands_api::write::{Declaration, ObjectSetDecl, PurgeReport};
 use lakelands_api::{
-    Error, LakeStore, Origin, Position, ReadAt, RecordKey, Refusal, SourceId, Timestamp, TypeName,
-    WriteOrigin,
+    Error, LakeStore, Origin, Position, Refusal, SourceId, Timestamp, TypeName, WriteOrigin,
 };
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, field, get_at, head_unmoved, ingest, reason, source_record, type_decl,
+    Lake, Must, field, get_at, head_unmoved, ingest, pattern, reason, source_record, step,
+    type_decl,
 };
 use crate::links::{link_key, link_type_name};
 
@@ -541,19 +541,12 @@ async fn another_sources_links_to_a_purged_record_stay_and_the_walk_skips_it(
         "the link `crm` brought in from `c1` to `p2` stayed: a purge takes the source's link \
          records with it; {report:?}"
     );
-    let mut p = Pattern::traverse(
-        TypeName::from("invoice"),
-        RecordKey::from("i1"),
-        vec![Step {
-            relation: "approved_by".into(),
-            walk: Walk::Out,
-            ty: None,
-            filter: None,
-            depth: Depth { min: 1, max: 1 },
-        }],
+    let p = pattern(
+        "invoice",
+        Some("i1"),
+        vec![step("approved_by", Walk::Out)],
+        Projection::Graph,
     );
-    p.project = Projection::Graph;
-    p.at = ReadAt::default();
     let reply = cat.query(own, p).await.must("walking from `i1`")?;
     let QueryResult::Graph { nodes, .. } = reply.data else {
         return Err(Failure::new("a graph projection answered something else"));

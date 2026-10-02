@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use lakelands_api::ontology::{Measure, StorageKind, TypeDecl, ViewDecl, ViewParam, ViewSource};
+use lakelands_api::ontology::{StorageKind, TypeDecl, ViewDecl, ViewParam, ViewSource};
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::read::Find;
 use lakelands_api::write::Declaration;
@@ -18,7 +18,7 @@ use lakelands_api::{
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, field, log_events, principal, reason, type_decl};
+use crate::conformance::fixture::{Lake, field, log_events, measure, principal, reason, type_decl};
 
 check!(
     /// Sources meet on their key.
@@ -64,13 +64,6 @@ fn log(name: &str, day: &str) -> TypeDecl {
             field("kcal", StorageKind::Decimal),
         ],
     )
-}
-
-fn measure(name: &str, expr: &str) -> Measure {
-    Measure {
-        name: FieldName::from(name),
-        expr: expr.into(),
-    }
 }
 
 fn workouts(filter: Option<&str>) -> ViewSource {
