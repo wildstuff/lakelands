@@ -58,6 +58,15 @@ impl Principal {
 }
 
 /// What one principal may do with one field.
+///
+/// The variants are not a ladder: `WriteOnly` writes without reading, so
+/// no variant is "more" than every other. Code decides with [`reads`],
+/// [`writes`] and [`appears`], never by comparing variants; the derived
+/// order exists only so that the type can key a collection.
+///
+/// [`reads`]: Access::reads
+/// [`writes`]: Access::writes
+/// [`appears`]: Access::appears
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
@@ -72,6 +81,11 @@ pub enum Access {
     Read,
     /// The field is read in full and may be written.
     Write,
+    /// The field may be written but not read: for reading it is as
+    /// `None`, absent from every answer, and nothing a write answers
+    /// shows its value (`docs/decisions/006-grants-not-roles.md`,
+    /// extended).
+    WriteOnly,
 }
 
 impl Access {
@@ -82,7 +96,13 @@ impl Access {
 
     /// Whether the field may be written.
     pub fn writes(self) -> bool {
-        self == Access::Write
+        matches!(self, Access::Write | Access::WriteOnly)
+    }
+
+    /// Whether the field appears in a read answer: its value, or its name
+    /// as masked.
+    pub fn appears(self) -> bool {
+        self.reads() || self == Access::Masked
     }
 }
 

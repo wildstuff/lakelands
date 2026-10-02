@@ -91,6 +91,9 @@ fn built_from<'d>(
         };
         access = match access_of(who, decl, source, seen) {
             s if s.reads() => access,
+            // The field's value stays hidden; its write stays the
+            // principal's, as the store's write check grants it.
+            _ if access.writes() => Access::WriteOnly,
             Access::Masked if access.reads() => Access::Masked,
             Access::Masked => access,
             _ => {

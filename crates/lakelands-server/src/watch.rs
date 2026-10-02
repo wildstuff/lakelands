@@ -529,7 +529,7 @@ impl<'a> View<'a> {
             .data
             .fields
             .iter()
-            .filter(|f| f.access != lakelands_api::Access::None)
+            .filter(|f| f.access.appears())
             .map(|f| f.name.to_string())
             .collect();
         self.shown.insert(ty.clone(), s.clone());
