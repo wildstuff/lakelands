@@ -105,6 +105,7 @@ macro_rules! door_checks {
             a_verb_on_its_type_is_called_without_a_key,
             a_low_risk_verb_runs_at_once,
             a_riskier_verb_is_proposed_and_accept_applies_it,
+            an_accept_after_the_verb_was_declared_differently_is_refused,
             a_call_that_could_not_run_now_is_neither_run_nor_proposed,
             a_rejected_proposal_writes_nothing_and_stays_decided,
             only_a_reviewer_decides_proposals,
@@ -1720,6 +1721,65 @@ pub async fn a_call_that_could_not_run_now_is_neither_run_nor_proposed(store: Ar
         }
     }
     assert_eq!(f.head().await, head, "nothing is appended");
+}
+
+/// Accepting a call whose verb was declared differently after the call was
+/// proposed is refused as invalid naming the verb, and the proposal stays
+/// pending; declared again with the same content, it is accepted (013).
+pub async fn an_accept_after_the_verb_was_declared_differently_is_refused(
+    store: Arc<dyn LakeStore>,
+) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let decl = |name: &str, status: &str| {
+        serde_json::from_value::<Declaration>(json!({"declare": "verb", "name": name,
+            "on": INVOICE, "risk": "medium", "effect": "write",
+            "set": [{"field": "status", "value": format!("'{status}'")}]}))
+        .unwrap()
+    };
+    f.write(owner, "INV-1", &[("status", json!("open"))]).await;
+    for (name, again, applies) in [("changed", "rejected", false), ("same", "approved", true)] {
+        f.catalog
+            .declare(owner, decl(name, "approved"))
+            .await
+            .unwrap();
+        let k = key("INV-1");
+        let Outcome::Proposed { proposal, .. } = f
+            .catalog
+            .call(
+                owner,
+                &name.into(),
+                Some(&k),
+                Patch::new(),
+                WriteOpts::default(),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("a medium verb is proposed");
+        };
+        f.catalog.declare(owner, decl(name, again)).await.unwrap();
+        let got = f.catalog.accept(&f.cast.reviewer, &proposal).await;
+        if applies {
+            got.expect("the same content is accepted");
+        } else {
+            let e = got.expect_err("a verb declared differently refuses the accept");
+            assert!(
+                matches!(refusal(&e).1, Refusal::Invalid { .. })
+                    && e.to_string().contains("`changed`"),
+                "{e:?}"
+            );
+            let pending = f
+                .catalog
+                .proposals(&f.cast.reviewer, ProposalFilter::default())
+                .await
+                .unwrap()
+                .data
+                .into_iter()
+                .any(|p| p.id == proposal && p.state == ProposalState::Pending);
+            assert!(pending, "the proposal stays pending");
+        }
+    }
 }
 
 /// A verb above `low` risk is proposed, not run; accepting the proposal

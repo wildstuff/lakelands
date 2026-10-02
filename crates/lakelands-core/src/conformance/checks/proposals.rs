@@ -38,6 +38,12 @@ check!(
 );
 
 check!(
+    /// Accept applies what was checked.
+    ACCEPT_AFTER_REDECLARE = accepting_a_call_after_its_verb_was_declared_differently_is_refused,
+    "013, extended (lakelands#371): accepting a call whose verb was declared differently after the call was proposed, its effect or its payload changed, is refused as invalid naming the verb and leaves the proposal pending, as a scope that no longer fits does; a verb declared again with the same content, or changed and changed back, is accepted"
+);
+
+check!(
     /// A proposal is logged, and accepting it applies it as the proposer.
     ACCEPT_APPLIES = accepting_a_proposal_applies_its_write_as_the_proposers,
     "013 and 004: a proposal is a `write_proposed` event; accepting it appends `write_accepted`, then the verb's run caused by that acceptance and its write caused by that run, written as the proposer"
@@ -291,6 +297,114 @@ async fn a_riskier_call_that_could_not_run_now_is_not_proposed(
         red.join("; ")
     );
     head_unmoved(store.as_ref(), before, "calls that could not run").await
+}
+
+async fn accepting_a_call_after_its_verb_was_declared_differently_is_refused(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = ledger(store.as_ref()).await?;
+    let Lake { cat, own } = &l;
+    let review = reviewer(store.as_ref(), false);
+    let write = |name: &str, status: &str| {
+        json!({"declare": "verb", "name": name, "on": "invoice", "risk": "medium",
+               "effect": "write", "set": [{"field": "status", "value": format!("'{status}'")}]})
+    };
+    let external = |name: &str, scope: &str| {
+        json!({"declare": "verb", "name": name, "on": "invoice", "risk": "medium",
+               "scope": scope, "effect": "external", "executor": EXECUTOR})
+    };
+    let c2_again = json!({"declare": "verb", "name": "c2", "on": "invoice", "risk": "medium",
+        "payload": [{"name": "reason", "type": {"kind": "text"}, "required": true}],
+        "effect": "write", "set": [{"field": "status", "value": "'approved'"},
+                                   {"field": "paid_ref", "value": "payload.reason"}]});
+    // Each row: the verb as proposed, what it is declared as before the
+    // accept, and whether the accept applies.
+    let rows = [
+        (
+            "C1, its effect changed",
+            write("c1", "approved"),
+            vec![write("c1", "rejected")],
+            false,
+        ),
+        (
+            "C2, a required payload field added",
+            write("c2", "approved"),
+            vec![c2_again],
+            false,
+        ),
+        (
+            "C3, its scope turned to the type",
+            external("c3", "record"),
+            vec![external("c3", "type")],
+            false,
+        ),
+        (
+            "nothing declared again",
+            write("c4", "approved"),
+            vec![],
+            true,
+        ),
+        (
+            "declared again, the same",
+            write("c5", "approved"),
+            vec![write("c5", "approved")],
+            true,
+        ),
+        (
+            "changed and changed back",
+            write("c6", "approved"),
+            vec![write("c6", "rejected"), write("c6", "approved")],
+            true,
+        ),
+    ];
+    let mut red = Vec::new();
+    for (what, proposed, again, applies) in rows {
+        let name = proposed["name"].as_str().expect("a name").to_owned();
+        l.declare_json(proposed).await?;
+        let (_, id) = proposal(
+            &call(store.as_ref(), own, &name, json!({}))
+                .await
+                .must(what)?,
+        )?;
+        for d in again {
+            l.declare_json(d).await?;
+        }
+        let head = store.head().await.must("reading the head")?;
+        let got = cat.accept(&review, &id).await;
+        let state = cat
+            .proposals(&review, ProposalFilter::default())
+            .await
+            .must("listing proposals")?
+            .data
+            .into_iter()
+            .find(|p| p.id == id)
+            .map(|p| p.state);
+        let ok = if applies {
+            got.is_ok() && state == Some(ProposalState::Accepted)
+        } else {
+            let names = got
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.to_string().contains(&format!("`{name}`")));
+            matches!(reason(&got), Some(Refusal::Invalid { .. }))
+                && names
+                && state == Some(ProposalState::Pending)
+                && store.head().await.must("reading the head")? == head
+        };
+        if !ok {
+            red.push(format!(
+                "{what}: accept answered {got:?}, the proposal is {state:?}"
+            ));
+        }
+    }
+    ensure!(
+        red.is_empty(),
+        "the reviewer applies what was checked: an accept after the verb was declared \
+         differently is refused as invalid naming it, the proposal pending; the same content \
+         is accepted: {}",
+        red.join("; ")
+    );
+    Ok(())
 }
 
 async fn accepting_a_proposal_applies_its_write_as_the_proposers(

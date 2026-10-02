@@ -155,6 +155,15 @@ called with no key.
   proposal can outlive a change of the verb's declaration. Accepting
   checks the scope at the head again, and a mismatch refuses the accept
   with the same text; the proposal stays pending.
+  Beyond the scope, the reviewer applies exactly what was checked: if
+  the verb is declared differently at the head than it was when the
+  call was proposed (another effect, another payload), the accept is
+  refused as invalid, naming the verb, and the proposal stays pending;
+  the caller proposes again (lakelands#371). The store compares the
+  declaration's content, as the lake held it at the proposal's position
+  and at the head, so a verb declared again unchanged, or changed and
+  changed back, as a host that applies its bundle at every start does,
+  leaves its pending calls acceptable. No event carries more for it.
 
 The default scope, `record`, is never written, so every declaration made
 before keeps its bytes.
