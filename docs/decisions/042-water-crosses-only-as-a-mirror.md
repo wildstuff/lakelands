@@ -96,3 +96,28 @@ resumes from the position it stopped at once the target admits it.
 - **Not a store operation.** The store has no notion of a connection. It
   holds the `upstream` member and the `sys.mirror` records the host's
   vocabulary declares, and the mirror uses the doors every host has.
+
+## Extended: a copy keeps its chain's depth (lakelands#420)
+
+A copy was written at depth 0, with origin `direct` and no cause, so
+every crossing started a chain of reactions anew. Take two lakes that
+mirror two types into each other, x one way and y the other, with a
+host on each side that reacts to one by writing the other. Their chain
+never met either lake's `max_reactive_depth`, since each crossing reset
+it, and it ran without end.
+
+A copy is now a reaction to the source's write. It is written with
+origin `reactive`, at the depth of the source state it copies:
+- a window crosses at the depth of its deepest change;
+- a retirement crosses at the depth of its own event.
+
+It names no cause, since the cause is an event of another lake;
+`upstream` already names the source lake and position. A chain then
+keeps growing across the lakes. The target refuses a copy deeper than
+its own ceiling as `too_deep`, and that stops the type, as any refused
+window does. The mirror's output says which record crossed at which
+depth and the target's ceiling, so the chain ends at the crossing that
+reached the ceiling, in plain sight.
+
+A snapshot copies what the source holds at its head, a standing state
+and no chain in flight, so it still crosses at depth 0.

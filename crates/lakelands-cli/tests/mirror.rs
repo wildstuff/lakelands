@@ -7,12 +7,14 @@ use std::sync::Arc;
 
 use lakelands_api::engine::OpenMode;
 use lakelands_api::event::EventBody;
+use lakelands_api::location::Limits;
 use lakelands_api::principal::{Access, TypeGrants};
 use lakelands_api::seam::{FeedFilter, Seams};
 use lakelands_api::write::{Declaration, Migration};
 use lakelands_api::{
     Catalog, Error, Get, Grants, LakeStore, Location, Origin, Patch, Position, Principal,
     PrincipalKind, ReadAt, RecordKey, SourceId, TypeName, Upstream, WriteContext, WriteOpts,
+    WriteOrigin,
 };
 use lakelands_cli::mirror::{
     ConnectionConfig, MIRROR_TYPE, Mirror, MirrorConfig, MirrorVocabulary, Start, mirror_type,
@@ -231,6 +233,17 @@ impl Two {
         source: Vec<Declaration>,
         target: Vec<Declaration>,
     ) -> Two {
+        Two::ceilings(test, engine, source, target, None).await
+    }
+
+    /// Two lakes whose reactive ceilings are `(crm, main)` when given.
+    async fn ceilings(
+        test: &str,
+        engine: &Engine,
+        source: Vec<Declaration>,
+        target: Vec<Declaration>,
+        ceilings: Option<(u32, u32)>,
+    ) -> Two {
         let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
             .join("mirror")
             .join(format!("{test}-{}", engine.name()));
@@ -249,9 +262,16 @@ impl Two {
             ..Seams::default()
         };
         let open = |at: Location| lakelands_store::open(at, seams.clone(), OpenMode::Create);
-        let crm_at = location(engine, &dir, "crm");
+        let ceiling = |at: Location, max: Option<u32>| Location {
+            limits: Limits {
+                max_reactive_depth: max.unwrap_or(at.limits.max_reactive_depth),
+                ..at.limits
+            },
+            ..at
+        };
+        let crm_at = ceiling(location(engine, &dir, "crm"), ceilings.map(|c| c.0));
         let crm = open(crm_at.clone()).await.unwrap();
-        let main_at = location(engine, &dir, "main");
+        let main_at = ceiling(location(engine, &dir, "main"), ceilings.map(|c| c.1));
         let main = open(main_at.clone()).await.unwrap();
         doors(crm.as_ref())
             .apply(&owner(crm.as_ref()), source)
@@ -1227,5 +1247,101 @@ async fn a_principal_that_may_not_write_sys_mirror_is_refused_naming_the_grant()
             why.contains("write grant on `sys.mirror`"),
             "{engine:?}: {why}"
         );
+    }
+}
+
+#[tokio::test]
+async fn a_copy_crosses_at_its_source_depth_and_a_chain_past_the_targets_ceiling_stops() {
+    for engine in engines() {
+        let engine = &engine;
+        let two = Two::ceilings(
+            "depth",
+            engine,
+            source_types(),
+            target_types(),
+            Some((12, 6)),
+        )
+        .await;
+        let write = |key: &'static str, depth: u32| {
+            let cat = two.crm.catalog(WriteContext {
+                origin: WriteOrigin::Reactive,
+                depth,
+                cause: None,
+            });
+            let owner = owner(two.crm.as_ref());
+            async move {
+                cat.upsert(
+                    &owner,
+                    &"customer".into(),
+                    &key.into(),
+                    patch(json!({"code": key, "name": key})),
+                    WriteOpts::default(),
+                )
+                .await
+                .unwrap();
+            }
+        };
+        // A snapshot copies standing state; what follows crosses from the feed.
+        let mut m = two.mirror().await.unwrap();
+        settle(&mut m).await;
+        write("c1", 5).await;
+        settle(&mut m).await;
+        let copies = two.events(&["record_ingested"], &["customer"]).await;
+        let copy = copies.last().expect("c1 crossed");
+        assert_eq!(
+            (copy.context.depth, copy.context.origin, copy.cause),
+            (5, WriteOrigin::Reactive, None),
+            "a copy is a reaction at its source's depth, naming no cause; {engine:?}"
+        );
+        // One window holds c2 at depth 2 and c3 at depth 9: it crosses at
+        // the deeper, past the target's ceiling of 6, and the chain ends.
+        write("c2", 2).await;
+        write("c3", 9).await;
+        settle(&mut m).await;
+        assert!(two.copy("customer", "c2").await.is_none(), "{engine:?}");
+        let why = m.kept().types[&TypeName::from("customer")]
+            .stopped
+            .clone()
+            .expect("customer stopped")
+            .why;
+        assert!(
+            why.contains("`c3`") && why.contains("depth 9") && why.contains("ceiling of 6"),
+            "the stop names the record, its depth and the ceiling: {why}"
+        );
+        // A retirement crosses at its own depth too.
+        let two = Two::ceilings(
+            "depth-retire",
+            engine,
+            source_types(),
+            target_types(),
+            Some((12, 6)),
+        )
+        .await;
+        let mut m = two.mirror().await.unwrap();
+        settle(&mut m).await;
+        two.upsert("customer", "c1", json!({"code": "c1", "name": "c1"}))
+            .await;
+        settle(&mut m).await;
+        let deep = two.crm.catalog(WriteContext {
+            origin: WriteOrigin::Reactive,
+            depth: 9,
+            cause: None,
+        });
+        deep.retire(
+            &owner(two.crm.as_ref()),
+            &"customer".into(),
+            &"c1".into(),
+            WriteOpts::default(),
+        )
+        .await
+        .unwrap();
+        settle(&mut m).await;
+        assert!(two.copy("customer", "c1").await.is_some(), "{engine:?}");
+        let why = m.kept().types[&TypeName::from("customer")]
+            .stopped
+            .clone()
+            .expect("customer stopped")
+            .why;
+        assert!(why.contains("at depth 9"), "{why}");
     }
 }
