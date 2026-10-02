@@ -12,8 +12,8 @@ use lakelands_api::location::Limits;
 use lakelands_api::ontology::{
     Cardinality, FieldDecl, FieldType, RelationDecl, StorageKind, TypeDecl,
 };
-use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Start, Step, Walk};
-use lakelands_api::read::{Order, ReadAt};
+use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Step, Walk};
+use lakelands_api::read::Order;
 use lakelands_api::seam::Seams;
 use lakelands_api::write::WriteOpts;
 use lakelands_api::{
@@ -22,7 +22,7 @@ use lakelands_api::{
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, Must, doors, field, owner, patch, principal, reason, type_decl,
+    Lake, Must, doors, field, owner, patch, pattern, principal, reason, step, type_decl,
 };
 use crate::conformance::{Failure, Given};
 
@@ -160,33 +160,9 @@ fn reader(store: &dyn LakeStore) -> Principal {
     )
 }
 
-fn step(relation: &str, walk: Walk) -> Step {
-    Step {
-        relation: relation.into(),
-        walk,
-        ty: None,
-        filter: None,
-        depth: Depth::default(),
-    }
-}
-
+/// A measure over all the records of `ty`.
 fn measure(ty: &str, steps: Vec<Step>, project: Projection) -> Pattern {
-    Pattern {
-        start: Start {
-            ty: ty.into(),
-            key: None,
-            filter: None,
-            search: None,
-            params: Default::default(),
-        },
-        steps,
-        to: None,
-        project,
-        order_by: Vec::new(),
-        limit: None,
-        cursor: None,
-        at: ReadAt::default(),
-    }
+    pattern(ty, None, steps, project)
 }
 
 fn both() -> Vec<Step> {

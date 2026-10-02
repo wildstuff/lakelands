@@ -20,7 +20,7 @@ use super::rekey;
 use crate::canonical;
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, doors, field, log_events, owner, reason, type_decl, upsert,
+    Lake, Must, count_view, doors, field, log_events, owner, reason, type_decl, upsert,
 };
 use crate::export::{self, Manifest};
 
@@ -1049,26 +1049,7 @@ async fn an_import_refuses_a_context_carrying_cause_naming_it(
 
 /// A view over `source`, counting its records by `k`.
 fn tally_view(name: &str, source: &str) -> lakelands_api::ontology::TypeDecl {
-    let mut t = type_decl(
-        name,
-        vec![
-            field("k", lakelands_api::ontology::StorageKind::Text),
-            field("n", lakelands_api::ontology::StorageKind::Number),
-        ],
-    );
-    t.key = vec!["k".into()];
-    t.view = Some(Box::new(lakelands_api::ontology::ViewDecl {
-        source: source.into(),
-        params: Vec::new(),
-        r#where: None,
-        group_by: vec!["k".into()],
-        measures: vec![lakelands_api::ontology::Measure {
-            name: "n".into(),
-            expr: "count()".into(),
-        }],
-        merge: Default::default(),
-    }));
-    t
+    count_view(name, source, "k")
 }
 
 async fn a_cycle_of_views_from_an_imported_log_is_refused_on_read(

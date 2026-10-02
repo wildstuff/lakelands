@@ -8,15 +8,17 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::{Measure, StorageKind, TypeDecl, ViewDecl, ViewParam};
-use lakelands_api::query::{Pattern, Projection, QueryResult, Start};
+use lakelands_api::ontology::{StorageKind, TypeDecl, ViewDecl, ViewParam};
+use lakelands_api::query::{Pattern, Projection, QueryResult};
 use lakelands_api::read::{Find, Found, Get};
 use lakelands_api::write::Declaration;
-use lakelands_api::{Error, FieldName, LakeStore, Params, Refusal, Value};
+use lakelands_api::{Error, LakeStore, Params, Refusal, Value};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, field, log_events, reason, type_decl};
+use crate::conformance::fixture::{
+    Lake, Must, field, log_events, pattern, reason, type_decl, view_of,
+};
 
 check!(
     /// Two anchors, two windows.
@@ -72,35 +74,19 @@ fn payment() -> TypeDecl {
 }
 
 fn account_window() -> TypeDecl {
-    let measure = |name: &str, expr: &str| Measure {
-        name: FieldName::from(name),
-        expr: expr.into(),
-    };
-    TypeDecl {
-        key: vec![FieldName::from("account")],
-        view: Some(Box::new(ViewDecl {
-            source: "payment".into(),
-            params: vec![param("anchor", StorageKind::DateTime)],
-            r#where: Some("date > param('anchor') - 7d and date <= param('anchor')".into()),
-            group_by: vec![FieldName::from("account")],
-            measures: vec![
-                measure("total", "sum(amount)"),
-                measure(
-                    "last_day",
-                    "count(if(date > param('anchor') - 1d, amount, null))",
-                ),
-            ],
-            merge: Default::default(),
-        })),
-        ..type_decl(
-            "account_window",
-            vec![
-                field("account", StorageKind::Text),
-                field("total", StorageKind::Decimal),
-                field("last_day", StorageKind::Number),
-            ],
-        )
+    let fields = vec![
+        field("account", StorageKind::Text),
+        field("total", StorageKind::Decimal),
+        field("last_day", StorageKind::Number),
+    ];
+    let last_day = "count(if(date > param('anchor') - 1d, amount, null))";
+    let measures = [("total", "sum(amount)"), ("last_day", last_day)];
+    let mut t = view_of("account_window", "payment", &["account"], fields, &measures);
+    if let Some(v) = t.view.as_mut() {
+        v.params = vec![param("anchor", StorageKind::DateTime)];
+        v.r#where = Some("date > param('anchor') - 7d and date <= param('anchor')".into());
     }
+    t
 }
 
 /// The source, the view, and five payments in June 2026.
@@ -279,22 +265,12 @@ async fn param_outside_a_views_where_and_measures_is_refused(
         "a `find` whose `where` calls param() must be refused as invalid, naming it; it \
          answered {r:?}"
     );
-    let pattern = Pattern {
-        start: Start {
-            ty: "payment".into(),
-            key: None,
-            filter: Some("date <= param('anchor')".into()),
-            search: None,
-            params: Params::new(),
-        },
-        steps: Vec::new(),
-        to: None,
-        project: Projection::Graph,
-        order_by: Vec::new(),
-        limit: None,
-        cursor: None,
-        at: Default::default(),
-    };
+    let pattern = start_on(
+        "payment",
+        None,
+        Some("date <= param('anchor')"),
+        Params::new(),
+    );
     let r = l.cat.query(&l.own, pattern).await;
     ensure!(
         invalid_naming(&r, "param()"),
@@ -423,23 +399,13 @@ async fn a_cursor_continues_only_with_the_parameters_it_was_handed_out_for(
     Ok(())
 }
 
+/// A graph from the records of `view` (or of any type), or the one at
+/// `key`, that `filter` holds for, binding `params`.
 fn start_on(view: &str, key: Option<&str>, filter: Option<&str>, params: Params) -> Pattern {
-    Pattern {
-        start: Start {
-            ty: view.into(),
-            key: key.map(Into::into),
-            filter: filter.map(Into::into),
-            search: None,
-            params,
-        },
-        steps: Vec::new(),
-        to: None,
-        project: Projection::Graph,
-        order_by: Vec::new(),
-        limit: None,
-        cursor: None,
-        at: Default::default(),
-    }
+    let mut p = pattern(view, key, Vec::new(), Projection::Graph);
+    p.start.filter = filter.map(Into::into);
+    p.start.params = params;
+    p
 }
 
 async fn a_pattern_started_on_a_view_binds_its_parameters(

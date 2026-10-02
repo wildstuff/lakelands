@@ -13,10 +13,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use lakelands_api::ontology::{
-    Authority, Cardinality, Derived, MatchPair, Measure, RelationDecl, StorageKind, TypeDecl,
-    ViewDecl,
+    Authority, Cardinality, Derived, MatchPair, RelationDecl, StorageKind, TypeDecl,
 };
-use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Start, Step, Walk};
+use lakelands_api::query::{Pattern, Projection, QueryResult, Step, Walk};
 use lakelands_api::read::Find;
 use lakelands_api::{FieldName, LakeStore, Principal, Refusal, TypeName, Value};
 use rust_decimal::Decimal;
@@ -24,8 +23,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all, all_found, dec, decimal, doors, field, partner_totals, reason, source_record,
-    type_decl, upsert, windows_reach_head,
+    Lake, Must, all, all_found, count_view, dec, decimal, doors, field, measure, partner_totals,
+    pattern, reason, source_record, step, type_decl, upsert, view_of, windows_reach_head,
 };
 
 check!(
@@ -327,27 +326,20 @@ async fn a_view_record_is_keyed_by_its_group_by_fields(
     let mut source = invoices(Authority::Authored);
     source.fields.push(field("region", StorageKind::Text));
     l.declare(source).await?;
-    let mut view = type_decl(
+    let fields = vec![
+        field("partner", StorageKind::Text),
+        field("region", StorageKind::Text),
+        field("invoices", StorageKind::Number),
+    ];
+    let by = ["partner", "region"];
+    l.declare(view_of(
         "by_both",
-        vec![
-            field("partner", StorageKind::Text),
-            field("region", StorageKind::Text),
-            field("invoices", StorageKind::Number),
-        ],
-    );
-    view.key = vec![FieldName::from("partner"), FieldName::from("region")];
-    view.view = Some(Box::new(ViewDecl {
-        source: TypeName::from("invoice"),
-        r#where: None,
-        group_by: vec![FieldName::from("partner"), FieldName::from("region")],
-        measures: vec![Measure {
-            name: FieldName::from("invoices"),
-            expr: "count()".into(),
-        }],
-        params: Default::default(),
-        merge: Default::default(),
-    }));
-    l.declare(view).await?;
+        "invoice",
+        &by,
+        fields,
+        &[("invoices", "count()")],
+    ))
+    .await?;
     for (k, partner, region) in [
         ("1", "acme", "north"),
         ("2", "acme", "south:east"),
@@ -381,28 +373,17 @@ async fn a_view_record_is_keyed_by_its_group_by_fields(
     Ok(())
 }
 
-/// A pattern over `ty` from a start, with its steps and projection.
-fn pattern(ty: &str, key: Option<&str>, filter: Option<&str>, steps: Vec<Step>) -> Pattern {
-    Pattern {
-        start: Start {
-            ty: ty.into(),
-            key: key.map(Into::into),
-            filter: filter.map(Into::into),
-            search: None,
-            params: Default::default(),
-        },
-        project: if steps.is_empty() {
-            Projection::Graph
-        } else {
-            Projection::Rows { fields: vec![] }
-        },
-        steps,
-        to: None,
-        order_by: Vec::new(),
-        limit: None,
-        cursor: None,
-        at: Default::default(),
-    }
+/// A pattern over `ty` from a start, with its steps: a graph without
+/// steps, rows with them.
+fn from(ty: &str, key: Option<&str>, filter: Option<&str>, steps: Vec<Step>) -> Pattern {
+    let project = if steps.is_empty() {
+        Projection::Graph
+    } else {
+        Projection::Rows { fields: vec![] }
+    };
+    let mut p = pattern(ty, key, steps, project);
+    p.start.filter = filter.map(Into::into);
+    p
 }
 
 /// The `type:key` of every node a graph answers, or every `far` key a
@@ -475,7 +456,7 @@ async fn a_pattern_started_on_a_view_holds_the_records_find_returns(
         let got = nodes(
             store.as_ref(),
             own,
-            pattern("partner_totals", key, filter, vec![]),
+            from("partner_totals", key, filter, vec![]),
             "",
         )
         .await?;
@@ -490,7 +471,7 @@ async fn a_pattern_started_on_a_view_holds_the_records_find_returns(
     let none = nodes(
         store.as_ref(),
         own,
-        pattern("partner_totals", Some("p9"), None, vec![]),
+        from("partner_totals", Some("p9"), None, vec![]),
         "",
     )
     .await?;
@@ -528,54 +509,32 @@ async fn a_walk_over_a_derived_relation_reaches_a_views_records_both_ways(
     }
     write_invoice(store.as_ref(), own, "i1", "p1", "10.00").await?;
     write_invoice(store.as_ref(), own, "i2", "p2", "3.00").await?;
-    let step = |walk, filter: Option<&str>| Step {
-        relation: "totals".into(),
-        walk,
-        ty: None,
+    let totals = |walk, filter: Option<&str>| Step {
         filter: filter.map(Into::into),
-        depth: Depth::default(),
+        ..step("totals", walk)
     };
-    let to_totals = "partner_totals";
-    for (start, key, walk, filter, far, want) in [
-        (
-            "partner",
-            "p1",
-            Walk::Out,
-            None,
-            to_totals,
-            vec!["partner_totals:p1"],
-        ),
-        ("partner", "p3", Walk::Out, None, to_totals, vec![]),
+    // Out walks from `partner` to `partner_totals`, In the other way.
+    for (key, walk, filter, want) in [
+        ("p1", Walk::Out, None, vec!["partner_totals:p1"]),
+        ("p3", Walk::Out, None, vec![]),
         // A step's `where` reads the view's records it reached.
         (
-            "partner",
             "p1",
             Walk::Out,
             Some("total > 5"),
-            to_totals,
             vec!["partner_totals:p1"],
         ),
-        (
-            "partner",
-            "p2",
-            Walk::Out,
-            Some("total > 5"),
-            to_totals,
-            vec![],
-        ),
-        (
-            "partner_totals",
-            "p2",
-            Walk::In,
-            None,
-            "partner",
-            vec!["partner:p2"],
-        ),
+        ("p2", Walk::Out, Some("total > 5"), vec![]),
+        ("p2", Walk::In, None, vec!["partner:p2"]),
     ] {
+        let (start, far) = match walk {
+            Walk::In => ("partner_totals", "partner"),
+            _ => ("partner", "partner_totals"),
+        };
         let got = nodes(
             store.as_ref(),
             own,
-            pattern(start, Some(key), None, vec![step(walk, filter)]),
+            from(start, Some(key), None, vec![totals(walk, filter)]),
             far,
         )
         .await?;
@@ -678,26 +637,7 @@ async fn a_search_on_a_view_is_refused_naming_it(store: Arc<dyn LakeStore>) -> R
 
 /// A view over `source`, counting its records by partner.
 fn counted(name: &str, source: &str) -> TypeDecl {
-    let mut t = type_decl(
-        name,
-        vec![
-            field("partner", StorageKind::Text),
-            field("n", StorageKind::Number),
-        ],
-    );
-    t.key = vec![FieldName::from("partner")];
-    t.view = Some(Box::new(ViewDecl {
-        source: TypeName::from(source),
-        params: Vec::new(),
-        r#where: None,
-        group_by: vec![FieldName::from("partner")],
-        measures: vec![Measure {
-            name: FieldName::from("n"),
-            expr: "count()".into(),
-        }],
-        merge: Default::default(),
-    }));
-    t
+    count_view(name, source, "partner")
 }
 
 async fn a_view_closing_a_cycle_over_source_is_refused_naming_the_chain(
@@ -795,34 +735,24 @@ async fn a_view_whose_measure_reads_another_is_described_to_its_readers(
     let mut averaged = partner_totals("averaged", StorageKind::Decimal);
     averaged.fields.push(field("mean", StorageKind::Decimal));
     if let Some(v) = averaged.view.as_mut() {
-        v.measures.push(Measure {
-            name: FieldName::from("mean"),
-            expr: "total / invoices".into(),
-        });
+        v.measures.push(measure("mean", "total / invoices"));
     }
     l.declare(averaged).await?;
     // A measure with the name of the source field it sums: the name inside
     // the aggregate is the source's field, and reading it is still asked.
-    let mut summed = type_decl(
+    let fields = vec![
+        field("partner", StorageKind::Text),
+        field("amount", StorageKind::Decimal),
+    ];
+    let measures = [("amount", "sum(amount)")];
+    l.declare(view_of(
         "summed",
-        vec![
-            field("partner", StorageKind::Text),
-            field("amount", StorageKind::Decimal),
-        ],
-    );
-    summed.key = vec![FieldName::from("partner")];
-    summed.view = Some(Box::new(ViewDecl {
-        source: TypeName::from("invoice"),
-        params: Vec::new(),
-        r#where: None,
-        group_by: vec![FieldName::from("partner")],
-        measures: vec![Measure {
-            name: FieldName::from("amount"),
-            expr: "sum(amount)".into(),
-        }],
-        merge: Default::default(),
-    }));
-    l.declare(summed).await?;
+        "invoice",
+        &["partner"],
+        fields,
+        &measures,
+    ))
+    .await?;
     let reader = |id: &str, amount: Access| {
         let mut types = BTreeMap::new();
         types.insert(

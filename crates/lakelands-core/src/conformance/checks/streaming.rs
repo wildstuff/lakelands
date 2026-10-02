@@ -113,9 +113,7 @@ use lakelands_api::event::{Digest, EventBody};
 use lakelands_api::ontology::{
     Authority, Cardinality, EmbedDecl, FieldDecl, FieldType, RelationDecl, StorageKind, TypeDecl,
 };
-use lakelands_api::query::{
-    Depth, Pattern, Projection, QueryResult, Search, SearchMode, Step, Walk,
-};
+use lakelands_api::query::{Pattern, Projection, QueryResult, Search, SearchMode, Walk};
 use lakelands_api::read::{Direction, Order, OrderBy};
 use lakelands_api::seam::{FeedFilter, Seams};
 use lakelands_api::{
@@ -127,7 +125,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::conformance::backing::EMBED_MODEL;
 use crate::conformance::fixture::{
-    Must, declare, doors, field, limits, owner, pause, reason, type_decl,
+    Must, declare, doors, field, limits, owner, pattern, pause, reason, step, type_decl,
 };
 use crate::conformance::{Failure, Given, Meter, backing, next};
 use crate::export;
@@ -314,20 +312,7 @@ fn follows(i: u64, first: u64) -> impl Iterator<Item = u64> {
 
 /// A whole-graph measure of every record over `follows`, both ways.
 fn measure(project: Projection) -> Pattern {
-    let mut p = Pattern::traverse(
-        TypeName::from(TY),
-        key(0),
-        vec![Step {
-            relation: FOLLOWS.into(),
-            walk: Walk::Both,
-            ty: None,
-            filter: None,
-            depth: Depth::default(),
-        }],
-    );
-    p.start.key = None;
-    p.project = project;
-    p
+    pattern(TY, None, vec![step(FOLLOWS, Walk::Both)], project)
 }
 
 /// The records of the largest component over `follows` in a lake of
@@ -1144,17 +1129,10 @@ impl Size<'_> {
         let head = store.head().await.must("reading the head")?;
         let first = u64::from(self.given.large_lake.max(20));
         let want = walk_rows(records, first);
-        let step = || Step {
-            relation: FOLLOWS.into(),
-            walk: Walk::In,
-            ty: None,
-            filter: None,
-            depth: Depth { min: 1, max: 1 },
-        };
         let mut pattern = Pattern::traverse(
             TypeName::from(TY),
             key(WALK_FROM),
-            (0..HOPS).map(|_| step()).collect(),
+            vec![step(FOLLOWS, Walk::In); HOPS],
         );
         pattern.limit = Some(limits().max_limit);
         let cat = doors(store);
@@ -1205,17 +1183,10 @@ impl Size<'_> {
     /// record whatever the lake's size, never the type (044).
     async fn derived_walk(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
         let head = store.head().await.must("reading the head")?;
-        let step = || Step {
-            relation: SAME_NOTE.into(),
-            walk: Walk::Out,
-            ty: None,
-            filter: None,
-            depth: Depth { min: 1, max: 1 },
-        };
         let pattern = Pattern::traverse(
             TypeName::from(TY),
             key(WALK_FROM),
-            (0..HOPS).map(|_| step()).collect(),
+            vec![step(SAME_NOTE, Walk::Out); HOPS],
         );
         let m = Measure::start(&self.given.meter, false);
         let reply = doors(store)

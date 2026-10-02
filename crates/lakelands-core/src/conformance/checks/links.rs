@@ -15,17 +15,15 @@ use std::sync::Arc;
 use lakelands_api::ontology::{
     Authority, Cardinality, FieldDecl, FieldType, RelationDecl, StorageKind, TypeDecl,
 };
-use lakelands_api::query::{Depth, Edge, Pattern, Projection, QueryResult, Step, Walk};
+use lakelands_api::query::{Edge, Projection, QueryResult, Walk};
 use lakelands_api::write::{Declaration, Migration, Outcome, WriteOpts};
-use lakelands_api::{
-    Catalog, Error, LakeStore, Position, Principal, ReadAt, RecordKey, Refusal, TypeName,
-};
+use lakelands_api::{Catalog, Error, LakeStore, Position, Principal, Refusal};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all, doors, field, field_writer, head_unmoved, patch, reason, refused_on,
-    source_record, type_decl,
+    Lake, Must, all, doors, field, field_writer, head_unmoved, patch, pattern, reason, refused_on,
+    source_record, step, type_decl,
 };
 use crate::links::{link_key, link_type_name};
 
@@ -195,22 +193,13 @@ async fn walked(
     walk: Walk,
     as_of: Option<Position>,
 ) -> Result<Vec<Edge>, Failure> {
-    let mut p = Pattern::traverse(
-        TypeName::from(ty),
-        RecordKey::from(key),
-        vec![Step {
-            relation: "approved_by".into(),
-            walk,
-            ty: None,
-            filter: None,
-            depth: Depth { min: 1, max: 1 },
-        }],
+    let mut p = pattern(
+        ty,
+        Some(key),
+        vec![step("approved_by", walk)],
+        Projection::Graph,
     );
-    p.project = Projection::Graph;
-    p.at = ReadAt {
-        as_of,
-        valid_at: None,
-    };
+    p.at.as_of = as_of;
     let reply = cat
         .query(who, p)
         .await
@@ -461,18 +450,12 @@ async fn link_records_go_through_the_link_doors_and_ingest_only(
     )
     .await
     .must("ingesting the link i1 → p2 of `vouched_by`")?;
-    let mut p = Pattern::traverse(
-        TypeName::from("invoice"),
-        RecordKey::from("i1"),
-        vec![Step {
-            relation: "vouched_by".into(),
-            walk: Walk::Out,
-            ty: None,
-            filter: None,
-            depth: Depth { min: 1, max: 1 },
-        }],
+    let p = pattern(
+        "invoice",
+        Some("i1"),
+        vec![step("vouched_by", Walk::Out)],
+        Projection::Graph,
     );
-    p.project = Projection::Graph;
     let reply = cat.query(own, p).await.must("walking `vouched_by`")?;
     let QueryResult::Graph { edges, .. } = reply.data else {
         return Err(Failure::new("a graph projection answered something else"));
@@ -608,18 +591,12 @@ async fn retiring_an_end_keeps_the_link_and_the_walk_skips_the_retired_end(
     cat.retire(own, &"partner".into(), &"p1".into(), WriteOpts::default())
         .await
         .must("retiring p1")?;
-    let mut p = Pattern::traverse(
-        TypeName::from("invoice"),
-        RecordKey::from("i1"),
-        vec![Step {
-            relation: "approved_by".into(),
-            walk: Walk::Out,
-            ty: None,
-            filter: None,
-            depth: Depth { min: 1, max: 1 },
-        }],
+    let p = pattern(
+        "invoice",
+        Some("i1"),
+        vec![step("approved_by", Walk::Out)],
+        Projection::Graph,
     );
-    p.project = Projection::Graph;
     let reply = cat.query(own, p).await.must("walking from i1")?;
     let QueryResult::Graph { nodes, .. } = reply.data else {
         return Err(Failure::new("a graph projection answered something else"));

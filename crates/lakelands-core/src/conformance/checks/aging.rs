@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use lakelands_api::event::{EventBody, Procedure};
 use lakelands_api::expr::Condition;
-use lakelands_api::ontology::{Authority, Measure, StorageKind, TriggerDecl, ViewDecl};
+use lakelands_api::ontology::{Authority, StorageKind, TriggerDecl};
 use lakelands_api::seam::{AGING_RULE_TYPE, FeedFilter};
 use lakelands_api::write::{AgeReport, Declaration};
 use lakelands_api::{Catalog, LakeStore, Origin, Principal, Refusal, Timestamp, WriteOrigin};
@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, declare, field, head_unmoved, read, refused_on, type_decl, upsert,
+    Lake, Must, count_view, declare, field, head_unmoved, read, refused_on, type_decl, upsert,
 };
 
 check!(
@@ -456,26 +456,7 @@ async fn a_rule_that_does_not_fit_is_refused_naming_its_field(
     ty.fields.push(total);
     ty.key = vec!["number".into()];
     l.declare(ty).await?;
-    let mut counts = type_decl(
-        "counts",
-        vec![
-            field("status", StorageKind::Text),
-            field("n", StorageKind::Number),
-        ],
-    );
-    counts.key = vec!["status".into()];
-    counts.view = Some(Box::new(ViewDecl {
-        source: "invoice".into(),
-        r#where: None,
-        group_by: vec!["status".into()],
-        measures: vec![Measure {
-            name: "n".into(),
-            expr: "count()".into(),
-        }],
-        params: Default::default(),
-        merge: Default::default(),
-    }));
-    l.declare(counts).await?;
+    l.declare(count_view("counts", "invoice", "status")).await?;
     let before = store.head().await.must("reading the head")?;
     let cases = [
         (
