@@ -644,6 +644,21 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
                 }
             }
             for r in &t.relations {
+                // As the store: a view's records are computed, so only a
+                // relation derived from matching values starts from one.
+                if t.view.is_some() && r.derived.is_none() {
+                    let carrier = if r.via.is_some() {
+                        "a `via` field"
+                    } else {
+                        "link records"
+                    };
+                    return Err(invalid(format!(
+                        "type `{}`, relation `{}`: `{}` is a view, whose records are computed \
+                         and never written, so a relation carried by {carrier} could never hold \
+                         an edge; a relation on a view is derived from matching values",
+                        t.name, r.name, t.name
+                    )));
+                }
                 if !known(&r.target, Some(&t.name)) {
                     return Err(invalid(format!(
                         "type `{}`, relation `{}`: `{}` is not a declared type",
@@ -752,6 +767,38 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
                         ),
                         _ => format!("`{ty}` is not declared"),
                     }));
+                }
+                // As the store: a view is never written, so a trigger on
+                // one never fires, and an object set holds stored records.
+                if st.types.get(ty).is_some_and(|o| o.decl.view.is_some()) {
+                    match other {
+                        Declaration::Trigger(t) => {
+                            return Err(Error::Refused {
+                                field: Some("on".into()),
+                                reason: Refusal::Invalid {
+                                    message: format!(
+                                        "trigger `{}` watches `{ty}`, a view; a view is never \
+                                         written, so no write of it fires a trigger",
+                                        t.name
+                                    ),
+                                },
+                            });
+                        }
+                        Declaration::ObjectSet(s) => {
+                            return Err(Error::Refused {
+                                field: Some("of".into()),
+                                reason: Refusal::Invalid {
+                                    message: format!(
+                                        "object set `{}` holds `{ty}`, a view; a view's records \
+                                         are computed on read, and an object set holds stored \
+                                         records only",
+                                        s.name
+                                    ),
+                                },
+                            });
+                        }
+                        _ => {}
+                    }
                 }
                 // As the store: a trigger may watch any declared type, the
                 // link types of relations carried by link records among them.

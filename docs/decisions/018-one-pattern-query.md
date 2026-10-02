@@ -81,7 +81,15 @@ view is not searched: the indexes a search reads hold stored records
 only, so a search of computed records could only answer nothing. A view
 field that is searchable, carries an embedding or is a vector is
 refused when the view is declared, and a search on a view is refused,
-naming it; neither is answered empty.
+naming it; neither is answered empty. For the same reason a declaration
+that could never act on a view is refused when declared, naming both.
+A trigger on a view would never fire, since no write has the view's
+type. An object set holds stored records, and a set evaluated over
+computed records would be a feature of its own. A relation on a view is
+refused unless it is derived from matching values. A link names a live,
+written record as its `from` (035), so a relation carried by link
+records could never hold an edge. A view has no stored field for `via`
+to read. The refusal names the view and the relation.
 
 ## Extended: a view may take parameters bound at read
 
