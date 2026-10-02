@@ -458,8 +458,8 @@ belongs in the suite, not beside one engine:
 
 **graph measures**
 
-- `degree_counts_each_records_links_to_ends_it_may_see_highest_first` — 026, 029 and 035: `degree` counts each start record's links over the steps' relations in each step's direction, a via reference and a link record alike, but not a link to a retired end or, without the grant, a restricted link; highest first, ties by key, paged by limit
-- `components_partition_what_the_start_reaches_largest_first` — 026 and 029: `components` puts every record reached from the start over the steps' relations, both ways, in exactly one component, across types; components largest first, ties by their least (type, key), members by (type, key)
+- `degree_counts_each_records_links_to_ends_it_may_see_highest_first` — 026, 029 and 035: `degree` counts each start record's links over the steps' relations in each step's direction, a via reference and a link record alike, but not a link to a retired end or, without the grant, a restricted link; highest first, ties by key, paged by limit; a start by key or by `where` counts those records only, and a key no record has counts none
+- `components_partition_what_the_start_reaches_largest_first` — 026 and 029: `components` puts every record reached from the start over the steps' relations, both ways, in exactly one component, across types; components largest first, ties by their least (type, key), members by (type, key); a start by key or by a search reaches from those records only
 - `a_measure_reads_the_graph_at_the_position_it_is_asked_at` — 009 and 026: a measure `as_of` an earlier position counts the links live there, not a link written later
 - `components_past_the_lakes_max_graph_nodes_are_refused_too_large` — 018 and the location's limits: `components` whose records, over all components, would number more than `max_graph_nodes` are refused as too_large naming the ceiling, and nothing partial is answered
 - `a_measure_refuses_depth_where_to_order_by_and_one_way_components` — 018: a measure refuses a step `depth` or `where`, `to`, `order_by`, and a `components` step that does not walk `both`, each as invalid, rather than answer less than it seems to
@@ -607,7 +607,7 @@ belongs in the suite, not beside one engine:
 
 - `a_reactive_write_with_a_cause_carries_it_on_each_of_its_events` — 021, extended: a write through a catalog whose context names a cause carries it as the envelope's `cause` on each event the write itself appends (an upsert's record, a verb's `verb_called`, an ingest's record), while the events the store derives keep the store's cause (a trigger's firing names its write, a verb's write names its `verb_called`); no event's `context` carries `cause`
 - `a_cause_past_the_head_is_refused_and_appends_nothing` — 021, extended: a write whose context names a cause past the lake's head is refused as invalid naming both positions, appending nothing; a cause at the head, and at position 0, is taken
-- `the_reactive_ceiling_holds_on_every_door_that_writes` — 021, as extended on 2026-09-25 (lakelands#257): a context deeper than the lake's max_reactive_depth is refused as too_deep, appending nothing, through ingest, accept, reject, declare, apply, add_field, migrate_apply and migrate_value_type_apply as through the record doors
+- `the_reactive_ceiling_holds_on_every_door_that_writes` — 021, as extended on 2026-09-25 (lakelands#257): a context deeper than the lake's max_reactive_depth is refused as too_deep naming that ceiling, appending nothing, through ingest, accept, reject, declare, apply, add_field, migrate_apply and migrate_value_type_apply as through the record doors
 
 **triggers**
 
@@ -616,7 +616,7 @@ belongs in the suite, not beside one engine:
 - `a_revival_is_a_creation_to_a_guard` — 004, extended: an upsert of a retired record is a creation to a guard: `previous(f)` is null, `changed(f)` is true and `retired()` is false
 - `retired_outside_a_triggers_guard_is_refused_naming_it` — 004, extended: `retired()` in an object set's filter, a verb's `requires`, a derived field or a find's filter, and `retired` called with an argument in a guard, are refused as invalid naming `retired`, appending nothing
 - `a_reaction_past_its_triggers_max_depth_is_refused_naming_it` — 021, extended: a reactive write whose `cause` names a firing of a trigger with `max_depth` is refused too_deep naming the trigger when it is deeper than that ceiling, appending nothing, while the lake's own ceiling is higher; a reaction to another trigger, or naming no cause, at the same depth is taken
-- `a_trigger_max_depth_above_the_lakes_ceiling_is_refused` — 021, extended: a trigger whose `max_depth` is above the lake's `max_reactive_depth` is refused as invalid naming the trigger and both numbers; the lake's ceiling itself and 0 are taken
+- `a_trigger_max_depth_above_the_lakes_ceiling_is_refused` — 021, extended: a trigger whose `max_depth` is above the lake's `max_reactive_depth` is refused as invalid naming the trigger and both numbers, by `declare`, `apply` and `propose`, and by `accept` once the lake is opened again with a lower ceiling; the lake's ceiling itself and 0 are taken
 
 **after**
 
