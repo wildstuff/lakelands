@@ -100,6 +100,7 @@ pub const ALL: &[Check] = &[
     backings::RECORDED_FILL_REACTS,
     backings::CHAIN_WAITS,
     views::GROUPS_AND_SUMS,
+    views::UNGROUPED_HOLDS_ONE,
     views::SAME_EITHER_WAY,
     views::EMPTIED_GROUP_GOES,
     views::CURRENT_AFTER_INGEST,

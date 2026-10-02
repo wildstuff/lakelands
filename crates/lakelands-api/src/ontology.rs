@@ -449,7 +449,9 @@ pub struct ViewDecl {
     /// Which source records it covers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#where: Option<Condition>,
-    /// Source fields whose values form one view record each.
+    /// Source fields whose values form one view record each. Without
+    /// them the view is one record, keyed [`crate::key::UNGROUPED`], over
+    /// no source record too.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub group_by: Vec<FieldName>,
     /// The view's fields, each an expression over its group. They are
