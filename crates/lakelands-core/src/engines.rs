@@ -30,8 +30,7 @@
 //!   key.
 //! - **Proposals** come newest first, ties by id.
 //! - **Vectors.** Similarity is the cosine of the angle between two
-//!   vectors, computed in `f64`; 0 when either is all zeros. Best first,
-//!   ties by key.
+//!   vectors ([`lakelands_api::query::cosine`]). Best first, ties by key.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
@@ -949,23 +948,6 @@ pub fn proposals<'a>(
         .take(filter.limit.map_or(usize::MAX, |l| l as usize))
         .cloned()
         .collect()
-}
-
-/// The cosine similarity of two vectors of one length, in `f64`; 0 when
-/// either is all zeros.
-pub fn cosine(a: &[f32], b: &[f32]) -> f64 {
-    let (mut dot, mut na, mut nb) = (0.0f64, 0.0f64, 0.0f64);
-    for (x, y) in a.iter().zip(b) {
-        let (x, y) = (f64::from(*x), f64::from(*y));
-        dot += x * y;
-        na += x * x;
-        nb += y * y;
-    }
-    if na == 0.0 || nb == 0.0 {
-        0.0
-    } else {
-        dot / (na.sqrt() * nb.sqrt())
-    }
 }
 
 /// A vector as an index stores it: its components as little-endian

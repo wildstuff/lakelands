@@ -478,7 +478,7 @@ earlier position ranks by the index at the head and keeps only the
 candidates visible at that position.
 
 **The ceiling.** Every engine searches by brute force with the one
-cosine (`lakelands_core::engines::cosine`) and keeps the best `k` as it
+cosine (`lakelands_api::query::cosine`) and keeps the best `k` as it
 goes (`lakelands_core::engines::TopK`), whose answer is what ranking
 every vector and cutting at `k` answers, to the bit. So what a search
 holds is `k` entries, whatever the field holds; SQLite steps its

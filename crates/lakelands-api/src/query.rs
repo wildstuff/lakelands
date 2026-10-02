@@ -401,3 +401,22 @@ pub struct Hit {
     /// Higher is more relevant; comparable within one answer only.
     pub score: f64,
 }
+
+/// The score of a vector search: the cosine of the angle between two
+/// vectors of one length, computed in `f64`; 0 when either is all zeros.
+/// The store, every engine and the mock score with this one definition,
+/// so a ranking never depends on whose arithmetic made it.
+pub fn cosine(a: &[f32], b: &[f32]) -> f64 {
+    let (mut dot, mut na, mut nb) = (0.0f64, 0.0f64, 0.0f64);
+    for (x, y) in a.iter().zip(b) {
+        let (x, y) = (f64::from(*x), f64::from(*y));
+        dot += x * y;
+        na += x * x;
+        nb += y * y;
+    }
+    if na == 0.0 || nb == 0.0 {
+        0.0
+    } else {
+        dot / (na.sqrt() * nb.sqrt())
+    }
+}

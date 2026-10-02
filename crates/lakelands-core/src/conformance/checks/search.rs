@@ -580,7 +580,12 @@ fn reference(points: &[Point], earlier: bool, group: Option<u32>, k: u32) -> Vec
             let seen = if earlier { p.then } else { Some(p.group) };
             seen.is_some_and(|g| group.is_none_or(|want| g == want))
         })
-        .map(|(p, v)| (p.key.as_str().into(), crate::engines::cosine(&QUERY, &v)))
+        .map(|(p, v)| {
+            (
+                p.key.as_str().into(),
+                lakelands_api::query::cosine(&QUERY, &v),
+            )
+        })
         .collect();
     crate::engines::rank(&mut all, k);
     all.into_iter().map(|(key, score)| (key.0, score)).collect()

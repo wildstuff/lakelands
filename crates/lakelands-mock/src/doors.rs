@@ -2619,13 +2619,15 @@ impl Catalog for MockCatalog {
                 ..
             } => {
                 readable(&st, who, t, f)?;
+                // A stored vector is read back as the `f32`s it was written as.
                 let cos = |v: &Value| {
-                    let v: Vec<f64> = v.as_array()?.iter().filter_map(Value::as_f64).collect();
-                    let dot: f64 = v.iter().zip(vector).map(|(a, b)| a * f64::from(*b)).sum();
-                    let n = |x: f64| x.sqrt();
-                    let na = n(v.iter().map(|a| a * a).sum());
-                    let nb = n(vector.iter().map(|b| f64::from(*b).powi(2)).sum());
-                    (na > 0.0 && nb > 0.0).then(|| dot / (na * nb))
+                    let v: Vec<f32> = v
+                        .as_array()?
+                        .iter()
+                        .filter_map(Value::as_f64)
+                        .map(|x| x as f32)
+                        .collect();
+                    Some(lakelands_api::query::cosine(&v, vector))
                 };
                 let s = rows
                     .into_iter()

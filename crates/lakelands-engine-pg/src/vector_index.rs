@@ -7,7 +7,7 @@
 //! it, ordered by L2 distance, which on unit vectors is cosine's order.
 //! A search over such a field reads its candidates from the index, as many
 //! as it asks for, and ranks them by the one cosine
-//! (`lakelands_core::engines::cosine`, then `TopK`), ties by key: the
+//! (`lakelands_api::query::cosine`, then `TopK`), ties by key: the
 //! answer is the index's set, which may miss a neighbour the exact scan
 //! would find. Every other field is searched by the exact scan.
 //!
