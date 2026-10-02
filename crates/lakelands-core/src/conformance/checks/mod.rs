@@ -210,6 +210,7 @@ pub const ALL: &[Check] = &[
     annotations::REFUSED_NAMING,
     proposals::VERB_PROCEDURE_VERSION,
     cursors::CURSOR_STAYS,
+    cursors::CURSOR_ONE_ANSWER,
     feed::FEED_IS_THE_LOG,
     feed::REBUILD_LEAVES_THE_FEED,
     feed::TRIGGER_FIRES,

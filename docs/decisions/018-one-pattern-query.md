@@ -117,8 +117,13 @@ each other. A view's parameters are part of its shape, so changing them
 is a change of shape like any other. A view that declares none keeps the
 schema hash it had. A cursor carries the parameters its first page was
 read with, and continuing it with others is refused, since the pages
-would belong to two answers. Views are computed on read, so nothing is
-kept per binding.
+would belong to two answers. For the same reason a cursor carries the
+door and the type it was handed out for: a page of `find` continues
+only that `find` on that type, a page of `query` that query, a page of
+`search` that search, and any other use is refused as invalid, naming
+where the cursor belongs (lakelands#367). The cursor's bytes are opaque
+and change freely; no log format changes. Views are computed on read,
+so nothing is kept per binding.
 
 A pattern binds only the view it starts on. Suppose one of its steps, in
 rows or in a measure, arrives at a view with parameters other than its

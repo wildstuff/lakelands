@@ -130,28 +130,47 @@ struct CursorState {
     /// with others would continue a different answer.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     params: Params,
+    /// The door and the type it was handed out for, which a page
+    /// continues and nothing else (018).
+    #[serde(default)]
+    door: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ty: Option<TypeName>,
 }
 
 fn encode(c: &CursorState) -> Cursor {
     Cursor(canonical::hex(&canonical::of(c)))
 }
 
-/// The offset a page continues at: none without a cursor, and refused
-/// when the cursor was handed out for other view parameters.
-fn offset(c: Option<&Cursor>, params: &Params) -> Result<usize> {
+/// The offset a `query` page continues at: none without a cursor.
+fn offset(c: Option<&Cursor>, ty: &TypeName, params: &Params) -> Result<usize> {
     let Some(c) = c else { return Ok(0) };
-    let state = decode(c)?;
-    if &state.params != params {
-        return Err(other_params());
-    }
-    Ok(state.offset as usize)
+    Ok(resume(c, "query", Some(ty), params)?.offset as usize)
 }
 
-fn other_params() -> Error {
-    invalid(
-        "the cursor was handed out for other parameters; continue with the parameters its \
-         first page was read with",
-    )
+/// A cursor's state, when it was handed out for this door, this type and
+/// these view parameters: a page continues only the answer it began, and
+/// any other use is refused, naming what differs (018).
+fn resume(c: &Cursor, door: &str, ty: Option<&TypeName>, params: &Params) -> Result<CursorState> {
+    let state = decode(c)?;
+    let on = |door: &str, ty: Option<&TypeName>| match ty {
+        Some(ty) => format!("`{door}` on `{ty}`"),
+        None => format!("`{door}`"),
+    };
+    if state.door != door || state.ty.as_ref() != ty {
+        return Err(invalid(format!(
+            "the cursor was handed out for {}, not {}; continue it there",
+            on(&state.door, state.ty.as_ref()),
+            on(door, ty)
+        )));
+    }
+    if &state.params != params {
+        return Err(invalid(
+            "the cursor was handed out for other parameters; continue with the parameters \
+             its first page was read with",
+        ));
+    }
+    Ok(state)
 }
 
 fn decode(c: &Cursor) -> Result<CursorState> {
@@ -911,13 +930,7 @@ impl<'a> Reader<'a> {
         }
         let limit = self.limit(find.limit)?;
         let after = match &find.cursor {
-            Some(c) => {
-                let state = decode(c)?;
-                if state.params != params {
-                    return Err(other_params());
-                }
-                state.after
-            }
+            Some(c) => resume(c, "find", Some(ty), &params)?.after,
             None => asked,
         };
         let mut keyed: Vec<((Vec<Value>, RecordKey), StoredRecord)> = if decl.view.is_some() {
@@ -949,6 +962,8 @@ impl<'a> Reader<'a> {
                     after: Some(k.clone()),
                     offset: 0,
                     params: params.clone(),
+                    door: "find".into(),
+                    ty: Some(ty.clone()),
                 })
             })
         } else {
@@ -1161,7 +1176,7 @@ impl<'a> Reader<'a> {
     pub fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
         let limit = self.limit(filter.limit)?;
         let offset = match &filter.cursor {
-            Some(c) => decode(c)?.offset as usize,
+            Some(c) => resume(c, "proposals", None, &Params::new())?.offset as usize,
             None => 0,
         };
         let all = self.view.proposals(&ProposalFilter {
@@ -1227,7 +1242,7 @@ impl<'a> Reader<'a> {
             rights::check_probe(self.who, &decl, core_derive::reads(e).iter())?;
         }
         let offset = match &s.cursor {
-            Some(c) => decode(c)?.offset as usize,
+            Some(c) => resume(c, "search", Some(&s.ty), &Params::new())?.offset as usize,
             None => 0,
         };
         let k = s.k.max(1) as usize;
@@ -1309,6 +1324,8 @@ impl<'a> Reader<'a> {
                 after: None,
                 offset: (offset + k) as u64,
                 params: Params::new(),
+                door: "search".into(),
+                ty: Some(s.ty.clone()),
             })
         });
         Ok(Hits {
@@ -1650,7 +1667,7 @@ impl<'a> Reader<'a> {
             })
             .collect();
         keyed.sort_by(|a, b| Self::compare(&order, &a.0, &b.0));
-        let offset = offset(p.cursor.as_ref(), &params)?;
+        let offset = offset(p.cursor.as_ref(), &p.start.ty, &params)?;
         let more = keyed.len() > offset + limit;
         let rows = keyed
             .into_iter()
@@ -1664,6 +1681,8 @@ impl<'a> Reader<'a> {
                 after: None,
                 offset: (offset + limit) as u64,
                 params,
+                door: "query".into(),
+                ty: Some(p.start.ty.clone()),
             })
         });
         Ok(QueryResult::Rows { rows, next_cursor })
