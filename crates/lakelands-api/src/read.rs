@@ -74,7 +74,7 @@ pub enum OrderBy {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Order {
     /// The field sorted on; empty, and absent on the wire, for `latest`.
-    #[serde(default = "no_field", skip_serializing_if = "is_no_field")]
+    #[serde(default, skip_serializing_if = "is_no_field")]
     pub field: FieldName,
     /// What of the field orders: its value unless stated.
     #[serde(default, skip_serializing_if = "is_value")]
@@ -86,10 +86,6 @@ pub struct Order {
 
 fn is_value(by: &OrderBy) -> bool {
     *by == OrderBy::Value
-}
-
-fn no_field() -> FieldName {
-    FieldName::new("")
 }
 
 fn is_no_field(field: &FieldName) -> bool {

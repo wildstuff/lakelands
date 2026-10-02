@@ -11,7 +11,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 macro_rules! name {
-    ($(#[$doc:meta])* $name:ident) => {
+    ($($(#[$doc:meta])* $name:ident,)*) => {$(
         $(#[$doc])*
         #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
         #[serde(transparent)]
@@ -64,60 +64,38 @@ macro_rules! name {
                 Self(s)
             }
         }
-    };
+    )*};
 }
 
-name!(
+name! {
     /// A lake: one world with one truth, one log and one writer. Nothing
     /// is ever read or written across two lakes.
-    LakeId
-);
-name!(
+    LakeId,
     /// A type declared in a lake's ontology. Names beginning with `sys.`
     /// are reserved for system types (`docs/decisions/003-reservation-by-namespace.md`).
-    TypeName
-);
-name!(
+    TypeName,
     /// A field of a type or of a relation.
-    FieldName
-);
-name!(
+    FieldName,
     /// A relation declared on a type.
-    RelationName
-);
-name!(
+    RelationName,
     /// A verb declared in a lake's ontology.
-    VerbName
-);
-name!(
+    VerbName,
     /// A value type declared in a lake's ontology over a storage kind.
-    ValueTypeName
-);
-name!(
+    ValueTypeName,
     /// A record's key within its type.
-    RecordKey
-);
-name!(
+    RecordKey,
     /// A source that feeds a lake through `ingest`. The source's own
     /// offset is the caller's business; the lake keeps only positions.
-    SourceId
-);
-name!(
+    SourceId,
     /// A proposal recorded by `WriteProposed`, accepted or rejected later.
-    ProposalId
-);
-name!(
+    ProposalId,
     /// A caller-chosen key that makes a retried authored write a no-op.
-    IdempotencyKey
-);
-name!(
+    IdempotencyKey,
     /// A trigger declared in a lake's ontology.
-    TriggerName
-);
-name!(
+    TriggerName,
     /// A parameter a view declares and a read binds.
-    ParamName
-);
+    ParamName,
+}
 
 /// The log coordinate: the exact place in a lake's history an answer
 /// reflects. Positions start at 0 (the lake's first event) and have no
