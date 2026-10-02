@@ -160,17 +160,9 @@ impl FieldDescription {
                 required: decl.required,
                 authority: decl.authority,
                 access,
-                derived: None,
-                function: None,
-                depends_on: vec![],
                 on_input_change: decl.on_input_change,
-                filterable: false,
-                searchable: false,
                 sensitive: decl.sensitive,
-                description: None,
-                label: None,
-                embed: None,
-                annotations: Annotations::new(),
+                ..FieldDescription::default()
             };
         }
         FieldDescription {

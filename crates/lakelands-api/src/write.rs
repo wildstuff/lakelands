@@ -554,8 +554,9 @@ pub struct Migration {
 /// The preflight of a migration: what it would do to the stored records,
 /// computed before anything changes. A migration is applied only when its
 /// report is lossless, and only by a call that names the report it was
-/// shown.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// shown. The empty report (`Default`) is what a proposer sends with a
+/// proposed migration, which the store replaces with the preflight's.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MigrationReport {
     /// The type migrated.
     #[serde(rename = "type")]
@@ -589,26 +590,6 @@ pub struct MigrationReport {
     pub lossless: bool,
     /// Names this report; `migrate_apply` must repeat it.
     pub report_id: String,
-}
-
-/// An empty report: what a proposer sends with a proposed migration,
-/// which the store replaces with the preflight's.
-impl Default for MigrationReport {
-    fn default() -> Self {
-        MigrationReport {
-            ty: TypeName::from(""),
-            from_schema_hash: String::new(),
-            to_schema_hash: String::new(),
-            records_scanned: 0,
-            fields: Vec::new(),
-            dropped: Vec::new(),
-            rekeyed: Vec::new(),
-            references: Vec::new(),
-            sample_collisions: Vec::new(),
-            lossless: false,
-            report_id: String::new(),
-        }
-    }
 }
 
 /// How the values of one field convert to its new type.

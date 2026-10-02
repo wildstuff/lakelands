@@ -266,39 +266,29 @@ fn all_names(
     links: &[(TypeName, RelationName)],
 ) -> BTreeMap<String, Vec<String>> {
     let mut names: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut add = |name: String, from: String| names.entry(name).or_default().push(from);
     for g in GENERIC_TOOLS {
-        names
-            .entry(g.to_owned())
-            .or_default()
-            .push(format!("the generic tool `{g}`"));
+        add(g.to_owned(), format!("the generic tool `{g}`"));
     }
     for ty in types {
-        if tool_base(ty.as_str()).is_empty() {
-            names
-                .entry(String::new())
-                .or_default()
-                .push(format!("type `{ty}`"));
+        let base = tool_base(ty.as_str());
+        if base.is_empty() {
+            add(base, format!("type `{ty}`"));
             continue;
         }
         for s in DOOR_SUFFIXES {
-            names
-                .entry(format!("{}_{s}", tool_base(ty.as_str())))
-                .or_default()
-                .push(format!("type `{ty}`"));
+            add(format!("{base}_{s}"), format!("type `{ty}`"));
         }
     }
     for v in verbs {
-        names
-            .entry(tool_base(v.as_str()))
-            .or_default()
-            .push(format!("verb `{v}`"));
+        add(tool_base(v.as_str()), format!("verb `{v}`"));
     }
     for (ty, relation) in links {
         for s in LINK_SUFFIXES {
-            names
-                .entry(link_tool(ty, relation, s))
-                .or_default()
-                .push(format!("relation `{relation}` of type `{ty}`"));
+            add(
+                link_tool(ty, relation, s),
+                format!("relation `{relation}` of type `{ty}`"),
+            );
         }
     }
     names
@@ -716,13 +706,12 @@ fn link_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
                     .collect()
             })
             .unwrap_or_default();
+        let key = json!({"type": "string",
+                         "description": format!("The key of the `{}` record the link is from.", ty.name)});
         let target = json!({"type": "string",
                             "description": format!("The key of the `{}` record to link to.", r.target)});
         let mut p = props([
-            (
-                "key",
-                json!({"type": "string", "description": format!("The key of the `{}` record the link is from.", ty.name)}),
-            ),
+            ("key", key.clone()),
             ("to", target.clone()),
             (
                 "fields",
@@ -745,13 +734,7 @@ fn link_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
                 relation: relation.clone(),
             },
         });
-        let mut p = props([
-            (
-                "key",
-                json!({"type": "string", "description": format!("The key of the `{}` record the link is from.", ty.name)}),
-            ),
-            ("to", target),
-        ]);
+        let mut p = props([("key", key), ("to", target)]);
         write_opts(&mut p);
         out.push(ToolSpec {
             name: link_tool(&ty.name, relation, "unlink"),
