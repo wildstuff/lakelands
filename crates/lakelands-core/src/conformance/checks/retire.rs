@@ -16,7 +16,7 @@ use crate::conformance::fixture::{
 check!(
     /// Retiring takes a write grant on every field.
     RETIRE_NEEDS_EVERY_FIELD = a_principal_who_may_write_only_some_fields_cannot_retire,
-    "006 and TypeRights::retire: retiring removes every field of a record, so it needs a write grant on every field of the type"
+    "006 and TypeRights::retire: retiring removes every field of a record, so it needs a write grant on every field of the type, checked before the record is looked up, and the record before the expected version (016, extended)"
 );
 
 check!(
@@ -126,6 +126,23 @@ async fn a_principal_who_may_write_only_some_fields_cannot_retire(
     head_unmoved(store.as_ref(), before, "retiring without write on `amount`").await?;
 
     let all = field_writer(store.as_ref(), "keeper", "invoice", &["status", "amount"]);
+    // In retire's order, the grant before the record, the record before
+    // the version (016, extended).
+    let gone = lakelands_api::RecordKey::from("gone");
+    let ungranted = cat
+        .retire(&clerk, &invoice, &gone, WriteOpts::default())
+        .await;
+    let at = WriteOpts {
+        expected_version: Some(lakelands_api::Version(3)),
+        ..WriteOpts::default()
+    };
+    let missing = cat.retire(&all, &invoice, &gone, at).await;
+    ensure!(
+        matches!(reason(&ungranted), Some(Refusal::NotGranted))
+            && matches!(missing, Err(lakelands_api::Error::NotFound { .. })),
+        "retiring a key never written is refused for the grant first, then as not found \
+         before a version is compared; it answered {ungranted:?} and {missing:?}"
+    );
     cat.retire(&all, &invoice, &"i".into(), WriteOpts::default())
         .await
         .must("retiring `i` as a principal who may write every field")?;

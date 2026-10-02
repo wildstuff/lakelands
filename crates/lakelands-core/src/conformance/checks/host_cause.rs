@@ -34,7 +34,7 @@ check!(
 check!(
     /// A cause past the head is refused.
     CAUSE_PAST_HEAD = a_cause_past_the_head_is_refused_and_appends_nothing,
-    "021, extended: a write whose context names a cause past the lake's head is refused as invalid naming both positions, appending nothing; a cause at the head, and at position 0, is taken"
+    "021, extended: a write whose context names a cause past the lake's head is refused as invalid naming both positions, appending nothing, after the door's own checks (016, extended); a cause at the head, and at position 0, is taken"
 );
 
 check!(
@@ -46,7 +46,7 @@ check!(
 check!(
     /// The context comes first on every door.
     CONTEXT_FIRST = every_write_door_checks_the_context_before_anything_else,
-    "021, extended (lakelands#344): a context past the ceiling is refused as too_deep before anything else a door checks, so a request that also breaks the door's own first rule (a principal without grants, a link type at an ordinary door, an undeclared type, relation, verb or proposal) is refused as too_deep on every write door"
+    "021, extended (lakelands#344): a context past the ceiling is refused as too_deep before anything else a door checks, so a request that also breaks the door's own first rule (a principal without grants, a link type at an ordinary door, an undeclared type, relation, verb or proposal) is refused as too_deep on every write door; a principal of another lake is refused not_granted before that"
 );
 
 check!(
@@ -219,6 +219,34 @@ async fn a_cause_past_the_head_is_refused_and_appends_nothing(
     write(store.catalog(reactive(1, Some(Position::GENESIS))), "j3")
         .await
         .must("a write whose cause is position 0")?;
+    // The cause is judged at the append, after the door's own checks.
+    let late = store.catalog(reactive(
+        1,
+        Some(store.head().await.must("the head")?.next()),
+    ));
+    let nobody = nobody(store.as_ref());
+    let job = TypeName::from("job");
+    let ungranted = late
+        .upsert(
+            &nobody,
+            &job,
+            &"j4".into(),
+            patch(json!({"status": "x"})),
+            WriteOpts::default(),
+        )
+        .await;
+    let stale = WriteOpts {
+        expected_version: Some(lakelands_api::Version(9)),
+        ..WriteOpts::default()
+    };
+    let conflict = late.retire(&own, &job, &"j2".into(), stale).await;
+    ensure!(
+        matches!(refused_on(&ungranted), Some(("status", _)))
+            && matches!(conflict, Err(lakelands_api::Error::Conflict { .. })),
+        "a cause past the head is judged after the door's own checks: a write of a field \
+         nobody may know of answered {ungranted:?}, and a retire at a stale version \
+         {conflict:?}"
+    );
     Ok(())
 }
 
@@ -453,15 +481,26 @@ async fn every_write_door_checks_the_context_before_anything_else(
             .map(drop),
         ),
     ];
-    let red: Vec<String> = tries
+    let mut red: Vec<String> = tries
         .into_iter()
         .filter(|(_, answer)| !matches!(reason(answer), Some(Refusal::TooDeep { .. })))
         .map(|(door, answer)| format!("`{door}` answered {answer:?}"))
         .collect();
+    // The lake comes before the context: a principal of another lake.
+    let stranger = lakelands_api::Principal {
+        lake: "elsewhere".into(),
+        ..nobody.clone()
+    };
+    let foreign = d
+        .upsert(&stranger, &lt, &key, patch(json!({"n": 1})), opts())
+        .await;
+    if !matches!(reason(&foreign), Some(Refusal::NotGranted)) {
+        red.push(format!("a principal of another lake answered {foreign:?}"));
+    }
     ensure!(
         red.is_empty(),
         "through a context past the ceiling, every write door refuses as too_deep before \
-         anything else it checks: {}",
+         anything else it checks, after the lake: {}",
         red.join("; ")
     );
     head_unmoved(store.as_ref(), head, "the writes past the ceiling").await

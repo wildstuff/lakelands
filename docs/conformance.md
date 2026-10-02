@@ -158,6 +158,7 @@ belongs in the suite, not beside one engine:
 - `a_patch_with_a_field_the_principal_may_not_write_is_refused_whole` — 006 and 012: a write carrying a field its principal may not write is refused whole, never applied in part
 - `a_field_absent_from_a_patch_is_unchanged_and_null_clears_it` — 012 and the log format: an upsert is a sparse patch; an absent field is unchanged and null clears the field
 - `a_patch_with_an_undeclared_field_is_refused_whole` — 015: a field the lake's map does not declare is refused as invalid, and nothing of the patch is written
+- `a_write_breaking_two_record_checks_is_refused_by_the_earlier` — 016, extended (lakelands#338): a record write that breaks two adjacent record checks is refused by the earlier: the type before an empty patch, the key before the fields, field by field in name order with the door before the grant, the grant before the value, the value before the key fill, the key's agreement before a reference, a reference before the version, the version before a required field; a retry answers its first outcome before any of them
 
 **positions**
 
@@ -216,7 +217,7 @@ belongs in the suite, not beside one engine:
 **views**
 
 - `a_view_groups_its_source_and_sums_it_exactly` — the ontology: a view type is computed from its source's records, one record per group, measures exact for decimals
-- `every_door_that_writes_or_holds_a_record_refuses_a_view_alike` — 018, extended (lakelands#370): upsert, retire, link, unlink, ingest, propose, restrict and unrestrict each refuse a view as invalid naming it, as upsert does; declaring a verb on a record of a view is refused naming both, while a verb on the view's type that reaches outside is taken
+- `every_door_that_writes_or_holds_a_record_refuses_a_view_alike` — 018, extended (lakelands#370): upsert, retire, link, unlink, ingest, propose, restrict and unrestrict each refuse a view as invalid naming it, as upsert does, before the grants; declaring a verb on a record of a view is refused naming both, while a verb on the view's type that reaches outside is taken
 - `an_ungrouped_view_holds_one_record_keyed_all_even_over_none` — 018, extended: a view without `group_by` holds exactly one record, keyed `all`, the totals over every source record its `where` keeps, even when it keeps none (a count and a sum of none are 0, a minimum null); `get` answers it by that key and no other, and a read's parameters and a merged source measure into the same record
 - `a_view_is_the_same_whether_declared_before_or_after_its_source_was_written` — the ontology: a view is a function of its source's state, so how the source got there cannot change a byte of it
 - `a_view_drops_a_group_whose_last_member_is_retired` — the ontology: a view holds a record per group that has members; retiring a group's last member removes the group
@@ -330,7 +331,7 @@ belongs in the suite, not beside one engine:
 - `an_unlinked_link_leaves_the_walk_and_stays_in_its_history` — 035 and §2.3: unlink retires the link record; the walk no longer follows it, and a read as of before the unlink still does
 - `a_link_that_would_break_the_relations_cardinality_is_refused` — §2.3 and 024, extended: many_to_one allows one live link per `from`; a second is refused as a constraint and nothing is appended, and a principal without write on the link type is refused not_granted before the links are read
 - `a_link_to_a_key_that_is_no_live_record_is_refused` — 032 and 035: a link's ends are references, so a link to a key that is not a live record of the target is refused on `to`
-- `link_records_go_through_the_link_doors_and_ingest_only` — 035 and §2.3: upsert and retire refuse a link type's records, a caller cannot declare a link type, the link door refuses a relation whose links arrive by ingest, and ingest writes them
+- `link_records_go_through_the_link_doors_and_ingest_only` — 035 and §2.3: upsert and retire refuse a link type's records, before a retry under the key of a link; a caller cannot declare a link type; the link door refuses a relation whose links arrive by ingest, before `from` among the fields, `from` among the fields before a retry, and a retry before the record checks (035, extended); and ingest writes them
 - `a_relation_cannot_move_between_via_and_link_records` — 035 and §2.3: a declaration that gives a relation via it did not have, or takes it away, is refused
 - `a_link_field_the_principal_may_not_write_refuses_the_link` — 035: the link doors check the principal's grants on the link type's fields as upsert does
 - `a_relations_fields_are_declared_when_added_and_migrated_when_retyped` — 007, 027 and 035: adding an optional link field is declared; retyping one reshapes the link type, is refused at declare and goes through migrate on the owner type
@@ -418,7 +419,7 @@ belongs in the suite, not beside one engine:
 
 **retire**
 
-- `a_principal_who_may_write_only_some_fields_cannot_retire` — 006 and TypeRights::retire: retiring removes every field of a record, so it needs a write grant on every field of the type
+- `a_principal_who_may_write_only_some_fields_cannot_retire` — 006 and TypeRights::retire: retiring removes every field of a record, so it needs a write grant on every field of the type, checked before the record is looked up, and the record before the expected version (016, extended)
 - `a_record_retired_at_a_position_is_readable_just_before_it` — 009 and 001: a read at the position before a retirement sees the record as it was, to a principal who could read it then; a session told of the retirement reads it there
 - `a_type_whose_fields_all_come_from_a_source_has_no_upsert` — 016 and TypeRights::upsert: upsert writes authored fields; a type with none has no upsert for anyone, the owner included: describe says so, and the door refuses it as the wrong door, naming the field
 
@@ -621,9 +622,9 @@ belongs in the suite, not beside one engine:
 **host cause**
 
 - `a_reactive_write_with_a_cause_carries_it_on_each_of_its_events` — 021, extended: a write through a catalog whose context names a cause carries it as the envelope's `cause` on each event the write itself appends (an upsert's record, a verb's `verb_called`, an ingest's record), while the events the store derives keep the store's cause (a trigger's firing names its write, a verb's write names its `verb_called`); no event's `context` carries `cause`
-- `a_cause_past_the_head_is_refused_and_appends_nothing` — 021, extended: a write whose context names a cause past the lake's head is refused as invalid naming both positions, appending nothing; a cause at the head, and at position 0, is taken
+- `a_cause_past_the_head_is_refused_and_appends_nothing` — 021, extended: a write whose context names a cause past the lake's head is refused as invalid naming both positions, appending nothing, after the door's own checks (016, extended); a cause at the head, and at position 0, is taken
 - `the_reactive_ceiling_holds_on_every_door_that_writes` — 021, as extended on 2026-09-25 (lakelands#257): a context deeper than the lake's max_reactive_depth is refused as too_deep naming that ceiling, appending nothing, through ingest, accept, reject, declare, apply, add_field, migrate_apply and migrate_value_type_apply as through the record doors
-- `every_write_door_checks_the_context_before_anything_else` — 021, extended (lakelands#344): a context past the ceiling is refused as too_deep before anything else a door checks, so a request that also breaks the door's own first rule (a principal without grants, a link type at an ordinary door, an undeclared type, relation, verb or proposal) is refused as too_deep on every write door
+- `every_write_door_checks_the_context_before_anything_else` — 021, extended (lakelands#344): a context past the ceiling is refused as too_deep before anything else a door checks, so a request that also breaks the door's own first rule (a principal without grants, a link type at an ordinary door, an undeclared type, relation, verb or proposal) is refused as too_deep on every write door; a principal of another lake is refused not_granted before that
 - `a_triggers_ceiling_is_read_with_the_cause_at_the_append` — 021, extended (lakelands#375): a reaction naming a cause past the head is refused as invalid even when the next append puts a firing there; once the firing is in the log, a reaction past its trigger's ceiling is refused too_deep naming the trigger, and that ceiling is read at the append, after the door's own checks, while the lake's ceiling comes first
 
 **triggers**
