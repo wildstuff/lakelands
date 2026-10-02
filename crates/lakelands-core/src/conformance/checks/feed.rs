@@ -5,13 +5,13 @@
 use std::sync::Arc;
 
 use lakelands_api::event::{Event, EventBody};
-use lakelands_api::ontology::StorageKind;
+use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::{LakeStore, Position, RecordKey, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, doors, field, log_events, owner, type_decl, upsert};
+use crate::conformance::fixture::{Lake, Must, log_events, type_of};
 
 check!(
     /// A key filter answers one record's events.
@@ -51,16 +51,9 @@ check!(
 
 async fn invoices(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
-    l.declare(type_decl(
-        "invoice",
-        vec![
-            field("status", StorageKind::Text),
-            field("note", StorageKind::Text),
-        ],
-    ))
-    .await?;
-    l.declare(type_decl("memo", vec![field("text", StorageKind::Text)]))
+    l.declare(type_of("invoice", &[("status", Text), ("note", Text)]))
         .await?;
+    l.declare(type_of("memo", &[("text", Text)])).await?;
     Ok(l)
 }
 
@@ -391,14 +384,8 @@ async fn a_feed_filtered_by_key_answers_that_records_events_only(
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     for ty in ["invoice", "credit"] {
-        l.declare(type_decl(
-            ty,
-            vec![
-                field("status", StorageKind::Text),
-                field("amount", StorageKind::Number),
-            ],
-        ))
-        .await?;
+        l.declare(type_of(ty, &[("status", Text), ("amount", Number)]))
+            .await?;
     }
     for d in [
         json!({"declare": "trigger", "name": "paid", "on": "invoice", "when": "status = 'paid'"}),
@@ -519,16 +506,10 @@ async fn a_feed_filtered_by_key_answers_that_records_events_only(
 }
 
 async fn a_key_filter_does_not_follow_a_rekey(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
-    super::rekey::lake(store.as_ref(), super::rekey::IBANS).await?;
+    let l = super::rekey::lake(store.as_ref(), super::rekey::IBANS).await?;
     let at = super::rekey::apply(store.as_ref()).await?;
-    upsert(
-        doors(store.as_ref()).as_ref(),
-        &owner(store.as_ref()),
-        "account",
-        "DE1",
-        json!({"holder": "after the re-key"}),
-    )
-    .await?;
+    l.upsert("account", "DE1", json!({"holder": "after the re-key"}))
+        .await?;
     let old = polled(store.as_ref(), filter(&[], &["account"], &["1"])).await?;
     ensure!(
         !old.is_empty() && old.iter().all(|e| e.position < at),

@@ -20,19 +20,19 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use lakelands_api::event::EventBody;
-use lakelands_api::ontology::StorageKind;
+use lakelands_api::ontology::StorageKind::{self, Number, Text};
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::Declaration;
 use lakelands_api::{
-    Catalog, Find, Get, IdempotencyKey, LakeStore, Position, Principal, ReadAt, RecordKey,
-    Timestamp, TypeName, WriteOpts,
+    Catalog, Find, Get, IdempotencyKey, LakeStore, Position, Principal, RecordKey, Timestamp,
+    TypeName, WriteOpts,
 };
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
-use crate::conformance::backing::{KIND, made};
+use crate::conformance::backing::made;
 use crate::conformance::fixture::{
-    Caller, Lake, Must, all, declare, doors, field, join_all, owner, patch, type_decl,
+    Caller, Lake, Must, all, field, join_all, log_events, patch, read_at, type_decl, type_of,
 };
 
 check!(
@@ -70,19 +70,10 @@ const WRITERS: usize = 8;
 const EACH: usize = 25;
 
 async fn items(store: &dyn LakeStore) -> Result<Lake, Failure> {
-    declare(
-        doors(store).as_ref(),
-        &owner(store),
-        type_decl(
-            "item",
-            vec![
-                field("n", StorageKind::Number),
-                field("by", StorageKind::Text),
-            ],
-        ),
-    )
-    .await?;
-    Ok(Lake::of(store))
+    let l = Lake::of(store);
+    l.declare(type_of("item", &[("n", Number), ("by", Text)]))
+        .await?;
+    Ok(l)
 }
 
 /// What one write answered: the record, the value it wrote, the position.
@@ -162,10 +153,7 @@ fn get_at(key: &str, as_of: Position) -> Get {
     Get {
         key: RecordKey::from(key),
         with_meta: false,
-        at: ReadAt {
-            as_of: Some(as_of),
-            valid_at: None,
-        },
+        at: read_at(Some(as_of)),
         params: Default::default(),
     }
 }
@@ -267,12 +255,7 @@ async fn concurrent_writes_each_land_once_in_one_order_of_the_log(
         WRITERS * EACH,
         live.len()
     );
-    let log = store
-        .feed()
-        .poll(Position::GENESIS, &FeedFilter::default(), u32::MAX)
-        .await
-        .must("reading the whole log")?
-        .events;
+    let log = log_events(store.as_ref()).await?;
     ensure!(
         log.iter()
             .enumerate()
@@ -347,14 +330,7 @@ async fn writes_and_a_declaration_made_at_once_are_ordered_as_one_log(
     let declared = declared.ok_or_else(|| Failure::new("the declaration answered nothing"))?;
     for (key, _, at) in &written {
         let d = cat
-            .describe_type(
-                own,
-                &TypeName::from("item"),
-                ReadAt {
-                    as_of: Some(*at),
-                    valid_at: None,
-                },
-            )
+            .describe_type(own, &TypeName::from("item"), read_at(Some(*at)))
             .await
             .must(&format!("describing `item` as of {at}"))?
             .data;
@@ -374,7 +350,7 @@ async fn writes_and_a_declaration_made_at_once_are_ordered_as_one_log(
 /// `find` answered there, and whether `get` found `w0-r0` there.
 type Seen = (Position, Vec<String>, Option<Value>);
 
-async fn read_at(
+async fn seen_at(
     cat: &dyn Catalog,
     who: &Principal,
     at: Position,
@@ -385,10 +361,7 @@ async fn read_at(
             &TypeName::from("item"),
             Find {
                 limit: Some(1000),
-                at: ReadAt {
-                    as_of: Some(at),
-                    valid_at: None,
-                },
+                at: read_at(Some(at)),
                 ..Find::default()
             },
         )
@@ -443,7 +416,7 @@ async fn a_read_at_a_position_answers_the_same_during_writes_and_after(
             // The head, as a host's own reader or an unpinned turn takes it:
             // a position `head()` answers is one the lake can read at.
             let at = rstore.head().await.must("reading the head")?;
-            let (keys, one) = read_at(rcat.as_ref(), &rown, at).await?;
+            let (keys, one) = seen_at(rcat.as_ref(), &rown, at).await?;
             ensure!(
                 one.is_some() == keys.iter().any(|k| k == "w0-r0"),
                 "as of {at}, `find` answered {} records {} `w0-r0`, and `get` of it answered \
@@ -474,7 +447,7 @@ async fn a_read_at_a_position_answers_the_same_during_writes_and_after(
         seen.len()
     );
     for (at, keys, one) in seen {
-        let (again, one_again) = read_at(cat.as_ref(), own, at).await?;
+        let (again, one_again) = seen_at(cat.as_ref(), own, at).await?;
         ensure!(
             again == keys && one_again == one,
             "as of {at}, during the writes, `find` answered {} records and `get` of \
@@ -550,25 +523,9 @@ async fn concurrent_writes_see_their_own_filled_field_and_one_input_is_called_on
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let token = "backed_under_writes";
-    let l = Lake::of(store.as_ref());
+    let l =
+        super::backings::places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
     let Lake { cat, own } = &l;
-    l.declare_json(json!({
-        "declare": "function", "name": "lookup", "backing": KIND,
-        "inputs": [{"name": "code", "type": {"kind": "text"}}],
-        "config": {"token": token, "echo": "code"}
-    }))
-    .await?;
-    let name = lakelands_api::ontology::FieldDecl {
-        authority: lakelands_api::ontology::Authority::Derived,
-        function: Some("lookup".into()),
-        depends_on: vec!["code".into()],
-        ..field("name", StorageKind::Text)
-    };
-    l.declare(type_decl(
-        "place",
-        vec![field("code", StorageKind::Text), name],
-    ))
-    .await?;
     let callers: Vec<Caller<'static, Result<(String, Position), Failure>>> = (0..WRITERS)
         .map(|w| {
             let (cat, own) = (cat.clone(), own.clone());
@@ -596,19 +553,7 @@ async fn concurrent_writes_see_their_own_filled_field_and_one_input_is_called_on
     }
     for (key, at) in &written {
         let got = cat
-            .get(
-                own,
-                &TypeName::from("place"),
-                Get {
-                    key: RecordKey::from(key.as_str()),
-                    with_meta: false,
-                    at: ReadAt {
-                        as_of: Some(*at),
-                        valid_at: None,
-                    },
-                    params: Default::default(),
-                },
-            )
+            .get(own, &TypeName::from("place"), get_at(key, *at))
             .await
             .must(&format!("reading `{key}` as of {at}"))?
             .data;
@@ -639,14 +584,8 @@ async fn writes_made_while_a_rule_runs_land_before_or_after_its_append(
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
-    l.declare(type_decl(
-        "task",
-        vec![
-            field("state", StorageKind::Text),
-            field("note", StorageKind::Text),
-        ],
-    ))
-    .await?;
+    l.declare(type_of("task", &[("state", Text), ("note", Text)]))
+        .await?;
     let keys: Vec<String> = (0..200).map(|n| format!("t{n}")).collect();
     for k in &keys {
         l.upsert("task", k, json!({"state": "open"})).await?;
@@ -691,12 +630,7 @@ async fn writes_made_while_a_rule_runs_land_before_or_after_its_append(
         r?;
     }
 
-    let log = store
-        .feed()
-        .poll(Position::GENESIS, &FeedFilter::default(), u32::MAX)
-        .await
-        .must("reading the whole log")?
-        .events;
+    let log = log_events(store.as_ref()).await?;
     let moves: Vec<_> = log
         .iter()
         .filter(|e| {

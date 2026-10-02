@@ -5,13 +5,13 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::{FieldDecl, FieldType, RelationDecl, StorageKind};
+use lakelands_api::ontology::{RelationDecl, StorageKind};
 use lakelands_api::query::{Depth, Pattern, QueryResult, Step, Walk};
 use lakelands_api::{Error, LakeStore, RecordKey, Refusal, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, field, limits, reason, type_decl};
+use crate::conformance::fixture::{Lake, Must, field, limits, reason, reference, type_decl};
 
 check!(
     /// A step must follow a declared relation.
@@ -38,13 +38,7 @@ async fn org(store: &dyn LakeStore) -> Result<Lake, Failure> {
         "person",
         vec![
             field("name", StorageKind::Text),
-            FieldDecl {
-                ty: FieldType {
-                    target: Some("person".into()),
-                    ..FieldType::kind(StorageKind::Reference)
-                },
-                ..field("boss", StorageKind::Text)
-            },
+            reference("boss", "person"),
         ],
     );
     ty.relations = vec![RelationDecl {

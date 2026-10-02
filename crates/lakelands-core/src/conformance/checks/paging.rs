@@ -15,7 +15,7 @@ use lakelands_api::{Find, LakeStore, Record};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, declare, doors, field, order, owner, type_decl, value};
+use crate::conformance::fixture::{Lake, order, type_of, value};
 
 check!(
     /// Walking the cursor visits each record once.
@@ -30,16 +30,13 @@ check!(
 );
 
 async fn counter(store: &dyn LakeStore) -> Result<Lake, Failure> {
-    let cat = doors(store);
-    let ty = type_decl(
+    let l = Lake::of(store);
+    let ty = type_of(
         "counter",
-        vec![
-            field("n", StorageKind::Number),
-            field("tag", StorageKind::Text),
-        ],
+        &[("n", StorageKind::Number), ("tag", StorageKind::Text)],
     );
-    declare(cat.as_ref(), &owner(store), ty).await?;
-    Ok(Lake::of(store))
+    l.declare(ty).await?;
+    Ok(l)
 }
 
 fn keys(rows: &[Record]) -> Vec<String> {
