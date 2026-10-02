@@ -11,14 +11,14 @@ use std::sync::Arc;
 
 use lakelands_api::event::EventBody;
 use lakelands_api::expr::Condition;
-use lakelands_api::ontology::{Assignment, Risk, StorageKind, TriggerDecl, VerbDecl, VerbEffect};
+use lakelands_api::ontology::{Assignment, Risk, StorageKind, VerbDecl, VerbEffect};
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::{Declaration, ObjectSetDecl};
 use lakelands_api::{LakeStore, Patch};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, field, type_decl};
+use crate::conformance::fixture::{Lake, Must, field, trigger_on, type_decl};
 
 check!(
     /// A trigger fires, and a set changes, on a verb's write.
@@ -49,13 +49,7 @@ async fn a_trigger_fires_on_a_verbs_write(store: Arc<dyn LakeStore>) -> Result<(
             },
             description: None,
         }),
-        Declaration::Trigger(TriggerDecl {
-            max_depth: None,
-            name: "paid".into(),
-            on: "invoice".into(),
-            when: Some(Condition::from("status = 'paid'")),
-            description: None,
-        }),
+        trigger_on("paid", "invoice", Some("status = 'paid'")),
         Declaration::ObjectSet(ObjectSetDecl {
             name: "settled".into(),
             of: "invoice".into(),

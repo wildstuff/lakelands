@@ -19,18 +19,15 @@
 //! towards another centre with their group moved, and 200 records added.
 //! 50 queries lie near the centres or between two of them.
 
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 
-use futures_core::Stream;
 use lakelands_api::ontology::{Authority, FieldDecl, StorageKind};
 use lakelands_api::query::{Search, SearchMode};
-use lakelands_api::{LakeStore, Position, Principal, ReadAt, SourceId, SourceRecord, TypeName};
+use lakelands_api::{LakeStore, Position, Principal, ReadAt, SourceRecord, TypeName};
 use serde_json::json;
 
 use crate::conformance::fixture::{Lake, Must, doors, field, type_decl, vector};
-use crate::conformance::{Failure, Given, next};
+use crate::conformance::{Failure, Given};
 
 check!(
     /// An indexed vector field answers its index's set, at the engine's recall floor.
@@ -122,34 +119,15 @@ fn source_record(key: &str, vector: Option<&[f32]>, group: u32) -> SourceRecord 
     }
 }
 
-/// A delivery of records already made.
-struct Delivery(std::vec::IntoIter<SourceRecord>);
-
-impl Stream for Delivery {
-    type Item = SourceRecord;
-
-    fn poll_next(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<SourceRecord>> {
-        Poll::Ready(self.0.next())
-    }
-}
-
 async fn deliver(
     store: &dyn LakeStore,
     own: &Principal,
     records: Vec<SourceRecord>,
 ) -> Result<(), Failure> {
     let what = format!("ingesting {} points", records.len());
-    let mut commits = doors(store)
-        .ingest(
-            own,
-            &SourceId::from(SOURCE),
-            Box::pin(Delivery(records.into_iter())),
-        )
+    crate::conformance::fixture::ingest(doors(store).as_ref(), own, SOURCE, records)
         .await
-        .map_err(|e| Failure::new(format!("{what} was refused: {e}")))?;
-    while let Some(w) = next(&mut commits).await {
-        w.must(&what)?;
-    }
+        .must(&what)?;
     Ok(())
 }
 

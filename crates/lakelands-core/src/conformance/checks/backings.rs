@@ -14,8 +14,7 @@
 use std::sync::Arc;
 
 use lakelands_api::event::EventBody;
-use lakelands_api::expr::Condition;
-use lakelands_api::ontology::{StorageKind, TriggerDecl};
+use lakelands_api::ontology::StorageKind;
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::Declaration;
 use lakelands_api::{Error, LakeStore, Origin, Refusal, Version};
@@ -24,8 +23,8 @@ use serde_json::{Value, json};
 use crate::conformance::Failure;
 use crate::conformance::backing::{KIND, made, plug, unplug};
 use crate::conformance::fixture::{
-    Lake, Must, computed_by, derived, field, head_unmoved, reason, recorded_outputs, type_decl,
-    value,
+    Lake, Must, computed_by, derived, field, head_unmoved, reason, recorded_outputs, trigger_on,
+    type_decl, value,
 };
 
 check!(
@@ -85,18 +84,7 @@ check!(
 /// Declares `lookup`, a function of the suite's backing that echoes its
 /// input `input`.
 async fn lookup(store: &dyn LakeStore, input: &str, config: Value) -> Result<Lake, Failure> {
-    let l = Lake::of(store);
-    let Lake { cat, own } = &l;
-    let function: Declaration = serde_json::from_value(json!({
-        "declare": "function", "name": "lookup", "backing": KIND,
-        "inputs": [{"name": input, "type": {"kind": "text"}}],
-        "config": config
-    }))
-    .map_err(|e| Failure::new(format!("the check's function does not read: {e}")))?;
-    cat.declare(own, function)
-        .await
-        .must("declaring `lookup`, backed by the suite's backing")?;
-    Ok(l)
+    echoing(store, "lookup", input, config).await
 }
 
 /// Declares `lookup`, a function of the suite's backing that echoes its
@@ -343,18 +331,9 @@ async fn a_filled_field_recomputes_what_reads_it_and_fires_its_triggers(
         vec![field("code", StorageKind::Text), name, greeting],
     ))
     .await?;
-    cat.declare(
-        own,
-        Declaration::Trigger(TriggerDecl {
-            max_depth: None,
-            name: "named".into(),
-            on: "place".into(),
-            when: Some(Condition::from("name = 'AT'")),
-            description: None,
-        }),
-    )
-    .await
-    .must("declaring the trigger `named` on `place`")?;
+    cat.declare(own, trigger_on("named", "place", Some("name = 'AT'")))
+        .await
+        .must("declaring the trigger `named` on `place`")?;
     l.upsert("place", "p1", json!({"code": "AT"})).await?;
 
     let r = l.read("place", "p1").await?;
@@ -432,33 +411,28 @@ async fn echoing(
     name: &str,
     input: &str,
     config: Value,
-) -> Result<(), Failure> {
+) -> Result<Lake, Failure> {
     let l = Lake::of(store);
-    let Lake { cat, own } = &l;
-    let function: Declaration = serde_json::from_value(json!({
+    l.declare_json(json!({
         "declare": "function", "name": name, "backing": KIND,
         "inputs": [{"name": input, "type": {"kind": "text"}}],
         "config": config
     }))
-    .map_err(|e| Failure::new(format!("the check's function does not read: {e}")))?;
-    cat.declare(own, function).await.must(&format!(
-        "declaring `{name}`, backed by the suite's backing"
-    ))?;
-    Ok(())
+    .await?;
+    Ok(l)
 }
 
 async fn a_second_record_with_the_same_input_has_its_derived_fields_right(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let token = "recorded_fill_reacts";
-    echoing(
+    let l = echoing(
         store.as_ref(),
         "lookup",
         "code",
         json!({"token": token, "echo": "code"}),
     )
     .await?;
-    let l = Lake::of(store.as_ref());
     let greeting = derived(
         "greeting",
         StorageKind::Text,
@@ -506,14 +480,13 @@ async fn a_backed_field_reading_another_waits_for_its_output(
     .await?;
     // `second` fails on a null input: a call made before `a` was computed
     // would leave `b` with an error instead of a value.
-    echoing(
+    let l = echoing(
         store.as_ref(),
         "second",
         "a",
         json!({"token": second, "echo": "a", "fail_on": null}),
     )
     .await?;
-    let l = Lake::of(store.as_ref());
     // `b` is declared before the field it reads.
     l.declare(type_decl(
         "place",

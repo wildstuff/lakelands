@@ -19,12 +19,13 @@ use lakelands_api::{
     Grants, IdempotencyKey, LakeStore, Outcome, Position, Principal, PrincipalKind, ReadAt,
     Refusal, TypeName, Version, WriteOpts,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::backing::{EXECUTOR, executed};
 use crate::conformance::fixture::{
-    Lake, Must, field, head_unmoved, invalid_naming, owner, patch, principal, reason, type_decl,
+    Lake, Must, field, head_unmoved, invalid_naming, owner, patch, principal, reason, reviewer,
+    type_decl,
 };
 
 check!(
@@ -82,11 +83,23 @@ fn type_writer(store: &dyn LakeStore, id: &str, ty: &str) -> Principal {
     principal(store, PrincipalKind::Agent, id, grants)
 }
 
+/// `who` calling `verb` on its type with `payload`, with no options.
+async fn on_type(
+    l: &Lake,
+    who: &Principal,
+    verb: &str,
+    payload: Value,
+) -> lakelands_api::Result<Outcome> {
+    let opts = WriteOpts::default();
+    l.cat
+        .call(who, &verb.into(), None, patch(payload), opts)
+        .await
+}
+
 /// `payment` and `partner`, and the external verbs on them: `name` on
 /// `payment`'s type at `risk`, and `register` on a `partner` record.
 async fn ledger(store: &dyn LakeStore, name: &str, risk: &str) -> Result<Lake, Failure> {
     let l = Lake::of(store);
-    let Lake { cat, own } = &l;
     l.declare(type_decl("payment", vec![field("ref", StorageKind::Text)]))
         .await?;
     l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))
@@ -98,9 +111,7 @@ async fn ledger(store: &dyn LakeStore, name: &str, risk: &str) -> Result<Lake, F
         json!({"declare": "verb", "name": "register", "on": "partner", "risk": "low",
                "effect": "external", "executor": EXECUTOR}),
     ] {
-        let d: Declaration = serde_json::from_value(verb)
-            .map_err(|e| Failure::new(format!("the check's verb does not read: {e}")))?;
-        cat.declare(own, d).await.must("declaring a verb")?;
+        l.declare_json(verb).await?;
     }
     Ok(l)
 }
@@ -152,15 +163,7 @@ async fn a_verb_on_its_type_runs_under_its_types_grants_and_records_its_output(
     );
     let before = store.head().await.must("reading the head")?;
     let runs = executed("create_payment");
-    let outcome = l
-        .cat
-        .call(
-            &clerk,
-            &"create_payment".into(),
-            None,
-            patch(json!({"amount": 12})),
-            WriteOpts::default(),
-        )
+    let outcome = on_type(&l, &clerk, "create_payment", json!({"amount": 12}))
         .await
         .must("the clerk calling `create_payment` on its type")?;
     let Outcome::Applied {
@@ -207,15 +210,7 @@ async fn a_verb_on_its_type_at_medium_risk_is_proposed_and_runs_when_accepted(
     let l = ledger(store.as_ref(), "open_ticket", "medium").await?;
     let clerk = type_writer(store.as_ref(), "clerk", "payment");
     let runs = executed("open_ticket");
-    let proposed = l
-        .cat
-        .call(
-            &clerk,
-            &"open_ticket".into(),
-            None,
-            patch(json!({"amount": 3})),
-            WriteOpts::default(),
-        )
+    let proposed = on_type(&l, &clerk, "open_ticket", json!({"amount": 3}))
         .await
         .must("the clerk calling `open_ticket` on its type")?;
     let Outcome::Proposed {
@@ -237,15 +232,7 @@ async fn a_verb_on_its_type_at_medium_risk_is_proposed_and_runs_when_accepted(
         events.first().map(|e| &e.body),
         executed("open_ticket") - runs
     );
-    let reviewer = principal(
-        store.as_ref(),
-        PrincipalKind::Human,
-        "reviewer",
-        Grants {
-            review: true,
-            ..Grants::default()
-        },
-    );
+    let reviewer = reviewer(store.as_ref(), false);
     l.cat
         .accept(&reviewer, proposal)
         .await
@@ -282,17 +269,7 @@ async fn a_verb_on_its_type_without_write_on_its_type_is_not_granted(
     let outsider = type_writer(store.as_ref(), "outsider", "partner");
     let before = store.head().await.must("reading the head")?;
     let runs = executed("settle_payment");
-    match l
-        .cat
-        .call(
-            &outsider,
-            &"settle_payment".into(),
-            None,
-            patch(json!({})),
-            WriteOpts::default(),
-        )
-        .await
-    {
+    match on_type(&l, &outsider, "settle_payment", json!({})).await {
         Err(e) if matches!(reason(&e), Some(Refusal::NotGranted)) => {}
         other => {
             return Err(Failure::new(format!(

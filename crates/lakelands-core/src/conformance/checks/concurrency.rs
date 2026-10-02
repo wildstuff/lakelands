@@ -552,15 +552,12 @@ async fn concurrent_writes_see_their_own_filled_field_and_one_input_is_called_on
     let token = "backed_under_writes";
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
-    let function: Declaration = serde_json::from_value(json!({
+    l.declare_json(json!({
         "declare": "function", "name": "lookup", "backing": KIND,
         "inputs": [{"name": "code", "type": {"kind": "text"}}],
         "config": {"token": token, "echo": "code"}
     }))
-    .map_err(|e| Failure::new(format!("the check's function does not read: {e}")))?;
-    cat.declare(own, function)
-        .await
-        .must("declaring `lookup`")?;
+    .await?;
     let name = lakelands_api::ontology::FieldDecl {
         authority: lakelands_api::ontology::Authority::Derived,
         function: Some("lookup".into()),
