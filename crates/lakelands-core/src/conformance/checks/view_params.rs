@@ -64,6 +64,12 @@ check!(
     "018 and 029: a page of a view continues only with the parameters its first page was read with; with others it is refused, since it would continue a different answer"
 );
 
+check!(
+    /// A step reaching a view binds nothing.
+    STEP_TO_UNBOUND_VIEW = a_step_arriving_at_a_view_with_parameters_is_refused_before_reading,
+    "018 and 029: a view's parameters are bound only by a read that names it, so a pattern (rows or a measure) whose step arrives at a view with parameters other than its start is refused as invalid before any record is read, naming the view and the relation, the same with no records and with some; a pattern started on that view with its parameters, stepping out, is answered"
+);
+
 fn payment() -> TypeDecl {
     type_decl(
         "payment",
@@ -502,6 +508,74 @@ async fn a_pattern_started_on_a_view_binds_its_parameters(
         "a pattern started on `account_window` without its `anchor` must be refused as \
          invalid, naming it; it answered {r:?}"
     );
+    Ok(())
+}
+
+async fn a_step_arriving_at_a_view_with_parameters_is_refused_before_reading(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let mut paid = payment();
+    paid.relations = vec![RelationDecl {
+        derived: Some(Derived {
+            pairs: vec![MatchPair {
+                from: "account".into(),
+                to: "account".into(),
+            }],
+        }),
+        ..RelationDecl::to("window", "account_window")
+    }];
+    l.declare(payment()).await?;
+    l.declare(account_window()).await?;
+    l.declare(paid).await?;
+    let rows = || {
+        pattern(
+            "payment",
+            None,
+            vec![step("window", Walk::Out)],
+            Projection::Rows { fields: Vec::new() },
+        )
+    };
+    let degree = || {
+        pattern(
+            "payment",
+            None,
+            vec![step("window", Walk::Out)],
+            Projection::Degree,
+        )
+    };
+    // The answer does not depend on the data: with no payment and with one.
+    for (when, write) in [("with no payment", false), ("with one payment", true)] {
+        if write {
+            l.upsert(
+                "payment",
+                "p1",
+                json!({"account": "a", "date": "2026-06-10", "amount": "10.00"}),
+            )
+            .await?;
+        }
+        for (what, p) in [("rows", rows()), ("a degree", degree())] {
+            let r = l.cat.query(&l.own, p).await;
+            ensure!(
+                invalid_naming(&r, "account_window") && invalid_naming(&r, "window"),
+                "a pattern of {what} from `payment` stepping over `window` arrives at the view \
+                 `account_window` with no parameters bound, and must be refused as invalid \
+                 {when}, naming the view and the relation; it answered {r:?}"
+            );
+        }
+    }
+    // Started on the view with its parameters, a step out is answered.
+    let mut out = pattern(
+        "account_window",
+        Some("a"),
+        vec![step("window", Walk::In)],
+        Projection::Rows { fields: Vec::new() },
+    );
+    out.start.params = anchor("2026-06-12");
+    l.cat
+        .query(&l.own, out)
+        .await
+        .must("a pattern started on `account_window` with its anchor, stepping over `window`")?;
     Ok(())
 }
 

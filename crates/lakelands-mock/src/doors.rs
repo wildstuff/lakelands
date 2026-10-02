@@ -1964,6 +1964,20 @@ fn view_reads(v: &ViewDecl) -> Vec<(TypeName, Vec<FieldName>)> {
         .collect()
 }
 
+/// As the store: a view with parameters is bound only by a read that names
+/// it, so a pattern's step that arrives at one other than its start is
+/// refused before anything is read.
+fn unbound_view(start: &TypeName, reached: &DeclaredType, relation: &RelationName) -> Result<()> {
+    match reached.decl.view.as_deref().and_then(|v| v.params.first()) {
+        Some(param) if &reached.decl.name != start => Err(invalid(format!(
+            "a step over `{relation}` arrives at view `{}`, which needs parameter `{}`, and only \
+             a read that names the view binds it",
+            reached.decl.name, param.name
+        ))),
+        _ => Ok(()),
+    }
+}
+
 /// The migration's preflight over the lake as it stands.
 fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationReport> {
     let ty = &m.to.name;
@@ -2504,6 +2518,16 @@ impl Catalog for MockCatalog {
                         t.decl.name, step.relation
                     )));
                 }
+                // Either end of the relation the measure may arrive at.
+                for o in st.types.values() {
+                    for r in o.decl.relations.iter().filter(|r| r.name == step.relation) {
+                        for end in [&o.decl.name, &r.target] {
+                            if let Some(e) = st.types.get(end) {
+                                unbound_view(&t.decl.name, e, &step.relation)?;
+                            }
+                        }
+                    }
+                }
             }
             let e = filter(&st, who, t, start.filter.as_ref())?;
             let mut seeds: Vec<(TypeName, RecordKey)> =
@@ -2601,6 +2625,7 @@ impl Catalog for MockCatalog {
                     .is_some()
             };
             let next = st.visible(who, &target).ok_or_else(|| no_type(&target))?;
+            unbound_view(&t.decl.name, next, &step.relation)?;
             if let Some(ty) = &step.ty
                 && ty != &target
             {

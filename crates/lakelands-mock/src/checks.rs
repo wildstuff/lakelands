@@ -94,6 +94,7 @@ macro_rules! door_checks {
             a_masked_field_is_named_but_its_value_is_absent,
             the_tools_follow_the_grants,
             a_verb_tool_says_what_its_risk_does,
+            a_step_to_an_unbound_view_is_refused,
             a_view_reads_only_what_its_source_has,
             a_migration_keeps_what_a_view_reads,
             a_view_is_never_migrated,
@@ -1637,6 +1638,50 @@ pub async fn a_view_reads_only_what_its_source_has(store: Arc<dyn LakeStore>) {
         );
     }
     assert_eq!(f.head().await, head, "nothing is appended");
+}
+
+/// A view with parameters is bound only by a read that names it: a
+/// pattern whose step arrives at one other than its start is refused
+/// before anything is read, naming the view and the relation, on the mock
+/// as on the store; started on the view with its parameters, it walks.
+pub async fn a_step_to_an_unbound_view_is_refused(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    for d in [
+        json!({"name": "by_status", "key": ["status"], "field_meta": true,
+               "fields": [{"name": "status", "type": {"kind": "text"}}, {"name": "count", "type": {"kind": "number"}}],
+               "view": {"source": INVOICE, "params": [{"name": "state", "kind": "text"}],
+                        "where": "status = param('state')", "group_by": ["status"],
+                        "measures": [{"name": "count", "expr": "count()"}]}}),
+        json!({"name": "ticket", "field_meta": true,
+               "fields": [{"name": "status", "type": {"kind": "text"}}],
+               "relations": [{"name": "window", "target": "by_status",
+                              "derived": {"match": [{"from": "status", "to": "status"}]}}]}),
+    ] {
+        let t: TypeDecl = serde_json::from_value(d).expect("a type");
+        f.catalog
+            .declare(owner, Declaration::Type(t))
+            .await
+            .expect("declared");
+    }
+    for project in [json!({"as": "rows"}), json!({"as": "degree"})] {
+        let pattern: Pattern = serde_json::from_value(json!({
+            "start": {"type": "ticket"},
+            "steps": [{"relation": "window", "walk": "out"}],
+            "project": project
+        }))
+        .expect("a pattern");
+        let e = f
+            .catalog
+            .query(owner, pattern)
+            .await
+            .expect_err("a step arriving at an unbound view is refused");
+        assert!(
+            matches!(&e, Error::Refused { reason: Refusal::Invalid { message }, .. }
+                if message.contains("by_status") && message.contains("window")),
+            "{project}: {e:?}"
+        );
+    }
 }
 
 /// A `low`-risk verb whose effect writes authored fields runs at once.
