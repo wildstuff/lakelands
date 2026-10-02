@@ -148,44 +148,39 @@ fn corrupt(position: Position, why: impl std::fmt::Display) -> Error {
 /// beside the bytes agree with them. A reader refuses a format version it
 /// does not know rather than guessing.
 pub fn open(stored: &CanonicalEvent) -> Result<Event> {
-    let value: serde_json::Value = serde_json::from_slice(&stored.bytes)
-        .map_err(|e| corrupt(stored.position, format!("not JSON: {e}")))?;
+    let at = stored.position;
+    let value: serde_json::Value =
+        serde_json::from_slice(&stored.bytes).map_err(|e| corrupt(at, format!("not JSON: {e}")))?;
     let v = value
         .get("v")
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
     if v > u64::from(LOG_FORMAT_VERSION) {
         return Err(corrupt(
-            stored.position,
+            at,
             format!(
                 "written in log format {v}, and this reader knows format {LOG_FORMAT_VERSION} at most"
             ),
         ));
     }
     if canonical::to_vec(&value) != stored.bytes {
-        return Err(corrupt(stored.position, "the bytes are not canonical"));
+        return Err(corrupt(at, "the bytes are not canonical"));
     }
-    let event: Event = serde_json::from_value(value)
-        .map_err(|e| corrupt(stored.position, format!("not an event: {e}")))?;
+    let event: Event =
+        serde_json::from_value(value).map_err(|e| corrupt(at, format!("not an event: {e}")))?;
     // Members read leniently (a date-time in another form) would print
     // differently: the event must re-serialise to exactly its bytes.
     if canonical::of(&event) != stored.bytes {
-        return Err(corrupt(
-            stored.position,
-            "a member is not in its one written form",
-        ));
+        return Err(corrupt(at, "a member is not in its one written form"));
     }
     // A member or a call a version does not have is refused, never read.
     if let Some(why) = lakelands_core::versions::below(&event)
         .or_else(|| lakelands_core::versions::misplaced(&event))
     {
-        return Err(corrupt(stored.position, why));
+        return Err(corrupt(at, why));
     }
     if hash_without_hash(&event) != event.hash {
-        return Err(corrupt(
-            stored.position,
-            "the hash does not match the event",
-        ));
+        return Err(corrupt(at, "the hash does not match the event"));
     }
     if event.position != stored.position
         || event.id != stored.id
@@ -194,7 +189,7 @@ pub fn open(stored: &CanonicalEvent) -> Result<Event> {
         || event.fence != stored.fence
     {
         return Err(corrupt(
-            stored.position,
+            at,
             "the engine's record of the event disagrees with its bytes",
         ));
     }
@@ -208,15 +203,13 @@ pub fn check_link(before: Option<(&Position, &Digest)>, event: &Event) -> Result
         Some((p, h)) => (p.next(), h.clone()),
         None => (Position::GENESIS, Digest::zero()),
     };
+    let at = event.position;
     if event.position != want_pos {
-        return Err(corrupt(
-            event.position,
-            format!("expected position {want_pos}"),
-        ));
+        return Err(corrupt(at, format!("expected position {want_pos}")));
     }
     if event.prev != want_prev {
         return Err(corrupt(
-            event.position,
+            at,
             "it does not name the hash of the event before it",
         ));
     }

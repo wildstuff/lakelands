@@ -132,7 +132,7 @@ pub fn check(
         Place::Record,
         "an aging rule's `when`",
     )
-    .map_err(|e| ("when".into(), message(e)))?;
+    .map_err(|e| ("when".into(), crate::backed::why(&e)))?;
     Ok(Rule {
         on,
         field,
@@ -155,18 +155,10 @@ pub fn check_authority(who: &Principal, ontology: &Ontology, rule: &Rule) -> Res
     rights::check_probe(who, decl, derive::reads(&rule.when).iter())
 }
 
-fn message(e: Error) -> String {
-    match e {
-        Error::Refused {
-            reason: Refusal::Invalid { message },
-            ..
-        } => message,
-        e => e.to_string(),
-    }
-}
-
-/// Refuse a `today` that is not a date: a time other than UTC midnight.
-pub fn check_today(today: Timestamp) -> Result<()> {
+/// Run every live rule once for `today`, in rule-name order, one append
+/// per rule that moves anything.
+pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
+    // `today` is a date: a time other than UTC midnight is refused.
     if today.0.rem_euclid(MICROS_PER_DAY) != 0 {
         return Err(Error::Refused {
             field: Some("today".into()),
@@ -175,13 +167,6 @@ pub fn check_today(today: Timestamp) -> Result<()> {
             },
         });
     }
-    Ok(())
-}
-
-/// Run every live rule once for `today`, in rule-name order, one append
-/// per rule that moves anything.
-pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
-    check_today(today)?;
     let system = lake.system("lakelands");
     let call = Call {
         lake,

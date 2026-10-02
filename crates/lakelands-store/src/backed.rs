@@ -838,7 +838,7 @@ async fn settle_embeddings(lake: &Arc<Lake>, drain: &mut Drain, batch: &[Due]) -
 }
 
 /// A backing's failure, in its own words.
-fn why(e: &lakelands_api::Error) -> String {
+pub(crate) fn why(e: &lakelands_api::Error) -> String {
     use lakelands_api::{Error, Refusal};
     match e {
         Error::Unavailable { message }

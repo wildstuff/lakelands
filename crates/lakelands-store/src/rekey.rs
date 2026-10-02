@@ -97,12 +97,9 @@ pub fn rewritten(
     out
 }
 
-/// Tally one type's new keys: the moves, the collisions, the missing.
-fn tally(
-    ty: &TypeName,
-    keyed: Vec<(RecordKey, Option<RecordKey>)>,
-    plan: &mut Plan,
-) -> BTreeMap<RecordKey, RecordKey> {
+/// Tally one type's new keys into `plan`: the moves, the collisions, the
+/// missing.
+fn tally(ty: &TypeName, keyed: Vec<(RecordKey, Option<RecordKey>)>, plan: &mut Plan) {
     let mut taken: BTreeMap<RecordKey, u64> = BTreeMap::new();
     for (_, new) in &keyed {
         if let Some(k) = new {
@@ -141,7 +138,9 @@ fn tally(
     if row.records > 0 || row.collisions > 0 || row.missing > 0 {
         plan.rekeyed.push(row);
     }
-    moves
+    if !moves.is_empty() {
+        plan.moves.insert(ty.clone(), moves);
+    }
 }
 
 /// Plan a re-key. `after` is the ontology with the migrated type's new
@@ -162,10 +161,7 @@ pub fn plan(
             (old, new)
         })
         .collect();
-    let moves = tally(migrated, keyed, &mut plan);
-    if !moves.is_empty() {
-        plan.moves.insert(migrated.clone(), moves);
-    }
+    tally(migrated, keyed, &mut plan);
     // The closure: types keyed by a reference to a re-keyed type.
     let mut visited: BTreeSet<TypeName> = BTreeSet::from([migrated.clone()]);
     loop {
@@ -207,10 +203,7 @@ pub fn plan(
                 (r.key, new)
             })
             .collect();
-        let moves = tally(&name, keyed, &mut plan);
-        if !moves.is_empty() {
-            plan.moves.insert(name, moves);
-        }
+        tally(&name, keyed, &mut plan);
     }
     // The reference fields, in any type, that hold a moved key.
     for (name, entry) in &after.types {
