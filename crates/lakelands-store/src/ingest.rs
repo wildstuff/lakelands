@@ -65,7 +65,9 @@ pub fn window(
     let mut duplicates = 0u32;
     for r in records {
         let decl = w.ontology.ty(&r.ty)?;
-        // The door first: a patch that carries a field the source is not
+        // The key's form before the door, as `upsert` checks it.
+        crate::writes::check_key(&r.key)?;
+        // Then the door: a patch that carries a field the source is not
         // the authority on is refused whole, even when that field's value
         // is the one already stored.
         lakelands_core::rights::check_write(who, decl, Door::Source, &r.fields)?;
