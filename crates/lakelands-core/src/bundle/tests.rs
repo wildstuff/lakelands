@@ -36,6 +36,15 @@ fn one(fs: &[(&str, &str)], problem: Problem) -> BundleError {
     errors.into_iter().next().unwrap()
 }
 
+/// The type `name` the bundle declares.
+fn ty<'b>(b: &'b Bundle, name: &str) -> &'b TypeDecl {
+    let found = b.declarations.iter().find_map(|d| match d {
+        Declaration::Type(t) if t.name.as_str() == name => Some(t),
+        _ => None,
+    });
+    found.unwrap_or_else(|| panic!("the bundle declares no type `{name}`"))
+}
+
 const PARTNER: (&str, &str) = (
     "types/partner.yaml",
     "name: partner\nkey: id\nfields:\n  id: text\n",
@@ -574,14 +583,7 @@ fn the_short_field_types_mean_their_object_forms() {
         ),
     ])
     .expect("loads");
-    let t = bundle
-        .declarations
-        .iter()
-        .find_map(|d| match d {
-            Declaration::Type(t) if t.name.as_str() == "t" => Some(t),
-            _ => None,
-        })
-        .expect("type t");
+    let t = ty(&bundle, "t");
     let tys: Vec<&FieldType> = t.fields.iter().map(|f| &f.ty).collect();
     assert_eq!(
         tys,
@@ -1263,14 +1265,7 @@ fn annotations_lower_as_json_and_a_bad_key_is_reported_against_its_file() {
         "name: shelf\nkey: code\nannotations:\n  acme.icon: books\n  acme.package: {name: library, weight: 1.5}\nfields:\n  code:\n    type: text\n    annotations:\n      acme.format: shelf-code\nrelations:\n  partner:\n    target: partner\n    annotations:\n      acme.plural: partners\n",
     );
     let bundle = load(&[PARTNER, shelf]).expect("the bundle loads");
-    let t = bundle
-        .declarations
-        .iter()
-        .find_map(|d| match d {
-            Declaration::Type(t) if t.name.as_str() == "shelf" => Some(t),
-            _ => None,
-        })
-        .expect("`shelf` is declared");
+    let t = ty(&bundle, "shelf");
     assert_eq!(t.annotations["acme.icon"], serde_json::json!("books"));
     assert_eq!(
         t.annotations["acme.package"],
@@ -1306,14 +1301,7 @@ fn a_derived_relation_lowers_from_its_yaml_match() {
         "name: invoice\nkey: number\nfields:\n  number: text\n  partner_id: text\nrelations:\n  partner:\n    target: partner\n    derived:\n      match:\n        - from: partner_id\n          to: id\n",
     );
     let bundle = load(&[PARTNER, invoice]).expect("the bundle loads");
-    let t = bundle
-        .declarations
-        .iter()
-        .find_map(|d| match d {
-            Declaration::Type(t) if t.name.as_str() == "invoice" => Some(t),
-            _ => None,
-        })
-        .expect("`invoice` is declared");
+    let t = ty(&bundle, "invoice");
     let d = t.relations[0]
         .derived
         .as_ref()

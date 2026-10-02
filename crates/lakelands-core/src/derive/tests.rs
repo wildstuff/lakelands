@@ -22,6 +22,16 @@ fn decimal(name: &str, derived: Option<&str>) -> Value {
     f
 }
 
+/// A first write of `written`, with no settings, at time zero.
+fn write(written: &BTreeSet<FieldName>) -> Write<'_> {
+    Write {
+        before: None,
+        written,
+        settings: None,
+        now: Timestamp(0),
+    }
+}
+
 #[test]
 fn derived_fields_are_ordered_by_what_they_read() {
     let t = ty(json!({"name": "invoice", "fields": [
@@ -58,12 +68,7 @@ fn derived_values_recompute_in_order_and_clear_when_they_cannot() {
     ]}));
     let mut f = fields(json!({"gross": "100.00"}));
     let written: BTreeSet<FieldName> = ["gross".into()].into();
-    let w = Write {
-        before: None,
-        written: &written,
-        settings: None,
-        now: Timestamp(0),
-    };
+    let w = write(&written);
     let touched = apply(&t, &[], &mut f, &w).unwrap();
     assert_eq!(f[&FieldName::from("vat")], json!("19.0000"));
     assert_eq!(f[&FieldName::from("net")], json!("81.0000"));
@@ -94,12 +99,7 @@ fn a_derived_decimal_is_rounded_to_its_scale_before_the_next_one_reads_it() {
     ]}));
     let mut f = fields(json!({"gross": "100.00"}));
     let written: BTreeSet<FieldName> = ["gross".into()].into();
-    let w = Write {
-        before: None,
-        written: &written,
-        settings: None,
-        now: Timestamp(0),
-    };
+    let w = write(&written);
     apply(&t, &[money], &mut f, &w).unwrap();
     assert_eq!(f[&FieldName::from("vat")], json!("15.97"));
     assert_eq!(
@@ -118,12 +118,7 @@ fn a_derived_decimal_is_written_at_its_scale_even_when_computed_at_a_smaller_one
     let t = ty(json!({"name": "line", "fields": [decimal("quantity", None), total]}));
     let mut f = fields(json!({"quantity": "2"}));
     let written: BTreeSet<FieldName> = ["quantity".into()].into();
-    let w = Write {
-        before: None,
-        written: &written,
-        settings: None,
-        now: Timestamp(0),
-    };
+    let w = write(&written);
     apply(&t, &[money], &mut f, &w).unwrap();
     assert_eq!(f[&FieldName::from("total")], json!("6.00"));
 }
@@ -138,12 +133,7 @@ fn a_dependent_is_cleared_when_its_input_changes_unless_the_write_sets_it() {
     ]}));
     let mut f = fields(json!({"body": "v2", "verdict": "ok", "since": "2026", "note": "n"}));
     let body: BTreeSet<FieldName> = ["body".into()].into();
-    let w = Write {
-        before: None,
-        written: &body,
-        settings: None,
-        now: Timestamp(0),
-    };
+    let w = write(&body);
     let touched = apply(&t, &[], &mut f, &w).unwrap();
     assert_eq!(f[&FieldName::from("verdict")], Value::Null);
     assert_eq!(
@@ -156,12 +146,7 @@ fn a_dependent_is_cleared_when_its_input_changes_unless_the_write_sets_it() {
 
     let mut g = fields(json!({"body": "v3", "verdict": "fresh"}));
     let both: BTreeSet<FieldName> = ["body".into(), "verdict".into()].into();
-    let w = Write {
-        before: None,
-        written: &both,
-        settings: None,
-        now: Timestamp(0),
-    };
+    let w = write(&both);
     apply(&t, &[], &mut g, &w).unwrap();
     assert_eq!(g[&FieldName::from("verdict")], json!("fresh"));
 }
@@ -174,12 +159,7 @@ fn a_write_that_touches_no_input_clears_nothing() {
     ]}));
     let mut f = fields(json!({"body": "v", "other": "x", "verdict": "ok"}));
     let other: BTreeSet<FieldName> = ["other".into()].into();
-    let w = Write {
-        before: None,
-        written: &other,
-        settings: None,
-        now: Timestamp(0),
-    };
+    let w = write(&other);
     assert!(apply(&t, &[], &mut f, &w).unwrap().is_empty());
     assert_eq!(f[&FieldName::from("verdict")], json!("ok"));
 }
