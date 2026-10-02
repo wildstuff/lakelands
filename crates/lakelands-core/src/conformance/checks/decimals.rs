@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use lakelands_api::ontology::StorageKind;
-use lakelands_api::read::{AggFunc, Aggregate};
+use lakelands_api::read::{AggFunc, Aggregate, Group};
 use lakelands_api::{Find, Found, LakeStore, TypeName};
 use serde_json::json;
 
@@ -34,6 +34,25 @@ check!(
     SCALE_KEPT = a_scaled_decimal_keeps_its_scale_when_derived_and_summed,
     "011: a value is kept at its value type's scale, so a derived decimal is rounded to it before it is stored, and a sum over a scaled field answers at that scale"
 );
+
+/// The groups of a sum of `field` over every `ty` record, with no
+/// `group_by`; any answer but groups fails, naming `what`.
+async fn sum(l: &Lake, ty: &str, field: &str, what: &str) -> Result<Vec<Group>, Failure> {
+    let find = Find {
+        aggregate: Some(Aggregate {
+            measures: vec![agg("total", AggFunc::Sum, Some(field))],
+            group_by: Vec::new(),
+        }),
+        ..Find::default()
+    };
+    let reply = l.cat.find(&l.own, &TypeName::from(ty), find).await;
+    let Found::Groups { rows } = reply.must(what)?.data else {
+        return Err(Failure::new(format!(
+            "{what}: `find` with an aggregate must answer groups; it answered records"
+        )));
+    };
+    Ok(rows)
+}
 
 const AMOUNTS: [&str; 6] = [
     "8500.125",
@@ -80,29 +99,19 @@ async fn a_decimal_reads_back_exactly_as_it_was_written(
 
 async fn a_sum_over_decimals_is_exact(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
     let ty = type_decl("payment", vec![field("amount", StorageKind::Decimal)]);
     l.declare(ty).await?;
     for (key, amount) in [("a", "0.10"), ("b", "0.20"), ("c", "0.30")] {
         l.upsert("payment", key, json!({"amount": amount})).await?;
     }
 
-    let find = Find {
-        aggregate: Some(Aggregate {
-            measures: vec![agg("total", AggFunc::Sum, Some("amount"))],
-            group_by: Vec::new(),
-        }),
-        ..Find::default()
-    };
-    let reply = cat
-        .find(own, &TypeName::from("payment"), find)
-        .await
-        .must("summing `amount` over the payments")?;
-    let Found::Groups { rows } = reply.data else {
-        return Err(Failure::new(
-            "`find` with an aggregate must answer groups; it answered records",
-        ));
-    };
+    let rows = sum(
+        &l,
+        "payment",
+        "amount",
+        "summing `amount` over the payments",
+    )
+    .await?;
     let [group] = rows.as_slice() else {
         return Err(Failure::new(format!(
             "a sum without `group_by` is one group; `find` answered {}",
@@ -123,13 +132,10 @@ async fn a_scaled_decimal_keeps_its_scale_when_derived_and_summed(
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
-    let money: lakelands_api::write::Declaration = serde_json::from_value(json!({
+    l.declare_json(json!({
         "declare": "value_type", "name": "money", "kind": "decimal", "scale": 2
     }))
-    .map_err(|e| Failure::new(format!("the check's value type does not read: {e}")))?;
-    cat.declare(own, money)
-        .await
-        .must("declaring the value type `money`")?;
+    .await?;
     let money_field = |name: &str| {
         let mut f = field(name, StorageKind::Decimal);
         f.ty.value_type = Some("money".into());
@@ -163,20 +169,7 @@ async fn a_scaled_decimal_keeps_its_scale_when_derived_and_summed(
          a derived value is rounded half away from zero to its scale before it is stored: \
          4760.00, 5950.00, 0.06"
     );
-    let find = Find {
-        aggregate: Some(Aggregate {
-            measures: vec![agg("total", AggFunc::Sum, Some("gross"))],
-            group_by: Vec::new(),
-        }),
-        ..Find::default()
-    };
-    let reply = cat
-        .find(own, &TypeName::from("invoice"), find)
-        .await
-        .must("summing `gross`")?;
-    let Found::Groups { rows } = reply.data else {
-        return Err(Failure::new("`find` with an aggregate must answer groups"));
-    };
+    let rows = sum(&l, "invoice", "gross", "summing `gross`").await?;
     let total = rows.first().and_then(|g| g.values.get("total"));
     ensure!(
         total == Some(&json!("10710.06")),
