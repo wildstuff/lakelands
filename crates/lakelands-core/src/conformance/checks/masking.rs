@@ -27,7 +27,7 @@ check!(
 check!(
     /// A field built from a hidden one is hidden as it is.
     BUILT_FROM_HIDDEN = a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field,
-    "024 and 006: a derived field, one derived from it in turn, and a vector embedded from a field are read as the field they are built from: absent where it is absent and masked where it is masked, on get, find and a pattern's rows, and a filter, an order or an aggregate over them is refused not_granted naming them",
+    "024 and 006: a derived field, one derived from it in turn, and a vector embedded from a field are read as the field they are built from: absent where it is absent and masked where it is masked, on get, find, a pattern's rows and describe, which shows a definition only where every field it names is read; a filter, an order or an aggregate over them is refused not_granted naming them",
     embedding
 );
 
@@ -111,6 +111,21 @@ async fn a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field
         ensure!(
             row == ["emp.k"],
             "the clerk's pattern rows hold `k` only, not `g` or `h`; they held {row:?}"
+        );
+        let d = cat
+            .describe_type(&who, &"emp".into(), ReadAt::default())
+            .await
+            .must("the clerk describing `emp`")?
+            .data;
+        let defined: Vec<String> = (d.fields.iter())
+            .filter(|f| f.derived.is_some() || !f.depends_on.is_empty())
+            .map(|f| f.name.to_string())
+            .collect();
+        let text = serde_json::to_string(&d).unwrap_or_default();
+        ensure!(
+            defined == ["k"] && (access != Access::None || !text.contains("salary")),
+            "describe shows a clerk with `salary` {access:?} the definition of `k` only, and \
+             names no field the clerk may not see; it defined {defined:?} in {text}"
         );
         let probes = [
             ("a filter on `g`", "g", find_where("g > 0")),
