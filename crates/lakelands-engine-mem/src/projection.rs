@@ -27,8 +27,7 @@ use lakelands_api::query::Edge;
 use lakelands_api::read::Direction;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
-
-use crate::invalid;
+use lakelands_core::engines;
 
 /// The states of one thing, each valid from a position, oldest first.
 #[derive(Clone, Debug)]
@@ -175,17 +174,9 @@ impl Projection {
     /// a commit behind the projection, or a put valid only after
     /// `through`, refuses the transaction and changes nothing.
     pub(crate) fn commit(&mut self, puts: Vec<Put>, through: Position) -> Result<()> {
-        if let Some(folded) = self.folded.filter(|f| *f > through) {
-            return Err(invalid(format!(
-                "the projection reflects the log through position {folded}; a transaction \
-                 cannot commit through the earlier position {through}"
-            )));
-        }
-        if let Some(late) = puts.iter().map(Put::own_position).find(|p| *p > through) {
-            return Err(invalid(format!(
-                "a state valid from position {late} cannot be committed through the earlier \
-                 position {through}"
-            )));
+        let late = puts.iter().map(Put::own_position).find(|p| *p > through);
+        if let Some(refused) = engines::commit_refusal(self.folded, late, through) {
+            return Err(refused);
         }
         let mut records = BTreeSet::new();
         let mut types = BTreeSet::new();

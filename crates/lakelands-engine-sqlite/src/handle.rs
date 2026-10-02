@@ -14,12 +14,13 @@ use lakelands_api::engine::{
     CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
     Reclaimed, VectorIndex,
 };
-use lakelands_api::error::{Error, Refusal, Result};
+use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
 use lakelands_api::location::SqliteTuning;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
+use lakelands_core::engines::{self, vector_bytes, vector_of};
 use rusqlite::{Connection, OpenFlags, params};
 
 use crate::lease::{Held, LeaseFile};
@@ -345,18 +346,7 @@ impl LakeEngine for SqliteLake {
 
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>> {
         let folded = projection::folded(&*self.reader()?)?;
-        let at = match (as_of, folded) {
-            (None, folded) => folded,
-            (Some(p), Some(head)) if p <= head => Some(p),
-            (Some(_), head) => {
-                return Err(Error::Refused {
-                    field: None,
-                    reason: Refusal::OutOfRange {
-                        head: head.unwrap_or_default(),
-                    },
-                });
-            }
-        };
+        let at = engines::view_at(as_of, folded)?;
         Ok(Box::new(SqliteView { lake: self, at }))
     }
 
@@ -384,21 +374,10 @@ impl ProjectionStore for SqliteLake {
             .take()
             .ok_or_else(|| invalid("there is no transaction to commit: call `begin` first"))?;
         self.write(|conn| {
-            let refuse = |message: String| {
+            let folded = projection::folded(conn)?;
+            if let Some(refused) = engines::commit_refusal(folded, t.latest, through) {
                 let _ = conn.execute_batch("ROLLBACK");
-                Err(invalid(message))
-            };
-            if let Some(folded) = projection::folded(conn)?.filter(|f| *f > through) {
-                return refuse(format!(
-                    "the projection reflects the log through position {folded}; a transaction \
-                     cannot commit through the earlier position {through}"
-                ));
-            }
-            if let Some(late) = t.latest.filter(|p| *p > through) {
-                return refuse(format!(
-                    "a state valid from position {late} cannot be committed through the earlier \
-                     position {through}"
-                ));
+                return Err(refused);
             }
             projection::set_folded(conn, through)?;
             projection::mark_sorted(conn, through)?;
@@ -544,21 +523,6 @@ fn truncate_journal(conn: &Connection) -> Result<bool> {
         .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))
         .map_err(sql)?;
     Ok(busy == 0)
-}
-
-/// A vector as the index stores it: its components as little-endian
-/// `f32`s.
-fn vector_bytes(v: &[f32]) -> Vec<u8> {
-    v.iter().flat_map(|x| x.to_le_bytes()).collect()
-}
-
-fn vector_of(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|c| f32::from_le_bytes(*c))
-        .collect()
 }
 
 /// The vector index: each field's vectors in one table, searched by

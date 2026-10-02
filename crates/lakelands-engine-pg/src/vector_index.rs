@@ -293,7 +293,7 @@ fn fill(db: &mut Db, names: &Names, ty: &TypeName, field: &str, v: &Pgvector) ->
             .iter()
             .map(|r| {
                 let key: String = r.get(0);
-                let unit = unit_text(&crate::handle::vector_of(&r.get::<_, Vec<u8>>(1)));
+                let unit = unit_text(&lakelands_core::engines::vector_of(&r.get::<_, Vec<u8>>(1)));
                 (key, unit)
             })
             .unzip();

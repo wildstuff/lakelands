@@ -37,8 +37,9 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use lakelands_api::engine::{After, Scan};
+use lakelands_api::error::{Error, Refusal, Result};
 use lakelands_api::expr::Expr;
-use lakelands_api::id::{FieldName, RecordKey, RelationName, TypeName, VerbName};
+use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName, VerbName};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::query::Edge;
 use lakelands_api::read::{Direction, Order, OrderBy};
@@ -48,6 +49,7 @@ use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposedWrite}
 
 pub use crate::expr::order::{cmp_values, sort_key};
 use crate::expr::{RecordScope, holds};
+use crate::invalid;
 
 /// The clock an engine evaluates a filter with. The store hands an engine
 /// only filters that do not read the clock, so any fixed instant will do.
@@ -964,6 +966,59 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f64 {
     } else {
         dot / (na.sqrt() * nb.sqrt())
     }
+}
+
+/// A vector as an index stores it: its components as little-endian
+/// `f32`s.
+pub fn vector_bytes(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|x| x.to_le_bytes()).collect()
+}
+
+/// The vector [`vector_bytes`] stored.
+pub fn vector_of(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
+        .collect()
+}
+
+/// The position a view reads at: `as_of`, or the position the projection
+/// reflects (`folded`) when none is asked; a position past it is out of
+/// range.
+pub fn view_at(as_of: Option<Position>, folded: Option<Position>) -> Result<Option<Position>> {
+    match (as_of, folded) {
+        (None, folded) => Ok(folded),
+        (Some(p), Some(head)) if p <= head => Ok(Some(p)),
+        (Some(_), head) => Err(Error::Refused {
+            field: None,
+            reason: Refusal::OutOfRange {
+                head: head.unwrap_or_default(),
+            },
+        }),
+    }
+}
+
+/// Why a transaction cannot commit through `through`, if it cannot: the
+/// projection already reflects a later position (`folded`), or it puts a
+/// state valid only from a later one (`late`).
+pub fn commit_refusal(
+    folded: Option<Position>,
+    late: Option<Position>,
+    through: Position,
+) -> Option<Error> {
+    if let Some(folded) = folded.filter(|f| *f > through) {
+        return Some(invalid(format!(
+            "the projection reflects the log through position {folded}; a transaction \
+             cannot commit through the earlier position {through}"
+        )));
+    }
+    let late = late.filter(|p| *p > through)?;
+    Some(invalid(format!(
+        "a state valid from position {late} cannot be committed through the earlier \
+         position {through}"
+    )))
 }
 
 #[cfg(test)]
