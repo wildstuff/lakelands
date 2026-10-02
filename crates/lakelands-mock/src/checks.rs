@@ -36,7 +36,8 @@ use lakelands_api::record::{Origin, Patch, Record, SourceRecord, Value};
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::tools::{Door, tools};
 use lakelands_api::write::{
-    Declaration, FunctionDecl, ObjectSetDecl, Outcome, ProposalFilter, ProposalState, WriteOpts,
+    Declaration, FunctionDecl, ObjectSetDecl, Outcome, ProposalFilter, ProposalState,
+    ProposedWrite, WriteOpts,
 };
 use lakelands_api::{Catalog, LakeStore, WriteContext};
 use serde_json::json;
@@ -1127,6 +1128,18 @@ pub async fn a_verb_on_its_type_is_called_without_a_key(store: Arc<dyn LakeStore
     let e = call(owner.clone(), "register", None, WriteOpts::default())
         .await
         .expect_err("no lake here binds the executor `crm`");
+    assert!(matches!(e, Error::Unbound { .. }), "{e:?}");
+    let proposed = ProposedWrite::Call {
+        verb: "register".into(),
+        key: None,
+        payload: payload(),
+        opts: WriteOpts::default(),
+    };
+    let e = f
+        .catalog
+        .propose(owner, proposed, "later".into())
+        .await
+        .expect_err("a call of `register` could not run when accepted");
     assert!(matches!(e, Error::Unbound { .. }), "{e:?}");
     assert_eq!(f.head().await, head, "nothing is appended");
 }

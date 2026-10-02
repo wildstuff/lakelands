@@ -870,9 +870,9 @@ the lake took that many other events while the executor ran) is answered
 as none; the position stands, and nothing runs again.
 
 There is no default: a verb whose executor is not bound is refused as
-`Unbound`, never faked. The store checks it when the verb is called and
-again when a proposal to call it is accepted, before anything is
-written.
+`Unbound`, never faked. The store checks it when the verb is called or
+a call of it is proposed, and again when a proposal to call it is
+accepted, before anything is written.
 
 ## `ChangeFeed`
 

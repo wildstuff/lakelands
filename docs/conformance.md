@@ -361,7 +361,7 @@ belongs in the suite, not beside one engine:
 **proposals**
 
 - `a_low_verb_runs_and_a_higher_one_is_proposed` — 013: a `low` verb that writes authored fields runs at once; any other risk is recorded as a proposal and runs only when accepted
-- `an_external_verb_without_an_executor_is_unbound` — 013 and 015: a verb whose effect reaches outside the lake runs only through a bound executor; without one the answer is `unbound`, and nothing is appended
+- `an_external_verb_without_an_executor_is_unbound` — 013 and 015: a verb whose effect reaches outside the lake runs only through a bound executor; without one, calling it at any risk or proposing a call of it answers `unbound` naming the executor, and nothing is appended
 - `accepting_a_proposal_applies_its_write_as_the_proposers` — 013 and 004: a proposal is a `write_proposed` event; accepting it appends `write_accepted`, then the verb's run caused by that acceptance and its write caused by that run, written as the proposer
 - `a_rejected_proposal_writes_nothing_and_a_decided_one_stays_decided` — 013: rejecting appends `write_rejected` and nothing else; a decided proposal is refused as decided
 - `only_a_reviewer_decides_and_a_proposer_sees_its_own_proposals` — 006, 013 and Catalog::proposals: accept and reject need the review grant; without it, `proposals` lists only the principal's own

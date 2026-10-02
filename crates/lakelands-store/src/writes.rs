@@ -1309,6 +1309,10 @@ impl Call<'_> {
                 let decl = w.ontology.verb(&verb)?.clone();
                 scoped(&decl, key.as_ref(), opts.expected_version)?;
                 granted(self.verb_callable(&decl))?;
+                // A call that could not run when accepted is not proposed (013).
+                if let VerbEffect::External { executor } = &decl.effect {
+                    self.check_executor(executor)?;
+                }
                 let payload = self.verb_payload(&w, &decl, &payload)?;
                 if matches!(decl.effect, VerbEffect::Write { .. }) {
                     self.run_verb(
