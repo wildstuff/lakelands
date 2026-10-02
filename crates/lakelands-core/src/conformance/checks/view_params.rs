@@ -8,8 +8,10 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::{StorageKind, TypeDecl, ViewDecl, ViewParam};
-use lakelands_api::query::{Pattern, Projection, QueryResult};
+use lakelands_api::ontology::{
+    Derived, MatchPair, RelationDecl, StorageKind, TypeDecl, ViewDecl, ViewParam,
+};
+use lakelands_api::query::{Pattern, Projection, QueryResult, Walk};
 use lakelands_api::read::{Find, Found, Get};
 use lakelands_api::write::Declaration;
 use lakelands_api::{Error, LakeStore, Params, Refusal, Value};
@@ -17,7 +19,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, field, find_where, log_events, pattern, reason, type_decl, view_of,
+    Lake, Must, field, find_where, log_events, pattern, reason, step, type_decl, view_of,
 };
 
 check!(
@@ -47,7 +49,7 @@ check!(
 check!(
     /// A pattern binds the view it starts on.
     PATTERN_START_BINDS = a_pattern_started_on_a_view_binds_its_parameters,
-    "018 and 026: a pattern that starts on a view binds its parameters with the start, by key and by `where`, and its nodes are the window `find` answers; a start that leaves one out is refused, naming it"
+    "018 and 026: a pattern that starts on a view binds its parameters with the start, by key and by `where`, and its nodes are the window `find` answers; a `degree` started on it by key answers that key's row of the whole view's; a start that leaves one out is refused, naming it"
 );
 
 check!(
@@ -445,6 +447,49 @@ async fn a_pattern_started_on_a_view_binds_its_parameters(
             "{what} must hold the window's record {want}; it holds {got}"
         );
     }
+    let mut paid = payment();
+    paid.relations = vec![RelationDecl {
+        derived: Some(Derived {
+            pairs: vec![MatchPair {
+                from: "account".into(),
+                to: "account".into(),
+            }],
+        }),
+        ..RelationDecl::to("window", "account_window")
+    }];
+    l.declare(paid).await?;
+    let degree = |key: Option<&str>| {
+        let mut p = pattern(
+            "account_window",
+            key,
+            vec![step("window", Walk::In)],
+            Projection::Degree,
+        );
+        p.start.params = anchor("2026-06-30");
+        p
+    };
+    let mut rows = Vec::new();
+    for key in [None, Some("a")] {
+        let what = format!("`degree` over `window` started on `account_window` at key {key:?}");
+        let reply = l.cat.query(&l.own, degree(key)).await.must(&what)?;
+        let QueryResult::Rows { rows: got, .. } = reply.data else {
+            return Err(Failure::new(format!(
+                "{what} answered something other than rows"
+            )));
+        };
+        rows.push(got);
+    }
+    let of_a: Vec<_> = rows[0]
+        .iter()
+        .filter(|r| r.get("key") == Some(&json!("a")))
+        .cloned()
+        .collect();
+    ensure!(
+        !of_a.is_empty() && rows[1] == of_a,
+        "a `degree` started on `account_window` at `a` with its `anchor` answers the whole \
+         view's row for `a`, {of_a:?}; it answered {:?}",
+        rows[1]
+    );
     let r = l
         .cat
         .query(
