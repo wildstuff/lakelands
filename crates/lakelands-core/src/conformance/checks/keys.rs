@@ -10,11 +10,13 @@
 use std::sync::Arc;
 
 use lakelands_api::ontology::StorageKind;
-use lakelands_api::{Error, FieldName, LakeStore, Refusal, TypeName};
+use lakelands_api::{FieldName, LakeStore, Refusal, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, field, head_unmoved, patch, type_decl, value};
+use crate::conformance::fixture::{
+    Lake, Must, field, head_unmoved, patch, reason, type_decl, value,
+};
 
 check!(
     /// A key that disagrees with the key fields is refused.
@@ -66,13 +68,7 @@ async fn a_key_that_disagrees_with_its_key_fields_is_refused(
         .await
         .must_fail("writing `line` `INV%3A7%251:3` with key fields that make `…:2`")?;
     ensure!(
-        matches!(
-            err,
-            Error::Refused {
-                reason: Refusal::Invalid { .. },
-                ..
-            }
-        ),
+        matches!(reason(&err), Some(Refusal::Invalid { .. })),
         "a key that disagrees with its key fields must be refused as invalid; it failed with {err:?}"
     );
     head_unmoved(

@@ -16,8 +16,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, committed, field, get_at, head_unmoved, patch, source_record, type_decl, value,
-    windows_reach_head,
+    Lake, Must, committed, field, get_at, head_unmoved, patch, refused_on, source_record,
+    type_decl, value, windows_reach_head,
 };
 
 check!(
@@ -235,10 +235,7 @@ async fn an_upsert_carrying_a_field_only_a_source_writes_is_refused_as_the_wrong
     )
     .await?;
     ensure!(
-        matches!(
-            &err,
-            Error::Refused { field: Some(f), reason: Refusal::WrongDoor } if f.as_str() == "body"
-        ),
+        matches!(refused_on(&err), Some(("body", Refusal::WrongDoor))),
         "an upsert carrying `body`, which only a source writes, must be refused as the \
          wrong door on `body`, even for the owner; it failed with {err:?}"
     );

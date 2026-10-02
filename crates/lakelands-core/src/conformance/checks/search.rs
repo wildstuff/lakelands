@@ -12,7 +12,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, declare, doors, field, field_writer, owner, type_decl, upsert,
+    Lake, Must, declare, doors, field, field_writer, owner, refused_on, type_decl, upsert,
 };
 
 check!(
@@ -171,7 +171,7 @@ async fn searching_a_type_whose_searchable_field_is_unreadable_is_refused(
         .await
         .must_fail("searching `article`, whose `text` the reader sees only masked")?;
     ensure!(
-        matches!(&err, Error::Refused { field: Some(f), reason: Refusal::NotGranted } if f.as_str() == "text"),
+        matches!(refused_on(&err), Some(("text", Refusal::NotGranted))),
         "a search over the masked `text` must be refused as not granted, naming `text`; \
          it failed with {err:?}"
     );
@@ -213,10 +213,7 @@ pub(super) async fn refused(
     what: &str,
 ) -> Result<(), Failure> {
     match doors(store).search(who, search).await {
-        Err(Error::Refused {
-            field: Some(f),
-            reason: Refusal::NotGranted,
-        }) if f.as_str() == field => Ok(()),
+        Err(e) if matches!(refused_on(&e), Some((f, Refusal::NotGranted)) if f == field) => Ok(()),
         Err(e) => Err(Failure::new(format!(
             "{what} must be refused as not granted, naming `{field}`; it failed with {e:?}"
         ))),

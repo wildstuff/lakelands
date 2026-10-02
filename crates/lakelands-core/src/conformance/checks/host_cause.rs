@@ -19,12 +19,13 @@ use lakelands_api::ontology::{
 use lakelands_api::principal::{WriteContext, WriteOrigin};
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::{Declaration, Migration, ProposedWrite};
-use lakelands_api::{Catalog, Error, LakeStore, Position, Refusal, TypeName, WriteOpts};
+use lakelands_api::{Catalog, LakeStore, Position, Refusal, TypeName, WriteOpts};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, doors, field, head_unmoved, ingest, limits, owner, patch, source_record, type_decl,
+    Lake, Must, doors, field, head_unmoved, ingest, limits, owner, patch, reason, source_record,
+    type_decl,
 };
 
 check!(
@@ -245,13 +246,7 @@ async fn a_cause_past_the_head_is_refused_and_appends_nothing(
         }
         Err(e) => {
             ensure!(
-                matches!(
-                    e,
-                    Error::Refused {
-                        reason: Refusal::Invalid { .. },
-                        ..
-                    }
-                ),
+                matches!(reason(&e), Some(Refusal::Invalid { .. })),
                 "a cause past the head must be refused as invalid; it was refused as {e:?}"
             );
             let why = e.to_string();
@@ -373,10 +368,7 @@ async fn the_reactive_ceiling_holds_on_every_door_that_writes(
     ];
     for (door, answer) in tries {
         match answer {
-            Err(Error::Refused {
-                reason: Refusal::TooDeep { .. },
-                ..
-            }) => {}
+            Err(e) if matches!(reason(&e), Some(Refusal::TooDeep { .. })) => {}
             other => {
                 return Err(Failure::new(format!(
                     "`{door}` through a context past the ceiling must be refused as too_deep; \
@@ -412,10 +404,7 @@ async fn the_reactive_ceiling_holds_on_every_door_that_writes(
         .migrate_value_type_apply(own, tightened, &report.report_id)
         .await
     {
-        Err(Error::Refused {
-            reason: Refusal::TooDeep { .. },
-            ..
-        }) => {}
+        Err(e) if matches!(reason(&e), Some(Refusal::TooDeep { .. })) => {}
         other => {
             return Err(Failure::new(format!(
                 "`migrate_value_type_apply` through a context past the ceiling must be refused \

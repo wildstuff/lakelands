@@ -18,7 +18,7 @@ use lakelands_api::{
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, field, log_events, principal, type_decl};
+use crate::conformance::fixture::{Lake, field, log_events, principal, reason, type_decl};
 
 check!(
     /// Sources meet on their key.
@@ -155,8 +155,7 @@ async fn rows(l: &Lake, view: &str, params: Params) -> Result<Value, Failure> {
 }
 
 fn invalid_naming(r: &Result<impl std::fmt::Debug, Error>, names: &[&str]) -> bool {
-    matches!(r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
-        if names.iter().all(|n| message.contains(&format!("`{n}`"))))
+    matches!(reason(&r), Some(Refusal::Invalid { message }) if names.iter().all(|n| message.contains(&format!("`{n}`"))))
 }
 
 async fn a_view_merges_its_sources_on_their_key_and_keeps_a_key_only_one_has(
@@ -428,12 +427,7 @@ async fn a_merged_sources_fields_are_probed_as_a_read_of_it(
         .find(&blind, &"energy_balance".into(), Find::default())
         .await;
     match r {
-        Err(
-            e @ Error::Refused {
-                reason: Refusal::NotGranted,
-                ..
-            },
-        ) => {
+        Err(e) if matches!(reason(&e), Some(Refusal::NotGranted)) => {
             let why = e.to_string();
             ensure!(
                 why.contains("kcal"),

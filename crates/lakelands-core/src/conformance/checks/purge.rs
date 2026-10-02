@@ -21,7 +21,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, field, get_at, head_unmoved, ingest, source_record, type_decl,
+    Lake, Must, field, get_at, head_unmoved, ingest, reason, source_record, type_decl,
 };
 use crate::links::{link_key, link_type_name};
 
@@ -634,11 +634,7 @@ async fn a_co_owned_purge_names_the_count_and_the_first_ten(
         .purge_source(&SourceId::from("bulk"))
         .await
         .must_fail("purging `bulk`, all twelve of whose records a person also wrote")?;
-    let Error::Refused {
-        reason: Refusal::Invalid { message },
-        ..
-    } = &e
-    else {
+    let Some(Refusal::Invalid { message }) = reason(&e) else {
         return Err(Failure::new(format!(
             "the purge was refused as {e:?}; invalid was expected"
         )));

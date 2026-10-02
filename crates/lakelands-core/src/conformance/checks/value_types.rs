@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, field, head_unmoved, log_events, principal, type_decl,
+    Lake, Must, field, head_unmoved, log_events, principal, reason, refused_on, type_decl,
 };
 
 check!(
@@ -154,7 +154,7 @@ async fn preflight(l: &Lake, to: ValueTypeDecl) -> Result<ValueTypeReport, Failu
 }
 
 fn is_invalid_naming(e: &Error, word: &str) -> bool {
-    matches!(e, Error::Refused { reason: Refusal::Invalid { message }, .. } if message.contains(word))
+    matches!(reason(&e), Some(Refusal::Invalid { message }) if message.contains(word))
 }
 
 async fn a_value_type_that_accepts_more_is_declared_and_no_record_changes(
@@ -421,7 +421,7 @@ async fn a_tightening_every_value_fits_is_one_declared_version(
         .await
         .must_fail("writing `void` after it was taken out")?;
     ensure!(
-        matches!(&e, Error::Refused { field: Some(f), reason: Refusal::Constraint { .. } } if f.as_str() == "status"),
+        matches!(refused_on(&e), Some(("status", Refusal::Constraint { .. }))),
         "`void` was written after the tightening, or refused as {e:?}"
     );
     Ok(())
@@ -441,13 +441,7 @@ async fn a_value_type_report_from_before_the_lake_moved_is_refused(
         .await
         .must_fail("applying a report from before the lake moved")?;
     ensure!(
-        matches!(
-            &e,
-            Error::Refused {
-                reason: Refusal::Invalid { .. },
-                ..
-            }
-        ),
+        matches!(reason(&e), Some(Refusal::Invalid { .. })),
         "a stale report was refused as {e:?}; invalid was expected"
     );
     head_unmoved(store.as_ref(), before, "a stale value-type report").await
@@ -471,15 +465,7 @@ async fn a_value_type_migration_needs_the_schema_grant(
     );
     let pre = cat.migrate_value_type(&clerk, to.clone()).await;
     let apply = cat.migrate_value_type_apply(&clerk, to, &r.report_id).await;
-    let refused = |r: &Result<_, Error>| {
-        matches!(
-            r,
-            Err(Error::Refused {
-                reason: Refusal::NotGranted,
-                ..
-            })
-        )
-    };
+    let refused = |r: &Result<_, Error>| matches!(reason(&r), Some(Refusal::NotGranted));
     ensure!(
         refused(&pre.map(|_| ())) && refused(&apply.map(|_| ())),
         "a principal without `schema` was not refused as not granted on both calls"

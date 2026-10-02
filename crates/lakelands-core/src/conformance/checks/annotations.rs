@@ -23,12 +23,12 @@ use lakelands_api::principal::TypeGrants;
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::Declaration;
 use lakelands_api::{
-    Access, Error, Grants, LakeStore, Position, PrincipalKind, ReadAt, Refusal, TypeName,
+    Access, Grants, LakeStore, Position, PrincipalKind, ReadAt, Refusal, TypeName,
 };
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, field, head_unmoved, principal, type_decl};
+use crate::conformance::fixture::{Lake, Must, field, head_unmoved, principal, reason, type_decl};
 
 check!(
     /// Annotations come back as declared.
@@ -411,15 +411,9 @@ async fn an_unnamespaced_reserved_null_or_oversized_annotation_is_refused_naming
             }
             Err(e) => e,
         };
-        let kind_ok = match &e {
-            Error::Refused {
-                reason: Refusal::Reserved,
-                ..
-            } => reserved,
-            Error::Refused {
-                reason: Refusal::Invalid { .. },
-                ..
-            } => !reserved,
+        let kind_ok = match reason(&e) {
+            Some(Refusal::Reserved) => reserved,
+            Some(Refusal::Invalid { .. }) => !reserved,
             _ => false,
         };
         ensure!(

@@ -7,13 +7,13 @@ use std::sync::Arc;
 
 use lakelands_api::ontology::{Authority, FieldDecl, StorageKind};
 use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Order, OrderBy};
-use lakelands_api::{Error, Find, LakeStore, Refusal, Timestamp};
+use lakelands_api::{Find, LakeStore, Refusal, Timestamp};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all_found, declare, doors, field, field_writer, owner, source_record, type_decl,
-    windows_reach_head,
+    Lake, Must, all_found, declare, doors, field, field_writer, owner, refused_on, source_record,
+    type_decl, windows_reach_head,
 };
 
 check!(
@@ -217,10 +217,7 @@ async fn probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggre
             .await
             .must_fail(&format!("probing the unreadable `note` with {how}"))?;
         ensure!(
-            matches!(
-                &err,
-                Error::Refused { field: Some(f), reason: Refusal::NotGranted } if f.as_str() == "note"
-            ),
+            matches!(refused_on(&err), Some(("note", Refusal::NotGranted))),
             "probing `note` with {how} must be refused as not granted, naming `note`; \
              it failed with {err:?}"
         );

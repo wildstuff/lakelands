@@ -14,7 +14,9 @@ use lakelands_api::{Error, LakeStore, ReadAt, Refusal, TypeName};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, doors, field, head_unmoved, owner, type_decl};
+use crate::conformance::fixture::{
+    Lake, Must, doors, field, head_unmoved, owner, reason, type_decl,
+};
 
 check!(
     /// The schema hash is the log format's, byte for byte.
@@ -260,13 +262,7 @@ async fn an_ordinary_principal_cannot_declare_a_sys_type(
         .must_fail("the owner declaring `sys.mine`")?;
     head_unmoved(store.as_ref(), before, "the owner declaring `sys.mine`").await?;
     ensure!(
-        matches!(
-            err,
-            Error::Refused {
-                reason: Refusal::Reserved,
-                ..
-            }
-        ),
+        matches!(reason(&err), Some(Refusal::Reserved)),
         "declaring `sys.mine` as the owner must be refused as reserved; it failed with {err:?}"
     );
 

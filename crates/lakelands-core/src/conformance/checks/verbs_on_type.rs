@@ -16,7 +16,7 @@ use lakelands_api::principal::{Access, TypeGrants};
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::{Declaration, ProposedWrite};
 use lakelands_api::{
-    Error, Grants, IdempotencyKey, LakeStore, Outcome, Position, Principal, PrincipalKind, ReadAt,
+    Grants, IdempotencyKey, LakeStore, Outcome, Position, Principal, PrincipalKind, ReadAt,
     Refusal, TypeName, Version, WriteOpts,
 };
 use serde_json::json;
@@ -24,7 +24,7 @@ use serde_json::json;
 use crate::conformance::Failure;
 use crate::conformance::backing::{EXECUTOR, executed};
 use crate::conformance::fixture::{
-    Lake, Must, field, head_unmoved, owner, patch, principal, type_decl,
+    Lake, Must, field, head_unmoved, invalid_naming, owner, patch, principal, reason, type_decl,
 };
 
 check!(
@@ -293,10 +293,7 @@ async fn a_verb_on_its_type_without_write_on_its_type_is_not_granted(
         )
         .await
     {
-        Err(Error::Refused {
-            reason: Refusal::NotGranted,
-            ..
-        }) => {}
+        Err(e) if matches!(reason(&e), Some(Refusal::NotGranted)) => {}
         other => {
             return Err(Failure::new(format!(
                 "a principal that only reads `payment` is refused not_granted calling a verb on \
@@ -397,29 +394,13 @@ async fn a_key_that_does_not_fit_the_verbs_scope_is_refused_naming_the_verb(
     ] {
         let before = store.head().await.must("reading the head")?;
         let key = key.map(lakelands_api::RecordKey::from);
-        match l
-            .cat
-            .call(&nobody, &verb.into(), key.as_ref(), patch(json!({})), opts)
-            .await
-        {
-            Err(
-                e @ Error::Refused {
-                    reason: Refusal::Invalid { .. },
-                    ..
-                },
-            ) => {
-                let why = e.to_string();
-                ensure!(
-                    why.contains(verb),
-                    "{what} must be refused naming `{verb}`; it said: {why}"
-                );
-            }
-            other => {
-                return Err(Failure::new(format!(
-                    "{what} must be refused as invalid; it answered {other:?}"
-                )));
-            }
-        }
+        invalid_naming(
+            what,
+            l.cat
+                .call(&nobody, &verb.into(), key.as_ref(), patch(json!({})), opts)
+                .await,
+            &[verb],
+        )?;
         head_unmoved(store.as_ref(), before, what).await?;
     }
     Ok(())
@@ -449,25 +430,7 @@ async fn a_verb_on_its_type_with_a_write_effect_or_requires_is_refused(
         let d: Declaration = serde_json::from_value(verb)
             .map_err(|e| Failure::new(format!("the check's verb does not read: {e}")))?;
         let before = store.head().await.must("reading the head")?;
-        match l.cat.declare(&own, d).await {
-            Err(
-                e @ Error::Refused {
-                    reason: Refusal::Invalid { .. },
-                    ..
-                },
-            ) => {
-                let why = e.to_string();
-                ensure!(
-                    why.contains(&name),
-                    "{what} must be refused naming `{name}`; it said: {why}"
-                );
-            }
-            other => {
-                return Err(Failure::new(format!(
-                    "{what} must be refused as invalid; it answered {other:?}"
-                )));
-            }
-        }
+        invalid_naming(what, l.cat.declare(&own, d).await, &[&name])?;
         head_unmoved(store.as_ref(), before, what).await?;
     }
     Ok(())

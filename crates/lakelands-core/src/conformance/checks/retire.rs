@@ -10,7 +10,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, field, field_writer, get_at, head_unmoved, type_decl,
+    Lake, Must, field, field_writer, get_at, head_unmoved, reason, refused_on, type_decl,
 };
 
 check!(
@@ -68,13 +68,7 @@ async fn a_type_whose_fields_all_come_from_a_source_has_no_upsert(
         .must_fail("the owner upserting `rate`, whose fields all come from a source")?;
     head_unmoved(store.as_ref(), before, "upserting a source-only type").await?;
     ensure!(
-        matches!(
-            &err,
-            Error::Refused {
-                field: Some(f),
-                reason: Refusal::WrongDoor,
-            } if f.as_str() == "currency"
-        ),
+        matches!(refused_on(&err), Some(("currency", Refusal::WrongDoor))),
         "an upsert of `rate`'s source field `currency` must be refused as the wrong door, \
          naming `currency`; it failed with {err:?}"
     );
@@ -123,13 +117,7 @@ async fn a_principal_who_may_write_only_some_fields_cannot_retire(
         .must_fail("the clerk retiring `i`")?;
     head_unmoved(store.as_ref(), before, "the clerk retiring `i`").await?;
     ensure!(
-        matches!(
-            err,
-            Error::Refused {
-                reason: Refusal::NotGranted,
-                ..
-            }
-        ),
+        matches!(reason(&err), Some(Refusal::NotGranted)),
         "retiring as a principal who may write only `status` must be refused as not \
          granted; it failed with {err:?}"
     );

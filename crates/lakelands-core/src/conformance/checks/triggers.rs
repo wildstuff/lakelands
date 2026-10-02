@@ -17,12 +17,13 @@ use lakelands_api::ontology::{StorageKind, TriggerDecl};
 use lakelands_api::principal::{WriteContext, WriteOrigin};
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::Declaration;
-use lakelands_api::{Error, Find, LakeStore, Position, Refusal, TypeName, WriteOpts};
+use lakelands_api::{Find, LakeStore, Position, Refusal, TypeName, WriteOpts};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, declare, doors, field, head_unmoved, limits, owner, patch, type_decl, upsert,
+    Must, declare, doors, field, head_unmoved, invalid_naming, limits, owner, patch, reason,
+    type_decl, upsert,
 };
 
 check!(
@@ -149,8 +150,9 @@ async fn a_transition_guard_fires_on_open_to_closed_only(
             }
         );
     }
-    match cat
-        .find(
+    invalid_naming(
+        "`previous` outside a guard",
+        cat.find(
             &own,
             &TypeName::from("job"),
             Find {
@@ -158,26 +160,9 @@ async fn a_transition_guard_fires_on_open_to_closed_only(
                 ..Find::default()
             },
         )
-        .await
-    {
-        Err(
-            e @ Error::Refused {
-                reason: Refusal::Invalid { .. },
-                ..
-            },
-        ) => {
-            let why = e.to_string();
-            ensure!(
-                why.contains("previous"),
-                "`previous` in a find must be refused naming it; it said: {why}"
-            );
-        }
-        other => {
-            return Err(Failure::new(format!(
-                "`previous` outside a guard must be refused as invalid; it answered {other:?}"
-            )));
-        }
-    }
+        .await,
+        &["previous"],
+    )?;
     Ok(())
 }
 
@@ -330,24 +315,6 @@ async fn retired_outside_a_triggers_guard_is_refused_naming_it(
         type_decl("job", vec![field("status", StorageKind::Text)]),
     )
     .await?;
-    let invalid_naming_retired = |what: &str, answer: Result<(), Error>| match answer {
-        Err(
-            e @ Error::Refused {
-                reason: Refusal::Invalid { .. },
-                ..
-            },
-        ) => {
-            let why = e.to_string();
-            ensure!(
-                why.contains("retired"),
-                "{what} must be refused naming `retired`; it said: {why}"
-            );
-            Ok(())
-        }
-        other => Err(Failure::new(format!(
-            "{what} must be refused as invalid; it answered {other:?}"
-        ))),
-    };
     for (what, d) in [
         (
             "an object set filtering on `retired()`",
@@ -372,10 +339,10 @@ async fn retired_outside_a_triggers_guard_is_refused_naming_it(
     ] {
         let d: Declaration = serde_json::from_value(d).expect("a declaration");
         let before = store.head().await.must("reading the head")?;
-        invalid_naming_retired(what, cat.declare(&own, d).await.map(|_| ()))?;
+        invalid_naming(what, cat.declare(&own, d).await, &["retired"])?;
         head_unmoved(store.as_ref(), before, what).await?;
     }
-    invalid_naming_retired(
+    invalid_naming(
         "a find filtering on `retired()`",
         cat.find(
             &own,
@@ -385,8 +352,8 @@ async fn retired_outside_a_triggers_guard_is_refused_naming_it(
                 ..Find::default()
             },
         )
-        .await
-        .map(|_| ()),
+        .await,
+        &["retired"],
     )
 }
 
@@ -459,12 +426,7 @@ async fn a_reaction_past_its_triggers_max_depth_is_refused_naming_it(
     // A reaction to that firing at depth 2 passes `once`'s ceiling.
     let head = store.head().await.must("reading the head")?;
     match write(host(2, Some(once_1)), "j2").await {
-        Err(
-            e @ Error::Refused {
-                reason: Refusal::TooDeep { max: 1 },
-                ..
-            },
-        ) => {
+        Err(e) if matches!(reason(&e), Some(Refusal::TooDeep { max: 1 })) => {
             let why = e.to_string();
             ensure!(
                 why.contains("once"),
@@ -506,33 +468,12 @@ async fn a_trigger_max_depth_above_the_lakes_ceiling_is_refused(
     .await?;
     let ceiling = limits().max_reactive_depth;
     let head = store.head().await.must("reading the head")?;
-    match cat
-        .declare(&own, trigger("deep", None, Some(ceiling + 1)))
-        .await
-    {
-        Err(
-            e @ Error::Refused {
-                reason: Refusal::Invalid { .. },
-                ..
-            },
-        ) => {
-            let why = e.to_string();
-            ensure!(
-                why.contains("deep")
-                    && why.contains(&(ceiling + 1).to_string())
-                    && why.contains(&ceiling.to_string()),
-                "a max_depth above the ceiling must be refused naming the trigger and both \
-                 numbers; it said: {why}"
-            );
-        }
-        other => {
-            return Err(Failure::new(format!(
-                "a max_depth of {} above the lake's {ceiling} must be refused as invalid; it \
-                 answered {other:?}",
-                ceiling + 1
-            )));
-        }
-    }
+    invalid_naming(
+        &format!("a max_depth of {} above the lake's {ceiling}", ceiling + 1),
+        cat.declare(&own, trigger("deep", None, Some(ceiling + 1)))
+            .await,
+        &["deep", &(ceiling + 1).to_string(), &ceiling.to_string()],
+    )?;
     head_unmoved(store.as_ref(), head, "a trigger above the ceiling").await?;
     for (name, m) in [("at_ceiling", ceiling), ("never", 0)] {
         cat.declare(&own, trigger(name, None, Some(m)))

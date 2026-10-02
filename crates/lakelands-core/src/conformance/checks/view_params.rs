@@ -16,7 +16,7 @@ use lakelands_api::{Error, FieldName, LakeStore, Params, Refusal, Value};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, field, log_events, type_decl};
+use crate::conformance::fixture::{Lake, Must, field, log_events, reason, type_decl};
 
 check!(
     /// Two anchors, two windows.
@@ -140,7 +140,7 @@ fn anchor(date: &str) -> Params {
 }
 
 fn invalid_naming(r: &Result<impl std::fmt::Debug, Error>, name: &str) -> bool {
-    matches!(r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. }) if message.contains(name))
+    matches!(reason(&r), Some(Refusal::Invalid { message }) if message.contains(name))
 }
 
 async fn the_same_view_read_at_two_anchors_answers_two_windows(

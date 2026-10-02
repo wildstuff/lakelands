@@ -16,14 +16,14 @@ use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Start, Step,
 use lakelands_api::read::ReadAt;
 use lakelands_api::write::{Declaration, WriteOpts};
 use lakelands_api::{
-    Access, Catalog, Error, Grants, LakeStore, Position, Principal, PrincipalKind, Refusal,
-    TypeName, Value,
+    Access, Catalog, Grants, LakeStore, Position, Principal, PrincipalKind, Refusal, TypeName,
+    Value,
 };
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, declare, doors, field, owner, patch, principal, type_decl, upsert,
+    Must, declare, doors, field, invalid_naming, owner, patch, principal, reason, type_decl, upsert,
 };
 
 check!(
@@ -446,12 +446,7 @@ async fn a_principal_without_read_on_a_matched_field_is_refused_naming_it(
     for (who, p, field) in cases {
         let what = format!("{:?} over `{}`", p.project, p.steps[0].relation);
         match cat.query(&who, p).await {
-            Err(
-                e @ Error::Refused {
-                    reason: Refusal::NotGranted,
-                    ..
-                },
-            ) => {
+            Err(e) if matches!(reason(&e), Some(Refusal::NotGranted)) => {
                 let why = e.to_string();
                 ensure!(
                     why.contains(field),
@@ -622,25 +617,11 @@ async fn a_derived_relation_is_declared_not_migrated_and_never_moves_carrier(
         ),
     ] {
         let head = store.head().await.must("reading the head")?;
-        match cat.declare(&own, Declaration::Type(t)).await {
-            Err(
-                e @ Error::Refused {
-                    reason: Refusal::Invalid { .. },
-                    ..
-                },
-            ) => {
-                let why = e.to_string();
-                ensure!(
-                    why.contains("customer") && why.contains("carrier"),
-                    "{what} must be refused naming the relation; it said: {why}"
-                );
-            }
-            other => {
-                return Err(Failure::new(format!(
-                    "{what} must be refused as invalid; it answered {other:?}"
-                )));
-            }
-        }
+        invalid_naming(
+            what,
+            cat.declare(&own, Declaration::Type(t)).await,
+            &["customer", "carrier"],
+        )?;
         crate::conformance::fixture::head_unmoved(store.as_ref(), head, what).await?;
     }
     Ok(())
@@ -689,25 +670,7 @@ async fn a_match_pair_of_two_kinds_is_refused_naming_both(
         ),
     ] {
         let head = store.head().await.must("reading the head")?;
-        match cat.declare(&own, Declaration::Type(t)).await {
-            Err(
-                e @ Error::Refused {
-                    reason: Refusal::Invalid { .. },
-                    ..
-                },
-            ) => {
-                let why = e.to_string();
-                ensure!(
-                    named.iter().all(|n| why.contains(n)),
-                    "{what} must be refused naming {named:?}; it said: {why}"
-                );
-            }
-            other => {
-                return Err(Failure::new(format!(
-                    "{what} must be refused as invalid; it answered {other:?}"
-                )));
-            }
-        }
+        invalid_naming(what, cat.declare(&own, Declaration::Type(t)).await, &named)?;
         crate::conformance::fixture::head_unmoved(store.as_ref(), head, what).await?;
     }
     Ok(())

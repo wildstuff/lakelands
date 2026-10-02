@@ -21,7 +21,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{EngineHarness, chain, event};
 use crate::conformance::Failure;
-use crate::conformance::fixture::Must;
+use crate::conformance::fixture::{Must, reason};
 
 engine_check!(
     /// Bytes are stored and returned unchanged.
@@ -303,11 +303,8 @@ fn a_stale_lease_cannot_append(engine: &dyn LakeEngine) -> Result<(), Failure> {
         .must_fail("appending events that carry the old fence under the new lease")?;
     ensure!(
         matches!(
-            wrong_fence,
-            Error::Refused {
-                reason: lakelands_api::Refusal::Invalid { .. },
-                ..
-            }
+            reason(&wrong_fence),
+            Some(lakelands_api::Refusal::Invalid { .. })
         ),
         "an event carrying another fence was refused as {wrong_fence:?}; it must be invalid"
     );
@@ -502,11 +499,8 @@ fn an_event_at_position_zero_with_a_fence_is_refused(
         .must_fail("appending position 0 under the lease's fence")?;
     ensure!(
         matches!(
-            refused,
-            Error::Refused {
-                reason: lakelands_api::Refusal::Invalid { .. },
-                ..
-            }
+            reason(&refused),
+            Some(lakelands_api::Refusal::Invalid { .. })
         ),
         "the event at position 0 carrying fence {} was refused as {refused:?}; it must be invalid",
         lease.fence

@@ -126,7 +126,9 @@ use serde_json::json;
 use sha2::{Digest as _, Sha256};
 
 use crate::conformance::backing::EMBED_MODEL;
-use crate::conformance::fixture::{Must, declare, doors, field, limits, owner, pause, type_decl};
+use crate::conformance::fixture::{
+    Must, declare, doors, field, limits, owner, pause, reason, type_decl,
+};
 use crate::conformance::{Failure, Given, Meter, backing, next};
 use crate::export;
 use crate::links::{link_key, link_type_name};
@@ -1359,13 +1361,7 @@ impl Size<'_> {
             .await;
         let measured = m.stop();
         ensure!(
-            matches!(
-                answer,
-                Err(lakelands_api::Error::Refused {
-                    reason: lakelands_api::Refusal::TooLarge { max },
-                    ..
-                }) if max == cap
-            ),
+            matches!(reason(&answer), Some(lakelands_api::Refusal::TooLarge { max }) if *max == cap),
             "the components of {} records under a cap of {cap} are refused as too_large; \
              the measure answered {answer:?}",
             self.live

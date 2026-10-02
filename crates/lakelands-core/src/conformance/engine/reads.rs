@@ -16,12 +16,12 @@ use lakelands_api::id::{Position, RecordKey, TypeName};
 use lakelands_api::read::{Direction, Order, OrderBy};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposalState, ProposedWrite};
-use lakelands_api::{Error, Refusal, Timestamp};
+use lakelands_api::{Refusal, Timestamp};
 use serde_json::{Value, json};
 
 use super::projection::{fold, record, view};
 use crate::conformance::Failure;
-use crate::conformance::fixture::Must;
+use crate::conformance::fixture::{Must, reason};
 
 engine_check!(
     /// Mixed kinds sort the same on every engine.
@@ -798,13 +798,7 @@ fn a_zero_vector_scores_zero_and_a_wrong_length_is_invalid(
     );
     let wrong = index.nearest(&ty, "emb", &[1.0, 0.0, 0.0], 5);
     ensure!(
-        matches!(
-            wrong,
-            Err(Error::Refused {
-                reason: Refusal::Invalid { .. },
-                ..
-            })
-        ),
+        matches!(reason(&wrong), Some(Refusal::Invalid { .. })),
         "a query of three dimensions against vectors of two answered {wrong:?}; it must be \
          refused as invalid"
     );

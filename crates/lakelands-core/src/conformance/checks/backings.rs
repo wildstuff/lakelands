@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 use crate::conformance::Failure;
 use crate::conformance::backing::{KIND, made, plug, unplug};
 use crate::conformance::fixture::{
-    Lake, Must, field, head_unmoved, recorded_outputs, type_decl, value,
+    Lake, Must, field, head_unmoved, reason, recorded_outputs, type_decl, value,
 };
 
 check!(
@@ -432,11 +432,8 @@ async fn computed_fields_that_read_each_other_in_a_cycle_are_refused(
             Declaration::Type(type_decl("place", vec![name, label])),
         )
         .await;
-    let named_both = match &answer {
-        Err(Error::Refused {
-            reason: Refusal::Invalid { message },
-            ..
-        }) => message.contains("name") && message.contains("label"),
+    let named_both = match reason(&answer) {
+        Some(Refusal::Invalid { message }) => message.contains("name") && message.contains("label"),
         _ => false,
     };
     ensure!(

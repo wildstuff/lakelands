@@ -8,12 +8,13 @@ use std::sync::Arc;
 use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, ValueTypeDecl};
 use lakelands_api::read::{Direction, Order, OrderBy};
 use lakelands_api::write::Declaration;
-use lakelands_api::{Error, FieldName, Find, LakeStore, Record, Refusal, TypeName, WriteOpts};
+use lakelands_api::{FieldName, Find, LakeStore, Record, Refusal, TypeName, WriteOpts};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, declare, doors, field, head_unmoved, owner, patch, type_decl, upsert, value,
+    Lake, Must, declare, doors, field, head_unmoved, owner, patch, refused_on, type_decl, upsert,
+    value,
 };
 use crate::expr::order::cmp_values;
 
@@ -83,9 +84,8 @@ async fn refused_in(store: &dyn LakeStore, ty: &str, v: Value, why: &str) -> Res
     head_unmoved(store, before, &what).await?;
     ensure!(
         matches!(
-            &err,
-            Error::Refused { field: Some(f), reason: Refusal::Constraint { .. } | Refusal::Invalid { .. } }
-                if f.as_str() == "v"
+            refused_on(&err),
+            Some(("v", Refusal::Constraint { .. } | Refusal::Invalid { .. }))
         ),
         "{what} must be refused on field `v`; it failed with {err:?}"
     );

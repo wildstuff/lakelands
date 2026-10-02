@@ -22,8 +22,8 @@ use serde_json::{Value, json};
 
 use crate::conformance::backing::{EMBED_MODEL, embedded, plug_text, unplug_text};
 use crate::conformance::fixture::{
-    Lake, Must, declare, doors, field, owner, read, recorded_outputs, source_record, type_decl,
-    upsert, value,
+    Lake, Must, declare, doors, field, owner, read, recorded_outputs, refused_on, source_record,
+    type_decl, upsert, value,
 };
 use crate::conformance::{Failure, Reopen, backing};
 
@@ -706,11 +706,8 @@ async fn an_embedding_that_is_not_a_derived_vector_of_its_own_text_fields_is_ref
             .await;
         ensure!(
             matches!(
-                &got,
-                Err(Error::Refused {
-                    field: Some(f),
-                    reason: lakelands_api::Refusal::Invalid { .. },
-                }) if f.as_str() == "vec"
+                refused_on(&got),
+                Some(("vec", lakelands_api::Refusal::Invalid { .. }))
             ),
             "declaring `vec` as {what} must be refused as invalid, naming `vec`; it answered {}",
             answered(&got)

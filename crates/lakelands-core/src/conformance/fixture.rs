@@ -19,12 +19,84 @@ use lakelands_api::principal::TypeGrants;
 use lakelands_api::write::Declaration;
 use lakelands_api::{
     Access, Catalog, Committed, Error, FieldName, Find, Found, Get, Grants, LakeStore, Outcome,
-    Patch, Position, Principal, PrincipalKind, ReadAt, Record, RecordKey, SourceId, SourceRecord,
-    SourceStream, TypeName, Value, WriteContext, WriteOpts,
+    Patch, Position, Principal, PrincipalKind, ReadAt, Record, RecordKey, Refusal, SourceId,
+    SourceRecord, SourceStream, TypeName, Value, WriteContext, WriteOpts,
 };
 use rust_decimal::Decimal;
 
 use super::Failure;
+
+/// An answer a refusal may be in: an error, or a result that may hold one.
+pub trait Answer {
+    /// The error the answer holds, if any.
+    fn error(&self) -> Option<&Error>;
+}
+
+impl Answer for Error {
+    fn error(&self) -> Option<&Error> {
+        Some(self)
+    }
+}
+
+impl<T> Answer for lakelands_api::Result<T> {
+    fn error(&self) -> Option<&Error> {
+        self.as_ref().err()
+    }
+}
+
+impl<A: Answer + ?Sized> Answer for &A {
+    fn error(&self) -> Option<&Error> {
+        (**self).error()
+    }
+}
+
+/// Why an answer is a refusal, if it is one.
+pub fn reason(a: &impl Answer) -> Option<&Refusal> {
+    match a.error() {
+        Some(Error::Refused { reason, .. }) => Some(reason),
+        _ => None,
+    }
+}
+
+/// The field an answer's refusal names, and why, if it is a refusal that
+/// names one.
+pub fn refused_on(a: &impl Answer) -> Option<(&str, &Refusal)> {
+    match a.error() {
+        Some(Error::Refused {
+            field: Some(f),
+            reason,
+        }) => Some((f.as_str(), reason)),
+        _ => None,
+    }
+}
+
+/// Whether an answer is a refusal as invalid.
+pub fn is_invalid(a: &impl Answer) -> bool {
+    matches!(reason(a), Some(Refusal::Invalid { .. }))
+}
+
+/// `answer`, to `what`, must be a refusal as invalid whose text names each
+/// of `names`.
+pub fn invalid_naming<T: Debug>(
+    what: &str,
+    answer: lakelands_api::Result<T>,
+    names: &[&str],
+) -> Result<(), Failure> {
+    match answer {
+        Err(e) if is_invalid(&e) => {
+            let why = e.to_string();
+            if names.iter().all(|n| why.contains(n)) {
+                return Ok(());
+            }
+            Err(Failure::new(format!(
+                "{what} must be refused naming {names:?}; it said: {why}"
+            )))
+        }
+        other => Err(Failure::new(format!(
+            "{what} must be refused as invalid; it answered {other:?}"
+        ))),
+    }
+}
 
 /// Turns the result of a contract call into the check's own result.
 pub trait Must<T> {
