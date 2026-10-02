@@ -94,6 +94,9 @@ macro_rules! door_checks {
             a_masked_field_is_named_but_its_value_is_absent,
             the_tools_follow_the_grants,
             a_verb_tool_says_what_its_risk_does,
+            a_view_reads_only_what_its_source_has,
+            a_migration_keeps_what_a_view_reads,
+            a_view_is_never_migrated,
             nothing_that_never_acts_is_declared_on_a_view,
             a_relation_on_a_view_is_derived,
             a_tools_key_says_what_to_pass,
@@ -1399,6 +1402,172 @@ pub async fn a_relation_on_a_view_is_derived(store: Arc<dyn LakeStore>) {
         assert!(
             matches!(&e, Error::Refused { reason: Refusal::Invalid { message }, .. }
                 if message.contains(name) && message.contains("partner_totals")),
+            "{e:?}"
+        );
+    }
+    assert_eq!(f.head().await, head, "nothing is appended");
+}
+
+/// A migration reshapes stored records, and a view stores none: turning
+/// a stored type into a view, or a view into a stored type, is refused at
+/// the preflight, naming the type, on the mock as on the store.
+pub async fn a_view_is_never_migrated(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let stored = |name: &str| TypeDecl {
+        name: name.into(),
+        key: vec!["partner".into()],
+        fields: vec![text("partner"), text("count")],
+        field_meta: true,
+        ..TypeDecl::named(name)
+    };
+    let view = |name: &str| TypeDecl {
+        view: Some(Box::new(ViewDecl {
+            source: INVOICE.into(),
+            r#where: None,
+            group_by: vec!["partner".into()],
+            measures: vec![Measure {
+                name: "count".into(),
+                expr: "count()".into(),
+            }],
+            params: Default::default(),
+            merge: Default::default(),
+        })),
+        ..stored(name)
+    };
+    for d in [stored("tally"), view("partner_totals")] {
+        f.catalog
+            .declare(owner, Declaration::Type(d))
+            .await
+            .expect("declared");
+    }
+    for (name, to) in [
+        ("tally", view("tally")),
+        ("partner_totals", stored("partner_totals")),
+    ] {
+        let m = lakelands_api::write::Migration {
+            to,
+            renames: vec![],
+        };
+        let e = f
+            .catalog
+            .migrate(owner, m)
+            .await
+            .expect_err("a view is never migrated");
+        assert!(
+            matches!(&e, Error::Refused { reason: Refusal::Invalid { message }, .. }
+                if message.contains(name)),
+            "{e:?}"
+        );
+    }
+}
+
+/// A view reads its source's shape after a migration as before: a
+/// migration that drops or renames a field the view groups by or
+/// aggregates is refused at the preflight, naming the view and the field,
+/// on the mock as on the store.
+pub async fn a_migration_keeps_what_a_view_reads(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let by_status = TypeDecl {
+        name: "status_totals".into(),
+        key: vec!["status".into()],
+        fields: vec![
+            text("status"),
+            FieldDecl {
+                ty: FieldType::kind(StorageKind::Decimal),
+                ..text("total")
+            },
+        ],
+        field_meta: true,
+        view: Some(Box::new(ViewDecl {
+            source: INVOICE.into(),
+            r#where: None,
+            group_by: vec!["status".into()],
+            measures: vec![Measure {
+                name: "total".into(),
+                expr: "sum(amount)".into(),
+            }],
+            params: Default::default(),
+            merge: Default::default(),
+        })),
+        ..TypeDecl::named("status_totals")
+    };
+    f.catalog
+        .declare(owner, Declaration::Type(by_status))
+        .await
+        .expect("the view is declared");
+    let invoice = fixture()
+        .into_iter()
+        .find_map(|d| match d {
+            Declaration::Type(t) if t.name.as_str() == INVOICE => Some(t),
+            _ => None,
+        })
+        .expect("the fixture declares `invoice`");
+    let mut dropped = invoice.clone();
+    dropped.fields.retain(|x| x.name.as_str() != "amount");
+    let mut renamed = invoice;
+    for x in &mut renamed.fields {
+        if x.name.as_str() == "status" {
+            x.name = "state".into();
+        }
+    }
+    for (to, renames, read) in [
+        (dropped, vec![], "amount"),
+        (renamed, vec![("status".into(), "state".into())], "status"),
+    ] {
+        let e = f
+            .catalog
+            .migrate(owner, lakelands_api::write::Migration { to, renames })
+            .await
+            .expect_err("a field a view reads stays");
+        assert!(
+            matches!(&e, Error::Refused { reason: Refusal::Invalid { message }, .. }
+                if message.contains("status_totals") && message.contains(read)),
+            "{e:?}"
+        );
+    }
+}
+
+/// A view whose `where` names, or whose measure aggregates, a field its
+/// source does not have is refused, naming the view and the field, on the
+/// mock as on the store.
+pub async fn a_view_reads_only_what_its_source_has(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let head = f.head().await;
+    for (filter, total) in [(Some("nope > 0"), "sum(amount)"), (None, "sum(nope)")] {
+        let view = TypeDecl {
+            name: "status_totals".into(),
+            key: vec!["status".into()],
+            fields: vec![
+                text("status"),
+                FieldDecl {
+                    ty: FieldType::kind(StorageKind::Decimal),
+                    ..text("total")
+                },
+            ],
+            field_meta: true,
+            view: Some(Box::new(ViewDecl {
+                source: INVOICE.into(),
+                r#where: filter.map(Into::into),
+                group_by: vec!["status".into()],
+                measures: vec![Measure {
+                    name: "total".into(),
+                    expr: total.into(),
+                }],
+                params: Default::default(),
+                merge: Default::default(),
+            })),
+            ..TypeDecl::named("status_totals")
+        };
+        let e = f
+            .catalog
+            .declare(&f.cast.owner, Declaration::Type(view))
+            .await
+            .expect_err("a view reads only what its source has");
+        assert!(
+            matches!(&e, Error::Refused { reason: Refusal::Invalid { message }, .. }
+                if message.contains("status_totals") && message.contains("nope")),
             "{e:?}"
         );
     }

@@ -643,6 +643,22 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             lakelands_core::expr::params_read(&e, &mut read);
         }
         merged_sources(o, &owner, v, source, &mut read)?;
+        // Every field the view reads from a source, in its `where` or in
+        // what its measures aggregate, is one that source has (028): the
+        // same rule `describe` and the migration preflight read it by.
+        for (from, names) in lakelands_core::describe::view_reads(v).unwrap_or_default() {
+            let Ok(s) = o.ty(&from) else {
+                continue;
+            };
+            if let Some(n) = names
+                .iter()
+                .find(|n| !s.fields.iter().any(|f| &f.name == *n))
+            {
+                return Err(invalid(format!(
+                    "{owner}: its view reads `{n}` of `{from}`, which `{from}` does not have"
+                )));
+            }
+        }
         view_fields(&owner, t, v)?;
         view_params(&owner, v, &read)?;
     }

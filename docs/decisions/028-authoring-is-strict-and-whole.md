@@ -12,7 +12,12 @@ arrives. A bundle's declarations must also hold together: a key, a
 `depends_on`, a `via`, a `valid_from` or a view's `group_by` that names a
 field the type (or the view's source) does not have is refused, and so
 is every name that is not an ASCII identifier (a type name: identifiers
-joined by `.`).
+joined by `.`). A view's `where` and the aggregates in its measures are
+held to the same rule, against its source and each merged source. A
+name outside an aggregate is an earlier measure or a grouping field, as
+`describe` reads a view, and is no source field. The migration
+preflight reads a view by the same rule
+(`docs/decisions/027-shape-changes-are-declared-or-migrated.md`, extended).
 
 ## Extended: a bundle reaches a lake whole
 

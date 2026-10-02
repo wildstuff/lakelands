@@ -91,6 +91,12 @@ check!(
 );
 
 check!(
+    /// A view reads only what its sources have.
+    VIEW_READS_ITS_SOURCES = a_view_reading_a_field_its_source_lacks_is_refused,
+    "028 and 018: `declare` and `apply` refuse a view whose `where` names, or whose measures aggregate, a field its source or a merged source does not have, naming the view, the source and the field; a name outside an aggregate is an earlier measure or a grouping field, and is taken"
+);
+
+check!(
     /// A view is not searched.
     VIEW_NOT_SEARCHED = a_search_on_a_view_is_refused_naming_it,
     "018: a view's records are computed on read and no index holds them, so a lexical, vector or hybrid search on a view is refused as invalid, naming the view, never answered empty"
@@ -726,6 +732,81 @@ async fn a_relation_on_a_view_is_derived_or_refused(
         ..RelationDecl::to("billed", "invoice")
     };
     l.declare(with(derived)).await?;
+    Ok(())
+}
+
+async fn a_view_reading_a_field_its_source_lacks_is_refused(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use lakelands_api::write::Declaration;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(invoices(Authority::Authored)).await?;
+    l.declare(type_decl(
+        "credit",
+        vec![
+            field("partner", StorageKind::Text),
+            field("amount", StorageKind::Decimal),
+        ],
+    ))
+    .await?;
+    let where_nope = {
+        let mut t = partner_totals("pt_where", StorageKind::Decimal);
+        t.view.as_mut().expect("a view").r#where = Some("nope > 0".into());
+        t
+    };
+    let measure_nope = {
+        let mut t = partner_totals("pt_measure", StorageKind::Decimal);
+        t.view.as_mut().expect("a view").measures[0] = measure("total", "sum(nope)");
+        t
+    };
+    let merged_nope = {
+        let mut t = partner_totals("pt_merged", StorageKind::Decimal);
+        t.fields.push(field("credited", StorageKind::Decimal));
+        t.view.as_mut().expect("a view").merge = vec![ViewSource {
+            source: "credit".into(),
+            r#where: None,
+            group_by: vec![FieldName::from("partner")],
+            measures: vec![measure("credited", "sum(nope)")],
+        }];
+        t
+    };
+    let before = store.head().await.must("reading the head")?;
+    for (view, source) in [
+        (where_nope, "invoice"),
+        (measure_nope, "invoice"),
+        (merged_nope, "credit"),
+    ] {
+        let name = view.name.clone();
+        for r in [
+            cat.declare(own, Declaration::Type(view.clone())).await,
+            cat.apply(own, vec![Declaration::Type(view)]).await,
+        ] {
+            ensure!(
+                matches!(reason(&r), Some(Refusal::Invalid { message })
+                    if message.contains(name.as_str()) && message.contains("nope")
+                        && message.contains(source)),
+                "the view `{name}` reads `nope`, which `{source}` does not have, and must be \
+                 refused as invalid, naming `{name}`, `{source}` and `nope`; it answered {r:?}"
+            );
+        }
+    }
+    head_unmoved(
+        store.as_ref(),
+        before,
+        "every view reading a field its source lacks",
+    )
+    .await?;
+    // A measure that reads an earlier one by name reads no source field.
+    let mut by_name = partner_totals("pt_by_name", StorageKind::Decimal);
+    by_name.fields.push(field("average", StorageKind::Decimal));
+    by_name
+        .view
+        .as_mut()
+        .expect("a view")
+        .measures
+        .push(measure("average", "total / invoices"));
+    l.declare(by_name).await?;
     Ok(())
 }
 
