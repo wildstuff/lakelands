@@ -25,6 +25,12 @@ pub const FROM: &str = "from";
 /// See [`FROM`].
 pub const TO: &str = "to";
 
+/// The key of the one record a view without `group_by` holds. The rule
+/// over no key fields would make the empty string, which is no key, so
+/// this one is reserved: a view without key fields is never written, and
+/// this is its only record (`docs/decisions/018-one-pattern-query.md`).
+pub const UNGROUPED: &str = "all";
+
 /// One key field's value as a component of a record's key: its JSON
 /// string form — text as it is, a number in its canonical form, `true` or
 /// `false` — with `%` written `%25` and `:` written `%3A`. `None` for a

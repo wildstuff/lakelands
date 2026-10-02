@@ -36,9 +36,11 @@
 //! **Views** are computed on read: the source's records at the same
 //! position, filtered by the view's `where`, grouped by its `group_by`
 //! fields (whose values form the view record's key, in declared order, by
-//! the one key rule of `docs/log-format.md` §2.3) and measured. A group with no member has no record. Keeping a view's
-//! records materialised would be an engine's optimisation, and it could
-//! never change an answer. A walk reads a view's records from that
+//! the one key rule of `docs/log-format.md` §2.3) and measured. A group
+//! with no member has no record, except that a view without `group_by` is
+//! always one record, keyed [`lakelands_api::key::UNGROUPED`], whatever
+//! its `where` keeps. Keeping a view's records materialised would be an
+//! engine's optimisation, and it could never change an answer. A walk reads a view's records from that
 //! computation too, once per read, never from the engine.
 
 use std::cell::RefCell;
@@ -628,16 +630,28 @@ impl<'a> Reader<'a> {
             ..decl.clone()
         };
         let rows: Vec<&BTreeMap<FieldName, Value>> = members.iter().map(|r| &r.fields).collect();
+        // A view without `group_by` is one total, kept over no records too,
+        // under the key reserved for it: the rule over no fields makes none.
+        let ungrouped = v.group_by.is_empty();
+        let mut groups = aggregate::groups(&rows, &v.group_by);
+        if ungrouped && groups.is_empty() {
+            groups.push((BTreeMap::new(), Vec::new()));
+        }
         let mut out = Vec::new();
-        for (by, group) in aggregate::groups(&rows, &v.group_by) {
+        for (by, group) in groups {
             if by.values().any(Value::is_null) {
                 continue;
             }
             let values =
                 aggregate::measures(&group, &by, &measures, Some(&self.settings), self.now)
                     .map_err(|e| invalid(format!("view `{}`: {e}", decl.name)))?;
-            let Some(key) = lakelands_core::log::record_key(&keyed_by, &by) else {
-                continue;
+            let key = if ungrouped {
+                RecordKey::from(lakelands_api::key::UNGROUPED)
+            } else {
+                let Some(key) = lakelands_core::log::record_key(&keyed_by, &by) else {
+                    continue;
+                };
+                key
             };
             let mut fields = by.clone();
             // A measure lands in the kind the view type declares for it.
