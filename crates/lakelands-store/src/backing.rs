@@ -17,8 +17,9 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 use lakelands_api::expr::Condition;
 use lakelands_api::seam::{FunctionBacking, FunctionCall};
-use lakelands_api::{Error, FieldName, Refusal, Result, Timestamp, Value};
+use lakelands_api::{FieldName, Result, Timestamp, Value};
 use lakelands_core::expr::{self, Place, RecordScope};
+use lakelands_core::invalid;
 
 /// The `expr` backing.
 #[derive(Clone, Copy, Debug, Default)]
@@ -26,13 +27,6 @@ pub struct ExprBacking;
 
 /// The backing kind functions name to be computed by an expression.
 pub const EXPR: &str = "expr";
-
-fn invalid(message: String) -> Error {
-    Error::Refused {
-        field: None,
-        reason: Refusal::Invalid { message },
-    }
-}
 
 impl ExprBacking {
     /// One call, computed at once: the expression in `config.expr` over

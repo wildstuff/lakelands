@@ -28,3 +28,23 @@ pub mod stem;
 pub mod valid_time;
 pub mod value;
 pub mod versions;
+
+use lakelands_api::{Error, Refusal};
+
+/// A refusal of what the caller asked for as not well-formed, naming no
+/// field.
+pub fn invalid(message: impl Into<String>) -> Error {
+    Error::Refused {
+        field: None,
+        reason: Refusal::Invalid {
+            message: message.into(),
+        },
+    }
+}
+
+/// The lake cannot answer now; `message` says why.
+pub fn unavailable(message: impl Into<String>) -> Error {
+    Error::Unavailable {
+        message: message.into(),
+    }
+}

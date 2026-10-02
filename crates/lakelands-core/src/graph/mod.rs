@@ -58,7 +58,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::engine::ProjectionView;
 use lakelands_api::query::{Depth, Edge, Walk};
-use lakelands_api::{Error, RecordKey, Refusal, RelationName, Result, TypeName};
+use lakelands_api::{RecordKey, RelationName, Result, TypeName};
+
+use crate::invalid;
 
 /// A record's identity: its type and its key. Ordered by type, then key.
 pub type Node = (TypeName, RecordKey);
@@ -169,13 +171,6 @@ pub fn check_depth(depth: Depth, max_depth: u32) -> Result<()> {
         )));
     }
     Ok(())
-}
-
-fn invalid(message: String) -> Error {
-    Error::Refused {
-        field: None,
-        reason: Refusal::Invalid { message },
-    }
 }
 
 /// The identity of a link, for deduplication and ordering:

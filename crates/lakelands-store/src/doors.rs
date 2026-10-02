@@ -23,9 +23,11 @@ use lakelands_api::write::{
 };
 use lakelands_api::{
     Catalog, Error, Find, Found, Get, LakeId, LakeStore, Patch, Position, Principal, ProposalId,
-    ReadAt, Record, RecordKey, Refusal, RelationName, Reply, Result, SourceId, Timestamp, TypeName,
+    ReadAt, Record, RecordKey, RelationName, Reply, Result, SourceId, Timestamp, TypeName,
     VerbName, Verification,
 };
+
+use lakelands_core::invalid;
 
 use crate::exec;
 use crate::ingest;
@@ -56,10 +58,7 @@ pub async fn import(
 
 fn same_lake(lake: &Lake, who: &Principal) -> Result<()> {
     if who.lake != lake.id {
-        return Err(Error::Refused {
-            field: None,
-            reason: Refusal::NotGranted,
-        });
+        return Err(writes::not_granted());
     }
     Ok(())
 }
@@ -163,12 +162,7 @@ impl Doors {
                     at: ReadAt::default(),
                     params: Default::default(),
                 };
-                let host = Principal {
-                    kind: lakelands_api::PrincipalKind::System,
-                    id: "host".into(),
-                    lake: self.lake.id.clone(),
-                    grants: lakelands_api::Grants::owner(),
-                };
+                let host = self.lake.system("host");
                 let ty = ext.ty.clone();
                 Some(
                     self.read(&host, ReadAt::default(), move |r| r.get(&ty, &get))
@@ -533,10 +527,7 @@ impl Catalog for Doors {
     ) -> Result<CommitStream> {
         same_lake(&self.lake, who)?;
         if !who.grants.ingest {
-            return Err(Error::Refused {
-                field: None,
-                reason: Refusal::NotGranted,
-            });
+            return Err(writes::not_granted());
         }
         Ok(ingest::run(
             self.lake.clone(),
@@ -563,12 +554,7 @@ fn cursor_position(c: &lakelands_api::Cursor) -> Result<Position> {
     bytes
         .and_then(|b| serde_json::from_slice::<At>(&b).ok())
         .map(|a| a.at)
-        .ok_or_else(|| Error::Refused {
-            field: None,
-            reason: Refusal::Invalid {
-                message: "the cursor is not one this lake handed out".into(),
-            },
-        })
+        .ok_or_else(|| invalid("the cursor is not one this lake handed out"))
 }
 
 #[async_trait]

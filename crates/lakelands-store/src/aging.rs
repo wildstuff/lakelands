@@ -20,7 +20,6 @@
 
 use std::collections::BTreeMap;
 
-use lakelands_api::engine::Scan;
 use lakelands_api::event::Procedure;
 use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::ontology::Authority;
@@ -28,8 +27,7 @@ use lakelands_api::principal::{WriteContext, WriteOrigin};
 use lakelands_api::record::Origin;
 use lakelands_api::write::{AgeReport, RuleRun};
 use lakelands_api::{
-    Error, FieldName, Grants, Patch, Position, Principal, PrincipalKind, Refusal, Result,
-    Timestamp, TypeName, Value,
+    Error, FieldName, Patch, Position, Principal, Refusal, Result, Timestamp, TypeName, Value,
 };
 use lakelands_core::derive;
 use lakelands_core::expr::{self, Place, RecordScope};
@@ -37,7 +35,7 @@ use lakelands_core::rights::{self, Door};
 use lakelands_core::{canonical, names};
 
 use crate::declare;
-use crate::lake::{AGING_RULE_TYPE, Lake};
+use crate::lake::{AGING_RULE_TYPE, Lake, every};
 use crate::log;
 use crate::ontology::Ontology;
 use crate::writes::{self, Call, Pending};
@@ -184,12 +182,7 @@ pub fn check_today(today: Timestamp) -> Result<()> {
 /// per rule that moves anything.
 pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
     check_today(today)?;
-    let system = Principal {
-        kind: PrincipalKind::System,
-        id: "lakelands".into(),
-        lake: lake.id.clone(),
-        grants: Grants::owner(),
-    };
+    let system = lake.system("lakelands");
     let call = Call {
         lake,
         who: &system,
@@ -199,11 +192,7 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
             depth: 0,
         },
     };
-    let all = Scan {
-        limit: u32::MAX,
-        restricted: true,
-        ..Default::default()
-    };
+    let all = every(false);
     let mut w = lake.writer();
     let mut rules = lake
         .engine

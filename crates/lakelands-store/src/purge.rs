@@ -15,19 +15,15 @@
 //! `record_retired` per record, each reacting as a `retire` does, in one
 //! append: the act is one. That append is held in memory before it lands.
 
-use lakelands_api::engine::Scan;
 use lakelands_api::event::EventBody;
 use lakelands_api::record::{Origin, StoredRecord};
 use lakelands_api::write::{PurgeReport, TypeRetired};
-use lakelands_api::{
-    Error, Grants, Position, Principal, PrincipalKind, Refusal, Result, SourceId, Version,
-    WriteContext,
-};
+use lakelands_api::{Position, Result, SourceId, Version, WriteContext};
 
-use crate::backed::Outputs;
-use crate::lake::Lake;
+use lakelands_core::invalid;
+
+use crate::lake::{Lake, every};
 use crate::log::Draft;
-use crate::record;
 use crate::writes::{self, Call, Pending};
 
 /// How many co-owned records a refusal names.
@@ -59,22 +55,13 @@ fn co_owned(r: &StoredRecord, source: &SourceId) -> bool {
 
 /// Retire every live record `source` brought in, in one append.
 pub fn run(lake: &Lake, source: &SourceId) -> Result<PurgeReport> {
-    let system = Principal {
-        kind: PrincipalKind::System,
-        id: "lakelands".into(),
-        lake: lake.id.clone(),
-        grants: Grants::owner(),
-    };
+    let system = lake.system("lakelands");
     let call = Call {
         lake,
         who: &system,
         context: WriteContext::default(),
     };
-    let all = Scan {
-        limit: u32::MAX,
-        restricted: true,
-        ..Default::default()
-    };
+    let all = every(false);
     let mut w = lake.writer();
     let view = lake.engine.view(None)?;
     let mut report = PurgeReport {
@@ -109,18 +96,13 @@ pub fn run(lake: &Lake, source: &SourceId) -> Result<PurgeReport> {
     if !shared.is_empty() {
         let n = shared.len();
         shared.truncate(NAMED);
-        return Err(Error::Refused {
-            field: None,
-            reason: Refusal::Invalid {
-                message: format!(
-                    "the purge of `{source}` is refused whole: {n} record(s) it brought in were \
-                     also written by another hand (a principal, or another source), and a purge \
-                     never half-removes a record; retire them or clear those fields, then purge \
-                     again. First: {}",
-                    shared.join(", ")
-                ),
-            },
-        });
+        return Err(invalid(format!(
+            "the purge of `{source}` is refused whole: {n} record(s) it brought in were also \
+             written by another hand (a principal, or another source), and a purge never \
+             half-removes a record; retire them or clear those fields, then purge again. \
+             First: {}",
+            shared.join(", ")
+        )));
     }
     let now = lake.clock(&mut w);
     let mut pending = Pending::default();
@@ -136,18 +118,7 @@ pub fn run(lake: &Lake, source: &SourceId) -> Result<PurgeReport> {
         );
         let cause = writes::position_after(&w, drafts.len());
         let event = writes::provisional(lake, cause, &d);
-        let after = record::apply(
-            &w.ontology,
-            Some(&before),
-            &event,
-            &w.settings,
-            &mut Outputs {
-                view: view.as_ref(),
-                staged: None,
-                due: None,
-            },
-        )?
-        .expect("a retire makes a record");
+        let after = writes::retired(&w, view.as_ref(), &before, &event)?;
         drafts.push(d);
         drafts.extend(call.reactions(
             &w,

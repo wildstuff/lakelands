@@ -20,12 +20,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use lakelands_api::engine::{ProjectionView, Scan};
+use lakelands_api::engine::ProjectionView;
 use lakelands_api::ontology::{StorageKind, TypeDecl};
 use lakelands_api::write::{RecordRef, ReferenceRewrite, Rekey, Rekeyed};
-use lakelands_api::{Error, FieldName, RecordKey, Refusal, Result, TypeName, Value};
-use lakelands_core::links;
+use lakelands_api::{FieldName, RecordKey, Result, TypeName, Value};
+use lakelands_core::{invalid, links};
 
+use crate::lake::every;
 use crate::ontology::Ontology;
 
 /// How many colliding keys a report names.
@@ -62,22 +63,6 @@ impl Plan {
                 })
             })
             .collect()
-    }
-}
-
-fn invalid(message: String) -> Error {
-    Error::Refused {
-        field: None,
-        reason: Refusal::Invalid { message },
-    }
-}
-
-fn all() -> Scan {
-    Scan {
-        limit: u32::MAX,
-        retired: true,
-        restricted: true,
-        ..Default::default()
     }
 }
 
@@ -213,7 +198,7 @@ pub fn plan(
             )));
         }
         let keyed = view
-            .scan(&name, &all())?
+            .scan(&name, &every(true))?
             .into_iter()
             .filter(|r| !r.is_ended())
             .map(|r| {
@@ -237,7 +222,7 @@ pub fn plan(
             continue;
         }
         let records: Vec<_> = view
-            .scan(name, &all())?
+            .scan(name, &every(true))?
             .into_iter()
             .filter(|r| !r.is_ended())
             .collect();

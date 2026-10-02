@@ -902,12 +902,7 @@ fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Posi
         )?;
         if let Some(after) = after {
             fills = true;
-            let host = lakelands_api::Principal {
-                kind: lakelands_api::PrincipalKind::System,
-                id: "lakelands".into(),
-                lake: lake.id.clone(),
-                grants: lakelands_api::Grants::owner(),
-            };
+            let host = lake.system("lakelands");
             let call = crate::writes::Call {
                 lake,
                 who: &host,
