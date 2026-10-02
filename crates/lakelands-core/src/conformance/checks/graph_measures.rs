@@ -12,7 +12,7 @@ use lakelands_api::location::Limits;
 use lakelands_api::ontology::{
     Cardinality, FieldDecl, FieldType, RelationDecl, StorageKind, TypeDecl,
 };
-use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Step, Walk};
+use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, SearchMode, Step, Walk};
 use lakelands_api::read::Order;
 use lakelands_api::seam::Seams;
 use lakelands_api::write::WriteOpts;
@@ -29,13 +29,13 @@ use crate::conformance::{Failure, Given};
 check!(
     /// Degree counts what a walk would follow.
     DEGREE_COUNTS = degree_counts_each_records_links_to_ends_it_may_see_highest_first,
-    "026, 029 and 035: `degree` counts each start record's links over the steps' relations in each step's direction, a via reference and a link record alike, but not a link to a retired end or, without the grant, a restricted link; highest first, ties by key, paged by limit"
+    "026, 029 and 035: `degree` counts each start record's links over the steps' relations in each step's direction, a via reference and a link record alike, but not a link to a retired end or, without the grant, a restricted link; highest first, ties by key, paged by limit; a start by key or by `where` counts those records only, and a key no record has counts none"
 );
 
 check!(
     /// Components partition what the start records reach.
     COMPONENTS_PARTITION = components_partition_what_the_start_reaches_largest_first,
-    "026 and 029: `components` puts every record reached from the start over the steps' relations, both ways, in exactly one component, across types; components largest first, ties by their least (type, key), members by (type, key)"
+    "026 and 029: `components` puts every record reached from the start over the steps' relations, both ways, in exactly one component, across types; components largest first, ties by their least (type, key), members by (type, key); a start by key or by a search reaches from those records only"
 );
 
 check!(
@@ -71,7 +71,10 @@ async fn lake(store: &dyn LakeStore) -> Result<Position, Failure> {
     let mut invoice: TypeDecl = type_decl(
         "invoice",
         vec![
-            field("note", StorageKind::Text),
+            FieldDecl {
+                searchable: true,
+                ..field("note", StorageKind::Text)
+            },
             FieldDecl {
                 ty: FieldType {
                     target: Some("partner".into()),
@@ -260,6 +263,35 @@ async fn degree_counts_each_records_links_to_ends_it_may_see_highest_first(
         "the partners' in-degree over `billed_to` is p1 2, p2 1, and the retired p3 is no \
          start; it answered {got:?}"
     );
+    let started = |key: Option<&str>, filter: Option<&str>| {
+        let mut p = out();
+        p.start.key = key.map(Into::into);
+        p.start.filter = filter.map(Into::into);
+        p
+    };
+    for (p, want, what) in [
+        (
+            started(Some("i1"), None),
+            vec!["invoice:i1=2"],
+            "started on i1",
+        ),
+        (
+            started(Some("i9"), None),
+            vec![],
+            "started on a key no record has",
+        ),
+        (
+            started(None, Some("note = 'i3' or note = 'i4'")),
+            vec!["invoice:i3=1", "invoice:i4=1"],
+            "started where `note` is i3 or i4",
+        ),
+    ] {
+        let (got, _) = rows(cat.as_ref(), own, p, what).await?;
+        ensure!(
+            got == want,
+            "the out-degree {what} holds its start's rows only, {want:?}; it answered {got:?}"
+        );
+    }
     let mut first = out();
     first.limit = Some(2);
     let reply = cat
@@ -315,6 +347,36 @@ async fn components_partition_what_the_start_reaches_largest_first(
          through p2 and the link i1 → p2); i0 and i5 (p3 is retired) stand alone and \
          come after it, though i0 sorts first; it answered {got:?}"
     );
+    let started = |key: Option<&str>, search: Option<&str>| {
+        let mut p = all();
+        p.start.key = key.map(Into::into);
+        p.start.search = search.map(SearchMode::lexical);
+        p
+    };
+    for (p, want, what) in [
+        (
+            started(Some("i0"), None),
+            vec!["0/1 invoice:i0"],
+            "started on i0",
+        ),
+        (
+            started(Some("i3"), None),
+            want[..6].to_vec(),
+            "started on i3",
+        ),
+        (
+            started(None, Some("i3")),
+            want[..6].to_vec(),
+            "started by a search for i3",
+        ),
+    ] {
+        let (got, _) = rows(cat.as_ref(), own, p, what).await?;
+        ensure!(
+            got == want,
+            "the components {what} are what its start reaches only, {want:?}; it answered \
+             {got:?}"
+        );
+    }
     let (got, _) = rows(
         cat.as_ref(),
         &reader(store.as_ref()),
