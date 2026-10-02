@@ -16,8 +16,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, committed, field, get_at, head_unmoved, patch, refused_on, source_record, sourced,
-    type_decl, value, windows_reach_head,
+    Lake, Must, committed, delivered, field, get_at, head_unmoved, log_events, refused_on,
+    refused_unmoved, source_record, sourced, try_upsert, type_decl, value, windows_reach_head,
 };
 
 check!(
@@ -69,24 +69,15 @@ async fn the_same_content_ingested_twice_appends_nothing_the_second_time(
     l.declare(feed()).await?;
 
     let once = || vec![source_record("feed", "k1", json!({"body": "unchanged"}))];
-    let first = l.ingest("bank", once()).await.must("ingesting `k1`")?;
-    windows_reach_head(store.as_ref(), &first, "ingesting `k1`").await?;
+    let first = delivered(store.as_ref(), &l, "bank", once(), "ingesting `k1`").await?;
     ensure!(
         committed(&first) == (1, 0),
         "the first delivery of `k1` must commit 1 record and 0 duplicates; the windows \
          answered {first:?}"
     );
     let head = store.head().await.must("reading the head")?;
-    let second = l
-        .ingest("bank", once())
-        .await
-        .must("ingesting `k1` again with the same values")?;
-    windows_reach_head(
-        store.as_ref(),
-        &second,
-        "ingesting `k1` again with the same values",
-    )
-    .await?;
+    let what = "ingesting `k1` again with the same values";
+    let second = delivered(store.as_ref(), &l, "bank", once(), what).await?;
     ensure!(
         committed(&second) == (0, 1),
         "delivering `k1` again with the same values must commit 0 records and 1 \
@@ -103,16 +94,8 @@ async fn the_same_content_ingested_twice_appends_nothing_the_second_time(
         source_record("feed", "k2", json!({"body": "same"})),
         source_record("feed", "k2", json!({"body": "same"})),
     ];
-    let windows = l
-        .ingest("bank", twice)
-        .await
-        .must("ingesting `k2` twice in one delivery")?;
-    windows_reach_head(
-        store.as_ref(),
-        &windows,
-        "ingesting `k2` twice in one delivery",
-    )
-    .await?;
+    let what = "ingesting `k2` twice in one delivery";
+    let windows = delivered(store.as_ref(), &l, "bank", twice, what).await?;
     ensure!(
         committed(&windows) == (1, 1),
         "one delivery carrying `k2` twice with the same values must commit 1 record and \
@@ -140,16 +123,8 @@ async fn the_same_key_twice_in_one_ingest_with_new_values_advances_the_version(
         source_record("feed", "k1", json!({"body": "first draft"})),
         source_record("feed", "k1", json!({"body": "second draft"})),
     ];
-    let windows = l
-        .ingest("bank", delivery)
-        .await
-        .must("ingesting `k1` twice with different values")?;
-    windows_reach_head(
-        store.as_ref(),
-        &windows,
-        "ingesting `k1` twice with different values",
-    )
-    .await?;
+    let what = "ingesting `k1` twice with different values";
+    let windows = delivered(store.as_ref(), &l, "bank", delivery, what).await?;
     ensure!(
         committed(&windows) == (2, 0),
         "two different values for `k1` are two changes, not a duplicate: the windows must \
@@ -179,16 +154,9 @@ async fn an_ingested_record_carrying_a_field_the_source_does_not_write_is_refuse
         json!({"body": "text", "verdict": "approved"}),
     )];
     let before = store.head().await.must("reading the head")?;
-    let err = l
-        .ingest("bank", delivery)
-        .await
-        .must_fail("ingesting a record that carries the authored field `verdict`")?;
-    head_unmoved(
-        store.as_ref(),
-        before,
-        "ingesting a record that carries the authored field `verdict`",
-    )
-    .await?;
+    let what = "ingesting a record that carries the authored field `verdict`";
+    let answer = l.ingest("bank", delivery).await;
+    let err = refused_unmoved(store.as_ref(), before, what, answer).await?;
     ensure!(
         matches!(
             &err,
@@ -239,22 +207,10 @@ async fn an_upsert_carrying_a_field_only_a_source_writes_is_refused_as_the_wrong
     l.declare(feed()).await?;
 
     let before = store.head().await.must("reading the head")?;
-    let err = cat
-        .upsert(
-            own,
-            &TypeName::from("feed"),
-            &"k1".into(),
-            patch(json!({"body": "typed in", "verdict": "approved"})),
-            Default::default(),
-        )
-        .await
-        .must_fail("the owner upserting the source field `body`")?;
-    head_unmoved(
-        store.as_ref(),
-        before,
-        "the owner upserting the source field `body`",
-    )
-    .await?;
+    let fields = json!({"body": "typed in", "verdict": "approved"});
+    let answer = try_upsert(cat.as_ref(), own, "feed", "k1", fields).await;
+    let what = "the owner upserting the source field `body`";
+    let err = refused_unmoved(store.as_ref(), before, what, answer).await?;
     ensure!(
         matches!(refused_on(&err), Some(("body", Refusal::WrongDoor))),
         "an upsert carrying `body`, which only a source writes, must be refused as the \
@@ -396,16 +352,7 @@ async fn an_ingested_record_carries_its_upstream_per_field(
              {got:?}"
         );
     }
-    let events = store
-        .feed()
-        .poll(
-            Position::GENESIS,
-            &lakelands_api::seam::FeedFilter::default(),
-            10_000,
-        )
-        .await
-        .must("reading the log")?
-        .events;
+    let events = log_events(store.as_ref()).await?;
     let ingested = events
         .iter()
         .rev()

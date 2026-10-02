@@ -7,11 +7,11 @@
 
 use std::sync::Arc;
 
-use lakelands_api::event::{Event, EventBody};
+use lakelands_api::event::EventBody;
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{Authority, Cardinality, RelationDecl, StorageKind};
 use lakelands_api::query::{Projection, QueryResult, Walk};
-use lakelands_api::seam::{AGING_RULE_TYPE, FeedFilter};
+use lakelands_api::seam::AGING_RULE_TYPE;
 use lakelands_api::write::{Declaration, ObjectSetDecl, PurgeReport};
 use lakelands_api::{
     Error, LakeStore, Origin, Position, Refusal, SourceId, Timestamp, TypeName, WriteOrigin,
@@ -20,8 +20,8 @@ use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, computed_by, derived, field, get_at, head_unmoved, ingest, pattern, reason,
-    source_record, sourced, step, trigger_on, type_decl,
+    Lake, Must, computed_by, derived, events_after, field, get_at, head_unmoved, ingest, pattern,
+    reason, source_record, sourced, step, trigger_on, type_decl,
 };
 use crate::links::{link_key, link_type_name};
 
@@ -172,15 +172,6 @@ async fn live(l: &Lake, ty: &str, key: &str) -> Result<bool, Failure> {
         Err(Error::NotFound { .. }) => Ok(false),
         Err(e) => Err(Failure::new(format!("reading `{ty}` `{key}`: {e}"))),
     }
-}
-
-async fn events_after(store: &dyn LakeStore, before: Position) -> Result<Vec<Event>, Failure> {
-    Ok(store
-        .feed()
-        .poll(before.next(), &FeedFilter::default(), 1000)
-        .await
-        .must("reading the feed")?
-        .events)
 }
 
 async fn a_purge_retires_every_record_the_source_brought_in_and_no_other(

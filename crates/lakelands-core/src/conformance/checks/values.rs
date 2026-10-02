@@ -8,13 +8,13 @@ use std::sync::Arc;
 use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, ValueTypeDecl};
 use lakelands_api::read::{Direction, OrderBy};
 use lakelands_api::write::Declaration;
-use lakelands_api::{Find, LakeStore, Record, Refusal, TypeName, WriteOpts};
+use lakelands_api::{Find, LakeStore, Record, Refusal};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, declare, doors, field, head_unmoved, order, owner, patch, refused_on, type_decl,
-    upsert, value,
+    Lake, Must, doors, field, head_unmoved, order, owner, refused_on, try_upsert, type_decl, value,
+    value_type,
 };
 use crate::expr::order::cmp_values;
 
@@ -49,16 +49,13 @@ check!(
 );
 
 async fn one_field(store: &dyn LakeStore, name: &str, ty: FieldType) -> Result<Lake, Failure> {
-    let cat = doors(store);
-    let decl = type_decl(
-        name,
-        vec![FieldDecl {
-            ty,
-            ..field("v", StorageKind::Text)
-        }],
-    );
-    declare(cat.as_ref(), &owner(store), decl).await?;
-    Ok(Lake::of(store))
+    let l = Lake::of(store);
+    let v = FieldDecl {
+        ty,
+        ..field("v", StorageKind::Text)
+    };
+    l.declare(type_decl(name, vec![v])).await?;
+    Ok(l)
 }
 
 /// Write `v` to `thing` and expect a refusal on field `v`, with nothing
@@ -68,19 +65,17 @@ async fn refused(store: &dyn LakeStore, v: Value, why: &str) -> Result<(), Failu
 }
 
 async fn refused_in(store: &dyn LakeStore, ty: &str, v: Value, why: &str) -> Result<(), Failure> {
-    let cat = doors(store);
     let before = store.head().await.must("reading the head")?;
     let what = format!("writing {v} ({why})");
-    let err = cat
-        .upsert(
-            &owner(store),
-            &TypeName::from(ty),
-            &"k".into(),
-            patch(json!({ "v": v })),
-            WriteOpts::default(),
-        )
-        .await
-        .must_fail(&what)?;
+    let err = try_upsert(
+        doors(store).as_ref(),
+        &owner(store),
+        ty,
+        "k",
+        json!({ "v": v }),
+    )
+    .await
+    .must_fail(&what)?;
     head_unmoved(store, before, &what).await?;
     ensure!(
         matches!(
@@ -143,16 +138,9 @@ async fn a_vector_of_the_wrong_length_is_refused(store: Arc<dyn LakeStore>) -> R
         dimensions: Some(3),
         ..FieldType::kind(StorageKind::Vector)
     };
-    one_field(store.as_ref(), "thing", ty).await?;
-    let cat = doors(store.as_ref());
-    upsert(
-        cat.as_ref(),
-        &owner(store.as_ref()),
-        "thing",
-        "k",
-        json!({"v": [0.1, 0.2, 0.3]}),
-    )
-    .await?;
+    let l = one_field(store.as_ref(), "thing", ty).await?;
+    l.upsert("thing", "k", json!({"v": [0.1, 0.2, 0.3]}))
+        .await?;
     refused(
         store.as_ref(),
         json!([0.1, 0.2]),
@@ -166,18 +154,6 @@ async fn a_vector_of_the_wrong_length_is_refused(store: Arc<dyn LakeStore>) -> R
     )
     .await?;
     refused(store.as_ref(), json!([0.1, "x", 0.3]), "not all numbers").await
-}
-
-fn value_type(name: &str, kind: StorageKind) -> ValueTypeDecl {
-    ValueTypeDecl {
-        name: name.into(),
-        kind,
-        constraint: None,
-        one_of: Vec::new(),
-        format: None,
-        scale: None,
-        description: None,
-    }
 }
 
 async fn typed(store: &dyn LakeStore, ty: &str, vt: ValueTypeDecl) -> Result<(), Failure> {
@@ -292,21 +268,13 @@ check!(
 async fn a_decimal_written_as_a_json_number_is_refused(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    one_field(
+    let l = one_field(
         store.as_ref(),
         "thing",
         FieldType::kind(StorageKind::Decimal),
     )
     .await?;
-    let cat = doors(store.as_ref());
-    upsert(
-        cat.as_ref(),
-        &owner(store.as_ref()),
-        "thing",
-        "k",
-        json!({"v": "12.50"}),
-    )
-    .await?;
+    l.upsert("thing", "k", json!({"v": "12.50"})).await?;
     refused(store.as_ref(), json!(12.5), "a decimal as a JSON number").await?;
     refused(store.as_ref(), json!(12), "a decimal as a JSON integer").await?;
     refused(store.as_ref(), json!("12,50"), "a decimal with a comma").await

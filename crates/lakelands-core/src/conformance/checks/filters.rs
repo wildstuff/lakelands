@@ -5,15 +5,15 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::{Authority, FieldDecl, StorageKind};
-use lakelands_api::read::{AggFunc, Aggregate, Order, OrderBy};
+use lakelands_api::ontology::StorageKind;
+use lakelands_api::read::{AggFunc, Aggregate, OrderBy};
 use lakelands_api::{Find, LakeStore, Refusal, Timestamp};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, agg, all_found, declare, doors, field, field_writer, find_where, no_such_field,
-    order, owner, refused_on, source_record, type_decl, windows_reach_head,
+    Lake, Must, agg, field, field_writer, find_where, no_such_field, order, refused_on,
+    source_record, sourced, type_decl, windows_reach_head,
 };
 
 check!(
@@ -47,7 +47,7 @@ check!(
 );
 
 async fn lines(store: &dyn LakeStore) -> Result<Lake, Failure> {
-    let cat = doors(store);
+    let l = Lake::of(store);
     let ty = type_decl(
         "line",
         vec![
@@ -58,17 +58,14 @@ async fn lines(store: &dyn LakeStore) -> Result<Lake, Failure> {
             field("flag", StorageKind::Boolean),
         ],
     );
-    declare(cat.as_ref(), &owner(store), ty).await?;
-    Ok(Lake::of(store))
+    l.declare(ty).await?;
+    Ok(l)
 }
 
 async fn keys_where(store: &dyn LakeStore, filter: &str) -> Result<Vec<String>, Failure> {
-    let cat = doors(store);
-    let find = Find {
-        filter: Some(filter.into()),
-        ..Find::default()
-    };
-    let rows = all_found(cat.as_ref(), &owner(store), "line", find).await?;
+    let rows = Lake::of(store)
+        .all_found("line", find_where(filter))
+        .await?;
     let mut keys: Vec<String> = rows.into_iter().map(|r| r.key.0).collect();
     keys.sort();
     Ok(keys)
@@ -183,11 +180,7 @@ async fn probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggre
             (
                 "an order",
                 Find {
-                    order_by: vec![Order {
-                        field: "note".into(),
-                        by: OrderBy::Value,
-                        dir: Default::default(),
-                    }],
+                    order_by: vec![order("note", OrderBy::Value, Default::default())],
                     ..Find::default()
                 },
             ),
@@ -229,13 +222,7 @@ async fn a_filter_and_an_order_can_read_when_a_source_saw_a_value(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let ty = type_decl(
-        "reading",
-        vec![FieldDecl {
-            authority: Authority::Source,
-            ..field("level", StorageKind::Number)
-        }],
-    );
+    let ty = type_decl("reading", vec![sourced("level", StorageKind::Number)]);
     l.declare(ty).await?;
     let seen = |day: u32| Timestamp::from_date(2026, 3, day);
     let mut records = Vec::new();

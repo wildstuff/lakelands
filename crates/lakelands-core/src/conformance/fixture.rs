@@ -204,6 +204,30 @@ impl Lake {
         upsert(self.cat.as_ref(), &self.own, ty, key, fields).await
     }
 
+    /// The lake as `describe` answers it to the owner at the head.
+    pub async fn describe(&self) -> Result<lakelands_api::describe::LakeDescription, Failure> {
+        let d = self.cat.describe(&self.own, ReadAt::default()).await;
+        Ok(d.must("describing the lake as the owner")?.data)
+    }
+
+    /// The type `ty` as `describe` answers it to the owner at the head.
+    pub async fn describe_type(
+        &self,
+        ty: &str,
+    ) -> Result<lakelands_api::describe::TypeDescription, Failure> {
+        let (t, what) = (
+            TypeName::from(ty),
+            format!("describing `{ty}` as the owner"),
+        );
+        let d = self.cat.describe_type(&self.own, &t, ReadAt::default());
+        Ok(d.await.must(&what)?.data)
+    }
+
+    /// Declares `d` as the owner; `what` names it if that fails.
+    pub async fn declare_as(&self, d: Declaration, what: &str) -> Result<Outcome, Failure> {
+        self.cat.declare(&self.own, d).await.must(what)
+    }
+
     /// Declares, as the owner, the declaration `json` describes.
     pub async fn declare_json(&self, json: Value) -> Result<Outcome, Failure> {
         let what = format!("declaring {json}");
@@ -458,6 +482,36 @@ pub fn trigger_on(name: &str, on: &str, when: Option<&str>) -> Declaration {
     })
 }
 
+/// A low-risk verb `name` on the records of `on` that sets `field` to
+/// the expression `value`, taking no payload.
+pub fn write_verb(name: &str, on: &str, field: &str, value: &str) -> Declaration {
+    use lakelands_api::ontology::{Assignment, Risk, VerbDecl, VerbEffect};
+    let set = vec![Assignment {
+        field: field.into(),
+        value: value.into(),
+    }];
+    Declaration::Verb(VerbDecl {
+        name: name.into(),
+        on: on.into(),
+        scope: Default::default(),
+        payload: vec![],
+        risk: Risk::Low,
+        requires: None,
+        effect: VerbEffect::Write { set },
+        description: None,
+    })
+}
+
+/// The object set `name` of the records of `of` that `filter` holds for.
+pub fn object_set_on(name: &str, of: &str, filter: &str) -> Declaration {
+    Declaration::ObjectSet(lakelands_api::write::ObjectSetDecl {
+        name: name.into(),
+        of: of.into(),
+        filter: filter.into(),
+        description: None,
+    })
+}
+
 /// One hop over `relation`, in the direction `walk`.
 pub fn step(relation: &str, walk: Walk) -> Step {
     Step {
@@ -511,6 +565,50 @@ pub async fn events_from(
     let all = lakelands_api::seam::FeedFilter::default();
     let polled = store.feed().poll(from, &all, 10_000).await;
     Ok(polled.must(&format!("reading the log from {from}"))?.events)
+}
+
+/// The lake's events after `after`, oldest first: up to 10 000.
+pub async fn events_after(
+    store: &dyn LakeStore,
+    after: Position,
+) -> Result<Vec<lakelands_api::event::Event>, Failure> {
+    events_from(store, after.next()).await
+}
+
+/// A host's reactive context `depth` deep, naming `cause`.
+pub fn reactive(depth: u32, cause: Option<Position>) -> WriteContext {
+    WriteContext {
+        origin: lakelands_api::principal::WriteOrigin::Reactive,
+        depth,
+        cause,
+    }
+}
+
+/// A migration of a type to `to`, with no field renamed.
+pub fn migration(to: TypeDecl) -> lakelands_api::write::Migration {
+    lakelands_api::write::Migration {
+        to,
+        renames: Vec::new(),
+    }
+}
+
+/// A value type `name` of `kind`, with no constraint, choices, format or
+/// scale.
+pub fn value_type(name: &str, kind: StorageKind) -> lakelands_api::ontology::ValueTypeDecl {
+    lakelands_api::ontology::ValueTypeDecl {
+        name: name.into(),
+        kind,
+        constraint: None,
+        one_of: Vec::new(),
+        format: None,
+        scale: None,
+        description: None,
+    }
+}
+
+/// An agent of the lake that holds no grant at all.
+pub fn nobody(store: &dyn LakeStore) -> Principal {
+    principal(store, PrincipalKind::Agent, "nobody", Grants::default())
 }
 
 /// The `output_recorded` events of the lake's log, oldest first.
@@ -575,6 +673,20 @@ pub async fn upsert(
     )
     .await
     .must(&what)
+}
+
+/// An upsert of `fields` into one record with no options, its answer as
+/// it came: for a check that expects a refusal.
+pub async fn try_upsert(
+    cat: &dyn Catalog,
+    who: &Principal,
+    ty: &str,
+    key: &str,
+    fields: Value,
+) -> lakelands_api::Result<Outcome> {
+    let (t, k) = (TypeName::from(ty), RecordKey::from(key));
+    cat.upsert(who, &t, &k, patch(fields), WriteOpts::default())
+        .await
 }
 
 /// A `get` of one record, with provenance, at `as_of` (the head when
@@ -731,6 +843,33 @@ pub async fn head_unmoved(
              a refused write must append nothing"
         )))
     }
+}
+
+/// Feeds `records` from `source` as `l`'s owner and checks that the
+/// windows it answers reach the head; `what` names the delivery.
+pub async fn delivered(
+    store: &dyn LakeStore,
+    l: &Lake,
+    source: &str,
+    records: Vec<SourceRecord>,
+    what: &str,
+) -> Result<Vec<Committed>, Failure> {
+    let windows = l.ingest(source, records).await.must(what)?;
+    windows_reach_head(store, &windows, what).await?;
+    Ok(windows)
+}
+
+/// The error a refused `answer` holds, once the head is still `before`;
+/// `what` names the attempt in either failure.
+pub async fn refused_unmoved<T: Debug>(
+    store: &dyn LakeStore,
+    before: Position,
+    what: &str,
+    answer: lakelands_api::Result<T>,
+) -> Result<Error, Failure> {
+    let err = answer.must_fail(what)?;
+    head_unmoved(store, before, what).await?;
+    Ok(err)
 }
 
 /// Fail unless an ingest's windows answer positions in log order and the

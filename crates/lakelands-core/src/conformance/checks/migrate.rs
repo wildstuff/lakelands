@@ -11,8 +11,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, count_view, declare, doors, field, head_unmoved, measure, owner, reason, type_decl,
-    value,
+    Lake, Must, count_view, declare, doors, field, head_unmoved, measure, migration, owner, reason,
+    type_decl, value,
 };
 
 check!(
@@ -47,6 +47,13 @@ async fn memo(store: &dyn LakeStore) -> Result<TypeDecl, Failure> {
     Ok(ty)
 }
 
+/// `m` preflighted, then applied as its report says: the first refusal.
+async fn migrated(l: &Lake, m: Migration) -> lakelands_api::Result<()> {
+    let report = l.cat.migrate(&l.own, m.clone()).await?;
+    let applied = l.cat.migrate_apply(&l.own, m, &report.data.report_id);
+    applied.await.map(|_| ())
+}
+
 async fn preflight(store: &dyn LakeStore, m: &Migration) -> Result<MigrationReport, Failure> {
     Ok(doors(store)
         .migrate(&owner(store), m.clone())
@@ -72,10 +79,7 @@ async fn migrate_apply_requires_the_report_it_was_shown(
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.upsert("memo", "a", json!({"pages": 3})).await?;
-    let m = Migration {
-        to: retype(&ty, "pages", StorageKind::Text),
-        renames: Vec::new(),
-    };
+    let m = migration(retype(&ty, "pages", StorageKind::Text));
     let report = preflight(store.as_ref(), &m).await?;
     ensure!(
         report.lossless && report.records_scanned == 1,
@@ -112,10 +116,7 @@ async fn a_migration_that_would_lose_information_is_refused_with_its_report(
     let Lake { cat, own } = &l;
     l.upsert("memo", "ok", json!({"ref": "12"})).await?;
     l.upsert("memo", "bad", json!({"ref": "twelve"})).await?;
-    let m = Migration {
-        to: retype(&ty, "ref", StorageKind::Number),
-        renames: Vec::new(),
-    };
+    let m = migration(retype(&ty, "ref", StorageKind::Number));
     let report = preflight(store.as_ref(), &m).await?;
     let conv = report.fields.iter().find(|f| f.field.as_str() == "ref");
     ensure!(
@@ -205,7 +206,6 @@ check!(
 
 async fn a_view_is_never_migrated(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
     l.declare(type_decl(
         "invoice",
         vec![
@@ -238,18 +238,8 @@ async fn a_view_is_never_migrated(store: Arc<dyn LakeStore>) -> Result<(), Failu
         ("tally", count_view("tally", "invoice", "partner")),
         ("pt", stored_pt),
     ] {
-        let m = Migration {
-            to,
-            renames: Vec::new(),
-        };
         let before = store.head().await.must("reading the head")?;
-        let answer = match cat.migrate(own, m.clone()).await {
-            Err(e) => Err(e),
-            Ok(report) => cat
-                .migrate_apply(own, m, &report.data.report_id)
-                .await
-                .map(|_| ()),
-        };
+        let answer = migrated(&l, migration(to)).await;
         ensure!(
             matches!(reason(&answer), Some(Refusal::Invalid { message }) if message.contains(ty)),
             "a migration of `{ty}` across a view and a stored type must be refused as invalid, \
@@ -291,7 +281,6 @@ async fn a_migration_taking_a_field_a_view_reads_is_refused(
     use lakelands_api::ontology::{ViewDecl, ViewSource};
     use lakelands_api::{FieldName, TypeName};
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
     let invoice = type_decl(
         "invoice",
         vec![
@@ -359,20 +348,9 @@ async fn a_migration_taking_a_field_a_view_reads_is_refused(
     let dropped = |t: &TypeDecl, name: &str| {
         let mut t = t.clone();
         t.fields.retain(|f| f.name.as_str() != name);
-        Migration {
-            to: t,
-            renames: Vec::new(),
-        }
+        migration(t)
     };
-    let migrated = |m: Migration| async move {
-        match cat.migrate(own, m.clone()).await {
-            Err(e) => Err(e),
-            Ok(report) => cat
-                .migrate_apply(own, m, &report.data.report_id)
-                .await
-                .map(|_| ()),
-        }
-    };
+    let migrated = |m: Migration| migrated(&l, m);
     for (what, m, read) in [
         (
             "renaming `partner` of `invoice`",
@@ -419,7 +397,6 @@ async fn a_migration_removing_the_field_a_relation_walks_is_refused(
 ) -> Result<(), Failure> {
     use lakelands_api::ontology::{FieldDecl, RelationDecl};
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
     l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))
         .await?;
     let mut invoice = type_decl(
@@ -444,18 +421,8 @@ async fn a_migration_removing_the_field_a_relation_walks_is_refused(
     l.declare(invoice.clone()).await?;
     let mut to = invoice;
     to.fields.retain(|f| f.name.as_str() != "partner");
-    let m = Migration {
-        to,
-        renames: Vec::new(),
-    };
     let before = store.head().await.must("reading the head")?;
-    let refused = match cat.migrate(own, m.clone()).await {
-        Err(_) => true,
-        Ok(report) => cat
-            .migrate_apply(own, m, &report.data.report_id)
-            .await
-            .is_err(),
-    };
+    let refused = migrated(&l, migration(to)).await.is_err();
     head_unmoved(store.as_ref(), before, "migrating away a relation's `via`").await?;
     ensure!(
         refused,
@@ -469,21 +436,10 @@ async fn the_preflight_names_every_dropped_field_and_an_empty_type_migrates_clea
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let wide = type_decl(
-        "memo",
-        vec![
-            field("title", StorageKind::Text),
-            field("pages", StorageKind::Number),
-            field("ref", StorageKind::Text),
-        ],
-    );
-    l.declare(wide.clone()).await?;
+    let wide = memo(store.as_ref()).await?;
     let mut narrow = wide.clone();
     narrow.fields.retain(|f| f.name.as_str() == "title");
-    let m = Migration {
-        to: narrow.clone(),
-        renames: Vec::new(),
-    };
+    let m = migration(narrow.clone());
     let empty = preflight(store.as_ref(), &m).await?;
     ensure!(
         empty.records_scanned == 0 && empty.fields.is_empty() && empty.lossless,

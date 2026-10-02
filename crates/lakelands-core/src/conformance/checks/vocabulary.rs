@@ -15,7 +15,7 @@ use lakelands_api::seam::Seams;
 use lakelands_api::{LakeStore, ReadAt, TypeName};
 use serde_json::json;
 
-use crate::conformance::fixture::{Must, doors, field, owner, read, type_decl, upsert};
+use crate::conformance::fixture::{Lake, Must, doors, field, owner, type_decl};
 use crate::conformance::{Failure, Reopen, backing};
 
 check!(
@@ -81,14 +81,9 @@ async fn a_host_type_is_declared_when_a_writer_opens_the_lake(
         "the vocabulary withholds `sys.host_hidden` from this lake; the lake holds it all \
          the same"
     );
-    upsert(
-        doors(store.as_ref()).as_ref(),
-        &owner(store.as_ref()),
-        "sys.host_note",
-        "n",
-        json!({"text": "kept"}),
-    )
-    .await?;
+    Lake::of(store.as_ref())
+        .upsert("sys.host_note", "n", json!({"text": "kept"}))
+        .await?;
 
     let store = reopen(
         store,
@@ -104,13 +99,7 @@ async fn a_host_type_is_declared_when_a_writer_opens_the_lake(
         "the host added `sys.host_tag` after the lake existed; the next writer's open did \
          not declare it"
     );
-    let kept = read(
-        doors(store.as_ref()).as_ref(),
-        &owner(store.as_ref()),
-        "sys.host_note",
-        "n",
-    )
-    .await?;
+    let kept = Lake::of(store.as_ref()).read("sys.host_note", "n").await?;
     ensure!(
         kept.fields.get("text") == Some(&json!("kept")),
         "`sys.host_note` `n` was written before the vocabulary grew; after the next open \

@@ -10,15 +10,15 @@
 use std::sync::Arc;
 
 use lakelands_api::event::EventBody;
-use lakelands_api::expr::Condition;
-use lakelands_api::ontology::{Assignment, Risk, StorageKind, VerbDecl, VerbEffect};
-use lakelands_api::seam::FeedFilter;
-use lakelands_api::write::{Declaration, ObjectSetDecl};
+use lakelands_api::ontology::StorageKind;
+use lakelands_api::write::Declaration;
 use lakelands_api::{LakeStore, Patch};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, field, trigger_on, type_decl};
+use crate::conformance::fixture::{
+    Lake, Must, events_after, field, object_set_on, trigger_on, type_decl, write_verb,
+};
 
 check!(
     /// A trigger fires, and a set changes, on a verb's write.
@@ -34,33 +34,13 @@ async fn a_trigger_fires_on_a_verbs_write(store: Arc<dyn LakeStore>) -> Result<(
             "invoice",
             vec![field("status", StorageKind::Text)],
         )),
-        Declaration::Verb(VerbDecl {
-            name: "settle".into(),
-            on: "invoice".into(),
-            scope: Default::default(),
-            payload: vec![],
-            risk: Risk::Low,
-            requires: None,
-            effect: VerbEffect::Write {
-                set: vec![Assignment {
-                    field: "status".into(),
-                    value: Condition::from("'paid'"),
-                }],
-            },
-            description: None,
-        }),
+        write_verb("settle", "invoice", "status", "'paid'"),
         trigger_on("paid", "invoice", Some("status = 'paid'")),
-        Declaration::ObjectSet(ObjectSetDecl {
-            name: "settled".into(),
-            of: "invoice".into(),
-            filter: Condition::from("status = 'paid'"),
-            description: None,
-        }),
+        object_set_on("settled", "invoice", "status = 'paid'"),
     ];
     for d in declarations {
-        cat.declare(own, d)
-            .await
-            .must("declaring the invoice, its verb, trigger and set")?;
+        l.declare_as(d, "declaring the invoice, its verb, trigger and set")
+            .await?;
     }
     let opened = l.upsert("invoice", "i1", json!({"status": "open"})).await?;
     let ran = cat
@@ -73,13 +53,8 @@ async fn a_trigger_fires_on_a_verbs_write(store: Arc<dyn LakeStore>) -> Result<(
         )
         .await
         .must("calling `settle` on `i1`")?;
-    let feed = store
-        .feed()
-        .poll(opened.position().next(), &FeedFilter::default(), 100)
-        .await
-        .must("reading the feed after the upsert")?;
-    let written = feed
-        .events
+    let events = events_after(store.as_ref(), opened.position()).await?;
+    let written = events
         .iter()
         .find(|e| matches!(e.body, EventBody::RecordUpserted { .. }))
         .ok_or_else(|| Failure::new("the verb `settle` wrote no record event"))?;
@@ -89,7 +64,7 @@ async fn a_trigger_fires_on_a_verbs_write(store: Arc<dyn LakeStore>) -> Result<(
         ran.position(),
         written.position
     );
-    let fired = feed.events.iter().any(|e| {
+    let fired = events.iter().any(|e| {
         e.cause == Some(written.position)
             && matches!(&e.body, EventBody::TriggerFired { trigger, .. } if trigger.as_str() == "paid")
     });
@@ -97,12 +72,9 @@ async fn a_trigger_fires_on_a_verbs_write(store: Arc<dyn LakeStore>) -> Result<(
         fired,
         "the verb's write made `status = 'paid'` hold, and the trigger `paid` did not fire, \
          caused by that write; the feed after the upsert holds {:?}",
-        feed.events
-            .iter()
-            .map(|e| e.body.kind())
-            .collect::<Vec<_>>()
+        events.iter().map(|e| e.body.kind()).collect::<Vec<_>>()
     );
-    let joined = feed.events.iter().any(|e| {
+    let joined = events.iter().any(|e| {
         e.cause == Some(written.position)
             && matches!(
                 &e.body,

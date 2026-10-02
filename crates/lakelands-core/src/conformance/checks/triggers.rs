@@ -15,14 +15,15 @@ use lakelands_api::event::EventBody;
 use lakelands_api::expr::Condition;
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::{StorageKind, TriggerDecl};
-use lakelands_api::principal::{WriteContext, WriteOrigin};
-use lakelands_api::seam::{FeedFilter, Seams};
+use lakelands_api::principal::WriteContext;
+use lakelands_api::seam::Seams;
 use lakelands_api::write::{Declaration, ProposedWrite};
-use lakelands_api::{LakeStore, Outcome, Position, Refusal, TypeName, WriteOpts};
+use lakelands_api::{LakeStore, Outcome, Position, Refusal, TypeName};
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, Must, field, find_where, head_unmoved, invalid_naming, limits, patch, reason, type_decl,
+    Lake, Must, events_after, field, find_where, head_unmoved, invalid_naming, limits, reactive,
+    reason, try_upsert, type_decl,
 };
 use crate::conformance::{Failure, Given};
 
@@ -91,12 +92,8 @@ async fn fired_after(
     after: Position,
     name: &str,
 ) -> Result<Vec<Position>, Failure> {
-    Ok(store
-        .feed()
-        .poll(after.next(), &FeedFilter::default(), 10_000)
-        .await
-        .must("reading the feed")?
-        .events
+    Ok(events_after(store, after)
+        .await?
         .into_iter()
         .filter(|e| matches!(&e.body, EventBody::TriggerFired { trigger, .. } if trigger.as_str() == name))
         .map(|e| e.position)
@@ -180,12 +177,8 @@ async fn a_guard_tells_a_retirement_from_an_update(
     ] {
         cat.declare(own, d).await.must("declaring the triggers")?;
     }
-    let declared = store
-        .feed()
-        .poll(before.next(), &FeedFilter::default(), 100)
-        .await
-        .must("reading the feed")?
-        .events
+    let declared = events_after(store.as_ref(), before)
+        .await?
         .into_iter()
         .find(|e| {
             matches!(&e.body, EventBody::Declared { declaration: Declaration::Trigger(t), .. }
@@ -318,14 +311,6 @@ async fn retired_outside_a_triggers_guard_is_refused_naming_it(
     )
 }
 
-fn host(depth: u32, cause: Option<Position>) -> WriteContext {
-    WriteContext {
-        origin: WriteOrigin::Reactive,
-        depth,
-        cause,
-    }
-}
-
 async fn a_reaction_past_its_triggers_max_depth_is_refused_naming_it(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
@@ -356,16 +341,8 @@ async fn a_reaction_past_its_triggers_max_depth_is_refused_naming_it(
     let write = |ctx: WriteContext, key: &'static str| {
         let (store, own) = (store.clone(), own.clone());
         async move {
-            store
-                .catalog(ctx)
-                .upsert(
-                    &own,
-                    &TypeName::from("job"),
-                    &key.into(),
-                    patch(json!({"n": 1})),
-                    WriteOpts::default(),
-                )
-                .await
+            let cat = store.catalog(ctx);
+            try_upsert(cat.as_ref(), &own, "job", key, json!({"n": 1})).await
         }
     };
     // The direct write fires both triggers at depth 0.
@@ -375,14 +352,14 @@ async fn a_reaction_past_its_triggers_max_depth_is_refused_naming_it(
     // The reaction to it at depth 1 is within `once`'s ceiling, and fires
     // `once` again at depth 1.
     let head = store.head().await.must("reading the head")?;
-    write(host(1, Some(once_0)), "j1")
+    write(reactive(1, Some(once_0)), "j1")
         .await
         .must("a depth-1 reaction naming `once`'s firing")?;
     let once_1 = firing(head, "once").await?;
     let always_1 = firing(head, "always").await?;
     // A reaction to that firing at depth 2 passes `once`'s ceiling.
     let head = store.head().await.must("reading the head")?;
-    match write(host(2, Some(once_1)), "j2").await {
+    match write(reactive(2, Some(once_1)), "j2").await {
         Err(e) if matches!(reason(&e), Some(Refusal::TooDeep { max: 1 })) => {
             let why = e.to_string();
             ensure!(
@@ -403,10 +380,10 @@ async fn a_reaction_past_its_triggers_max_depth_is_refused_naming_it(
         "a reaction past its trigger's ceiling",
     )
     .await?;
-    write(host(2, Some(always_1)), "j3")
+    write(reactive(2, Some(always_1)), "j3")
         .await
         .must("a depth-2 reaction naming `always`'s firing")?;
-    write(host(2, None), "j4")
+    write(reactive(2, None), "j4")
         .await
         .must("a depth-2 reaction naming no cause")?;
     Ok(())

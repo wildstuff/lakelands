@@ -13,15 +13,14 @@ use std::sync::Arc;
 
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{Authority, Cardinality, RelationDecl, StorageKind, ValueTypeDecl};
-use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::{Declaration, ValueTypeReport};
 use lakelands_api::{Error, Grants, LakeStore, PrincipalKind, Refusal, WriteOpts};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, field, head_unmoved, log_events, principal, reason, refused_on, trigger_on,
-    type_decl,
+    Lake, Must, events_after, field, head_unmoved, log_events, object_set_on, principal, reason,
+    refused_on, trigger_on, try_upsert, type_decl,
 };
 
 check!(
@@ -92,11 +91,9 @@ fn score(constraint: Option<&str>) -> ValueTypeDecl {
 /// `invoice` uses both, `ticket` uses `status_code`.
 async fn lake(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
-    let Lake { cat, own } = &l;
     for d in [status(&["open", "paid", "late", "void"]), score(None)] {
-        cat.declare(own, Declaration::ValueType(d))
-            .await
-            .must("declaring a value type")?;
+        l.declare_as(Declaration::ValueType(d), "declaring a value type")
+            .await?;
     }
     let typed = |name: &str, kind, vt: &str| {
         let mut f = field(name, kind);
@@ -202,9 +199,8 @@ async fn declare_refuses_a_value_type_that_accepts_less_or_reshapes(
         json!({"name": "contact", "kind": "text"}),
         json!({"name": "site", "kind": "text", "format": "domain"}),
     ] {
-        cat.declare(own, Declaration::ValueType(vt(d)))
-            .await
-            .must("declaring a value type")?;
+        l.declare_as(Declaration::ValueType(vt(d)), "declaring a value type")
+            .await?;
     }
     let before = store.head().await.must("reading the head")?;
     for (what, d, word) in [
@@ -409,16 +405,15 @@ async fn a_tightening_every_value_fits_is_one_declared_version(
         i1.version.0,
         after.version.0
     );
-    let e = cat
-        .upsert(
-            own,
-            &"invoice".into(),
-            &"i5".into(),
-            crate::conformance::fixture::patch(json!({"status": "void"})),
-            WriteOpts::default(),
-        )
-        .await
-        .must_fail("writing `void` after it was taken out")?;
+    let e = try_upsert(
+        cat.as_ref(),
+        own,
+        "invoice",
+        "i5",
+        json!({"status": "void"}),
+    )
+    .await
+    .must_fail("writing `void` after it was taken out")?;
     ensure!(
         matches!(refused_on(&e), Some(("status", Refusal::Constraint { .. }))),
         "`void` was written after the tightening, or refused as {e:?}"
@@ -518,9 +513,8 @@ async fn removing_a_constraint_or_a_format_is_declared_and_changing_a_constraint
         json!({"name": "grade", "kind": "number", "constraint": "value >= 0"}),
         json!({"name": "site", "kind": "text", "format": "domain"}),
     ] {
-        cat.declare(own, Declaration::ValueType(vt(d)))
-            .await
-            .must("declaring a value type")?;
+        l.declare_as(Declaration::ValueType(vt(d)), "declaring a value type")
+            .await?;
     }
     for (what, d) in [
         (
@@ -576,23 +570,14 @@ check!(
 async fn a_trigger_or_set_on_a_value_the_type_no_longer_admits_never_holds(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    use lakelands_api::expr::Condition;
-
-    use lakelands_api::write::ObjectSetDecl;
     let l = lake(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     for d in [
         trigger_on("went_late", "invoice", Some("status = 'late'")),
-        Declaration::ObjectSet(ObjectSetDecl {
-            name: "late_ones".into(),
-            of: "invoice".into(),
-            filter: Condition::from("status = 'late'"),
-            description: None,
-        }),
+        object_set_on("late_ones", "invoice", "status = 'late'"),
     ] {
-        cat.declare(own, d)
-            .await
-            .must("declaring a trigger and a set on `late`")?;
+        l.declare_as(d, "declaring a trigger and a set on `late`")
+            .await?;
     }
     l.upsert("invoice", "i1", json!({"status": "open"})).await?;
     // `late` leaves `status_code`: no stored value holds it, so it applies.
@@ -638,25 +623,20 @@ async fn a_trigger_or_set_on_a_value_the_type_no_longer_admits_never_holds(
     // A record first written after the tightening: a set that held would
     // take it in.
     l.upsert("invoice", "i2", json!({"status": "open"})).await?;
-    let late = cat
-        .upsert(
-            own,
-            &"invoice".into(),
-            &"i1".into(),
-            crate::conformance::fixture::patch(json!({"status": "late"})),
-            WriteOpts::default(),
-        )
-        .await;
+    let late = try_upsert(
+        cat.as_ref(),
+        own,
+        "invoice",
+        "i1",
+        json!({"status": "late"}),
+    )
+    .await;
     ensure!(
         late.is_err(),
         "`late` is no longer a `status_code`, and writing it answered {late:?}"
     );
-    let reacted: Vec<String> = store
-        .feed()
-        .poll(from.next(), &FeedFilter::default(), 1000)
-        .await
-        .must("reading the feed")?
-        .events
+    let reacted: Vec<String> = events_after(store.as_ref(), from)
+        .await?
         .into_iter()
         .filter(|e| matches!(e.body.kind(), "trigger_fired" | "object_set_changed"))
         .map(|e| e.body.kind().to_owned())

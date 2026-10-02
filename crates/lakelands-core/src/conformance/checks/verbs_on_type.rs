@@ -24,8 +24,8 @@ use serde_json::{Value, json};
 use crate::conformance::Failure;
 use crate::conformance::backing::{EXECUTOR, executed};
 use crate::conformance::fixture::{
-    Lake, Must, field, head_unmoved, invalid_naming, owner, patch, principal, reason, reviewer,
-    type_decl,
+    Lake, Must, events_from, field, head_unmoved, invalid_naming, nobody, owner, patch, principal,
+    reason, reviewer, type_decl,
 };
 
 check!(
@@ -120,18 +120,6 @@ async fn ledger(store: &dyn LakeStore, name: &str, risk: &str) -> Result<Lake, F
         l.declare_json(verb).await?;
     }
     Ok(l)
-}
-
-async fn events_from(
-    store: &dyn LakeStore,
-    from: Position,
-) -> Result<Vec<lakelands_api::event::Event>, Failure> {
-    Ok(store
-        .feed()
-        .poll(from, &FeedFilter::default(), 1_000)
-        .await
-        .must("reading the feed")?
-        .events)
 }
 
 /// The `verb_called` events of `verb` in `events`, with their keys.
@@ -345,12 +333,7 @@ async fn a_key_that_does_not_fit_the_verbs_scope_is_refused_naming_the_verb(
     l.upsert("partner", "p1", json!({"name": "Acme"})).await?;
     // A principal with no grant at all: the key is checked before the
     // grants are, so the refusal is `invalid`, not `not_granted`.
-    let nobody = principal(
-        store.as_ref(),
-        PrincipalKind::Agent,
-        "nobody",
-        Grants::default(),
-    );
+    let nobody = nobody(store.as_ref());
     let at_version = WriteOpts {
         expected_version: Some(Version(1)),
         ..WriteOpts::default()

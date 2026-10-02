@@ -15,7 +15,6 @@ use std::sync::Arc;
 
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind;
-use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::Declaration;
 use lakelands_api::{Error, LakeStore, Origin, Refusal, Version};
 use serde_json::{Value, json};
@@ -23,8 +22,8 @@ use serde_json::{Value, json};
 use crate::conformance::Failure;
 use crate::conformance::backing::{KIND, made, plug, unplug};
 use crate::conformance::fixture::{
-    Lake, Must, computed_by, derived, field, head_unmoved, reason, recorded_outputs, trigger_on,
-    type_decl, value,
+    Lake, Must, computed_by, derived, events_from, field, head_unmoved, reason, recorded_outputs,
+    trigger_on, type_decl, value,
 };
 
 check!(
@@ -320,12 +319,7 @@ async fn a_filled_field_recomputes_what_reads_it_and_fires_its_triggers(
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let name = computed_by("name", StorageKind::Text, "lookup", &["code"]);
-    let greeting = derived(
-        "greeting",
-        StorageKind::Text,
-        "concat(name, '!')",
-        &["name"],
-    );
+    let greeting = greeting();
     l.declare(type_decl(
         "place",
         vec![field("code", StorageKind::Text), name, greeting],
@@ -349,12 +343,8 @@ async fn a_filled_field_recomputes_what_reads_it_and_fires_its_triggers(
             "no `output_recorded` in the log after the write",
         ));
     };
-    let feed = store
-        .feed()
-        .poll(output.position, &FeedFilter::default(), u32::MAX)
-        .await
-        .must("reading the feed from the recorded output")?;
-    let fired = feed.events.iter().any(|e| {
+    let events = events_from(store.as_ref(), output.position).await?;
+    let fired = events.iter().any(|e| {
         e.cause == Some(output.position)
             && matches!(&e.body, EventBody::TriggerFired { trigger, .. } if trigger.as_str() == "named")
     });
@@ -363,12 +353,22 @@ async fn a_filled_field_recomputes_what_reads_it_and_fires_its_triggers(
         "the fill made `name = 'AT'` hold, so the trigger `named` fires, caused by the \
          `output_recorded` at {}; the feed from there holds {:?}",
         output.position,
-        feed.events
+        events
             .iter()
             .map(|e| (e.position, e.body.kind(), e.cause))
             .collect::<Vec<_>>()
     );
     Ok(())
+}
+
+/// `greeting`, derived from `name` as concat(name, '!').
+fn greeting() -> lakelands_api::ontology::FieldDecl {
+    derived(
+        "greeting",
+        StorageKind::Text,
+        "concat(name, '!')",
+        &["name"],
+    )
 }
 
 async fn computed_fields_that_read_each_other_in_a_cycle_are_refused(
@@ -433,12 +433,7 @@ async fn a_second_record_with_the_same_input_has_its_derived_fields_right(
         json!({"token": token, "echo": "code"}),
     )
     .await?;
-    let greeting = derived(
-        "greeting",
-        StorageKind::Text,
-        "concat(name, '!')",
-        &["name"],
-    );
+    let greeting = greeting();
     l.declare(type_decl(
         "place",
         vec![

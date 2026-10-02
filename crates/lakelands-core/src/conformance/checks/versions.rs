@@ -14,8 +14,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, declare, doors, field, get_at, head_unmoved, owner, patch, principal, type_decl,
-    value,
+    Lake, Must, declare, doors, field, get_at, head_unmoved, owner, patch, principal,
+    refused_unmoved, type_decl, value,
 };
 
 check!(
@@ -99,15 +99,19 @@ async fn versions_start_at_one_and_grow_by_one_with_every_change(
     Ok(())
 }
 
+/// Options expecting the record at version `v`.
+fn expecting(v: u64) -> WriteOpts {
+    WriteOpts {
+        expected_version: Some(Version(v)),
+        idempotency_key: None,
+    }
+}
+
 async fn a_write_expecting_a_superseded_version_is_refused_as_a_conflict(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = counter(store.as_ref()).await?;
     let Lake { cat, own } = &l;
-    let expecting = |v: u64| WriteOpts {
-        expected_version: Some(Version(v)),
-        idempotency_key: None,
-    };
 
     put(cat.as_ref(), own, "k", 1, expecting(0))
         .await
@@ -117,15 +121,9 @@ async fn a_write_expecting_a_superseded_version_is_refused_as_a_conflict(
         .must("writing `k` expecting its current version 1")?;
 
     let before = store.head().await.must("reading the head")?;
-    let err = put(cat.as_ref(), own, "k", 3, expecting(1))
-        .await
-        .must_fail("writing `k` expecting version 1 after it moved to 2")?;
-    head_unmoved(
-        store.as_ref(),
-        before,
-        "writing `k` expecting version 1 after it moved to 2",
-    )
-    .await?;
+    let answer = put(cat.as_ref(), own, "k", 3, expecting(1)).await;
+    let what = "writing `k` expecting version 1 after it moved to 2";
+    let err = refused_unmoved(store.as_ref(), before, what, answer).await?;
     ensure!(
         err == Error::Conflict {
             expected: Version(1),
@@ -135,15 +133,9 @@ async fn a_write_expecting_a_superseded_version_is_refused_as_a_conflict(
          (expected 1, actual 2); it failed with {err:?}"
     );
     let before = store.head().await.must("reading the head")?;
-    let err = put(cat.as_ref(), own, "k", 4, expecting(0))
-        .await
-        .must_fail("creating `k` expecting version 0 when it already exists")?;
-    head_unmoved(
-        store.as_ref(),
-        before,
-        "creating `k` expecting version 0 when it already exists",
-    )
-    .await?;
+    let answer = put(cat.as_ref(), own, "k", 4, expecting(0)).await;
+    let what = "creating `k` expecting version 0 when it already exists";
+    let err = refused_unmoved(store.as_ref(), before, what, answer).await?;
     ensure!(
         err == Error::Conflict {
             expected: Version(0),
@@ -238,10 +230,6 @@ async fn a_write_expecting_the_version_before_a_retirement_is_a_conflict(
     let l = counter(store.as_ref()).await?;
     let Lake { cat, own } = &l;
     let counter = TypeName::from("counter");
-    let expecting = |v: u64| WriteOpts {
-        expected_version: Some(Version(v)),
-        idempotency_key: None,
-    };
     l.upsert("counter", "k", json!({"n": 1})).await?;
     l.retire(counter.as_str(), "k").await?;
     let before = store.head().await.must("reading the head")?;

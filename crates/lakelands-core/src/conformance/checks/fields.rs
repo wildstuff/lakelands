@@ -10,13 +10,13 @@
 use std::sync::Arc;
 
 use lakelands_api::ontology::{OnInputChange, StorageKind};
-use lakelands_api::{Error, FieldName, LakeStore, Refusal, TypeName};
-use serde_json::json;
+use lakelands_api::{Catalog, Error, FieldName, LakeStore, Outcome, Principal, Refusal, TypeName};
+use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, declare, doors, field, field_writer, get_at, head_unmoved, owner, read, refused_on,
-    type_decl, upsert, value,
+    try_upsert, type_decl, upsert, value,
 };
 
 check!(
@@ -55,13 +55,17 @@ check!(
     "015: a field the lake's map does not declare is refused as invalid, and nothing of the patch is written"
 );
 
+/// Upserts `fields` into `invoice` `i1` as `who`.
+async fn i1(cat: &dyn Catalog, who: &Principal, fields: Value) -> Result<Outcome, Failure> {
+    upsert(cat, who, "invoice", "i1", fields).await
+}
+
 /// Declares `invoice` with the importer's `amount` and the reviewer's
 /// `verdict`, the latter depending on `amount` as `on_change` says.
 async fn two_writer_invoice(
     store: &dyn LakeStore,
     on_change: OnInputChange,
 ) -> Result<(), Failure> {
-    let cat = doors(store);
     let mut verdict = field("verdict", StorageKind::Text);
     verdict.depends_on = vec![FieldName::from("amount")];
     verdict.on_input_change = on_change;
@@ -69,7 +73,7 @@ async fn two_writer_invoice(
         "invoice",
         vec![field("amount", StorageKind::Decimal), verdict],
     );
-    declare(cat.as_ref(), &owner(store), ty).await?;
+    Lake::of(store).declare(ty).await?;
     Ok(())
 }
 
@@ -89,30 +93,14 @@ async fn a_rewrite_by_one_writer_leaves_another_writers_fields_alone(
     let a = field_writer(store.as_ref(), "importer", "invoice", &["amount", "note"]);
     let b = field_writer(store.as_ref(), "reviewer", "invoice", &["verdict"]);
 
-    upsert(
+    i1(
         cat.as_ref(),
         &a,
-        "invoice",
-        "i1",
         json!({"amount": "100.00", "note": "first"}),
     )
     .await?;
-    upsert(
-        cat.as_ref(),
-        &b,
-        "invoice",
-        "i1",
-        json!({"verdict": "approved"}),
-    )
-    .await?;
-    upsert(
-        cat.as_ref(),
-        &a,
-        "invoice",
-        "i1",
-        json!({"amount": "120.00"}),
-    )
-    .await?;
+    i1(cat.as_ref(), &b, json!({"verdict": "approved"})).await?;
+    i1(cat.as_ref(), &a, json!({"amount": "120.00"})).await?;
 
     let rec = read(cat.as_ref(), &owner(store.as_ref()), "invoice", "i1").await?;
     ensure!(
@@ -144,22 +132,8 @@ async fn changing_an_input_clears_a_dependent_field_declared_clear(
     let b = field_writer(store.as_ref(), "reviewer", "invoice", &["verdict"]);
     let own = owner(store.as_ref());
 
-    upsert(
-        cat.as_ref(),
-        &a,
-        "invoice",
-        "i1",
-        json!({"amount": "100.00"}),
-    )
-    .await?;
-    upsert(
-        cat.as_ref(),
-        &b,
-        "invoice",
-        "i1",
-        json!({"verdict": "approved"}),
-    )
-    .await?;
+    i1(cat.as_ref(), &a, json!({"amount": "100.00"})).await?;
+    i1(cat.as_ref(), &b, json!({"verdict": "approved"})).await?;
     let rec = read(cat.as_ref(), &own, "invoice", "i1").await?;
     ensure!(
         value(&rec, "verdict") == Some(&json!("approved")),
@@ -167,14 +141,7 @@ async fn changing_an_input_clears_a_dependent_field_declared_clear(
         value(&rec, "verdict")
     );
 
-    let changed = upsert(
-        cat.as_ref(),
-        &a,
-        "invoice",
-        "i1",
-        json!({"amount": "120.00"}),
-    )
-    .await?;
+    let changed = i1(cat.as_ref(), &a, json!({"amount": "120.00"})).await?;
     let rec = read(cat.as_ref(), &own, "invoice", "i1").await?;
     ensure!(
         value(&rec, "verdict").is_none(),
@@ -206,30 +173,9 @@ async fn changing_an_input_keeps_a_dependent_field_declared_keep_and_shows_it_ol
     let a = field_writer(store.as_ref(), "importer", "invoice", &["amount"]);
     let b = field_writer(store.as_ref(), "reviewer", "invoice", &["verdict"]);
 
-    upsert(
-        cat.as_ref(),
-        &a,
-        "invoice",
-        "i1",
-        json!({"amount": "100.00"}),
-    )
-    .await?;
-    upsert(
-        cat.as_ref(),
-        &b,
-        "invoice",
-        "i1",
-        json!({"verdict": "approved"}),
-    )
-    .await?;
-    upsert(
-        cat.as_ref(),
-        &a,
-        "invoice",
-        "i1",
-        json!({"amount": "120.00"}),
-    )
-    .await?;
+    i1(cat.as_ref(), &a, json!({"amount": "100.00"})).await?;
+    i1(cat.as_ref(), &b, json!({"verdict": "approved"})).await?;
+    i1(cat.as_ref(), &a, json!({"amount": "120.00"})).await?;
 
     let rec = read(cat.as_ref(), &owner(store.as_ref()), "invoice", "i1").await?;
     ensure!(
@@ -271,26 +217,18 @@ async fn a_patch_with_a_field_the_principal_may_not_write_is_refused_whole(
     let a = field_writer(store.as_ref(), "importer", "invoice", &["amount"]);
     let own = owner(store.as_ref());
 
-    upsert(
+    i1(cat.as_ref(), &a, json!({"amount": "100.00"})).await?;
+    let head = store.head().await.must("reading the head")?;
+
+    let err = try_upsert(
         cat.as_ref(),
         &a,
         "invoice",
         "i1",
-        json!({"amount": "100.00"}),
+        json!({"amount": "999.00", "verdict": "approved"}),
     )
-    .await?;
-    let head = store.head().await.must("reading the head")?;
-
-    let err = cat
-        .upsert(
-            &a,
-            &TypeName::from("invoice"),
-            &"i1".into(),
-            crate::conformance::fixture::patch(json!({"amount": "999.00", "verdict": "approved"})),
-            Default::default(),
-        )
-        .await
-        .must_fail("the importer writing `amount` and the reviewer's `verdict` together")?;
+    .await
+    .must_fail("the importer writing `amount` and the reviewer's `verdict` together")?;
     ensure!(
         matches!(refused_on(&err), Some(("verdict", Refusal::NotGranted))),
         "a patch carrying `verdict`, which the importer holds no write grant for, must be \
@@ -370,16 +308,8 @@ async fn a_patch_with_an_undeclared_field_is_refused_whole(
 
     for key in ["m1", "m2"] {
         let before = store.head().await.must("reading the head")?;
-        let err = cat
-            .upsert(
-                own,
-                &TypeName::from("memo"),
-                &key.into(),
-                crate::conformance::fixture::patch(
-                    json!({"text": "changed", "remark": "call before dunning"}),
-                ),
-                Default::default(),
-            )
+        let remark = json!({"text": "changed", "remark": "call before dunning"});
+        let err = try_upsert(cat.as_ref(), own, "memo", key, remark)
             .await
             .must_fail(&format!(
                 "writing the undeclared field `remark` to `memo` `{key}`"
