@@ -85,6 +85,16 @@ impl ProjectionView for MemView {
         }))
     }
 
+    fn count(&self, ty: &TypeName, scan: &Scan) -> Result<u64> {
+        Ok(self.read(|p, at| {
+            let count: std::result::Result<_, std::convert::Infallible> =
+                engines::count_in_key_order(p.type_at(ty, at), scan, |after, n| {
+                    Ok(p.records_after(ty, at, after, n))
+                });
+            count.unwrap_or_else(|never| match never {})
+        }))
+    }
+
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
         Ok(self.read(|p, at| {
             let decl = p.type_at(ty, at);

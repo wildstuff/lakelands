@@ -122,6 +122,24 @@ impl Read<'_> {
         )
     }
 
+    /// How many records of a type are in force at the view's position, the
+    /// retired and the restricted ones only when asked, their flags read
+    /// from the stored state.
+    fn count_in_force(&self, ty: &TypeName, retired: bool, restricted: bool) -> Result<u64> {
+        let counted: Vec<i64> = column(
+            self.conn,
+            &format!(
+                "SELECT COUNT(*) FROM records WHERE ty = ?1 AND {} \
+                 AND (?3 OR json_extract(state, '$.retired') = 0) \
+                 AND (?4 OR json_extract(state, '$.restricted') = 0)",
+                holds_at(2)
+            ),
+            params![ty.as_str(), self.at(), retired, restricted],
+            Ok,
+        )?;
+        Ok(counted.first().map_or(0, |n| n.unsigned_abs()))
+    }
+
     /// The fields of `ty` whose order index answers this read: none but at
     /// the head, and only while the index is kept through it.
     fn sorted_fields(&self, ty: &TypeName, decl: Option<&TypeDecl>) -> Result<Vec<FieldName>> {
@@ -308,6 +326,20 @@ impl ProjectionView for SqliteView<'_> {
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
         self.read(Vec::new(), |r| {
             r.records_by_key(ty, keys.iter().map(|k| k.to_string()).collect())
+        })
+    }
+
+    fn count(&self, ty: &TypeName, scan: &Scan) -> Result<u64> {
+        self.read(0, |r| {
+            // At the head, a count that selects by the flags alone is the
+            // projection's `COUNT(*)`; any other is counted batch by batch.
+            if r.head && scan.filter.is_none() && scan.equal.is_empty() && scan.valid_at.is_none() {
+                return r.count_in_force(ty, scan.retired, scan.restricted);
+            }
+            let decl = r.type_decl(ty)?;
+            engines::count_in_key_order(decl.as_ref(), scan, |after, n| {
+                r.records_after(ty, after, n)
+            })
         })
     }
 

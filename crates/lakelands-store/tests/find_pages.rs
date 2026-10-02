@@ -65,6 +65,9 @@ impl ProjectionView for CountingView<'_> {
         self.handed.most.fetch_max(rows.len(), Ordering::SeqCst);
         Ok(rows)
     }
+    fn count(&self, ty: &TypeName, scan: &Scan) -> Result<u64> {
+        self.inner.count(ty, scan)
+    }
     fn edges(
         &self,
         ty: &TypeName,

@@ -269,6 +269,28 @@ pub fn scan_in_key_order<E>(
     }
 }
 
+/// How many states [`scan`] would select over every state, its order,
+/// keyset position and limit ignored, read as [`scan_in_key_order`] reads
+/// them: in key-ordered batches, each admitted or not and dropped, so a
+/// count holds one batch whatever the type holds.
+pub fn count_in_key_order<E>(
+    decl: Option<&TypeDecl>,
+    scan: &Scan,
+    mut read: impl FnMut(Option<&str>, u32) -> Result<Vec<StoredRecord>, E>,
+) -> Result<u64, E> {
+    const BATCH: u32 = 1024;
+    let (mut n, mut after) = (0, None::<String>);
+    loop {
+        let rows = read(after.as_deref(), BATCH)?;
+        count_read(rows.len());
+        n += rows.iter().filter(|r| admits(decl, r, scan)).count() as u64;
+        match rows.last() {
+            Some(last) if rows.len() == BATCH as usize => after = Some(last.key.to_string()),
+            _ => return Ok(n),
+        }
+    }
+}
+
 /// A scan over the states of one type's records at one position, `decl`
 /// the type's declaration in force there: the flags, `valid_at` and the
 /// filter select; the sort keys order; the keyset position continues;
