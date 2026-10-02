@@ -452,14 +452,7 @@ async fn a_feed_filtered_by_key_answers_that_records_events_only(
         .await
         .must("lifting the hold")?;
     for key in ["INV-2", "INV-1"] {
-        cat.retire(
-            own,
-            &invoice,
-            &key.into(),
-            lakelands_api::WriteOpts::default(),
-        )
-        .await
-        .must(&format!("retiring {key}"))?;
+        l.retire(invoice.as_str(), key).await?;
     }
 
     let log = log_events(store.as_ref()).await?;

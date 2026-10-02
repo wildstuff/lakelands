@@ -14,9 +14,12 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
-use lakelands_api::ontology::{FieldDecl, Measure, StorageKind, TypeDecl, ViewDecl};
+use lakelands_api::ontology::{
+    Authority, EmbedDecl, FieldDecl, Measure, StorageKind, TypeDecl, ViewDecl,
+};
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{Depth, Pattern, Projection, Start, Step, Walk};
+use lakelands_api::read::{AggFunc, AggMeasure, Direction, Order, OrderBy};
 use lakelands_api::write::Declaration;
 use lakelands_api::{
     Access, Catalog, Committed, Error, FieldName, Find, Found, Get, Grants, LakeStore, Outcome,
@@ -186,6 +189,13 @@ impl Lake {
         upsert(self.cat.as_ref(), &self.own, ty, key, fields).await
     }
 
+    /// Retires one record as the owner.
+    pub async fn retire(&self, ty: &str, key: &str) -> Result<Outcome, Failure> {
+        let (t, k) = (TypeName::from(ty), RecordKey::from(key));
+        let retired = self.cat.retire(&self.own, &t, &k, WriteOpts::default());
+        retired.await.must(&format!("retiring `{ty}` `{key}`"))
+    }
+
     /// Reads one record at the head as the owner, with provenance.
     pub async fn read(&self, ty: &str, key: &str) -> Result<Record, Failure> {
         read(self.cat.as_ref(), &self.own, ty, key).await
@@ -221,29 +231,88 @@ pub fn principal(
     }
 }
 
-/// An agent that reads everything and may write only `fields` of `ty`.
-pub fn field_writer(store: &dyn LakeStore, id: &str, ty: &str, fields: &[&str]) -> Principal {
+/// An agent `id` that reads everything but holds `fields` of `ty`, each
+/// with its own access.
+pub fn field_access(
+    store: &dyn LakeStore,
+    id: &str,
+    ty: &str,
+    fields: &[(&str, Access)],
+) -> Principal {
     let mut grants = Grants {
         default: Access::Read,
         ..Grants::default()
     };
+    let fields = fields.iter().map(|(f, a)| (FieldName::from(*f), *a));
     grants.types.insert(
         TypeName::from(ty),
         TypeGrants {
             default: None,
-            fields: fields
-                .iter()
-                .map(|f| (FieldName::from(*f), Access::Write))
-                .collect(),
+            fields: fields.collect(),
         },
     );
     principal(store, PrincipalKind::Agent, id, grants)
+}
+
+/// An agent that reads everything and may write only `fields` of `ty`.
+pub fn field_writer(store: &dyn LakeStore, id: &str, ty: &str, fields: &[&str]) -> Principal {
+    let fields: Vec<_> = fields.iter().map(|f| (*f, Access::Write)).collect();
+    field_access(store, id, ty, &fields)
 }
 
 /// A field of a bare storage kind, authored, optional, with every other
 /// member at its default.
 pub fn field(name: &str, kind: StorageKind) -> FieldDecl {
     FieldDecl::of(name, kind)
+}
+
+/// A field only a source writes.
+pub fn sourced(name: &str, kind: StorageKind) -> FieldDecl {
+    FieldDecl {
+        authority: Authority::Source,
+        ..field(name, kind)
+    }
+}
+
+/// A field derived by `expr` from the fields `deps`.
+pub fn derived(name: &str, kind: StorageKind, expr: &str, deps: &[&str]) -> FieldDecl {
+    FieldDecl {
+        authority: Authority::Derived,
+        derived: Some(expr.into()),
+        depends_on: deps.iter().map(|d| FieldName::from(*d)).collect(),
+        ..field(name, kind)
+    }
+}
+
+/// A field computed by the function `function` from the fields `deps`.
+pub fn computed_by(name: &str, kind: StorageKind, function: &str, deps: &[&str]) -> FieldDecl {
+    FieldDecl {
+        authority: Authority::Derived,
+        function: Some(function.into()),
+        depends_on: deps.iter().map(|d| FieldName::from(*d)).collect(),
+        ..field(name, kind)
+    }
+}
+
+/// A vector field of `dims` dimensions.
+pub fn vector(name: &str, dims: u32) -> FieldDecl {
+    let mut f = field(name, StorageKind::Vector);
+    f.ty.dimensions = Some(dims);
+    f
+}
+
+/// A vector field of `dims` dimensions, the embedding by `model` of the
+/// fields `from`.
+pub fn embedding(name: &str, dims: u32, from: &[&str], model: &str) -> FieldDecl {
+    let from = from.iter().map(|f| FieldName::from(*f)).collect();
+    FieldDecl {
+        authority: Authority::Derived,
+        embed: Some(EmbedDecl {
+            from,
+            model: model.into(),
+        }),
+        ..vector(name, dims)
+    }
 }
 
 /// A type whose records are keyed by the writer, with these fields.
@@ -297,6 +366,32 @@ pub fn count_view(name: &str, source: &str, by: &str) -> TypeDecl {
     view_of(name, source, &[by], fields, &[("n", "count()")])
 }
 
+/// A find of the records `filter` holds for.
+pub fn find_where(filter: &str) -> Find {
+    Find {
+        filter: Some(filter.into()),
+        ..Find::default()
+    }
+}
+
+/// One sort key: `field`'s `by`, in `dir`.
+pub fn order(field: &str, by: OrderBy, dir: Direction) -> Order {
+    Order {
+        field: FieldName::from(field),
+        by,
+        dir,
+    }
+}
+
+/// An aggregate's measure `name`: `func` over `field`, or over the records.
+pub fn agg(name: &str, func: AggFunc, field: Option<&str>) -> AggMeasure {
+    AggMeasure {
+        name: FieldName::from(name),
+        func,
+        field: field.map(FieldName::from),
+    }
+}
+
 /// One hop over `relation`, in the direction `walk`.
 pub fn step(relation: &str, walk: Walk) -> Step {
     Step {
@@ -335,37 +430,42 @@ pub async fn declare(cat: &dyn Catalog, who: &Principal, ty: TypeDecl) -> Result
     cat.declare(who, Declaration::Type(ty)).await.must(&what)
 }
 
-/// Every event of the lake's log, oldest first (at most ten thousand).
+/// The lake's log, oldest first: up to 10 000 events.
 pub async fn log_events(
     store: &dyn LakeStore,
 ) -> Result<Vec<lakelands_api::event::Event>, Failure> {
-    Ok(store
-        .feed()
-        .poll(
-            Position::GENESIS,
-            &lakelands_api::seam::FeedFilter::default(),
-            10_000,
-        )
-        .await
-        .must("reading the log")?
-        .events)
+    events_from(store, Position::GENESIS).await
+}
+
+/// The lake's events from `from` on, oldest first: up to 10 000.
+pub async fn events_from(
+    store: &dyn LakeStore,
+    from: Position,
+) -> Result<Vec<lakelands_api::event::Event>, Failure> {
+    let all = lakelands_api::seam::FeedFilter::default();
+    let polled = store.feed().poll(from, &all, 10_000).await;
+    Ok(polled.must(&format!("reading the log from {from}"))?.events)
 }
 
 /// The `output_recorded` events of the lake's log, oldest first.
 pub async fn recorded_outputs(
     store: &dyn LakeStore,
 ) -> Result<Vec<lakelands_api::event::Event>, Failure> {
-    Ok(store
-        .feed()
-        .poll(
-            Position::GENESIS,
-            &lakelands_api::seam::FeedFilter {
-                kinds: vec!["output_recorded".into()],
-                ..Default::default()
-            },
-            u32::MAX,
-        )
-        .await
+    outputs_from(store, Position::GENESIS).await
+}
+
+/// The `output_recorded` events of the lake's log from `from` on, oldest
+/// first.
+pub async fn outputs_from(
+    store: &dyn LakeStore,
+    from: Position,
+) -> Result<Vec<lakelands_api::event::Event>, Failure> {
+    let outputs = lakelands_api::seam::FeedFilter {
+        kinds: vec!["output_recorded".into()],
+        ..Default::default()
+    };
+    let polled = store.feed().poll(from, &outputs, u32::MAX).await;
+    Ok(polled
         .must("reading the recorded outputs from the feed")?
         .events)
 }

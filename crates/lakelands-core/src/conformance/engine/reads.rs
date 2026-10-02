@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 
 use super::projection::{fold, record, view};
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Must, reason};
+use crate::conformance::fixture::{Must, order, reason};
 
 engine_check!(
     /// Mixed kinds sort the same on every engine.
@@ -168,11 +168,7 @@ fn scan_all() -> Scan {
 }
 
 fn by(field: &str, dir: Direction) -> Order {
-    Order {
-        field: field.into(),
-        by: OrderBy::Value,
-        dir,
-    }
+    order(field, OrderBy::Value, dir)
 }
 
 fn declare(json: Value) -> Declaration {
@@ -1329,11 +1325,7 @@ fn walk_field_orders(
     when: &str,
 ) -> Result<(), Failure> {
     let ty = TypeName::from("t");
-    let by = |field: &str, dir| Order {
-        field: field.into(),
-        by: OrderBy::Value,
-        dir,
-    };
+    let by = |field: &str, dir| order(field, OrderBy::Value, dir);
     let filter = crate::expr::parse("w != 'b'").expect("the check's filter parses");
     let Declaration::Type(decl) = decl else {
         unreachable!("the check declares types")
@@ -1445,11 +1437,7 @@ fn a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it
     // the first page, or the one after the first's last row.
     let page = |dir, continued: bool| -> Result<(u64, bool), Failure> {
         let mut scan = Scan {
-            order_by: vec![Order {
-                field: "v".into(),
-                by: OrderBy::Value,
-                dir,
-            }],
+            order_by: vec![order("v", OrderBy::Value, dir)],
             limit: LIMIT,
             ..Scan::default()
         };

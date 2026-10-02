@@ -23,8 +23,9 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all, all_found, count_view, dec, decimal, doors, field, measure, partner_totals,
-    pattern, reason, source_record, step, type_decl, upsert, view_of, windows_reach_head,
+    Lake, Must, all, all_found, count_view, dec, decimal, doors, field, field_access, measure,
+    partner_totals, pattern, reason, source_record, step, type_decl, upsert, view_of,
+    windows_reach_head,
 };
 
 check!(
@@ -249,7 +250,7 @@ async fn a_view_drops_a_group_whose_last_member_is_retired(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
+    let Lake { own, .. } = &l;
     l.declare(invoices(Authority::Authored)).await?;
     l.declare(partner_totals("partner_totals", StorageKind::Decimal))
         .await?;
@@ -259,9 +260,7 @@ async fn a_view_drops_a_group_whose_last_member_is_retired(
 
     let invoice = TypeName::from("invoice");
     for nr in ["i2", "i1"] {
-        cat.retire(own, &invoice, &nr.into(), Default::default())
-            .await
-            .must(&format!("retiring invoice `{nr}`"))?;
+        l.retire(invoice.as_str(), nr).await?;
     }
 
     let got = view_totals(store.as_ref(), own, "partner_totals").await?;
@@ -595,14 +594,8 @@ async fn a_search_on_a_view_is_refused_naming_it(store: Arc<dyn LakeStore>) -> R
     write_invoice(store.as_ref(), own, "i1", "p1", "10.00").await?;
     let near = || (FieldName::from("total"), vec![1.0, 0.0, 0.0]);
     for mode in [
-        SearchMode::Lexical {
-            text: "p1".into(),
-            fields: None,
-        },
-        SearchMode::Vector {
-            field: near().0,
-            vector: near().1,
-        },
+        SearchMode::lexical("p1"),
+        SearchMode::vector(near().0, near().1),
         SearchMode::Hybrid {
             text: "p1".into(),
             fields: None,
@@ -727,8 +720,7 @@ async fn a_view_declares_exactly_the_fields_it_computes(
 async fn a_view_whose_measure_reads_another_is_described_to_its_readers(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    use lakelands_api::principal::TypeGrants;
-    use lakelands_api::{Access, Grants, PrincipalKind};
+    use lakelands_api::Access;
     let l = Lake::of(store.as_ref());
     let Lake { cat, .. } = &l;
     l.declare(invoices(Authority::Authored)).await?;
@@ -754,24 +746,7 @@ async fn a_view_whose_measure_reads_another_is_described_to_its_readers(
     ))
     .await?;
     let reader = |id: &str, amount: Access| {
-        let mut types = BTreeMap::new();
-        types.insert(
-            TypeName::from("invoice"),
-            TypeGrants {
-                default: None,
-                fields: [(FieldName::from("amount"), amount)].into(),
-            },
-        );
-        crate::conformance::fixture::principal(
-            store.as_ref(),
-            PrincipalKind::Agent,
-            id,
-            Grants {
-                default: Access::Read,
-                types,
-                ..Grants::default()
-            },
-        )
+        field_access(store.as_ref(), id, "invoice", &[("amount", amount)])
     };
     for (who, sees) in [
         (reader("reader", Access::Read), true),

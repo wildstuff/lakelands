@@ -4,13 +4,13 @@
 use std::sync::Arc;
 
 use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, ValueTypeDecl};
-use lakelands_api::read::{AggFunc, AggMeasure, Aggregate};
+use lakelands_api::read::{AggFunc, Aggregate};
 use lakelands_api::write::Declaration;
 use lakelands_api::{Find, Found, LakeStore, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, dec, decimal, field, type_decl};
+use crate::conformance::fixture::{Lake, Must, agg, dec, decimal, field, type_decl};
 
 check!(
     /// Nothing counts as zero.
@@ -47,16 +47,8 @@ async fn an_aggregate_over_no_records_answers_zero(
     let find = Find {
         aggregate: Some(Aggregate {
             measures: vec![
-                AggMeasure {
-                    name: "n".into(),
-                    func: AggFunc::Count,
-                    field: None,
-                },
-                AggMeasure {
-                    name: "total".into(),
-                    func: AggFunc::Sum,
-                    field: Some("amount".into()),
-                },
+                agg("n", AggFunc::Count, None),
+                agg("total", AggFunc::Sum, Some("amount")),
             ],
             group_by: Vec::new(),
         }),

@@ -17,8 +17,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, doors, field, field_writer, head_unmoved, owner, patch, principal, read, reason,
-    type_decl, value,
+    Lake, Must, doors, field, field_writer, head_unmoved, outputs_from, owner, patch, principal,
+    read, reason, type_decl, value,
 };
 
 check!(
@@ -488,19 +488,7 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
          outcome carries {output} after {} runs",
         executed(key)
     );
-    let recorded = store
-        .feed()
-        .poll(
-            *position,
-            &lakelands_api::seam::FeedFilter {
-                kinds: vec!["output_recorded".into()],
-                ..Default::default()
-            },
-            u32::MAX,
-        )
-        .await
-        .must("reading the recorded outputs")?
-        .events;
+    let recorded = outputs_from(store.as_ref(), *position).await?;
     ensure!(
         recorded.iter().any(|e| e.cause == Some(*position)
             && matches!(&e.body, lakelands_api::event::EventBody::OutputRecorded { output: o, .. } if o == output)),
@@ -532,19 +520,7 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
          position with {{\"error\": …}} as its output; it answered {failed:?}"
     );
     let failed_at = failed.position();
-    let recorded = store
-        .feed()
-        .poll(
-            failed_at,
-            &lakelands_api::seam::FeedFilter {
-                kinds: vec!["output_recorded".into()],
-                ..Default::default()
-            },
-            u32::MAX,
-        )
-        .await
-        .must("reading the recorded outputs after the failed call")?
-        .events;
+    let recorded = outputs_from(store.as_ref(), failed_at).await?;
     ensure!(
         recorded.iter().any(|e| e.cause == Some(failed_at)
             && matches!(&e.body, lakelands_api::event::EventBody::OutputRecorded { output: o, .. }

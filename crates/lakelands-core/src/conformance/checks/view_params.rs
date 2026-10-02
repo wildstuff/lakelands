@@ -17,7 +17,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, field, log_events, pattern, reason, type_decl, view_of,
+    Lake, Must, field, find_where, log_events, pattern, reason, type_decl, view_of,
 };
 
 check!(
@@ -254,10 +254,7 @@ async fn param_outside_a_views_where_and_measures_is_refused(
         .find(
             &l.own,
             &"payment".into(),
-            Find {
-                filter: Some("date <= param('anchor')".into()),
-                ..Find::default()
-            },
+            find_where("date <= param('anchor')"),
         )
         .await;
     ensure!(

@@ -213,9 +213,7 @@ async fn retiring_a_record_does_not_erase_its_history(
     let Lake { cat, own } = &l;
     let counter = TypeName::from("counter");
     let written = l.upsert("counter", "k", json!({"n": 7})).await?;
-    cat.retire(own, &counter, &"k".into(), Default::default())
-        .await
-        .must("retiring `k`")?;
+    l.retire(counter.as_str(), "k").await?;
 
     let live = cat.get(own, &counter, get_at("k", None)).await;
     ensure!(

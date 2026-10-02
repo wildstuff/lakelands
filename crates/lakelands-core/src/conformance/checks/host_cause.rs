@@ -277,7 +277,7 @@ async fn the_reactive_ceiling_holds_on_every_door_that_writes(
         type_decl("job", vec![field("status", StorageKind::Text)]),
         reading,
     ] {
-        crate::conformance::fixture::declare(cat.as_ref(), own, t).await?;
+        l.declare(t).await?;
     }
     let proposal = |key: &str| ProposedWrite::Upsert {
         ty: "job".into(),

@@ -652,12 +652,9 @@ async fn writes_made_while_a_rule_runs_land_before_or_after_its_append(
     .await?;
     let keys: Vec<String> = (0..200).map(|n| format!("t{n}")).collect();
     for k in &keys {
-        crate::conformance::fixture::upsert(cat.as_ref(), own, "task", k, json!({"state": "open"}))
-            .await?;
+        l.upsert("task", k, json!({"state": "open"})).await?;
     }
-    crate::conformance::fixture::upsert(
-        cat.as_ref(),
-        own,
+    l.upsert(
         lakelands_api::seam::AGING_RULE_TYPE,
         "go_stale",
         json!({"on": "task", "field": "state", "from": "open", "to": "stale", "when": "true"}),

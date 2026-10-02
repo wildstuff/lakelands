@@ -10,12 +10,12 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use lakelands_api::ontology::StorageKind;
-use lakelands_api::read::{Direction, Order, OrderBy};
-use lakelands_api::{FieldName, Find, LakeStore, Record};
+use lakelands_api::read::{Direction, OrderBy};
+use lakelands_api::{Find, LakeStore, Record};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, declare, doors, field, owner, type_decl, value};
+use crate::conformance::fixture::{Lake, declare, doors, field, order, owner, type_decl, value};
 
 check!(
     /// Walking the cursor visits each record once.
@@ -58,11 +58,7 @@ async fn paging_through_find_visits_every_record_exactly_once(
 
     for order_by in [
         Vec::new(),
-        vec![Order {
-            field: FieldName::from("n"),
-            by: OrderBy::Value,
-            dir: Direction::Desc,
-        }],
+        vec![order("n", OrderBy::Value, Direction::Desc)],
     ] {
         let find = Find {
             order_by: order_by.clone(),
@@ -101,11 +97,7 @@ async fn records_without_the_sort_field_are_listed_last_in_either_direction(
         (Direction::Asc, ["k1", "k3"]),
         (Direction::Desc, ["k3", "k1"]),
     ] {
-        let order = vec![Order {
-            field: FieldName::from("n"),
-            by: OrderBy::Value,
-            dir,
-        }];
+        let order = vec![order("n", OrderBy::Value, dir)];
         let whole = Find {
             order_by: order.clone(),
             limit: Some(50),

@@ -5,20 +5,18 @@
 //! calories of an entry. The view `energy_balance` sums the food by day,
 //! merges the workouts summed by their date, and nets the two.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use lakelands_api::ontology::{StorageKind, TypeDecl, ViewDecl, ViewParam, ViewSource};
-use lakelands_api::principal::TypeGrants;
 use lakelands_api::read::Find;
 use lakelands_api::write::Declaration;
-use lakelands_api::{
-    Access, Error, FieldName, Grants, LakeStore, Params, PrincipalKind, Refusal, Value,
-};
+use lakelands_api::{Access, Error, FieldName, LakeStore, Params, Refusal, Value};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, field, log_events, measure, principal, reason, type_decl};
+use crate::conformance::fixture::{
+    Lake, field, field_access, log_events, measure, reason, type_decl,
+};
 
 check!(
     /// Sources meet on their key.
@@ -357,43 +355,19 @@ async fn a_merged_sources_fields_are_probed_as_a_read_of_it(
     let l = lake(store.as_ref()).await?;
     l.declare(energy_balance("energy_balance", Vec::new(), None, None))
         .await?;
-    let mut types = BTreeMap::new();
-    types.insert(
-        "workout_log".into(),
-        TypeGrants {
-            default: None,
-            fields: [("kcal".into(), Access::None)].into(),
-        },
-    );
-    let blind = principal(
+    let blind = field_access(
         store.as_ref(),
-        PrincipalKind::Agent,
         "blind",
-        Grants {
-            default: Access::Read,
-            types,
-            ..Grants::default()
-        },
+        "workout_log",
+        &[("kcal", Access::None)],
     );
     // describe answers the definition only to a principal who reads what
     // every source's measures aggregate.
-    let mut types = BTreeMap::new();
-    types.insert(
-        "workout_log".into(),
-        TypeGrants {
-            default: None,
-            fields: [("kcal".into(), Access::Read)].into(),
-        },
-    );
-    let reader = principal(
+    let reader = field_access(
         store.as_ref(),
-        PrincipalKind::Agent,
         "reader",
-        Grants {
-            default: Access::Read,
-            types,
-            ..Grants::default()
-        },
+        "workout_log",
+        &[("kcal", Access::Read)],
     );
     for (who, sees) in [(&reader, true), (&blind, false)] {
         let d = l

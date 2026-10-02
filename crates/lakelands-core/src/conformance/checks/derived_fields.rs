@@ -12,12 +12,13 @@
 use std::sync::Arc;
 
 use lakelands_api::ontology::{Authority, FieldDecl, StorageKind};
-use lakelands_api::{Error, FieldName, LakeStore, Origin, Refusal, TypeName};
+use lakelands_api::{Error, LakeStore, Origin, Refusal, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, dec, decimal, field, get_at, head_unmoved, patch, refused_on, type_decl, value,
+    Lake, Must, computed_by, dec, decimal, derived, field, get_at, head_unmoved, patch, refused_on,
+    type_decl, value,
 };
 
 check!(
@@ -39,11 +40,7 @@ check!(
 );
 
 fn gross() -> FieldDecl {
-    let mut gross = field("gross", StorageKind::Decimal);
-    gross.authority = Authority::Derived;
-    gross.derived = Some("amount * 1.19".into());
-    gross.depends_on = vec![FieldName::from("amount")];
-    gross
+    derived("gross", StorageKind::Decimal, "amount * 1.19", &["amount"])
 }
 
 async fn a_derived_field_is_computed_by_the_fold_on_every_write(
@@ -195,18 +192,13 @@ async fn a_derived_field_accepts_no_value_from_a_source_or_a_verb_either(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     use crate::conformance::fixture::{head_unmoved, patch, source_record};
-    use lakelands_api::ontology::FieldDecl;
+
     use lakelands_api::write::Declaration;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let mut net = field("net", StorageKind::Decimal);
     net.authority = Authority::Shared;
-    let gross = FieldDecl {
-        authority: Authority::Derived,
-        derived: Some("net * 2".into()),
-        depends_on: vec!["net".into()],
-        ..field("gross", StorageKind::Decimal)
-    };
+    let gross = derived("gross", StorageKind::Decimal, "net * 2", &["net"]);
     l.declare(type_decl("bill", vec![net, gross])).await?;
     let verb: Declaration = serde_json::from_value(serde_json::json!({
         "declare": "verb", "name": "inflate", "on": "bill", "risk": "low",
@@ -265,7 +257,6 @@ async fn a_derived_field_accepts_no_value_from_a_source_or_a_verb_either(
 async fn a_derived_field_reading_a_function_is_recomputed_when_the_function_changes(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    use lakelands_api::ontology::FieldDecl;
     use lakelands_api::write::Declaration;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
@@ -280,12 +271,7 @@ async fn a_derived_field_reading_a_function_is_recomputed_when_the_function_chan
     cat.declare(own, function("net * 2")?)
         .await
         .must("declaring the function `scaled` as net * 2")?;
-    let scaled = FieldDecl {
-        authority: Authority::Derived,
-        function: Some("scaled".into()),
-        depends_on: vec!["net".into()],
-        ..field("scaled", StorageKind::Decimal)
-    };
+    let scaled = computed_by("scaled", StorageKind::Decimal, "scaled", &["net"]);
     l.declare(type_decl(
         "bill",
         vec![field("net", StorageKind::Decimal), scaled],

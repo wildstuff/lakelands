@@ -66,7 +66,6 @@ check!(
 /// Answers the position before the last link.
 async fn lake(store: &dyn LakeStore) -> Result<Position, Failure> {
     let l = Lake::of(store);
-    let Lake { cat, own } = &l;
     l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))
         .await?;
     let mut invoice: TypeDecl = type_decl(
@@ -112,9 +111,7 @@ async fn lake(store: &dyn LakeStore) -> Result<Position, Failure> {
         let fields = p.map_or_else(|| json!({"note": i}), |p| json!({"note": i, "partner": p}));
         l.upsert("invoice", i, fields).await?;
     }
-    cat.retire(own, &"partner".into(), &"p3".into(), WriteOpts::default())
-        .await
-        .must("retiring p3")?;
+    l.retire("partner", "p3").await?;
     for (from, to) in [("i2", "p1"), ("i4", "p1")] {
         link(&l, from, to).await?;
     }

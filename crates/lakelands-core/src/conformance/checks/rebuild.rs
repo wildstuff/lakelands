@@ -10,14 +10,14 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::{Authority, StorageKind};
-use lakelands_api::{FieldName, Find, LakeStore, Position, Principal, ReadAt, Record, TypeName};
+use lakelands_api::ontology::StorageKind;
+use lakelands_api::{Find, LakeStore, Position, Principal, ReadAt, Record, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all_found, declare, doors, field, get_at, owner, pattern, step, type_decl, upsert,
-    view_of,
+    Lake, Must, all_found, derived, doors, field, find_where, get_at, owner, pattern, step,
+    type_decl, vector, view_of,
 };
 
 check!(
@@ -72,12 +72,9 @@ async fn a_rebuilt_projection_answers_every_read_as_the_live_one_did(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
+    let Lake { own, .. } = &l;
 
-    let mut gross = field("gross", StorageKind::Decimal);
-    gross.authority = Authority::Derived;
-    gross.derived = Some("amount * 1.19".into());
-    gross.depends_on = vec![FieldName::from("amount")];
+    let gross = derived("gross", StorageKind::Decimal, "amount * 1.19", &["amount"]);
     let invoice = type_decl(
         "invoice",
         vec![
@@ -111,15 +108,7 @@ async fn a_rebuilt_projection_answers_every_read_as_the_live_one_did(
     ] {
         positions.push(l.upsert("invoice", nr, fields).await?.position());
     }
-    let retired = cat
-        .retire(
-            own,
-            &TypeName::from("invoice"),
-            &"i2".into(),
-            Default::default(),
-        )
-        .await
-        .must("retiring `i2`")?;
+    let retired = l.retire("invoice", "i2").await?;
     positions.push(retired.position());
 
     // A type migration that converts every record, and a re-key that moves
@@ -258,17 +247,10 @@ async fn after_a_rebuild_every_index_answers_as_before(
 ) -> Result<(), Failure> {
     use lakelands_api::ontology::{FieldType, RelationDecl};
     use lakelands_api::query::{Projection, Search, SearchMode, Walk};
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
     let mut text = field("text", StorageKind::Text);
     text.searchable = true;
-    let embedding = lakelands_api::ontology::FieldDecl {
-        ty: FieldType {
-            dimensions: Some(2),
-            ..FieldType::kind(StorageKind::Vector)
-        },
-        ..field("embedding", StorageKind::Text)
-    };
+    let embedding = vector("embedding", 2);
     let parent = lakelands_api::ontology::FieldDecl {
         ty: FieldType {
             target: Some("note".into()),
@@ -284,18 +266,14 @@ async fn after_a_rebuild_every_index_answers_as_before(
         via: Some("parent".into()),
         ..Default::default()
     }];
-    declare(cat.as_ref(), &own, ty).await?;
-    upsert(
-        cat.as_ref(),
-        &own,
+    l.declare(ty).await?;
+    l.upsert(
         "note",
         "root",
         json!({"text": "harbour plans", "embedding": [1.0, 0.0]}),
     )
     .await?;
-    upsert(
-        cat.as_ref(),
-        &own,
+    l.upsert(
         "note",
         "leaf",
         json!({"text": "crane rental", "embedding": [0.0, 1.0], "parent": "root"}),
@@ -309,10 +287,7 @@ async fn after_a_rebuild_every_index_answers_as_before(
             cat.as_ref(),
             &own,
             "note",
-            Find {
-                filter: Some("text = 'crane rental'".into()),
-                ..Find::default()
-            },
+            find_where("text = 'crane rental'"),
         )
         .await?;
         let search = |mode: SearchMode| Search {
@@ -325,23 +300,14 @@ async fn after_a_rebuild_every_index_answers_as_before(
             at: ReadAt::default(),
         };
         let lexical = cat
-            .search(
-                &own,
-                search(SearchMode::Lexical {
-                    text: "harbour".into(),
-                    fields: None,
-                }),
-            )
+            .search(&own, search(SearchMode::lexical("harbour")))
             .await
             .must("searching \"harbour\"")?
             .data;
         let vector = cat
             .search(
                 &own,
-                search(SearchMode::Vector {
-                    field: "embedding".into(),
-                    vector: vec![0.0, 1.0],
-                }),
+                search(SearchMode::vector("embedding", vec![0.0, 1.0])),
             )
             .await
             .must("searching near (0, 1)")?
@@ -407,15 +373,8 @@ check!(
 async fn a_number_and_a_vector_read_back_in_their_one_json_form_before_and_after_a_rebuild(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    use lakelands_api::ontology::{FieldDecl, FieldType};
     let l = Lake::of(store.as_ref());
-    let v = FieldDecl {
-        ty: FieldType {
-            dimensions: Some(3),
-            ..FieldType::kind(StorageKind::Vector)
-        },
-        ..field("v", StorageKind::Text)
-    };
+    let v = vector("v", 3);
     l.declare(type_decl(
         "sample",
         vec![
