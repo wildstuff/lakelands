@@ -54,7 +54,13 @@ when accepted would be a promise the store cannot keep.
 
 Accepting a proposal applies it under the proposer's grants as they were
 when it was proposed: the write was checked whole then, and the reviewer
-applies exactly what was checked. At acceptance the store checks again
+applies exactly what was checked. A call is proposed only if it could
+run when it is proposed. A call that becomes a proposal, through `call`
+at its declared risk or through `propose`, is checked as if it ran now:
+its record's version against the expected one, then its `requires` on
+that record. A stale version is a conflict and a `requires` that does
+not hold is a precondition, and neither is recorded as a proposal
+(lakelands#338). At acceptance the store checks again
 only what can have moved since — the type's shape and the record's
 version — and records the write with the proposer as its writer, caused
 by the acceptance. A verb's write, run at once or on acceptance, fires

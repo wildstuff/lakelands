@@ -13,6 +13,7 @@ use lakelands_api::{Error, LakeStore, Outcome, Position, ProposalId, Refusal, Ve
 use serde_json::json;
 
 use crate::conformance::Failure;
+use crate::conformance::backing::EXECUTOR;
 use crate::conformance::fixture::{
     Lake, Must, doors, field, field_writer, head_unmoved, outputs_from, owner, patch, read, reason,
     reviewer, type_decl, value,
@@ -28,6 +29,12 @@ check!(
     /// A verb that reaches outside needs its executor.
     EXTERNAL_UNBOUND = an_external_verb_without_an_executor_is_unbound,
     "013 and 015: a verb whose effect reaches outside the lake runs only through a bound executor; without one, calling it at any risk or proposing a call of it answers `unbound` naming the executor, and nothing is appended"
+);
+
+check!(
+    /// A riskier call that could not run now is not proposed.
+    NOT_PROPOSED_IF_IT_COULD_NOT_RUN = a_riskier_call_that_could_not_run_now_is_not_proposed,
+    "013, extended, and 024, extended: a call that would become a proposal is checked as if it ran now: at a stale version it is a conflict, and where its `requires` does not hold it is refused as a precondition, the version first; nothing is appended"
 );
 
 check!(
@@ -219,6 +226,71 @@ async fn an_external_verb_without_an_executor_is_unbound(
     }
     head_unmoved(store.as_ref(), before, "the unbound external verbs").await?;
     Ok(())
+}
+
+async fn a_riskier_call_that_could_not_run_now_is_not_proposed(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = ledger(store.as_ref()).await?;
+    for verb in [
+        json!({"declare": "verb", "name": "settle", "on": "invoice", "risk": "high",
+               "requires": "status = 'open'", "effect": "write",
+               "set": [{"field": "status", "value": "'settled'"}]}),
+        json!({"declare": "verb", "name": "dun", "on": "invoice", "risk": "high",
+               "requires": "status = 'open'", "effect": "external", "executor": EXECUTOR}),
+    ] {
+        l.declare_json(verb).await?;
+    }
+    l.upsert("invoice", "i", json!({"status": "closed"}))
+        .await?;
+    let before = store.head().await.must("reading the head")?;
+    let mut red = Vec::new();
+    for verb in ["settle", "dun"] {
+        for (version, proposed) in [
+            (None, false),
+            (Some(1), false),
+            (None, true),
+            (Some(1), true),
+        ] {
+            let opts = WriteOpts {
+                expected_version: version.map(Version),
+                ..WriteOpts::default()
+            };
+            let got = if proposed {
+                let write = ProposedWrite::Call {
+                    verb: verb.into(),
+                    key: Some("i".into()),
+                    payload: patch(json!({})),
+                    opts,
+                };
+                l.cat.propose(&l.own, write, "later".into()).await
+            } else {
+                let key = Some("i".into());
+                l.cat
+                    .call(&l.own, &verb.into(), key.as_ref(), patch(json!({})), opts)
+                    .await
+            };
+            let ok = match (&got, version) {
+                (Err(Error::Conflict { expected, actual }), Some(_)) => {
+                    *expected == Version(1) && *actual == Version(2)
+                }
+                (other, None) => matches!(reason(other), Some(Refusal::Precondition { .. })),
+                _ => false,
+            };
+            if !ok {
+                let door = if proposed { "propose" } else { "call" };
+                red.push(format!("{door} `{verb}` at {version:?} answered {got:?}"));
+            }
+        }
+    }
+    ensure!(
+        red.is_empty(),
+        "`i` is at version 2 and closed, so a high-risk call on it could not run now and is \
+         not proposed: at version 1 it is a conflict, the version first; with no version, \
+         a precondition: {}",
+        red.join("; ")
+    );
+    head_unmoved(store.as_ref(), before, "calls that could not run").await
 }
 
 async fn accepting_a_proposal_applies_its_write_as_the_proposers(

@@ -1624,6 +1624,11 @@ fn check_call<'a>(
             ));
         }
     }
+    // The version before `requires` is judged on the record, whether the
+    // call runs or is proposed (013 and 024, extended).
+    if let (Some(_), Some(key)) = (rec, key) {
+        check_version(st, &v.on, key, opts)?;
+    }
     // A verb on its type declares no `requires`: declaring refuses it.
     if let (Some(req), Some(rec), Some(key)) = (&v.requires, rec, key) {
         let scope = Scope {
