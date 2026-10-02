@@ -7,7 +7,10 @@ searches it is refused when the principal may not read that field —
 also when the field would have been masked in the answer. The refusal
 names the field. Where the principal may not know of the field at all (its
 access is `none`), the refusal is the one for a field the type does not
-declare (006, extended in lakelands#394).
+declare (006, extended in lakelands#394). A read at `valid_at` filters on its
+type's `valid_from` and `valid_to`, so it probes them as a filter on
+them would: `find`, `get`, `search`, a pattern's start and every type a
+walk reaches (lakelands#372).
 
 A search probes every searchable field of its type, in every mode, and
 the vector field it names. A vector embedded from text encodes that

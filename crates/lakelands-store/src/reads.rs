@@ -347,6 +347,12 @@ impl<'a> Reader<'a> {
                 missing: Missing::Type { name: ty.clone() },
             });
         }
+        // A read at a valid time filters on the type's valid-time fields,
+        // so it probes them as a `where` on them would (024).
+        if self.valid_at.is_some() {
+            let timed = decl.valid_from.iter().chain(&decl.valid_to);
+            rights::check_probe(self.who, decl, timed)?;
+        }
         Ok(decl)
     }
 
