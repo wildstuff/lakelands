@@ -136,19 +136,9 @@ pub fn check_probe<'a>(
     probed: impl IntoIterator<Item = &'a FieldName>,
 ) -> Result<(), Error> {
     for name in probed {
-        let Some(field) = decl.fields.iter().find(|f| &f.name == name) else {
-            return Err(Error::Refused {
-                field: Some(name.clone()),
-                reason: Refusal::Invalid {
-                    message: format!("`{}` has no field `{name}`", decl.name),
-                },
-            });
-        };
+        let field = field_of(decl, name)?;
         if !field_access(who, &decl.name, field).reads() {
-            return Err(Error::Refused {
-                field: Some(name.clone()),
-                reason: Refusal::NotGranted,
-            });
+            return Err(refused(Some(name), Refusal::NotGranted));
         }
     }
     Ok(())
@@ -181,25 +171,16 @@ pub fn check_search(
         return check_probe(who, decl, searched.chain(vector_field).chain(embedded_from));
     };
     if named.is_empty() {
-        return Err(Error::Refused {
-            field: None,
-            reason: Refusal::Invalid {
-                message: "`fields` names no field; leave it out to search every searchable \
-                          field"
-                    .into(),
-            },
-        });
+        return Err(crate::invalid(
+            "`fields` names no field; leave it out to search every searchable field",
+        ));
     }
     let named: BTreeSet<&FieldName> = named.iter().collect();
     for name in named {
         check_probe(who, decl, [name])?;
         if !decl.fields.iter().any(|f| &f.name == name && f.searchable) {
-            return Err(Error::Refused {
-                field: Some(name.clone()),
-                reason: Refusal::Invalid {
-                    message: format!("`{name}` of `{}` is not searchable", decl.name),
-                },
-            });
+            let message = format!("`{name}` of `{}` is not searchable", decl.name);
+            return Err(refused(Some(name), Refusal::Invalid { message }));
         }
     }
     check_probe(who, decl, vector_field.into_iter().chain(embedded_from))
@@ -236,42 +217,36 @@ pub fn check_write(
     patch: &BTreeMap<FieldName, Value>,
 ) -> Result<(), Error> {
     if door == Door::Source && !who.grants.ingest {
-        return Err(Error::Refused {
-            field: None,
-            reason: Refusal::NotGranted,
-        });
+        return Err(refused(None, Refusal::NotGranted));
     }
     if decl.view.is_some() {
-        return Err(Error::Refused {
-            field: None,
-            reason: Refusal::Invalid {
-                message: format!("`{}` is a view; it is computed, never written", decl.name),
-            },
-        });
+        return Err(crate::invalid(format!(
+            "`{}` is a view; it is computed, never written",
+            decl.name
+        )));
     }
     for name in patch.keys() {
-        let Some(field) = decl.fields.iter().find(|f| &f.name == name) else {
-            return Err(Error::Refused {
-                field: Some(name.clone()),
-                reason: Refusal::Invalid {
-                    message: format!("`{}` has no field `{name}`", decl.name),
-                },
-            });
-        };
+        let field = field_of(decl, name)?;
         if !door.admits(field.authority) {
-            return Err(Error::Refused {
-                field: Some(name.clone()),
-                reason: Refusal::WrongDoor,
-            });
+            return Err(refused(Some(name), Refusal::WrongDoor));
         }
         if !who.grants.access(&decl.name, name).writes() {
-            return Err(Error::Refused {
-                field: Some(name.clone()),
-                reason: Refusal::NotGranted,
-            });
+            return Err(refused(Some(name), Refusal::NotGranted));
         }
     }
     Ok(())
+}
+
+fn refused(field: Option<&FieldName>, reason: Refusal) -> Error {
+    let field = field.cloned();
+    Error::Refused { field, reason }
+}
+
+/// The field `decl` declares as `name`, or a refusal naming it.
+fn field_of<'d>(decl: &'d TypeDecl, name: &FieldName) -> Result<&'d FieldDecl, Error> {
+    let message = || format!("`{}` has no field `{name}`", decl.name);
+    let field = decl.fields.iter().find(|f| &f.name == name);
+    field.ok_or_else(|| refused(Some(name), Refusal::Invalid { message: message() }))
 }
 
 #[cfg(test)]

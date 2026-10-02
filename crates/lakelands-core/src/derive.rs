@@ -52,26 +52,12 @@ pub fn reads(e: &Expr) -> BTreeSet<FieldName> {
 }
 
 fn collect(e: &Expr, out: &mut BTreeSet<FieldName>) {
-    match e {
-        Expr::Path { path } => {
-            if let Some(first) = path.first() {
-                out.insert(first.clone());
-            }
-        }
-        Expr::Lit { .. } => {}
-        Expr::Cmp { lhs, rhs, .. } | Expr::Arith { lhs, rhs, .. } => {
-            collect(lhs, out);
-            collect(rhs, out);
-        }
-        Expr::Neg { arg } | Expr::Not { arg } | Expr::IsNull { arg } => collect(arg, out),
-        Expr::And { args } | Expr::Or { args } | Expr::Call { args, .. } => {
-            args.iter().for_each(|a| collect(a, out));
-        }
-        Expr::In { arg, list } => {
-            collect(arg, out);
-            list.iter().for_each(|a| collect(a, out));
-        }
+    if let Expr::Path { path } = e
+        && let Some(first) = path.first()
+    {
+        out.insert(first.clone());
     }
+    crate::expr::children(e).for_each(|c| collect(c, out));
 }
 
 fn typed(field: &FieldDecl) -> Result<Option<Expr>, DeriveError> {
@@ -187,7 +173,7 @@ pub fn apply(
             .value_type
             .as_ref()
             .and_then(|vt| value_types.iter().find(|d| &d.name == vt))
-            .and_then(value_type_scale);
+            .and_then(|vt| vt.scale);
         let scope = WriteScope {
             after: fields,
             before: write.before,
@@ -207,11 +193,6 @@ pub fn apply(
         }
     }
     Ok(touched)
-}
-
-/// The decimal scale a value type declares, if any.
-fn value_type_scale(vt: &ValueTypeDecl) -> Option<u32> {
-    vt.scale
 }
 
 #[cfg(test)]

@@ -50,8 +50,7 @@ pub fn shortest_path<S: EdgeSource + ?Sized>(
     let mut links = Links::new(source);
     let mut prev: BTreeMap<Node, (Node, Edge)> = BTreeMap::new();
     let mut frontier: BTreeSet<Node> = BTreeSet::from([from.clone()]);
-    let mut found = false;
-    'levels: for _ in 1..=depth {
+    for _ in 1..=depth {
         let nears: Vec<Node> = frontier.iter().cloned().collect();
         let mut next = BTreeSet::new();
         for (near, around) in nears.iter().zip(links.around(&nears, relations, walk)?) {
@@ -61,8 +60,7 @@ pub fn shortest_path<S: EdgeSource + ?Sized>(
                 }
                 prev.insert(other.clone(), (near.clone(), edge));
                 if other == *to {
-                    found = true;
-                    break 'levels;
+                    return Ok(Some(unwind(prev, from, to)));
                 }
                 next.insert(other);
             }
@@ -72,10 +70,7 @@ pub fn shortest_path<S: EdgeSource + ?Sized>(
         }
         frontier = next;
     }
-    if !found {
-        return Ok(None);
-    }
-    Ok(Some(unwind(prev, from, to)))
+    Ok(None)
 }
 
 /// Follow the predecessors back from the target to the start.

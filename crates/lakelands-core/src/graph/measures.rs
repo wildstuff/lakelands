@@ -146,11 +146,7 @@ impl<'a, S: EdgeSource + ?Sized> Components<'a, S> {
         for (node, index) in self.member_of {
             all[index].push(node);
         }
-        all.sort_by(|a, b| {
-            b.len()
-                .cmp(&a.len())
-                .then_with(|| a.first().cmp(&b.first()))
-        });
+        all.sort_by(|a, b| (b.len(), a.first()).cmp(&(a.len(), b.first())));
         all
     }
 }

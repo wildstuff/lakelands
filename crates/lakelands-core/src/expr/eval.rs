@@ -483,31 +483,19 @@ pub fn bind_params(e: &Expr, values: &BTreeMap<String, Literal>) -> Expr {
 
 /// The names every `param('name')` in `e` reads, added to `out`.
 pub fn params_read(e: &Expr, out: &mut std::collections::BTreeSet<String>) {
-    match e {
-        Expr::Call {
-            func: Func::Param,
-            args,
-        } => {
-            if let Some(Expr::Lit {
-                value: Literal::Text(name),
-            }) = args.first()
-            {
-                out.insert(name.clone());
-            }
+    if let Expr::Call {
+        func: Func::Param,
+        args,
+    } = e
+    {
+        if let Some(Expr::Lit {
+            value: Literal::Text(name),
+        }) = args.first()
+        {
+            out.insert(name.clone());
         }
-        Expr::Call { args, .. } | Expr::And { args } | Expr::Or { args } => {
-            args.iter().for_each(|a| params_read(a, out));
-        }
-        Expr::Cmp { lhs, rhs, .. } | Expr::Arith { lhs, rhs, .. } => {
-            params_read(lhs, out);
-            params_read(rhs, out);
-        }
-        Expr::Neg { arg } | Expr::Not { arg } | Expr::IsNull { arg } => params_read(arg, out),
-        Expr::In { arg, list } => {
-            params_read(arg, out);
-            list.iter().for_each(|a| params_read(a, out));
-        }
-        Expr::Lit { .. } | Expr::Path { .. } => {}
+    } else {
+        super::children(e).for_each(|c| params_read(c, out));
     }
 }
 
