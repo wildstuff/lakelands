@@ -73,13 +73,6 @@ pub struct Imported {
     pub files: usize,
 }
 
-fn damaged(file: &Path, position: Position, why: impl std::fmt::Display) -> Error {
-    unavailable(format!(
-        "the export is damaged in {} at position {position}: {why}; nothing was imported",
-        file.display()
-    ))
-}
-
 /// A refusal of the import as asked: the export or the target is not
 /// one it can make a lake from, and asking again changes nothing.
 fn precondition(message: String) -> Error {
@@ -169,14 +162,13 @@ fn check(files: &[PathBuf], lake: &LakeId) -> Result<Vec<Digest>> {
                 fence = taken;
             }
             if event.fence != fence {
-                return Err(damaged(
-                    path,
+                return Err(unavailable(format!(
+                    "the export is damaged in {} at position {}: the event carries fence {}, and \
+                     its writer's lease had fence {fence}; nothing was imported",
+                    path.display(),
                     event.position,
-                    format!(
-                        "the event carries fence {}, and its writer's lease had fence {fence}",
-                        event.fence
-                    ),
-                ));
+                    event.fence
+                )));
             }
         }
     }
