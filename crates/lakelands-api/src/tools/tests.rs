@@ -1,5 +1,5 @@
 use super::*;
-use crate::describe::{LakeRights, TypeAccess, TypeLifecycle, TypeLineage, TypeRights};
+use crate::describe::{LakeRights, TypeAccess, TypeLifecycle, TypeRights};
 use crate::ontology::{Authority, FieldDecl, Risk};
 use crate::principal::Access;
 
@@ -13,6 +13,10 @@ fn field(name: &str, kind: StorageKind, authority: Authority, access: Access) ->
     FieldDescription::of(&decl, access)
 }
 
+fn authored(name: &str, kind: StorageKind, access: Access) -> FieldDescription {
+    field(name, kind, Authority::Authored, access)
+}
+
 fn ty(name: &str, may: TypeRights, fields: Vec<FieldDescription>) -> TypeDescription {
     TypeDescription {
         name: name.into(),
@@ -23,9 +27,6 @@ fn ty(name: &str, may: TypeRights, fields: Vec<FieldDescription>) -> TypeDescrip
             ..Default::default()
         },
         may,
-        lineage: TypeLineage {
-            ..Default::default()
-        },
         lifecycle: TypeLifecycle {
             version: 1,
             schema_hash: "h".into(),
@@ -64,6 +65,24 @@ fn lake(
     }
 }
 
+/// A verb on `invoice`, record-scoped and undescribed.
+fn verb(name: &str, risk: Risk, external: bool, payload: Vec<FieldDescription>) -> VerbDescription {
+    VerbDescription {
+        name: name.into(),
+        on: "invoice".into(),
+        scope: Default::default(),
+        payload,
+        risk,
+        external,
+        description: None,
+    }
+}
+
+/// A lake of `types`, with no verb and no lake-wide right.
+fn lake_of(types: Vec<TypeDescription>) -> LakeDescription {
+    lake(types, vec![], LakeRights::default())
+}
+
 fn tools_ok(lake: &LakeDescription) -> Vec<ToolSpec> {
     tools(lake).expect("the test lake's names are valid")
 }
@@ -83,19 +102,14 @@ fn invoice() -> TypeDescription {
                 Authority::Source,
                 Access::Write,
             ),
-            field(
-                "verdict",
-                StorageKind::Text,
-                Authority::Authored,
-                Access::Write,
-            ),
+            authored("verdict", StorageKind::Text, Access::Write),
             field(
                 "score",
                 StorageKind::Number,
                 Authority::Derived,
                 Access::Read,
             ),
-            field("note", StorageKind::Text, Authority::Authored, Access::Read),
+            authored("note", StorageKind::Text, Access::Read),
         ],
     )
 }
@@ -129,7 +143,7 @@ fn a_type_gives_four_doors_and_the_generic_tools_follow_rights() {
 
 #[test]
 fn upsert_offers_only_authored_fields_the_principal_may_write() {
-    let t = tools_ok(&lake(vec![invoice()], vec![], LakeRights::default()));
+    let t = tools_ok(&lake_of(vec![invoice()]));
     let upsert = t.iter().find(|t| t.name == "invoice_upsert").unwrap();
     let fields = upsert.input_schema["properties"]["fields"]["properties"]
         .as_object()
@@ -139,20 +153,12 @@ fn upsert_offers_only_authored_fields_the_principal_may_write() {
 
 #[test]
 fn a_verb_is_one_tool_and_says_whether_it_runs() {
-    let pay = VerbDescription {
-        name: "pay_invoice".into(),
-        on: "invoice".into(),
-        scope: Default::default(),
-        payload: vec![field(
-            "amount",
-            StorageKind::Decimal,
-            Authority::Authored,
-            Access::Write,
-        )],
-        risk: Risk::High,
-        external: true,
-        description: None,
-    };
+    let pay = verb(
+        "pay_invoice",
+        Risk::High,
+        true,
+        vec![authored("amount", StorageKind::Decimal, Access::Write)],
+    );
     let t = tools_ok(&lake(vec![], vec![pay], LakeRights::default()));
     let v = t.iter().find(|t| t.name == "pay_invoice").unwrap();
     assert_eq!(
@@ -174,14 +180,10 @@ fn twenty_types_offer_about_eighty_tools() {
 
 #[test]
 fn names_are_sanitised_sorted_and_valid_for_mcp() {
-    let t = tools_ok(&lake(
-        vec![
-            ty("sys.source", READ, vec![]),
-            ty("Invoice-Line", ALL, vec![]),
-        ],
-        vec![],
-        LakeRights::default(),
-    ));
+    let t = tools_ok(&lake_of(vec![
+        ty("sys.source", READ, vec![]),
+        ty("Invoice-Line", ALL, vec![]),
+    ]));
     assert!(names(&t).contains(&"sys_source_find"));
     assert!(names(&t).contains(&"invoice_line_upsert"));
     let mut sorted = names(&t);
@@ -234,7 +236,6 @@ fn linked_invoice() -> (TypeDescription, TypeDescription) {
         ..Default::default()
     }];
     invoice.may.link = vec!["approved_by".into()];
-    let authored = |name: &str, kind, access| field(name, kind, Authority::Authored, access);
     let link_type = ty(
         "sys.link.invoice.approved_by",
         READ,
@@ -261,11 +262,7 @@ fn linked_invoice() -> (TypeDescription, TypeDescription) {
 #[test]
 fn a_link_tool_offers_only_the_link_fields_the_principal_may_write() {
     let (invoice, link_type) = linked_invoice();
-    let t = tools_ok(&lake(
-        vec![invoice, link_type],
-        vec![],
-        LakeRights::default(),
-    ));
+    let t = tools_ok(&lake_of(vec![invoice, link_type]));
     let link = t
         .iter()
         .find(|t| t.name == "invoice_approved_by_link")
@@ -284,14 +281,10 @@ fn a_link_relation_gets_link_and_unlink_tools_named_by_type_and_relation() {
     let (mut invoice, link_type) = linked_invoice();
     // Offered only for the relations the principal may link.
     invoice.may.link.clear();
-    let without = tools_ok(&lake(vec![invoice.clone()], vec![], LakeRights::default()));
+    let without = tools_ok(&lake_of(vec![invoice.clone()]));
     assert!(!names(&without).iter().any(|n| n.ends_with("link")));
     invoice.may.link = vec!["approved_by".into()];
-    let t = tools_ok(&lake(
-        vec![invoice, link_type],
-        vec![],
-        LakeRights::default(),
-    ));
+    let t = tools_ok(&lake_of(vec![invoice, link_type]));
     let link = t
         .iter()
         .find(|t| t.name == "invoice_approved_by_link")
@@ -347,11 +340,7 @@ const OWNER: LakeRights = LakeRights {
 
 #[test]
 fn the_generator_refuses_collisions_and_overlong_or_empty_names_itself() {
-    let colliding = lake(
-        vec![ty("a.b", READ, vec![]), ty("a_b", READ, vec![])],
-        vec![],
-        LakeRights::default(),
-    );
+    let colliding = lake_of(vec![ty("a.b", READ, vec![]), ty("a_b", READ, vec![])]);
     let problems = tools(&colliding).unwrap_err();
     assert!(
         problems
@@ -359,11 +348,7 @@ fn the_generator_refuses_collisions_and_overlong_or_empty_names_itself() {
             .any(|p| matches!(p, NameProblem::Collision { name, .. } if name == "a_b_find"))
     );
 
-    let long = lake(
-        vec![ty(&"x".repeat(70), READ, vec![])],
-        vec![],
-        LakeRights::default(),
-    );
+    let long = lake_of(vec![ty(&"x".repeat(70), READ, vec![])]);
     assert!(
         tools(&long)
             .unwrap_err()
@@ -371,15 +356,7 @@ fn the_generator_refuses_collisions_and_overlong_or_empty_names_itself() {
             .any(|p| matches!(p, NameProblem::TooLong { .. }))
     );
 
-    let empty = VerbDescription {
-        name: "".into(),
-        on: "invoice".into(),
-        scope: Default::default(),
-        payload: vec![],
-        risk: Risk::Low,
-        external: false,
-        description: None,
-    };
+    let empty = verb("", Risk::Low, false, vec![]);
     assert!(matches!(
         tools(&lake(vec![], vec![empty], LakeRights::default())).unwrap_err()[..],
         [NameProblem::Empty { .. }]
@@ -388,28 +365,15 @@ fn the_generator_refuses_collisions_and_overlong_or_empty_names_itself() {
 
 #[test]
 fn a_verb_payload_offers_only_fields_the_principal_may_write() {
-    let verb = VerbDescription {
-        name: "settle".into(),
-        on: "invoice".into(),
-        scope: Default::default(),
-        payload: vec![
-            field(
-                "amount",
-                StorageKind::Decimal,
-                Authority::Authored,
-                Access::Write,
-            ),
-            field(
-                "approver",
-                StorageKind::Text,
-                Authority::Authored,
-                Access::Read,
-            ),
+    let verb = verb(
+        "settle",
+        Risk::Low,
+        false,
+        vec![
+            authored("amount", StorageKind::Decimal, Access::Write),
+            authored("approver", StorageKind::Text, Access::Read),
         ],
-        risk: Risk::Low,
-        external: false,
-        description: None,
-    };
+    );
     let t = tools_ok(&lake(vec![], vec![verb], LakeRights::default()));
     let payload = &t.iter().find(|t| t.name == "settle").unwrap().input_schema["properties"]["payload"]
         ["properties"];

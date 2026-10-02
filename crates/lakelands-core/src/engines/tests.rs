@@ -1,4 +1,5 @@
 use super::*;
+use crate::conformance::fixture::order;
 use serde_json::json;
 
 #[test]
@@ -114,11 +115,7 @@ fn a_scan_sorted_by_keys_answers_what_cmp_places_orders() {
         })
         .collect();
     for dir in [Direction::Asc, Direction::Desc] {
-        let order_by = vec![Order {
-            field: FieldName::from("v"),
-            by: OrderBy::Value,
-            dir,
-        }];
+        let order_by = vec![order("v", OrderBy::Value, dir)];
         let mut expected: Vec<&StoredRecord> = records.iter().collect();
         expected.sort_by(|a, b| {
             cmp_places(
@@ -244,11 +241,7 @@ fn a_walk_in_index_order_answers_what_a_whole_sort_answers() {
             }
         })
         .collect();
-    let order = |field: &str, dir| Order {
-        field: FieldName::from(field),
-        by: OrderBy::Value,
-        dir,
-    };
+    let order = |field: &str, dir| order(field, OrderBy::Value, dir);
     for dir in [Direction::Asc, Direction::Desc] {
         for order_by in [
             vec![order("v", dir)],

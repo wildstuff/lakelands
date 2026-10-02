@@ -8,6 +8,11 @@ fn created() -> (Event, CanonicalEvent) {
 
 /// `finance` sealed at format `v`, the event at `position` with the
 /// previous digest zero and the lease's `fence`.
+/// A system draft at time 0 carrying `body`.
+fn draft(body: EventBody) -> Draft {
+    Draft::system(Timestamp(0), body)
+}
+
 fn sealed(v: u32, position: u64, fence: u64, d: Draft) -> (Event, CanonicalEvent) {
     seal_at(
         v,
@@ -91,35 +96,29 @@ fn a_newer_format_is_refused_by_name() {
 /// it; the same event written at 3 opens.
 #[test]
 fn a_version_2_event_that_carries_upstream_or_declares_date_bucket_is_refused() {
-    let mut ingested = Draft::system(
-        Timestamp(0),
-        EventBody::RecordIngested {
-            ty: "t".into(),
-            key: "k".into(),
-            version: lakelands_api::Version(1),
-            patch: [("f".into(), json!(1))].into(),
-        },
-    );
+    let mut ingested = draft(EventBody::RecordIngested {
+        ty: "t".into(),
+        key: "k".into(),
+        version: lakelands_api::Version(1),
+        patch: [("f".into(), json!(1))].into(),
+    });
     ingested.upstream = Some(lakelands_api::Upstream {
         lake: "other".into(),
         position: Position(9),
     });
-    let declared = Draft::system(
-        Timestamp(0),
-        EventBody::Declared {
-            declaration: serde_json::from_value(json!({
-                "declare": "type", "name": "t",
-                "fields": [
-                    {"name": "at", "type": {"kind": "date_time"}},
-                    {"name": "m", "type": {"kind": "date_time"}, "authority": "derived",
-                     "derived": "date_bucket(at, 'month')", "depends_on": ["at"]}
-                ]
-            }))
-            .unwrap(),
-            schema_hash: None,
-            version: 1,
-        },
-    );
+    let declared = draft(EventBody::Declared {
+        declaration: serde_json::from_value(json!({
+            "declare": "type", "name": "t",
+            "fields": [
+                {"name": "at", "type": {"kind": "date_time"}},
+                {"name": "m", "type": {"kind": "date_time"}, "authority": "derived",
+                 "derived": "date_bucket(at, 'month')", "depends_on": ["at"]}
+            ]
+        }))
+        .unwrap(),
+        schema_hash: None,
+        version: 1,
+    });
     for (d, what) in [
         (ingested, "carries `upstream`"),
         (declared, "declares a call of `date_bucket`"),
@@ -134,30 +133,21 @@ fn a_version_2_event_that_carries_upstream_or_declares_date_bucket_is_refused() 
 
 #[test]
 fn a_version_1_event_that_carries_rekeyed_is_refused() {
-    let d = Draft::system(
-        Timestamp(0),
-        EventBody::Migrated {
-            migration: lakelands_api::write::Migration {
-                to: serde_json::from_value(json!({"name": "t"})).unwrap(),
-                renames: vec![],
-            },
-            schema_hash: "h".into(),
-            version: 2,
-            report_id: "r".into(),
-            rekeyed: vec![lakelands_api::write::Rekey {
-                ty: "t".into(),
-                from: "a".into(),
-                to: "b".into(),
-            }],
+    let d = draft(EventBody::Migrated {
+        migration: lakelands_api::write::Migration {
+            to: serde_json::from_value(json!({"name": "t"})).unwrap(),
+            renames: vec![],
         },
-    );
-    let (_, stored) = seal(
-        &"finance".into(),
-        Position(0),
-        &Digest::zero(),
-        0,
-        d.clone(),
-    );
+        schema_hash: "h".into(),
+        version: 2,
+        report_id: "r".into(),
+        rekeyed: vec![lakelands_api::write::Rekey {
+            ty: "t".into(),
+            from: "a".into(),
+            to: "b".into(),
+        }],
+    });
+    let (_, stored) = sealed(LOG_FORMAT_BASE, 0, 0, d.clone());
     let e = open(&stored).unwrap_err().to_string();
     assert!(e.contains("format 2 added"), "{e}");
     let (_, stored) = sealed(2, 0, 0, d);
@@ -168,18 +158,15 @@ fn a_version_1_event_that_carries_rekeyed_is_refused() {
 /// version 4 added; the same event written at 4 opens.
 #[test]
 fn a_version_3_event_proposing_a_declaration_is_refused() {
-    let d = Draft::system(
-        Timestamp(0),
-        EventBody::WriteProposed {
-            proposal: "p".into(),
-            write: lakelands_api::write::ProposedWrite::Declare {
-                declarations: vec![
-                    serde_json::from_value(json!({"declare": "type", "name": "t"})).unwrap(),
-                ],
-            },
-            why: "w".into(),
+    let d = draft(EventBody::WriteProposed {
+        proposal: "p".into(),
+        write: lakelands_api::write::ProposedWrite::Declare {
+            declarations: vec![
+                serde_json::from_value(json!({"declare": "type", "name": "t"})).unwrap(),
+            ],
         },
-    );
+        why: "w".into(),
+    });
     let (_, stored) = sealed(3, 1, 1, d.clone());
     let e = open(&stored).unwrap_err().to_string();
     assert!(
@@ -194,14 +181,11 @@ fn a_version_3_event_proposing_a_declaration_is_refused() {
 /// kind, whatever the version.
 #[test]
 fn upstream_on_another_kind_is_refused() {
-    let mut retired = Draft::system(
-        Timestamp(0),
-        EventBody::RecordRetired {
-            ty: "t".into(),
-            key: "k".into(),
-            version: lakelands_api::Version(2),
-        },
-    );
+    let mut retired = draft(EventBody::RecordRetired {
+        ty: "t".into(),
+        key: "k".into(),
+        version: lakelands_api::Version(2),
+    });
     retired.upstream = Some(lakelands_api::Upstream {
         lake: "other".into(),
         position: Position(9),
@@ -218,13 +202,10 @@ fn upstream_on_another_kind_is_refused() {
 fn links_are_checked() {
     let (first, _) = created();
     assert!(check_link(None, &first).is_ok());
-    let d = Draft::system(
-        Timestamp(0),
-        EventBody::LeaseTaken {
-            fence: 1,
-            holder: "t".into(),
-        },
-    );
+    let d = draft(EventBody::LeaseTaken {
+        fence: 1,
+        holder: "t".into(),
+    });
     let (second, _) = seal(&"finance".into(), Position(1), &first.hash, 1, d.clone());
     assert!(check_link(Some((&first.position, &first.hash)), &second).is_ok());
     let (bad, _) = seal(&"finance".into(), Position(1), &Digest::zero(), 1, d);
