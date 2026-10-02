@@ -94,6 +94,7 @@ macro_rules! door_checks {
             a_masked_field_is_named_but_its_value_is_absent,
             the_tools_follow_the_grants,
             a_verb_tool_says_what_its_risk_does,
+            a_view_reads_only_what_its_source_has,
             a_migration_keeps_what_a_view_reads,
             a_view_is_never_migrated,
             nothing_that_never_acts_is_declared_on_a_view,
@@ -1526,6 +1527,51 @@ pub async fn a_migration_keeps_what_a_view_reads(store: Arc<dyn LakeStore>) {
             "{e:?}"
         );
     }
+}
+
+/// A view whose `where` names, or whose measure aggregates, a field its
+/// source does not have is refused, naming the view and the field, on the
+/// mock as on the store.
+pub async fn a_view_reads_only_what_its_source_has(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let head = f.head().await;
+    for (filter, total) in [(Some("nope > 0"), "sum(amount)"), (None, "sum(nope)")] {
+        let view = TypeDecl {
+            name: "status_totals".into(),
+            key: vec!["status".into()],
+            fields: vec![
+                text("status"),
+                FieldDecl {
+                    ty: FieldType::kind(StorageKind::Decimal),
+                    ..text("total")
+                },
+            ],
+            field_meta: true,
+            view: Some(Box::new(ViewDecl {
+                source: INVOICE.into(),
+                r#where: filter.map(Into::into),
+                group_by: vec!["status".into()],
+                measures: vec![Measure {
+                    name: "total".into(),
+                    expr: total.into(),
+                }],
+                params: Default::default(),
+                merge: Default::default(),
+            })),
+            ..TypeDecl::named("status_totals")
+        };
+        let e = f
+            .catalog
+            .declare(&f.cast.owner, Declaration::Type(view))
+            .await
+            .expect_err("a view reads only what its source has");
+        assert!(
+            matches!(&e, Error::Refused { reason: Refusal::Invalid { message }, .. }
+                if message.contains("status_totals") && message.contains("nope")),
+            "{e:?}"
+        );
+    }
+    assert_eq!(f.head().await, head, "nothing is appended");
 }
 
 /// A `low`-risk verb whose effect writes authored fields runs at once.

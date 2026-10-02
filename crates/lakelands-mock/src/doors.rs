@@ -615,6 +615,24 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
             } else {
                 types.push(t.name.clone());
             }
+            // As the store: a view reads only fields its sources have.
+            if let Some(v) = t.view.as_deref() {
+                for (from, reads) in view_reads(v) {
+                    let Some(source) = st.types.get(&from) else {
+                        continue;
+                    };
+                    if let Some(n) = reads
+                        .iter()
+                        .find(|n| !source.decl.fields.iter().any(|f| &f.name == *n))
+                    {
+                        return Err(invalid(format!(
+                            "type `{}`: its view reads `{n}` of `{from}`, which `{from}` does not \
+                             have",
+                            t.name
+                        )));
+                    }
+                }
+            }
             // Its link types too, as the store: a relation dropped by a
             // migration and declared again with another target would
             // reshape the links it kept.
@@ -1895,6 +1913,31 @@ fn risk_word(r: Risk) -> &'static str {
     }
 }
 
+/// The fields a view reads from each source, its own first: its grouping,
+/// what its `where` names and what its measures aggregate, as the store
+/// counts them.
+fn view_reads(v: &ViewDecl) -> Vec<(TypeName, Vec<FieldName>)> {
+    std::iter::once((&v.source, v.r#where.as_ref(), &v.group_by, &v.measures))
+        .chain(
+            v.merge
+                .iter()
+                .map(|s| (&s.source, s.r#where.as_ref(), &s.group_by, &s.measures)),
+        )
+        .map(|(source, filter, group_by, measures)| {
+            let mut reads: Vec<FieldName> = group_by.clone();
+            if let Some(n) = filter.and_then(named) {
+                reads.extend(n);
+            }
+            for m in measures {
+                if let Ok(e) = expr::typed(&m.expr) {
+                    expr::aggregated(&e, false, &mut reads);
+                }
+            }
+            (source.clone(), reads)
+        })
+        .collect()
+}
+
 /// The migration's preflight over the lake as it stands.
 fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationReport> {
     let ty = &m.to.name;
@@ -1923,24 +1966,9 @@ fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationRepor
         let Some(v) = o.decl.view.as_deref() else {
             continue;
         };
-        let sources = std::iter::once((&v.source, v.r#where.as_ref(), &v.group_by, &v.measures))
-            .chain(
-                v.merge
-                    .iter()
-                    .map(|s| (&s.source, s.r#where.as_ref(), &s.group_by, &s.measures)),
-            );
-        for (source, filter, group_by, measures) in sources {
-            if source != ty {
+        for (source, reads) in view_reads(v) {
+            if &source != ty {
                 continue;
-            }
-            let mut reads: Vec<FieldName> = group_by.clone();
-            if let Some(n) = filter.and_then(named) {
-                reads.extend(n);
-            }
-            for m in measures {
-                if let Ok(e) = expr::typed(&m.expr) {
-                    expr::aggregated(&e, false, &mut reads);
-                }
             }
             if let Some(gone) = reads
                 .iter()
