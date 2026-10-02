@@ -157,6 +157,12 @@ engine_check!(
 );
 
 engine_check!(
+    /// A page at an earlier position reads the head index and the changes.
+    SORTED_PAGE_PINNED = a_page_at_an_earlier_position_reads_the_head_index_and_the_keys_changed_since,
+    "041, extended: a page ordered by an indexed field at an earlier position reads the head's order index and the keys of the type changed since, with their states at the position, so it answers what one scan over the states there answers, a key changed, retired or written after the position in its place there, and reads its page, at most three rows more and two per changed key, not the type; a commit between two pages of one view changes neither"
+);
+
+engine_check!(
     /// Proposals filter by state and type, newest first.
     PROPOSALS = proposals_filter_by_state_and_type_newest_first,
     "seams §ProjectionView: proposals match the filter's state and type, a call's type being its verb's `on`, newest first by their latest state, then by id"
@@ -1603,6 +1609,100 @@ fn a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it
                 );
             }
         }
+    }
+    Ok(())
+}
+
+fn a_page_at_an_earlier_position_reads_the_head_index_and_the_keys_changed_since(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    const N: u64 = 1000;
+    const LIMIT: u32 = 10;
+    let decl = declare(json!({
+        "declare": "type", "name": "t",
+        "fields": [{"name": "v", "type": {"kind": "text"}}]
+    }));
+    let Declaration::Type(t) = &decl else {
+        unreachable!("the check declares a type")
+    };
+    let v = |n: u64| json!({"v": format!("v{n:04} {}", "past the cut ".repeat(3))});
+    let states: Vec<StoredRecord> = (0..N)
+        .map(|i| record("t", &format!("k{i:04}"), v((i * 7919) % N), 1))
+        .collect();
+    fold(engine, 1, |p| {
+        p.put_declaration(&decl, 1, None, Position(0))?;
+        states.iter().try_for_each(|r| p.put_record(r))
+    })?;
+    fold_one(engine, 2, sort_setting(json!(["v"]), 2))?;
+    let ty = TypeName::from("t");
+    let asc = |dir| scan_with(|s| s.order_by = vec![by("v", dir)]);
+    let first = keys(&crate::engines::scan(
+        Some(t),
+        &states,
+        &asc(Direction::Asc),
+    ));
+    // After the position: the first in order moves last, the second is
+    // retired, a new key sorts first, and another type is written.
+    let mut moved = record("t", &first[0], json!({"v": "zz"}), 3);
+    moved.version = lakelands_api::Version(2);
+    let mut retired = record("t", &first[1], v(1), 3);
+    retired.retired = true;
+    fold(engine, 3, |p| {
+        p.put_record(&moved)?;
+        p.put_record(&retired)?;
+        p.put_record(&record("t", "a-new", json!({"v": "a"}), 3))?;
+        p.put_record(&record("u", "u1", json!({"v": "a"}), 3))
+    })?;
+    let pinned = view(engine, Some(Position(2)))?;
+    let page = |scan: &Scan, changed: u64, what: &str| -> Result<Vec<StoredRecord>, Failure> {
+        let before = crate::engines::rows_read();
+        let rows = pinned.scan(&ty, scan).must(what)?;
+        let read = crate::engines::rows_read() - before;
+        let whole = crate::engines::scan(Some(t), &states, scan);
+        ensure!(
+            keys(&rows) == keys(&whole),
+            "{what} at position 2 answers {:?}, not {:?}, what one scan over the states there \
+             answers",
+            keys(&rows),
+            keys(&whole)
+        );
+        ensure!(
+            read <= u64::from(LIMIT) + 3 + 2 * changed,
+            "{what} at position 2 read {read} rows of the type's {N}, with {changed} key(s) \
+             changed since; the head's order index reads its page, at most three more and two \
+             per changed key"
+        );
+        Ok(rows)
+    };
+    for dir in [Direction::Asc, Direction::Desc] {
+        let scan = scan_with(|s| {
+            s.order_by = vec![by("v", dir)];
+            s.limit = LIMIT;
+        });
+        // The second direction's first page sees the first's commit too.
+        let changed = 3 + u64::from(dir == Direction::Desc);
+        let rows = page(&scan, changed, &format!("a page ordered by `v` {dir:?}"))?;
+        let last = rows.last().expect("a first page");
+        // A commit between the two pages of one view: the view's position
+        // stays where it was.
+        let after = 4 + u64::from(dir == Direction::Desc);
+        fold_one(
+            engine,
+            after,
+            record("t", &first[15], json!({"v": "b"}), after),
+        )?;
+        let next = Scan {
+            after: Some(After {
+                values: vec![last.fields.get("v").cloned().unwrap_or(Value::Null)],
+                key: last.key.clone(),
+            }),
+            ..scan
+        };
+        page(
+            &next,
+            4,
+            &format!("the next page ordered by `v` {dir:?}, after a commit"),
+        )?;
     }
     Ok(())
 }

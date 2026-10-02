@@ -454,8 +454,9 @@ thread_local! {
 }
 
 /// The rows the scans on this thread were handed to order: the whole
-/// type in the fallback, [`scan`], and the index rows and missing records
-/// in [`scan_in_field_order`]. It exists for the engine checks, which
+/// type in the fallback, [`scan`], the index rows and missing records
+/// in [`scan_in_field_order`], and those and the changed states in
+/// [`scan_in_field_order_at`]. It exists for the engine checks, which
 /// count by it that a page ordered by an indexed field reads its page,
 /// not the type; it costs one add per call or batch.
 pub fn rows_read() -> u64 {
@@ -476,8 +477,18 @@ pub(crate) fn count_links(n: usize) {
     LINKS_READ.with(|c| c.set(c.get() + n as u64));
 }
 
+/// [`rows_read`] over every thread of the process: for the streaming
+/// check, whose reads go through a store that runs them on its blocking
+/// pool. It counts what other checks running at the same time read too.
+pub fn rows_read_in_process() -> u64 {
+    ROWS_READ_IN_PROCESS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static ROWS_READ_IN_PROCESS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn count_read(n: usize) {
     ROWS_READ.with(|c| c.set(c.get() + n as u64));
+    ROWS_READ_IN_PROCESS.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// A scan answered from an order index, in the order [`scan`] gives, by
@@ -503,9 +514,202 @@ fn count_read(n: usize) {
 pub fn scan_in_field_order<E>(
     decl: Option<&TypeDecl>,
     scan: &Scan,
+    sorted: impl FnMut(Option<(&[u8], &str)>, u32) -> Result<Vec<(Vec<u8>, StoredRecord)>, E>,
+    missing: impl FnMut(Option<&str>, u32) -> Result<Vec<StoredRecord>, E>,
+) -> Result<Vec<StoredRecord>, E> {
+    in_field_order(decl, scan, true, sorted, missing)
+}
+
+/// The keys of a type changed after an earlier position, and the states
+/// they had there: what a page at that position reads in place of the head
+/// order index's rows for those keys
+/// (`docs/decisions/041-a-sorted-page-reads-its-page.md`, extended). A key
+/// written only after the position has no state among them.
+#[derive(Debug, Default)]
+pub struct Changed {
+    /// Every key of the type with a state put or ended after the position.
+    pub keys: BTreeSet<RecordKey>,
+    /// The states of those keys at the position.
+    pub states: Vec<StoredRecord>,
+}
+
+/// The most states put to a type since an earlier position, and the most
+/// keys changed, that a page there takes into the head order index's order
+/// before it sorts the type instead: ten pages' worth, and never more than
+/// 4 096, so that what a page holds stays near a page. Far below where the
+/// merge stops paying: at 100 000 records it reads 4 096 changed keys in a
+/// tenth of the sort's time
+/// (`docs/decisions/041-a-sorted-page-reads-its-page.md`).
+pub fn changed_ceiling(limit: u32) -> usize {
+    (limit as usize).saturating_mul(10).min(4096)
+}
+
+/// [`scan_in_field_order`] at an earlier position, over the head's order
+/// index: `sorted` and `missing` answer the head, and `changed` the keys
+/// changed since the position with their states there. The head's rows
+/// for those keys are passed over, and their states at the position are
+/// merged in, in the index's order (sort key, then key; the sort key
+/// descending for a descending first field) and, for the records without
+/// the first field, in key order. Every other key's state is the same at
+/// the head and at the position, so the page is the one a sort of the type
+/// at the position gives. Every row read counts, the passed-over ones and
+/// the changed states included.
+pub fn scan_in_field_order_at<E>(
+    decl: Option<&TypeDecl>,
+    scan: &Scan,
+    changed: &Changed,
     mut sorted: impl FnMut(Option<(&[u8], &str)>, u32) -> Result<Vec<(Vec<u8>, StoredRecord)>, E>,
     mut missing: impl FnMut(Option<&str>, u32) -> Result<Vec<StoredRecord>, E>,
 ) -> Result<Vec<StoredRecord>, E> {
+    let Some(first) = scan.order_by.first() else {
+        return Ok(Vec::new());
+    };
+    count_read(changed.states.len());
+    let desc = first.dir == Direction::Desc;
+    let cmp = |a: (&[u8], &str), b: (&[u8], &str)| {
+        let by_value = if desc { b.0.cmp(a.0) } else { a.0.cmp(b.0) };
+        by_value.then_with(|| a.1.cmp(b.1))
+    };
+    fn row(r: &(Vec<u8>, StoredRecord)) -> (&[u8], &str) {
+        (r.0.as_slice(), r.1.key.as_str())
+    }
+    let (mut indexed, mut unindexed) = (Vec::new(), Vec::new());
+    for r in &changed.states {
+        match r.fields.get(&first.field).filter(|v| !v.is_null()) {
+            Some(v) => indexed.push((order_key(v), r.clone())),
+            None => unindexed.push(r.clone()),
+        }
+    }
+    indexed.sort_by(|a, b| cmp(row(a), row(b)));
+    unindexed.sort_by(|a, b| a.key.cmp(&b.key));
+    let ours = |key: &RecordKey| changed.keys.contains(key);
+    let mut rows = Ahead::default();
+    let mut rest = Ahead::default();
+    in_field_order(
+        decl,
+        scan,
+        false,
+        |from, n| {
+            let past = |r: &&(Vec<u8>, StoredRecord)| from.is_none_or(|f| cmp(row(r), f).is_gt());
+            let mine = indexed.iter().filter(past).take(n as usize).cloned();
+            rows.next(
+                from.map(|(k, key)| (k.to_vec(), key.to_owned())),
+                n,
+                |at: Option<&(Vec<u8>, String)>, n| {
+                    sorted(at.map(|(k, key)| (k.as_slice(), key.as_str())), n)
+                },
+                |r| (r.0.clone(), r.1.key.to_string()),
+                |r| ours(&r.1.key),
+                mine,
+                |a, b| cmp(row(a), row(b)),
+            )
+        },
+        |after, n| {
+            let past = |r: &&StoredRecord| after.is_none_or(|a| r.key.as_str() > a);
+            let mine = unindexed.iter().filter(past).take(n as usize).cloned();
+            rest.next(
+                after.map(str::to_owned),
+                n,
+                |at: Option<&String>, n| missing(at.map(String::as_str), n),
+                |r| r.key.to_string(),
+                |r| ours(&r.key),
+                mine,
+                |a, b| a.key.cmp(&b.key),
+            )
+        },
+    )
+}
+
+/// One of the head's two streams of rows at an earlier position, the
+/// changed keys passed over. The rows read ahead of what was answered are
+/// kept, so a call that goes on where the last one ended reads no row
+/// twice; a call from anywhere else reads from there.
+struct Ahead<T, P> {
+    pending: std::collections::VecDeque<T>,
+    at: Option<P>,
+    done: bool,
+    served: Option<P>,
+}
+
+impl<T, P> Default for Ahead<T, P> {
+    fn default() -> Self {
+        Ahead {
+            pending: Default::default(),
+            at: None,
+            done: false,
+            served: None,
+        }
+    }
+}
+
+impl<T, P: PartialEq> Ahead<T, P> {
+    /// At most `n` rows after `from`: the head's, read by `read` and less
+    /// those `ours` passes over, merged with `mine` in `cmp`'s order.
+    #[allow(clippy::too_many_arguments)]
+    fn next<E>(
+        &mut self,
+        from: Option<P>,
+        n: u32,
+        mut read: impl FnMut(Option<&P>, u32) -> Result<Vec<T>, E>,
+        place: impl Fn(&T) -> P,
+        ours: impl Fn(&T) -> bool,
+        mine: impl Iterator<Item = T>,
+        cmp: impl Fn(&T, &T) -> Ordering,
+    ) -> Result<Vec<T>, E> {
+        if from != self.served {
+            self.pending.clear();
+            self.at = from;
+            self.done = false;
+        }
+        while self.pending.len() < n as usize && !self.done {
+            let want = n - self.pending.len() as u32;
+            let rows = read(self.at.as_ref(), want)?;
+            count_read(rows.len());
+            self.done = rows.len() < want as usize;
+            for r in rows {
+                self.at = Some(place(&r));
+                if !ours(&r) {
+                    self.pending.push_back(r);
+                }
+            }
+        }
+        // Merged in `cmp`'s order, each row moved, not copied: a page
+        // holds its rows once.
+        let mut mine = mine.peekable();
+        let mut out = Vec::with_capacity(n as usize);
+        while out.len() < n as usize {
+            let theirs = match (self.pending.front(), mine.peek()) {
+                (Some(head), Some(own)) => cmp(own, head).is_gt(),
+                (head, _) => head.is_some(),
+            };
+            match if theirs {
+                self.pending.pop_front()
+            } else {
+                mine.next()
+            } {
+                Some(r) => out.push(r),
+                None => break,
+            }
+        }
+        self.served = out.last().map(place);
+        Ok(out)
+    }
+}
+
+/// [`scan_in_field_order`]'s body; `counted` says whether the rows the two
+/// closures answer count as read here, or were counted where they were.
+fn in_field_order<E>(
+    decl: Option<&TypeDecl>,
+    scan: &Scan,
+    counted: bool,
+    mut sorted: impl FnMut(Option<(&[u8], &str)>, u32) -> Result<Vec<(Vec<u8>, StoredRecord)>, E>,
+    mut missing: impl FnMut(Option<&str>, u32) -> Result<Vec<StoredRecord>, E>,
+) -> Result<Vec<StoredRecord>, E> {
+    let count = |n: usize| {
+        if counted {
+            count_read(n);
+        }
+    };
     let mut out = Vec::new();
     if scan.limit == 0 || scan.order_by.is_empty() {
         return Ok(out);
@@ -553,7 +757,7 @@ pub fn scan_in_field_order<E>(
         let mut n = batch;
         loop {
             let rows = sorted(from.as_ref().map(|(k, r)| (k.as_slice(), r.as_str())), n)?;
-            count_read(rows.len());
+            count(rows.len());
             let read_all = rows.len() < n as usize;
             for (k, r) in rows {
                 from = Some((k.clone(), r.key.to_string()));
@@ -599,7 +803,7 @@ pub fn scan_in_field_order<E>(
     let mut n = batch;
     loop {
         let rows = missing(from.as_deref(), n)?;
-        count_read(rows.len());
+        count(rows.len());
         let read_all = rows.len() < n as usize;
         for r in rows {
             from = Some(r.key.to_string());

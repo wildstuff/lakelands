@@ -58,9 +58,10 @@ before.
   writer's open rebuilds, once, every index that does not describe the
   head: one whose mark a writer without the index left behind, and one
   whose setting such a writer wrote.
-- **The ceiling.** A view at an earlier position, an order by `known_at`
-  or `seen_at`, an order by a field the lake did not ask an index for,
-  and a view type are sorted whole by `sort_key` as before. So is a
+- **The ceiling.** An order by `known_at` or `seen_at`, an order by a
+  field the lake did not ask an index for, and a view type are sorted
+  whole by `sort_key` as before, and so is a view at an earlier position
+  whose type changed too much since (below). So is a
   multi-field page whose first field has few values: its runs are long.
   `describe_type` names a type's indexed fields in its lifecycle
   (`sorted`), so an agent can see which orders are cheap. The seams page
@@ -104,9 +105,68 @@ once, more slowly, until a writer rebuilds.
 
 - **Not a second order.** `cmp_values` defines the order; `sort_key` is
   checked against it, never the other way round.
-- **Not history.** The index describes the head. Earlier positions sort,
-  as the other head indexes leave earlier positions to the kept states.
+- **Not history.** The index describes the head. An earlier position
+  reads it with the kept states of the keys changed since (below).
 - **Not a declaration.** Nothing in a type says which fields are sorted;
   the setting does, and the log format does not change.
 - **Not a seam method.** `Scan` already carries the order, `after` and
   `limit`, and the engine decides how to read them.
+
+## Extended: an earlier position reads the head index and the keys changed since
+
+A cursor keeps a walk at its first page's position, so its pages stay
+one answer while the lake is written. Each page after a write was a view
+at an earlier position, and sorted the type: the write the cursor keeps
+out of the walk made every later page cost the type.
+
+**What is decided.** A page at a position `p` before the head, ordered
+first by a field the head's index answers (the index kept through the
+head, the field named by the head's setting), reads that index too:
+
+- **The keys changed since.** `C` is every key of the type with a state
+  put after `p`, or with a state that held at `p` and ended after it.
+  The page passes over the index rows of `C` and merges in the states of
+  `C` at `p`, in the index's order: the kept sort key and the key, the
+  sort key descending for a descending first field; the records without
+  the first field in key order. Every other key's head state is its
+  state at `p`, so the page is the one a sort of the type at `p` gives,
+  byte for byte. A key written only after `p` is not in it; one retired
+  after `p` is, with its state at `p`.
+- **One read.** The index, `C` and the states at `p` are read in one
+  snapshot: SQLite's read transaction, PostgreSQL's `REPEATABLE READ`
+  read, the memory engine's lock. A commit between two pages of a view
+  changes neither.
+- **The merge is shared.** `lakelands_core::engines::
+  scan_in_field_order_at` passes over and merges; an engine finds `C`
+  and the states. SQLite and PostgreSQL read `C` by two range reads,
+  `records_since (ty, since)` for the states put and `records_at (ty,
+  until, key)` for the states that ended; a `UNION` of the two is planned
+  by SQLite as a merge in key order, which reads the type. The memory
+  engine keeps, per type, the position and key of every state put.
+- **The ceiling.** More than `min(10 × limit, 4 096)` states put since
+  `p`, or keys in `C`, and the page sorts the type as before. Every
+  state of `C` is held for the page, so the ceiling keeps what a page
+  holds near a page. It sits far below where the merge stops paying.
+  At 100 000 records, one text field indexed, a page of 50 or 1 000:
+
+  | keys changed | SQLite | PostgreSQL |
+  |---|---|---|
+  | 50 | 0.5 / 3.1 ms | 1.4 / 8.5 ms |
+  | 500 | 2.1 / 5.2 ms | 8.0 / 21.6 ms |
+  | 4 096 | 18.8 / 22.7 ms | 33.7 / 54.0 ms |
+  | 30 000 | 130 / 141 ms | 176 / 177 ms |
+  | the sort | 177 to 194 ms | 224 to 265 ms |
+
+- **What it costs a write.** One more index entry per state put, on
+  SQLite and PostgreSQL. Projection writes of 100 000 records, 32 per
+  commit, seven interleaved runs each: SQLite 3.39 s without and 3.42 s
+  with (medians, +1 %); PostgreSQL 12.63 s and 12.93 s (fastest runs,
+  +2 %), its medians within the runs' spread. The memory engine keeps a
+  position and a key per state put.
+
+**Why.** The head index still describes every key that has not changed
+since `p`, which in a walk is nearly all of them. Reading it and only the
+few that changed keeps a pinned page at about its page, as the head's
+is. The streaming check holds a walk with writes between its pages to
+its page, the one row more the store asks for, three more and two per
+changed key; before, each page after a write read the type.

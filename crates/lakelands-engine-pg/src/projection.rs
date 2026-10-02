@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS {s}.records (
     PRIMARY KEY (ty, key, since)
 );
 CREATE INDEX IF NOT EXISTS records_at ON {s}.records (ty, until, key);
+CREATE INDEX IF NOT EXISTS records_since ON {s}.records (ty, since);
 CREATE INDEX IF NOT EXISTS records_key_c ON {s}.records (ty, key COLLATE \"C\", since);
 CREATE TABLE IF NOT EXISTS {s}.proposals (
     id TEXT NOT NULL, since BIGINT NOT NULL, until BIGINT, state TEXT NOT NULL,

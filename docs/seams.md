@@ -348,13 +348,26 @@ about 0.1 ms in memory, 0.3 ms on SQLite and 2 ms on PostgreSQL.
 `describe_type` names a type's indexed fields in its lifecycle
 (`sorted`). The index is used only while it describes the head; a lake
 whose index a writer did not keep sorts as below until a writer's open
-rebuilds it. **Its ceilings:** with several sort fields, the first
+rebuilds it. **At an earlier position** — every page of a walk after a
+write, which its cursor keeps at the first page's position — a page reads
+the head's index too, passing over the keys of the type changed since the
+position and merging in their states there, read in the same snapshot
+(`scan_in_field_order_at`): SQLite and PostgreSQL find those keys by two
+range reads, into `records_since (ty, since)` and `records_at`, the
+memory engine in a per-type log of the states put. More than `min(10 ×
+limit, 4 096)` states put since, or keys changed, and the page sorts the
+type as below. At 100 000 records a page of 50 with 500 keys changed
+takes 2 ms on SQLite and 8 ms on PostgreSQL, against 0.18 s and 0.24 s for
+the sort; `records_since` costs a write about 1 to 2 %
+(`docs/decisions/041-a-sorted-page-reads-its-page.md`, extended).
+**Its ceilings:** with several sort fields, the first
 field's index orders runs of equal values and each run is read whole and
 sorted, so a first field with few values reads most of the type (a
 boolean first: about 0.3 s in memory, 0.45 s on SQLite and 1.3 s on
 PostgreSQL at 100 000 records). A field the lake did not ask an index
-for, an earlier position, an order by `known_at`, `seen_at` or `latest`,
-and a view type read the type at the position and sort it by `sort_key`,
+for, an earlier position past the ceiling above, an order by `known_at`,
+`seen_at` or `latest`, and a view type read the type at the position and
+sort it by `sort_key`,
 holding it only for that answer: about 0.2 s in memory, 0.5 s on SQLite
 and 0.6 s on PostgreSQL for a page of 50 over 100 000 records. Because
 each such engine page sorts the type again, a filter only the store
