@@ -136,15 +136,15 @@ fn no_record(ty: &TypeName, key: &RecordKey) -> Error {
 /// a new field required; the key changed; a relation removed or
 /// retargeted, or its cardinality narrowed; a stored type turned into a
 /// view. A change of meaning, an added optional field or relation, a
-/// loosened requirement or cardinality, a view ceasing to be one, is a
-/// declaration; and between two views nothing is stored, so every change
-/// is.
+/// loosened requirement or cardinality, is a declaration; and a view
+/// stores nothing, so every change of one is, a view ceasing to be one
+/// included.
 fn reshapes(
     old: &lakelands_api::ontology::TypeDecl,
     new: &lakelands_api::ontology::TypeDecl,
 ) -> bool {
     use lakelands_api::ontology::Cardinality;
-    if old.view.is_some() && new.view.is_some() {
+    if old.view.is_some() {
         return false;
     }
     if old.view.is_none() && new.view.is_some() {
@@ -1982,17 +1982,25 @@ fn unbound_view(start: &TypeName, reached: &DeclaredType, relation: &RelationNam
 fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationReport> {
     let ty = &m.to.name;
     let t = st.types.get(ty).ok_or_else(|| no_type(ty))?;
-    // As the store: a view is retired and declared, never migrated.
+    // As the store: a view changes, or becomes a stored type, by being
+    // declared again; a stored type never becomes a view.
     if t.decl.view.is_some() || m.to.view.is_some() {
-        return Err(invalid(format!(
-            "`{ty}` {}; a migration reshapes a stored type, and a view is retired and declared, \
-             never migrated",
-            if t.decl.view.is_some() {
-                "is a view"
-            } else {
-                "would become a view"
-            }
-        )));
+        return Err(invalid(
+            match (t.decl.view.is_some(), m.to.view.is_some()) {
+                (true, true) => format!(
+                    "`{ty}` is a view, and a view changes by being declared again, never by a \
+                 migration"
+                ),
+                (true, false) => format!(
+                    "`{ty}` is a view, and it becomes a stored type by being declared as one, never \
+                 by a migration"
+                ),
+                _ => format!(
+                    "the migration would turn the stored type `{ty}` into a view; declare the view \
+                 under another name (`{ty}` keeps its name and its records)"
+                ),
+            },
+        ));
     }
     if t.decl.key != m.to.key {
         return Err(invalid(format!(
