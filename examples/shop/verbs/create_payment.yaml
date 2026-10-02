@@ -1,0 +1,8 @@
+name: create_payment
+on: payment
+scope: type
+risk: low
+description: Create the payment of a paid order in the ledger.
+payload:
+  order_id: { type: text, required: true }
+executor: ledger

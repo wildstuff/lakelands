@@ -1,0 +1,35 @@
+[package]
+name = "lakelands-server"
+description = "The Lakelands server door: MCP over stdio and HTTP, and REST."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+futures-core.workspace = true
+bytes = "1"
+getrandom = "0.3"
+http-body-util = "0.1"
+hyper = { version = "1", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+lakelands-api.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_path_to_error.workspace = true
+tokio = { workspace = true, features = ["io-std", "io-util", "macros", "net", "rt", "sync", "time"] }
+
+[dev-dependencies]
+lakelands-engine-mem.workspace = true
+lakelands-engine-sqlite.workspace = true
+lakelands-mock.workspace = true
+lakelands-store.workspace = true
+# The official SDK, as a client only: proves it talks to this server.
+rmcp = { version = "3.4", default-features = false, features = ["client", "transport-async-rw", "transport-streamable-http-client-reqwest"] }
+tokio = { workspace = true, features = ["macros", "process", "rt-multi-thread"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,26 @@
+[package]
+name = "lakelands-engine-sqlite"
+description = "The SQLite engine for Lakelands."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+fs4.workspace = true
+lakelands-api.workspace = true
+lakelands-core.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+lakelands-store.workspace = true
+peak_alloc.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

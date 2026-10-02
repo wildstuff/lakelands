@@ -1,0 +1,7 @@
+name: invoice_overdue
+on: invoice
+field: status
+from: open
+to: overdue
+when: "due_on < today() - 30d"
+description: An open invoice becomes overdue thirty days after it fell due.

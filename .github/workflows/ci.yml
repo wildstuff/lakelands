@@ -1,0 +1,217 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [develop, main]
+  # release.yml runs these same checks on a tag before it builds.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  # The runner has about 14 GB free. Full debug info and incremental
+  # state more than double the test artifacts and the cache; line tables
+  # keep file and line in a failing test's backtrace.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # The CLI without its default features: no PostgreSQL client linked.
+      - run: cargo clippy -p lakelands-cli --no-default-features --all-targets --locked -- -D warnings
+
+  # The declared rust-version is a claim until something builds with it.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --all-targets --locked
+
+  nextest:
+    runs-on: ubuntu-latest
+    steps:
+      # This job builds every test of the workspace; the runner image's
+      # toolchains Lakelands never uses take the disk it needs.
+      - name: free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /usr/local/share/boost "$AGENT_TOOLSDIRECTORY/CodeQL"
+          df -h /
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --workspace --locked
+      # The door tests also run as `cargo test` runs them, many tests in
+      # one process, in parallel and in series: a test that leans on
+      # state another test left behind fails here, where nextest's
+      # process per test would hide it.
+      - run: cargo test --locked -p lakelands-cli -p lakelands-server
+      - run: df -h /
+      - run: cargo test --locked -p lakelands-cli -p lakelands-server -- --test-threads=1
+
+  # The engines come from conformance/roster, never from this file.
+  roster:
+    runs-on: ubuntu-latest
+    outputs:
+      engines: ${{ steps.roster.outputs.engines }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: roster
+        run: echo "engines=$(scripts/conformance.sh --list | jq -R . | jq -cs .)" >> "$GITHUB_OUTPUT"
+
+  # No `name:` of its own: GitHub names each matrix job `conformance
+  # (<engine>)`, and a run whose roster never answered shows one skipped
+  # `conformance` instead of a job under an unexpanded placeholder.
+  conformance:
+    needs: roster
+    if: needs.roster.result == 'success' && needs.roster.outputs.engines != ''
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: ${{ fromJSON(needs.roster.outputs.engines || '[]') }}
+        # Every engine runs against a plain server; pg runs once more
+        # against a server with pgvector, where a vector field the lake
+        # asks an index for is searched through it (decision 043). The
+        # plain pg job keeps the lake without the extension under test.
+        server: [plain]
+        include:
+          - engine: pg
+            server: pgvector
+    # A throwaway PostgreSQL for the `pg` engine only: an empty image
+    # starts no container for the other engines. Its password guards
+    # nothing but this job's own database, so it is not a secret.
+    services:
+      postgres:
+        image: ${{ matrix.engine == 'pg' && (matrix.server == 'pgvector' && 'pgvector/pgvector:pg16' || 'postgres:16') || '' }}
+        env:
+          POSTGRES_USER: lakelands
+          POSTGRES_PASSWORD: lakelands
+          POSTGRES_DB: lakelands
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lakelands -d lakelands"
+          --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      # Only the pg engine's test harness reads this and passes it as the
+      # `url` of `EngineConfig::Postgres`; the engine reads no environment.
+      LAKELANDS_TEST_PG_URL: ${{ matrix.engine == 'pg' && 'postgres://lakelands:lakelands@localhost:5432/lakelands' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - run: scripts/conformance.sh "${{ matrix.engine }}"
+
+  # Licences and advisories (deny.toml): one job each, so a new advisory
+  # never hides a licence failure.
+  deny:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [licenses, advisories]
+    name: deny (${{ matrix.check }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny --locked check ${{ matrix.check }}
+
+  # The release's third-party licence list, generated on every PR so the
+  # script cannot rot; the file is an artefact, never tracked.
+  third-party-licences:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+      - run: scripts/third-party-licences.sh target/third-party-licences.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: third-party-licences
+          path: target/third-party-licences.txt
+          retention-days: 7
+
+  # What a host must change to take this tree, against the latest release:
+  # a report in the job summary, never a failure (under 0.x a release may
+  # break a host, and must say how). The release PR's body carries it.
+  host-changes:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+      - run: scripts/release/host-changes.sh | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # docs/conformance.md lists every registered check; this fails while the
+  # page differs from the registries.
+  conformance-page:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/conformance-page.py --check
+
+  # One job per gate, so a red gate never hides another.
+  gate:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        gate:
+          - no-external-platform-deps
+          - cfg-budget
+          - vocabulary
+          - single-catalog
+          - seam-width
+          - core-size
+          - conformance-required
+          - dco
+          - no-external-decisions
+    name: gate (${{ matrix.gate }})
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - run: scripts/gates/${{ matrix.gate }}.sh
+        env:
+          GATE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}

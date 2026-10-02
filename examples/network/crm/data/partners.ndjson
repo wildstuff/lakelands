@@ -1,0 +1,7 @@
+{"type": "partner", "key": "P-100", "fields": {"id": "P-100", "name": "Harbor Supplies", "city": "Hamburg"}}
+{"type": "partner", "key": "P-200", "fields": {"id": "P-200", "name": "Northwind Tools", "city": "Bremen"}}
+{"type": "partner", "key": "P-300", "fields": {"id": "P-300", "name": "Cedar Logistics", "city": "Rotterdam"}}
+{"type": "partner", "key": "P-400", "fields": {"id": "P-400", "name": "Delta Metals", "city": "Antwerp"}}
+{"type": "partner", "key": "P-500", "fields": {"id": "P-500", "name": "Elm Packaging", "city": "Gdansk"}}
+{"type": "partner", "key": "P-600", "fields": {"id": "P-600", "name": "Fjord Timber", "city": "Bergen"}}
+{"type": "partner", "key": "P-700", "fields": {"id": "P-700", "name": "Gull Catering", "city": "Kiel"}}

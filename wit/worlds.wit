@@ -1,0 +1,15 @@
+package lakelands:data@0.7.0;
+
+/// A component that uses lakes its host keeps.
+world client {
+    import store;
+    import query;
+    import schema;
+}
+
+/// A component that keeps lakes for its host.
+world provider {
+    export store;
+    export query;
+    export schema;
+}

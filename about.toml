@@ -1,0 +1,18 @@
+# cargo-about: generates the third-party licence list that ships with a
+# release (scripts/third-party-licences.sh). The accepted set is the
+# allow-list in deny.toml; the two change together.
+accepted = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+]
+# The workspace's own crates are not third-party, and dev-dependencies
+# never ship.
+private = { ignore = true }
+ignore-dev-dependencies = true

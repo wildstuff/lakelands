@@ -1,0 +1,17 @@
+name: order
+description: An order, arriving with the customer's number only.
+key: id
+fields:
+  id: { type: text, authority: source }
+  customer_no: { type: text, authority: source }
+  amount: { type: decimal, authority: source }
+  ordered_on: { type: date_time, authority: source }
+  status: { type: text, authority: shared }
+  paid_on: date_time
+relations:
+  placed_by:
+    target: customer
+    cardinality: many_to_one
+    derived:
+      match:
+        - { from: customer_no, to: number }

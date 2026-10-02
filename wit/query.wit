@@ -1,0 +1,13 @@
+package lakelands:data@0.7.0;
+
+/// Reading across records: the one pattern query
+/// (`docs/decisions/018-one-pattern-query.md`) and search. Search is a
+/// start of the pattern query as well as a door of its own, so it lives
+/// here rather than in an interface of its own.
+interface query {
+    use types.{principal, pattern, query-result-reply, search as search-request, hits-reply, error};
+    use store.{catalog};
+
+    query: func(catalog: borrow<catalog>, who: principal, pattern: pattern) -> result<query-result-reply, error>;
+    search: func(catalog: borrow<catalog>, who: principal, search: search-request) -> result<hits-reply, error>;
+}

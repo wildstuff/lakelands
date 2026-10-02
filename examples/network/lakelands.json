@@ -1,0 +1,15 @@
+{
+  "lakelands": 1,
+  "owner": "owner",
+  "principals": [
+    { "name": "mirror", "kind": "service", "id": "mirror",
+      "grants": { "default": "write", "ingest": true } }
+  ],
+  "mirror": {
+    "connections": [
+      { "name": "crm", "source": "crm", "target": "ledger", "principal": "mirror",
+        "types": { "partner": "partner" } }
+    ],
+    "poll_millis": 200
+  }
+}

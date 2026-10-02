@@ -1,0 +1,28 @@
+[package]
+name = "lakelands-api"
+description = "The contract every Lakelands crate builds against: principals, locations, positions, the catalog and the seam traits."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+futures-core.workspace = true
+# The shortest round-trip digits of a double, for the canonical number form.
+ryu.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Where in a declaration a member it does not know sits.
+serde_path_to_error.workspace = true
+# The schema hash and every other digest over canonical bytes.
+sha2.workspace = true
+
+[dev-dependencies]
+# Parses the WIT package in `wit/` for the drift check (tests/wit.rs).
+wit-parser = { version = "0.259", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

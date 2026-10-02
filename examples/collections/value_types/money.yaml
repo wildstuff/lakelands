@@ -1,0 +1,4 @@
+name: money
+kind: decimal
+scale: 2
+description: An amount of money in the lake's one currency, kept to the cent.

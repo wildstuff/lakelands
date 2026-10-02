@@ -1,0 +1,624 @@
+//! Fields computed by a function whose backing reaches outside the lake
+//! (`docs/decisions/022-functions-are-declarations.md` and
+//! `docs/decisions/002-determinism-is-the-boundary.md`, extended;
+//! `docs/log-format.md` §2.5).
+//!
+//! The store calls such a backing after the write that made the call due,
+//! records the answer as `output_recorded`, and fills the field from the
+//! record, never from a second call. A replay that called the backing
+//! again could answer differently, and a backing called twice for one
+//! input costs twice and may act twice; both are why these checks count
+//! the calls the backing received. The checks use the suite's scripted
+//! backing ([`crate::conformance::backing`]), which every harness binds.
+
+use std::sync::Arc;
+
+use lakelands_api::event::EventBody;
+use lakelands_api::expr::Condition;
+use lakelands_api::ontology::{Authority, FieldDecl, StorageKind, TriggerDecl};
+use lakelands_api::seam::FeedFilter;
+use lakelands_api::write::Declaration;
+use lakelands_api::{Error, LakeStore, Origin, Refusal, Version};
+use serde_json::{Value, json};
+
+use crate::conformance::Failure;
+use crate::conformance::backing::{KIND, made, plug, unplug};
+use crate::conformance::fixture::{
+    Lake, Must, field, head_unmoved, recorded_outputs, type_decl, value,
+};
+
+check!(
+    /// A function of a kind no backing is bound for is refused.
+    UNBOUND_KIND_REFUSED = a_function_of_a_backing_kind_nobody_bound_is_refused_at_declare,
+    "022, extended: a function computed outside the store is declared only where the host bound a backing of its kind; otherwise the declaration is refused as unbound, naming the kind"
+);
+
+check!(
+    /// A backed field is filled from the recorded output.
+    FILLED_AND_RECORDED = a_backed_field_is_filled_from_the_output_the_store_records,
+    "022, extended, and the log format: the store calls the backing after the write, records the answer as output_recorded naming the field, and the write answers the position the filled field is visible from"
+);
+
+check!(
+    /// One input, one call.
+    ONE_CALL_PER_INPUT = the_same_input_is_never_sent_to_a_backing_twice,
+    "002 and 022, extended: an output recorded for a call is read back for every later call with the same input, across records and after the input changed and came back"
+);
+
+check!(
+    /// A failure clears the field and says why.
+    FAILURE_CLEARS = a_failing_backing_clears_the_field_and_records_the_failure,
+    "022 and 010, extended: a failure is recorded as {\"error\": …}, clears the field it fills, puts the reason in the field's metadata, and is not retried for the same input"
+);
+
+check!(
+    /// Rebuild reads recorded outputs back.
+    REBUILD_READS_OUTPUTS = a_rebuild_reads_recorded_outputs_back_without_calling_the_backing,
+    "001 and 002: a rebuild folds the recorded outputs; with the backing refusing every call, the rebuilt field reads as before and no call is made"
+);
+
+check!(
+    /// A fill is a record change like any write.
+    FILL_REACTS = a_filled_field_recomputes_what_reads_it_and_fires_its_triggers,
+    "012 and 022, extended: the field an output fills is changed through the fold's ordinary path; a derived field reading it is recomputed and a trigger on it fires, caused by the output"
+);
+
+check!(
+    /// Computed fields read one another without a cycle.
+    COMPUTED_CYCLE_REFUSED = computed_fields_that_read_each_other_in_a_cycle_are_refused,
+    "022, extended: a type's computed fields, derived and function-computed alike, read one another without a cycle, so a chain of fills ends; a cycle is refused at declare, naming its fields"
+);
+
+check!(
+    /// A fill from a recorded output reacts like any other.
+    RECORDED_FILL_REACTS = a_second_record_with_the_same_input_has_its_derived_fields_right,
+    "022, extended: a field filled from an output the lake already holds is a change of that field; the derived fields reading it are recomputed in the same event"
+);
+
+check!(
+    /// A backed field waits for the backed field it reads.
+    CHAIN_WAITS = a_backed_field_reading_another_waits_for_its_output,
+    "022, extended: computed fields settle in the order of what they read; a backed field whose input is not computed yet is not called, so no output is recorded under an input that was never meant"
+);
+
+/// Declares `lookup`, a function of the suite's backing that echoes its
+/// input `input`.
+async fn lookup(store: &dyn LakeStore, input: &str, config: Value) -> Result<Lake, Failure> {
+    let l = Lake::of(store);
+    let Lake { cat, own } = &l;
+    let function: Declaration = serde_json::from_value(json!({
+        "declare": "function", "name": "lookup", "backing": KIND,
+        "inputs": [{"name": input, "type": {"kind": "text"}}],
+        "config": config
+    }))
+    .map_err(|e| Failure::new(format!("the check's function does not read: {e}")))?;
+    cat.declare(own, function)
+        .await
+        .must("declaring `lookup`, backed by the suite's backing")?;
+    Ok(l)
+}
+
+/// Declares `lookup`, a function of the suite's backing that echoes its
+/// input `code`, and the type `place`, whose `name` it computes.
+async fn places(store: &dyn LakeStore, config: Value) -> Result<Lake, Failure> {
+    let l = lookup(store, "code", config).await?;
+    let name = FieldDecl {
+        authority: Authority::Derived,
+        function: Some("lookup".into()),
+        depends_on: vec!["code".into()],
+        ..field("name", StorageKind::Text)
+    };
+    l.declare(type_decl(
+        "place",
+        vec![field("code", StorageKind::Text), name],
+    ))
+    .await?;
+    Ok(Lake::of(store))
+}
+
+async fn a_function_of_a_backing_kind_nobody_bound_is_refused_at_declare(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    let before = store.head().await.must("reading the head")?;
+    let function: Declaration = serde_json::from_value(json!({
+        "declare": "function", "name": "geocode", "backing": "nowhere",
+        "inputs": [{"name": "address", "type": {"kind": "text"}}],
+        "config": {"url": "https://geo.example/lookup"}
+    }))
+    .map_err(|e| Failure::new(format!("the check's function does not read: {e}")))?;
+    let answer = cat.declare(own, function).await;
+    ensure!(
+        matches!(&answer, Err(Error::Unbound { seam }) if seam.contains("nowhere")),
+        "no backing of the kind `nowhere` is bound, so declaring a function of that kind \
+         must be refused as unbound, naming the kind; it answered {answer:?}"
+    );
+    head_unmoved(store.as_ref(), before, "a refused function declaration").await?;
+    Ok(())
+}
+
+async fn a_backed_field_is_filled_from_the_output_the_store_records(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let token = "filled_and_recorded";
+    let l = places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
+    let written = l.upsert("place", "p1", json!({"code": "AT"})).await?;
+
+    let r = l.read("place", "p1").await?;
+    ensure!(
+        value(&r, "name") == Some(&json!("AT")),
+        "`name` is computed by `lookup`, which answers its input; after writing code AT \
+         it must read \"AT\", but reads {:?}",
+        value(&r, "name")
+    );
+    let meta = r.meta.get("name");
+    ensure!(
+        meta.is_some_and(|m| m.origin == Origin::Derived
+            && m.procedure_version.as_deref() == Some("1")
+            && m.error.is_none()),
+        "a filled field carries origin `derived`, the function's version (1) and no error; \
+         its metadata is {meta:?}"
+    );
+    ensure!(
+        r.version == Version(1),
+        "filling a computed field is not a write: `p1` was written once and is at version \
+         1, not {:?}",
+        r.version
+    );
+
+    let recorded = recorded_outputs(store.as_ref()).await?;
+    let [event] = recorded.as_slice() else {
+        return Err(Failure::new(format!(
+            "one call was made, so the log holds one `output_recorded`; it holds {}",
+            recorded.len()
+        )));
+    };
+    let EventBody::OutputRecorded {
+        seam,
+        output,
+        field: filled,
+        ..
+    } = &event.body
+    else {
+        return Err(Failure::new(
+            "the feed answered another kind for `output_recorded`",
+        ));
+    };
+    ensure!(
+        seam == &format!("function:{KIND}:lookup")
+            && output == &json!("AT")
+            && filled
+                .as_ref()
+                .is_some_and(|(t, k, f)| t.as_str() == "place"
+                    && k.as_str() == "p1"
+                    && f.as_str() == "name"),
+        "the output is recorded under the seam `function:{KIND}:lookup`, as \"AT\", naming \
+         the field `place` `p1` `name`; the log holds seam {seam:?}, output {output}, field \
+         {filled:?}"
+    );
+    ensure!(
+        event.cause.is_some_and(|c| c < event.position)
+            && event.procedure.as_ref().map(|p| p.name.as_str()) == Some("lookup"),
+        "the recorded output names the write that made the call due as its cause and \
+         `lookup` as its procedure; it has cause {:?} and procedure {:?}",
+        event.cause,
+        event.procedure
+    );
+    ensure!(
+        written.position() == event.position,
+        "the write answers the position its filled field is visible from, the recorded \
+         output's ({}); it answered {}",
+        event.position,
+        written.position()
+    );
+    Ok(())
+}
+
+async fn the_same_input_is_never_sent_to_a_backing_twice(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let token = "one_call_per_input";
+    let l = places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
+    for (key, code) in [("p1", "AT"), ("p2", "AT"), ("p1", "DE"), ("p1", "AT")] {
+        l.upsert("place", key, json!({"code": code})).await?;
+    }
+    let calls = made(token);
+    ensure!(
+        calls == 2,
+        "four writes asked for two inputs (AT, DE); the backing must have been called \
+         once for each, but was called {calls} times"
+    );
+    for key in ["p1", "p2"] {
+        let r = l.read("place", key).await?;
+        ensure!(
+            value(&r, "name") == Some(&json!("AT")),
+            "`{key}` has code AT, so its `name` is the output recorded for AT, \"AT\"; it \
+             reads {:?}",
+            value(&r, "name")
+        );
+    }
+    Ok(())
+}
+
+async fn a_failing_backing_clears_the_field_and_records_the_failure(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let token = "failure_clears";
+    places(
+        store.as_ref(),
+        json!({"token": token, "echo": "code", "fail_on": "XX"}),
+    )
+    .await?;
+    let l = Lake::of(store.as_ref());
+    l.upsert("place", "p1", json!({"code": "AT"})).await?;
+    l.upsert("place", "p1", json!({"code": "XX"})).await?;
+
+    let r = l.read("place", "p1").await?;
+    ensure!(
+        value(&r, "name").is_none(),
+        "`lookup` fails for XX, so `name` must hold no value, not the value AT computed \
+         before; it reads {:?}",
+        value(&r, "name")
+    );
+    let meta = r.meta.get("name");
+    ensure!(
+        meta.is_some_and(
+            |m| m.origin == Origin::Derived && m.error.as_deref().is_some_and(|e| e.contains("XX"))
+        ),
+        "a field cleared by a failure keeps metadata that says why (its `error`) though it \
+         holds no value; the read with provenance answered {meta:?}"
+    );
+    let recorded = recorded_outputs(store.as_ref()).await?;
+    let last = recorded.last().map(|e| &e.body);
+    ensure!(
+        matches!(last, Some(EventBody::OutputRecorded { output, .. })
+            if output.as_object().is_some_and(|o| o.len() == 1 && o["error"].is_string())),
+        "the failure is recorded as its output, {{\"error\": \"<why>\"}}; the last \
+         `output_recorded` is {last:?}"
+    );
+
+    l.upsert("place", "p2", json!({"code": "XX"})).await?;
+    let calls = made(token);
+    ensure!(
+        calls == 2,
+        "a failure is final for its input: `p2` with code XX is cleared from the recorded \
+         failure, without a third call; the backing was called {calls} times"
+    );
+    let r = l.read("place", "p2").await?;
+    ensure!(
+        value(&r, "name").is_none() && r.meta.get("name").is_some_and(|m| m.error.is_some()),
+        "`p2` reads the recorded failure: no `name`, and an error in its metadata; it \
+         reads {r:?}"
+    );
+    Ok(())
+}
+
+async fn a_rebuild_reads_recorded_outputs_back_without_calling_the_backing(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let token = "rebuild_reads_outputs";
+    let l = places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
+    l.upsert("place", "p1", json!({"code": "AT"})).await?;
+    let before = l.read("place", "p1").await?;
+    let calls = made(token);
+
+    unplug(token);
+    store.rebuild().await.must("rebuilding the projection")?;
+    let after = l.read("place", "p1").await?;
+    ensure!(
+        after == before,
+        "a rebuild reads the recorded output back, so `p1` reads as before it.\n  before: \
+         {before:?}\n  after:  {after:?}"
+    );
+    l.upsert("place", "p2", json!({"code": "AT"})).await?;
+    let p2 = l.read("place", "p2").await?;
+    ensure!(
+        made(token) == calls && value(&p2, "name") == Some(&json!("AT")),
+        "with the backing refusing every call, neither the rebuild nor a later write of the \
+         same input may call it: {calls} calls before, {} after; `p2` reads {:?}",
+        made(token),
+        value(&p2, "name")
+    );
+    Ok(())
+}
+
+async fn a_filled_field_recomputes_what_reads_it_and_fires_its_triggers(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let token = "fill_reacts";
+    lookup(
+        store.as_ref(),
+        "code",
+        json!({"token": token, "echo": "code"}),
+    )
+    .await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    let name = FieldDecl {
+        authority: Authority::Derived,
+        function: Some("lookup".into()),
+        depends_on: vec!["code".into()],
+        ..field("name", StorageKind::Text)
+    };
+    let greeting = FieldDecl {
+        authority: Authority::Derived,
+        derived: Some("concat(name, '!')".into()),
+        depends_on: vec!["name".into()],
+        ..field("greeting", StorageKind::Text)
+    };
+    l.declare(type_decl(
+        "place",
+        vec![field("code", StorageKind::Text), name, greeting],
+    ))
+    .await?;
+    cat.declare(
+        own,
+        Declaration::Trigger(TriggerDecl {
+            max_depth: None,
+            name: "named".into(),
+            on: "place".into(),
+            when: Some(Condition::from("name = 'AT'")),
+            description: None,
+        }),
+    )
+    .await
+    .must("declaring the trigger `named` on `place`")?;
+    l.upsert("place", "p1", json!({"code": "AT"})).await?;
+
+    let r = l.read("place", "p1").await?;
+    ensure!(
+        value(&r, "greeting") == Some(&json!("AT!")),
+        "`greeting` is concat(name, '!') and `name` was filled with \"AT\" by the output; \
+         the fill is a change of `name`, so `greeting` must read \"AT!\", but reads {:?}",
+        value(&r, "greeting")
+    );
+    let recorded = recorded_outputs(store.as_ref()).await?;
+    let Some(output) = recorded.first() else {
+        return Err(Failure::new(
+            "no `output_recorded` in the log after the write",
+        ));
+    };
+    let feed = store
+        .feed()
+        .poll(output.position, &FeedFilter::default(), u32::MAX)
+        .await
+        .must("reading the feed from the recorded output")?;
+    let fired = feed.events.iter().any(|e| {
+        e.cause == Some(output.position)
+            && matches!(&e.body, EventBody::TriggerFired { trigger, .. } if trigger.as_str() == "named")
+    });
+    ensure!(
+        fired,
+        "the fill made `name = 'AT'` hold, so the trigger `named` fires, caused by the \
+         `output_recorded` at {}; the feed from there holds {:?}",
+        output.position,
+        feed.events
+            .iter()
+            .map(|e| (e.position, e.body.kind(), e.cause))
+            .collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+async fn computed_fields_that_read_each_other_in_a_cycle_are_refused(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let token = "computed_cycle_refused";
+    lookup(
+        store.as_ref(),
+        "label",
+        json!({"token": token, "echo": "label"}),
+    )
+    .await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    let before = store.head().await.must("reading the head")?;
+    let name = FieldDecl {
+        authority: Authority::Derived,
+        function: Some("lookup".into()),
+        depends_on: vec!["label".into()],
+        ..field("name", StorageKind::Text)
+    };
+    let label = FieldDecl {
+        authority: Authority::Derived,
+        derived: Some("concat(name, '-')".into()),
+        depends_on: vec!["name".into()],
+        ..field("label", StorageKind::Text)
+    };
+    let answer = cat
+        .declare(
+            own,
+            Declaration::Type(type_decl("place", vec![name, label])),
+        )
+        .await;
+    let named_both = match &answer {
+        Err(Error::Refused {
+            reason: Refusal::Invalid { message },
+            ..
+        }) => message.contains("name") && message.contains("label"),
+        _ => false,
+    };
+    ensure!(
+        named_both,
+        "`name` is computed by `lookup` from `label`, and `label` is derived from `name`: \
+         a cycle, which must be refused as invalid naming both fields; it answered {answer:?}"
+    );
+    head_unmoved(store.as_ref(), before, "a refused cycle of computed fields").await?;
+    Ok(())
+}
+
+/// Declares a function of the suite's backing, `name`, echoing `input`.
+async fn echoing(
+    store: &dyn LakeStore,
+    name: &str,
+    input: &str,
+    config: Value,
+) -> Result<(), Failure> {
+    let l = Lake::of(store);
+    let Lake { cat, own } = &l;
+    let function: Declaration = serde_json::from_value(json!({
+        "declare": "function", "name": name, "backing": KIND,
+        "inputs": [{"name": input, "type": {"kind": "text"}}],
+        "config": config
+    }))
+    .map_err(|e| Failure::new(format!("the check's function does not read: {e}")))?;
+    cat.declare(own, function).await.must(&format!(
+        "declaring `{name}`, backed by the suite's backing"
+    ))?;
+    Ok(())
+}
+
+fn computed_by(name: &str, function: &str, input: &str) -> FieldDecl {
+    FieldDecl {
+        authority: Authority::Derived,
+        function: Some(function.into()),
+        depends_on: vec![input.into()],
+        ..field(name, StorageKind::Text)
+    }
+}
+
+async fn a_second_record_with_the_same_input_has_its_derived_fields_right(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let token = "recorded_fill_reacts";
+    echoing(
+        store.as_ref(),
+        "lookup",
+        "code",
+        json!({"token": token, "echo": "code"}),
+    )
+    .await?;
+    let l = Lake::of(store.as_ref());
+    let greeting = FieldDecl {
+        authority: Authority::Derived,
+        derived: Some("concat(name, '!')".into()),
+        depends_on: vec!["name".into()],
+        ..field("greeting", StorageKind::Text)
+    };
+    l.declare(type_decl(
+        "place",
+        vec![
+            field("code", StorageKind::Text),
+            computed_by("name", "lookup", "code"),
+            greeting,
+        ],
+    ))
+    .await?;
+    l.upsert("place", "p1", json!({"code": "AT"})).await?;
+    l.upsert("place", "p2", json!({"code": "AT"})).await?;
+    let r = l.read("place", "p2").await?;
+    ensure!(
+        value(&r, "name") == Some(&json!("AT")) && value(&r, "greeting") == Some(&json!("AT!")),
+        "`p2` has the code AT, whose output the lake already holds: `name` is filled from it \
+         without a call, and `greeting`, derived from `name`, must read \"AT!\" in the same \
+         event; `p2` reads name {:?}, greeting {:?}",
+        value(&r, "name"),
+        value(&r, "greeting")
+    );
+    ensure!(
+        made(token) == 1,
+        "one input, one call: the backing was called {} times",
+        made(token)
+    );
+    Ok(())
+}
+
+async fn a_backed_field_reading_another_waits_for_its_output(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let (first, second) = ("chain_waits_first", "chain_waits_second");
+    echoing(
+        store.as_ref(),
+        "first",
+        "code",
+        json!({"token": first, "echo": "code"}),
+    )
+    .await?;
+    // `second` fails on a null input: a call made before `a` was computed
+    // would leave `b` with an error instead of a value.
+    echoing(
+        store.as_ref(),
+        "second",
+        "a",
+        json!({"token": second, "echo": "a", "fail_on": null}),
+    )
+    .await?;
+    let l = Lake::of(store.as_ref());
+    // `b` is declared before the field it reads.
+    l.declare(type_decl(
+        "place",
+        vec![
+            field("code", StorageKind::Text),
+            computed_by("b", "second", "a"),
+            computed_by("a", "first", "code"),
+        ],
+    ))
+    .await?;
+    l.upsert("place", "p1", json!({"code": "AT"})).await?;
+    let r = l.read("place", "p1").await?;
+    ensure!(
+        value(&r, "a") == Some(&json!("AT")) && value(&r, "b") == Some(&json!("AT")),
+        "`a` is computed from `code` and `b` from `a`: both must read \"AT\", `b` called \
+         only once `a` was filled; `p1` reads a {:?}, b {:?}, with metadata {:?}",
+        value(&r, "a"),
+        value(&r, "b"),
+        r.meta.get("b")
+    );
+    ensure!(
+        made(first) == 1 && made(second) == 1,
+        "one call for `a` and one for `b` with `a`'s value, never one with `a` absent; the \
+         backing was called {} times for `a` and {} for `b`",
+        made(first),
+        made(second)
+    );
+    Ok(())
+}
+
+check!(
+    /// A redeclaration calls again for an input whose output was a failure.
+    FAILURE_RETRIED = a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds,
+    "022, extended: a settle forced by a declaration calls again, once, for an input whose recorded output is a failure, for a function backing as for an embedding; the later output holds for every record with that input"
+);
+
+async fn a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let token = "failure_retried";
+    let l = places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
+    unplug(token);
+    l.upsert("place", "p1", json!({"code": "AT"})).await?;
+    l.upsert("place", "p2", json!({"code": "AT"})).await?;
+    let failed = made(token);
+    let r = l.read("place", "p1").await?;
+    ensure!(
+        failed == 1 && value(&r, "name").is_none(),
+        "the backing refused every call, so `p1` and `p2`, both with code AT, hold no \
+         `name` after one call; the backing was called {failed} times and `p1` reads {r:?}"
+    );
+
+    plug(token);
+    let name = FieldDecl {
+        authority: Authority::Derived,
+        function: Some("lookup".into()),
+        depends_on: vec!["code".into()],
+        ..field("name", StorageKind::Text)
+    };
+    l.declare(type_decl(
+        "place",
+        vec![field("code", StorageKind::Text), name],
+    ))
+    .await?;
+    let calls = made(token) - failed;
+    let (p1, p2) = (l.read("place", "p1").await?, l.read("place", "p2").await?);
+    ensure!(
+        calls == 1
+            && value(&p1, "name") == Some(&json!("AT"))
+            && value(&p2, "name") == Some(&json!("AT")),
+        "declaring `place` again retries the failed call for code AT: one more call, not \
+         {calls}, and its output fills `name` on both records; they read {:?} and {:?}",
+        value(&p1, "name"),
+        value(&p2, "name")
+    );
+    Ok(())
+}

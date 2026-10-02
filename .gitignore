@@ -19,3 +19,11 @@ target
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# Personal agent instructions with private pointers — never committed
+CLAUDE.local.md
+
+# Per-slot agent environment (see docs/development.md)
+.claude/settings.local.json
+*.actual
+__pycache__/

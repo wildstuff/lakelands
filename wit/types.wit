@@ -1,0 +1,1011 @@
+package lakelands:data@0.7.0;
+
+/// The types every interface of the package shares: the contract of
+/// `lakelands-api`, type for type.
+///
+/// The Rust crate is the source and this package mirrors it; a test in
+/// `lakelands-api` (`tests/wit.rs`) fails when the two drift apart. Where
+/// the component model cannot say what the crate says, one rule applies
+/// everywhere:
+///
+/// - A JSON value (a field's value, a verb's output, a function's
+///   configuration) is `json`: the value's JSON text, as the contract
+///   would serialise it.
+/// - The typed form of an expression is recursive, and a WIT type cannot
+///   be; a condition is its text form, or its typed form as `json`.
+/// - A map is a list of named entries, in the map's order.
+/// - A generic reply (`Reply<T>` in the crate) is one record per `T`:
+///   `position` and `data`, named `<t>-reply`.
+/// - A stream is a list: `ingest` takes the records of one delivery and
+///   answers every commit window of it.
+///
+/// Names are the contract's, in kebab-case; a name that is a WIT keyword
+/// (`type`, `record`, `from`) is written with `%`.
+interface types {
+    // ------------------------------------------------------------------
+    // Identifiers and time
+    // ------------------------------------------------------------------
+
+    /// A JSON value, as its JSON text.
+    type json = string;
+    /// A UTC instant in the one form of `docs/log-format.md` §1.3.
+    type timestamp = string;
+    /// The log coordinate every reply carries (`docs/glossary.md`).
+    type position = u64;
+    /// A record's compare-and-set token.
+    type version = u64;
+    type lake-id = string;
+    type type-name = string;
+    type field-name = string;
+    type record-key = string;
+    type relation-name = string;
+    type verb-name = string;
+    type trigger-name = string;
+    type param-name = string;
+    type value-type-name = string;
+    type source-id = string;
+    type proposal-id = string;
+    type idempotency-key = string;
+    /// A page token of a list-shaped read, bound to its first page's
+    /// position.
+    type cursor = string;
+    /// A SHA-256 digest, as 64 lower-case hex digits.
+    type digest = string;
+
+    /// The two time axes of a read: the position it is pinned at
+    /// (`as-of`), and business time (`valid-at`).
+    record read-at {
+        as-of: option<position>,
+        valid-at: option<timestamp>,
+    }
+
+    // ------------------------------------------------------------------
+    // Principals
+    // ------------------------------------------------------------------
+
+    enum principal-kind { human, agent, service, system }
+
+    enum access { none, masked, read, write }
+
+    /// A field's access, one entry of a type's grants.
+    record field-access {
+        field: field-name,
+        access: access,
+    }
+
+    /// The grants a principal holds on one type.
+    record type-grants {
+        %type: type-name,
+        default: option<access>,
+        fields: list<field-access>,
+    }
+
+    record grants {
+        default: access,
+        types: list<type-grants>,
+        review: bool,
+        schema: bool,
+        ingest: bool,
+        restricted: bool,
+    }
+
+    /// Who is calling, with the grants the store enforces
+    /// (`docs/decisions/006-grants-not-roles.md`).
+    record principal {
+        kind: principal-kind,
+        id: string,
+        lake: lake-id,
+        grants: grants,
+    }
+
+    enum write-origin { direct, reactive, scheduled }
+
+    record write-context {
+        origin: write-origin,
+        depth: u32,
+        /// The position the write follows from, as the host names it; it
+        /// lands in the envelope's `cause` of the write's own events.
+        cause: option<position>,
+    }
+
+    // ------------------------------------------------------------------
+    // Expressions
+    // ------------------------------------------------------------------
+
+    /// A condition in the one expression grammar
+    /// (`docs/decisions/017-one-expression-grammar.md`).
+    variant condition {
+        /// The text form, as a caller writes it.
+        text(string),
+        /// The typed form (`docs/log-format.md` Appendix B), as JSON.
+        typed(json),
+    }
+
+    // ------------------------------------------------------------------
+    // Ontology
+    // ------------------------------------------------------------------
+
+    enum storage-kind {
+        text, number, decimal, boolean, date-time, bytes, json, reference, vector, geo,
+    }
+
+    record field-type {
+        kind: storage-kind,
+        value-type: option<value-type-name>,
+        target: option<type-name>,
+        dimensions: option<u32>,
+    }
+
+    enum authority { authored, source, shared, derived }
+
+    enum on-input-change { keep, clear }
+
+    record field-decl {
+        name: field-name,
+        %type: field-type,
+        required: bool,
+        authority: authority,
+        derived: option<condition>,
+        function: option<string>,
+        depends-on: list<field-name>,
+        on-input-change: on-input-change,
+        sensitive: bool,
+        searchable: bool,
+        description: option<string>,
+        label: option<string>,
+        embed: option<embed-decl>,
+        /// The host's own marks, by namespaced key (`acme.icon`), each a
+        /// JSON value; Lakelands never reads them.
+        annotations: list<tuple<string, json>>,
+    }
+
+    /// What a vector field is the embedding of: text fields of the same
+    /// record, joined in order with one blank line, and the model.
+    record embed-decl {
+        %from: list<field-name>,
+        model: string,
+    }
+
+    enum cardinality { one-to-one, one-to-many, many-to-one, many-to-many }
+
+    /// One pair of a derived relation's match: a field of the owner and a
+    /// field of the target, of the same kind.
+    record match-pair {
+        %from: field-name,
+        to: field-name,
+    }
+
+    /// What connects a derived relation's records: every pair holds the
+    /// same non-null value on both sides.
+    record derived {
+        %match: list<match-pair>,
+    }
+
+    record relation-decl {
+        name: relation-name,
+        target: type-name,
+        cardinality: cardinality,
+        inverse: option<relation-name>,
+        via: option<field-name>,
+        fields: list<field-decl>,
+        /// Who writes the links, for a relation without `via`.
+        authority: authority,
+        description: option<string>,
+        /// The host's own marks, by namespaced key (`acme.icon`), each a
+        /// JSON value; Lakelands never reads them.
+        annotations: list<tuple<string, json>>,
+        /// Instead of a carrier: the fields whose values connect (044).
+        derived: option<derived>,
+    }
+
+    record measure {
+        name: field-name,
+        expr: condition,
+    }
+
+    /// A parameter of a view: a value every read of it binds.
+    record view-param {
+        name: param-name,
+        kind: storage-kind,
+    }
+
+    record view-decl {
+        source: type-name,
+        params: list<view-param>,
+        where: option<condition>,
+        group-by: list<field-name>,
+        measures: list<measure>,
+    }
+
+    record type-decl {
+        name: type-name,
+        key: list<field-name>,
+        fields: list<field-decl>,
+        relations: list<relation-decl>,
+        view: option<view-decl>,
+        valid-from: option<field-name>,
+        valid-to: option<field-name>,
+        language: option<string>,
+        field-meta: bool,
+        description: option<string>,
+        label: option<string>,
+        /// The host's own marks, by namespaced key (`acme.icon`), each a
+        /// JSON value; Lakelands never reads them.
+        annotations: list<tuple<string, json>>,
+    }
+
+    record value-type-decl {
+        name: value-type-name,
+        kind: storage-kind,
+        constraint: option<condition>,
+        one-of: list<string>,
+        format: option<string>,
+        scale: option<u32>,
+        description: option<string>,
+    }
+
+    enum risk { low, medium, high }
+
+    record assignment {
+        field: field-name,
+        value: condition,
+    }
+
+    /// What a verb does: writes to its record, or reaches outside the
+    /// lake through the named executor.
+    variant verb-effect {
+        write(list<assignment>),
+        external(string),
+    }
+
+    /// What a verb is called on: one record of its type, or the type,
+    /// with no key (log format 8).
+    enum verb-scope { %record, %type }
+
+    record verb-decl {
+        name: verb-name,
+        on: type-name,
+        scope: verb-scope,
+        payload: list<field-decl>,
+        risk: risk,
+        requires: option<condition>,
+        effect: verb-effect,
+        description: option<string>,
+    }
+
+    record trigger-decl {
+        name: trigger-name,
+        on: type-name,
+        when: option<condition>,
+        description: option<string>,
+        /// How deep a reaction naming this trigger's firing as its cause
+        /// may be; at most the lake's ceiling.
+        max-depth: option<u32>,
+    }
+
+    record object-set-decl {
+        name: string,
+        of: type-name,
+        where: condition,
+        description: option<string>,
+    }
+
+    record function-decl {
+        name: string,
+        backing: string,
+        inputs: list<field-decl>,
+        expr: option<condition>,
+        config: option<json>,
+        description: option<string>,
+    }
+
+    variant declaration {
+        %type(type-decl),
+        value-type(value-type-decl),
+        verb(verb-decl),
+        trigger(trigger-decl),
+        object-set(object-set-decl),
+        function(function-decl),
+    }
+
+    record migration {
+        to: type-decl,
+        renames: list<tuple<field-name, field-name>>,
+    }
+
+    record field-conversion {
+        field: field-name,
+        %from: field-type,
+        to: field-type,
+        convertible: u64,
+        not-convertible: u64,
+        sample-keys: list<record-key>,
+    }
+
+    record migration-report {
+        %type: type-name,
+        from-schema-hash: string,
+        to-schema-hash: string,
+        records-scanned: u64,
+        fields: list<field-conversion>,
+        dropped: list<tuple<field-name, u64>>,
+        rekeyed: list<rekeyed>,
+        references: list<reference-rewrite>,
+        sample-collisions: list<record-ref>,
+        lossless: bool,
+        report-id: string,
+    }
+
+    /// What a re-key does to one type's records.
+    record rekeyed {
+        %type: type-name,
+        records: u64,
+        collisions: u64,
+        missing: u64,
+    }
+
+    /// The values of one reference field a re-key rewrites.
+    record reference-rewrite {
+        %type: type-name,
+        field: field-name,
+        values: u64,
+    }
+
+    // ------------------------------------------------------------------
+    // Records
+    // ------------------------------------------------------------------
+
+    enum origin { source, authored, derived, system }
+
+    /// Where values read from another lake's log came from: that lake and
+    /// the position of the event there whose state they are (log format
+    /// version 3).
+    record upstream {
+        lake: lake-id,
+        position: position,
+    }
+
+    /// A field's provenance (`docs/decisions/010-provenance-per-field.md`).
+    record field-meta {
+        origin: origin,
+        known-at: timestamp,
+        seen-at: option<timestamp>,
+        position: position,
+        writer: string,
+        source: option<source-id>,
+        procedure-version: option<string>,
+        /// For a value read from another lake's log: that lake and
+        /// position.
+        upstream: option<upstream>,
+        /// For a field a function computes that holds no value because
+        /// its backing failed: why.
+        error: option<string>,
+    }
+
+    /// One field and its value.
+    record field-value {
+        field: field-name,
+        value: json,
+    }
+
+    /// One field and its provenance.
+    record field-meta-entry {
+        field: field-name,
+        meta: field-meta,
+    }
+
+    /// A sparse patch: each entry sets a field, the JSON `null` clears
+    /// it, an absent field is unchanged
+    /// (`docs/decisions/012-writes-touch-only-their-fields.md`).
+    type patch = list<field-value>;
+
+    /// A record as a principal reads it.
+    record %record {
+        %type: type-name,
+        key: record-key,
+        version: version,
+        fields: list<field-value>,
+        masked: list<field-name>,
+        meta: list<field-meta-entry>,
+    }
+
+    /// A record as a source delivers it to `ingest`.
+    record source-record {
+        %type: type-name,
+        key: record-key,
+        fields: patch,
+        seen-at: option<timestamp>,
+        /// When the values were read from another lake's log (a
+        /// mirror's): that lake and the position of the state they
+        /// reflect.
+        upstream: option<upstream>,
+    }
+
+    // ------------------------------------------------------------------
+    // Reads
+    // ------------------------------------------------------------------
+
+    enum direction { asc, desc }
+
+    enum order-by { value, known-at, seen-at, latest }
+
+    record order {
+        field: field-name,
+        by: order-by,
+        dir: direction,
+    }
+
+    enum agg-func { count, sum, min, max, avg }
+
+    record agg-measure {
+        name: field-name,
+        %func: agg-func,
+        field: option<field-name>,
+    }
+
+    record aggregate {
+        measures: list<agg-measure>,
+        group-by: list<group-key>,
+    }
+
+    /// One key of an aggregate's grouping: a field's value, or a named
+    /// expression's value per record, answered under its name.
+    variant group-key {
+        field(field-name),
+        named(named-group),
+    }
+
+    /// A group key computed by an expression, answered under `name`.
+    record named-group {
+        name: field-name,
+        expr: condition,
+    }
+
+    record find {
+        where: option<condition>,
+        order-by: list<order>,
+        limit: option<u32>,
+        cursor: option<cursor>,
+        after: option<after-row>,
+        aggregate: option<aggregate>,
+        with-meta: bool,
+        /// The values bound to a view's parameters, each as JSON.
+        params: list<tuple<param-name, json>>,
+        at: read-at,
+    }
+
+    /// A sort position `find` resumes strictly after: the row's values
+    /// for the `order-by` keys, in order (`null` where it has none), and
+    /// its key.
+    record after-row {
+        values: list<json>,
+        key: record-key,
+    }
+
+    record group {
+        by: list<field-value>,
+        values: list<field-value>,
+    }
+
+    record records-page {
+        rows: list<%record>,
+        next-cursor: option<cursor>,
+    }
+
+    variant found {
+        records(records-page),
+        groups(list<group>),
+    }
+
+    record get {
+        key: record-key,
+        with-meta: bool,
+        params: list<tuple<param-name, json>>,
+        at: read-at,
+    }
+
+    // ------------------------------------------------------------------
+    // Writes and proposals
+    // ------------------------------------------------------------------
+
+    record write-opts {
+        expected-version: option<version>,
+        idempotency-key: option<idempotency-key>,
+    }
+
+    record applied {
+        position: position,
+        version: option<version>,
+        /// An external verb's recorded output, the error form included.
+        output: option<json>,
+    }
+
+    record proposed {
+        position: position,
+        proposal: proposal-id,
+        why: string,
+    }
+
+    /// What every write answers (`docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`).
+    variant outcome {
+        applied(applied),
+        proposed(proposed),
+    }
+
+    record upsert-write {
+        %type: type-name,
+        key: record-key,
+        patch: patch,
+        opts: write-opts,
+    }
+
+    record retire-write {
+        %type: type-name,
+        key: record-key,
+        opts: write-opts,
+    }
+
+    record call-write {
+        verb: verb-name,
+        key: option<record-key>,
+        payload: patch,
+        opts: write-opts,
+    }
+
+    /// Declarations proposed together, as `apply` would apply them.
+    record declare-write {
+        declarations: list<declaration>,
+    }
+
+    /// A migration proposed, with the report its preflight answered then.
+    record migrate-write {
+        migration: migration,
+        report: migration-report,
+    }
+
+    variant proposed-write {
+        upsert(upsert-write),
+        retire(retire-write),
+        call(call-write),
+        declare(declare-write),
+        migrate(migrate-write),
+    }
+
+    enum proposal-kind { upsert, retire, call, declare, migrate }
+
+    enum proposal-state { pending, accepted, rejected }
+
+    record proposal {
+        id: proposal-id,
+        position: position,
+        proposer: string,
+        proposed-at: timestamp,
+        write: proposed-write,
+        why: string,
+        state: proposal-state,
+        decided-by: option<string>,
+        reason: option<string>,
+    }
+
+    record proposal-filter {
+        state: option<proposal-state>,
+        %type: option<type-name>,
+        kind: option<proposal-kind>,
+        limit: option<u32>,
+        order-by: list<order>,
+        cursor: option<cursor>,
+        at: read-at,
+    }
+
+    /// One commit window of an ingest.
+    record committed {
+        position: position,
+        records: u32,
+        duplicates: u32,
+    }
+
+    // ------------------------------------------------------------------
+    // The pattern query and search
+    // ------------------------------------------------------------------
+
+    enum walk { out, in, both }
+
+    record depth {
+        min: u32,
+        max: u32,
+    }
+
+    record lexical-search {
+        text: string,
+        fields: option<list<field-name>>,
+    }
+
+    record vector-search {
+        field: field-name,
+        vector: list<f32>,
+    }
+
+    record hybrid-search {
+        text: string,
+        field: field-name,
+        vector: option<list<f32>>,
+        fields: option<list<field-name>>,
+    }
+
+    variant search-mode {
+        lexical(lexical-search),
+        vector(vector-search),
+        hybrid(hybrid-search),
+    }
+
+    record start {
+        %type: type-name,
+        key: option<record-key>,
+        where: option<condition>,
+        search: option<search-mode>,
+        params: list<tuple<param-name, json>>,
+    }
+
+    record step {
+        relation: relation-name,
+        walk: walk,
+        %type: option<type-name>,
+        where: option<condition>,
+        depth: depth,
+    }
+
+    variant projection {
+        /// Bindings per step; the named fields, or all when empty.
+        rows(list<string>),
+        graph,
+        aggregate(aggregate),
+        /// Each start record's links over the steps' relations.
+        degree,
+        /// The weak components the start records are in.
+        components,
+    }
+
+    record pattern {
+        start: start,
+        steps: list<step>,
+        to: option<tuple<type-name, record-key>>,
+        project: projection,
+        order-by: list<order>,
+        limit: option<u32>,
+        cursor: option<cursor>,
+        at: read-at,
+    }
+
+    record edge {
+        %from: tuple<type-name, record-key>,
+        relation: relation-name,
+        to: tuple<type-name, record-key>,
+        fields: list<field-value>,
+    }
+
+    record rows-page {
+        /// One entry per row: the row's bindings by name.
+        rows: list<list<field-value>>,
+        next-cursor: option<cursor>,
+    }
+
+    record graph {
+        nodes: list<%record>,
+        edges: list<edge>,
+        truncated: bool,
+    }
+
+    variant query-result {
+        rows(rows-page),
+        graph(graph),
+        groups(list<group>),
+    }
+
+    record search {
+        %type: type-name,
+        mode: search-mode,
+        k: u32,
+        cursor: option<cursor>,
+        where: option<condition>,
+        with-meta: bool,
+        at: read-at,
+    }
+
+    record hit {
+        %record: %record,
+        score: f64,
+    }
+
+    record hits {
+        hits: list<hit>,
+        next-cursor: option<cursor>,
+        ranked-by: string,
+    }
+
+    // ------------------------------------------------------------------
+    // Describe
+    // ------------------------------------------------------------------
+
+    record lake-rights {
+        review: bool,
+        schema: bool,
+        ingest: bool,
+    }
+
+    record type-rights {
+        find: bool,
+        get: bool,
+        upsert: bool,
+        retire: bool,
+        /// The relations whose links the principal may write.
+        link: list<relation-name>,
+    }
+
+    record type-access {
+        key: list<field-name>,
+        valid-from: option<field-name>,
+        valid-to: option<field-name>,
+        searchable: bool,
+        field-meta: bool,
+    }
+
+    record type-lineage {
+        sourced: bool,
+        view-of: option<type-name>,
+    }
+
+    record type-lifecycle {
+        version: u32,
+        schema-hash: string,
+        /// The fields the lake keeps an order index for (its
+        /// `sort_index.<type>` setting): a `find` ordered first by one of
+        /// them reads its page, not the type.
+        sorted: list<field-name>,
+        /// The vector fields the lake asks an index for (its
+        /// `vector_index.<type>` setting): a search over one of them
+        /// answers the index's set and says `ranked_by: index`.
+        indexed: list<field-name>,
+    }
+
+    record field-description {
+        name: field-name,
+        %type: field-type,
+        required: bool,
+        authority: authority,
+        access: access,
+        derived: option<condition>,
+        /// The declared function that computes it.
+        function: option<string>,
+        depends-on: list<field-name>,
+        on-input-change: on-input-change,
+        filterable: bool,
+        searchable: bool,
+        sensitive: bool,
+        description: option<string>,
+        label: option<string>,
+        embed: option<embed-decl>,
+        /// The host's own marks, to a principal who may see them.
+        annotations: list<tuple<string, json>>,
+    }
+
+    record type-description {
+        name: type-name,
+        description: option<string>,
+        label: option<string>,
+        language: option<string>,
+        /// The view as declared, to a principal who reads every source
+        /// field it names or holds the schema grant.
+        view: option<view-decl>,
+        fields: list<field-description>,
+        relations: list<relation-decl>,
+        access: type-access,
+        may: type-rights,
+        verbs: list<verb-name>,
+        lineage: type-lineage,
+        lifecycle: type-lifecycle,
+        /// The host's own marks, to a principal who may see them.
+        annotations: list<tuple<string, json>>,
+    }
+
+    record verb-description {
+        name: verb-name,
+        on: type-name,
+        scope: verb-scope,
+        payload: list<field-description>,
+        risk: risk,
+        external: bool,
+        description: option<string>,
+    }
+
+    record lake-description {
+        lake: lake-id,
+        types: list<type-description>,
+        verbs: list<verb-description>,
+        value-types: list<value-type-decl>,
+        /// Functions, triggers and object sets in force, each listed to a
+        /// principal who reads every field it names or holds the schema
+        /// grant.
+        functions: list<function-decl>,
+        triggers: list<trigger-decl>,
+        object-sets: list<object-set-decl>,
+        may: lake-rights,
+    }
+
+    // ------------------------------------------------------------------
+    // Replies: every read answers the position it was read at
+    // ------------------------------------------------------------------
+
+    record lake-description-reply { position: position, data: lake-description }
+    record type-description-reply { position: position, data: type-description }
+    record found-reply { position: position, data: found }
+    record record-reply { position: position, data: %record }
+    record query-result-reply { position: position, data: query-result }
+    record hits-reply { position: position, data: hits }
+    record proposals-reply { position: position, data: list<proposal> }
+    record migration-report-reply { position: position, data: migration-report }
+
+    /// A value type's preflight: what its new declaration would refuse
+    /// among the values stored under it.
+    record value-type-report {
+        value-type: value-type-name,
+        from-version: u32,
+        records-scanned: u64,
+        fields: list<value-type-use>,
+        misfits: u64,
+        first: list<misfit>,
+        fits: bool,
+        report-id: string,
+    }
+
+    /// One field that uses a value type, as its preflight found it.
+    record value-type-use {
+        %type: type-name,
+        field: field-name,
+        values-scanned: u64,
+        misfits: u64,
+    }
+
+    /// Where a stored value a new declaration would refuse is; never what.
+    record misfit {
+        %type: type-name,
+        key: record-key,
+        field: field-name,
+    }
+
+    record value-type-report-reply { position: position, data: value-type-report }
+
+    // ------------------------------------------------------------------
+    // Errors: the closed set every door answers with
+    // ------------------------------------------------------------------
+
+    record record-ref {
+        %type: type-name,
+        key: record-key,
+    }
+
+    variant missing {
+        %type(type-name),
+        %record(record-ref),
+        verb(verb-name),
+        proposal(proposal-id),
+    }
+
+    variant refusal {
+        not-granted,
+        wrong-door,
+        reserved,
+        invalid(string),
+        constraint(string),
+        precondition(string),
+        too-deep(u32),
+        too-large(u32),
+        migration(migration-report),
+        decided,
+        out-of-range(position),
+    }
+
+    record refused {
+        field: option<field-name>,
+        reason: refusal,
+    }
+
+    record conflict {
+        expected: version,
+        actual: version,
+    }
+
+    variant error {
+        refused(refused),
+        not-found(missing),
+        conflict(conflict),
+        unbound(string),
+        unavailable(string),
+    }
+
+    // ------------------------------------------------------------------
+    // The facade and the feed
+    // ------------------------------------------------------------------
+
+    record verification {
+        %from: position,
+        through: position,
+        hash: digest,
+    }
+
+    /// What one `age` did: the date, each rule in name order, and the
+    /// position after the last append.
+    record age-report {
+        date: timestamp,
+        rules: list<rule-run>,
+        transitions: u32,
+        failed-guards: u32,
+        position: position,
+    }
+
+    /// One aging rule's run: the rule's version, the records it moved,
+    /// the guards that failed, and why it was skipped if it was.
+    record rule-run {
+        rule: string,
+        version: version,
+        moved: u32,
+        failed-guards: u32,
+        skipped: option<string>,
+    }
+
+    /// What one purge retired: per type, the types it could not search,
+    /// and the position after its append.
+    record purge-report {
+        source: source-id,
+        retired: u32,
+        types: list<type-retired>,
+        unsearched: list<type-name>,
+        position: position,
+    }
+
+    /// How much of one embedding field is embedded, at the head.
+    record vector-coverage {
+        field: field-name,
+        embedded: u64,
+        due: u64,
+    }
+
+    /// What one compact measured of the projection's storage, in bytes,
+    /// as the engine measures it, and the head it left unmoved.
+    record compact-report {
+        before: option<u64>,
+        after: option<u64>,
+        head: position,
+    }
+
+    /// The records a purge retired in one type.
+    record type-retired {
+        %type: type-name,
+        retired: u32,
+    }
+
+    record limits {
+        default-limit: u32,
+        max-limit: u32,
+        max-depth: u32,
+        max-reactive-depth: u32,
+        commit-window-events: u32,
+        max-graph-nodes: u32,
+    }
+
+    record feed-filter {
+        /// Event kinds as the log spells them. Free strings, so a relay may
+        /// name a kind a newer format adds; this format version's kinds are
+        /// `lakelands_api::event::KINDS` (`docs/log-format.md`).
+        kinds: list<string>,
+        types: list<type-name>,
+        /// Only events about records with these keys; all when empty.
+        keys: list<record-key>,
+    }
+
+    record feed-batch {
+        /// Each event as its canonical bytes (`docs/log-format.md` §1.2).
+        events: list<json>,
+        next: position,
+        head: position,
+    }
+}

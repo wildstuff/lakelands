@@ -1,0 +1,682 @@
+# Conformance
+
+An engine **supports Lakelands** when the conformance suite passes on it,
+every check, with nothing skipped. There is no other definition: no
+feature matrix, no partial level, no engine-specific allowance. A
+behaviour Lakelands promises is claimed once, in the suite, and every
+engine is held to the same claim.
+
+## What the suite is
+
+The suite is a library in `lakelands-core` (`lakelands_core::conformance`)
+with two halves:
+
+- **Through the doors.** Checks that open a lake as a `LakeStore` and
+  talk to it through its `Catalog`, the way every caller does. They check
+  meaning: that a write touches only its fields, that a read at an earlier
+  position sees the lake as it was there, that a decimal stays exact,
+  that a field a principal may not write refuses the whole write. A check
+  that could only pass on one engine's storage cannot be written here,
+  because a check never reaches past the contract.
+- **Through the engine seam.** Checks that call the engine traits
+  directly (`lakelands_core::conformance::engine`), for what the store
+  relies on and cannot see through its doors: that an event's bytes come
+  back unchanged, that a stale or held lease is refused, that an append
+  is whole or nothing, that a view at a position reads the states valid
+  there. `docs/seams.md` states these promises and says which check holds
+  each one.
+
+Each check is one function whose name is a sentence stating what must
+hold, one line in a registry, and one sentence naming the decision
+record or specification the rule comes from. The list at the end of this
+page is generated from the two registries.
+
+## Running it on an engine
+
+An engine crate runs the suite from two test files:
+
+- `tests/conformance.rs` implements `Harness`: `name()`,
+  `fresh(seams)`, a brand-new, empty lake opened as a `LakeStore` over
+  the engine, one per check, so that no check sees another's writes, and
+  `reopener()`, which closes a lake it handed out and opens it again for
+  writing with the seams a check names, as a host's next process would.
+  A check that meets the lake's next writer (a host vocabulary that
+  grew) is given it. And `scratch()`, a directory the engine's test
+  chooses: a check that writes files (an export) is given the
+  subdirectory named after it and removes what it wrote, so the suite
+  itself reads no environment. Two more are optional. `meter()` counts
+  the process's heap, usually through the test binary's global
+  allocator; the streaming check uses it to show that ingest, the feed
+  and an export hold no more memory at four times a lake's size. A
+  harness without one runs that check without the memory claim.
+  `large_lake()` sets that check's first size, `LARGE_LAKE` (2 000
+  records) by default; a long run by hand asks for 25 000.
+  The runner hands it the seams the lake binds besides the engine: the
+  suite's function backing and its verb executor, and its embedding
+  backend for the checks that need one. The harness adds its engine's opener and nothing else. It calls `run_all`
+  and fails unless the `Report` is green. Every lake has the default
+  limits of `Location`; the checks read limits from the suite's fixture,
+  never from the engine.
+- `tests/engine_seam.rs` implements `EngineHarness`: `name()`, `fresh()`
+  (a brand-new, empty lake opened for writing as a `LakeEngine`), and
+  `reopen(lake, mode)` (another handle onto the same lake, as a second
+  process would open it). It calls `run_engine_checks`.
+
+`crates/lakelands-engine-mem/tests/` holds both for the in-memory engine,
+and is the example to copy. A run never stops at the first failure, and
+a check that panics is reported as failed, so one report lists every
+check that did not hold, each with a message that says what was done,
+what came back and what the rule is.
+
+```sh
+scripts/conformance.sh mem      # one engine
+scripts/conformance.sh          # every required engine
+```
+
+The script runs under bash 3.2 and later, so the system shell of macOS
+runs it as well as a current bash. It needs `cargo-nextest`.
+
+`conformance/roster` lists the engines. A `required` engine runs both
+halves on every pull request, as its own CI job; a `deferred` engine has
+a crate but is not imported yet, and a required engine never becomes
+deferred again.
+
+**An engine that needs a server.** The PostgreSQL engine's suite runs
+against a live database. In CI the `conformance (pg)` job starts a
+throwaway PostgreSQL as a service container and hands its URL to the
+tests as `LAKELANDS_TEST_PG_URL`. Only the harness in
+`crates/lakelands-engine-pg/tests/` reads it; the engine itself reads no
+environment (`docs/decisions/005-no-environment-reads.md`), so the
+harness passes it on as the `url` of `EngineConfig::Postgres`, with TLS
+disabled because the container serves none. Each check creates its own
+schema and the harness drops it afterwards, so one database serves the
+whole suite. The container runs PostgreSQL 16, the oldest version the
+engine supports (`docs/decisions/038-a-lake-in-postgresql.md`). The
+roster names `pg` required, so the job runs on every pull request.
+Without the variable, the
+pg tests say so and stand down, so a workspace test run on a machine
+without PostgreSQL stays green; `scripts/conformance.sh pg` refuses to
+run without it, so the suite is never skipped there. The workspace job
+starts no server, since only the pg engine needs one and its job already
+has it, so `scripts/conformance.sh pg` runs every test file in
+`crates/lakelands-engine-pg/tests/`, by that one rule, not only the
+suite. To run the same tests locally:
+
+```sh
+docker run --rm -d --name lakelands-pg -p 5432:5432 \
+  -e POSTGRES_USER=lakelands -e POSTGRES_PASSWORD=lakelands -e POSTGRES_DB=lakelands \
+  postgres:16
+LAKELANDS_TEST_PG_URL=postgres://lakelands:lakelands@localhost:5432/lakelands \
+  scripts/conformance.sh pg
+```
+
+## What a red check means
+
+A red check is a defect, in the engine or in the claim, and it is fixed
+in one of those two places:
+
+- **The engine is wrong.** It is fixed in the engine. There is no list
+  of checks an engine may fail, and no switch that skips one.
+- **The claim is wrong.** The check says something Lakelands should not
+  promise, or says it ambiguously. It is corrected in the suite, with the
+  specification or decision record it cites, in the same pull request,
+  and it then holds for every engine.
+
+A check is never made to pass by teaching it about one engine.
+
+## Adding a check
+
+A behaviour claim comes with a check that fails without the change it
+describes (`CONTRIBUTING.md`). A check that every engine must honour
+belongs in the suite, not beside one engine:
+
+1. Write the check in the file of its subject: in
+   `crates/lakelands-core/src/conformance/checks/` for a check through the
+   doors, in `…/conformance/engine/` for one through the seam. Its name is
+   a sentence in snake_case stating what must hold; its message says what
+   was done, what came back and what the rule is.
+2. Turn it into a constant with one `check!` (or `engine_check!`) line,
+   whose sentence names the rule's source: a decision record's number, a
+   section of `docs/log-format.md` or `docs/seams.md`.
+3. Add the constant to the registry (`checks::ALL` or `ENGINE_CHECKS`).
+4. Show it red: once against the behaviour it forbids, then green.
+5. Run `scripts/conformance-page.py --write` and commit this page with
+   it. CI runs `scripts/conformance-page.py --check`, which fails while
+   the list below differs from the registries.
+
+## The checks
+
+<!-- The list below is generated by scripts/conformance-page.py from the registries; do not edit it by hand. -->
+
+### Through the doors (296 checks)
+
+**fields**
+
+- `a_rewrite_by_one_writer_leaves_another_writers_fields_alone` — 012: a patch is merged per field, so a writer that sends only its own fields cannot erase anyone else's
+- `changing_an_input_clears_a_dependent_field_declared_clear` — 012: with on_input_change clear, the fold clears the dependent field in the same event that changes its input
+- `changing_an_input_keeps_a_dependent_field_declared_keep_and_shows_it_older` — 012 and 010: with on_input_change keep, the value stays and its provenance shows it is older than its input
+- `a_patch_with_a_field_the_principal_may_not_write_is_refused_whole` — 006 and 012: a write carrying a field its principal may not write is refused whole, never applied in part
+- `a_field_absent_from_a_patch_is_unchanged_and_null_clears_it` — 012 and the log format: an upsert is a sparse patch; an absent field is unchanged and null clears the field
+- `a_patch_with_an_undeclared_field_is_refused_whole` — 015: a field the lake's map does not declare is refused as invalid, and nothing of the patch is written
+
+**positions**
+
+- `every_reply_carries_the_position_it_reflects` — 009: every answer to a read or a write carries the log position it reflects, so what a caller saw can be read again
+- `a_read_as_of_a_write_sees_that_write_and_nothing_later` — 009: a read pinned with as_of answers the lake as it was at that position, not the head
+- `a_read_as_of_the_position_before_a_write_does_not_see_it` — 009: the position a write answers is the first from which it is visible; one earlier, it is not
+- `retiring_a_record_does_not_erase_its_history` — the log format: a retired record is invisible at and after its retirement, and its history is kept
+- `a_read_as_of_a_position_past_the_head_is_refused_as_out_of_range` — 015: a position that is not in the lake's log is refused as out of range, naming the head
+- `position_at_answers_the_last_position_at_or_before_an_instant` — 009 and log-format §1.3: position_at answers, at each event's known_at, the last event at or before it; between two instants the earlier one's last; before the first event none; past the head the head; and a read as of the answer sees the lake as it stood then
+
+**versions**
+
+- `versions_start_at_one_and_grow_by_one_with_every_change` — the glossary and the log format: a version starts at 1 and grows by one per event that changes the record, retirement included
+- `a_write_expecting_a_superseded_version_is_refused_as_a_conflict` — 015: a write naming a version the record has moved past fails as a conflict, and nothing of it lands
+- `a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_appends_nothing` — 016 and the log format: one idempotency key from one principal is one write in the whole lake
+- `a_write_expecting_the_version_before_a_retirement_is_a_conflict` — the glossary, the log format §2.3 and 015: a retired key keeps its count, so `expected_version` is compared with the retired record's version, a match re-creates it, and an older one is a conflict reporting that version
+
+**paging**
+
+- `paging_through_find_visits_every_record_exactly_once` — the read contract: a cursor continues where its page ended, so a page set is a total order with no repeat and no gap
+- `records_without_the_sort_field_are_listed_last_in_either_direction` — the read contract: records without a value for a sort key sort last in either direction; ordering never drops them
+
+**latest**
+
+- `find_ordered_by_latest_lists_records_by_their_last_event` — 029 and seams §scan: `find` ordered by `latest` lists records by the position of the event that made each one's state: an upsert, an ingest and a reference field move a record, a link record moves only itself, a retired record leaves; ascending is the reverse, a cursor continues it, a filter the store evaluates keeps it, and a read at an earlier position answers the order as it was then
+
+**decimals**
+
+- `a_decimal_reads_back_exactly_as_it_was_written` — the log format: a decimal is a string of digits kept as written, trailing zeros and all, beyond any float's precision
+- `a_sum_over_decimals_is_exact` — the engine seam: sum is exact for decimals, so 0.10 + 0.20 + 0.30 is 0.60 and not a float's approximation
+- `a_scaled_decimal_keeps_its_scale_when_derived_and_summed` — 011: a value is kept at its value type's scale, so a derived decimal is rounded to it before it is stored, and a sum over a scaled field answers at that scale
+
+**derived fields**
+
+- `a_derived_field_is_computed_by_the_fold_on_every_write` — the ontology and the log format: the fold computes a derived field from its expression in the event that changes its inputs
+- `a_derived_field_written_through_a_door_is_refused_as_the_wrong_door` — 015 and the ontology: no door writes a derived field; a patch carrying one is refused whole as the wrong door
+- `a_derived_field_added_to_a_live_type_is_computed_on_later_writes` — the ontology: a derived field added with add_field is kept by the fold for every write after it, like one declared with the type
+- `a_derived_field_accepts_no_value_from_a_source_or_a_verb_either` — 015 and 016: a derived field is the fold's alone; a source record or a verb that would set it is refused whole, not only an upsert
+- `a_derived_field_reading_a_function_is_recomputed_when_the_function_changes` — 022: a derived field that names a function is computed by that function's declaration in force; a new version of the function recomputes it and names that version as its procedure
+
+**backings**
+
+- `a_function_of_a_backing_kind_nobody_bound_is_refused_at_declare` — 022, extended: a function computed outside the store is declared only where the host bound a backing of its kind; otherwise the declaration is refused as unbound, naming the kind
+- `a_backed_field_is_filled_from_the_output_the_store_records` — 022, extended, and the log format: the store calls the backing after the write, records the answer as output_recorded naming the field, and the write answers the position the filled field is visible from
+- `the_same_input_is_never_sent_to_a_backing_twice` — 002 and 022, extended: an output recorded for a call is read back for every later call with the same input, across records and after the input changed and came back
+- `a_failing_backing_clears_the_field_and_records_the_failure` — 022 and 010, extended: a failure is recorded as {"error": …}, clears the field it fills, puts the reason in the field's metadata, and is not retried for the same input
+- `a_rebuild_reads_recorded_outputs_back_without_calling_the_backing` — 001 and 002: a rebuild folds the recorded outputs; with the backing refusing every call, the rebuilt field reads as before and no call is made
+- `a_filled_field_recomputes_what_reads_it_and_fires_its_triggers` — 012 and 022, extended: the field an output fills is changed through the fold's ordinary path; a derived field reading it is recomputed and a trigger on it fires, caused by the output
+- `computed_fields_that_read_each_other_in_a_cycle_are_refused` — 022, extended: a type's computed fields, derived and function-computed alike, read one another without a cycle, so a chain of fills ends; a cycle is refused at declare, naming its fields
+- `a_second_record_with_the_same_input_has_its_derived_fields_right` — 022, extended: a field filled from an output the lake already holds is a change of that field; the derived fields reading it are recomputed in the same event
+- `a_backed_field_reading_another_waits_for_its_output` — 022, extended: computed fields settle in the order of what they read; a backed field whose input is not computed yet is not called, so no output is recorded under an input that was never meant
+- `a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds` — 022, extended: a settle forced by a declaration calls again, once, for an input whose recorded output is a failure, for a function backing as for an embedding; the later output holds for every record with that input
+
+**views**
+
+- `a_view_groups_its_source_and_sums_it_exactly` — the ontology: a view type is computed from its source's records, one record per group, measures exact for decimals
+- `a_view_is_the_same_whether_declared_before_or_after_its_source_was_written` — the ontology: a view is a function of its source's state, so how the source got there cannot change a byte of it
+- `a_view_drops_a_group_whose_last_member_is_retired` — the ontology: a view holds a record per group that has members; retiring a group's last member removes the group
+- `a_view_over_an_ingested_source_is_current_once_the_ingest_is_committed` — 016 and the ontology: both write doors are folded by the same rules, so a view over ingested records is kept like any other
+- `a_pattern_started_on_a_view_holds_the_records_find_returns` — 018 and 026: a view is read like any other type, so a pattern started on it by key, by `where` or with neither has as its graph's nodes exactly the records `find` returns for that selection; a key with no group has none
+- `a_walk_over_a_derived_relation_reaches_a_views_records_both_ways` — 018, 026 and 044: a derived relation between a stored type and a view connects their records by matching values like any other, so a walk out from the stored type reaches the view's records, a step's `where` keeps those of them it holds for, and a walk in from the view reaches the stored ones
+- `a_view_field_that_asks_to_be_searched_or_embedded_is_refused` — 018: a view is not searched, so `declare` refuses a view field that is searchable, carries an embedding or is a vector, naming the view and the field
+- `a_search_on_a_view_is_refused_naming_it` — 018: a view's records are computed on read and no index holds them, so a lexical, vector or hybrid search on a view is refused as invalid, naming the view, never answered empty
+- `a_view_closing_a_cycle_over_source_is_refused_naming_the_chain` — 018 and 028: a view may not read itself, directly or through other views, so `declare` refuses a view whose `source` closes a cycle of length 1, 2 or 3, and a set applied whole whose new views close one among themselves, naming the chain; the views keep what they read
+- `a_view_whose_measure_reads_another_is_described_to_its_readers` — 024 and 018: `describe` answers a view's definition to a principal who reads every field of its source that it names; a measure that reads an earlier measure by name names no field, so it keeps the definition from no one, while a name inside an aggregate is the source's field, even where a measure has the same name
+- `a_view_declares_exactly_the_fields_it_computes` — 018 and 028: a read answers declared fields only, so `declare` refuses a view whose `group_by` field or measure has no declared field, or which declares a field nothing computes, naming it
+- `a_view_record_is_keyed_by_its_group_by_fields` — 018 and the log format §2.3: a view record's key is made from its `group_by` fields as any record key is, each value with `%` and `:` escaped, joined by `:` in declared order
+
+**view params**
+
+- `the_same_view_read_at_two_anchors_answers_two_windows` — 018: a view's parameters are bound by the read, so the same view read with two anchors answers two windows, by `find` and by `get`, each byte for byte the same on every engine; a date alone is midnight UTC
+- `a_missing_unknown_or_wrongly_kinded_parameter_is_refused_naming_it` — 018 and 015: a read of a view that leaves a parameter out, names one the view does not declare, or gives a value not of its kind is refused as invalid, naming the parameter; a type that is not a view takes none
+- `param_outside_a_views_where_and_measures_is_refused` — 017 and 018: `param()` is read only in a view's `where` and `measures`; in a read's `where`, a pattern's `where` or a derived field it is refused as invalid, naming the function
+- `a_view_declaring_its_parameters_badly_is_refused` — 028 and 018: `declare` refuses a view whose `param()` names no declared parameter, which declares a parameter nothing reads, one twice, or one of a kind other than text, number, decimal, boolean or date_time, naming it
+- `a_pattern_started_on_a_view_binds_its_parameters` — 018 and 026: a pattern that starts on a view binds its parameters with the start, by key and by `where`, and its nodes are the window `find` answers; a start that leaves one out is refused, naming it
+- `a_cursor_continues_only_with_the_parameters_it_was_handed_out_for` — 018 and 029: a page of a view continues only with the parameters its first page was read with; with others it is refused, since it would continue a different answer
+- `a_view_with_parameters_is_written_in_log_format_8` — log format §6 and 018: the event that declares a view with parameters is written in format 8, as is every event after it; a view without them leaves the lake's format where it was
+
+**ingest**
+
+- `the_same_content_ingested_twice_appends_nothing_the_second_time` — 016 and the log format: ingest is content-addressed, so a redelivery of the same values appends nothing, within one delivery or across two
+- `the_same_key_twice_in_one_ingest_with_new_values_advances_the_version` — the log format: every event that changes a record moves its version by one, including two in one delivery
+- `an_ingested_record_carrying_a_field_the_source_does_not_write_is_refused_whole` — 016 and the log format: ingest writes only source and shared fields; a record carrying any other is refused whole, never trimmed
+- `an_ingested_record_carries_its_upstream_per_field` — 010, 016 and log-format §1.1 and §6: a record ingested with `upstream` names that lake and position on every field it sets, the event is written in format version 3, and the member is not in the event's id; a later write of a field without it leaves that field without it
+- `an_upsert_carrying_a_field_only_a_source_writes_is_refused_as_the_wrong_door` — 016 and 015: an author never overwrites a figure the source is the authority on; the patch is refused as the wrong door
+- `ingest_skips_redeliveries_and_unchanged_records_but_writes_a_revert` — 016 and the log format: an ingest that changes nothing appends nothing, and a record set back to an earlier value is a new change, not a redelivery
+- `a_record_delivered_twice_in_two_windows_is_written_once` — 016 and the log format: ingest is content-addressed across windows too, so a record delivered again in a later window of the same ingest appends nothing and the feed holds one event
+
+**rebuild**
+
+- `a_rebuilt_projection_answers_every_read_as_the_live_one_did` — 001, 040 and the engine seam: a projection rebuilt from the log is the one it replaces, byte for byte, at the head and as of every earlier position, a type migration that converts records and a re-key that rewrites references to moved keys included
+- `a_rebuild_reproduces_the_chain` — 001 and 020: the log is the truth and a rebuild only re-derives the projection, so verifying the chain answers the same range and hash before and after
+- `after_a_rebuild_every_index_answers_as_before` — 001 and the engine seam: the projection and its indexes are derived from the log, so after a rebuild a find by a field, a lexical and a vector search and a walk over a relation answer as they did
+- `a_number_and_a_vector_read_back_in_their_one_json_form_before_and_after_a_rebuild` — the log format §1.2 and 001: every value a door answers is in its canonical JSON form (`1`, never `1.0`), so a read answers the same text live and after a rebuild
+
+**filters**
+
+- `absent_fields_never_match_not_even_not_equal` — 023: a comparison with an absent or null operand is false, `!=` included; `is null` is how absence is asked about
+- `numbers_and_numeric_text_compare_as_numbers` — 023: when both sides read as numbers, a JSON number or a decimal string, they compare exactly as numbers, never as text
+- `values_of_kinds_that_do_not_compare_match_nothing_and_fail_nothing` — 023: text that is not a number against a number, a boolean against text: every operator is false, and the read does not fail
+- `probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggregate` — 024: filtering, ordering or aggregating over a field the principal may not read is refused, naming the field
+- `a_filter_and_an_order_can_read_when_a_source_saw_a_value` — 010 and 017: `seen_at(f)` reads a field's provenance in `where`, and `order_by` may order by it
+- `a_cleared_field_matches_nothing_but_its_record_is_found_by_another` — 012 and 023: a field set to null is absent, so no comparison on it holds, and the record is found by its other fields as before
+
+**provenance**
+
+- `valid_at_and_as_of_combine_and_neither_stands_in_for_the_other` — 009 and the glossary: `valid_at` asks what was true in the world, `as_of` what the lake knew; a read may name both
+- `every_field_carries_its_own_provenance` — 010: with meta, each field answers its origin, known_at, position and writer, and a value from a source also its source and seen_at
+
+**masking**
+
+- `a_masked_field_is_listed_masked_and_an_ungranted_one_is_absent` — 006 and 014: a field the principal may not read is masked (named, no value) or absent from get, find, describe and the tools' schemas
+
+**values**
+
+- `date_time_values_read_back_in_their_one_canonical_form` — the log format §5: a date-time is kept in UTC as YYYY-MM-DDTHH:MM:SS.ffffffZ, whatever offset it was written with
+- `bytes_are_padded_standard_base64_and_nothing_else` — the log format §5: bytes are canonical standard base64, padded and with zero pad bits; unpadded, url-safe or non-canonical spellings are refused
+- `a_vector_of_the_wrong_length_is_refused` — 011: a vector field declares its dimensions, and a value of another length does not fit it
+- `a_value_types_one_of_format_and_scale_hold_on_every_write` — 011: a value's `one_of`, named `format` and decimal `scale` are the value type's, checked on every write; scale rounds half away from zero
+- `null_clears_a_field_whatever_its_value_type_allows` — 012 and 011: `null` in a patch clears the field; it is not a value the value type must allow
+- `a_decimal_written_as_a_json_number_is_refused` — the log format §5: a decimal's one JSON form is a string of digits, so a JSON number, which may already have lost digits, is refused
+- `a_geo_value_reads_back_in_its_one_form_and_a_malformed_one_is_refused` — 011, extended, and the log format §5: a geo value is a GeoJSON geometry whose numbers take their one JSON form, the same through get and find, live and after a rebuild; empty `coordinates` are the empty geometry of every type alike, while an empty part inside one is refused; an open ring, a missing `type` or a GeoJSON object that is not a geometry is refused naming the field; null clears it
+- `a_json_value_reads_back_in_its_one_form_and_null_clears_it` — 011, extended, and the log format §5: a json value is kept as written but for its numbers, which take their one JSON form (`1`, never `1.0`), the same through get and find, live and after a rebuild; null clears it like any field
+- `a_page_ordered_by_a_geo_or_json_field_takes_the_rulebooks_fallback_order` — 029: a geo or json value has no order of its own, so a find ordered by one ranks it as `cmp_values` does, a JSON value by its canonical bytes, a missing value last either way, ties by key; paging walks the same order
+
+**schema**
+
+- `the_schema_hash_of_the_log_formats_vector_is_the_one_it_pins` — 007 and the log format's vectors: a type's schema hash is SHA-256 over its canonical shape, the same on every engine
+- `describing_and_relabelling_a_type_leaves_its_schema_hash` — 007: descriptions, labels and field order in a revision are meaning, not shape, and leave the schema hash as it was
+- `declare_refuses_a_revision_that_reshapes_stored_records` — 027: retyping, removing or requiring a field goes through `migrate`; `declare` refuses it and appends nothing
+- `declare_refuses_bad_names_unknown_references_and_tool_name_collisions` — 028 and 014: a name that is not an ASCII identifier, a reference to an undeclared type, or a name that collides with a tool is refused whole
+- `an_ordinary_principal_cannot_declare_a_sys_type` — 003: every type name starting `sys.` is reserved; an ordinary principal, even the owner, is refused declaring one and nothing is appended
+- `redeclaring_a_type_with_its_fields_reordered_keeps_its_schema_hash` — 007: field order is not shape, so a type declared again with its fields in another order keeps its schema hash; the log keeps the declaration as written, so it is one revision
+
+**migrate**
+
+- `migrate_apply_requires_the_report_it_was_shown` — 027: `migrate_apply` names the preflight's report; another report id, or a lake that moved since the report, is refused
+- `a_migration_that_would_lose_information_is_refused_with_its_report` — 027: a migration applies only when every stored value converts without loss; otherwise it is refused and the report names the records
+- `migrated_values_follow_the_conversion_table_and_renames_keep_them` — 027: a number becomes text in its canonical form, numeric text becomes the equal number, and a renamed field keeps its values
+- `a_migration_removing_the_field_a_relation_walks_is_refused` — 027 and 018: a relation is carried by its `via` field; a migration that removes that field would leave the relation dangling and is refused
+- `the_preflight_names_every_dropped_field_and_an_empty_type_migrates_cleanly` — 027 and MigrationReport.dropped: the preflight names every removed field with how many values it discards, and a type with no records reports nothing to lose
+
+**links**
+
+- `a_link_is_written_and_walked_with_its_fields` — 035 and §2.3: a relation without via is carried by link records; the walk follows it out and in, and the edge carries the link's own fields
+- `writing_a_link_again_changes_its_fields_and_keeps_one_link` — 035: a link is keyed by its pair, so writing it again changes its fields and advances its version, never adds a second link
+- `an_unlinked_link_leaves_the_walk_and_stays_in_its_history` — 035 and §2.3: unlink retires the link record; the walk no longer follows it, and a read as of before the unlink still does
+- `a_link_that_would_break_the_relations_cardinality_is_refused` — §2.3: many_to_one allows one live link per `from`; a second is refused as a constraint and nothing is appended
+- `a_link_to_a_key_that_is_no_live_record_is_refused` — 032 and 035: a link's ends are references, so a link to a key that is not a live record of the target is refused on `to`
+- `link_records_go_through_the_link_doors_and_ingest_only` — 035 and §2.3: upsert and retire refuse a link type's records, a caller cannot declare a link type, the link door refuses a relation whose links arrive by ingest, and ingest writes them
+- `a_relation_cannot_move_between_via_and_link_records` — 035 and §2.3: a declaration that gives a relation via it did not have, or takes it away, is refused
+- `a_link_field_the_principal_may_not_write_refuses_the_link` — 035: the link doors check the principal's grants on the link type's fields as upsert does
+- `a_relations_fields_are_declared_when_added_and_migrated_when_retyped` — 007, 027 and 035: adding an optional link field is declared; retyping one reshapes the link type, is refused at declare and goes through migrate on the owner type
+- `retiring_an_end_keeps_the_link_and_the_walk_skips_the_retired_end` — 032 and 035: retiring a record others link to stays allowed and keeps the links' history; the walk does not reach the retired record
+- `a_relation_that_allows_one_link_per_target_refuses_a_second` — §2.3: one_to_many and one_to_one allow one live link per `to`; a second link into it is refused as a constraint
+- `a_relations_authority_changes_by_declaration_and_keeps_its_links` — 035, extended: a relation's authority changes by an ordinary declaration; the door its links arrive by swaps, and the links already written stay
+- `ingest_holds_a_source_relations_cardinality_over_the_lake_and_the_window` — §2.3: a link that arrives by ingest holds the relation's cardinality over the lake's live links and the window's, its ends read from the key when the record leaves them out
+- `a_relation_declared_again_with_another_target_is_a_migration` — 027 and 035, extended: a relation removed by migrate keeps its links; declaring it again with another target would reshape them, and is refused, naming the link type
+- `a_restricted_link_is_walked_only_with_the_restricted_grant` — 035 and the retention hold: a link's edge comes from its own record, so a restricted link is walked only by a principal with the `restricted` grant
+- `narrowing_a_relations_cardinality_is_refused_while_links_would_break` — 027 and §2.3: narrowing a relation's cardinality is a migration, and its preflight refuses it while live links would break the narrower rule
+
+**walks**
+
+- `a_step_over_a_relation_the_type_does_not_declare_is_refused` — 018: the planner knows the ontology; a step over an undeclared relation is refused, not answered empty
+- `a_step_deeper_than_the_lakes_limit_is_refused` — 018 and the location's limits: on a lake opened with the default limits, a step whose depth exceeds `max_depth` is refused rather than walked
+- `a_walk_answers_what_it_reaches_in_one_order` — 026 and 029: a graph includes its start, and a walk orders what it reaches by depth, type and key, so no engine's link order shows through
+- `a_walk_over_a_cycle_ends_and_answers_each_record_once` — 026: the store walks the graph, so a walk over a cycle of links ends within its depth and reaches every record once
+
+**search**
+
+- `full_text_matches_words_whatever_their_case_inflection_or_accents` — 025: the store's one token pipeline splits, lower-cases, stems and folds diacritics, so the same query matches the same records on every engine
+- `search_is_ordered_by_score_then_key` — 029: ranked search answers best first, and equal scores in key order
+- `searching_a_type_whose_searchable_field_is_unreadable_is_refused` — 024: a search over a searchable field the principal may not read is refused, naming the field
+- `a_hybrid_search_over_an_unreadable_searchable_field_is_refused_whole` — 024: a hybrid search over a type whose searchable field the principal may not read is refused, naming the field, whether it brings a vector or not; it never answers from its vector half
+- `a_vector_search_over_an_unreadable_vector_field_is_refused` — 024: a vector or hybrid search that names a vector field the principal may not read is refused, naming that field
+- `a_search_over_a_vector_embedded_from_an_unreadable_field_is_refused` — 024: a vector embedded from a field encodes that field, so a vector or hybrid search over it is refused, naming the field, when the principal may not read one of the fields it is embedded from, even though it may read the vector
+- `a_search_finds_a_record_by_its_current_text_and_nothing_by_none` — 025: the index follows every write, so a record is found by its new words and no longer by its old ones, and a query of no words matches nothing
+- `a_retired_or_restricted_record_is_never_a_hit` — the log format §2.3 and 006: a retired record is invisible, and a restricted one invisible to a principal without the `restricted` grant; neither is ever a search hit
+- `a_retired_record_or_a_cleared_vector_is_no_longer_a_nearest_neighbour` — the engine seam's vector index: it follows the projection, so a retired record or a cleared vector field is no longer among the nearest
+- `a_vector_search_answers_the_brute_force_ranking_to_the_bit` — 025 and 029, the engine seam's vector index: for k = 1, 10 and 100, with and without a filter, at the head and at an earlier position, after records were retired, vectors cleared and rewritten and records added, a vector search answers the keys, order and scores of the brute-force reference: the one cosine over every vector at the head, best first, ties by key, kept where the read sees the record
+- `a_hybrid_search_without_a_vector_or_a_backend_ranks_lexically_and_says_so` — the embedding seam (docs/seams.md): with no embedding backend bound, a hybrid search that brings no vector ranks by its text alone, and its answer says it ranked lexically
+- `a_bound_backend_embeds_a_hybrid_search_without_a_vector_and_nothing_else` — the embedding seam (docs/seams.md): a hybrid search without a vector ranks through the bound backend and says `hybrid`; a vector search or a hybrid one bringing its vector never calls it; a backend that fails, whatever error it answers, makes the search unavailable, never lexical
+- `every_hit_is_the_record_get_answers_in_its_declared_shape` — README, Search: a search never returns a shape the ontology did not declare; every hit, lexical, vector or hybrid, is the record `get` answers the same principal, with only the type's declared fields and only those it may read
+
+**search fields**
+
+- `a_search_limited_to_named_fields_matches_and_ranks_in_those_only` — 024 and 025: a lexical or hybrid search that names `fields` matches, scores and ties over those searchable fields only, the same on every engine; without `fields` it searches every searchable field
+- `a_search_limited_to_readable_fields_is_answered_beside_a_masked_one` — 024: a search that names `fields` probes only those, so a searchable field the principal may not read no longer refuses it when it is not named; the field stays masked in every hit
+- `naming_an_undeclared_unsearchable_or_unreadable_field_is_refused` — 024: a named field that is not declared or not searchable is invalid, one the principal may not read is not granted, judged before its searchability, and a search naming no field is invalid
+- `a_hybrid_search_limited_to_named_fields_still_probes_what_its_vector_is_embedded_from` — 024: `fields` narrows only the text half of a hybrid search; its vector still encodes every field it is embedded from, so a hybrid search over it is refused, naming the field, when the principal may not read one, whatever `fields` names
+
+**proposals**
+
+- `a_low_verb_runs_and_a_higher_one_is_proposed` — 013: a `low` verb that writes authored fields runs at once; any other risk is recorded as a proposal and runs only when accepted
+- `an_external_verb_without_an_executor_is_unbound` — 013 and 015: a verb whose effect reaches outside the lake runs only through a bound executor; without one the answer is `unbound`, and nothing is appended
+- `accepting_a_proposal_applies_its_write_as_the_proposers` — 013 and 004: a proposal is a `write_proposed` event; accepting it appends `write_accepted`, then the verb's run caused by that acceptance and its write caused by that run, written as the proposer
+- `a_rejected_proposal_writes_nothing_and_a_decided_one_stays_decided` — 013: rejecting appends `write_rejected` and nothing else; a decided proposal is refused as decided
+- `only_a_reviewer_decides_and_a_proposer_sees_its_own_proposals` — 006, 013 and Catalog::proposals: accept and reject need the review grant; without it, `proposals` lists only the principal's own
+- `a_verbs_write_carries_the_verbs_procedure_version` — 010 and the log format §1.1: a value a verb produced carries, as its procedure_version, the version of the verb's declaration
+- `an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_position` — seams, VerbExecutor, and 013: the executor's answer is recorded as output_recorded caused by the event that made the verb due and returned in the outcome's output; a failure is recorded as {"error": …} at a real position; a retry of the same call answers the first outcome, its position and output, and like a rebuild runs nothing again
+- `a_retried_external_verb_answers_its_call_though_a_host_write_names_it` — 013 and 021, extended: a host write naming an external verb's `verb_called` as its cause does not become the call's outcome; a retry with the call's idempotency key answers the verb's position and its recorded output, for a verb on a record and one on its type
+- `a_retried_write_verb_answers_its_own_write_though_a_host_write_names_it` — 013 and 021, extended: a retry of a write verb answers the record write the verb itself made and its version, though a later host write names the verb's `verb_called` as its cause
+- `a_retried_proposed_call_answers_its_proposal_after_it_is_accepted` — 013 and 015: a retry of a call that was proposed answers the proposal, its first outcome, after the proposal was accepted and a host write named the accepted call as its cause
+
+**schema proposals**
+
+- `a_proposed_declaration_takes_effect_only_when_accepted` — 013, extended, and 007: a principal without the schema grant may propose declarations; nothing is declared and no schema hash moves until a reviewer with review and schema accepts, and then the declaration is logged at the acceptance, written as the proposer and caused by the acceptance
+- `accepting_a_schema_proposal_needs_the_schema_grant` — 013, extended: a reviewer with review alone may not accept a declaration or a migration; the refusal is not_granted, nothing is appended, and the proposal stays pending
+- `a_migration_proposal_carries_its_report_and_is_preflighted_again_at_accept` — 013, extended, and 027: a proposed migration carries the report its preflight answered then; at the acceptance it is preflighted again on the head, and one that would now lose information is refused with the fresh report, the proposal pending and the type unchanged
+- `a_rejected_schema_proposal_leaves_the_ontology_untouched` — 013, extended: a rejected declaration leaves the ontology as it was, and proposals can be listed by kind
+
+**annotations**
+
+- `annotations_round_trip_through_declare_the_feed_and_describe` — 007, 024 and 027, extended: annotations on a type, a field, a relation and a relation's link field, declared or applied, come back exactly in the feed's `declared` event and in `describe` for the owner, in canonical form
+- `an_annotation_change_alone_moves_the_version_and_not_the_schema_hash` — 007 and 027, extended: re-declaring a type with only an annotation changed is taken by `declare`, moves its version by one and leaves its schema hash byte-identical
+- `a_masked_field_is_described_without_its_annotations` — 024, extended: a field the principal may not read is described by its shape alone, without its annotations, and so is a relation's link field it may not read (no description, label or annotations); the type's and the relation's own annotations are still shown
+- `an_unnamespaced_reserved_null_or_oversized_annotation_is_refused_naming_it` — the contract's annotation rules: a key without a namespace, a `null` value and a declaration holding more than 16 KiB of annotations are refused as invalid, a key in `sys.` or `lakelands.` as reserved, each naming the key or the declaration, with nothing appended; a declaration holding exactly 16 KiB is taken
+
+**cursors**
+
+- `a_cursor_stays_on_the_position_of_its_first_page` — the glossary: a cursor is bound to the position its first page was read at, so a page set is stable while the lake is written
+
+**feed**
+
+- `the_feed_answers_the_log_from_a_position_by_kind_and_type` — 004: `poll` answers the events from a position in log order, filtered by kind and type, with the position to poll from next and the head
+- `rebuilding_the_projection_changes_nothing_in_the_feed` — 001 and 004: the log is the truth and the projection an index; deleting and rebuilding the projection leaves every event as it was
+- `a_trigger_fires_on_every_write_whose_guard_holds` — 004: when a write makes a trigger's guard hold, `trigger_fired` is appended with it; a write under which the guard does not hold fires nothing
+- `an_object_set_change_is_written_only_when_membership_changes` — 004: a write that moves a record into or out of an object set appends `object_set_changed`; one that leaves membership as it was appends none
+- `polling_from_next_in_small_pages_sees_every_matching_event_once_in_order` — 004: a consumer that polls from the `next` each answer gives, in pages of one or two events and with writes landing between polls, sees every matching event once, in log order; this is the position a deliverer keeps
+- `a_poll_with_a_limit_of_zero_answers_one_event` — seams, ChangeFeed: a limit of 0 is read as 1, so a consumer that passes 0 still moves forward instead of polling the same position for ever
+- `a_feed_filtered_by_key_answers_that_records_events_only` — 004 and lakelands#146: a feed filtered by types and keys answers exactly the events about those records, in log order, each once: its upserts, a verb called on it, a trigger it fired, its object-set changes, a restrict, an unrestrict and its retire; with types empty a key matches in any type and verb_called passes too; kinds narrow it further; no event that names no record passes
+- `a_key_filter_does_not_follow_a_rekey` — 004, 027 and lakelands#146: a feed filtered by a record's old key answers its events up to the migration that re-keyed it and none after; the new key answers what came after
+
+**retire**
+
+- `a_principal_who_may_write_only_some_fields_cannot_retire` — 006 and TypeRights::retire: retiring removes every field of a record, so it needs a write grant on every field of the type
+- `a_record_retired_at_a_position_is_readable_just_before_it` — 009 and 001: a read at the position before a retirement sees the record as it was, to a principal who could read it then; a session told of the retirement reads it there
+- `a_type_whose_fields_all_come_from_a_source_has_no_upsert` — 016 and TypeRights::upsert: upsert writes authored fields; a type with none has no upsert for anyone, the owner included: describe says so, and the door refuses it as the wrong door, naming the field
+
+**keys**
+
+- `a_key_that_disagrees_with_its_key_fields_is_refused` — the log format: a record's key is its key fields' values joined by `:`; a write that says otherwise is refused and appends nothing
+- `a_record_created_by_its_key_alone_gets_its_key_fields` — the log format: a writer may give only the key; the key fields are read from its components
+
+**restriction**
+
+- `a_restricted_record_is_withheld_but_kept` — the facade: restrict hides a record from principals without the restricted grant, keeps it for those with it, keeps its history, and unrestrict lifts it
+
+**reactions**
+
+- `a_trigger_fires_on_a_verbs_write` — 004 and 013: a verb's write fires the triggers whose guard holds and changes object sets in the same append, caused by that write, as any other write does
+
+**link triggers**
+
+- `a_trigger_on_a_link_type_fires_on_link_rewrite_unlink_and_ingest` — 035 and 004: a trigger naming a relation's link type fires on link, on the link written again, on unlink and on each ingested link, naming the link type and the link's key, caused by that write; its guard reads the link's fields, and `changed(f)` holds on a write that changes f and not on unlink
+- `a_trigger_on_the_link_type_of_a_reference_relation_is_refused` — 035: a relation carried by a reference field has no link type, so a trigger naming one is refused as invalid on `on`, saying to watch the type with `changed(<field>)`
+
+**bundles**
+
+- `a_bundle_with_forward_references_is_applied_whole_or_not_at_all` — 028: apply validates a set of declarations together, so a reference may point forward within it, and appends all of it in one append or none of it
+
+**references**
+
+- `a_write_referencing_a_record_that_does_not_exist_is_refused` — 011 and the log format §5: a reference is the key of a record of its target type; a write naming no such record is refused whole, one naming an existing record is accepted
+- `a_reference_to_a_record_earlier_in_the_same_ingest_resolves` — 016 and the log format §5: an ingest's records are written in order, so a record may refer to one delivered before it in the same window
+
+**aggregates**
+
+- `an_aggregate_over_no_records_answers_zero` — the read contract and 011: an aggregate over an empty set answers one group with a count of 0 and a sum of zero, kept at the field's scale
+
+**date bucket**
+
+- `find_groups_records_by_date_bucket_for_every_unit` — 017, extended, and 029: find groups by a named date_bucket key for day, week (ISO, from Monday), month, quarter and year, across a year's end and a leap day, with the same groups, counts and exact sums on every engine, the bucket answered under the key's name as its starting instant, and the records without a date in the null group, last
+- `a_where_selects_the_records_of_one_date_bucket` — 017, extended: a where comparing date_bucket(x, 'month') with an instant selects exactly that month's records; a unit outside the five is refused as invalid, naming it
+- `a_declaration_may_call_date_bucket_and_from_it_the_lake_writes_format_3` — 017, extended, and log-format §6: a declaration may call date_bucket (a derived field, a view's where, an object set's filter); the event that first declares such a call is written in format version 3, as is every event after it, and a derived bucket answers finds by it
+
+**derived relations**
+
+- `a_walk_over_a_derived_relation_finds_exactly_the_matching_records_both_ways` — 044: a pattern step over a derived relation reaches exactly the records whose matched fields hold the same value, out and in, over one pair and over two, at the head and as_of an earlier position; `'010'` does not match `'10'`
+- `changing_a_matched_field_moves_the_edge_at_that_position` — 044 and 009: changing a matched field moves the edge at the position of that write: as_of before it the old record is reached, from it on the new one
+- `a_null_never_matches` — 044: a matched field that is null or absent on either side connects nothing, a null to a null included
+- `a_principal_without_read_on_a_matched_field_is_refused_naming_it` — 024 and 044: a walk over a derived relation, a step and a measure alike, is refused not_granted, naming the field, when the principal may not read a matched field on either side
+- `degree_and_components_over_a_derived_relation_equal_those_over_the_same_links` — 026 and 044: `degree` and `components` over a derived relation answer what they answer over the same connections written as link records
+- `a_derived_relation_is_declared_not_migrated_and_never_moves_carrier` — 007, 027, 035 and 044: changing a derived relation's match is taken by `declare` and leaves the schema hash byte-identical; a relation carried by link records or by `via` is not redeclared as derived, nor a derived one as carried, each refused naming the relation
+- `a_match_pair_of_two_kinds_is_refused_naming_both` — 044: `declare` refuses a match pair whose fields are of different storage kinds, naming both fields, since identity would never match; a derived relation with `via` or fields of its own is refused too
+
+**graph measures**
+
+- `degree_counts_each_records_links_to_ends_it_may_see_highest_first` — 026, 029 and 035: `degree` counts each start record's links over the steps' relations in each step's direction, a via reference and a link record alike, but not a link to a retired end or, without the grant, a restricted link; highest first, ties by key, paged by limit
+- `components_partition_what_the_start_reaches_largest_first` — 026 and 029: `components` puts every record reached from the start over the steps' relations, both ways, in exactly one component, across types; components largest first, ties by their least (type, key), members by (type, key)
+- `a_measure_reads_the_graph_at_the_position_it_is_asked_at` — 009 and 026: a measure `as_of` an earlier position counts the links live there, not a link written later
+- `components_past_the_lakes_max_graph_nodes_are_refused_too_large` — 018 and the location's limits: `components` whose records, over all components, would number more than `max_graph_nodes` are refused as too_large naming the ceiling, and nothing partial is answered
+- `a_measure_refuses_depth_where_to_order_by_and_one_way_components` — 018: a measure refuses a step `depth` or `where`, `to`, `order_by`, and a `components` step that does not walk `both`, each as invalid, rather than answer less than it seems to
+
+**vector index**
+
+- `an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_floor` — 043, 025 and 029: a search over a vector field the `vector_index.<type>` setting names says `ranked_by: index`, ranks the index's candidates by the one cosine with ties by key, answers the same bytes when asked again, and finds on average at least the engine's floor of the brute-force reference's hits for k = 1, 10 and 100, with and without a filter, at the head and at an earlier position, after records were retired, vectors cleared and rewritten and records added; an engine without such an index answers the reference, a recall of 1
+
+**embeddings**
+
+- `a_write_embeds_its_text_and_records_the_vector` — 022, extended, and the log format: the store embeds the joined `from` text after the write, records the vector as output_recorded under embed:<model> naming the field, and the field holds it
+- `vector_coverage_counts_embedded_and_due_records_at_the_head` — 022, extended, and lakelands#147: vector_coverage answers, per embedding field at the head, the live records holding a vector and those whose text is not embedded (never embedded, failed or waiting for a retry), not counting a record without text; a redeclaration's retry and a retire move the counts; an unknown type is not found and a type without embeddings answers none
+- `the_same_text_is_embedded_once_whichever_record_asks` — 002 and 022, extended: a vector recorded for a text under a model is read back for every later record with that text, and after a record's text changed and came back; the log holds one output per distinct text
+- `a_rebuild_reads_the_vectors_back_without_embedding` — 001 and 002: a rebuild folds the recorded vectors; the fields read as before and nothing is embedded
+- `an_embedding_whose_model_the_backend_does_not_make_is_refused_at_declare` — 022, extended: an embedding is declared only where the bound backend names its model and makes vectors of its dimensions; otherwise the declaration is refused as unbound
+- `an_embedding_without_a_backend_is_refused_at_declare` — 022, extended: with no embedding backend bound, declaring an embedding is refused as unbound, naming the model
+- `a_changed_embedding_is_due_on_every_live_record_and_an_unchanged_one_embeds_nothing_new` — 022, extended: a change of `from` or `model` is a redeclaration that makes the field due on every live record, one call per distinct text; declaring it again unchanged reads the recorded vectors back
+- `a_record_with_nothing_to_embed_holds_no_vector_and_embeds_nothing` — 022, extended: with no `from` field holding text, the field holds no value and keeps metadata without an error, and nothing is called; the text written later makes it due
+- `a_failed_embedding_clears_the_field_and_a_redeclaration_retries_it` — 022, extended: a failure is recorded, clears the field and puts its reason in the metadata; a redeclaration calls again for that text once, the later output holds and the vector fills every record holding it
+- `an_embedded_vector_recomputes_the_derived_fields_that_read_it` — 012 and 022, extended: the field a vector fills is changed through the fold's ordinary path, so a derived field reading it is recomputed
+- `a_hybrid_search_over_an_embedding_the_bound_backend_does_not_make_is_unbound` — seams, EmbedBackend: a hybrid search over an embed field whose model or dimensions are not the bound backend's is refused as unbound when it is made, not ranked with vectors of another space
+- `a_due_embedding_waits_while_no_backend_makes_it` — seams, EmbedBackend: a due embedding whose backend is gone or makes another model or other dimensions is not made; the field waits, with neither a value nor metadata, until its record is written again or its type is declared again with the backend bound
+- `an_embedding_that_is_not_a_derived_vector_of_its_own_text_fields_is_refused` — seams, EmbedBackend, and TypeDecl::embedding_problem: an embed field is a derived vector with dimensions, made from distinct text fields of its type other than itself, sensitive where a source is; anything else is refused as invalid, whatever backend is bound
+- `no_request_carries_more_than_sixty_four_texts` — seams, EmbedBackend: the store sends the due texts of one model in batches of at most 64, however many records one declaration makes due, so its memory per drain stays bounded
+
+**aging**
+
+- `a_rule_moves_only_the_records_holding_from_whose_condition_holds` — 036: `age` moves every record of the rule's type, restricted ones included, whose field holds `from` and whose `when` holds, and no other
+- `aging_a_date_twice_appends_nothing_the_second_time` — 036 and log-format §3: every move has an id from the rule, the record and the date, and a second `age` for the same date appends nothing
+- `today_in_a_rule_is_the_date_aged_not_the_clock` — 036: inside a rule's condition `today()` is the date `age` was handed, never the clock of the process running it
+- `a_condition_that_cannot_be_evaluated_leaves_the_record` — 036: a `when` that cannot be evaluated for a record leaves it as it is, is counted as a failed guard, and the run goes on
+- `a_move_is_written_by_the_system_as_its_rule` — 036 and seams: a move is a `record_upserted` of origin `system` by `system:lakelands`, its procedure `aging:<rule>` at the rule record's version, scheduled, with no cause; a trigger reacts in the same append
+- `a_rule_that_does_not_fit_is_refused_naming_its_field` — seams: a rule is refused as invalid, naming the rule field at fault, when `on` names no type, a `sys.` type or a view, `field` is derived or part of the key, `from` is no value of the field, `to` equals `from`, or `when` reads `previous`
+- `rules_run_in_name_order_one_append_each` — seams: `age` runs the rules in rule-name order, each rule's moves one append, and reports them in that order
+- `age_at_a_time_other_than_midnight_is_refused` — seams: `age` is handed a date, at UTC midnight; any other time is refused as invalid, naming `today`, and appends nothing
+- `a_rule_that_no_longer_fits_is_skipped_and_named` — seams: a rule the lake's shape no longer fits is skipped, named in the report with its reason, while the other rules run
+- `a_rule_needs_write_on_its_field_and_read_on_what_when_reads` — 036 and 024: a rule is refused as not granted, naming the field, unless its author may write the field it moves and read every field its `when` reads; the run carries that authority
+- `a_move_the_store_would_refuse_leaves_the_record` — 036: a move the store would refuse for a record (its `to` a reference no longer live) leaves the record, is counted as a failed guard, and the other rules run
+- `a_rule_under_a_retention_hold_is_live_and_runs` — 036 and seams, SystemVocabulary: a hold withholds a record from reads, it does not stop it; a restricted rule record runs
+- `a_rule_reads_the_setting_at_its_run_and_a_replay_reads_its_moves` — seams, SystemVocabulary: setting() in `when` reads the lake's settings as a filter does, with no grant on sys.setting asked of the rule's author, as of the head at the run; the move is an event, so a replay never evaluates `when` again
+- `a_rule_is_skipped_when_its_field_is_dropped_or_its_value_no_longer_admitted` — seams, SystemVocabulary, and 027 extended: a rule whose field a migration dropped, or whose `from` or `to` a tightened value type no longer admits, is skipped and named, never run half
+
+**purge**
+
+- `a_purge_retires_every_record_the_source_brought_in_and_no_other` — 039: a purge retires, in one append, every live record the source brought in across every type it reached, and leaves other sources' and authored records; the report counts per type
+- `a_purged_record_is_still_read_as_of_before_the_purge` — 039 and 007: a purge retires, it does not erase: a read as of before it sees the records, and each retirement continues the record's version
+- `a_record_another_hand_also_wrote_refuses_the_whole_purge` — 039: a record the source brought in that a principal or another source also wrote refuses the whole purge as invalid, naming it, and nothing is appended
+- `derived_and_system_values_make_no_owner` — 039: a derived value and a value the lake itself wrote (an aging move) make no owner; a cleared authored field co-owns nothing
+- `a_restricted_record_is_purged_too` — 039: a purge is the host's act over its lake, so a record under a retention hold is retired with the rest
+- `a_type_that_keeps_no_provenance_is_named_and_not_searched` — 039 and 010: a type declared without per-field provenance cannot say who brought its records in; the purge names it as unsearched and leaves its records
+- `a_second_purge_appends_nothing_and_the_feed_can_come_back` — 039 and log-format §3: a second purge of the same source retires nothing and appends nothing; the same content ingested after a purge is a new ingest
+- `each_purged_record_reacts_as_a_retire_does_in_the_same_append` — 039 and 004: each retirement of a purge is written by `system:lakelands`, origin `system`, context `direct`, and fires the triggers and leaves the object sets a `retire` would, in the same append, caused by that retirement
+- `another_sources_links_to_a_purged_record_stay_and_the_walk_skips_it` — 039, 035 and 032: the purged source's own link records are retired with it; link records another source brought in, pointing at purged records, stay, and a walk skips the retired end
+- `a_record_whose_values_from_the_source_were_all_cleared_stays` — 039: whose a record is, is read over the fields that hold a value: a record whose values from the source were all cleared holds nothing of it and stays, whether the source brought it in or set and cleared a value on another source's record, while a record still holding one is purged
+- `a_co_owned_purge_names_the_count_and_the_first_ten` — 039 and seams: a purge refused because records are co-owned names how many there are, and the first ten, never more
+- `a_value_a_backing_filled_makes_no_owner` — 039: a backed output is the lake's own computation, like a derived value; it makes no owner, so the source's purge retires the record
+
+**value types**
+
+- `a_value_type_that_accepts_more_is_declared_and_no_record_changes` — 027: a value type that accepts everything it did (a value added to `one_of`, a `constraint` removed) is declared at its next version, and no stored record changes
+- `declare_refuses_a_value_type_that_accepts_less_or_reshapes` — 027: `declare` refuses a value type that would accept less, naming `migrate`, and one whose `kind` or `scale` changes; `migrate_value_type` refuses that change too, since no value-type migration makes it; nothing is appended
+- `the_preflight_counts_what_would_not_fit_over_every_use_and_history` — 027: the preflight of a value type checks every value stored under it, over every field of every type that uses it, retired and restricted records included, counts the records and the misfits per use, names the first, and appends nothing
+- `applying_a_tightening_some_value_does_not_fit_is_refused` — 027: a value-type migration some stored value would not fit is refused as invalid, naming how many, and appends nothing
+- `a_tightening_every_value_fits_is_one_declared_version` — 027 and log-format: a value-type migration every stored value fits appends one `declared` at the next version and changes no record; later writes are checked against it
+- `a_value_type_report_from_before_the_lake_moved_is_refused` — 027: a value-type migration is applied only against the report of the lake as it stands; after the lake moved it is refused as invalid
+- `a_value_type_migration_needs_the_schema_grant` — 027 and 006: both the preflight and the apply of a value-type migration refuse a principal without the `schema` grant
+- `an_apply_that_loosens_one_value_type_and_tightens_another_is_refused_whole` — 028 and 027: `apply` of a set that loosens one value type and tightens another is refused whole, naming `migrate`, and appends nothing
+- `removing_a_constraint_or_a_format_is_declared_and_changing_a_constraint_is_refused` — 027 extended and seams: `declare` takes a value type whose `constraint` or `format` is removed, since no stored value can stop fitting it; a `constraint` changed may reject a stored value, so `declare` refuses it, naming `migrate`
+- `a_trigger_or_set_on_a_value_the_type_no_longer_admits_never_holds` — 027 extended and seams: the preflight checks stored values, not the conditions that mention them; a trigger's `when` or an object set's `where` comparing with a value a tightening removed stays declared and simply never holds afterwards
+
+**rekey**
+
+- `a_rekeys_preflight_counts_what_moves_with_it_and_appends_nothing` — 027: the preflight of a re-key counts the records it moves, retired and restricted included, the types keyed by a reference to them, their link records, and the reference values it rewrites, and appends nothing
+- `two_records_that_would_take_one_new_key_refuse_the_rekey` — 027: a re-key under which two records would take one key is not lossless, names the key, and is refused, appending nothing
+- `a_record_without_a_new_key_value_refuses_the_rekey` — 027: a re-key under which a record has no value for a new key field is not lossless
+- `a_rekey_moves_every_record_with_its_values_version_and_provenance` — 027 and log-format §2.3: a re-key moves every record to its new key with its fields, version and per-field provenance; at the migration's position the new key is found and the old one not, and a read before it still finds the old key
+- `a_reference_to_a_rekeyed_record_names_its_new_key` — 027 and 032: a reference field in another type that named a moved key names the new one, and a walk over its relation reaches the record
+- `a_link_to_a_rekeyed_record_is_rekeyed_and_walked` — 027 and 035: a link record keyed by a moved end is moved to its new pair key, and a walk over its relation reaches the re-keyed record
+- `a_type_keyed_by_a_reference_to_a_rekeyed_type_is_rekeyed_with_it` — 027: a type whose key fields reference a re-keyed type is re-keyed in the same migration
+- `an_old_key_is_ended_and_a_new_write_follows_the_new_rule` — 027 and log-format §2.3: after a re-key a write at an old key whose key fields make another key is refused as invalid, naming it; a write at a new key continues its version; and a write of the bare old key string, its key field filled from it, is a new record at version 1
+- `a_rekey_and_every_event_after_it_are_format_version_2` — log-format §6: the re-keying `migrated` event and every event after it carry `v` 2; the log verifies, and a rebuild answers every read as before
+- `a_lake_that_never_rekeys_writes_format_version_1` — log-format §6: a lake in which nothing is re-keyed carries `v` 1 on every event, a migration that keeps the key included
+- `a_migration_that_takes_every_key_field_away_is_refused` — 027: a migration is refused as invalid when it takes every key field away, names a key field that is not required or of a kind a key cannot be made of, or would re-key a view
+- `a_rekey_report_from_before_a_write_is_refused` — 027: a re-key is applied only against the report of the lake as it stands; a write between the preflight and the apply, one that changes a move, makes it refused
+- `object_set_membership_moves_with_a_rekeyed_record` — 027 and 004: a moved record keeps its object-set memberships at its new key: a write that keeps it in a set changes nothing, and retiring it leaves the set at the new key
+- `a_rekeyed_type_migrates_again` — 027 and log-format §2.3: the ended keys a re-key leaves are no records: a later migration that keeps the key, a value-type tightening, and a second re-key over them all apply
+
+**export**
+
+- `an_export_writes_one_file_per_segment_of_canonical_lines` — 030 and log-format §4.2: an export writes one file per segment, named by its first position in 20 digits, holding each event's canonical bytes and a line feed, and the sealed file's digest is the one the checkpoint after it lists
+- `an_export_verifies_to_the_through_and_hash_the_lake_answers` — 030: an export verifies from its files alone to the position and hash the lake's own verify answers; its manifest names the same pair and every file with its digest, and is never trusted: with a wrong manifest or none the export verifies the same
+- `a_rekeyed_lake_exports_both_format_versions_as_written` — 030 and log-format §6: a lake that re-keyed exports its version-1 events and its version-2 events as they were written, and the export verifies
+- `a_later_export_repeats_the_sealed_files_and_extends_the_active_one` — 030: an export reads through the head as it stood when it began; a lake never checkpointed exports one file 00000000000000000000.jsonl, and a later export has the earlier sealed files byte for byte and an active file the earlier one begins
+- `an_export_into_a_directory_that_holds_anything_is_refused` — 030: an export writes only into an empty or absent directory; into any other it is refused as a failed precondition naming the directory, and writes nothing
+- `a_damaged_export_is_refused_naming_the_position` — 030 and log-format §2.6 and §4.2: verifying an export refuses a changed byte, a space inserted, a missing last line feed, a format version below the first, past the newest or going down, a known_at going back, a checkpoint naming the wrong position before it, a missing file, an empty log/, a file too many, a file not named in 20 digits and two lines out of order, and names the position where the files stop being the log
+- `an_export_imported_into_a_fresh_lake_answers_as_the_lake_it_came_from` — 030 and log-format §4: an export imported into a fresh lake of the engine holds every event unchanged at its position, of every format version the lake wrote (annotations included), so the lake answers as the one exported (the head, verify, the feed from position 0, every type's records with provenance at the head and at an earlier position, describe) and exports the same files byte for byte; its next writer takes a lease greater than every fence in the log and continues it
+- `an_import_is_refused_for_a_damaged_export_another_lake_or_a_lake_holding_events` — 030: an import verifies the whole export before it writes: a changed byte in a segment is refused naming its position, and an export of another lake (naming both lakes) and a lake that holds events (naming its head) are refused as failed preconditions; nothing is written into the lake it refuses
+- `an_import_refuses_a_declaration_member_it_does_not_know_naming_it` — 028 and log-format §2: an export whose `declared` event carries a member its declaration does not take, its hash made right, is refused on import, naming the member and the declaration
+- `a_cycle_of_views_from_an_imported_log_is_refused_on_read` — 018 and 030: a log can bring in a cycle of views over `source` that `declare` would have refused; a read of a view on it is refused as invalid, naming the chain, the process goes on, and a view off the cycle reads as before
+- `an_import_refuses_a_context_carrying_cause_naming_it` — 021, extended, and log-format §1.1: a host's cause is the envelope's and never written inside `context`; an export whose line carries `cause` in its `context`, its hash made right, is refused on import naming the member, and a write through the doors carries no cause
+
+**compact**
+
+- `a_compacted_lake_answers_every_read_as_before` — 040: after a compact of a churned lake (overwrites, a retire, a restrict, a derived field, a view, recorded outputs, embedded vectors, a proposal, a value-type migration, a re-key and a rebuild), every read answers byte for byte as before: every record with provenance at the head and as of every position, a lexical and a vector search, a walk and the proposals; a retry of a keyed write is still recognised and appends nothing; an input the lake recorded is not called again after the compact, and a rebuild after it answers as before
+- `compact_appends_nothing_and_exports_the_same_bytes` — 040: a compact appends nothing: the head, the whole feed and verify's answer are as before, the report names the head unmoved, and an export before and after is the same, file for file and byte for byte, manifest included
+- `a_lake_compacts_again_and_writes_on` — 040: a lake compacts again and nothing changes either; a write after it continues the record's version and the log's position
+- `writes_made_while_a_compact_runs_each_land_once_before_or_after_it` — 040 and 008: writers writing while compacts run each land once, before or after a compact; every write answers a position its value is visible from, the log grows by the writes alone, and every read of the churned lake answers as before
+
+**settings**
+
+- `a_setting_is_read_as_it_stood_at_the_position_read` — seams, SystemVocabulary: setting('key') in an expression reads the sys.setting record with that key as of the position being read
+
+**vocabulary**
+
+- `a_host_type_is_declared_when_a_writer_opens_the_lake` — 003 and seams, SystemVocabulary: each writer open declares the host's sys. types the lake may hold and does not hold yet; a type added later reaches the existing lake, and a withheld one never does
+- `a_vocabulary_naming_a_reserved_type_refuses_the_writers_open` — 003, 035 and seams, SystemVocabulary: a host vocabulary naming a type under sys.link. or one of the store's own four (sys.source, sys.provenance, sys.setting, sys.aging_rule) is refused at the writer's open as invalid, naming the type as reserved; nothing is appended, and the lake never holds it
+
+**verbs on type**
+
+- `a_verb_on_its_type_runs_under_its_types_grants_and_records_its_output` — 013, extended: a `low` external verb declared with `scope: type` is described with that scope and called with no key by a principal with write on its type; it answers `applied` with its executor's output, its `verb_called` carries no key and is written in log format 8, and the output is recorded as `output_recorded` caused by it
+- `a_verb_on_its_type_at_medium_risk_is_proposed_and_runs_when_accepted` — 013, extended: a `medium` verb on its type is recorded as a proposal whose call carries no key and runs nothing; accepting it runs its executor once and records the output, caused by the acceptance
+- `a_verb_on_its_type_without_write_on_its_type_is_not_granted` — 006 and 013, extended: a principal that may write another type but only read the verb's type is refused not_granted when it calls the verb on that type, and nothing is appended
+- `a_verb_on_its_type_retried_with_its_key_answers_the_first_outcome` — 013, extended, and 015: a verb on its type called again with the same idempotency key answers the first outcome, appends no second `verb_called` and runs its executor once
+- `a_key_that_does_not_fit_the_verbs_scope_is_refused_naming_the_verb` — 013, extended: a key passed to a verb on its type, none passed to a verb on a record, and an expected version with no key are each refused as invalid naming the verb, before grants are read, and nothing is appended
+- `a_verb_on_its_type_with_a_write_effect_or_requires_is_refused` — 013, extended: a verb declared with `scope: type` and a `write` effect, or with `requires`, is refused as invalid naming the verb, since it has no record to set or to read, and nothing is appended
+
+**concurrency**
+
+- `concurrent_writes_each_land_once_in_one_order_of_the_log` — 008: many callers write through the lake's one writer; every write lands once, the log's positions follow one another without a gap, every answer names a position the write is visible from, and the chain verifies
+- `writes_and_a_declaration_made_at_once_are_ordered_as_one_log` — 008 and 027: a declaration made while others write takes its place in the same order; every write after it sees the new field at its position, none before it does
+- `a_read_at_a_position_answers_the_same_during_writes_and_after` — 008 and 009: a read at a position sees the lake as it was there, whoever is writing; `find` and `get` at one position agree, and answer the same when asked again later
+- `two_feed_readers_polling_during_writes_see_one_log` — 004 and 008: the feed is the log; two consumers polling from one position while others write see the same events, in the same order, each once
+- `concurrent_writes_see_their_own_filled_field_and_one_input_is_called_once` — 008 and 022, extended: each write answers a position its own filled field is visible from, whoever else is writing, and one input is called once across all the writers
+- `writes_made_while_a_rule_runs_land_before_or_after_its_append` — 036 and seams, SystemVocabulary: `age` holds the writer's lock for a rule's whole run, so a write made meanwhile lands before or after the rule's append, never inside it, and every move is made from the record as it stood before that append
+
+**streaming**
+
+- `a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it` — 016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification and its import into a new lake, each page of a walk of a type through find, a rebuild, a reopen, a three-hop walk over link records, a three-hop walk over a derived relation, a hybrid search with k = 10 over every record's vector, without and with a vector index asked for, the ten records of highest degree over the whole type, and components refused at the lake's max_graph_nodes, hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB, and the search answers what it must
+
+**reactive depth**
+
+- `a_chain_of_reactions_past_the_lakes_ceiling_is_refused_too_deep_and_appends_nothing` — 021: a host writes each reaction one deeper than its cause; the store takes every write up to the lake's max_reactive_depth and refuses the next as too_deep naming the ceiling, an upsert and a retire alike and whatever origin the context names, appending nothing, while the log keeps the chain before it with each write's depth
+
+**host cause**
+
+- `a_reactive_write_with_a_cause_carries_it_on_each_of_its_events` — 021, extended: a write through a catalog whose context names a cause carries it as the envelope's `cause` on each event the write itself appends (an upsert's record, a verb's `verb_called`, an ingest's record), while the events the store derives keep the store's cause (a trigger's firing names its write, a verb's write names its `verb_called`); no event's `context` carries `cause`
+- `a_cause_past_the_head_is_refused_and_appends_nothing` — 021, extended: a write whose context names a cause past the lake's head is refused as invalid naming both positions, appending nothing; a cause at the head, and at position 0, is taken
+- `the_reactive_ceiling_holds_on_every_door_that_writes` — 021, as extended on 2026-09-25 (lakelands#257): a context deeper than the lake's max_reactive_depth is refused as too_deep, appending nothing, through ingest, accept, reject, declare, apply, add_field, migrate_apply and migrate_value_type_apply as through the record doors
+
+**triggers**
+
+- `a_transition_guard_fires_on_open_to_closed_only` — 004, extended: a guard `previous(status) = 'open' and status = 'closed'` fires on open → closed and not on draft → closed, open → open or a record created closed (`previous` is null for it); `previous` outside a guard is refused as invalid naming it
+- `a_guard_tells_a_retirement_from_an_update` — 004, extended: a guard `status = 'closed' and not retired()` fires on closing a record and on updating a closed one but not on retiring it, and a guard `retired()` fires on the retirement only; the declaration calling `retired` is written in log format 7
+- `a_revival_is_a_creation_to_a_guard` — 004, extended: an upsert of a retired record is a creation to a guard: `previous(f)` is null, `changed(f)` is true and `retired()` is false
+- `retired_outside_a_triggers_guard_is_refused_naming_it` — 004, extended: `retired()` in an object set's filter, a verb's `requires`, a derived field or a find's filter, and `retired` called with an argument in a guard, are refused as invalid naming `retired`, appending nothing
+- `a_reaction_past_its_triggers_max_depth_is_refused_naming_it` — 021, extended: a reactive write whose `cause` names a firing of a trigger with `max_depth` is refused too_deep naming the trigger when it is deeper than that ceiling, appending nothing, while the lake's own ceiling is higher; a reaction to another trigger, or naming no cause, at the same depth is taken
+- `a_trigger_max_depth_above_the_lakes_ceiling_is_refused` — 021, extended: a trigger whose `max_depth` is above the lake's `max_reactive_depth` is refused as invalid naming the trigger and both numbers; the lake's ceiling itself and 0 are taken
+
+**after**
+
+- `after_resumes_where_the_cursor_would` — 029: `after` names the position a cursor carries — a row's sort values and key — and continues strictly after it in the one order, at the caller's read position; it is refused beside a cursor or an aggregate, with a value count other than `order_by`'s, or with a value its key's field cannot hold
+
+**describe**
+
+- `describe_answers_the_declaration_whole` — 014 and 024: for the owner, a described type projects back onto its declaration byte for byte — every field's function, embedding, searchable, sensitive, label and description, and the type's label, language and view; a masked field shows its shape only; functions, triggers, object sets and views are answered as declared, to a principal who reads every field they name or holds the schema grant, as in force at the read position
+
+### Through the engine seam (54 checks)
+
+**log**
+
+- `appended_bytes_come_back_unchanged` — log format §1.2: the engine keeps each event's canonical bytes and returns them unchanged, so the store can verify the hash chain over what it reads
+- `a_stale_lease_cannot_append` — 008: every append is checked against the current fencing token, so a writer that lost the lease cannot fork the chain
+- `a_held_lease_is_refused_at_once_naming_its_holder` — 008: a second writer fails at once with an unavailable error that names the lease's holder; it never waits
+- `every_take_of_the_lease_has_a_greater_fence` — 008: the fencing token increases with every new writer, which is what makes an older token stale
+- `an_append_with_a_gap_or_a_wrong_prev_is_refused_whole` — log format §4.1: an append whose positions do not continue the tip, or whose prev is not the hash before it, is refused, and none of it is appended
+- `a_sealed_segment_is_digested_as_its_lines` — log format §4.2: a segment's digest is SHA-256 over its file's bytes, each event's canonical bytes followed by a line feed, whatever the engine keeps them in
+- `releasing_a_stale_lease_leaves_the_current_holders_lease` — 008: a writer that lost the lease cannot release its successor's, so the successor goes on appending
+- `reading_past_the_tip_or_with_limit_zero_answers_nothing` — seams §LakeEngine: read answers at most `limit` events from `from` on, nothing past the tip or for a limit of 0, and an empty lake has no tip
+- `an_event_at_position_zero_with_a_fence_is_refused` — log format §4.1: the event at position 0 is written before any lease exists, under fence 0, and an engine refuses it under any other
+- `an_import_keeps_each_events_fence_and_the_next_lease_is_greater` — 030 and log format §4.1: `import` stores events carried over from another lake with the fences they were written under, which never fall, refuses a fence below the one before it, and the next lease taken is greater than every fence imported
+- `an_import_is_refused_once_the_log_holds_an_appended_event` — 030: `import` continues only a log that holds nothing but imported events; once anything was appended, an import is refused and nothing of it is written
+- `sealing_under_a_stale_lease_is_refused_and_two_seals_list_contiguous_ranges` — log format §4.2: only the writer seals, and the sealed segments' ranges start at 0 and follow each other with no gap
+- `opening_a_missing_lake_to_read_or_write_is_unavailable_and_create_opens_an_existing_one` — seams §EngineOpener: reading or writing a lake that does not exist is unavailable, and create opens a lake that exists, as it is
+- `a_read_only_open_creates_and_changes_nothing` — 008 and seams §EngineOpener: a reader opens a lake as it is; opening a missing lake read-only makes none, and a read-only handle writes neither the log nor the projection
+- `a_dropped_writer_releases_its_lease` — 008: a lake is closed when its last handle goes, so a writer that ends without closing does not keep every later writer out
+- `a_read_only_handle_refuses_the_lease_and_appends` — 008: any number of readers may open a lake, and none of them can take the lease, append or seal, so only the writer extends the chain
+- `an_append_that_returned_is_read_by_the_next_handle` — seams, append: an append is durable before it returns, so the events are there, byte for byte, for a handle opened after the writer's handle was dropped without closing
+
+**projection**
+
+- `a_view_at_a_position_sees_the_states_then` — seams §Engine: the projection keeps every superseded state, so a view at an earlier position reads the lake as it was right after folding it
+- `a_view_past_the_folded_position_is_refused` — seams §Engine: a view at a position the projection has not folded is refused as out of range, naming the head
+- `a_rolled_back_transaction_leaves_nothing` — seams §Engine: the fold writes one transaction per append, so a crash or an abandoned append leaves the projection at a whole append
+- `edges_walk_in_out_and_both` — 026: out gives the links a record declares, in the links that point at it, both their union with each link once; the store's walks are built on them
+- `edges_over_many_keys_answer_each_key_as_it_answers_alone` — seams §ProjectionView (lakelands#227): edges over many records of one type answer one list per key, in the keys' order, each what the key alone answers, at the head and at an earlier position; a link between two of the keys is in both lists
+- `get_many_answers_what_get_answers_key_by_key` — seams §ProjectionView (lakelands#227): get_many answers each record of the keys that exists at the view's position, retired and restricted ones included, once, in key order; a key with no record is left out
+- `edges_to_a_retired_record_are_returned` — 026: an engine returns a link to a retired or missing record as it is; hiding that end is the store's
+- `edges_follow_a_records_latest_state` — 026: a record put again links where its new state says, and no longer where its earlier state did, in both directions
+- `a_commit_backwards_or_with_a_put_past_through_is_invalid` — seams §ProjectionStore: a commit never moves the projection backwards, and never commits a state valid from after the position it says it folded through
+- `a_view_does_not_see_an_open_transaction` — seams §ProjectionStore: nothing put in a transaction is visible to any view until it commits, and then all of it at once
+- `a_view_keeps_its_position_after_later_commits` — seams §LakeEngine: a view keeps answering its own position while the fold moves on
+- `a_put_at_the_same_position_replaces_the_state_there` — seams §ProjectionStore: a put of the same thing at the same position replaces the state there; the fold writing a state again never adds a second one
+- `a_put_before_a_later_state_ends_where_that_state_begins` — seams §ProjectionStore: a state put at a position before a later state of the same thing is valid until that later state begins, which stays the latest
+- `several_puts_of_one_thing_in_one_transaction_leave_what_they_leave_one_by_one` — seams §ProjectionStore: puts of the same things in one transaction, at later positions, at the same one or before a later one, leave the history and the head's indexes a commit after each put would leave
+- `clear_empties_the_projection_and_the_vector_index` — seams §ProjectionStore: clear deletes every state, kept history and the vector index included, and leaves nothing folded, for a rebuild from the log
+
+**reads**
+
+- `mixed_kinds_sort_the_same_on_every_engine` — 029: a scan orders numbers, then instants, then text, then booleans, then JSON, a missing value last in either direction, ties by key, so every engine puts the same records in the same places
+- `a_scan_continues_strictly_after_its_keyset_position` — seams §scan: a scan answers only what sorts strictly after `after`, and at most `limit` of it, 0 answering nothing, so an engine that pages natively gives the store's pages
+- `a_key_ordered_scan_answers_across_its_batches_as_one_scan` — seams §scan and lakelands#134: a scan ordered by the key alone, read in batches from `after`, answers what one scan over every state answers, whatever its limit, its `after`, its flags and its filter, at the head and at an earlier position, however many rows each batch passes over
+- `a_field_ordered_scan_walks_page_by_page_as_one_scan` — seams §scan and lakelands#137: a scan ordered by fields, walked page by page from `after`, answers what one scan over every state answers, whatever its directions, its filter and its flags, after later puts, a redeclaration and a change of the `sort_index.<type>` setting, at the head and at an earlier position
+- `a_page_ordered_by_an_indexed_field_reads_its_page_and_the_setting_switches_it` — 041 and lakelands#137: a page of 10 ordered by a field the `sort_index.<type>` setting names reads its page and at most three rows more, not the type, the first page and one continued after a value longer than the index keeps alike; the setting's write switches the same page from sorting the type to the index and back, and the answer stays what one scan over every state answers
+- `scan_filters_exactly_as_the_evaluator_including_mixed_kinds_and_errors` — seams §scan: an engine selects exactly the records the one evaluator selects, comparisons across kinds included, and a filter that errors for a record does not select it
+- `a_scan_with_equal_answers_exactly_the_identical_values` — 044 and seams §scan: a scan's `equal` selects the records whose field holds exactly the JSON value, never the expression's `=` (`'010'` is not `'10'`, text is not a number, an instant in another written form is not the same), never a null, at the head and at an earlier position alike
+- `scan_honours_retired_restricted_and_valid_at` — seams §scan: retired and restricted records come only when asked for, and a valid-timed type's records only when valid at `valid_at`
+- `lexical_hits_are_the_pipelines_over_searchable_live_records` — 025 and seams §lexical: a hit holds a token the one pipeline makes of the query in a searchable field of a live record, restricted ones included (the store applies grants); the hit set is the same on every engine, ties by key, at most k
+- `lexical_finds_every_token_the_pipeline_makes_beyond_ascii` — 025: every token the one pipeline makes is a term an engine finds, in any script, combining marks included, so no engine's own tokenizer narrows the hit set
+- `lexical_at_an_earlier_position_ranks_by_the_head_and_keeps_what_was_visible_then` — seams §lexical: a view answers from the full-text index at the head and keeps only the records live at its own position
+- `lexical_over_named_fields_is_the_pipelines_over_those_fields` — 025 and seams §lexical: a search limited to named fields matches, scores and ties over the head text of the named searchable fields only, and no engine cuts its candidates at k before it narrows them: a record matching in a named field is a hit however many others match only in fields not named
+- `a_record_put_after_a_redeclaration_in_the_same_transaction_is_indexed_under_it` — 025 and seams §ProjectionStore: a put reads the declarations as the transaction holds them, so a type declared again inside one fold's transaction governs every record put after it, and the records it already held
+- `nearest_ranks_by_cosine_with_ties_by_key` — seams §VectorIndex: nearest answers the exact top k by the cosine of the angle, best first, equal scores by key
+- `a_zero_vector_scores_zero_and_a_wrong_length_is_invalid` — seams §VectorIndex: a vector of zeros scores 0 against everything, and a query whose length differs from a stored vector's is refused as invalid
+- `put_replaces_a_vector_and_remove_forgets_it` — seams §VectorIndex: put replaces a record's vector for the field, remove forgets it, forgetting one that is absent does nothing, and count counts
+- `declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position` — seams §ProjectionView: declarations, membership, recorded outputs and applied ids are kept states too, read at a view's own position
+- `a_later_output_for_the_same_call_replaces_the_earlier_from_its_position` — 022, extended, and seams §ProjectionView: the log may hold two outputs for one seam and input (a failure, then the answer a redeclaration asked for); the later one holds from its position, the earlier one before it
+- `the_first_applied_position_is_kept` — seams §ProjectionStore: marking an id applied twice keeps the first position, so a redelivery is recognised where the event first took effect
+- `proposals_filter_by_state_and_type_newest_first` — seams §ProjectionView: proposals match the filter's state and type, a call's type being its verb's `on`, newest first by their latest state, then by id
+- `edges_over_a_link_relation_come_from_the_live_link_records_at_the_views_position` — 035 and seams §edges: an engine answers a relation without via from its live link records at the view's position, out and in, each edge carrying the link's own fields
+- `a_records_edges_at_the_head_read_its_links_not_the_type` — seams §edges and lakelands#190: at the head, the edges into or out of a record over a relation carried by link records, and the edges into it over one carried by a reference field, are found without reading the link type or the declaring type: the records an engine hands the rulebook to find them are about the edges it returns
+
+<!-- End of the generated list. -->

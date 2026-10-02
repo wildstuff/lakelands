@@ -1,0 +1,17 @@
+name: partner
+label: Partner
+description: A business in the supply network, kept by the CRM.
+key: id
+fields:
+  id: { type: text, required: true, authority: source }
+  name: { type: text, required: true, authority: source }
+  city: { type: text, authority: source }
+relations:
+  supplies:
+    target: partner
+    cardinality: many_to_many
+    inverse: supplied_by
+    authority: source
+    description: >-
+      Which partner supplies which: carried by link records the CRM
+      exports beside its partners.

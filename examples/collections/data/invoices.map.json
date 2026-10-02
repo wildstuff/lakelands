@@ -1,0 +1,14 @@
+{
+  "type": "invoice",
+  "key": "number",
+  "fields": {
+    "number": "number",
+    "partner": "partner",
+    "issued_on": "issued_on",
+    "due_on": "due_on",
+    "net": "net",
+    "status": "status",
+    "summary": "summary"
+  },
+  "seen_at": "exported_at"
+}
