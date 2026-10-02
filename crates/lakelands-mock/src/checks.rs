@@ -94,6 +94,7 @@ macro_rules! door_checks {
             describe_answers_the_declaration_whole,
             a_masked_field_is_named_but_its_value_is_absent,
             a_field_built_from_a_hidden_one_is_hidden_too,
+            a_valid_time_read_probes_the_valid_time_fields,
             a_write_only_field_is_written_and_never_shown,
             the_tools_follow_the_grants,
             a_verb_tool_says_what_its_risk_does,
@@ -1091,6 +1092,44 @@ pub async fn a_masked_field_is_named_but_its_value_is_absent(store: Arc<dyn Lake
         .await;
     let r = f.read(&f.cast.stranger, "INV-1").await;
     assert!(r.masked.contains(&"ssn".into()), "{r:?}");
+}
+
+/// A read at a valid time filters on the type's valid-time field, so it
+/// probes it: the clerk, who sees a `doc`'s `body` masked, may read a
+/// `doc` valid from `body`, but not at a valid time.
+pub async fn a_valid_time_read_probes_the_valid_time_fields(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let doc: Declaration = serde_json::from_value(json!({
+        "declare": "type", "name": "doc", "valid_from": "body",
+        "fields": [{"name": "body", "type": {"kind": "date_time"}}]
+    }))
+    .expect("a declaration");
+    f.catalog
+        .declare(&f.cast.owner, doc)
+        .await
+        .expect("the owner declares `doc`");
+    let at = |valid_at: Option<&str>| Find {
+        at: ReadAt {
+            valid_at: valid_at.map(|t| serde_json::from_value(json!(t)).expect("an instant")),
+            ..ReadAt::default()
+        },
+        ..Find::default()
+    };
+    let doc = ty("doc");
+    f.catalog
+        .find(&f.cast.clerk, &doc, at(None))
+        .await
+        .expect("a read without a valid time");
+    let e = f
+        .catalog
+        .find(&f.cast.clerk, &doc, at(Some("2026-04-01T00:00:00Z")))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refusal(&e),
+        (&Some(FieldName::from("body")), &Refusal::NotGranted),
+        "{e:?}"
+    );
 }
 
 /// A field derived from one the principal may not read is read as that

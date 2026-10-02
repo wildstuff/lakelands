@@ -149,6 +149,7 @@ pub const ALL: &[Check] = &[
     masking::MASKED_AND_ABSENT,
     masking::BUILT_FROM_HIDDEN,
     masking::NONE_HIDES,
+    masking::VALID_AT_PROBES,
     masking::WRITE_ONLY,
     values::DATE_TIME_CANONICAL,
     values::BYTES_ONE_SPELLING,

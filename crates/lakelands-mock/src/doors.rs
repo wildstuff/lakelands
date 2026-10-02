@@ -1223,6 +1223,17 @@ fn no_field(ty: &TypeName, name: &FieldName) -> Error {
     )
 }
 
+/// A read at a valid time filters on the type's valid-time fields, so it
+/// probes them as a filter on them would (024).
+fn valid_time_readable(st: &State, who: &Principal, t: &DeclaredType, at: ReadAt) -> Result<()> {
+    if at.valid_at.is_some() {
+        for f in t.decl.valid_from.iter().chain(&t.decl.valid_to) {
+            readable(st, who, t, f)?;
+        }
+    }
+    Ok(())
+}
+
 /// Whether a record is valid at a business instant.
 fn valid_at(t: &DeclaredType, r: &StoredRecord, at: Option<lakelands_api::Timestamp>) -> bool {
     let (Some(at), Some(from)) = (at, &t.decl.valid_from) else {
@@ -1253,6 +1264,7 @@ fn candidates<'a>(
     at: ReadAt,
     filter: Option<&Expr>,
 ) -> Result<Vec<&'a StoredRecord>> {
+    valid_time_readable(st, who, t, at)?;
     let mut out = Vec::new();
     for r in st.records.values() {
         if r.ty != t.decl.name || r.retired || (r.restricted && !who.grants.restricted) {
@@ -2289,6 +2301,7 @@ impl Catalog for MockCatalog {
         let (position, st) = self.state_at(&self.log(), get.at.as_of)?;
         let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
         bound(&t.decl, &get.params)?;
+        valid_time_readable(&st, who, t, get.at)?;
         let r = st
             .live(ty, &get.key)
             .filter(|r| !r.restricted || who.grants.restricted)

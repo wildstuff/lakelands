@@ -9,7 +9,8 @@ use lakelands_api::query::{Projection, QueryResult, Search, SearchMode};
 use lakelands_api::read::{AggFunc, Aggregate, Direction, OrderBy};
 use lakelands_api::tools::{Door, tools};
 use lakelands_api::{
-    Access, FieldName, Find, Grants, LakeStore, PrincipalKind, ReadAt, Refusal, TypeName, WriteOpts,
+    Access, FieldName, Find, Grants, LakeStore, PrincipalKind, ReadAt, Refusal, Timestamp,
+    TypeName, WriteOpts,
 };
 use serde_json::json;
 
@@ -17,8 +18,8 @@ use crate::conformance::Failure;
 use crate::conformance::backing::EMBED_MODEL;
 use crate::conformance::fixture::{
     Lake, Must, agg, all_found, derived, embedding, field, field_access, field_writer, find_where,
-    ingest, no_such_field, order, patch, pattern, principal, read, refused_on, source_record,
-    sourced, type_decl,
+    get_at, ingest, no_such_field, order, patch, pattern, principal, read, refused_on,
+    source_record, sourced, type_decl,
 };
 
 check!(
@@ -397,6 +398,87 @@ check!(
     WRITE_ONLY = a_write_only_field_is_written_and_never_shown,
     "006, extended (lakelands#393): a field granted write_only is written by upsert and retire like a writable one, while get, find, query, search, describe and the tools' read schemas never show it, a filter or a search that probes it is refused not_granted naming it, and the write answers no value; a writable field built from one the principal may not read, write-only or masked, is write-only in turn: written, and probed as not granted, never as undeclared"
 );
+
+check!(
+    /// A valid-time read probes the valid-time fields.
+    VALID_AT_PROBES = a_read_at_a_valid_time_probes_the_types_valid_time_fields,
+    "024 and 006: a read at `valid_at` filters on the type's `valid_from` and `valid_to`, so `find`, `get` and a pattern started on the type probe them as a filter would: refused not_granted naming the field where it is masked, answered as an undeclared field where it is hidden; without `valid_at` the same reads are answered"
+);
+
+async fn a_read_at_a_valid_time_probes_the_types_valid_time_fields(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, .. } = &l;
+    let mut contract = type_decl(
+        "contract",
+        vec![
+            field("name", StorageKind::Text),
+            field("start", StorageKind::DateTime),
+            field("end", StorageKind::DateTime),
+        ],
+    );
+    contract.valid_from = Some("start".into());
+    contract.valid_to = Some("end".into());
+    l.declare(contract).await?;
+    l.upsert(
+        "contract",
+        "c1",
+        json!({"name": "x", "start": "2026-03-15T00:00:00Z"}),
+    )
+    .await?;
+    let ty = TypeName::from("contract");
+    let april = ReadAt {
+        valid_at: Some(Timestamp::parse("2026-04-01T00:00:00Z").expect("an instant")),
+        ..ReadAt::default()
+    };
+    let cases = ["start", "end"].map(|f| [(f, Access::None), (f, Access::Masked)]);
+    for (timed, access) in cases.into_iter().flatten() {
+        let who = field_access(store.as_ref(), "clerk", "contract", &[(timed, access)]);
+        for at in [ReadAt::default(), april] {
+            let mut start = pattern("contract", None, Vec::new(), Projection::Graph);
+            start.at = at;
+            let get = lakelands_api::Get {
+                at,
+                ..get_at("c1", None)
+            };
+            let answers = [
+                (
+                    "find",
+                    cat.find(
+                        &who,
+                        &ty,
+                        Find {
+                            at,
+                            ..Find::default()
+                        },
+                    )
+                    .await
+                    .map(drop),
+                ),
+                ("get", cat.get(&who, &ty, get).await.map(drop)),
+                ("a pattern's start", cat.query(&who, start).await.map(drop)),
+            ];
+            for (door, r) in answers {
+                let answered = match (at.valid_at, access) {
+                    (None, _) => r.is_ok(),
+                    (Some(_), Access::None) => no_such_field(&r, timed),
+                    (Some(_), _) => {
+                        matches!(refused_on(&r), Some((f, Refusal::NotGranted)) if f == timed)
+                    }
+                };
+                ensure!(
+                    answered,
+                    "`{door}` by a clerk with `{timed}` {access:?} at valid time {:?} is \
+                     answered only without a valid time, and refused naming `{timed}` with \
+                     one; it answered {r:?}",
+                    at.valid_at
+                );
+            }
+        }
+    }
+    Ok(())
+}
 
 async fn a_masked_field_is_listed_masked_and_an_ungranted_one_is_absent(
     store: Arc<dyn LakeStore>,
