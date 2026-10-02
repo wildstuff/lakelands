@@ -71,7 +71,7 @@ struct Entry {
 
 /// One segment, as a handle keeps it: its span and where to find its
 /// events, not the events.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Segment {
     first: u64,
     /// How many events it has committed: positions `first..first + count`.
@@ -90,18 +90,6 @@ struct Segment {
 }
 
 impl Segment {
-    fn new(first: u64) -> Segment {
-        Segment {
-            first,
-            count: 0,
-            end: 0,
-            last_hash: None,
-            marks: Vec::new(),
-            index_read: 0,
-            digest: None,
-        }
-    }
-
     /// The last committed position, if any.
     fn last(&self) -> Option<u64> {
         (self.count > 0).then(|| self.first + self.count - 1)
@@ -146,6 +134,37 @@ fn parse_line(path: &Path, line: &[u8]) -> Result<Option<Entry>> {
     }
 }
 
+/// The digest of a segment's committed bytes, hashed as they are read:
+/// a segment is never held whole.
+fn digest_of(dir: &Path, segment: &Segment) -> Result<Digest> {
+    let path = segment_path(dir, segment.first);
+    let file = File::open(&path).map_err(|e| io_error("reading", &path, e))?;
+    let mut hash = Sha256::new();
+    let read = std::io::copy(&mut file.take(segment.end), &mut hash)
+        .map_err(|e| io_error("reading", &path, e))?;
+    if read != segment.end {
+        return Err(unavailable(format!(
+            "{} ends before its committed events do; the log is damaged",
+            path.display()
+        )));
+    }
+    Ok(Digest(lakelands_core::canonical::hex(&hash.finalize())))
+}
+
+/// One index line, an event line checked to name `expected`.
+fn parse_at(path: &Path, line: &[u8], expected: u64) -> Result<Option<Entry>> {
+    match parse_line(path, line)? {
+        Some(e) if e.position != expected => Err(damaged(
+            path,
+            format!(
+                "a line names position {} where position {expected} belongs",
+                e.position
+            ),
+        )),
+        entry => Ok(entry),
+    }
+}
+
 /// One lake's log, as this handle has read it.
 #[derive(Debug)]
 pub(crate) struct Log {
@@ -153,8 +172,12 @@ pub(crate) struct Log {
     segments: Vec<Segment>,
 }
 
-fn segment_name(first: u64) -> String {
-    format!("{first:020}")
+fn segment_path(dir: &Path, first: u64) -> PathBuf {
+    dir.join("log").join(format!("{first:020}.jsonl"))
+}
+
+fn index_path(dir: &Path, first: u64) -> PathBuf {
+    dir.join("index").join(format!("{first:020}.idx"))
 }
 
 /// Sync a directory, so a file created in it survives a crash.
@@ -188,21 +211,9 @@ impl Log {
         Ok(log)
     }
 
-    fn segment_path(&self, first: u64) -> PathBuf {
-        self.dir
-            .join("log")
-            .join(format!("{}.jsonl", segment_name(first)))
-    }
-
-    fn index_path(&self, first: u64) -> PathBuf {
-        self.dir
-            .join("index")
-            .join(format!("{}.idx", segment_name(first)))
-    }
-
     /// Create the files of a new, empty segment.
     fn start_segment(&self, first: u64) -> Result<()> {
-        for path in [self.segment_path(first), self.index_path(first)] {
+        for path in [segment_path(&self.dir, first), index_path(&self.dir, first)] {
             OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -233,17 +244,14 @@ impl Log {
     pub(crate) fn refresh(&mut self) -> Result<()> {
         for first in self.files()? {
             if !self.segments.iter().any(|s| s.first == first) {
-                self.segments.push(Segment::new(first));
+                self.segments.push(Segment {
+                    first,
+                    ..Segment::default()
+                });
             }
         }
-        let paths: Vec<(usize, PathBuf)> = self
-            .segments
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (i, self.index_path(s.first)))
-            .collect();
-        for (i, path) in paths {
-            let segment = &mut self.segments[i];
+        for segment in &mut self.segments {
+            let path = index_path(&self.dir, segment.first);
             let mut file = match File::open(&path) {
                 Ok(f) => f,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
@@ -272,7 +280,8 @@ impl Log {
                 }
                 let at = segment.index_read + read;
                 read += line.len() as u64;
-                match parse_line(&path, &line)? {
+                let expected = segment.first + segment.count + pending;
+                match parse_at(&path, &line, expected)? {
                     None => {
                         segment.count += pending;
                         segment.marks.append(&mut marks);
@@ -285,16 +294,6 @@ impl Log {
                         read = 0;
                     }
                     Some(e) => {
-                        let expected = segment.first + segment.count + pending;
-                        if e.position != expected {
-                            return Err(damaged(
-                                &path,
-                                format!(
-                                    "a line names position {} where position {expected} belongs",
-                                    e.position
-                                ),
-                            ));
-                        }
                         if (expected - segment.first).is_multiple_of(MARK_EVERY) {
                             marks.push(at);
                         }
@@ -315,8 +314,8 @@ impl Log {
             return Ok(());
         };
         for (path, len) in [
-            (self.segment_path(active.first), active.end),
-            (self.index_path(active.first), active.index_read),
+            (segment_path(&self.dir, active.first), active.end),
+            (index_path(&self.dir, active.first), active.index_read),
         ] {
             // A crash between creating a segment and its index leaves no
             // index; the writer creates it empty.
@@ -392,9 +391,10 @@ impl Log {
         let active = self.segments.last_mut().ok_or_else(|| {
             unavailable("the lake's log has no segment; it was not created by this engine")
         })?;
-        let first = active.first;
-        let (segment_path, index_path) = (self.segment_path(first), self.index_path(first));
-        let active = self.segments.last_mut().expect("checked above");
+        let (segment_path, index_path) = (
+            segment_path(&self.dir, active.first),
+            index_path(&self.dir, active.first),
+        );
         // An active segment holding nothing is named by the position its
         // first event takes; one named otherwise is not this log's.
         if active.count == 0 && events[0].position.0 != active.first {
@@ -468,7 +468,7 @@ impl Log {
                 continue;
             }
             let wanted = self.entries_of(segment, start, limit as u64 - out.len() as u64)?;
-            let path = self.segment_path(segment.first);
+            let path = segment_path(&self.dir, segment.first);
             let mut file = File::open(&path).map_err(|e| io_error("reading", &path, e))?;
             for e in wanted {
                 let mut bytes = vec![0; e.len as usize];
@@ -503,7 +503,7 @@ impl Log {
     /// `start` on: from the mark at or before it, each line checked to be
     /// the position that follows the one before.
     fn entries_of(&self, segment: &Segment, start: u64, n: u64) -> Result<Vec<Entry>> {
-        let path = self.index_path(segment.first);
+        let path = index_path(&self.dir, segment.first);
         let last = segment.last().unwrap_or(segment.first);
         let k = (start - segment.first) / MARK_EVERY;
         let (mut expected, at) = match segment.marks.get(k as usize) {
@@ -527,41 +527,15 @@ impl Log {
                     format!("it ends before the committed position {expected}"),
                 ));
             }
-            let Some(e) = parse_line(&path, &line)? else {
+            let Some(e) = parse_at(&path, &line, expected)? else {
                 continue;
             };
-            if e.position != expected {
-                return Err(damaged(
-                    &path,
-                    format!(
-                        "a line names position {} where position {expected} belongs",
-                        e.position
-                    ),
-                ));
-            }
             expected += 1;
             if e.position >= start {
                 out.push(e);
             }
         }
         Ok(out)
-    }
-
-    /// The digest of a segment's committed bytes, hashed as they are read:
-    /// a segment is never held whole.
-    fn digest_of(&self, segment: &Segment) -> Result<Digest> {
-        let path = self.segment_path(segment.first);
-        let file = File::open(&path).map_err(|e| io_error("reading", &path, e))?;
-        let mut hash = Sha256::new();
-        let read = std::io::copy(&mut file.take(segment.end), &mut hash)
-            .map_err(|e| io_error("reading", &path, e))?;
-        if read != segment.end {
-            return Err(unavailable(format!(
-                "{} ends before its committed events do; the log is damaged",
-                path.display()
-            )));
-        }
-        Ok(Digest(lakelands_core::canonical::hex(&hash.finalize())))
     }
 
     /// Close the active segment, if it holds any event, and start the next.
@@ -573,7 +547,7 @@ impl Log {
         let Some(last) = active.last() else {
             return Ok(None);
         };
-        let digest = self.digest_of(active)?;
+        let digest = digest_of(&self.dir, active)?;
         let sealed = SegmentDigest {
             first: Position(active.first),
             last: Position(last),
@@ -591,23 +565,18 @@ impl Log {
         self.refresh()?;
         let sealed = self.segments.len().saturating_sub(1);
         let mut out = Vec::with_capacity(sealed);
-        for i in 0..sealed {
-            let segment = &self.segments[i];
+        for segment in &mut self.segments[..sealed] {
             let Some(last) = segment.last() else {
                 continue;
             };
-            let (first, last) = (Position(segment.first), Position(last));
             let digest = match &segment.digest {
                 Some(d) => d.clone(),
-                None => {
-                    let d = self.digest_of(segment)?;
-                    self.segments[i].digest = Some(d.clone());
-                    d
-                }
+                None => digest_of(&self.dir, segment)?,
             };
+            segment.digest = Some(digest.clone());
             out.push(SegmentDigest {
-                first,
-                last,
+                first: Position(segment.first),
+                last: Position(last),
                 digest,
             });
         }

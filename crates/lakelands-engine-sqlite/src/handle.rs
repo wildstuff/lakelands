@@ -173,10 +173,12 @@ impl SqliteLake {
         }
     }
 
-    /// Refuses a lease that is not the one this handle holds, or whose
-    /// fencing token the lease file no longer records: the lock can be lost
-    /// without the process knowing, and the token is what says so.
+    /// Refuses a handle opened read-only, and a lease that is not the one
+    /// this handle holds, or whose fencing token the lease file no longer
+    /// records: the lock can be lost without the process knowing, and the
+    /// token is what says so.
     fn check_lease(&self, lease: &Lease) -> Result<()> {
+        self.writable()?;
         let (fence, holder) = self.lease_file.current()?;
         if lock(&self.held).as_ref().is_some_and(|h| h.lease == *lease) && fence == lease.fence {
             return Ok(());
@@ -294,13 +296,11 @@ impl LakeEngine for SqliteLake {
     }
 
     fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        self.writable()?;
         self.check_lease(lease)?;
         lock(&self.log).append(Some(lease.fence), events)
     }
 
     fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        self.writable()?;
         self.check_lease(lease)?;
         let mut held = lock(&self.held);
         let held = held
@@ -331,7 +331,6 @@ impl LakeEngine for SqliteLake {
     }
 
     fn seal_segment(&self, lease: &Lease) -> Result<Option<SegmentDigest>> {
-        self.writable()?;
         self.check_lease(lease)?;
         lock(&self.log).seal()
     }
@@ -372,9 +371,7 @@ impl ProjectionStore for SqliteLake {
     fn begin(&self) -> Result<()> {
         let mut transaction = lock(&self.transaction);
         self.write(|conn| {
-            if !conn.is_autocommit() {
-                conn.execute_batch("ROLLBACK").map_err(sql)?;
-            }
+            abandon(conn)?;
             conn.execute_batch("BEGIN IMMEDIATE").map_err(sql)
         })?;
         *transaction = Some(Transaction::default());
@@ -411,12 +408,7 @@ impl ProjectionStore for SqliteLake {
 
     fn rollback(&self) {
         *lock(&self.transaction) = None;
-        let _ = self.write(|conn| {
-            if !conn.is_autocommit() {
-                conn.execute_batch("ROLLBACK").map_err(sql)?;
-            }
-            Ok(())
-        });
+        let _ = self.write(abandon);
     }
 
     fn folded_through(&self) -> Result<Option<Position>> {
@@ -484,9 +476,7 @@ impl ProjectionStore for SqliteLake {
     fn clear(&self) -> Result<()> {
         *lock(&self.transaction) = None;
         self.write(|conn| {
-            if !conn.is_autocommit() {
-                conn.execute_batch("ROLLBACK").map_err(sql)?;
-            }
+            abandon(conn)?;
             let statements: String = projection::TABLES
                 .iter()
                 .map(|t| format!("DELETE FROM {t};"))
@@ -510,9 +500,7 @@ impl ProjectionStore for SqliteLake {
         self.write(|conn| {
             // A transaction a failed commit left open is abandoned, as
             // `begin` and `clear` abandon it.
-            if !conn.is_autocommit() {
-                conn.execute_batch("ROLLBACK").map_err(sql)?;
-            }
+            abandon(conn)?;
             let before = self.size()?;
             if !truncate_journal(conn)? {
                 return Err(unavailable(format!(
@@ -538,6 +526,14 @@ impl ProjectionStore for SqliteLake {
             })
         })
     }
+}
+
+/// Roll back the transaction `conn` holds open, if any.
+fn abandon(conn: &Connection) -> Result<()> {
+    if !conn.is_autocommit() {
+        conn.execute_batch("ROLLBACK").map_err(sql)?;
+    }
+    Ok(())
 }
 
 /// Checkpoint the write-ahead journal into `projection.db` and truncate
@@ -577,20 +573,12 @@ fn vector_of(bytes: &[u8]) -> Vec<f32> {
 impl VectorIndex for SqliteLake {
     fn put(&self, ty: &TypeName, key: &RecordKey, field: &str, vector: &[f32]) -> Result<()> {
         self.write(|conn| {
-            conn.prepare_cached(
+            projection::run(
+                conn,
                 "INSERT INTO vectors (ty, field, key, data) VALUES (?1, ?2, ?3, ?4) \
                  ON CONFLICT (ty, field, key) DO UPDATE SET data = ?4",
+                params![ty.as_str(), field, key.as_str(), vector_bytes(vector)],
             )
-            .and_then(|mut s| {
-                s.execute(params![
-                    ty.as_str(),
-                    field,
-                    key.as_str(),
-                    vector_bytes(vector)
-                ])
-            })
-            .map(|_| ())
-            .map_err(sql)
         })
     }
 
