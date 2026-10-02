@@ -135,11 +135,18 @@ annotations together with the shape carries them like any other member
 ## Extended: a view is never migrated
 
 A migration reshapes the stored records of a type, and a view stores
-none: its records are computed on read. So no migration turns a stored
-type into a view, a view into a stored type, or one view into another.
-Each is refused as invalid, naming the type. The way there is to retire
-the one and declare the other. Otherwise a stored type's records would
-linger beside the records the view computes.
+none: its records are computed on read. So `migrate` refuses any change
+that has a view on either side, as invalid, naming the type and the way
+to make the change:
+- A view that changes (its source, `where`, grouping, measures or
+  parameters) is declared again with `declare` or `apply`. Nothing is
+  stored, so nothing is reshaped.
+- A view that becomes a stored type is declared as one. It stored
+  nothing, so the new type starts empty.
+- A stored type never becomes a view. Its stored records would linger
+  beside the records the view computes, and a type's declaration is
+  never retired, so `declare` refuses that change too. The view is
+  declared under another name.
 
 ## Extended: a migration keeps what a view reads
 

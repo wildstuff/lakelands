@@ -1831,20 +1831,28 @@ impl Call<'_> {
         m: &Migration,
     ) -> Result<(MigrationReport, Vec<lakelands_api::write::Rekey>)> {
         let before = w.ontology.ty(&m.to.name)?.clone();
-        // A view is computed and never stored, so no migration turns a
-        // stored type into one, or one into a stored type, or reshapes
-        // one: that is retiring the type and declaring the other.
+        // A migration reshapes stored records, and a view stores none. A
+        // view changes, or becomes a stored type, by being declared again;
+        // a stored type never becomes a view, since its records would
+        // linger beside the computed ones: the view takes another name.
         if before.view.is_some() || m.to.view.is_some() {
-            return Err(invalid(format!(
-                "`{}` {}; a migration reshapes a stored type, and a view is retired and \
-                 declared, never migrated",
-                m.to.name,
-                if before.view.is_some() {
-                    "is a view"
-                } else {
-                    "would become a view"
-                }
-            )));
+            let ty = &m.to.name;
+            return Err(invalid(
+                match (before.view.is_some(), m.to.view.is_some()) {
+                    (true, true) => format!(
+                        "`{ty}` is a view, and a view changes by being declared again, never by a \
+                     migration"
+                    ),
+                    (true, false) => format!(
+                        "`{ty}` is a view, and it becomes a stored type by being declared as one, \
+                     never by a migration"
+                    ),
+                    _ => format!(
+                        "the migration would turn the stored type `{ty}` into a view; declare the view \
+                     under another name (`{ty}` keeps its name and its records)"
+                    ),
+                },
+            ));
         }
         if !before.key.is_empty() && m.to.key.is_empty() {
             return Err(invalid(format!(

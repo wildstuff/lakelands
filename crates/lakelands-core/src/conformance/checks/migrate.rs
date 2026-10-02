@@ -200,7 +200,7 @@ check!(
 check!(
     /// A view is never migrated.
     VIEW_NOT_MIGRATED = a_view_is_never_migrated,
-    "027, extended: a migration reshapes stored records, and a view stores none, so a migration that would turn a stored type into a view, or a view into a stored type, is refused as invalid naming the type, at the preflight or when applied; nothing is appended"
+    "027, extended: a migration reshapes stored records, and a view stores none, so a migration that would turn a stored type into a view, or a view into a stored type, is refused as invalid naming the type, at the preflight or when applied, and nothing is appended; a view changes by being declared again"
 );
 
 async fn a_view_is_never_migrated(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
@@ -257,6 +257,10 @@ async fn a_view_is_never_migrated(store: Arc<dyn LakeStore>) -> Result<(), Failu
         );
         head_unmoved(store.as_ref(), before, &format!("migrating `{ty}`")).await?;
     }
+    // A view changes by being declared again.
+    let mut narrowed = count_view("pt", "invoice", "partner");
+    narrowed.view.as_mut().expect("a view").r#where = Some("amount > 0".into());
+    l.declare(narrowed).await?;
     Ok(())
 }
 
