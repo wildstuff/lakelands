@@ -13,17 +13,18 @@ use std::sync::Arc;
 
 use lakelands_api::event::EventBody;
 use lakelands_api::expr::Condition;
+use lakelands_api::location::Limits;
 use lakelands_api::ontology::{StorageKind, TriggerDecl};
 use lakelands_api::principal::{WriteContext, WriteOrigin};
-use lakelands_api::seam::FeedFilter;
-use lakelands_api::write::Declaration;
-use lakelands_api::{LakeStore, Position, Refusal, TypeName, WriteOpts};
+use lakelands_api::seam::{FeedFilter, Seams};
+use lakelands_api::write::{Declaration, ProposedWrite};
+use lakelands_api::{LakeStore, Outcome, Position, Refusal, TypeName, WriteOpts};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, field, find_where, head_unmoved, invalid_naming, limits, patch, reason, type_decl,
 };
+use crate::conformance::{Failure, Given};
 
 check!(
     /// A transition guard fires on its transition only.
@@ -58,7 +59,8 @@ check!(
 check!(
     /// A trigger's ceiling lies within the lake's.
     TRIGGER_CEILING = a_trigger_max_depth_above_the_lakes_ceiling_is_refused,
-    "021, extended: a trigger whose `max_depth` is above the lake's `max_reactive_depth` is refused as invalid naming the trigger and both numbers; the lake's ceiling itself and 0 are taken"
+    "021, extended: a trigger whose `max_depth` is above the lake's `max_reactive_depth` is refused as invalid naming the trigger and both numbers, by `declare`, `apply` and `propose`, and by `accept` once the lake is opened again with a lower ceiling; the lake's ceiling itself and 0 are taken",
+    given
 );
 
 fn trigger(name: &str, when: Option<&str>, max_depth: Option<u32>) -> Declaration {
@@ -412,6 +414,7 @@ async fn a_reaction_past_its_triggers_max_depth_is_refused_naming_it(
 
 async fn a_trigger_max_depth_above_the_lakes_ceiling_is_refused(
     store: Arc<dyn LakeStore>,
+    given: Given,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
@@ -419,17 +422,64 @@ async fn a_trigger_max_depth_above_the_lakes_ceiling_is_refused(
         .await?;
     let ceiling = limits().max_reactive_depth;
     let head = store.head().await.must("reading the head")?;
-    invalid_naming(
-        &format!("a max_depth of {} above the lake's {ceiling}", ceiling + 1),
-        cat.declare(own, trigger("deep", None, Some(ceiling + 1)))
+    let deep = || trigger("deep", None, Some(ceiling + 1));
+    let named = ["deep", &(ceiling + 1).to_string(), &ceiling.to_string()];
+    for (door, answer) in [
+        ("declare", cat.declare(own, deep()).await),
+        ("apply", cat.apply(own, vec![deep()]).await),
+        (
+            "propose",
+            cat.propose(
+                own,
+                ProposedWrite::Declare {
+                    declarations: vec![deep()],
+                },
+                "deeper".into(),
+            )
             .await,
-        &["deep", &(ceiling + 1).to_string(), &ceiling.to_string()],
-    )?;
+        ),
+    ] {
+        let what = format!(
+            "`{door}`: a max_depth of {} above the lake's {ceiling}",
+            ceiling + 1
+        );
+        invalid_naming(&what, answer, &named)?;
+    }
     head_unmoved(store.as_ref(), head, "a trigger above the ceiling").await?;
+    let pending = cat
+        .propose(
+            own,
+            ProposedWrite::Declare {
+                declarations: vec![trigger("pending", None, Some(ceiling))],
+            },
+            "at the ceiling".into(),
+        )
+        .await
+        .must("proposing a trigger with max_depth at the ceiling")?;
+    let Outcome::Proposed { proposal, .. } = pending else {
+        return Err(Failure::new(format!(
+            "a proposal answers `proposed`; it answered {pending:?}"
+        )));
+    };
     for (name, m) in [("at_ceiling", ceiling), ("never", 0)] {
         cat.declare(own, trigger(name, None, Some(m)))
             .await
             .must(&format!("declaring a trigger with max_depth {m}"))?;
     }
-    Ok(())
+    let lower = Limits {
+        max_reactive_depth: ceiling - 1,
+        ..limits()
+    };
+    let store = (given.relimit)(store, Seams::default(), lower)
+        .await
+        .map_err(|e| Failure::new(format!("opening the lake again with a lower ceiling: {e}")))?;
+    let l = Lake::of(store.as_ref());
+    invalid_naming(
+        &format!(
+            "accepting `pending` (max_depth {ceiling}) under a ceiling of {}",
+            ceiling - 1
+        ),
+        l.cat.accept(&l.own, &proposal).await,
+        &["pending", &ceiling.to_string(), &(ceiling - 1).to_string()],
+    )
 }

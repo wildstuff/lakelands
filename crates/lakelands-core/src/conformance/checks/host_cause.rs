@@ -40,7 +40,7 @@ check!(
 check!(
     /// The ceiling holds on every door that writes.
     DEPTH_ON_EVERY_DOOR = the_reactive_ceiling_holds_on_every_door_that_writes,
-    "021, as extended on 2026-09-25 (lakelands#257): a context deeper than the lake's max_reactive_depth is refused as too_deep, appending nothing, through ingest, accept, reject, declare, apply, add_field, migrate_apply and migrate_value_type_apply as through the record doors"
+    "021, as extended on 2026-09-25 (lakelands#257): a context deeper than the lake's max_reactive_depth is refused as too_deep naming that ceiling, appending nothing, through ingest, accept, reject, declare, apply, add_field, migrate_apply and migrate_value_type_apply as through the record doors"
 );
 
 fn host(depth: u32, cause: Option<Position>) -> WriteContext {
@@ -299,7 +299,8 @@ async fn the_reactive_ceiling_holds_on_every_door_that_writes(
         .must("preflighting a migration of `job`")?
         .data;
 
-    let deep = store.catalog(host(limits().max_reactive_depth + 1, None));
+    let ceiling = limits().max_reactive_depth;
+    let deep = store.catalog(host(ceiling + 1, None));
     let head = store.head().await.must("reading the head")?;
     let tries: Vec<(&str, lakelands_api::Result<()>)> = vec![
         (
@@ -354,11 +355,11 @@ async fn the_reactive_ceiling_holds_on_every_door_that_writes(
     ];
     for (door, answer) in tries {
         match answer {
-            Err(e) if matches!(reason(&e), Some(Refusal::TooDeep { .. })) => {}
+            Err(e) if matches!(reason(&e), Some(Refusal::TooDeep { max }) if *max == ceiling) => {}
             other => {
                 return Err(Failure::new(format!(
-                    "`{door}` through a context past the ceiling must be refused as too_deep; \
-                     it answered {other:?}"
+                    "`{door}` through a context past the ceiling must be refused as too_deep \
+                     naming the lake's ceiling {ceiling}; it answered {other:?}"
                 )));
             }
         }
@@ -390,11 +391,11 @@ async fn the_reactive_ceiling_holds_on_every_door_that_writes(
         .migrate_value_type_apply(own, tightened, &report.report_id)
         .await
     {
-        Err(e) if matches!(reason(&e), Some(Refusal::TooDeep { .. })) => {}
+        Err(e) if matches!(reason(&e), Some(Refusal::TooDeep { max }) if *max == ceiling) => {}
         other => {
             return Err(Failure::new(format!(
                 "`migrate_value_type_apply` through a context past the ceiling must be refused \
-                 as too_deep; it answered {other:?}"
+                 as too_deep naming the lake's ceiling {ceiling}; it answered {other:?}"
             )));
         }
     }
