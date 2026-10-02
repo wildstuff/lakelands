@@ -142,6 +142,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     reads::FILTER_AS_EVALUATOR,
     reads::EQUAL_IS_IDENTITY,
     reads::FLAGS_AND_VALID_AT,
+    reads::COUNT_IS_THE_SCAN,
     reads::LEXICAL_HITS,
     reads::LEXICAL_BEYOND_ASCII,
     reads::LEXICAL_EARLIER,

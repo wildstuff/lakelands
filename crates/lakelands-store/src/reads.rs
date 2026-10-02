@@ -56,7 +56,8 @@ use lakelands_api::query::{
     Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Walk,
 };
 use lakelands_api::read::{
-    After as ReadAfter, Aggregate, Direction, Find, Found, Get, Order, OrderBy, Params, ReadAt,
+    After as ReadAfter, AggFunc, Aggregate, Direction, Find, Found, Get, Group, Order, OrderBy,
+    Params, ReadAt,
 };
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::{Proposal, ProposalFilter};
@@ -165,6 +166,9 @@ fn decode(c: &Cursor) -> Result<CursorState> {
         .ok_or_else(bad)?;
     serde_json::from_slice(&bytes).map_err(|_| bad())
 }
+
+/// The records a count that needs the store reads at a time.
+const COUNT_PAGE: usize = 1024;
 
 /// Whether an expression needs something only the store knows or does:
 /// the clock, the settings, per-field provenance, or a pattern match,
@@ -445,6 +449,36 @@ impl<'a> Reader<'a> {
             out.retain(|r| self.holds(e, &r.fields, Some(&r.meta)));
         }
         Ok(out)
+    }
+
+    /// How many records of a type [`Self::records`] would answer, holding
+    /// no more than a page of a stored type: the engine counts what it can
+    /// select itself, and a filter only the store evaluates is applied a
+    /// page at a time. A view's records are computed whole first.
+    fn count(&self, decl: &TypeDecl, filter: Option<&Expr>) -> Result<u64> {
+        if let Some(v) = &decl.view {
+            return Ok(self.view_records(decl, v, filter)?.len() as u64);
+        }
+        if let Some(e) = filter.filter(|e| needs_store(e)) {
+            let (mut n, mut after) = (0, None);
+            loop {
+                let rows = self.page(decl, Some(e), &[], after.take(), COUNT_PAGE)?;
+                n += rows.len() as u64;
+                match rows.last() {
+                    Some(last) if rows.len() == COUNT_PAGE => {
+                        after = Some((Vec::new(), last.key.clone()));
+                    }
+                    _ => return Ok(n),
+                }
+            }
+        }
+        let scan = Scan {
+            filter: filter.cloned(),
+            valid_at: self.valid_at,
+            restricted: self.who.grants.restricted,
+            ..Default::default()
+        };
+        self.view.count(&decl.name, &scan)
     }
 
     /// At most `want` records of a stored type the principal may see, in
@@ -856,6 +890,21 @@ impl<'a> Reader<'a> {
             .map(|a| self.resume_after(&decl, find, a))
             .transpose()?;
         if let Some(a) = &find.aggregate {
+            // Counting alone holds no record: the count answers it.
+            let counts = a.group_by.is_empty()
+                && a.measures
+                    .iter()
+                    .all(|m| m.func == AggFunc::Count && m.field.is_none());
+            if counts && !a.measures.is_empty() {
+                let n = Value::String(self.count(&decl, filter.as_ref())?.to_string());
+                let values = a.measures.iter().map(|m| (m.name.clone(), n.clone()));
+                return Ok(Found::Groups {
+                    rows: vec![Group {
+                        by: BTreeMap::new(),
+                        values: values.collect(),
+                    }],
+                });
+            }
             let rows = self.records(&decl, filter.as_ref())?;
             return self.aggregated(&decl, &rows, a);
         }

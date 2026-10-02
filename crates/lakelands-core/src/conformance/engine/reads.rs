@@ -24,6 +24,12 @@ use crate::conformance::Failure;
 use crate::conformance::fixture::{Must, order, reason};
 
 engine_check!(
+    /// A count is its scan's length.
+    COUNT_IS_THE_SCAN = a_count_is_the_number_of_records_its_scan_selects,
+    "seams §ProjectionView and 029: `count` answers the number of records `scan` selects, its flags, `valid_at`, `filter` and `equal` applied and its order, keyset position and limit ignored, at the head and at an earlier position, across more than one batch, a superseded state and a retired record not counted"
+);
+
+engine_check!(
     /// Mixed kinds sort the same on every engine.
     MIXED_KINDS = mixed_kinds_sort_the_same_on_every_engine,
     "029: a scan orders numbers, then instants, then text, then booleans, then JSON, a missing value last in either direction, ties by key, so every engine puts the same records in the same places"
@@ -495,6 +501,140 @@ fn scan_honours_retired_restricted_and_valid_at(engine: &dyn LakeEngine) -> Resu
         valid == ["open"],
         "a scan valid at 2026-07-01 answered {valid:?}; `ended` stopped in June and `undated` \
          cannot say when it began, so only `open` holds"
+    );
+    Ok(())
+}
+
+fn a_count_is_the_number_of_records_its_scan_selects(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    let timed = declare(json!({
+        "declare": "type", "name": "t", "valid_from": "from", "valid_to": "to",
+        "fields": [
+            {"name": "from", "type": {"kind": "date_time"}},
+            {"name": "to", "type": {"kind": "date_time"}},
+            {"name": "tag", "type": {"kind": "text"}}
+        ]
+    }));
+    let jan = json!({"from": "2026-01-01T00:00:00Z", "tag": "x"});
+    fold(engine, 1, |p| {
+        p.put_declaration(&timed, 1, None, Position(0))?;
+        // More records than one batch, so a count reads on past the first.
+        for i in 0..1100 {
+            let tag = if i % 2 == 0 { "x" } else { "y" };
+            let fields = json!({"from": "2026-01-01T00:00:00Z", "tag": tag});
+            p.put_record(&record("t", &format!("b{i:04}"), fields, 1))?;
+        }
+        for (key, retired, restricted) in [("retired", true, false), ("held", false, true)] {
+            let mut r = record("t", key, jan.clone(), 1);
+            (r.retired, r.restricted) = (retired, restricted);
+            p.put_record(&r)?;
+        }
+        p.put_record(&record(
+            "t",
+            "open",
+            json!({"from": "2026-03-01T00:00:00Z"}),
+            1,
+        ))
+    })?;
+    // A later state of `open` supersedes its first, and `b0000` is retired.
+    fold(engine, 2, |p| {
+        let mut open = record("t", "open", json!({"from": "2026-08-01T00:00:00Z"}), 2);
+        open.version = lakelands_api::Version(2);
+        p.put_record(&open)?;
+        let mut gone = record("t", "b0000", jan.clone(), 2);
+        (gone.version, gone.retired) = (lakelands_api::Version(2), true);
+        p.put_record(&gone)
+    })?;
+    let ty = TypeName::from("t");
+    let july = Timestamp::parse("2026-07-01T00:00:00Z").expect("an instant");
+    let tagged = crate::expr::parse("tag = 'x'").expect("the check's filter parses");
+    let scans = [
+        ("no flags", scan_all()),
+        (
+            "retired",
+            Scan {
+                retired: true,
+                ..scan_all()
+            },
+        ),
+        (
+            "restricted",
+            Scan {
+                restricted: true,
+                ..scan_all()
+            },
+        ),
+        (
+            "both flags",
+            Scan {
+                retired: true,
+                restricted: true,
+                ..scan_all()
+            },
+        ),
+        (
+            "valid at 2026-07-01",
+            Scan {
+                valid_at: Some(july),
+                ..scan_all()
+            },
+        ),
+        (
+            "tag = 'x'",
+            Scan {
+                filter: Some(tagged),
+                ..scan_all()
+            },
+        ),
+        (
+            "tag exactly x",
+            Scan {
+                equal: vec![("tag".into(), json!("x"))],
+                ..scan_all()
+            },
+        ),
+        (
+            "a page of 5 after b0500",
+            Scan {
+                limit: 5,
+                after: Some(After {
+                    values: Vec::new(),
+                    key: "b0500".into(),
+                }),
+                ..scan_all()
+            },
+        ),
+    ];
+    for at in [None, Some(Position(1))] {
+        let v = view(engine, at)?;
+        for (what, scan) in &scans {
+            let all = Scan {
+                limit: u32::MAX,
+                after: None,
+                ..scan.clone()
+            };
+            let want = v
+                .scan(&ty, &all)
+                .must(&format!("scanning ({what}) at {at:?}"))?
+                .len();
+            let got = v
+                .count(&ty, scan)
+                .must(&format!("counting ({what}) at {at:?}"))?;
+            ensure!(
+                got == want as u64,
+                "a count ({what}) at {at:?} must be the {want} records its scan selects, \
+                 ignoring order, keyset position and limit; it answered {got}"
+            );
+        }
+    }
+    let head = view(engine, None)?
+        .count(&ty, &scan_all())
+        .must("counting at the head")?;
+    ensure!(
+        head == 1100,
+        "at the head, 1 099 of the batch records are live (b0000 was retired) and `open` is \
+         one record in its later state; the count answered {head}"
     );
     Ok(())
 }

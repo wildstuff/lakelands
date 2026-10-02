@@ -787,6 +787,62 @@ impl Size<'_> {
         Ok(())
     }
 
+    /// Count every `reading` through `find`'s `count()`, once with a filter
+    /// the engine applies and once with one only the store evaluates, each
+    /// measured: a count holds a batch, whatever the size of the type.
+    async fn counts(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+        let cat = doors(store);
+        let head = store.head().await.must("reading the head")?;
+        for (phase, filter) in [
+            ("count", "seq >= 0"),
+            ("count-store", "seq >= 0 and now() > now() - 1d"),
+        ] {
+            let find = Find {
+                filter: Some(filter.into()),
+                aggregate: Some(lakelands_api::read::Aggregate {
+                    measures: vec![crate::conformance::fixture::agg(
+                        "n",
+                        lakelands_api::read::AggFunc::Count,
+                        None,
+                    )],
+                    group_by: Vec::new(),
+                }),
+                ..Find::default()
+            };
+            let started = Instant::now();
+            let m = Measure::start(&self.given.meter, false);
+            let reply = cat
+                .find(&self.own, &TypeName::from(TY), find)
+                .await
+                .must(&format!("counting `reading` where {filter}"))?;
+            let (heap, _) = m.stop();
+            let counted = match &reply.data {
+                Found::Groups { rows } => rows
+                    .first()
+                    .and_then(|g| g.values.get("n"))
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|n| n.parse::<u64>().ok()),
+                Found::Records { .. } => None,
+            };
+            ensure!(
+                counted == Some(self.live),
+                "counting `reading` where {filter} must answer the {} live records; it \
+                 answered {:?}",
+                self.live,
+                reply.data
+            );
+            self.row(
+                phase,
+                Claim::Held,
+                records,
+                head.0 + 1,
+                format!("a count of {} where {filter}", self.live),
+                (heap, started.elapsed()),
+            );
+        }
+        Ok(())
+    }
+
     /// Walk every `reading` through `find`, a page of `max_limit` at a
     /// time with the cursor, measuring each page on its own: a page holds
     /// its rows, whatever the size of the type.
@@ -1441,6 +1497,7 @@ async fn a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_doe
         let dir = given.scratch.join(format!("export-{records}"));
         size.export(store.as_ref(), records, &log, &dir).await?;
         size.find_walk(store.as_ref(), records).await?;
+        size.counts(store.as_ref(), records).await?;
         size.sorted_walks(store.as_ref(), records).await?;
         size.searches(store.as_ref(), records).await?;
         size.traverse(store.as_ref(), records).await?;

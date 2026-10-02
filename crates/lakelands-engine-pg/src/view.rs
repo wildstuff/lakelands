@@ -119,6 +119,23 @@ impl Read<'_> {
         )
     }
 
+    /// How many records of a type are in force at the view's position, the
+    /// retired and the restricted ones only when asked, their flags read
+    /// from the stored state.
+    fn count_in_force(&mut self, ty: &TypeName, retired: bool, restricted: bool) -> Result<u64> {
+        let query = format!(
+            "SELECT COUNT(*) FROM {} WHERE ty = $1 AND {} \
+             AND ($3 OR NOT (state::jsonb ->> 'retired')::boolean) \
+             AND ($4 OR NOT (state::jsonb ->> 'restricted')::boolean)",
+            self.names.t("records"),
+            holds_at(2)
+        );
+        let counted: Vec<i64> = self
+            .db
+            .column(&query, &[&ty.as_str(), &self.at, &retired, &restricted])?;
+        Ok(counted.first().map_or(0, |n| n.unsigned_abs()))
+    }
+
     /// At most `n` records of a type at the view's position after the key
     /// `after` (from the first when `None`), in key order, bytewise: a walk
     /// of the index `records_key_c`. The first page and a later one are two
@@ -370,6 +387,20 @@ impl ProjectionView for PgView<'_> {
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
         self.single(Vec::new(), |r| {
             r.records_by_key(ty, keys.iter().map(|k| k.to_string()).collect())
+        })
+    }
+
+    fn count(&self, ty: &TypeName, scan: &Scan) -> Result<u64> {
+        self.read(0, |r| {
+            // At the head, a count that selects by the flags alone is the
+            // projection's `COUNT(*)`; any other is counted batch by batch.
+            if r.head && scan.filter.is_none() && scan.equal.is_empty() && scan.valid_at.is_none() {
+                return r.count_in_force(ty, scan.retired, scan.restricted);
+            }
+            let decl = r.type_decl(ty)?;
+            engines::count_in_key_order(decl.as_ref(), scan, |after, n| {
+                r.records_after(ty, after, n)
+            })
         })
     }
 
