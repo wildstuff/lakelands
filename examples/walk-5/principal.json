@@ -1,0 +1,12 @@
+{
+  "name": "clerk",
+  "kind": "agent",
+  "id": "clerk",
+  "grants": {
+    "default": "read",
+    "types": {
+      "order": { "fields": { "status": "write" } },
+      "payment": { "default": "write" }
+    }
+  }
+}

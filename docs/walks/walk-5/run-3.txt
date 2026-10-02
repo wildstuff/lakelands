@@ -1,0 +1,34 @@
+AGENT: First I'll make the colleague's call exactly as given, so I can see how the store answers it. 
+
+CALL 1: payment_upsert {"key": "P-O-1", "fields": {"order_id": "O-1", "customer_no": "C-1", "amount": 120, "paid_on": "2026-10-07"}}
+
+ANSWER (isError):
+error: refused on `amount`: a decimal value must be a string of digits
+  what to do: correct the input and run the command again; nothing was written
+
+{"error":"refused","field":"amount","reason":{"message":"a decimal value must be a string of digits","refusal":"constraint"}}
+
+AGENT: The refusal told me to send `amount` as a string of digits ("120.00") instead of the number 120. Nothing was written, so I'll retry with only that change. 
+
+CALL 2: payment_upsert {"key": "P-O-1", "fields": {"order_id": "O-1", "customer_no": "C-1", "amount": "120.00", "paid_on": "2026-10-07"}}
+
+ANSWER:
+{"outcome":"applied","position":29,"version":1}
+
+AGENT: I'll read the record back to check that what was stored matches the task. 
+
+CALL 3: payment_get {"key": "P-O-1"}
+
+ANSWER:
+{"data":{"fields":{"amount":"120.00","customer_no":"C-1","order_id":"O-1","paid_on":"2026-10-07T00:00:00.000000Z"},"key":"P-O-1","type":"payment","version":1},"position":29}
+
+AGENT: The payment is written: P-O-1 is now in the ledger for order O-1, for 120.00 from customer C-1, paid on 2026-10-07.
+
+- **The colleague's call** was refused on `amount`: "a decimal value must be a string of digits". The answer also said nothing was written.
+- **The retry** sent the amount as the string `"120.00"` and changed nothing else. It came back `applied` at position 29, as version 1.
+- **Reading the record back** at position 29 shows `amount: "120.00"`, `customer_no: "C-1"`, `order_id: "O-1"` and `paid_on: "2026-10-07T00:00:00.000000Z"`. The store accepted the date on its own and saved it as midnight UTC.
+
+Yes, the refusal alone told me what to change. It named the field and the rule it broke, and one corrected retry worked. I had to choose the exact string myself: I used `"120.00"` to match the amount in the task, though `"120"` would also have fit the rule.
+
+I wrote the record by hand as the task asked, not through `create_payment`. That tool is the ledger's own way of creating a payment for a paid order. 
+
