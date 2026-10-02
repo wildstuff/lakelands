@@ -12,26 +12,33 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use lakelands_api::key::UNGROUPED;
 use lakelands_api::ontology::{
     Authority, Cardinality, Derived, MatchPair, Measure, RelationDecl, StorageKind, TypeDecl,
-    ViewDecl,
+    ViewDecl, ViewParam,
 };
 use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Start, Step, Walk};
 use lakelands_api::read::Find;
-use lakelands_api::{Error, FieldName, LakeStore, Principal, Refusal, TypeName, Value};
+use lakelands_api::{Error, FieldName, LakeStore, Principal, Record, Refusal, TypeName, Value};
 use rust_decimal::Decimal;
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all, all_found, dec, decimal, doors, field, partner_totals, source_record,
-    type_decl, upsert, windows_reach_head,
+    Lake, Must, all, all_found, dec, decimal, doors, field, get_at, partner_totals, source_record,
+    type_decl, upsert, value, windows_reach_head,
 };
 
 check!(
     /// A view record's key is its group.
     VIEW_KEY_IS_ITS_GROUP = a_view_record_is_keyed_by_its_group_by_fields,
     "018 and the log format §2.3: a view record's key is made from its `group_by` fields as any record key is, each value with `%` and `:` escaped, joined by `:` in declared order"
+);
+
+check!(
+    /// A view without `group_by` holds one record.
+    UNGROUPED_HOLDS_ONE = an_ungrouped_view_holds_one_record_keyed_all_even_over_none,
+    "018, extended: a view without `group_by` holds exactly one record, keyed `all`, the totals over every source record its `where` keeps, even when it keeps none (a count and a sum of none are 0, a minimum null); `get` answers it by that key and no other, and a read's parameters measure into the same record"
 );
 
 check!(
@@ -876,5 +883,120 @@ async fn a_view_whose_measure_reads_another_is_described_to_its_readers(
             );
         }
     }
+    Ok(())
+}
+
+/// A view over `invoice` without `group_by`, keeping what `filter` holds
+/// for; `limit` a parameter when asked for.
+fn ungrouped(name: &str, filter: Option<&str>, limit: bool) -> TypeDecl {
+    let fields = vec![
+        field("invoices", StorageKind::Number),
+        field("total", StorageKind::Decimal),
+        field("least", StorageKind::Decimal),
+    ];
+    let measure = |name: &str, expr: &str| Measure {
+        name: name.into(),
+        expr: expr.into(),
+    };
+    TypeDecl {
+        key: Vec::new(),
+        view: Some(Box::new(ViewDecl {
+            source: "invoice".into(),
+            params: if limit {
+                vec![ViewParam {
+                    name: "limit".into(),
+                    kind: StorageKind::Decimal,
+                }]
+            } else {
+                Vec::new()
+            },
+            r#where: filter.map(Into::into),
+            group_by: Vec::new(),
+            measures: vec![
+                measure("invoices", "count()"),
+                measure("total", "sum(amount)"),
+                measure("least", "min(amount)"),
+            ],
+        })),
+        ..type_decl(name, fields)
+    }
+}
+
+async fn an_ungrouped_view_holds_one_record_keyed_all_even_over_none(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(invoices(Authority::Authored)).await?;
+    for (nr, partner, amount) in [
+        ("i1", "p1", "10.00"),
+        ("i2", "p1", "2.50"),
+        ("i3", "p2", "7.25"),
+    ] {
+        write_invoice(store.as_ref(), own, nr, partner, amount).await?;
+    }
+    l.declare(ungrouped("everything", None, false)).await?;
+    l.declare(ungrouped("nothing", Some("amount > 1000"), false))
+        .await?;
+    l.declare(ungrouped("up_to", Some("amount <= param('limit')"), true))
+        .await?;
+    // A record as (key, invoices, total, least).
+    let show = |r: &Record| {
+        (
+            r.key.to_string(),
+            value(r, "invoices").and_then(Value::as_f64),
+            decimal(value(r, "total")),
+            decimal(value(r, "least")),
+        )
+    };
+    let one = |n: f64, total: &str, least: Option<&str>| {
+        vec![(
+            UNGROUPED.to_owned(),
+            Some(n),
+            Some(dec(total)),
+            least.map(dec),
+        )]
+    };
+    let limit = Find {
+        params: [("limit".into(), json!("8.00"))].into(),
+        ..Find::default()
+    };
+    for (ty, find, want, what) in [
+        (
+            "everything",
+            Find::default(),
+            one(3.0, "19.75", Some("2.50")),
+            "over three invoices",
+        ),
+        (
+            "nothing",
+            Find::default(),
+            one(0.0, "0", None),
+            "whose `where` keeps no invoice (a count and a sum of none are 0, a minimum null)",
+        ),
+        (
+            "up_to",
+            limit,
+            one(2.0, "9.75", Some("2.50")),
+            "read with `limit` 8.00 (i2 and i3)",
+        ),
+    ] {
+        let got: Vec<_> = l.all_found(ty, find).await?.iter().map(show).collect();
+        ensure!(
+            got == want,
+            "a view without `group_by` {what} holds one record, {want:?}; it holds {got:?}"
+        );
+    }
+    let got = show(&l.read("everything", UNGROUPED).await?);
+    ensure!(
+        vec![got.clone()] == one(3.0, "19.75", Some("2.50")),
+        "`get` of `{UNGROUPED}` answers the record `find` holds; it answered {got:?}"
+    );
+    let other = cat.get(own, &"everything".into(), get_at("p1", None)).await;
+    ensure!(
+        matches!(other, Err(Error::NotFound { .. })),
+        "a view without `group_by` holds no record but `{UNGROUPED}`, so `get` of `p1` is \
+         not_found; it answered {other:?}"
+    );
     Ok(())
 }
