@@ -12,7 +12,7 @@ use lakelands_api::engine::{
     CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
     Reclaimed, VectorIndex,
 };
-use lakelands_api::error::{Error, Refusal, Result};
+use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
 use lakelands_api::record::{StoredRecord, Value};
@@ -129,18 +129,7 @@ impl LakeEngine for MemoryLake {
 
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>> {
         let folded = lock(&self.shared).projection.folded;
-        let at = match (as_of, folded) {
-            (None, folded) => folded,
-            (Some(p), Some(head)) if p <= head => Some(p),
-            (Some(_), head) => {
-                return Err(Error::Refused {
-                    field: None,
-                    reason: Refusal::OutOfRange {
-                        head: head.unwrap_or_default(),
-                    },
-                });
-            }
-        };
+        let at = lakelands_core::engines::view_at(as_of, folded)?;
         Ok(Box::new(MemView {
             lake: Arc::clone(&self.shared),
             at,

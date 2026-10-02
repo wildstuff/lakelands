@@ -47,7 +47,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
-use lakelands_api::error::{Error, Refusal, Result};
+use lakelands_api::error::Result;
 use lakelands_api::id::LakeId;
 use lakelands_api::location::{EngineConfig, Location};
 
@@ -76,22 +76,7 @@ pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// An error for a lake that cannot answer now.
-pub(crate) fn unavailable(message: impl Into<String>) -> Error {
-    Error::Unavailable {
-        message: message.into(),
-    }
-}
-
-/// An error for a request that does not fit the seam's contract.
-pub(crate) fn invalid(message: impl Into<String>) -> Error {
-    Error::Refused {
-        field: None,
-        reason: Refusal::Invalid {
-            message: message.into(),
-        },
-    }
-}
+pub(crate) use lakelands_core::{invalid, unavailable};
 
 /// Finds the in-memory engine by name and opens lakes held in memory. The
 /// lakes are this opener's: its clones share them, another opener holds

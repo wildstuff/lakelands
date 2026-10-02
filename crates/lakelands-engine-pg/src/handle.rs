@@ -33,12 +33,12 @@ use lakelands_api::engine::{
     CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
     Reclaimed, VectorIndex,
 };
-use lakelands_api::error::{Error, Refusal, Result};
+use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
-use lakelands_core::engines::cosine;
+use lakelands_core::engines::{self, cosine, vector_bytes, vector_of};
 
 use crate::connect::{self, Db, Target};
 use crate::projection::{self, Buffer, HeadTypes, Names, PROJECTION_TABLES};
@@ -362,18 +362,7 @@ impl LakeEngine for PgLake {
 
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>> {
         let folded = projection::folded(&mut self.reader(), &self.names)?;
-        let at = match (as_of, folded) {
-            (None, folded) => folded,
-            (Some(p), Some(head)) if p <= head => Some(p),
-            (Some(_), head) => {
-                return Err(Error::Refused {
-                    field: None,
-                    reason: Refusal::OutOfRange {
-                        head: head.unwrap_or_default(),
-                    },
-                });
-            }
-        };
+        let at = engines::view_at(as_of, folded)?;
         Ok(Box::new(PgView { lake: self, at }))
     }
 
@@ -404,17 +393,9 @@ impl ProjectionStore for PgLake {
             .take()
             .ok_or_else(|| invalid("there is no transaction to commit: call `begin` first"))?;
         let mut db = lock(&writing.projection);
-        if let Some(folded) = projection::folded(&mut db, &self.names)?.filter(|f| *f > through) {
-            return db.end(Err(invalid(format!(
-                "the projection reflects the log through position {folded}; a transaction \
-                 cannot commit through the earlier position {through}"
-            ))));
-        }
-        if let Some(late) = t.latest.filter(|p| *p > through) {
-            return db.end(Err(invalid(format!(
-                "a state valid from position {late} cannot be committed through the earlier \
-                 position {through}"
-            ))));
+        let folded = projection::folded(&mut db, &self.names)?;
+        if let Some(refused) = engines::commit_refusal(folded, t.latest, through) {
+            return db.end(Err(refused));
         }
         let Transaction {
             mut types, buffer, ..
@@ -564,21 +545,6 @@ fn size(db: &mut Db, schema: &str, tables: &[&str]) -> Result<u64> {
         &[&schema, &tables],
     )?;
     Ok(row.get::<_, i64>(0) as u64)
-}
-
-/// A vector as the index stores it: its components as little-endian
-/// `f32`s.
-fn vector_bytes(v: &[f32]) -> Vec<u8> {
-    v.iter().flat_map(|x| x.to_le_bytes()).collect()
-}
-
-pub(crate) fn vector_of(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|c| f32::from_le_bytes(*c))
-        .collect()
 }
 
 /// The vector index: each field's vectors in one table, searched by brute
