@@ -36,12 +36,12 @@
 
 use std::collections::BTreeMap;
 
-use lakelands_api::engine::{ProjectionView, Scan};
+use lakelands_api::engine::ProjectionView;
 use lakelands_api::event::{Digest, Event, EventBody, Procedure};
 use lakelands_api::ontology::{
     Authority, RelationDecl, Risk, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
 };
-use lakelands_api::principal::{Grants, WriteContext};
+use lakelands_api::principal::WriteContext;
 use lakelands_api::record::{Origin, StoredRecord};
 use lakelands_api::write::{
     Declaration, Migration, MigrationReport, Misfit, Outcome, ProposalState, ProposedWrite,
@@ -53,26 +53,17 @@ use lakelands_api::{
 };
 use lakelands_core::expr::{self, Place, RecordScope, Scope, WriteScope};
 use lakelands_core::rights::{self, Door};
-use lakelands_core::{links, shape, value};
+use lakelands_core::{invalid, links, shape, value};
 
 use crate::backed::Outputs;
 use crate::declare;
-use crate::lake::{AGING_RULE_TYPE, Lake, SETTING_TYPE, Writer, find_proposal};
+use crate::lake::{AGING_RULE_TYPE, Lake, SETTING_TYPE, Writer, every, find_proposal};
 use crate::log::{self, Draft};
 use crate::record;
 
 /// How many events after an external verb's call a retry reads for the
 /// output recorded for it.
 const RETRY_REACH: u32 = 4_096;
-
-fn invalid(message: impl Into<String>) -> Error {
-    Error::Refused {
-        field: None,
-        reason: Refusal::Invalid {
-            message: message.into(),
-        },
-    }
-}
 
 /// The record a call names, checked against the verb's scope before
 /// anything is read (013, extended): a verb on a record needs its key, a
@@ -101,7 +92,7 @@ fn scoped<'k>(
     }
 }
 
-fn not_granted() -> Error {
+pub(crate) fn not_granted() -> Error {
     Error::Refused {
         field: None,
         reason: Refusal::NotGranted,
@@ -555,6 +546,25 @@ pub(crate) fn position_after(w: &Writer, n: usize) -> Position {
     Position(first.0 + n as u64)
 }
 
+/// The record a retire of `before` makes, computed from its provisional
+/// event.
+pub(crate) fn retired(
+    w: &Writer,
+    view: &dyn ProjectionView,
+    before: &StoredRecord,
+    event: &Event,
+) -> Result<StoredRecord> {
+    let outputs = &mut Outputs {
+        view,
+        staged: None,
+        due: None,
+    };
+    Ok(
+        record::apply(&w.ontology, Some(before), event, &w.settings, outputs)?
+            .expect("a retire makes a record"),
+    )
+}
+
 /// The scope a verb's assignments see: the record's fields, and
 /// `payload.<name>` for the call's payload.
 struct VerbScope<'a> {
@@ -975,18 +985,7 @@ impl Call<'_> {
             d.idempotency_key = Some(k.clone());
         }
         let event = provisional(self.lake, position_after(&w, 0), &d);
-        let after = record::apply(
-            &w.ontology,
-            Some(&before),
-            &event,
-            &w.settings,
-            &mut Outputs {
-                view: view.as_ref(),
-                staged: None,
-                due: None,
-            },
-        )?
-        .expect("a retire makes a record");
+        let after = retired(&w, view.as_ref(), &before, &event)?;
         let mut pending = Pending::default();
         let cause = event.position;
         let mut drafts = vec![d];
@@ -1463,12 +1462,7 @@ impl Call<'_> {
         let now = self.lake.clock(&mut w);
         // The write was checked under the proposer's grants when it was
         // proposed; it is applied as the proposer, with what was checked.
-        let proposer = Principal {
-            kind: lakelands_api::PrincipalKind::System,
-            id: p.proposer.clone(),
-            lake: self.lake.id.clone(),
-            grants: Grants::owner(),
-        };
+        let proposer = self.lake.system(p.proposer.clone());
         let accepted = self.draft(
             now,
             Origin::Authored,
@@ -1537,18 +1531,7 @@ impl Call<'_> {
                     },
                 ));
                 let event = provisional(self.lake, Position(accepted_at.0 + 1), &d);
-                let after = record::apply(
-                    &w.ontology,
-                    Some(&before),
-                    &event,
-                    &w.settings,
-                    &mut Outputs {
-                        view: view.as_ref(),
-                        staged: None,
-                        due: None,
-                    },
-                )?
-                .expect("a retire makes a record");
+                let after = retired(&w, view.as_ref(), &before, &event)?;
                 drafts.push(d);
                 drafts.extend(self.reactions(
                     &w,
@@ -1991,15 +1974,7 @@ impl Call<'_> {
             },
         )?;
         let records: Vec<StoredRecord> = view
-            .scan(
-                &before.name,
-                &Scan {
-                    limit: u32::MAX,
-                    retired: true,
-                    restricted: true,
-                    ..Default::default()
-                },
-            )?
+            .scan(&before.name, &every(true))?
             .into_iter()
             .filter(|r| !r.is_ended())
             .collect();
@@ -2048,14 +2023,7 @@ impl Call<'_> {
                 continue;
             }
             let lt = links::link_type_name(&m.to.name, &r.name);
-            let live = view.scan(
-                &lt,
-                &Scan {
-                    limit: u32::MAX,
-                    restricted: true,
-                    ..Default::default()
-                },
-            )?;
+            let live = view.scan(&lt, &every(false))?;
             let mut from_seen: BTreeMap<String, u32> = BTreeMap::new();
             let mut to_seen: BTreeMap<String, u32> = BTreeMap::new();
             for l in &live {
@@ -2094,15 +2062,7 @@ impl Call<'_> {
                 renames: vec![],
             };
             let links: Vec<StoredRecord> = view
-                .scan(
-                    &old.name,
-                    &Scan {
-                        limit: u32::MAX,
-                        retired: true,
-                        restricted: true,
-                        ..Default::default()
-                    },
-                )?
+                .scan(&old.name, &every(true))?
                 .into_iter()
                 .filter(|r| !r.is_ended())
                 .collect();
@@ -2285,12 +2245,7 @@ impl Call<'_> {
             current.version + 1,
             None,
         );
-        let all = Scan {
-            limit: u32::MAX,
-            retired: true,
-            restricted: true,
-            ..Default::default()
-        };
+        let all = every(true);
         let mut report = ValueTypeReport {
             value_type: to.name.clone(),
             from_version: current.version,

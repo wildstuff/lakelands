@@ -72,9 +72,7 @@ pub struct Manifest {
 }
 
 fn io(what: &str, path: &Path, e: std::io::Error) -> Error {
-    Error::Unavailable {
-        message: format!("cannot {what} {}: {e}", path.display()),
-    }
+    crate::unavailable(format!("cannot {what} {}: {e}", path.display()))
 }
 
 fn damaged(position: impl std::fmt::Display, why: impl std::fmt::Display) -> Error {
@@ -374,9 +372,8 @@ fn first_of(path: &Path) -> Option<u64> {
     }
 }
 
-/// Verify an export from its segment files alone, a line at a time: the
-/// chain from position 0 through the last line, and its hash.
-pub fn verify(dir: &Path) -> Result<Verification> {
+/// An export's segment files, in order.
+pub fn segment_files(dir: &Path) -> Result<Vec<PathBuf>> {
     let log = dir.join("log");
     let mut files: Vec<PathBuf> = fs::read_dir(&log)
         .map_err(|e| io("read", &log, e))?
@@ -384,6 +381,13 @@ pub fn verify(dir: &Path) -> Result<Verification> {
         .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
         .collect();
     files.sort();
+    Ok(files)
+}
+
+/// Verify an export from its segment files alone, a line at a time: the
+/// chain from position 0 through the last line, and its hash.
+pub fn verify(dir: &Path) -> Result<Verification> {
+    let files = segment_files(dir)?;
     let mut chain = Chain {
         next: Position::GENESIS,
         prev: Digest::zero(),

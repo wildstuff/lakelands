@@ -123,6 +123,17 @@ fn wall_clock() -> Timestamp {
     Timestamp(micros)
 }
 
+/// A scan over every record of a type, restricted ones included, and
+/// retired ones when `retired`.
+pub(crate) fn every(retired: bool) -> lakelands_api::engine::Scan {
+    lakelands_api::engine::Scan {
+        limit: u32::MAX,
+        retired,
+        restricted: true,
+        ..Default::default()
+    }
+}
+
 /// The settings a view holds: the `value` of every live `sys.setting`
 /// record, by key.
 pub fn settings_in(view: &dyn ProjectionView) -> Result<BTreeMap<String, Value>> {
@@ -262,6 +273,17 @@ impl Lake {
         self.holds_lease.store(w.lease.is_some(), Ordering::Release);
     }
 
+    /// A system principal of this lake, named `id`, with every grant: the
+    /// store acting for itself, the host, or a proposer being applied.
+    pub(crate) fn system(&self, id: impl Into<String>) -> lakelands_api::Principal {
+        lakelands_api::Principal {
+            kind: lakelands_api::PrincipalKind::System,
+            id: id.into(),
+            lake: self.id.clone(),
+            grants: lakelands_api::Grants::owner(),
+        }
+    }
+
     /// The writer state, locked.
     pub fn writer(&self) -> MutexGuard<'_, Writer> {
         self.writer
@@ -384,15 +406,10 @@ impl Lake {
             .filter_map(|d| d.context.cause)
             .find(|c| Some(*c) > head)
         {
-            return Err(Error::Refused {
-                field: None,
-                reason: lakelands_api::Refusal::Invalid {
-                    message: format!(
-                        "the cause {cause} is past the lake's head {}",
-                        head.map_or_else(|| "(none)".to_owned(), |h| h.to_string())
-                    ),
-                },
-            });
+            return Err(lakelands_core::invalid(format!(
+                "the cause {cause} is past the lake's head {}",
+                head.map_or_else(|| "(none)".to_owned(), |h| h.to_string())
+            )));
         }
         // An event that needs a newer format raises the lake to it, from
         // this append on (`lakelands_core::versions`).
@@ -729,14 +746,7 @@ impl Lake {
                 // compute every live record's derived fields again, in this
                 // event.
                 for ty in rederive {
-                    let records = view.scan(
-                        &ty,
-                        &lakelands_api::engine::Scan {
-                            limit: u32::MAX,
-                            restricted: true,
-                            ..Default::default()
-                        },
-                    )?;
+                    let records = view.scan(&ty, &every(false))?;
                     // The records written earlier in this append are staged,
                     // not yet in the view.
                     let mut all: BTreeMap<RecordKey, StoredRecord> =
@@ -1388,15 +1398,7 @@ fn staged_scan(
     staged: &Staged,
     ty: &TypeName,
 ) -> Result<Vec<StoredRecord>> {
-    let records = view.scan(
-        ty,
-        &lakelands_api::engine::Scan {
-            limit: u32::MAX,
-            retired: true,
-            restricted: true,
-            ..Default::default()
-        },
-    )?;
+    let records = view.scan(ty, &every(true))?;
     let mut all: BTreeMap<RecordKey, StoredRecord> =
         records.into_iter().map(|r| (r.key.clone(), r)).collect();
     all.extend(staged.of_type(ty).map(|r| (r.key.clone(), r.clone())));

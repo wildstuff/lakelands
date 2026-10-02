@@ -91,21 +91,7 @@ fn precondition(message: String) -> Error {
 }
 
 fn io(what: &str, path: &Path, e: std::io::Error) -> Error {
-    Error::Unavailable {
-        message: format!("cannot {what} {}: {e}", path.display()),
-    }
-}
-
-/// The export's segment files, in order.
-fn files(dir: &Path) -> Result<Vec<PathBuf>> {
-    let log = dir.join("log");
-    let mut files: Vec<PathBuf> = fs::read_dir(&log)
-        .map_err(|e| io("read", &log, e))?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
-        .collect();
-    files.sort();
-    Ok(files)
+    lakelands_core::unavailable(format!("cannot {what} {}: {e}", path.display()))
 }
 
 /// What an import reads of a line beyond its bytes; the whole export was
@@ -201,7 +187,7 @@ fn check(files: &[PathBuf], lake: &LakeId) -> Result<Vec<Digest>> {
 /// Import the export in `dir` as a new lake at `location` (module doc).
 pub fn import(location: &Location, seams: Seams, dir: &Path) -> Result<Imported> {
     let verified = lakelands_core::export::verify(dir)?;
-    let files = files(dir)?;
+    let files = lakelands_core::export::segment_files(dir)?;
     let digests = check(&files, &location.lake)?;
     let opener = crate::lake::opener(location, &seams)?;
     let engine: Arc<dyn lakelands_api::engine::LakeEngine> =
