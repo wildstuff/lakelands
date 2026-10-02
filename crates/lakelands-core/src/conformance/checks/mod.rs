@@ -368,6 +368,7 @@ pub const ALL: &[Check] = &[
     host_cause::CAUSE_PAST_HEAD,
     host_cause::DEPTH_ON_EVERY_DOOR,
     host_cause::CONTEXT_FIRST,
+    host_cause::TRIGGER_CEILING_AT_APPEND,
     triggers::TRANSITION,
     triggers::RETIREMENT,
     triggers::REVIVAL,

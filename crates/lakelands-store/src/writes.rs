@@ -122,42 +122,21 @@ pub(crate) fn granted(ok: bool) -> Result<()> {
     })
 }
 
-/// Refuse a write whose context the lake does not take: deeper than its
-/// reactive ceiling, whatever the origin names
+/// Refuse a write whose context is deeper than the lake's reactive
+/// ceiling, whatever the origin names
 /// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`). Every
 /// write door calls it first, before any other check and before it takes
 /// the writer, so a refused context waits on no other write and every
-/// door refuses it alike; a host's `cause` is checked against the head
-/// where the write appends ([`crate::lake::Lake::append_after`]).
+/// door refuses it alike. It reads nothing. A host's `cause` is checked
+/// where the write appends, under the writer: that it is at or below the
+/// head, then the ceiling of the trigger whose firing it names
+/// ([`crate::lake::Lake::append_after`]).
 pub fn check_context(lake: &Lake, context: &WriteContext) -> Result<()> {
     let max = lake.limits.max_reactive_depth;
     if context.depth > max {
         return Err(Error::Refused {
             field: None,
             reason: Refusal::TooDeep { max },
-        });
-    }
-    // A reaction that names a trigger's firing as its cause is bound by
-    // that trigger's own ceiling too, as the head declares it (021). Any
-    // other cause binds nothing more.
-    let Some(cause) = context.cause else {
-        return Ok(());
-    };
-    let Some(stored) = lake.engine.read(cause, 1)?.into_iter().next() else {
-        return Ok(());
-    };
-    if let EventBody::TriggerFired { trigger, .. } = crate::log::open(&stored)?.body
-        && let Some(m) = lake
-            .writer()
-            .ontology
-            .triggers
-            .get(trigger.as_str())
-            .and_then(|e| e.decl.max_depth)
-        && context.depth > m
-    {
-        return Err(Error::Refused {
-            field: Some(trigger.as_str().into()),
-            reason: Refusal::TooDeep { max: m },
         });
     }
     Ok(())
