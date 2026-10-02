@@ -719,12 +719,9 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
     // A typed expression reaches here without the parser's checks; the
     // argument count is checked again so no malformed call can panic.
     let (min, max) = super::arity(func);
+    let name = super::func_name(func);
     if args.len() < min || max.is_some_and(|m| args.len() > m) {
-        return err(format!(
-            "{}() does not take {} argument(s)",
-            super::func_name(func),
-            args.len()
-        ));
+        return err(format!("{name}() does not take {} argument(s)", args.len()));
     }
     // The functions that decide which arguments to evaluate, or read a
     // field's name rather than its value.
@@ -755,10 +752,7 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
         }
         Func::Previous | Func::Changed => {
             if !scope.in_write() {
-                return err(format!(
-                    "{}() has meaning only in a guard over a write",
-                    super::func_name(func)
-                ));
+                return err(format!("{name}() has meaning only in a guard over a write"));
             }
             let field = field_arg(args)?;
             let before = scope.previous(field).map_or(Val::Null, |v| from_json(&v));
@@ -786,8 +780,7 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
                 return v;
             }
             return err(format!(
-                "{}() folds a set of records and has no meaning over one record",
-                super::func_name(func)
+                "{name}() folds a set of records and has no meaning over one record"
             ));
         }
         _ => {}

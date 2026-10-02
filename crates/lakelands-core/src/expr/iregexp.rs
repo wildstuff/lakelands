@@ -35,33 +35,12 @@ struct Parser<'a> {
 
 /// Characters that stand for themselves outside a class.
 fn is_normal(c: char) -> bool {
-    !matches!(
-        c,
-        '(' | ')' | '*' | '+' | '.' | '?' | '[' | '\\' | ']' | '{' | '|' | '}'
-    )
+    !"()*+.?[\\]{|}".contains(c)
 }
 
 /// Characters a single-character escape may name.
 fn is_single_escape(c: char) -> bool {
-    matches!(
-        c,
-        '(' | ')'
-            | '*'
-            | '+'
-            | '-'
-            | '.'
-            | '?'
-            | '['
-            | '\\'
-            | ']'
-            | '^'
-            | 'n'
-            | 'r'
-            | 't'
-            | '{'
-            | '|'
-            | '}'
-    )
+    "()*+-.?[\\]^nrt{|}".contains(c)
 }
 
 /// The Unicode general categories `\p{…}` may name.

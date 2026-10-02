@@ -66,28 +66,6 @@ pub fn declaration_key(d: &Declaration) -> String {
     }
 }
 
-/// Whether `filter` selects `record`; a filter that cannot be evaluated
-/// does not.
-pub fn selects(filter: Option<&Expr>, record: &StoredRecord) -> bool {
-    filter.is_none_or(|f| {
-        let scope = RecordScope {
-            fields: &record.fields,
-            settings: None,
-            now: NO_CLOCK,
-        };
-        holds(f, &scope).unwrap_or(false)
-    })
-}
-
-/// Whether `record` holds at `valid_at` under its type's declaration. A
-/// type not in force is not valid-timed.
-pub fn valid(decl: Option<&TypeDecl>, record: &StoredRecord, valid_at: Option<Timestamp>) -> bool {
-    match (decl, valid_at) {
-        (Some(decl), Some(t)) => crate::valid_time::record_holds(decl, &record.fields, t),
-        _ => true,
-    }
-}
-
 /// A narrowing an engine may take from a filter, with the one evaluator's
 /// meaning: when the filter is, or has as one of its `and` terms,
 /// `field = 'text'` whose text reads neither as a number nor as an
@@ -210,14 +188,23 @@ pub fn cmp_places(a: &Place<'_>, b: &Place<'_>, order_by: &[Order]) -> Ordering 
         .unwrap_or_else(|| a.key.cmp(b.key))
 }
 
-/// Whether a scan selects `record`: its flags, `valid_at`, the fields it
-/// must hold exactly, and the filter.
+/// Whether a scan selects `record`: its flags, `valid_at` under the
+/// record's type (a type not in force is not valid-timed), the fields it
+/// must hold exactly, and the filter (one that cannot be evaluated does
+/// not select).
 pub fn admits(decl: Option<&TypeDecl>, record: &StoredRecord, scan: &Scan) -> bool {
+    let fields = &record.fields;
+    let scope = RecordScope {
+        fields,
+        settings: None,
+        now: NO_CLOCK,
+    };
     (scan.retired || !record.retired)
         && (scan.restricted || !record.restricted)
-        && valid(decl, record, scan.valid_at)
+        && (decl.zip(scan.valid_at))
+            .is_none_or(|(d, t)| crate::valid_time::record_holds(d, fields, t))
         && holds_exactly(record, &scan.equal)
-        && selects(scan.filter.as_ref(), record)
+        && (scan.filter.as_ref()).is_none_or(|f| holds(f, &scope).unwrap_or(false))
 }
 
 /// Whether `record` holds each value exactly: the same JSON value, never
@@ -298,12 +285,7 @@ pub fn scan<'a>(
         .into_iter()
         .inspect(|_| handed += 1)
         .filter(|r| admits(decl, r, scan))
-        .map(|r| {
-            (
-                PlaceKey::of(&Place::of(r, &scan.order_by), &scan.order_by),
-                r,
-            )
-        })
+        .map(|r| (PlaceKey::record(r, &scan.order_by), r))
         .collect();
     count_read(handed);
     rows.sort_unstable_by(|a, b| a.0.cmp(&b.0));
@@ -445,6 +427,7 @@ pub fn by_order_index<'a>(
 
 thread_local! {
     static ROWS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static LINKS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// The rows the scans on this thread were handed to order: the whole
@@ -454,10 +437,6 @@ thread_local! {
 /// not the type; it costs one add per call or batch.
 pub fn rows_read() -> u64 {
     ROWS_READ.with(|n| n.get())
-}
-
-thread_local! {
-    static LINKS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// The records the edge walks on this thread were handed to find a
@@ -528,12 +507,7 @@ pub fn scan_in_field_order<E>(
         let mut keyed: Vec<(PlaceKey, StoredRecord)> = run
             .drain(..)
             .filter(|r| admits(decl, r, scan))
-            .map(|r| {
-                (
-                    PlaceKey::of(&Place::of(&r, &scan.order_by), &scan.order_by),
-                    r,
-                )
-            })
+            .map(|r| (PlaceKey::record(&r, &scan.order_by), r))
             .filter(|(k, _)| after.as_ref().is_none_or(|a| k > a))
             .collect();
         keyed.sort_unstable_by(|a, b| a.0.cmp(&b.0));
@@ -647,6 +621,10 @@ enum SortPart {
 }
 
 impl PlaceKey {
+    fn record(r: &StoredRecord, order_by: &[Order]) -> PlaceKey {
+        PlaceKey::of(&Place::of(r, order_by), order_by)
+    }
+
     fn of(place: &Place<'_>, order_by: &[Order]) -> PlaceKey {
         PlaceKey {
             values: order_by
