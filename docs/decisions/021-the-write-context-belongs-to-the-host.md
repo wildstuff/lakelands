@@ -129,3 +129,9 @@ trigger, when the depth is above its ceiling. Both now come after the
 door's other checks; the lake's own ceiling, which reads nothing, stays
 first.
 
+
+## Extended: the depth crosses lakes with a mirror (lakelands#420)
+
+A mirror's copy is a reaction at the depth of the source state it
+copies, with no cause, so a chain of reactions that crosses lakes still
+meets a ceiling: see 042, "a copy keeps its chain's depth".

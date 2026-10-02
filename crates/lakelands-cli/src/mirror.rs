@@ -30,6 +30,12 @@
 //! therefore steps once per window, not once per source event: in return,
 //! a window delivered again reads what the copies already hold, and
 //! appends nothing.
+//! Each copy is a reaction at the depth its change was written at, a
+//! window at its deepest and a retirement at its own, naming no cause:
+//! a chain of reactions across lakes meets the target's ceiling, which
+//! stops the type, saying which record crossed how deep. A snapshot
+//! crosses at depth 0
+//! (`docs/decisions/042-water-crosses-only-as-a-mirror.md`).
 //!
 //! **What is not ingest.** A retirement crosses through `retire` (a link's
 //! through `unlink`), with an idempotency key naming the source position,
@@ -104,8 +110,8 @@ use lakelands_api::seam::{FeedFilter, SystemVocabulary};
 use lakelands_api::write::Declaration;
 use lakelands_api::{
     Error, FieldName, Find, Found, Get, IdempotencyKey, LakeId, LakeStore, Patch, Position,
-    Principal, ReadAt, Record, RecordKey, RelationName, SourceId, SourceRecord, Timestamp,
-    TypeName, Upstream, Value, WriteContext, WriteOpts, ingest_all,
+    Principal, ReadAt, Record, RecordKey, Refusal, RelationName, SourceId, SourceRecord, Timestamp,
+    TypeName, Upstream, Value, WriteContext, WriteOpts, WriteOrigin, ingest_all,
 };
 use lakelands_backings::lock::FileLock;
 use serde::{Deserialize, Serialize};
@@ -428,13 +434,13 @@ impl std::fmt::Debug for Mirror {
 }
 
 /// A run of consecutive changes to one source type: each change's key,
-/// position and `known_at`, in feed order.
+/// position, `known_at` and the depth it was written at, in feed order.
 #[derive(Default)]
 struct Run {
     ty: Option<TypeName>,
     first: Position,
     last: Position,
-    changes: Vec<(RecordKey, Position, Timestamp)>,
+    changes: Vec<(RecordKey, Position, Timestamp, u32)>,
 }
 
 impl Run {
@@ -444,24 +450,36 @@ impl Run {
             self.first = e.position;
         }
         self.last = e.position;
-        self.changes.push((key.clone(), e.position, e.known_at));
+        self.changes
+            .push((key.clone(), e.position, e.known_at, e.context.depth));
     }
 
     /// One entry per key, at the key's last position, in the order keys
     /// first appeared: what a window delivered again reads is what the
     /// copies already hold.
-    fn coalesced(self) -> Vec<(RecordKey, Position, Timestamp)> {
-        let mut last: HashMap<RecordKey, (Position, Timestamp)> = HashMap::new();
-        for (key, p, t) in &self.changes {
-            last.insert(key.clone(), (*p, *t));
+    fn coalesced(self) -> Vec<(RecordKey, Position, Timestamp, u32)> {
+        let mut last: HashMap<RecordKey, (Position, Timestamp, u32)> = HashMap::new();
+        for (key, p, t, d) in &self.changes {
+            last.insert(key.clone(), (*p, *t, *d));
         }
         self.changes
             .into_iter()
-            .filter_map(|(key, _, _)| {
-                let (p, t) = last.remove(&key)?;
-                Some((key, p, t))
+            .filter_map(|(key, ..)| {
+                let (p, t, d) = last.remove(&key)?;
+                Some((key, p, t, d))
             })
             .collect()
+    }
+}
+
+/// The context a copy is written in: a reaction to the source's write, at
+/// its depth, naming no cause, since the cause is in another lake
+/// (`docs/decisions/042-water-crosses-only-as-a-mirror.md`).
+fn crossing(depth: u32) -> WriteContext {
+    WriteContext {
+        origin: WriteOrigin::Reactive,
+        depth,
+        cause: None,
     }
 }
 
@@ -1060,7 +1078,8 @@ impl Mirror {
             if failed.contains_key(&s) {
                 continue;
             }
-            if let Some(why) = self.ingest(&s, window).await? {
+            // A snapshot copies standing state, not a chain in flight.
+            if let Some(why) = self.ingest(&s, window, None).await? {
                 failed.insert(s, why);
             }
         }
@@ -1128,7 +1147,9 @@ impl Mirror {
         let (first, last) = (run.first, run.last);
         let mapped = self.map[&s].clone();
         let mut records = Vec::new();
-        for (key, position, known_at) in run.coalesced() {
+        let mut depths: HashMap<RecordKey, u32> = HashMap::new();
+        for (key, position, known_at, depth) in run.coalesced() {
+            depths.insert(key.clone(), depth);
             let key = &key;
             let Some(record) = self.read(&s, key, position).await? else {
                 continue;
@@ -1153,22 +1174,30 @@ impl Mirror {
             ));
         }
         for (s, window) in self.windows(records) {
-            if let Some(why) = self.ingest(&s, window).await? {
+            // The window crosses at the depth of its deepest change, so a
+            // chain of reactions keeps growing across the lakes (042).
+            let deepest = (window.iter())
+                .filter_map(|r| Some((r.key.clone(), *depths.get(&r.key)?)))
+                .max_by_key(|(_, d)| *d);
+            if let Some(why) = self.ingest(&s, window, deepest).await? {
                 return self.stop(&[s], first, why).await;
             }
         }
         self.advance(last.next()).await
     }
 
-    /// Ingest one window of one source type. A refusal is answered as the
-    /// reason the type stops; any other failure ends the round.
+    /// Ingest one window of one source type, as a reaction at the depth of
+    /// its deepest change (none for a snapshot). A refusal is answered as
+    /// the reason the type stops; any other failure ends the round.
     async fn ingest(
         &mut self,
         s: &TypeName,
         window: Vec<SourceRecord>,
+        deepest: Option<(RecordKey, u32)>,
     ) -> Result<Option<String>, String> {
         let source = SourceId::from(format!("mirror:{}:{s}", self.source.lake()));
-        let tcat = self.target.catalog(WriteContext::default());
+        let depth = deepest.as_ref().map_or(0, |(_, d)| *d);
+        let tcat = self.target.catalog(crossing(depth));
         let keys = window.len();
         match ingest_all(tcat.as_ref(), &self.writer, &source, window).await {
             Ok(commits) => {
@@ -1181,6 +1210,16 @@ impl Mirror {
                 }));
                 Ok(None)
             }
+            Err(Error::Refused {
+                reason: Refusal::TooDeep { max },
+                ..
+            }) => {
+                let key = deepest.map(|(k, _)| k.to_string()).unwrap_or_default();
+                Ok(Some(format!(
+                    "`{key}` crosses at depth {depth}, past the target's ceiling of {max}: a \
+                     chain of reactions across the lakes ends here"
+                )))
+            }
             Err(e @ Error::Refused { .. }) => Ok(Some(format!("the target refused a window: {e}"))),
             Err(e) => Err(format!("the target failed: {e}")),
         }
@@ -1190,7 +1229,9 @@ impl Mirror {
     /// a declaration.
     async fn act(&mut self, e: &Event) -> Result<(), String> {
         match &e.body {
-            EventBody::RecordRetired { ty, key, .. } => self.retire(ty, key, e.position).await,
+            EventBody::RecordRetired { ty, key, .. } => {
+                self.retire(ty, key, e.position, e.context.depth).await
+            }
             EventBody::RecordRestricted {
                 ty, key, reason, ..
             } => self.hold(ty, key, Some(reason), e.position).await,
@@ -1207,9 +1248,15 @@ impl Mirror {
         }
     }
 
-    async fn retire(&mut self, s: &TypeName, key: &RecordKey, p: Position) -> Result<(), String> {
+    async fn retire(
+        &mut self,
+        s: &TypeName,
+        key: &RecordKey,
+        p: Position,
+        depth: u32,
+    ) -> Result<(), String> {
         let mapped = self.map[s].clone();
-        let tcat = self.target.catalog(WriteContext::default());
+        let tcat = self.target.catalog(crossing(depth));
         let opts = WriteOpts {
             idempotency_key: Some(IdempotencyKey::from(format!(
                 "mirror:{}:{}",
@@ -1248,7 +1295,7 @@ impl Mirror {
                     std::slice::from_ref(s),
                     p,
                     format!(
-                        "the target refused to retire `{}` `{key}`: {e}",
+                        "the target refused to retire `{}` `{key}`, at depth {depth}: {e}",
                         mapped.target
                     ),
                 )
