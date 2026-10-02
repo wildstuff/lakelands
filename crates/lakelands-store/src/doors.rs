@@ -485,9 +485,8 @@ impl Catalog for Doors {
     ) -> Result<CommitStream> {
         same_lake(&self.lake, who)?;
         // The context first, as on every write door, and before the stream
-        // is taken; each window checks it again against the head it reads.
-        let (lake, context) = (self.lake.clone(), self.context);
-        exec::run(move || writes::check_context(&lake, &context)).await?;
+        // is taken.
+        writes::check_context(&self.lake, &self.context)?;
         writes::granted(who.grants.ingest)?;
         Ok(ingest::run(
             self.lake.clone(),

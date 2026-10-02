@@ -24,7 +24,7 @@ use serde_json::json;
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, doors, events_from, field, head_unmoved, ingest, limits, owner, patch, principal,
-    reason, source_record, trigger_on, type_decl,
+    reason, refused_on, source_record, trigger_on, type_decl,
 };
 
 check!(
@@ -49,6 +49,12 @@ check!(
     /// The context comes first on every door.
     CONTEXT_FIRST = every_write_door_checks_the_context_before_anything_else,
     "021, extended (lakelands#344): a context past the ceiling is refused as too_deep before anything else a door checks, so a request that also breaks the door's own first rule (a principal without grants, a link type at an ordinary door, an undeclared type, relation, verb or proposal) is refused as too_deep on every write door"
+);
+
+check!(
+    /// A trigger's ceiling is read where the cause is judged.
+    TRIGGER_CEILING_AT_APPEND = a_triggers_ceiling_is_read_with_the_cause_at_the_append,
+    "021, extended (lakelands#375): a reaction naming a cause past the head is refused as invalid even when the next append puts a firing there; once the firing is in the log, a reaction past its trigger's ceiling is refused too_deep naming the trigger, and that ceiling is read at the append, after the door's own checks, while the lake's ceiling comes first"
 );
 
 fn host(depth: u32, cause: Option<Position>) -> WriteContext {
@@ -529,4 +535,94 @@ async fn every_write_door_checks_the_context_before_anything_else(
         red.join("; ")
     );
     head_unmoved(store.as_ref(), head, "the writes past the ceiling").await
+}
+
+async fn a_triggers_ceiling_is_read_with_the_cause_at_the_append(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("job", vec![field("n", StorageKind::Number)]))
+        .await?;
+    let Declaration::Trigger(mut once) = trigger_on("once", "job", None) else {
+        unreachable!("trigger_on declares a trigger")
+    };
+    once.max_depth = Some(0);
+    cat.declare(own, Declaration::Trigger(once))
+        .await
+        .must("declaring `once` with max_depth 0")?;
+    let nobody = principal(
+        store.as_ref(),
+        PrincipalKind::Agent,
+        "nobody",
+        Grants::default(),
+    );
+    let write = |who: lakelands_api::Principal, ctx: WriteContext, key: &'static str| {
+        let store = store.clone();
+        async move {
+            store
+                .catalog(ctx)
+                .upsert(
+                    &who,
+                    &TypeName::from("job"),
+                    &key.into(),
+                    patch(json!({"n": 1})),
+                    WriteOpts::default(),
+                )
+                .await
+        }
+    };
+    // The write that fires `once` puts its record at head + 1 and the
+    // firing at head + 2; a reaction naming head + 2 before it is past the
+    // head.
+    let head = store.head().await.must("reading the head")?;
+    let firing = head.next().next();
+    let early = write(own.clone(), host(1, Some(firing)), "r1").await;
+    ensure!(
+        matches!(reason(&early), Some(Refusal::Invalid { .. })),
+        "a reaction naming {firing}, past the head {head}, is refused as invalid; it \
+         answered {early:?}"
+    );
+    head_unmoved(
+        store.as_ref(),
+        head,
+        "a reaction naming a cause past the head",
+    )
+    .await?;
+    let fired = write(own.clone(), WriteContext::default(), "j1")
+        .await
+        .must("the write that fires `once`")?;
+    ensure!(
+        store.head().await.must("reading the head")? == firing,
+        "the write at {} fires `once` at {firing}; the head is elsewhere",
+        fired.position()
+    );
+    let mut red = Vec::new();
+    for (what, who, too_deep) in [("the owner", own.clone(), true), ("nobody", nobody, false)] {
+        let late = write(who, host(1, Some(firing)), "r2").await;
+        let ok = if too_deep {
+            matches!(
+                refused_on(&late),
+                Some(("once", Refusal::TooDeep { max: 0 }))
+            )
+        } else {
+            matches!(reason(&late), Some(Refusal::NotGranted))
+        };
+        if !ok {
+            red.push(format!("{what} answered {late:?}"));
+        }
+    }
+    ensure!(
+        red.is_empty(),
+        "a reaction at depth 1 naming the firing of `once` (max_depth 0) is refused too_deep \
+         naming `once`, read at the append after the door's own checks, so one without a \
+         grant is refused not_granted first: {}",
+        red.join("; ")
+    );
+    head_unmoved(
+        store.as_ref(),
+        firing,
+        "the reactions past `once`'s ceiling",
+    )
+    .await
 }

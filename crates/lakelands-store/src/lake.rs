@@ -32,7 +32,8 @@ use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::Seams;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposalState};
 use lakelands_api::{
-    Error, LakeId, Position, ProposalId, RecordKey, Result, Timestamp, TypeName, Value,
+    Error, LakeId, Position, ProposalId, RecordKey, Refusal, Result, Timestamp, TypeName, Value,
+    WriteContext,
 };
 use lakelands_core::{shape, unavailable};
 
@@ -411,6 +412,13 @@ impl Lake {
                 head.map_or_else(|| "(none)".to_owned(), |h| h.to_string())
             )));
         }
+        // A reaction that names a trigger's firing as its cause is bound by
+        // that trigger's own ceiling too, as the head declares it (021).
+        // It is read here, under the writer, so the firing the cause names
+        // is the one this append follows, never one appended meanwhile.
+        if let Some(d) = drafts.iter().find(|d| d.context.cause.is_some()) {
+            self.check_trigger_ceiling(w, d.context)?;
+        }
         // An event that needs a newer format raises the lake to it, from
         // this append on (`lakelands_core::versions`).
         let v = drafts
@@ -446,6 +454,31 @@ impl Lake {
         // answers is one a read can be answered at, on every engine.
         self.publish(w);
         Ok(events)
+    }
+
+    /// Refuse a context deeper than the ceiling of the trigger whose firing
+    /// its cause names; any other cause binds nothing more.
+    fn check_trigger_ceiling(&self, w: &Writer, context: WriteContext) -> Result<()> {
+        let Some(cause) = context.cause else {
+            return Ok(());
+        };
+        let Some(stored) = self.engine.read(cause, 1)?.into_iter().next() else {
+            return Ok(());
+        };
+        if let EventBody::TriggerFired { trigger, .. } = log::open(&stored)?.body
+            && let Some(m) = w
+                .ontology
+                .triggers
+                .get(trigger.as_str())
+                .and_then(|e| e.decl.max_depth)
+            && context.depth > m
+        {
+            return Err(Error::Refused {
+                field: Some(trigger.as_str().into()),
+                reason: Refusal::TooDeep { max: m },
+            });
+        }
+        Ok(())
     }
 
     /// Fold events into the projection, in one transaction.

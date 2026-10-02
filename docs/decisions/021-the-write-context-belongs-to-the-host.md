@@ -106,7 +106,26 @@ principal belongs to the lake: before its grants, before it looks up a
 type, relation, verb or proposal, and before it takes the lake's
 writer. So a context past a ceiling is refused as `too_deep` alike on
 every door, whatever else the request would break, and a refused
-context waits on no other write. `ingest` checks it when it is called,
+context waits on no other write. This holds for the lake's ceiling; a
+trigger's ceiling depends on the cause, and is read where the cause is
+(below). `ingest` checks it when it is called,
 before it takes the stream, and each window checks it again against
 the head it reads. A host's `cause` is the exception: it is judged
 against the head where the write appends, after every other check.
+
+## Extended: a trigger's ceiling is read under the writer (lakelands#375)
+
+The ceiling of a trigger depends on the event a reaction's `cause`
+names, so it is read where the cause is judged: at the append, under
+the lake's writer, right after the cause is found at or below the head.
+Read before the writer was taken, a cause one past the head named
+nothing yet, so the trigger's ceiling was skipped. If another write
+appended the firing in the meantime, the append then took the cause and
+wrote a reaction past the trigger's ceiling. Under the writer the
+store reads exactly the event the append follows. A cause past the head
+is refused as `invalid`, even when the next append would put a firing
+there. A cause that names a firing is refused `too_deep`, naming the
+trigger, when the depth is above its ceiling. Both now come after the
+door's other checks; the lake's own ceiling, which reads nothing, stays
+first.
+
