@@ -75,32 +75,33 @@ of changes without polling, `propose`, `proposals`, `accept` and
 `add_field` and `migrate` for the schema. Served over MCP (stdio and
 HTTP) and REST from one catalog. Agents never write a query language.
 
-> **Status: `0.7.0`.** Lakelands `0.7.0` is the `lakelands` CLI, its MCP
+> **Status: `0.8.0`.** Lakelands `0.8.0` is the `lakelands` CLI, its MCP
 > server (stdio and streamable HTTP) and its REST door over the SQLite,
 > in-memory and PostgreSQL engines, all three passing the whole
-> conformance suite (303 checks through the doors and 54 through the
-> engine seam), with 44 decision records and the event log at format
-> version 8, installable from the release. Its budgets: the store facade
-> and engine traits hold 53 of 110 methods, the core crates' product
-> code 35 189 of 36 000 lines and their specification 38 495 of 40 000,
-> and 2 of 20 `cfg(feature)` sites. Beside what `0.6.1` held, a view
-> declares parameters that a read binds, so its window can be anchored
-> on a business date, and a bundle declares them too. A verb can be
-> called on its type, with no record, so an effect that creates
-> something outside the lake runs under its type's grants, by its
-> declared risk, with its answer recorded. Both are log format 8. A
-> pattern step's `where` keeps the view records it reaches, a view is
-> refused where it would be searched silently empty, and a cycle of
-> views over `source` is refused when declared instead of overflowing
-> on read. The fourth walk ran a procedure on the lake, from an order to
-> its payment and its lineage, and what it found is fixed: a retried
-> verb answers its own call, not a host write that names it; a view
-> declares exactly the fields it computes; a bundle can declare a
-> view's parameters; and the log format says that a version is raised
-> for the whole append that needs it. `describe` answers a view whose
-> measure reads another. A release names every changed trait method
-> and field type a host must follow. Views over more than one source
-> come after.
+> conformance suite (325 checks through the doors and 56 through the
+> engine seam), with 45 decision records and the event log at format
+> version 9, installable from the release. Its budgets: the store facade
+> and engine traits hold 54 of 110 methods, the core crates' product
+> code 35 219 of 36 000 lines and their specification 39 840 of 40 000,
+> and 2 of 20 `cfg(feature)` sites. Beside what `0.7.1` held, a view
+> merges several sources grouped on a shared dimension (log format 9).
+> A principal may write a field it may not read (`write_only`), a field
+> it may not know of is answered as one never declared, and a field
+> built from a hidden one is hidden as it is. Every write door refuses
+> in a stated order, pinned by the suite: the context first, the grants
+> before anything that reads the data they protect, a trigger's ceiling
+> read with the cause under the writer, a view refused alike at every
+> door, a call that could not run now never proposed, and an accept
+> refused when the verb was declared differently since. `find` answers
+> a total and reaches a page by its offset, a count holds no type in
+> memory, and a sorted walk reads its page. Declaring and migrating
+> views keeps what they read; a view becomes a stored type by declare.
+> The fifth walk had an agent work a lake through MCP alone, and what it
+> found is fixed in the tools' descriptions. A sweep over feature
+> combinations found the rest, fixed here. A mirror copy keeps its
+> chain's depth, so a reaction cycle across two lakes meets the ceiling.
+> A release names every changed item of the core and the store a host
+> must follow.
 
 ## Try it
 
