@@ -57,10 +57,7 @@ pub async fn import(
 }
 
 fn same_lake(lake: &Lake, who: &Principal) -> Result<()> {
-    if who.lake != lake.id {
-        return Err(writes::not_granted());
-    }
-    Ok(())
+    writes::granted(who.lake == lake.id)
 }
 
 /// The store facade of one lake.
@@ -526,9 +523,7 @@ impl Catalog for Doors {
         records: SourceStream,
     ) -> Result<CommitStream> {
         same_lake(&self.lake, who)?;
-        if !who.grants.ingest {
-            return Err(writes::not_granted());
-        }
+        writes::granted(who.grants.ingest)?;
         Ok(ingest::run(
             self.lake.clone(),
             who.clone(),
