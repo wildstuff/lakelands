@@ -29,7 +29,7 @@ use crate::conformance::fixture::{
 check!(
     /// A function of a kind no backing is bound for is refused.
     UNBOUND_KIND_REFUSED = a_function_of_a_backing_kind_nobody_bound_is_refused_at_declare,
-    "022, extended: a function computed outside the store is declared only where the host bound a backing of its kind; otherwise the declaration is refused as unbound, naming the kind"
+    "022, extended: a function computed outside the store is declared only where the host bound a backing of its kind; otherwise the declaration is refused as unbound, naming the kind, after its own checks (028, extended)"
 );
 
 check!(
@@ -111,11 +111,19 @@ async fn a_function_of_a_backing_kind_nobody_bound_is_refused_at_declare(
         "config": {"url": "https://geo.example/lookup"}
     }))
     .map_err(|e| Failure::new(format!("the check's function does not read: {e}")))?;
-    let answer = cat.declare(own, function).await;
+    let answer = cat.declare(own, function.clone()).await;
+    // The declaration's own checks before its backing (028, extended).
+    let Declaration::Function(mut misnamed) = function else {
+        unreachable!("a function declaration")
+    };
+    misnamed.name = "not a name".into();
+    let first = cat.declare(own, Declaration::Function(misnamed)).await;
     ensure!(
-        matches!(&answer, Err(Error::Unbound { seam }) if seam.contains("nowhere")),
+        matches!(&answer, Err(Error::Unbound { seam }) if seam.contains("nowhere"))
+            && matches!(reason(&first), Some(Refusal::Invalid { .. })),
         "no backing of the kind `nowhere` is bound, so declaring a function of that kind \
-         must be refused as unbound, naming the kind; it answered {answer:?}"
+         must be refused as unbound, naming the kind, and one whose name is no name as \
+         invalid first; it answered {answer:?} and {first:?}"
     );
     head_unmoved(store.as_ref(), before, "a refused function declaration").await?;
     Ok(())

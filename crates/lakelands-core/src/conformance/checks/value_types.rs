@@ -62,7 +62,7 @@ check!(
 check!(
     /// Only `schema` migrates a value type.
     SCHEMA_GRANT = a_value_type_migration_needs_the_schema_grant,
-    "027 and 006: both the preflight and the apply of a value-type migration refuse a principal without the `schema` grant"
+    "027 and 006: both the preflight and the apply of a value-type migration refuse a principal without the `schema` grant; migrate_apply, migrate_value_type_apply, declare and apply ask for it before they judge what they are given (028 and 027, extended)"
 );
 
 check!(
@@ -463,6 +463,33 @@ async fn a_value_type_migration_needs_the_schema_grant(
     ensure!(
         refused(&pre.map(|_| ())) && refused(&apply.map(|_| ())),
         "a principal without `schema` was not refused as not granted on both calls"
+    );
+    // Every schema door asks for the grant before it judges what it is
+    // given (028 and 027, extended): an undeclared value type or type, a
+    // name no declaration may carry, an empty set.
+    let none = ValueTypeDecl {
+        name: "nothing".into(),
+        ..status(&["a"])
+    };
+    let bad = Declaration::ValueType(ValueTypeDecl {
+        name: "not a name".into(),
+        ..status(&["a"])
+    });
+    let missing = lakelands_api::write::Migration {
+        to: type_decl("nothing", vec![]),
+        renames: vec![],
+    };
+    let answers = [
+        cat.migrate_value_type_apply(&clerk, none, "r")
+            .await
+            .map(drop),
+        cat.migrate_apply(&clerk, missing, "r").await.map(drop),
+        cat.declare(&clerk, bad).await.map(drop),
+        cat.apply(&clerk, vec![]).await.map(drop),
+    ];
+    ensure!(
+        answers.iter().all(refused),
+        "the schema grant comes before what a schema door is given; they answered {answers:?}"
     );
     Ok(())
 }

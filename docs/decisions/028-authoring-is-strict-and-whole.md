@@ -70,3 +70,28 @@ rather than one error at a time.
   format and to its documentation; an old bundle keeps loading.
 - It does not make the lake trust the bundle. Every declaration the
   loader produces is checked again when the lake declares it.
+
+## Extended: the order of refusals (lakelands#338)
+
+The schema doors refuse in this order, in the frame every write door
+shares (016, extended): the lake, the context, the door's own checks,
+the append.
+
+**`declare`**: the `schema` grant (`not_granted`); the declaration's
+own checks, strict and whole as above; then what it needs bound: a
+trigger's `max_depth` within the lake's (`invalid`), a backed
+function's backing (`unbound`), each embedding's model (`unbound`).
+
+**`apply`**: the `schema` grant; a set that is not empty (`invalid`);
+then every declaration's own checks and bound checks, collected: one
+problem answers as itself, several answer one `invalid` naming them
+all.
+
+**`add_field`**: the `schema` grant; the type is declared
+(`not_found`); it has no field of that name (`invalid`, naming it);
+then `declare`'s checks on the type with the field added.
+
+A trigger, a function and a type each need one thing bound, so the
+bound checks never meet in one declaration, and an undeclared type has
+no field: those pairs are stated, not checked.
+

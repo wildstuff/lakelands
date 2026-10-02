@@ -162,3 +162,30 @@ see a view's definition, and one function holds it for both. The view
 is also checked as `declare` would check it against the new shape, so a
 grouping field whose kind no key is made of is refused too. A field no
 view reads migrates as before.
+
+## Extended: the order of refusals (lakelands#338)
+
+The migration doors refuse in this order, in the frame every write
+door shares (016, extended).
+
+**`migrate_apply`**: the `schema` grant (`not_granted`); the preflight:
+the type is declared (`not_found`), not every key field is taken away
+(`invalid`), every new key field is required (`invalid`, naming it),
+the new declaration's own checks, its history converts, a narrowed
+cardinality breaks no live link (`constraint`); then the report id is
+the one the preflight answered (`invalid`); then the migration is
+lossless (`migration`, with the report); then each embedding's model is
+bound (`unbound`).
+
+**`migrate_value_type_apply`**: the `schema` grant; the value type is
+declared, accepts something other than it does, and keeps its `kind`
+and `scale` (`invalid` each); its own checks; the report id
+(`invalid`); every stored value fits (`invalid`, naming the value
+type).
+
+The preflight's own steps answer one kind with the type's name, or
+exclude each other (a migration that takes every key field away names
+no new one), and are stated, not checked; so are the report id against
+the fit of a value type, both `invalid` naming nothing a caller can
+tell apart.
+
