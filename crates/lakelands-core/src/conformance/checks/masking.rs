@@ -5,18 +5,167 @@
 use std::sync::Arc;
 
 use lakelands_api::ontology::{FieldDecl, StorageKind};
+use lakelands_api::query::{Projection, QueryResult};
+use lakelands_api::read::{AggFunc, Aggregate, Direction, OrderBy};
 use lakelands_api::tools::{Door, tools};
-use lakelands_api::{Access, FieldName, Find, LakeStore, ReadAt, TypeName};
+use lakelands_api::{Access, FieldName, Find, LakeStore, ReadAt, Refusal, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, all_found, field, field_writer, read, type_decl};
+use crate::conformance::backing::EMBED_MODEL;
+use crate::conformance::fixture::{
+    Lake, Must, agg, all_found, derived, embedding, field, field_access, field_writer, find_where,
+    order, pattern, read, refused_on, type_decl,
+};
 
 check!(
     /// A masked field is named; an ungranted one is not there at all.
     MASKED_AND_ABSENT = a_masked_field_is_listed_masked_and_an_ungranted_one_is_absent,
     "006 and 014: a field the principal may not read is masked (named, no value) or absent from get, find, describe and the tools' schemas"
 );
+
+check!(
+    /// A field built from a hidden one is hidden as it is.
+    BUILT_FROM_HIDDEN = a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field,
+    "024 and 006: a derived field, one derived from it in turn, and a vector embedded from a field are read as the field they are built from: absent where it is absent and masked where it is masked, on get, find, a pattern's rows and describe, which shows a definition only where every field it names is read; a filter, an order or an aggregate over them is refused not_granted naming them",
+    embedding
+);
+
+async fn a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, .. } = &l;
+    l.declare(type_decl(
+        "emp",
+        vec![
+            field("salary", StorageKind::Number),
+            field("bonus", StorageKind::Number),
+            derived("g", StorageKind::Number, "salary * 2", &["salary"]),
+            derived("h", StorageKind::Number, "g + 1", &["g"]),
+            derived("k", StorageKind::Number, "bonus + 1", &["bonus"]),
+        ],
+    ))
+    .await?;
+    l.declare(type_decl(
+        "doc",
+        vec![
+            field("body", StorageKind::Text),
+            embedding("vec", 2, &["body"], EMBED_MODEL),
+        ],
+    ))
+    .await?;
+    l.upsert("emp", "e1", json!({"salary": 4200, "bonus": 10}))
+        .await?;
+    l.upsert("doc", "d1", json!({"body": "the harbour master's salary"}))
+        .await?;
+    let names = |r: &lakelands_api::Record| {
+        let fields: Vec<String> = r.fields.keys().map(ToString::to_string).collect();
+        let masked: Vec<String> = r.masked.iter().map(ToString::to_string).collect();
+        (fields, masked)
+    };
+    let owner = names(&l.read("emp", "e1").await?);
+    ensure!(
+        owner.0 == ["bonus", "g", "h", "k", "salary"],
+        "the owner reads every field of `e1`; it read {owner:?}"
+    );
+    for (access, want) in [
+        (Access::None, (vec!["bonus", "k"], Vec::<&str>::new())),
+        (
+            Access::Masked,
+            (vec!["bonus", "k"], vec!["salary", "g", "h"]),
+        ),
+    ] {
+        let who = field_access(store.as_ref(), "clerk", "emp", &[("salary", access)]);
+        let got = names(&read(cat.as_ref(), &who, "emp", "e1").await?);
+        ensure!(
+            got.0 == want.0 && got.1 == want.1,
+            "a clerk with `salary` {access:?} reads `g` (from salary) and `h` (from g) as \
+             `salary` is read: {want:?}; get answered {got:?}"
+        );
+        let found = all_found(cat.as_ref(), &who, "emp", Find::default()).await?;
+        let found: Vec<_> = found.iter().map(names).collect();
+        ensure!(
+            found == [got.clone()],
+            "find answers what get answers for the clerk ({got:?}); it answered {found:?}"
+        );
+        let rows = cat
+            .query(
+                &who,
+                pattern(
+                    "emp",
+                    Some("e1"),
+                    Vec::new(),
+                    Projection::Rows {
+                        fields: vec!["emp.g".into(), "emp.h".into(), "emp.k".into()],
+                    },
+                ),
+            )
+            .await
+            .must("the clerk's pattern rows over `emp`")?
+            .data;
+        let QueryResult::Rows { rows, .. } = rows else {
+            return Err(Failure::new("a pattern's rows answered something else"));
+        };
+        let row: Vec<&String> = rows.iter().flat_map(|r| r.keys()).collect();
+        ensure!(
+            row == ["emp.k"],
+            "the clerk's pattern rows hold `k` only, not `g` or `h`; they held {row:?}"
+        );
+        let d = cat
+            .describe_type(&who, &"emp".into(), ReadAt::default())
+            .await
+            .must("the clerk describing `emp`")?
+            .data;
+        let defined: Vec<String> = (d.fields.iter())
+            .filter(|f| f.derived.is_some() || !f.depends_on.is_empty())
+            .map(|f| f.name.to_string())
+            .collect();
+        let text = serde_json::to_string(&d).unwrap_or_default();
+        ensure!(
+            defined == ["k"] && (access != Access::None || !text.contains("salary")),
+            "describe shows a clerk with `salary` {access:?} the definition of `k` only, and \
+             names no field the clerk may not see; it defined {defined:?} in {text}"
+        );
+        let probes = [
+            ("a filter on `g`", "g", find_where("g > 0")),
+            (
+                "an order by `h`",
+                "h",
+                Find {
+                    order_by: vec![order("h", OrderBy::Value, Direction::Asc)],
+                    ..Find::default()
+                },
+            ),
+            (
+                "a sum of `g`",
+                "g",
+                Find {
+                    aggregate: Some(Aggregate {
+                        measures: vec![agg("s", AggFunc::Sum, Some("g"))],
+                        group_by: Vec::new(),
+                    }),
+                    ..Find::default()
+                },
+            ),
+        ];
+        for (what, name, find) in probes {
+            let r = cat.find(&who, &"emp".into(), find).await;
+            ensure!(
+                matches!(refused_on(&r), Some((f, Refusal::NotGranted)) if f == name),
+                "{what} by a clerk with `salary` {access:?} is refused not_granted naming \
+                 `{name}`; it answered {r:?}"
+            );
+        }
+    }
+    let reader = field_access(store.as_ref(), "reader", "doc", &[("body", Access::None)]);
+    let got = names(&read(cat.as_ref(), &reader, "doc", "d1").await?);
+    ensure!(
+        got.0.is_empty() && got.1.is_empty(),
+        "a reader without `body` reads no `vec`, which is embedded from it; get answered {got:?}"
+    );
+    Ok(())
+}
 
 async fn a_masked_field_is_listed_masked_and_an_ungranted_one_is_absent(
     store: Arc<dyn LakeStore>,

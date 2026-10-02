@@ -1876,7 +1876,7 @@ impl EdgeSource for Visible<'_, '_> {
                     if let Ok(decl) = r.ontology.ty(&lt) {
                         e.fields.retain(|name, _| {
                             decl.fields.iter().any(|f| {
-                                &f.name == name && rights::field_access(r.who, &lt, f).reads()
+                                &f.name == name && rights::field_access(r.who, decl, f).reads()
                             })
                         });
                     }

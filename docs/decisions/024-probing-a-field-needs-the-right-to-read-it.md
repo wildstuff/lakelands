@@ -88,3 +88,18 @@ field. So the line this record draws for reads holds for writes:
   `retire` already ordered it.
 
 What a write checks is unchanged; only which refusal comes first.
+
+## Extended: a field built from another is read as that field (lakelands#387)
+
+A derived field hands out what it is computed from: `g = salary * 2`
+is the salary, doubled. An embedded vector encodes the text it is
+embedded from. So a field is read no further than every field it is
+built from, its `depends_on` and its `embed.from`, and theirs in turn.
+A source the principal may not read hides the field. A masked source
+masks it, unless the field is already hidden. The rule lives in one
+place, the field's access (`lakelands_core::rights::field_access`), so
+it holds on every door: such a field is absent or masked in `get`,
+`find` and a pattern's rows, and in `describe` and the tools.
+Filtering, ordering or aggregating over it is refused as not granted,
+naming it, as for its source. A search over a vector embedded from a
+field the principal may not read still names that source, as above.
