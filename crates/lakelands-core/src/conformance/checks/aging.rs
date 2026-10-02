@@ -14,14 +14,12 @@ use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{Authority, Measure, StorageKind, TriggerDecl, ViewDecl};
 use lakelands_api::seam::{AGING_RULE_TYPE, FeedFilter};
 use lakelands_api::write::{AgeReport, Declaration};
-use lakelands_api::{
-    Catalog, Error, LakeStore, Origin, Principal, Refusal, Timestamp, WriteOrigin,
-};
+use lakelands_api::{Catalog, LakeStore, Origin, Principal, Refusal, Timestamp, WriteOrigin};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, declare, field, head_unmoved, read, type_decl, upsert,
+    Lake, Must, declare, field, head_unmoved, read, refused_on, type_decl, upsert,
 };
 
 check!(
@@ -525,10 +523,7 @@ async fn a_rule_that_does_not_fit_is_refused_naming_its_field(
             .await
             .must_fail(&format!("writing a rule whose `{at}` does not fit"))?;
         ensure!(
-            matches!(
-                &e,
-                Error::Refused { field: Some(f), reason: Refusal::Invalid { .. } } if f.as_str() == at
-            ),
+            matches!(refused_on(&e), Some((f, Refusal::Invalid { .. })) if f == at),
             "a rule whose `{at}` does not fit was refused as {e:?}, and invalid naming `{at}` \
              was expected"
         );
@@ -590,10 +585,7 @@ async fn age_at_a_time_other_than_midnight_is_refused(
     let noon = Timestamp(date(2026, 3, 1).0 + 12 * 3_600 * 1_000_000);
     let e = store.age(noon).await.must_fail("aging at noon")?;
     ensure!(
-        matches!(
-            &e,
-            Error::Refused { field: Some(f), reason: Refusal::Invalid { .. } } if f.as_str() == "today"
-        ),
+        matches!(refused_on(&e), Some(("today", Refusal::Invalid { .. }))),
         "aging at noon was refused as {e:?}, and invalid naming `today` was expected"
     );
     head_unmoved(store.as_ref(), before, "aging at noon").await
@@ -720,10 +712,7 @@ async fn a_rule_needs_write_on_its_field_and_read_on_what_when_reads(
             .await
             .must_fail(&format!("writing a rule as `{}`", who.writer()))?;
         ensure!(
-            matches!(
-                &e,
-                Error::Refused { field: Some(f), reason: Refusal::NotGranted } if f.as_str() == at
-            ),
+            matches!(refused_on(&e), Some((f, Refusal::NotGranted)) if f == at),
             "`{}` wrote a rule over `{at}` and was refused as {e:?}; not granted, naming \
              `{at}`, was expected",
             who.writer()

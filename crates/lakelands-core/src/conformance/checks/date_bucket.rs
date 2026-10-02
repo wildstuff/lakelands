@@ -15,11 +15,13 @@ use lakelands_api::expr::Condition;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, GroupKey};
 use lakelands_api::write::Declaration;
-use lakelands_api::{Error, Find, Found, LakeStore, Refusal, TypeName, Value};
+use lakelands_api::{Find, Found, LakeStore, Refusal, TypeName, Value};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, dec, decimal, doors, field, owner, type_decl};
+use crate::conformance::fixture::{
+    Lake, Must, dec, decimal, doors, field, owner, reason, type_decl,
+};
 
 check!(
     /// Records group into date buckets by unit.
@@ -236,7 +238,7 @@ async fn a_where_selects_the_records_of_one_date_bucket(
         )
         .await;
     ensure!(
-        matches!(&refused, Err(Error::Refused { reason: Refusal::Invalid { message }, .. }) if message.contains("fortnight")),
+        matches!(reason(&refused), Some(Refusal::Invalid { message }) if message.contains("fortnight")),
         "a unit outside the five is refused as invalid, naming it; find answered {refused:?}"
     );
     Ok(())

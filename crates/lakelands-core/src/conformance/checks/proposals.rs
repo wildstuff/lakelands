@@ -17,8 +17,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, doors, field, field_writer, head_unmoved, owner, patch, principal, read, type_decl,
-    value,
+    Lake, Must, doors, field, field_writer, head_unmoved, owner, patch, principal, read, reason,
+    type_decl, value,
 };
 
 check!(
@@ -325,13 +325,7 @@ async fn a_rejected_proposal_writes_nothing_and_a_decided_one_stays_decided(
         )
         .await?;
         ensure!(
-            matches!(
-                err,
-                Error::Refused {
-                    reason: Refusal::Decided,
-                    ..
-                }
-            ),
+            matches!(reason(&err), Some(Refusal::Decided)),
             "{what} a decided proposal must be refused as decided; it failed with {err:?}"
         );
     }
@@ -373,13 +367,7 @@ async fn only_a_reviewer_decides_and_a_proposer_sees_its_own_proposals(
         .must_fail("the clerk, without the review grant, accepting its own proposal")?;
     head_unmoved(store.as_ref(), before, "accepting without the review grant").await?;
     ensure!(
-        matches!(
-            err,
-            Error::Refused {
-                reason: Refusal::NotGranted,
-                ..
-            }
-        ),
+        matches!(reason(&err), Some(Refusal::NotGranted)),
         "accepting without the review grant must be refused as not granted; it failed \
          with {err:?}"
     );

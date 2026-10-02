@@ -19,7 +19,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all, before, declare, doors, field, get_at, owner, type_decl, value,
+    Lake, Must, all, before, declare, doors, field, get_at, owner, reason, type_decl, value,
 };
 
 check!(
@@ -255,10 +255,7 @@ async fn a_read_as_of_a_position_past_the_head_is_refused_as_out_of_range(
         .get(own, &TypeName::from("counter"), get_at("k", Some(beyond)))
         .await;
     ensure!(
-        matches!(
-            &got,
-            Err(Error::Refused { reason: Refusal::OutOfRange { head: h }, .. }) if *h == head
-        ),
+        matches!(reason(&got), Some(Refusal::OutOfRange { head: h }) if *h == head),
         "a read as of position {beyond}, past the head {head}, must be refused as out of \
          range naming the head; it answered {got:?}"
     );

@@ -18,14 +18,13 @@ use lakelands_api::write::{
     Declaration, Migration, ProposalFilter, ProposalKind, ProposalState, ProposedWrite,
 };
 use lakelands_api::{
-    Error, Grants, LakeStore, Outcome, Position, PrincipalKind, ProposalId, ReadAt, Refusal,
-    TypeName,
+    Grants, LakeStore, Outcome, Position, PrincipalKind, ProposalId, ReadAt, Refusal, TypeName,
 };
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, doors, field_writer, head_unmoved, owner, principal, upsert,
+    Lake, Must, doors, field_writer, head_unmoved, owner, principal, reason, upsert,
 };
 
 check!(
@@ -183,13 +182,7 @@ async fn accepting_a_schema_proposal_needs_the_schema_grant(
         .await
         .must_fail("a reviewer without the schema grant accepting a declaration")?;
     ensure!(
-        matches!(
-            refused,
-            Error::Refused {
-                reason: Refusal::NotGranted,
-                ..
-            }
-        ),
+        matches!(reason(&refused), Some(Refusal::NotGranted)),
         "accepting a declaration without the schema grant must be refused as not granted; it \
          was refused as {refused:?}"
     );
@@ -286,7 +279,7 @@ async fn a_migration_proposal_carries_its_report_and_is_preflighted_again_at_acc
         .await
         .must_fail("accepting a migration that would now lose `pages` of `b`")?;
     ensure!(
-        matches!(&refused, Error::Refused { reason: Refusal::Migration { report }, .. } if !report.lossless),
+        matches!(reason(&refused), Some(Refusal::Migration { report }) if !report.lossless),
         "the accept must be refused with the fresh preflight's report, not lossless; it was \
          refused as {refused:?}"
     );

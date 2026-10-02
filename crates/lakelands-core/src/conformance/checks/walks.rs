@@ -11,7 +11,7 @@ use lakelands_api::{Error, LakeStore, RecordKey, Refusal, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, field, limits, type_decl};
+use crate::conformance::fixture::{Lake, Must, field, limits, reason, type_decl};
 
 check!(
     /// A step must follow a declared relation.
@@ -97,13 +97,7 @@ async fn a_step_over_a_relation_the_type_does_not_declare_is_refused(
         .await
         .must_fail("walking the undeclared relation `audited_by`")?;
     ensure!(
-        matches!(
-            err,
-            Error::Refused {
-                reason: Refusal::Invalid { .. },
-                ..
-            }
-        ),
+        matches!(reason(&err), Some(Refusal::Invalid { .. })),
         "a step over the undeclared relation `audited_by` must be refused as invalid; \
          it failed with {err:?}"
     );

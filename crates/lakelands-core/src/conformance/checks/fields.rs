@@ -15,8 +15,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, declare, doors, field, field_writer, get_at, head_unmoved, owner, read, type_decl,
-    upsert, value,
+    Lake, Must, declare, doors, field, field_writer, get_at, head_unmoved, owner, read, refused_on,
+    type_decl, upsert, value,
 };
 
 check!(
@@ -292,10 +292,7 @@ async fn a_patch_with_a_field_the_principal_may_not_write_is_refused_whole(
         .await
         .must_fail("the importer writing `amount` and the reviewer's `verdict` together")?;
     ensure!(
-        matches!(
-            &err,
-            Error::Refused { field: Some(f), reason: Refusal::NotGranted } if f.as_str() == "verdict"
-        ),
+        matches!(refused_on(&err), Some(("verdict", Refusal::NotGranted))),
         "a patch carrying `verdict`, which the importer holds no write grant for, must be \
          refused as not granted on `verdict`; it failed with {err:?}"
     );

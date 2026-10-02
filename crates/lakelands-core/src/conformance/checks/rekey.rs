@@ -19,7 +19,7 @@ use lakelands_api::{
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, get_at, head_unmoved, log_events, patch};
+use crate::conformance::fixture::{Lake, Must, get_at, head_unmoved, log_events, patch, reason};
 
 check!(
     /// The preflight counts everything a re-key moves.
@@ -341,13 +341,7 @@ async fn two_records_that_would_take_one_new_key_refuse_the_rekey(
         .await
         .must_fail("applying a re-key with a collision")?;
     ensure!(
-        matches!(
-            &e,
-            Error::Refused {
-                reason: Refusal::Migration { .. },
-                ..
-            }
-        ),
+        matches!(reason(&e), Some(Refusal::Migration { .. })),
         "the apply was refused as {e:?}; a migration refusal with its report was expected"
     );
     head_unmoved(store.as_ref(), before, "a re-key with a collision").await
@@ -497,8 +491,7 @@ async fn an_old_key_is_ended_and_a_new_write_follows_the_new_rule(
         .await
         .must_fail("writing at the old key `1` with `iban` DE9")?;
     ensure!(
-        matches!(&e, Error::Refused { reason: Refusal::Invalid { message }, .. }
-            if message.contains("DE9")),
+        matches!(reason(&e), Some(Refusal::Invalid { message }) if message.contains("DE9")),
         "a write at an old key whose key field makes `DE9` was answered {e:?}; invalid, naming \
          the key the key fields make, was expected"
     );
@@ -625,13 +618,7 @@ async fn a_migration_that_takes_every_key_field_away_is_refused(
         .await
         .must_fail("migrating `account` to no key fields")?;
     ensure!(
-        matches!(
-            &e,
-            Error::Refused {
-                reason: Refusal::Invalid { .. },
-                ..
-            }
-        ),
+        matches!(reason(&e), Some(Refusal::Invalid { .. })),
         "taking every key field away was refused as {e:?}; invalid was expected"
     );
     // A key field that is not required, and one of a kind no key is made of.
@@ -644,13 +631,7 @@ async fn a_migration_that_takes_every_key_field_away_is_refused(
             .await
             .must_fail(&format!("migrating `account` to {what}"))?;
         ensure!(
-            matches!(
-                &e,
-                Error::Refused {
-                    reason: Refusal::Invalid { .. },
-                    ..
-                }
-            ),
+            matches!(reason(&e), Some(Refusal::Invalid { .. })),
             "{what} was refused as {e:?}; invalid was expected"
         );
     }
@@ -672,8 +653,7 @@ async fn a_migration_that_takes_every_key_field_away_is_refused(
         .await
         .must_fail("re-keying `account` under a view keyed by it")?;
     ensure!(
-        matches!(&e, Error::Refused { reason: Refusal::Invalid { message }, .. }
-            if message.contains("per_account")),
+        matches!(reason(&e), Some(Refusal::Invalid { message }) if message.contains("per_account")),
         "a re-key under a view keyed by the type was answered {e:?}; invalid, naming the \
          view, was expected"
     );
@@ -694,13 +674,7 @@ async fn a_rekey_report_from_before_a_write_is_refused(
         .await
         .must_fail("applying a re-key report from before a write")?;
     ensure!(
-        matches!(
-            &e,
-            Error::Refused {
-                reason: Refusal::Invalid { .. },
-                ..
-            }
-        ),
+        matches!(reason(&e), Some(Refusal::Invalid { .. })),
         "a stale re-key report was answered {e:?}; invalid was expected"
     );
     head_unmoved(store.as_ref(), before, "a stale re-key report").await

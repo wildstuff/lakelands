@@ -17,11 +17,13 @@ use lakelands_api::read::{Order, ReadAt};
 use lakelands_api::seam::Seams;
 use lakelands_api::write::WriteOpts;
 use lakelands_api::{
-    Access, Catalog, Error, Grants, LakeStore, Position, Principal, PrincipalKind, Refusal, Value,
+    Access, Catalog, Grants, LakeStore, Position, Principal, PrincipalKind, Refusal, Value,
 };
 use serde_json::json;
 
-use crate::conformance::fixture::{Lake, Must, doors, field, owner, patch, principal, type_decl};
+use crate::conformance::fixture::{
+    Lake, Must, doors, field, owner, patch, principal, reason, type_decl,
+};
 use crate::conformance::{Failure, Given};
 
 check!(
@@ -453,13 +455,7 @@ async fn components_past_the_lakes_max_graph_nodes_are_refused_too_large(
         .await
         .must_fail("components past a cap of 7")?;
     ensure!(
-        matches!(
-            err,
-            Error::Refused {
-                reason: Refusal::TooLarge { max: 7 },
-                ..
-            }
-        ),
+        matches!(reason(&err), Some(Refusal::TooLarge { max: 7 })),
         "components that reach eight records past a cap of 7 are refused as too_large \
          naming 7; it failed with {err:?}"
     );
@@ -515,13 +511,7 @@ async fn a_measure_refuses_depth_where_to_order_by_and_one_way_components(
             .await
             .must_fail(&format!("a measure with {what}"))?;
         ensure!(
-            matches!(
-                err,
-                Error::Refused {
-                    reason: Refusal::Invalid { .. },
-                    ..
-                }
-            ),
+            matches!(reason(&err), Some(Refusal::Invalid { .. })),
             "a measure with {what} must be refused as invalid; it failed with {err:?}"
         );
     }

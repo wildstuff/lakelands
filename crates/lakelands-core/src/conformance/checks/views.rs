@@ -18,13 +18,13 @@ use lakelands_api::ontology::{
 };
 use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Start, Step, Walk};
 use lakelands_api::read::Find;
-use lakelands_api::{Error, FieldName, LakeStore, Principal, Refusal, TypeName, Value};
+use lakelands_api::{FieldName, LakeStore, Principal, Refusal, TypeName, Value};
 use rust_decimal::Decimal;
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all, all_found, dec, decimal, doors, field, partner_totals, source_record,
+    Lake, Must, all, all_found, dec, decimal, doors, field, partner_totals, reason, source_record,
     type_decl, upsert, windows_reach_head,
 };
 
@@ -618,8 +618,7 @@ async fn a_view_field_that_asks_to_be_searched_or_embedded_is_refused(
             .declare(own, lakelands_api::write::Declaration::Type(ty))
             .await;
         ensure!(
-            matches!(&r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
-                if message.contains(view.as_str()) && message.contains(name)),
+            matches!(reason(&r), Some(Refusal::Invalid { message }) if message.contains(view.as_str()) && message.contains(name)),
             "a view whose field `{name}` {what} must be refused as invalid, naming `{view}` \
              and `{name}`; declare answered {r:?}"
         );
@@ -668,8 +667,7 @@ async fn a_search_on_a_view_is_refused_naming_it(store: Arc<dyn LakeStore>) -> R
             )
             .await;
         ensure!(
-            matches!(&r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
-                if message.contains("partner_totals") && message.contains("view")),
+            matches!(reason(&r), Some(Refusal::Invalid { message }) if message.contains("partner_totals") && message.contains("view")),
             "a search on the view `partner_totals` ({what}) must be refused as invalid, \
              naming it as a view; it answered {r:?}. An empty answer looks exactly like no \
              match"
@@ -722,8 +720,7 @@ async fn a_view_closing_a_cycle_over_source_is_refused_naming_the_chain(
             .declare(own, Declaration::Type(counted("view_a", reads)))
             .await;
         ensure!(
-            matches!(&r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
-                if chain.iter().all(|v| message.contains(&format!("`{v}`")))),
+            matches!(reason(&r), Some(Refusal::Invalid { message }) if chain.iter().all(|v| message.contains(&format!("`{v}`")))),
             "`view_a` declared to read `{reads}` closes a cycle of {} view(s); it must be \
              refused as invalid, naming {chain:?}; declare answered {r:?}",
             chain.len()
@@ -735,8 +732,7 @@ async fn a_view_closing_a_cycle_over_source_is_refused_naming_the_chain(
     ];
     let r = cat.apply(own, set).await;
     ensure!(
-        matches!(&r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
-            if message.contains("`view_x`") && message.contains("`view_y`")),
+        matches!(reason(&r), Some(Refusal::Invalid { message }) if message.contains("`view_x`") && message.contains("`view_y`")),
         "a set whose new views `view_x` and `view_y` read each other must be refused as \
          invalid, naming both; apply answered {r:?}"
     );
@@ -778,8 +774,7 @@ async fn a_view_declares_exactly_the_fields_it_computes(
     ] {
         let r = cat.declare(own, Declaration::Type(t)).await;
         ensure!(
-            matches!(&r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
-                if message.contains(&format!("`{name}`")) && message.contains("`totals`")),
+            matches!(reason(&r), Some(Refusal::Invalid { message }) if message.contains(&format!("`{name}`")) && message.contains("`totals`")),
             "a view with {what} must be refused as invalid, naming `{name}` and the view; \
              declare answered {r:?}"
         );

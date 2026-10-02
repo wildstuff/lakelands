@@ -12,16 +12,16 @@
 
 use std::collections::BTreeMap;
 
+use lakelands_api::Refusal;
 use lakelands_api::engine::{LakeEngine, ProjectionStore, ProjectionView};
 use lakelands_api::id::{Position, RecordKey, RelationName, TypeName, Version};
 use lakelands_api::query::Walk;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::Declaration;
-use lakelands_api::{Error, Refusal};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::Must;
+use crate::conformance::fixture::{Must, reason};
 
 engine_check!(
     /// A view at a position reads the states valid then.
@@ -183,13 +183,7 @@ fn a_view_at_a_position_sees_the_states_then(engine: &dyn LakeEngine) -> Result<
 fn a_view_past_the_folded_position_is_refused(engine: &dyn LakeEngine) -> Result<(), Failure> {
     let refused = engine.view(Some(Position(0))).map(|v| v.position());
     ensure!(
-        matches!(
-            refused,
-            Err(Error::Refused {
-                reason: Refusal::OutOfRange { .. },
-                ..
-            })
-        ),
+        matches!(reason(&refused), Some(Refusal::OutOfRange { .. })),
         "a view at position 0 of a projection that has folded nothing answered {refused:?}; \
          it must be refused as out of range"
     );
@@ -200,11 +194,8 @@ fn a_view_past_the_folded_position_is_refused(engine: &dyn LakeEngine) -> Result
     let past = engine.view(Some(Position(3))).map(|v| v.position());
     ensure!(
         matches!(
-            past,
-            Err(Error::Refused {
-                reason: Refusal::OutOfRange { head: Position(2) },
-                ..
-            })
+            reason(&past),
+            Some(Refusal::OutOfRange { head: Position(2) })
         ),
         "a view at position 3 of a projection folded through 2 answered {past:?}; it must be \
          refused as out of range with head 2"
@@ -416,15 +407,8 @@ fn a_commit_backwards_or_with_a_put_past_through_is_invalid(
 ) -> Result<(), Failure> {
     fold(engine, 4, |p| p.put_record(&record("t", "a", json!({}), 4)))?;
     let p = engine.projection();
-    let invalid = |r: &lakelands_api::Result<()>| {
-        matches!(
-            r,
-            Err(Error::Refused {
-                reason: Refusal::Invalid { .. },
-                ..
-            })
-        )
-    };
+    let invalid =
+        |r: &lakelands_api::Result<()>| matches!(reason(&r), Some(Refusal::Invalid { .. }));
     p.begin().must("beginning a transaction")?;
     let backwards = p.commit(Position(3));
     ensure!(

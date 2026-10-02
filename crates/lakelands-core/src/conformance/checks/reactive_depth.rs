@@ -19,7 +19,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, declare, doors, field, head_unmoved, limits, owner, patch, type_decl,
+    Must, declare, doors, field, head_unmoved, limits, owner, patch, reason, type_decl,
 };
 
 check!(
@@ -152,13 +152,7 @@ async fn a_chain_of_reactions_past_the_lakes_ceiling_is_refused_too_deep_and_app
         )
         .await;
     ensure!(
-        matches!(
-            &retired,
-            Err(Error::Refused {
-                reason: Refusal::TooDeep { max: named },
-                ..
-            }) if *named == max
-        ),
+        matches!(reason(&retired), Some(Refusal::TooDeep { max: named }) if *named == max),
         "retiring `s0` at depth {} (the lake's ceiling is {max}) answered {retired:?}; it is \
          refused as too_deep naming the ceiling",
         max + 1
@@ -185,13 +179,7 @@ async fn a_chain_of_reactions_past_the_lakes_ceiling_is_refused_too_deep_and_app
             )
             .await;
         ensure!(
-            matches!(
-                &written,
-                Err(Error::Refused {
-                    reason: Refusal::TooDeep { max: named },
-                    ..
-                }) if *named == max
-            ),
+            matches!(reason(&written), Some(Refusal::TooDeep { max: named }) if *named == max),
             "an upsert with a {origin:?} context at depth {} (the lake's ceiling is {max}) \
              answered {written:?}; the depth is the chain's whatever the origin, and it is \
              refused as too_deep naming the ceiling",

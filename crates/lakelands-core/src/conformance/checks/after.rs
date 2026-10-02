@@ -12,14 +12,14 @@ use std::sync::Arc;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::read::{Aggregate, Direction, Order, OrderBy};
 use lakelands_api::{
-    After, Catalog, Error, FieldName, Find, Found, LakeStore, Position, Principal, ReadAt, Record,
+    After, Catalog, FieldName, Find, Found, LakeStore, Position, Principal, ReadAt, Record,
     Refusal, TypeName, Value, WriteOpts,
 };
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all_found, declare, field, type_decl, upsert, value,
+    Lake, Must, all_found, declare, field, reason, refused_on, type_decl, upsert, value,
 };
 
 check!(
@@ -295,8 +295,7 @@ async fn after_resumes_where_the_cursor_would(store: Arc<dyn LakeStore>) -> Resu
             .await
             .must_fail(what)?;
         ensure!(
-            matches!(&refused, Error::Refused { reason: Refusal::Invalid { message }, .. }
-                if message.contains("`after")),
+            matches!(reason(&refused), Some(Refusal::Invalid { message }) if message.contains("`after")),
             "{what} must be refused as invalid, naming `after`; it answered {refused:?}"
         );
     }
@@ -312,8 +311,7 @@ async fn after_resumes_where_the_cursor_would(store: Arc<dyn LakeStore>) -> Resu
         .await
         .must_fail("a text `after` value for the number `n`")?;
     ensure!(
-        matches!(&refused, Error::Refused { field: Some(f), reason: Refusal::Invalid { message } }
-            if f.as_str() == "n" && message.contains("`after")),
+        matches!(refused_on(&refused), Some(("n", Refusal::Invalid { message })) if message.contains("`after")),
         "a text `after` value for the number `n` must be refused as invalid on `n`, \
          naming `after`; it answered {refused:?}"
     );

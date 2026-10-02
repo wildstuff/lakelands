@@ -6,12 +6,12 @@ use std::sync::Arc;
 
 use lakelands_api::ontology::{FieldType, StorageKind, TypeDecl};
 use lakelands_api::write::{Migration, MigrationReport};
-use lakelands_api::{Error, LakeStore, Refusal};
+use lakelands_api::{LakeStore, Refusal};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, declare, doors, field, head_unmoved, owner, type_decl, value,
+    Lake, Must, declare, doors, field, head_unmoved, owner, reason, type_decl, value,
 };
 
 check!(
@@ -132,7 +132,7 @@ async fn a_migration_that_would_lose_information_is_refused_with_its_report(
         .must_fail("applying a lossy migration")?;
     head_unmoved(store.as_ref(), before, "applying a lossy migration").await?;
     ensure!(
-        matches!(&err, Error::Refused { reason: Refusal::Migration { report: r }, .. } if !r.lossless),
+        matches!(reason(&err), Some(Refusal::Migration { report: r }) if !r.lossless),
         "a lossy migration must be refused with its report; it failed with {err:?}"
     );
     Ok(())

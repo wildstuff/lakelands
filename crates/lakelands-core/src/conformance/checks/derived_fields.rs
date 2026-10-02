@@ -17,7 +17,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, dec, decimal, field, get_at, head_unmoved, patch, type_decl, value,
+    Lake, Must, dec, decimal, field, get_at, head_unmoved, patch, refused_on, type_decl, value,
 };
 
 check!(
@@ -129,10 +129,7 @@ async fn a_derived_field_written_through_a_door_is_refused_as_the_wrong_door(
     )
     .await?;
     ensure!(
-        matches!(
-            &err,
-            Error::Refused { field: Some(f), reason: Refusal::WrongDoor } if f.as_str() == "gross"
-        ),
+        matches!(refused_on(&err), Some(("gross", Refusal::WrongDoor))),
         "a patch carrying the derived field `gross` must be refused as the wrong door on \
          `gross`, even for the owner; it failed with {err:?}"
     );

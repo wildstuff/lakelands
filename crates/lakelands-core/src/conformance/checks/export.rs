@@ -19,7 +19,9 @@ use sha2::{Digest as _, Sha256};
 use super::rekey;
 use crate::canonical;
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, doors, field, log_events, owner, type_decl, upsert};
+use crate::conformance::fixture::{
+    Lake, Must, doors, field, log_events, owner, reason, type_decl, upsert,
+};
 use crate::export::{self, Manifest};
 
 check!(
@@ -382,8 +384,7 @@ async fn an_export_into_a_directory_that_holds_anything_is_refused(
     let said = export::write(store.as_ref(), &dir).await;
     let named = dir.display().to_string();
     ensure!(
-        matches!(&said, Err(Error::Refused { reason: Refusal::Precondition { message }, .. })
-            if message.contains(&named)),
+        matches!(reason(&said), Some(Refusal::Precondition { message }) if message.contains(&named)),
         "an export into {named}, which holds a file, is refused as a failed precondition naming \
          it, and it answered {said:?}"
     );
@@ -903,13 +904,7 @@ async fn an_import_is_refused_for_a_damaged_export_another_lake_or_a_lake_holdin
     // answer later.
     let precondition = |e: &Error, what: &str| {
         ensure!(
-            matches!(
-                e,
-                Error::Refused {
-                    reason: Refusal::Precondition { .. },
-                    ..
-                }
-            ),
+            matches!(reason(&e), Some(Refusal::Precondition { .. })),
             "{what} must be refused as a failed precondition; it was refused as {e:?}"
         );
         Ok(())
@@ -1143,8 +1138,7 @@ async fn a_cycle_of_views_from_an_imported_log_is_refused_on_read(
             .find(&own, &view.into(), lakelands_api::read::Find::default())
             .await;
         ensure!(
-            matches!(&r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
-                if message.contains("`view_a`") && message.contains("`view_b`")),
+            matches!(reason(&r), Some(Refusal::Invalid { message }) if message.contains("`view_a`") && message.contains("`view_b`")),
             "`{view}` reads itself through the other view in the imported log, so a read of it \
              must be refused as invalid, naming both; it answered {r:?}"
         );
