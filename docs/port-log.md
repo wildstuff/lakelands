@@ -137,6 +137,27 @@ root, no merge shows a change under one, and every root holds the files
 it held at `2ffca4d46d`. No row is added. **The list is closed for
 `0.7.0` as of `ce764acbd7`.**
 
+**Checked on 2026-10-02, for the `0.7.1` patch and before the `0.8.0`
+tag**, against the source's mainline at `318aae2bdc`: the 112 commits
+after `ce764acbd7` (1003 after the freeze in all), checked the same way.
+The first 48, through `afbd5c361`, were checked for `0.7.1` (its release
+PR says so), and none of them touches a root. Of the 64 after it, three
+touch a root, and they are the last three rows. Each comes from the
+source's effect and flow layers, not its storage core, and none applies:
+- the first marks an effect whose dispatch was interrupted as an unknown
+  delivery, and touches a root only in a test fixture of the tool layer;
+- the second labels an effect's command for the operator's inbox;
+- the third adds a check to the flow lint, which was never imported.
+
+Twelve other mainline merges show changes under the roots when compared
+with their side parent. Each brings a branch up to a mainline that
+already held those rows, and by patch id each one's change is exactly
+that of one of the three, or, for one merge, of the second and third
+together. Every root holds the files
+it held at `ce764acbd7`. **The list is closed for `0.8.0` as of
+`318aae2bdc`.** If the mainline moves before the tag, only the commits
+after it are checked.
+
 | Source commit | Behaviour, in one line | Ported in, or not applicable and why |
 |---|---|---|
 | `5914084de9` | One German user-interface sentence in the capabilities module changes its form of address from formal to informal. | Not applicable: the capabilities module was not carried (cut in O2: there is no capability negotiation; see `docs/import-ledger.md`), and no storage behaviour changes: no event, no fold rule, no signature, no stored byte. |
@@ -150,3 +171,6 @@ it held at `2ffca4d46d`. No row is added. **The list is closed for
 | `d3cb2ccf17` | The PostgreSQL engine's refusal of a transaction-mode pooler also probes a temporary table, since a pooler that learned to re-apply a client's `search_path` still lets one session read another's temporary tables, and the engine's replay of an earlier position builds such tables. | Not needed: Lakelands' PostgreSQL engine sets no `search_path` (every statement names its schema) and builds no temporary tables; an earlier position is read from the kept history rows. The session state a pooler could lose or leak is the writer lease, a session lock, and `connect::session_keeping_state` refuses before taking it, by a setting of its own (`lakelands.probe`) that the server does not report, so no pooler that re-applies reported settings restores it. |
 | `14b12d63c7` | The reactive dispatch the store hands a trigger's worker carries a cause, the identity of the event that fired it (its lake and position on the lake plane), so a run id derived from it stays the same when the at-least-once feed delivers that event again. | Not needed: the dispatch structure was not carried; Lakelands' store hands out no dispatches and runs no walks. A trigger's firing is a `trigger_fired` event in the log, and the dedup key of a delivered change is already its lake and its position (`docs/decisions/004-the-change-feed-is-the-log.md`), so a consumer that derives a run from it gets the same one on every delivery. |
 | `3ab89a5271` | The store grants one more write authority, used only by its own requeue verb: a work-queue item stored `failed` may be written back to `pending` on the version the caller read, and every other transition under that authority is refused by type. The flag that marked an enrichment write becomes a closed set of authorities. | Not applicable: Lakelands has no work-queue types, no guard that keeps a terminal status, and no enrichment write authority; the `DataBackend` trait the verb is added to was never imported. Which door may write a field is decided by its declared authority and the caller's grants (`docs/decisions/016-two-write-doors-by-origin.md`), and nothing in the store changes a status on its own. |
+| `acbe9e4b50` | An effect whose dispatch was cut off when the source's daemon died is no longer freed for a re-run: it is reported as an unknown delivery, and only an effect its plugin declares repeatable runs again, since it may have reached the outside world and lost only its receipt. Under the roots, only a test fixture of the tool layer gains the new flag. | Not applicable: Lakelands has no effect daemon, no dispatch queue and no plugin declarations, and the tool layer's tests were not carried. A verb's external effect runs within its call or its acceptance. A retry with the same idempotency key answers the first outcome and runs nothing again (`docs/decisions/016-two-write-doors-by-origin.md`). |
+| `98fb09c1db` | The command an effect is submitted with carries an optional label, the operator's name for it: a domain verb's name and the record it acts on. An inbox row about an unknown delivery then names that, not the handler every data verb shares. | Not applicable: the effect command and the inbox were not carried. Lakelands records a verb's call as `verb_called`, which names the verb and the record it acts on itself. |
+| `d741fe684e` | The flow lint gains a check that warns, before a flow's first run, when a step files a record under a key an agent step produced with no confirm step between, since a retry could produce another key and file the record twice. | Not applicable: the flow lint (`{store}/src/flow_lint.rs`) was never imported, being a product feature (`docs/import-ledger.md`), and Lakelands has no flows. An idempotency key is the caller's own, and the same key answers the same outcome (`docs/decisions/016-two-write-doors-by-origin.md`). |
