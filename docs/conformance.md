@@ -285,6 +285,7 @@ belongs in the suite, not beside one engine:
 **masking**
 
 - `a_masked_field_is_listed_masked_and_an_ungranted_one_is_absent` — 006 and 014: a field the principal may not read is masked (named, no value) or absent from get, find, describe and the tools' schemas
+- `a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field` — 024 and 006: a derived field, one derived from it in turn, and a vector embedded from a field are read as the field they are built from: absent where it is absent and masked where it is masked, on get, find and a pattern's rows, and a filter, an order or an aggregate over them is refused not_granted naming them
 
 **values**
 

@@ -37,14 +37,59 @@ pub fn is_system(ty: &TypeName) -> bool {
     ty.as_str().starts_with(SYSTEM_PREFIX)
 }
 
-/// One principal's access to one declared field: the grant, with a
-/// `sensitive` field shown masked rather than dropped when the grant gives
-/// no read.
-pub fn field_access(who: &Principal, ty: &TypeName, field: &FieldDecl) -> Access {
-    match who.grants.access(ty, &field.name) {
+/// One principal's access to one declared field of `decl`: the grant,
+/// read no further than every field it is computed or embedded from
+/// (`depends_on`, `embed.from`, and theirs in turn), since such a field
+/// hands out what it is built from; a `sensitive` field is shown masked
+/// rather than dropped when that gives no read
+/// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
+pub fn field_access(who: &Principal, decl: &TypeDecl, field: &FieldDecl) -> Access {
+    access_of(who, decl, field, &mut Vec::new())
+}
+
+fn access_of<'d>(
+    who: &Principal,
+    decl: &'d TypeDecl,
+    field: &'d FieldDecl,
+    seen: &mut Vec<&'d FieldName>,
+) -> Access {
+    match built_from(who, decl, field, seen) {
         Access::None if field.sensitive => Access::Masked,
         a => a,
     }
+}
+
+/// A field's grant, lowered by each field it is built from that the
+/// principal may not read: to masked by a masked one, to none by any
+/// other. `seen` guards a cycle a declaration could not hold anyway.
+fn built_from<'d>(
+    who: &Principal,
+    decl: &'d TypeDecl,
+    field: &'d FieldDecl,
+    seen: &mut Vec<&'d FieldName>,
+) -> Access {
+    let mut access = who.grants.access(&decl.name, &field.name);
+    seen.push(&field.name);
+    let sources = field
+        .depends_on
+        .iter()
+        .chain(field.embed.iter().flat_map(|e| &e.from));
+    for name in sources {
+        if seen.contains(&name) {
+            continue;
+        }
+        let Some(source) = decl.fields.iter().find(|f| &f.name == name) else {
+            continue;
+        };
+        access = match access_of(who, decl, source, seen) {
+            s if s.reads() => access,
+            Access::Masked if access.reads() => Access::Masked,
+            Access::Masked => access,
+            _ => Access::None,
+        };
+    }
+    seen.pop();
+    access
 }
 
 /// Whether the principal may retire records of a type: every field of the
@@ -100,13 +145,13 @@ pub fn visible(
                     .meta
                     .get(&f.name)
                     .filter(|m| m.error.is_some() || f.embed.is_some())
-                && field_access(who, &decl.name, f).reads()
+                && field_access(who, decl, f).reads()
             {
                 meta.insert(f.name.clone(), m.clone());
             }
             continue;
         };
-        match field_access(who, &decl.name, f) {
+        match field_access(who, decl, f) {
             a if a.reads() => {
                 fields.insert(f.name.clone(), value.clone());
                 if with_meta && let Some(m) = stored.meta.get(&f.name) {
@@ -137,7 +182,7 @@ pub fn check_probe<'a>(
 ) -> Result<(), Error> {
     for name in probed {
         let field = field_of(decl, name)?;
-        if !field_access(who, &decl.name, field).reads() {
+        if !field_access(who, decl, field).reads() {
             return Err(refused(Some(name), Refusal::NotGranted));
         }
     }
@@ -168,7 +213,7 @@ pub fn check_search(
         .flat_map(|e| e.from.iter());
     let Some(named) = text_fields else {
         let searched = decl.fields.iter().filter(|f| f.searchable).map(|f| &f.name);
-        return check_probe(who, decl, searched.chain(vector_field).chain(embedded_from));
+        return check_probe(who, decl, searched.chain(embedded_from).chain(vector_field));
     };
     if named.is_empty() {
         return Err(crate::invalid(
@@ -183,7 +228,7 @@ pub fn check_search(
             return Err(refused(Some(name), Refusal::Invalid { message }));
         }
     }
-    check_probe(who, decl, vector_field.into_iter().chain(embedded_from))
+    check_probe(who, decl, embedded_from.chain(vector_field))
 }
 
 /// The door a write comes through.

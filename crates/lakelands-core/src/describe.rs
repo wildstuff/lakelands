@@ -118,7 +118,7 @@ fn reads_all<'a>(
         t.fields
             .iter()
             .find(|f| &f.name == n)
-            .is_some_and(|f| field_access(who, ty, f).reads())
+            .is_some_and(|f| field_access(who, t, f).reads())
     })
 }
 
@@ -243,7 +243,7 @@ fn type_description(
     let fields: Vec<FieldDescription> = t
         .fields
         .iter()
-        .map(|f| (f, field_access(who, &t.name, f)))
+        .map(|f| (f, field_access(who, t, f)))
         .filter(|(_, a)| *a != Access::None)
         .map(|(f, a)| FieldDescription::of(f, a))
         .collect();
@@ -276,7 +276,7 @@ fn type_description(
                     .filter(|f| {
                         f.name.as_str() == crate::links::FROM || f.name.as_str() == crate::links::TO
                     })
-                    .all(|f| field_access(who, &lt.name, f).writes())
+                    .all(|f| field_access(who, &lt, f).writes())
             })
             .map(|r| r.name.clone())
             .collect(),
@@ -338,7 +338,7 @@ fn type_description(
 /// what it is computed from, what it means or how the host marked it
 /// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
 fn relation_description(t: &TypeName, r: &RelationDecl, who: &Principal) -> RelationDecl {
-    let link = crate::links::link_type_name(t, &r.name);
+    let link = crate::links::link_type(t, r);
     let mut r = r.clone();
     for f in &mut r.fields {
         if !field_access(who, &link, f).reads() {

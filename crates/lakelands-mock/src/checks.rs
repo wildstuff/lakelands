@@ -92,6 +92,7 @@ macro_rules! door_checks {
             describe_shows_only_what_the_principal_may_see,
             describe_answers_the_declaration_whole,
             a_masked_field_is_named_but_its_value_is_absent,
+            a_field_built_from_a_hidden_one_is_hidden_too,
             the_tools_follow_the_grants,
             a_verb_tool_says_what_its_risk_does,
             a_view_reads_only_what_its_source_has,
@@ -960,6 +961,46 @@ pub async fn a_masked_field_is_named_but_its_value_is_absent(store: Arc<dyn Lake
         refusal(&e).1,
         &Refusal::NotGranted,
         "a filter cannot probe a hidden field"
+    );
+}
+
+/// A field derived from one the principal may not read is read as that
+/// field: a filter on it is refused naming it, and `describe` leaves it
+/// out.
+pub async fn a_field_built_from_a_hidden_one_is_hidden_too(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let g: FieldDecl = serde_json::from_value(json!({
+        "name": "g", "type": {"kind": "text"}, "authority": "derived",
+        "derived": "secret", "depends_on": ["secret"]
+    }))
+    .expect("a field");
+    f.catalog
+        .add_field(&f.cast.owner, &ty(INVOICE), g)
+        .await
+        .expect("the owner adds `g`, derived from `secret`");
+    let find = Find {
+        filter: Some("g = 's3'".into()),
+        ..Find::default()
+    };
+    let e = f
+        .catalog
+        .find(&f.cast.clerk, &ty(INVOICE), find)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refusal(&e),
+        (&Some(FieldName::from("g")), &Refusal::NotGranted),
+        "a filter on `g`, derived from the hidden `secret`, probes `secret`"
+    );
+    let d = f
+        .catalog
+        .describe_type(&f.cast.clerk, &ty(INVOICE), ReadAt::default())
+        .await
+        .expect("describing `invoice`")
+        .data;
+    assert!(
+        d.fields.iter().all(|x| x.name.as_str() != "g"),
+        "`g` hands out `secret`, so it is described as `secret` is: not at all; {d:?}"
     );
 }
 

@@ -883,7 +883,7 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
 fn authored_writable(who: &Principal, t: &DeclaredType) -> bool {
     t.decl.fields.iter().any(|f| {
         matches!(f.authority, Authority::Authored | Authority::Shared)
-            && access(who, &t.decl.name, f).writes()
+            && access(who, &t.decl, f).writes()
     })
 }
 
@@ -903,7 +903,7 @@ fn callable(st: &State, who: &Principal, v: &VerbDecl) -> bool {
     match &v.effect {
         VerbEffect::Write { set } => set
             .iter()
-            .all(|a| field(&t.decl, &a.field).is_some_and(|f| access(who, &v.on, f).writes())),
+            .all(|a| field(&t.decl, &a.field).is_some_and(|f| access(who, &t.decl, f).writes())),
         // Carrying it out writes nothing of the record, so it asks for
         // write access to the type, as the store does.
         VerbEffect::External { .. } => who
@@ -921,7 +921,7 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
     let fields: Vec<FieldDescription> = d
         .fields
         .iter()
-        .filter_map(|f| match access(who, &d.name, f) {
+        .filter_map(|f| match access(who, d, f) {
             Access::None => None,
             a => Some(FieldDescription::of(f, a)),
         })
@@ -953,7 +953,7 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
             .map(|r| {
                 // A link field the principal may not read is described by
                 // its shape alone, as a type's own field is.
-                let link = crate::links::name(&d.name, &r.name);
+                let link = crate::links::link_type(&d.name, r);
                 let mut r = r.clone();
                 for f in &mut r.fields {
                     if !access(who, &link, f).reads() {
@@ -993,9 +993,7 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
                 })
                 .filter(|r| {
                     let lt = links::link_type(&d.name, r);
-                    lt.fields[..2]
-                        .iter()
-                        .all(|f| access(who, &lt.name, f).writes())
+                    lt.fields[..2].iter().all(|f| access(who, &lt, f).writes())
                 })
                 .map(|r| r.name.clone())
                 .collect(),
@@ -1041,7 +1039,7 @@ fn reads_all<'a>(
     };
     names
         .into_iter()
-        .all(|n| field(&t.decl, n).is_some_and(|f| access(who, ty, f).reads()))
+        .all(|n| field(&t.decl, n).is_some_and(|f| access(who, &t.decl, f).reads()))
 }
 
 /// The fields a condition names: the first segment of each path.
@@ -1213,7 +1211,7 @@ fn readable(_: &State, who: &Principal, t: &DeclaredType, name: &FieldName) -> R
             },
         )
     })?;
-    if !access(who, &t.decl.name, f).reads() {
+    if !access(who, &t.decl, f).reads() {
         return Err(on(name, Refusal::NotGranted));
     }
     Ok(())
@@ -1301,7 +1299,7 @@ fn check_patch<'a>(
         if !door_writes(door, f.authority) {
             return Err(on(name, Refusal::WrongDoor));
         }
-        if !access(who, ty, f).writes() {
+        if !access(who, &t.decl, f).writes() {
             return Err(on(name, Refusal::NotGranted));
         }
         if !v.is_null()
@@ -1406,7 +1404,7 @@ fn with_key_fields(
             if !door_writes(door, f.authority) {
                 return Err(on(name, Refusal::WrongDoor));
             }
-            if !access(who, &t.decl.name, f).writes() {
+            if !access(who, &t.decl, f).writes() {
                 return Err(on(name, Refusal::NotGranted));
             }
             if let Some(message) = value::misfit(&f.ty, &v, &st.value_types) {
@@ -1494,7 +1492,7 @@ fn check_rule(st: &State, who: &Principal, key: &RecordKey, patch: &Patch) -> Re
     expr::paths(&rule.when, &mut read);
     for name in read.iter().filter_map(|p| p.first()) {
         match field(&t.decl, name) {
-            Some(f) if access(who, &rule.on, f).reads() => {}
+            Some(f) if access(who, &t.decl, f).reads() => {}
             Some(_) => return Err(on(name, Refusal::NotGranted)),
             None => {
                 return Err(on(
