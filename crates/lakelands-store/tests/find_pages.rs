@@ -221,7 +221,9 @@ async fn keys_of(
     find: Find,
 ) -> (Vec<String>, Option<lakelands_api::Cursor>) {
     match cat.find(who, &"note".into(), find).await.unwrap().data {
-        Found::Records { rows, next_cursor } => (
+        Found::Records {
+            rows, next_cursor, ..
+        } => (
             rows.into_iter().map(|r| r.key.to_string()).collect(),
             next_cursor,
         ),

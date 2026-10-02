@@ -25,6 +25,7 @@ use lakelands_api::expr::Condition;
 use lakelands_api::id::{
     Cursor, FieldName, LakeId, Position, RecordKey, TypeName, VerbName, Version,
 };
+use lakelands_api::location::Limits;
 use lakelands_api::ontology::{
     Assignment, Authority, FieldDecl, FieldType, Measure, OnInputChange, RelationDecl, Risk,
     StorageKind, TriggerDecl, TypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl, ViewParam,
@@ -121,6 +122,7 @@ macro_rules! door_checks {
             a_proposer_sees_only_its_own_proposals,
             ingest_is_content_addressed,
             a_cursor_keeps_its_page_set_while_writes_land,
+            a_page_answers_its_total_and_jumps_by_offset,
             after_walks_the_pages_the_cursor_walks,
             after_is_refused_naming_the_member,
             a_principal_of_another_lake_is_refused,
@@ -2588,7 +2590,10 @@ pub async fn a_cursor_keeps_its_page_set_while_writes_land(store: Arc<dyn LakeSt
         )
     };
     let first = page(None).await.unwrap();
-    let Found::Records { rows, next_cursor } = first.data else {
+    let Found::Records {
+        rows, next_cursor, ..
+    } = first.data
+    else {
         panic!("find lists records");
     };
     assert_eq!(rows.len(), 2);
@@ -2602,6 +2607,7 @@ pub async fn a_cursor_keeps_its_page_set_while_writes_land(store: Arc<dyn LakeSt
     let Found::Records {
         rows: more,
         next_cursor,
+        ..
     } = second.data
     else {
         panic!("find lists records");
@@ -2609,6 +2615,73 @@ pub async fn a_cursor_keeps_its_page_set_while_writes_land(store: Arc<dyn LakeSt
     let keys: Vec<&str> = rows.iter().chain(&more).map(|r| r.key.as_str()).collect();
     assert_eq!(keys, ["INV-1", "INV-2", "INV-3"]);
     assert!(next_cursor.is_none());
+}
+
+/// A page answers its total when asked, and `offset` jumps to the walk's
+/// slice; `offset` beside a cursor, and `total` beside an aggregate, are
+/// refused as invalid, and an offset past the lake's ceiling as too large
+/// (045).
+pub async fn a_page_answers_its_total_and_jumps_by_offset(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    f.sortable().await;
+    let invoice = ty(INVOICE);
+    let find = |find: Find| f.catalog.find(&f.cast.owner, &invoice, find);
+    let keys = |found: Found| match found {
+        Found::Records {
+            rows,
+            next_cursor,
+            total,
+        } => (
+            rows.iter().map(|r| r.key.to_string()).collect::<Vec<_>>(),
+            next_cursor,
+            total,
+        ),
+        other => panic!("find lists records, got {other:?}"),
+    };
+    let (all, _, total) = keys(
+        find(Find {
+            total: true,
+            ..Find::default()
+        })
+        .await
+        .unwrap()
+        .data,
+    );
+    assert_eq!(total, Some(all.len() as u64), "{all:?}");
+    let (page, next, _) = keys(
+        find(Find {
+            offset: Some(2),
+            limit: Some(2),
+            ..Find::default()
+        })
+        .await
+        .unwrap()
+        .data,
+    );
+    assert_eq!(page, all[2..4]);
+    let r = find(Find {
+        offset: Some(1),
+        cursor: next,
+        ..Find::default()
+    })
+    .await
+    .unwrap_err();
+    assert!(matches!(refusal(&r).1, Refusal::Invalid { .. }), "{r:?}");
+    let r = find(Find {
+        offset: Some(Limits::default().max_offset + 1),
+        ..Find::default()
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(
+        refusal(&r),
+        (
+            &Some(FieldName::from("offset")),
+            &Refusal::TooLarge {
+                max: Limits::default().max_offset
+            }
+        )
+    );
 }
 
 impl Fixture {
@@ -2644,7 +2717,9 @@ impl Fixture {
             .expect("the page reads")
             .data
         {
-            Found::Records { rows, next_cursor } => (rows, next_cursor),
+            Found::Records {
+                rows, next_cursor, ..
+            } => (rows, next_cursor),
             other => panic!("find lists records, got {other:?}"),
         }
     }

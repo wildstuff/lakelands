@@ -217,6 +217,18 @@ pub struct Find {
     /// with `cursor` or `aggregate`, it is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<After>,
+    /// Skip this many rows of the order before the page: the page a
+    /// table jumps to. It reads and drops the rows it skips, so its cost
+    /// grows with it; at most the lake's `max_offset`. Given with
+    /// `cursor`, `after` or `aggregate`, it is refused
+    /// (`docs/decisions/045-a-table-reads-a-page-and-its-total.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u32>,
+    /// Answer, beside the page, how many records match, at the answer's
+    /// position: counted only when asked. Given with `aggregate`, it is
+    /// refused.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub total: bool,
     /// Aggregate instead of listing records.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aggregate: Option<Aggregate>,
@@ -255,6 +267,10 @@ pub enum Found {
         /// Where the next page starts, if there is one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         next_cursor: Option<Cursor>,
+        /// How many records match, when `total` asked for it: at the
+        /// answer's position, so every page of one walk says the same.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        total: Option<u64>,
     },
     /// Aggregated groups.
     Groups {

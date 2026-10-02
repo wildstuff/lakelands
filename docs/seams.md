@@ -326,7 +326,11 @@ is applied over engine pages read one after another and dropped, as for
 never the type: its order, the row it continues after, and `limit + 1`
 rows. A filter only the store can evaluate is applied over engine pages
 read one after another, so its cost is the rows read to fill the page:
-bounded in memory, linear in time. A page ordered by key reads about
+bounded in memory, linear in time. An `offset` reads the rows it skips
+the same way, a page at a time, and drops them, so a jump holds one
+page and costs the rows it skips; `total` is the count above, at the
+same position
+(`docs/decisions/045-a-table-reads-a-page-and-its-total.md`). A page ordered by key reads about
 `limit` rows, not the type; every engine reads it in key order from
 `after` and stops when it is full (`lakelands_core::engines::
 scan_in_key_order`). **A page ordered by a field reads its page when the

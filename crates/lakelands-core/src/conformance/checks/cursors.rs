@@ -37,7 +37,10 @@ async fn a_cursor_stays_on_the_position_of_its_first_page(
         .find(own, &item, page(None))
         .await
         .must("reading the first page")?;
-    let Found::Records { rows, next_cursor } = first.data else {
+    let Found::Records {
+        rows, next_cursor, ..
+    } = first.data
+    else {
         return Err(Failure::new("`find` without an aggregate answered groups"));
     };
     let mut seen: Vec<String> = rows.iter().map(|r| r.key.0.clone()).collect();
@@ -61,7 +64,10 @@ async fn a_cursor_stays_on_the_position_of_its_first_page(
             next.position,
             first.position
         );
-        let Found::Records { rows, next_cursor } = next.data else {
+        let Found::Records {
+            rows, next_cursor, ..
+        } = next.data
+        else {
             return Err(Failure::new("`find` without an aggregate answered groups"));
         };
         for r in &rows {

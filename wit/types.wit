@@ -478,6 +478,11 @@ interface types {
         limit: option<u32>,
         cursor: option<cursor>,
         after: option<after-row>,
+        /// Rows of the order skipped before the page: at most the lake's
+        /// `max-offset`; refused with `cursor`, `after` or `aggregate`.
+        offset: option<u32>,
+        /// Answer how many records match, at the answer's position.
+        total: bool,
         aggregate: option<aggregate>,
         with-meta: bool,
         /// The values bound to a view's parameters, each as JSON.
@@ -501,6 +506,8 @@ interface types {
     record records-page {
         rows: list<%record>,
         next-cursor: option<cursor>,
+        /// How many records match, when `total` asked for it.
+        total: option<u64>,
     }
 
     variant found {
@@ -1001,6 +1008,7 @@ interface types {
         max-reactive-depth: u32,
         commit-window-events: u32,
         max-graph-nodes: u32,
+        max-offset: u32,
     }
 
     record feed-filter {

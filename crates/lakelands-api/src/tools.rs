@@ -595,6 +595,16 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
             ("limit", json!({"type": "integer", "minimum": 1})),
             ("cursor", json!({"type": "string"})),
             (
+                "offset",
+                json!({"type": "integer", "minimum": 0,
+                       "description": "Skip this many rows of the order before the page, to jump to a page of a table. The rows skipped are read, so a large offset costs more; continue from there with the cursor. Not with cursor, after or aggregate."}),
+            ),
+            (
+                "total",
+                json!({"type": "boolean",
+                       "description": "Also answer how many records match, at the answer's position. Counted only when asked."}),
+            ),
+            (
                 "after",
                 json!({"type": "object",
                        "description": "Resume strictly after a row: its values for the order_by keys, in order (null where it has none), and its key. Instead of a cursor.",
@@ -626,7 +636,7 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
         out.push(ToolSpec {
             name: format!("{base}_find"),
             description: format!(
-                "Find {} records: filter with `where`, sort, page with `cursor` or resume after a row with `after`, or aggregate. Every answer carries the position it was read at.",
+                "Find {} records: filter with `where`, sort, page with `cursor`, resume after a row with `after` or jump with `offset`, ask for the `total`, or aggregate. Every answer carries the position it was read at.",
                 label(ty)
             ),
             input_schema: obj(p, if params { &["params"] } else { &[] }),
@@ -634,7 +644,8 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
                 "type": "object",
                 "properties": {"shape": {"enum": ["records", "groups"]},
                                "rows": {"type": "array"},
-                               "next_cursor": {"type": "string"}},
+                               "next_cursor": {"type": "string"},
+                               "total": {"type": "integer"}},
                 "required": ["shape", "rows"]})),
             door: Door::Find { ty: ty.name.clone() },
         });
