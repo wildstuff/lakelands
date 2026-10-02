@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use lakelands_api::event::EventBody;
 use lakelands_api::expr::Condition;
-use lakelands_api::ontology::{Authority, FieldDecl, StorageKind, TriggerDecl};
+use lakelands_api::ontology::{StorageKind, TriggerDecl};
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::Declaration;
 use lakelands_api::{Error, LakeStore, Origin, Refusal, Version};
@@ -24,7 +24,8 @@ use serde_json::{Value, json};
 use crate::conformance::Failure;
 use crate::conformance::backing::{KIND, made, plug, unplug};
 use crate::conformance::fixture::{
-    Lake, Must, field, head_unmoved, reason, recorded_outputs, type_decl, value,
+    Lake, Must, computed_by, derived, field, head_unmoved, reason, recorded_outputs, type_decl,
+    value,
 };
 
 check!(
@@ -102,12 +103,7 @@ async fn lookup(store: &dyn LakeStore, input: &str, config: Value) -> Result<Lak
 /// input `code`, and the type `place`, whose `name` it computes.
 async fn places(store: &dyn LakeStore, config: Value) -> Result<Lake, Failure> {
     let l = lookup(store, "code", config).await?;
-    let name = FieldDecl {
-        authority: Authority::Derived,
-        function: Some("lookup".into()),
-        depends_on: vec!["code".into()],
-        ..field("name", StorageKind::Text)
-    };
+    let name = computed_by("name", StorageKind::Text, "lookup", &["code"]);
     l.declare(type_decl(
         "place",
         vec![field("code", StorageKind::Text), name],
@@ -335,18 +331,13 @@ async fn a_filled_field_recomputes_what_reads_it_and_fires_its_triggers(
     .await?;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
-    let name = FieldDecl {
-        authority: Authority::Derived,
-        function: Some("lookup".into()),
-        depends_on: vec!["code".into()],
-        ..field("name", StorageKind::Text)
-    };
-    let greeting = FieldDecl {
-        authority: Authority::Derived,
-        derived: Some("concat(name, '!')".into()),
-        depends_on: vec!["name".into()],
-        ..field("greeting", StorageKind::Text)
-    };
+    let name = computed_by("name", StorageKind::Text, "lookup", &["code"]);
+    let greeting = derived(
+        "greeting",
+        StorageKind::Text,
+        "concat(name, '!')",
+        &["name"],
+    );
     l.declare(type_decl(
         "place",
         vec![field("code", StorageKind::Text), name, greeting],
@@ -414,18 +405,8 @@ async fn computed_fields_that_read_each_other_in_a_cycle_are_refused(
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
-    let name = FieldDecl {
-        authority: Authority::Derived,
-        function: Some("lookup".into()),
-        depends_on: vec!["label".into()],
-        ..field("name", StorageKind::Text)
-    };
-    let label = FieldDecl {
-        authority: Authority::Derived,
-        derived: Some("concat(name, '-')".into()),
-        depends_on: vec!["name".into()],
-        ..field("label", StorageKind::Text)
-    };
+    let name = computed_by("name", StorageKind::Text, "lookup", &["label"]);
+    let label = derived("label", StorageKind::Text, "concat(name, '-')", &["name"]);
     let answer = cat
         .declare(
             own,
@@ -466,15 +447,6 @@ async fn echoing(
     Ok(())
 }
 
-fn computed_by(name: &str, function: &str, input: &str) -> FieldDecl {
-    FieldDecl {
-        authority: Authority::Derived,
-        function: Some(function.into()),
-        depends_on: vec![input.into()],
-        ..field(name, StorageKind::Text)
-    }
-}
-
 async fn a_second_record_with_the_same_input_has_its_derived_fields_right(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
@@ -487,17 +459,17 @@ async fn a_second_record_with_the_same_input_has_its_derived_fields_right(
     )
     .await?;
     let l = Lake::of(store.as_ref());
-    let greeting = FieldDecl {
-        authority: Authority::Derived,
-        derived: Some("concat(name, '!')".into()),
-        depends_on: vec!["name".into()],
-        ..field("greeting", StorageKind::Text)
-    };
+    let greeting = derived(
+        "greeting",
+        StorageKind::Text,
+        "concat(name, '!')",
+        &["name"],
+    );
     l.declare(type_decl(
         "place",
         vec![
             field("code", StorageKind::Text),
-            computed_by("name", "lookup", "code"),
+            computed_by("name", StorageKind::Text, "lookup", &["code"]),
             greeting,
         ],
     ))
@@ -547,8 +519,8 @@ async fn a_backed_field_reading_another_waits_for_its_output(
         "place",
         vec![
             field("code", StorageKind::Text),
-            computed_by("b", "second", "a"),
-            computed_by("a", "first", "code"),
+            computed_by("b", StorageKind::Text, "second", &["a"]),
+            computed_by("a", StorageKind::Text, "first", &["code"]),
         ],
     ))
     .await?;
@@ -595,12 +567,7 @@ async fn a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds(
     );
 
     plug(token);
-    let name = FieldDecl {
-        authority: Authority::Derived,
-        function: Some("lookup".into()),
-        depends_on: vec!["code".into()],
-        ..field("name", StorageKind::Text)
-    };
+    let name = computed_by("name", StorageKind::Text, "lookup", &["code"]);
     l.declare(type_decl(
         "place",
         vec![field("code", StorageKind::Text), name],

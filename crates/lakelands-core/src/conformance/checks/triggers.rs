@@ -17,13 +17,12 @@ use lakelands_api::ontology::{StorageKind, TriggerDecl};
 use lakelands_api::principal::{WriteContext, WriteOrigin};
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::Declaration;
-use lakelands_api::{Find, LakeStore, Position, Refusal, TypeName, WriteOpts};
+use lakelands_api::{LakeStore, Position, Refusal, TypeName, WriteOpts};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, declare, doors, field, head_unmoved, invalid_naming, limits, owner, patch, reason,
-    type_decl, upsert,
+    Lake, Must, field, find_where, head_unmoved, invalid_naming, limits, patch, reason, type_decl,
 };
 
 check!(
@@ -105,16 +104,12 @@ async fn fired_after(
 async fn a_transition_guard_fires_on_open_to_closed_only(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("job", vec![field("status", StorageKind::Text)]),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
+        .await?;
     cat.declare(
-        &own,
+        own,
         trigger(
             "closed",
             Some("previous(status) = 'open' and status = 'closed'"),
@@ -132,7 +127,7 @@ async fn a_transition_guard_fires_on_open_to_closed_only(
         let mut fires = Vec::new();
         for status in &states {
             let before = store.head().await.must("reading the head")?;
-            upsert(cat.as_ref(), &own, "job", key, json!({"status": status})).await?;
+            l.upsert("job", key, json!({"status": status})).await?;
             fires.push(
                 !fired_after(store.as_ref(), before, "closed")
                     .await?
@@ -153,12 +148,9 @@ async fn a_transition_guard_fires_on_open_to_closed_only(
     invalid_naming(
         "`previous` outside a guard",
         cat.find(
-            &own,
+            own,
             &TypeName::from("job"),
-            Find {
-                filter: Some(Condition::from("previous(status) = 'open'")),
-                ..Find::default()
-            },
+            find_where("previous(status) = 'open'"),
         )
         .await,
         &["previous"],
@@ -169,26 +161,22 @@ async fn a_transition_guard_fires_on_open_to_closed_only(
 async fn a_guard_tells_a_retirement_from_an_update(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl(
-            "job",
-            vec![
-                field("status", StorageKind::Text),
-                field("note", StorageKind::Text),
-            ],
-        ),
-    )
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl(
+        "job",
+        vec![
+            field("status", StorageKind::Text),
+            field("note", StorageKind::Text),
+        ],
+    ))
     .await?;
     let before = store.head().await.must("reading the head")?;
     for d in [
         trigger("closed", Some("status = 'closed' and not retired()"), None),
         trigger("retired", Some("retired()"), None),
     ] {
-        cat.declare(&own, d).await.must("declaring the triggers")?;
+        cat.declare(own, d).await.must("declaring the triggers")?;
     }
     let declared = store
         .feed()
@@ -222,7 +210,7 @@ async fn a_guard_tells_a_retirement_from_an_update(
         ),
     ] {
         let at = store.head().await.must("reading the head")?;
-        upsert(cat.as_ref(), &own, "job", "a", write).await?;
+        l.upsert("job", "a", write).await?;
         let got = fires(store.as_ref(), at, &names).await?;
         ensure!(
             got == want,
@@ -230,14 +218,7 @@ async fn a_guard_tells_a_retirement_from_an_update(
         );
     }
     let at = store.head().await.must("reading the head")?;
-    cat.retire(
-        &own,
-        &TypeName::from("job"),
-        &"a".into(),
-        WriteOpts::default(),
-    )
-    .await
-    .must("retiring `a`")?;
+    l.retire("job", "a").await?;
     let got = fires(store.as_ref(), at, &names).await?;
     ensure!(
         got == [false, true],
@@ -248,16 +229,12 @@ async fn a_guard_tells_a_retirement_from_an_update(
 }
 
 async fn a_revival_is_a_creation_to_a_guard(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("job", vec![field("status", StorageKind::Text)]),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
+        .await?;
     cat.declare(
-        &own,
+        own,
         trigger(
             "created",
             Some("previous(status) is null and changed(status) and not retired()"),
@@ -279,23 +256,16 @@ async fn a_revival_is_a_creation_to_a_guard(store: Arc<dyn LakeStore>) -> Result
         }
     };
     let at = store.head().await.must("reading the head")?;
-    upsert(cat.as_ref(), &own, "job", "r", json!({"status": "open"})).await?;
+    l.upsert("job", "r", json!({"status": "open"})).await?;
     fired("creating `r`", true, at).await?;
     let at = store.head().await.must("reading the head")?;
-    upsert(cat.as_ref(), &own, "job", "r", json!({"status": "open"})).await?;
+    l.upsert("job", "r", json!({"status": "open"})).await?;
     fired("writing `r` again", false, at).await?;
     let at = store.head().await.must("reading the head")?;
-    cat.retire(
-        &own,
-        &TypeName::from("job"),
-        &"r".into(),
-        WriteOpts::default(),
-    )
-    .await
-    .must("retiring `r`")?;
+    l.retire("job", "r").await?;
     fired("retiring `r`", false, at).await?;
     let at = store.head().await.must("reading the head")?;
-    upsert(cat.as_ref(), &own, "job", "r", json!({"status": "open"})).await?;
+    l.upsert("job", "r", json!({"status": "open"})).await?;
     fired(
         "reviving `r` (`previous` null, `changed` true, `retired()` false)",
         true,
@@ -307,14 +277,10 @@ async fn a_revival_is_a_creation_to_a_guard(store: Arc<dyn LakeStore>) -> Result
 async fn retired_outside_a_triggers_guard_is_refused_naming_it(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("job", vec![field("status", StorageKind::Text)]),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
+        .await?;
     for (what, d) in [
         (
             "an object set filtering on `retired()`",
@@ -339,20 +305,13 @@ async fn retired_outside_a_triggers_guard_is_refused_naming_it(
     ] {
         let d: Declaration = serde_json::from_value(d).expect("a declaration");
         let before = store.head().await.must("reading the head")?;
-        invalid_naming(what, cat.declare(&own, d).await, &["retired"])?;
+        invalid_naming(what, cat.declare(own, d).await, &["retired"])?;
         head_unmoved(store.as_ref(), before, what).await?;
     }
     invalid_naming(
         "a find filtering on `retired()`",
-        cat.find(
-            &own,
-            &TypeName::from("job"),
-            Find {
-                filter: Some(Condition::from("retired()")),
-                ..Find::default()
-            },
-        )
-        .await,
+        cat.find(own, &TypeName::from("job"), find_where("retired()"))
+            .await,
         &["retired"],
     )
 }
@@ -368,19 +327,15 @@ fn host(depth: u32, cause: Option<Position>) -> WriteContext {
 async fn a_reaction_past_its_triggers_max_depth_is_refused_naming_it(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("job", vec![field("n", StorageKind::Number)]),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("job", vec![field("n", StorageKind::Number)]))
+        .await?;
     for d in [
         trigger("once", None, Some(1)),
         trigger("always", None, None),
     ] {
-        cat.declare(&own, d).await.must("declaring the triggers")?;
+        cat.declare(own, d).await.must("declaring the triggers")?;
     }
     ensure!(
         limits().max_reactive_depth > 1,
@@ -413,7 +368,7 @@ async fn a_reaction_past_its_triggers_max_depth_is_refused_naming_it(
     };
     // The direct write fires both triggers at depth 0.
     let head = store.head().await.must("reading the head")?;
-    upsert(cat.as_ref(), &own, "job", "j0", json!({"n": 0})).await?;
+    l.upsert("job", "j0", json!({"n": 0})).await?;
     let once_0 = firing(head, "once").await?;
     // The reaction to it at depth 1 is within `once`'s ceiling, and fires
     // `once` again at depth 1.
@@ -458,25 +413,21 @@ async fn a_reaction_past_its_triggers_max_depth_is_refused_naming_it(
 async fn a_trigger_max_depth_above_the_lakes_ceiling_is_refused(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("job", vec![field("n", StorageKind::Number)]),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("job", vec![field("n", StorageKind::Number)]))
+        .await?;
     let ceiling = limits().max_reactive_depth;
     let head = store.head().await.must("reading the head")?;
     invalid_naming(
         &format!("a max_depth of {} above the lake's {ceiling}", ceiling + 1),
-        cat.declare(&own, trigger("deep", None, Some(ceiling + 1)))
+        cat.declare(own, trigger("deep", None, Some(ceiling + 1)))
             .await,
         &["deep", &(ceiling + 1).to_string(), &ceiling.to_string()],
     )?;
     head_unmoved(store.as_ref(), head, "a trigger above the ceiling").await?;
     for (name, m) in [("at_ceiling", ceiling), ("never", 0)] {
-        cat.declare(&own, trigger(name, None, Some(m)))
+        cat.declare(own, trigger(name, None, Some(m)))
             .await
             .must(&format!("declaring a trigger with max_depth {m}"))?;
     }

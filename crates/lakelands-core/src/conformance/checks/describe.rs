@@ -11,8 +11,6 @@
 //! declared, each to a principal who reads every field it names or holds
 //! the `schema` grant, as they stand at the read position.
 
-use std::collections::BTreeMap;
-
 use lakelands_api::describe::{FieldDescription, LakeDescription, TypeDescription};
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{
@@ -21,14 +19,11 @@ use lakelands_api::ontology::{
 use lakelands_api::write::{Declaration, FunctionDecl, ObjectSetDecl};
 use std::sync::Arc;
 
-use lakelands_api::principal::TypeGrants;
-use lakelands_api::{
-    Access, Catalog, FieldName, Grants, LakeStore, Principal, PrincipalKind, ReadAt, TypeName,
-};
+use lakelands_api::{Access, Catalog, LakeStore, Principal, ReadAt};
 
 use crate::conformance::Failure;
 use crate::conformance::backing::EMBED_MODEL;
-use crate::conformance::fixture::{Must, doors, field, owner, principal, type_decl, view_of};
+use crate::conformance::fixture::{Must, doors, field, field_access, owner, type_decl, view_of};
 
 check!(
     /// `describe` answers the declaration whole.
@@ -191,18 +186,7 @@ fn one_type<'a>(d: &'a LakeDescription, name: &str) -> Result<&'a TypeDescriptio
 
 /// Reads everything but the ledger's salary, and holds no schema grant.
 fn clerk(store: &dyn LakeStore) -> Principal {
-    let mut grants = Grants {
-        default: Access::Read,
-        ..Grants::default()
-    };
-    grants.types.insert(
-        TypeName::from("ledger"),
-        TypeGrants {
-            default: None,
-            fields: BTreeMap::from([(FieldName::from("salary"), Access::None)]),
-        },
-    );
-    principal(store, PrincipalKind::Agent, "clerk", grants)
+    field_access(store, "clerk", "ledger", &[("salary", Access::None)])
 }
 
 async fn describe_at(

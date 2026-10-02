@@ -20,8 +20,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, field, get_at, head_unmoved, ingest, pattern, reason, source_record, step,
-    type_decl,
+    Lake, Must, computed_by, derived, field, get_at, head_unmoved, ingest, pattern, reason,
+    source_record, sourced, step, type_decl,
 };
 use crate::links::{link_key, link_type_name};
 
@@ -91,11 +91,6 @@ check!(
 /// and the invoice c1, `erp` the invoice i1.
 async fn lake(store: &dyn LakeStore) -> Result<(), Failure> {
     let l = Lake::of(store);
-    let sourced = |name: &str, kind| {
-        let mut f = field(name, kind);
-        f.authority = Authority::Source;
-        f
-    };
     l.declare(type_decl(
         "partner",
         vec![
@@ -106,10 +101,7 @@ async fn lake(store: &dyn LakeStore) -> Result<(), Failure> {
     .await?;
     let mut status = field("status", StorageKind::Text);
     status.authority = Authority::Shared;
-    let mut gross = field("gross", StorageKind::Number);
-    gross.authority = Authority::Derived;
-    gross.derived = Some(Condition::from("amount * 2"));
-    gross.depends_on = vec!["amount".into()];
+    let gross = derived("gross", StorageKind::Number, "amount * 2", &["amount"]);
     let mut invoice = type_decl(
         "invoice",
         vec![sourced("amount", StorageKind::Number), status, gross],
@@ -376,8 +368,7 @@ async fn a_type_that_keeps_no_provenance_is_named_and_not_searched(
 ) -> Result<(), Failure> {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
-    let mut line = field("text", StorageKind::Text);
-    line.authority = Authority::Source;
+    let line = sourced("text", StorageKind::Text);
     let mut lines = type_decl("log_line", vec![line]);
     lines.field_meta = false;
     l.declare(lines).await?;
@@ -665,12 +656,8 @@ async fn a_value_a_backing_filled_makes_no_owner(store: Arc<dyn LakeStore>) -> R
     cat.declare(own, function)
         .await
         .must("declaring `lookup`")?;
-    let mut code = field("code", StorageKind::Text);
-    code.authority = Authority::Source;
-    let mut name = field("name", StorageKind::Text);
-    name.authority = Authority::Derived;
-    name.function = Some("lookup".into());
-    name.depends_on = vec!["code".into()];
+    let code = sourced("code", StorageKind::Text);
+    let name = computed_by("name", StorageKind::Text, "lookup", &["code"]);
     l.declare(type_decl("place", vec![code, name])).await?;
     feed(
         &l,

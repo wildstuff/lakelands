@@ -111,10 +111,10 @@ use std::time::{Duration, Instant};
 use futures_core::Stream;
 use lakelands_api::event::{Digest, EventBody};
 use lakelands_api::ontology::{
-    Authority, Cardinality, EmbedDecl, FieldDecl, FieldType, RelationDecl, StorageKind, TypeDecl,
+    Authority, Cardinality, FieldDecl, RelationDecl, StorageKind, TypeDecl,
 };
 use lakelands_api::query::{Pattern, Projection, QueryResult, Search, SearchMode, Walk};
-use lakelands_api::read::{Direction, Order, OrderBy};
+use lakelands_api::read::{Direction, OrderBy};
 use lakelands_api::seam::{FeedFilter, Seams};
 use lakelands_api::{
     Find, Found, LakeStore, Position, Principal, ReadAt, RecordKey, SourceId, SourceRecord,
@@ -125,7 +125,8 @@ use sha2::{Digest as _, Sha256};
 
 use crate::conformance::backing::EMBED_MODEL;
 use crate::conformance::fixture::{
-    Must, declare, doors, field, limits, owner, pattern, pause, reason, step, type_decl,
+    Must, declare, doors, embedding, limits, order, owner, pattern, pause, reason, sourced, step,
+    type_decl,
 };
 use crate::conformance::{Failure, Given, Meter, backing, next};
 use crate::export;
@@ -176,33 +177,17 @@ const K: u32 = 10;
 /// and every record holds a vector. `follows` links a record to two
 /// earlier ones, by link records that arrive from a source.
 fn reading() -> TypeDecl {
-    let source = |name: &str, kind| {
-        let mut f = field(name, kind);
-        f.authority = Authority::Source;
-        f
-    };
     let mut ty = type_decl(
         TY,
         vec![
-            source("seq", StorageKind::Number),
-            source("site", StorageKind::Text),
-            source("value", StorageKind::Number),
+            sourced("seq", StorageKind::Number),
+            sourced("site", StorageKind::Text),
+            sourced("value", StorageKind::Number),
             FieldDecl {
                 searchable: true,
-                ..source("note", StorageKind::Text)
+                ..sourced("note", StorageKind::Text)
             },
-            FieldDecl {
-                ty: FieldType {
-                    dimensions: Some(2),
-                    ..FieldType::kind(StorageKind::Vector)
-                },
-                authority: Authority::Derived,
-                embed: Some(EmbedDecl {
-                    from: vec!["site".into()],
-                    model: EMBED_MODEL.into(),
-                }),
-                ..field("vec", StorageKind::Text)
-            },
+            embedding("vec", 2, &["site"], EMBED_MODEL),
         ],
     );
     ty.relations = vec![RelationDecl {
@@ -936,11 +921,7 @@ impl Size<'_> {
         let limit = limits().max_limit;
         let mut find = Find {
             limit: Some(limit),
-            order_by: vec![Order {
-                field: "note".into(),
-                by: OrderBy::Value,
-                dir: Direction::Asc,
-            }],
+            order_by: vec![order("note", OrderBy::Value, Direction::Asc)],
             ..Find::default()
         };
         let mut previous: Option<String> = None;

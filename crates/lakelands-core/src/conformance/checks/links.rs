@@ -588,9 +588,7 @@ async fn retiring_an_end_keeps_the_link_and_the_walk_skips_the_retired_end(
     link(cat.as_ref(), own, "i1", "p1", json!({"since": SEPT}))
         .await
         .must("linking i1 to p1")?;
-    cat.retire(own, &"partner".into(), &"p1".into(), WriteOpts::default())
-        .await
-        .must("retiring p1")?;
+    l.retire("partner", "p1").await?;
     let p = pattern(
         "invoice",
         Some("i1"),

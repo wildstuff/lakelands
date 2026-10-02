@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use lakelands_api::event::{EventBody, Procedure};
 use lakelands_api::expr::Condition;
-use lakelands_api::ontology::{Authority, StorageKind, TriggerDecl};
+use lakelands_api::ontology::{StorageKind, TriggerDecl};
 use lakelands_api::seam::{AGING_RULE_TYPE, FeedFilter};
 use lakelands_api::write::{AgeReport, Declaration};
 use lakelands_api::{Catalog, LakeStore, Origin, Principal, Refusal, Timestamp, WriteOrigin};
@@ -19,7 +19,8 @@ use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, count_view, declare, field, head_unmoved, read, refused_on, type_decl, upsert,
+    Lake, Must, count_view, declare, derived, field, field_access, head_unmoved, read, refused_on,
+    sourced, type_decl, upsert,
 };
 
 check!(
@@ -441,10 +442,7 @@ async fn a_rule_that_does_not_fit_is_refused_naming_its_field(
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
-    let mut total = field("total", StorageKind::Number);
-    total.authority = Authority::Derived;
-    total.derived = Some(Condition::from("amount * 2"));
-    total.depends_on = vec!["amount".into()];
+    let total = derived("total", StorageKind::Number, "amount * 2", &["amount"]);
     let mut ty = type_decl(
         "invoice",
         vec![
@@ -592,8 +590,7 @@ async fn a_rule_that_no_longer_fits_is_skipped_and_named(
     )
     .await?;
     // `state` becomes the source's: the rule written for it no longer fits.
-    let mut state = field("state", StorageKind::Text);
-    state.authority = Authority::Source;
+    let state = sourced("state", StorageKind::Text);
     l.declare(type_decl("ticket", vec![state])).await?;
     let report = age(store.as_ref(), date(2026, 3, 1)).await?;
     let skipped = report
@@ -621,26 +618,13 @@ async fn a_rule_that_no_longer_fits_is_skipped_and_named(
 /// A clerk who writes rules and, per type, the given field accesses.
 fn clerk(store: &dyn LakeStore, id: &str, invoice: &[(&str, lakelands_api::Access)]) -> Principal {
     use lakelands_api::principal::TypeGrants;
-    use lakelands_api::{Access, Grants, PrincipalKind};
-    let mut grants = Grants {
-        default: Access::Read,
-        ..Grants::default()
+    let mut clerk = field_access(store, id, "invoice", invoice);
+    let rules = TypeGrants {
+        default: Some(lakelands_api::Access::Write),
+        fields: Default::default(),
     };
-    grants.types.insert(
-        AGING_RULE_TYPE.into(),
-        TypeGrants {
-            default: Some(Access::Write),
-            fields: Default::default(),
-        },
-    );
-    grants.types.insert(
-        "invoice".into(),
-        TypeGrants {
-            default: None,
-            fields: invoice.iter().map(|(f, a)| ((*f).into(), *a)).collect(),
-        },
-    );
-    crate::conformance::fixture::principal(store, PrincipalKind::Agent, id, grants)
+    clerk.grants.types.insert(AGING_RULE_TYPE.into(), rules);
+    clerk
 }
 
 async fn a_rule_needs_write_on_its_field_and_read_on_what_when_reads(
@@ -722,7 +706,6 @@ async fn a_move_the_store_would_refuse_leaves_the_record(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
     l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))
         .await?;
     let mut owner_field = field("owner", StorageKind::Reference);
@@ -741,9 +724,7 @@ async fn a_move_the_store_would_refuse_leaves_the_record(
     rule(&l, "b_stale", "ticket.state", "new", "stale", "true").await?;
     // `p2` retired after the rule was written: moving `owner` to it would
     // refer to a record no longer live.
-    cat.retire(own, &"partner".into(), &"p2".into(), Default::default())
-        .await
-        .must("retiring `p2`")?;
+    l.retire("partner", "p2").await?;
     let report = age(store.as_ref(), date(2026, 3, 1)).await?;
     let t1 = l.read("ticket", "t1").await?;
     ensure!(

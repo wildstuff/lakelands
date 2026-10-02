@@ -5,26 +5,21 @@
 //! matched fields hold the same non-null value, as the read's position
 //! holds them, both ways and in every walk the store runs.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use lakelands_api::ontology::{
     Cardinality, Derived, MatchPair, RelationDecl, StorageKind, TypeDecl,
 };
-use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{Pattern, Projection, QueryResult, Walk};
 use lakelands_api::read::ReadAt;
 use lakelands_api::write::{Declaration, WriteOpts};
-use lakelands_api::{
-    Access, Catalog, Grants, LakeStore, Position, Principal, PrincipalKind, Refusal, TypeName,
-    Value,
-};
+use lakelands_api::{Access, Catalog, LakeStore, Position, Principal, Refusal, Value};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, declare, doors, field, invalid_naming, owner, patch, pattern, principal, reason, step,
-    type_decl, upsert,
+    Lake, Must, doors, field, field_access, invalid_naming, owner, patch, pattern, reason, step,
+    type_decl,
 };
 
 check!(
@@ -121,23 +116,14 @@ fn invoice() -> TypeDecl {
 /// i3 (010), i4 (no customer, no region) and i5 (20, north). Answers the
 /// position before i2 was written.
 async fn lake(store: &dyn LakeStore) -> Result<Position, Failure> {
-    let cat = doors(store);
-    let own = owner(store);
-    declare(cat.as_ref(), &own, customer()).await?;
-    declare(cat.as_ref(), &own, invoice()).await?;
+    let l = Lake::of(store);
+    l.declare(customer()).await?;
+    l.declare(invoice()).await?;
     for (no, region) in [("10", "north"), ("010", "north"), ("20", "south")] {
-        upsert(
-            cat.as_ref(),
-            &own,
-            "customer",
-            no,
-            json!({"no": no, "region": region}),
-        )
-        .await?;
+        l.upsert("customer", no, json!({"no": no, "region": region}))
+            .await?;
     }
-    upsert(
-        cat.as_ref(),
-        &own,
+    l.upsert(
         "invoice",
         "i1",
         json!({"customer_no": "10", "region": "north"}),
@@ -150,7 +136,7 @@ async fn lake(store: &dyn LakeStore) -> Result<Position, Failure> {
         ("i4", json!({"amount": 1})),
         ("i5", json!({"customer_no": "20", "region": "north"})),
     ] {
-        upsert(cat.as_ref(), &own, "invoice", key, fields).await?;
+        l.upsert("invoice", key, fields).await?;
     }
     Ok(before)
 }
@@ -264,14 +250,14 @@ async fn changing_a_matched_field_moves_the_edge_at_that_position(
 
 async fn a_null_never_matches(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
     lake(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     // A customer without a region, and i4 without either field.
-    upsert(cat.as_ref(), &own, "customer", "30", json!({"no": "30"})).await?;
+    l.upsert("customer", "30", json!({"no": "30"})).await?;
     for (relation, want) in [("customer", "customer"), ("same_region", "customer")] {
         let got = reached(
             cat.as_ref(),
-            &own,
+            own,
             walk("invoice", "i4", relation, Walk::Out, None),
             want,
         )
@@ -283,7 +269,7 @@ async fn a_null_never_matches(store: Arc<dyn LakeStore>) -> Result<(), Failure> 
     }
     let got = reached(
         cat.as_ref(),
-        &own,
+        own,
         walk("customer", "30", "same_region", Walk::In, None),
         "invoice",
     )
@@ -300,26 +286,7 @@ async fn a_principal_without_read_on_a_matched_field_is_refused_naming_it(
 ) -> Result<(), Failure> {
     lake(store.as_ref()).await?;
     let cat = doors(store.as_ref());
-    let blind = |ty: &str, f: &str| {
-        let mut types = BTreeMap::new();
-        types.insert(
-            TypeName::from(ty),
-            TypeGrants {
-                default: None,
-                fields: [(f.into(), Access::None)].into(),
-            },
-        );
-        principal(
-            store.as_ref(),
-            PrincipalKind::Agent,
-            "blind",
-            Grants {
-                default: Access::Read,
-                types,
-                ..Grants::default()
-            },
-        )
-    };
+    let blind = |ty: &str, f: &str| field_access(store.as_ref(), "blind", ty, &[(f, Access::None)]);
     let in_local = vec![step("local_customer", Walk::In)];
     let degree = pattern("customer", None, in_local, Projection::Degree);
     let cases = [
@@ -360,28 +327,24 @@ async fn degree_and_components_over_a_derived_relation_equal_those_over_the_same
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     lake(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     // The same connections, written as link records between twin types.
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("client", vec![field("no", StorageKind::Text)]),
-    )
-    .await?;
+    l.declare(type_decl("client", vec![field("no", StorageKind::Text)]))
+        .await?;
     let mut bill = type_decl("bill", vec![field("note", StorageKind::Text)]);
     bill.relations = vec![RelationDecl {
         cardinality: Cardinality::ManyToOne,
         ..RelationDecl::to("customer", "client")
     }];
-    declare(cat.as_ref(), &own, bill).await?;
+    l.declare(bill).await?;
     for c in ["10", "010", "20"] {
-        upsert(cat.as_ref(), &own, "client", c, json!({"no": c})).await?;
+        l.upsert("client", c, json!({"no": c})).await?;
     }
     for (b, c) in [("i1", "10"), ("i2", "10"), ("i3", "010"), ("i5", "20")] {
-        upsert(cat.as_ref(), &own, "bill", b, json!({"note": b})).await?;
+        l.upsert("bill", b, json!({"note": b})).await?;
         cat.link(
-            &own,
+            own,
             &"bill".into(),
             &b.into(),
             &"customer".into(),
@@ -392,7 +355,7 @@ async fn degree_and_components_over_a_derived_relation_equal_those_over_the_same
         .await
         .must(&format!("linking {b} to {c}"))?;
     }
-    upsert(cat.as_ref(), &own, "bill", "i4", json!({"note": "i4"})).await?;
+    l.upsert("bill", "i4", json!({"note": "i4"})).await?;
     let measure = |ty: &str, project: Projection, walk: Walk| {
         pattern(ty, None, vec![step("customer", walk)], project)
     };
@@ -417,12 +380,12 @@ async fn degree_and_components_over_a_derived_relation_equal_those_over_the_same
         (Projection::Components, Walk::Both),
     ] {
         let derived = cat
-            .query(&own, measure("customer", project.clone(), walk_dir))
+            .query(own, measure("customer", project.clone(), walk_dir))
             .await
             .must(&format!("{project:?} over the derived relation"))?
             .data;
         let linked = cat
-            .query(&own, measure("client", project.clone(), walk_dir))
+            .query(own, measure("client", project.clone(), walk_dir))
             .await
             .must(&format!("{project:?} over the links"))?
             .data;
@@ -509,13 +472,13 @@ async fn a_derived_relation_is_declared_not_migrated_and_never_moves_carrier(
 async fn a_match_pair_of_two_kinds_is_refused_naming_both(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(cat.as_ref(), &own, customer()).await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(customer()).await?;
     let mut numbered = customer();
     numbered.name = "account".into();
     numbered.fields.push(field("number", StorageKind::Number));
-    declare(cat.as_ref(), &own, numbered).await?;
+    l.declare(numbered).await?;
     let base = || {
         type_decl(
             "invoice",
@@ -549,7 +512,7 @@ async fn a_match_pair_of_two_kinds_is_refused_naming_both(
         ),
     ] {
         let head = store.head().await.must("reading the head")?;
-        invalid_naming(what, cat.declare(&own, Declaration::Type(t)).await, &named)?;
+        invalid_naming(what, cat.declare(own, Declaration::Type(t)).await, &named)?;
         crate::conformance::fixture::head_unmoved(store.as_ref(), head, what).await?;
     }
     Ok(())

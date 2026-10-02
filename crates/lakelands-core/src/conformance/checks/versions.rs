@@ -53,15 +53,11 @@ async fn versions_start_at_one_and_grow_by_one_with_every_change(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = counter(store.as_ref()).await?;
-    let Lake { cat, own } = &l;
     let counter = TypeName::from("counter");
 
     let one = l.upsert("counter", "k", json!({"n": 1})).await?;
     let two = l.upsert("counter", "k", json!({"n": 2})).await?;
-    let retired = cat
-        .retire(own, &counter, &"k".into(), WriteOpts::default())
-        .await
-        .must("retiring `k`")?;
+    let retired = l.retire(counter.as_str(), "k").await?;
     let again = l.upsert("counter", "k", json!({"n": 3})).await?;
 
     let got: Vec<Option<u64>> = [&one, &two, &retired, &again]
@@ -270,9 +266,7 @@ async fn a_write_expecting_the_version_before_a_retirement_is_a_conflict(
         idempotency_key: None,
     };
     l.upsert("counter", "k", json!({"n": 1})).await?;
-    cat.retire(own, &counter, &"k".into(), WriteOpts::default())
-        .await
-        .must("retiring `k`")?;
+    l.retire(counter.as_str(), "k").await?;
     let before = store.head().await.must("reading the head")?;
     let err = cat
         .upsert(

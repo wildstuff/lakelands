@@ -174,9 +174,7 @@ pub(super) async fn lake(store: &dyn LakeStore, ibans: [Option<&str>; 4]) -> Res
         }
         l.upsert("account", &n, fields).await?;
     }
-    cat.retire(own, &"account".into(), &"3".into(), WriteOpts::default())
-        .await
-        .must("retiring account 3")?;
+    l.retire("account", "3").await?;
     store
         .restrict(&"account".into(), &"4".into(), "a retention hold".into())
         .await
@@ -715,9 +713,7 @@ async fn object_set_membership_moves_with_a_rekeyed_record(
         set_changes(&after_write)
     );
     let before = store.head().await.must("reading the head")?;
-    cat.retire(own, &"account".into(), &"DE1".into(), WriteOpts::default())
-        .await
-        .must("retiring `DE1`")?;
+    l.retire("account", "DE1").await?;
     let after_retire: Vec<Event> = log_events(store.as_ref())
         .await?
         .into_iter()

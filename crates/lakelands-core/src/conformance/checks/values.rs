@@ -6,15 +6,15 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, ValueTypeDecl};
-use lakelands_api::read::{Direction, Order, OrderBy};
+use lakelands_api::read::{Direction, OrderBy};
 use lakelands_api::write::Declaration;
-use lakelands_api::{FieldName, Find, LakeStore, Record, Refusal, TypeName, WriteOpts};
+use lakelands_api::{Find, LakeStore, Record, Refusal, TypeName, WriteOpts};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, declare, doors, field, head_unmoved, owner, patch, refused_on, type_decl, upsert,
-    value,
+    Lake, Must, declare, doors, field, head_unmoved, order, owner, patch, refused_on, type_decl,
+    upsert, value,
 };
 use crate::expr::order::cmp_values;
 
@@ -558,11 +558,7 @@ async fn a_page_ordered_by_a_geo_or_json_field_takes_the_rulebooks_fallback_orde
             let want: Vec<&str> = want.into_iter().map(|(k, _)| k).collect();
             for limit in [50, 3, 1] {
                 let find = Find {
-                    order_by: vec![Order {
-                        field: FieldName::from(name),
-                        by: OrderBy::Value,
-                        dir,
-                    }],
+                    order_by: vec![order(name, OrderBy::Value, dir)],
                     limit: Some(limit),
                     ..Find::default()
                 };

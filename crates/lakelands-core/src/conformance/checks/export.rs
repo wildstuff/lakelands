@@ -147,19 +147,14 @@ fn files(dir: &Path) -> Result<Vec<String>, Failure> {
 /// A lake with an `invoice` type and `n` invoices written.
 async fn invoices(store: &dyn LakeStore, from: u32, n: u32) -> Result<Position, Failure> {
     let l = Lake::of(store);
-    let Lake { cat, own } = &l;
     if from == 0 {
-        crate::conformance::fixture::declare(
-            cat.as_ref(),
-            own,
-            type_decl(
-                "invoice",
-                vec![field(
-                    "amount",
-                    lakelands_api::ontology::StorageKind::Number,
-                )],
-            ),
-        )
+        l.declare(type_decl(
+            "invoice",
+            vec![field(
+                "amount",
+                lakelands_api::ontology::StorageKind::Number,
+            )],
+        ))
         .await?;
     }
     let mut at = Position::GENESIS;
@@ -627,21 +622,14 @@ async fn exported_lake(
     let store = writer.as_ref();
     rekey::lake(store, rekey::IBANS).await?;
     rekey::apply(store).await?;
-    let own = owner(store);
-    let cat = doors(store);
+    let l = Lake::of(store);
+    let Lake { cat, own } = &l;
     let invoice = lakelands_api::TypeName::from("invoice");
     store
         .restrict(&invoice, &"i1".into(), "held".into())
         .await
         .must("restricting `i1`")?;
-    cat.retire(
-        &own,
-        &invoice,
-        &"i2".into(),
-        lakelands_api::WriteOpts::default(),
-    )
-    .await
-    .must("retiring `i2`")?;
+    l.retire(invoice.as_str(), "i2").await?;
     // Format version 3: a derived field calling date_bucket, and a record
     // ingested with the lake and position it was read from. Format version
     // 5: the type, a field and a relation carry annotations. Format version
@@ -661,7 +649,7 @@ async fn exported_lake(
         ]
     }))
     .expect("a declaration");
-    cat.declare(&own, stamp)
+    cat.declare(own, stamp)
         .await
         .must("declaring an annotated type with a derived field calling date_bucket")?;
     // Format version 7: a trigger whose guard calls `retired`.
@@ -669,7 +657,7 @@ async fn exported_lake(
         "declare": "trigger", "name": "stamp_retired", "on": "stamp", "when": "retired()"
     }))
     .expect("a declaration");
-    cat.declare(&own, gone)
+    cat.declare(own, gone)
         .await
         .must("declaring a trigger whose guard calls retired")?;
     // Format version 8: a view with a parameter.
@@ -682,7 +670,7 @@ async fn exported_lake(
                  "measures": [{"name": "stamps", "expr": "count()"}]}
     }))
     .expect("a declaration");
-    cat.declare(&own, up_to)
+    cat.declare(own, up_to)
         .await
         .must("declaring a view with a parameter")?;
     // Format version 9: a view that merges a second source on its key.
@@ -700,7 +688,7 @@ async fn exported_lake(
     ]))
     .expect("declarations");
     for d in ticks {
-        cat.declare(&own, d)
+        cat.declare(own, d)
             .await
             .must("declaring a view that merges a second source")?;
     }
@@ -710,11 +698,11 @@ async fn exported_lake(
         "risk": "low", "effect": "external", "executor": crate::conformance::backing::EXECUTOR
     }))
     .expect("a declaration");
-    cat.declare(&own, print)
+    cat.declare(own, print)
         .await
         .must("declaring a verb on its type")?;
     cat.call(
-        &own,
+        own,
         &"print_stamp".into(),
         None,
         Default::default(),
@@ -731,7 +719,7 @@ async fn exported_lake(
         lake: "upstream-lake".into(),
         position: Position(42),
     });
-    crate::conformance::fixture::ingest(cat.as_ref(), &own, "mirror", vec![read_from])
+    crate::conformance::fixture::ingest(cat.as_ref(), own, "mirror", vec![read_from])
         .await
         .must("ingesting `s1` with an upstream")?;
     let earlier = store.head().await.must("reading the head")?;

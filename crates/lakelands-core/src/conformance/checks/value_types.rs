@@ -286,9 +286,7 @@ async fn stored(store: &dyn LakeStore) -> Result<Lake, Failure> {
         l.upsert("invoice", k, json!({"status": s, "score": n}))
             .await?;
     }
-    cat.retire(own, &"invoice".into(), &"i3".into(), WriteOpts::default())
-        .await
-        .must("retiring `i3`")?;
+    l.retire("invoice", "i3").await?;
     store
         .restrict(&"invoice".into(), &"i4".into(), "a retention hold".into())
         .await

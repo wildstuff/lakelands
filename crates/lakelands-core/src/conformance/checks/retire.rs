@@ -4,13 +4,13 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::{Authority, StorageKind};
+use lakelands_api::ontology::StorageKind;
 use lakelands_api::{Access, Error, LakeStore, ReadAt, Refusal, TypeName, WriteOpts};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, field, field_writer, get_at, head_unmoved, reason, refused_on, type_decl,
+    Lake, Must, field, field_writer, get_at, head_unmoved, reason, refused_on, sourced, type_decl,
 };
 
 check!(
@@ -30,11 +30,6 @@ async fn a_type_whose_fields_all_come_from_a_source_has_no_upsert(
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
-    let sourced = |name: &str, kind| {
-        let mut f = field(name, kind);
-        f.authority = Authority::Source;
-        f
-    };
     l.declare(type_decl(
         "rate",
         vec![
@@ -147,7 +142,7 @@ async fn a_record_retired_at_a_position_is_readable_just_before_it(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
+    let Lake { cat, .. } = &l;
     l.declare(type_decl(
         "invoice",
         vec![field("status", StorageKind::Text)],
@@ -156,11 +151,7 @@ async fn a_record_retired_at_a_position_is_readable_just_before_it(
     l.upsert("invoice", "i1", json!({"status": "open"})).await?;
     let reader = field_writer(store.as_ref(), "reader", "invoice", &[]);
     let invoice = TypeName::from("invoice");
-    let retired = cat
-        .retire(own, &invoice, &"i1".into(), WriteOpts::default())
-        .await
-        .must("retiring `i1`")?
-        .position();
+    let retired = l.retire(invoice.as_str(), "i1").await?.position();
     let before = lakelands_api::Position(retired.0 - 1);
     let then = cat
         .get(&reader, &invoice, get_at("i1", Some(before)))

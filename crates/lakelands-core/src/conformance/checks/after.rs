@@ -12,8 +12,8 @@ use std::sync::Arc;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::read::{Aggregate, Direction, Order, OrderBy};
 use lakelands_api::{
-    After, Catalog, FieldName, Find, Found, LakeStore, Position, Principal, ReadAt, Record,
-    Refusal, TypeName, Value, WriteOpts,
+    After, Catalog, Find, Found, LakeStore, Position, Principal, ReadAt, Record, Refusal, TypeName,
+    Value,
 };
 use serde_json::json;
 
@@ -107,11 +107,7 @@ async fn by_after(
 }
 
 fn order(dir: Direction, two: bool) -> Vec<Order> {
-    let by = |f: &str, dir| Order {
-        field: FieldName::from(f),
-        by: OrderBy::Value,
-        dir,
-    };
+    let by = |f: &str, dir| crate::conformance::fixture::order(f, OrderBy::Value, dir);
     let other = match dir {
         Direction::Asc => Direction::Desc,
         Direction::Desc => Direction::Asc,
@@ -232,14 +228,7 @@ async fn after_resumes_where_the_cursor_would(store: Arc<dyn LakeStore>) -> Resu
         .position(|k| k.as_str() == gone.key.as_str())
         .ok_or_else(|| Failure::new("the first page's last row is not in the walk"))?;
     let expected = listed[at + 1..].to_vec();
-    cat.retire(
-        own,
-        &TypeName::from("item"),
-        &gone.key,
-        WriteOpts::default(),
-    )
-    .await
-    .must("retiring the first page's last row")?;
+    l.retire("item", gone.key.as_str()).await?;
     let resumed: Vec<String> = by_after(
         cat,
         own,

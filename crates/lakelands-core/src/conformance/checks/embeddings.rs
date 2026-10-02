@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use lakelands_api::event::EventBody;
-use lakelands_api::ontology::{Authority, EmbedDecl, FieldDecl, FieldType, StorageKind};
+use lakelands_api::ontology::{Authority, FieldDecl, FieldType, StorageKind};
 use lakelands_api::query::{Search, SearchMode};
 use lakelands_api::seam::Seams;
 use lakelands_api::write::Declaration;
@@ -22,8 +22,8 @@ use serde_json::{Value, json};
 
 use crate::conformance::backing::{EMBED_MODEL, embedded, plug_text, unplug_text};
 use crate::conformance::fixture::{
-    Lake, Must, declare, doors, field, owner, read, recorded_outputs, refused_on, source_record,
-    type_decl, upsert, value,
+    Lake, Must, declare, derived, doors, embedding, field, owner, read, recorded_outputs,
+    refused_on, source_record, type_decl, upsert, value,
 };
 use crate::conformance::{Failure, Reopen, backing};
 
@@ -96,23 +96,6 @@ check!(
     embedding
 );
 
-/// The embedding field of `note`: `vec`, made from `title` and `body`
-/// with `model`, of `dimensions`.
-fn vec_field(from: &[&str], model: &str, dimensions: u32) -> FieldDecl {
-    FieldDecl {
-        ty: FieldType {
-            dimensions: Some(dimensions),
-            ..FieldType::kind(StorageKind::Vector)
-        },
-        authority: Authority::Derived,
-        embed: Some(EmbedDecl {
-            from: from.iter().map(|f| (*f).into()).collect(),
-            model: model.into(),
-        }),
-        ..field("vec", StorageKind::Text)
-    }
-}
-
 fn notes_with(vec: FieldDecl, extra: Vec<FieldDecl>) -> lakelands_api::ontology::TypeDecl {
     let mut fields = vec![
         field("title", StorageKind::Text),
@@ -129,7 +112,7 @@ async fn notes(store: &dyn LakeStore) -> Result<Lake, Failure> {
     declare(
         cat.as_ref(),
         &owner(store),
-        notes_with(vec_field(&["title", "body"], EMBED_MODEL, 2), vec![]),
+        notes_with(embedding("vec", 2, &["title", "body"], EMBED_MODEL), vec![]),
     )
     .await?;
     Ok(Lake::of(store))
@@ -267,7 +250,7 @@ async fn an_embedding_whose_model_the_backend_does_not_make_is_refused_at_declar
         .declare(
             own,
             Declaration::Type(notes_with(
-                vec_field(&["title"], "another-model", 2),
+                embedding("vec", 2, &["title"], "another-model"),
                 vec![],
             )),
         )
@@ -275,7 +258,10 @@ async fn an_embedding_whose_model_the_backend_does_not_make_is_refused_at_declar
     let other_dimensions = cat
         .declare(
             own,
-            Declaration::Type(notes_with(vec_field(&["title"], EMBED_MODEL, 3), vec![])),
+            Declaration::Type(notes_with(
+                embedding("vec", 3, &["title"], EMBED_MODEL),
+                vec![],
+            )),
         )
         .await;
     ensure!(
@@ -296,7 +282,10 @@ async fn an_embedding_without_a_backend_is_refused_at_declare(
     let got = cat
         .declare(
             &owner(store.as_ref()),
-            Declaration::Type(notes_with(vec_field(&["title"], EMBED_MODEL, 2), vec![])),
+            Declaration::Type(notes_with(
+                embedding("vec", 2, &["title"], EMBED_MODEL),
+                vec![],
+            )),
         )
         .await;
     ensure!(
@@ -322,8 +311,11 @@ async fn a_changed_embedding_is_due_on_every_live_record_and_an_unchanged_one_em
             .await?;
     }
     // Now made from `body` alone: two distinct texts for three records.
-    l.declare(notes_with(vec_field(&["body"], EMBED_MODEL, 2), vec![]))
-        .await?;
+    l.declare(notes_with(
+        embedding("vec", 2, &["body"], EMBED_MODEL),
+        vec![],
+    ))
+    .await?;
     let (shared, own_body) = (
         embedded("Redeclared shared body"),
         embedded("Redeclared own body"),
@@ -338,8 +330,11 @@ async fn a_changed_embedding_is_due_on_every_live_record_and_an_unchanged_one_em
          two distinct bodies must each be embedded once (they were {shared} and \
          {own_body} times) and every record hold a vector ({filled:?})"
     );
-    l.declare(notes_with(vec_field(&["body"], EMBED_MODEL, 2), vec![]))
-        .await?;
+    l.declare(notes_with(
+        embedding("vec", 2, &["body"], EMBED_MODEL),
+        vec![],
+    ))
+    .await?;
     ensure!(
         embedded("Redeclared shared body") == 1 && embedded("Redeclared own body") == 1,
         "declaring `vec` again unchanged reads the recorded vectors back; the bodies were \
@@ -402,7 +397,7 @@ async fn a_failed_embedding_clears_the_field_and_a_redeclaration_retries_it(
     let before = embedded(text);
     plug_text(text);
     l.declare(notes_with(
-        vec_field(&["title", "body"], EMBED_MODEL, 2),
+        embedding("vec", 2, &["title", "body"], EMBED_MODEL),
         vec![],
     ))
     .await?;
@@ -424,14 +419,17 @@ async fn an_embedded_vector_recomputes_the_derived_fields_that_read_it(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let has = FieldDecl {
-        authority: Authority::Derived,
-        derived: Some("vec is not null".into()),
-        depends_on: vec!["vec".into()],
-        ..field("embedded", StorageKind::Boolean)
-    };
-    l.declare(notes_with(vec_field(&["title"], EMBED_MODEL, 2), vec![has]))
-        .await?;
+    let has = derived(
+        "embedded",
+        StorageKind::Boolean,
+        "vec is not null",
+        &["vec"],
+    );
+    l.declare(notes_with(
+        embedding("vec", 2, &["title"], EMBED_MODEL),
+        vec![has],
+    ))
+    .await?;
     l.upsert("note", "n1", json!({"title": "Reacting harbour"}))
         .await?;
     let r = l.read("note", "n1").await?;
@@ -626,7 +624,7 @@ async fn an_embedding_that_is_not_a_derived_vector_of_its_own_text_fields_is_ref
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
-    let good = || vec_field(&["title"], EMBED_MODEL, 2);
+    let good = || embedding("vec", 2, &["title"], EMBED_MODEL);
     let number = field("pages", StorageKind::Number);
     let cases: Vec<(&str, FieldDecl, Vec<FieldDecl>)> = vec![
         (
@@ -669,30 +667,34 @@ async fn an_embedding_that_is_not_a_derived_vector_of_its_own_text_fields_is_ref
             },
             vec![],
         ),
-        ("made from nothing", vec_field(&[], EMBED_MODEL, 2), vec![]),
+        (
+            "made from nothing",
+            embedding("vec", 2, &[], EMBED_MODEL),
+            vec![],
+        ),
         (
             "made from itself",
-            vec_field(&["title", "vec"], EMBED_MODEL, 2),
+            embedding("vec", 2, &["title", "vec"], EMBED_MODEL),
             vec![],
         ),
         (
             "made from a field twice",
-            vec_field(&["title", "title"], EMBED_MODEL, 2),
+            embedding("vec", 2, &["title", "title"], EMBED_MODEL),
             vec![],
         ),
         (
             "made from a field it lacks",
-            vec_field(&["summary"], EMBED_MODEL, 2),
+            embedding("vec", 2, &["summary"], EMBED_MODEL),
             vec![],
         ),
         (
             "made from a number",
-            vec_field(&["pages"], EMBED_MODEL, 2),
+            embedding("vec", 2, &["pages"], EMBED_MODEL),
             vec![number.clone()],
         ),
         (
             "made from a sensitive field and not sensitive itself",
-            vec_field(&["secret"], EMBED_MODEL, 2),
+            embedding("vec", 2, &["secret"], EMBED_MODEL),
             vec![FieldDecl {
                 sensitive: true,
                 ..field("secret", StorageKind::Text)
@@ -722,7 +724,7 @@ async fn an_embedding_that_is_not_a_derived_vector_of_its_own_text_fields_is_ref
     l.declare(notes_with(
         FieldDecl {
             sensitive: true,
-            ..vec_field(&["secret"], EMBED_MODEL, 2)
+            ..embedding("vec", 2, &["secret"], EMBED_MODEL)
         },
         vec![FieldDecl {
             sensitive: true,
@@ -772,7 +774,7 @@ async fn no_request_carries_more_than_sixty_four_texts(
         .must("ingesting 150 batches")?;
     l.declare(type_decl(
         "batch",
-        vec![title(), vec_field(&["title"], model, 2)],
+        vec![title(), embedding("vec", 2, &["title"], model)],
     ))
     .await?;
     let sizes = backing::embed_call_sizes(model);
@@ -801,7 +803,6 @@ async fn vector_coverage_counts_embedded_and_due_records_at_the_head(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = notes(store.as_ref()).await?;
-    let Lake { cat, own } = &l;
     for (key, title) in [
         ("n1", "Coverage harbour one"),
         ("n2", "Coverage harbour two"),
@@ -833,7 +834,7 @@ async fn vector_coverage_counts_embedded_and_due_records_at_the_head(
         plug_text(title);
     }
     l.declare(notes_with(
-        vec_field(&["title", "body"], EMBED_MODEL, 2),
+        embedding("vec", 2, &["title", "body"], EMBED_MODEL),
         vec![],
     ))
     .await?;
@@ -844,14 +845,7 @@ async fn vector_coverage_counts_embedded_and_due_records_at_the_head(
          vector_coverage answered {got:?}"
     );
 
-    cat.retire(
-        own,
-        &"note".into(),
-        &"n1".into(),
-        lakelands_api::WriteOpts::default(),
-    )
-    .await
-    .must("retiring n1")?;
+    l.retire("note", "n1").await?;
     let got = coverage(store.as_ref(), "after a retire").await?;
     ensure!(
         got == (4, 0),

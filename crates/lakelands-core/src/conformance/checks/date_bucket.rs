@@ -13,14 +13,14 @@ use std::sync::Arc;
 
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::StorageKind;
-use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, GroupKey};
+use lakelands_api::read::{AggFunc, Aggregate, GroupKey};
 use lakelands_api::write::Declaration;
 use lakelands_api::{Find, Found, LakeStore, Refusal, TypeName, Value};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, dec, decimal, doors, field, owner, reason, type_decl,
+    Lake, Must, agg, dec, decimal, doors, field, find_where, log_events, owner, reason, type_decl,
 };
 
 check!(
@@ -83,16 +83,8 @@ fn by(unit: &str) -> Find {
     Find {
         aggregate: Some(Aggregate {
             measures: vec![
-                AggMeasure {
-                    name: "n".into(),
-                    func: AggFunc::Count,
-                    field: None,
-                },
-                AggMeasure {
-                    name: "total".into(),
-                    func: AggFunc::Sum,
-                    field: Some("amount".into()),
-                },
+                agg("n", AggFunc::Count, None),
+                agg("total", AggFunc::Sum, Some("amount")),
             ],
             group_by: vec![GroupKey::Named {
                 name: "bucket".into(),
@@ -275,10 +267,7 @@ async fn a_declaration_may_call_date_bucket_and_from_it_the_lake_writes_format_3
         .find(
             own,
             &TypeName::from("entry"),
-            Find {
-                filter: Some(Condition::Text("month = '2028-01-01T00:00:00Z'".into())),
-                ..Find::default()
-            },
+            find_where("month = '2028-01-01T00:00:00Z'"),
         )
         .await
         .must("finding January's entries by their derived month")?
@@ -308,16 +297,7 @@ async fn a_declaration_may_call_date_bucket_and_from_it_the_lake_writes_format_3
     cat.apply(own, more)
         .await
         .must("applying a view and an object set calling date_bucket")?;
-    let events = store
-        .feed()
-        .poll(
-            lakelands_api::Position::GENESIS,
-            &lakelands_api::seam::FeedFilter::default(),
-            10_000,
-        )
-        .await
-        .must("reading the log")?
-        .events;
+    let events = log_events(store.as_ref()).await?;
     for e in &events {
         let want_v3 = e.position >= declared_at;
         ensure!(

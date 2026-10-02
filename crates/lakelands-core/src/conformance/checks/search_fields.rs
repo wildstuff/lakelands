@@ -12,7 +12,7 @@ use serde_json::json;
 
 use super::search::{doc_search, keys, masking, refused};
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, doors, field, owner, type_decl};
+use crate::conformance::fixture::{Lake, Must, doors, embedding, field, owner, type_decl, vector};
 
 check!(
     /// Named fields narrow the match and the ranking.
@@ -44,19 +44,12 @@ check!(
 /// quayside", `a` and `b` hold both words and `c` one over every
 /// searchable field; `b` holds both in `note`, `a` one, `c` none.
 async fn accounts(store: &dyn LakeStore) -> Result<(), Failure> {
-    use lakelands_api::ontology::FieldType;
     let l = Lake::of(store);
     let searchable = |name| FieldDecl {
         searchable: true,
         ..field(name, StorageKind::Text)
     };
-    let w = FieldDecl {
-        ty: FieldType {
-            dimensions: Some(2),
-            ..FieldType::kind(StorageKind::Vector)
-        },
-        ..field("w", StorageKind::Text)
-    };
+    let w = vector("w", 2);
     l.declare(type_decl(
         "doc",
         vec![
@@ -119,10 +112,7 @@ async fn a_search_limited_to_named_fields_matches_and_ranks_in_those_only(
     let every = answer(
         store.as_ref(),
         &own,
-        SearchMode::Lexical {
-            text: "harbour quayside".into(),
-            fields: None,
-        },
+        SearchMode::lexical("harbour quayside"),
         "a search in every searchable field",
     )
     .await?;
@@ -186,10 +176,7 @@ async fn a_search_limited_to_readable_fields_is_answered_beside_a_masked_one(
     refused(
         store.as_ref(),
         &reader,
-        doc_search(SearchMode::Lexical {
-            text: "harbour quayside".into(),
-            fields: None,
-        }),
+        doc_search(SearchMode::lexical("harbour quayside")),
         "secret",
         "a search in every searchable field, by a reader who sees `secret` only masked,",
     )
@@ -304,20 +291,9 @@ async fn a_hybrid_search_limited_to_named_fields_still_probes_what_its_vector_is
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     use crate::conformance::backing::EMBED_MODEL;
-    use lakelands_api::ontology::{Authority, EmbedDecl, FieldType};
+
     let l = Lake::of(store.as_ref());
-    let vec = FieldDecl {
-        ty: FieldType {
-            dimensions: Some(2),
-            ..FieldType::kind(StorageKind::Vector)
-        },
-        authority: Authority::Derived,
-        embed: Some(EmbedDecl {
-            from: vec!["secret".into()],
-            model: EMBED_MODEL.into(),
-        }),
-        ..field("vec", StorageKind::Text)
-    };
+    let vec = embedding("vec", 2, &["secret"], EMBED_MODEL);
     let note = FieldDecl {
         searchable: true,
         ..field("note", StorageKind::Text)

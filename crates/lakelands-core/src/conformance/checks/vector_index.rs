@@ -24,12 +24,12 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
-use lakelands_api::ontology::{Authority, FieldDecl, FieldType, StorageKind};
+use lakelands_api::ontology::{Authority, FieldDecl, StorageKind};
 use lakelands_api::query::{Search, SearchMode};
 use lakelands_api::{LakeStore, Position, Principal, ReadAt, SourceId, SourceRecord, TypeName};
 use serde_json::json;
 
-use crate::conformance::fixture::{Lake, Must, doors, field, type_decl};
+use crate::conformance::fixture::{Lake, Must, doors, field, type_decl, vector};
 use crate::conformance::{Failure, Given, next};
 
 check!(
@@ -182,20 +182,13 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
     store: Arc<dyn LakeStore>,
     given: Given,
 ) -> Result<(), Failure> {
-    use lakelands_api::WriteOpts;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let source = |f: FieldDecl| FieldDecl {
         authority: Authority::Source,
         ..f
     };
-    let v = source(FieldDecl {
-        ty: FieldType {
-            dimensions: Some(DIMENSIONS as u32),
-            ..FieldType::kind(StorageKind::Vector)
-        },
-        ..field("v", StorageKind::Text)
-    });
+    let v = source(vector("v", DIMENSIONS as u32));
     let group = source(field("group", StorageKind::Number));
     l.declare(type_decl(TY, vec![v, group])).await?;
     let mut points: Vec<Point> = (0..POINTS)
@@ -233,9 +226,7 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
         match i % 100 {
             5 => {
                 p.retired = true;
-                cat.retire(own, &point, &p.key.as_str().into(), WriteOpts::default())
-                    .await
-                    .must(&format!("retiring `{}`", p.key))?;
+                l.retire(point.as_str(), p.key.as_str()).await?;
             }
             17 => {
                 p.vector = Some(near((i as u64 + 11) % CENTRES, i as u64 + 50_000, 0.35));
@@ -270,10 +261,7 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
                 &own,
                 Search {
                     ty: TypeName::from(TY),
-                    mode: SearchMode::Vector {
-                        field: "v".into(),
-                        vector: q,
-                    },
+                    mode: SearchMode::vector("v", q),
                     k,
                     cursor: None,
                     filter: group.map(|g| format!("group = {g}").as_str().into()),

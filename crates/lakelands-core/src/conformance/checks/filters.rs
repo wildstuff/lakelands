@@ -6,14 +6,14 @@
 use std::sync::Arc;
 
 use lakelands_api::ontology::{Authority, FieldDecl, StorageKind};
-use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Order, OrderBy};
+use lakelands_api::read::{AggFunc, Aggregate, Order, OrderBy};
 use lakelands_api::{Find, LakeStore, Refusal, Timestamp};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all_found, declare, doors, field, field_writer, owner, refused_on, source_record,
-    type_decl, windows_reach_head,
+    Lake, Must, agg, all_found, declare, doors, field, field_writer, find_where, order, owner,
+    refused_on, source_record, type_decl, windows_reach_head,
 };
 
 check!(
@@ -178,13 +178,7 @@ async fn probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggre
     let line = "line".into();
 
     let probes: [(&str, Find); 3] = [
-        (
-            "a filter",
-            Find {
-                filter: Some("note = 'secret'".into()),
-                ..Find::default()
-            },
-        ),
+        ("a filter", find_where("note = 'secret'")),
         (
             "an order",
             Find {
@@ -200,11 +194,7 @@ async fn probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggre
             "an aggregate",
             Find {
                 aggregate: Some(Aggregate {
-                    measures: vec![AggMeasure {
-                        name: "n".into(),
-                        func: AggFunc::Count,
-                        field: None,
-                    }],
+                    measures: vec![agg("n", AggFunc::Count, None)],
                     group_by: vec!["note".into()],
                 }),
                 ..Find::default()
@@ -222,16 +212,9 @@ async fn probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggre
              it failed with {err:?}"
         );
     }
-    cat.find(
-        &reader,
-        &line,
-        Find {
-            filter: Some("qty = 1".into()),
-            ..Find::default()
-        },
-    )
-    .await
-    .must("filtering on the readable `qty`")?;
+    cat.find(&reader, &line, find_where("qty = 1"))
+        .await
+        .must("filtering on the readable `qty`")?;
     Ok(())
 }
 
@@ -262,11 +245,11 @@ async fn a_filter_and_an_order_can_read_when_a_source_saw_a_value(
 
     let find = Find {
         filter: Some("seen_at(level) < '2026-03-16'".into()),
-        order_by: vec![Order {
-            field: "level".into(),
-            by: OrderBy::SeenAt,
-            dir: lakelands_api::read::Direction::Desc,
-        }],
+        order_by: vec![order(
+            "level",
+            OrderBy::SeenAt,
+            lakelands_api::read::Direction::Desc,
+        )],
         ..Find::default()
     };
     let rows = l.all_found("reading", find).await?;

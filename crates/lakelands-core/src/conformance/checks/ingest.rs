@@ -10,13 +10,13 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::{Authority, StorageKind, TypeDecl};
+use lakelands_api::ontology::{StorageKind, TypeDecl};
 use lakelands_api::{Error, LakeStore, Refusal, TypeName, Version};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, committed, field, get_at, head_unmoved, patch, refused_on, source_record,
+    Lake, Must, committed, field, get_at, head_unmoved, patch, refused_on, source_record, sourced,
     type_decl, value, windows_reach_head,
 };
 
@@ -58,8 +58,7 @@ check!(
 
 /// `feed`: a source's `body` and an author's `verdict`.
 fn feed() -> TypeDecl {
-    let mut body = field("body", StorageKind::Text);
-    body.authority = Authority::Source;
+    let body = sourced("body", StorageKind::Text);
     type_decl("feed", vec![body, field("verdict", StorageKind::Text)])
 }
 
@@ -352,10 +351,8 @@ async fn an_ingested_record_carries_its_upstream_per_field(
 ) -> Result<(), Failure> {
     use lakelands_api::{Position, Upstream};
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
     let mut reading = feed();
-    let mut unit = field("unit", StorageKind::Text);
-    unit.authority = Authority::Source;
+    let unit = sourced("unit", StorageKind::Text);
     reading.fields.push(unit);
     l.declare(reading).await?;
     let from = Upstream {
@@ -437,8 +434,7 @@ async fn an_ingested_record_carries_its_upstream_per_field(
     l.ingest("mirror", vec![stamped])
         .await
         .must("ingesting `r2` with an upstream")?;
-    crate::conformance::fixture::upsert(cat.as_ref(), own, "feed", "r2", json!({"verdict": "ok"}))
-        .await?;
+    l.upsert("feed", "r2", json!({"verdict": "ok"})).await?;
     let rec = l.read("feed", "r2").await?;
     let (body, verdict) = (
         rec.meta.get("body").and_then(|m| m.upstream.clone()),

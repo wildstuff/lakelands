@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use lakelands_api::ontology::StorageKind;
-use lakelands_api::{Find, Found, LakeStore, TypeName, WriteOpts};
+use lakelands_api::{Find, Found, LakeStore, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
@@ -47,9 +47,7 @@ async fn a_cursor_stays_on_the_position_of_its_first_page(
     // The lake moves on: a record that sorts first, a change and a retirement.
     l.upsert("item", "a", json!({"n": 9})).await?;
     l.upsert("item", "d", json!({"n": 99})).await?;
-    cat.retire(own, &item, &"e".into(), WriteOpts::default())
-        .await
-        .must("retiring `e`")?;
+    l.retire(item.as_str(), "e").await?;
 
     loop {
         let next = cat

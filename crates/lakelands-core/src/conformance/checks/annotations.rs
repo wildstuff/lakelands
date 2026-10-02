@@ -19,16 +19,14 @@ use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{
     ANNOTATIONS_MAX_BYTES, Annotations, RelationDecl, StorageKind, TypeDecl,
 };
-use lakelands_api::principal::TypeGrants;
-use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::Declaration;
-use lakelands_api::{
-    Access, Grants, LakeStore, Position, PrincipalKind, ReadAt, Refusal, TypeName,
-};
+use lakelands_api::{Access, LakeStore, Position, ReadAt, Refusal, TypeName};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, field, head_unmoved, principal, reason, type_decl};
+use crate::conformance::fixture::{
+    Lake, Must, events_from, field, field_access, head_unmoved, reason, type_decl,
+};
 
 check!(
     /// Annotations come back as declared.
@@ -143,12 +141,7 @@ async fn declared_event(
     after: Position,
     name: &str,
 ) -> Result<TypeDecl, Failure> {
-    let events = store
-        .feed()
-        .poll(after, &FeedFilter::default(), 10_000)
-        .await
-        .must("reading the feed")?
-        .events;
+    let events = events_from(store, after).await?;
     events
         .into_iter()
         .rev()
@@ -281,31 +274,20 @@ async fn a_masked_field_is_described_without_its_annotations(
         .must("declaring `shelf`")?;
     // Reads everything but `secret` (masked: it is sensitive) and the
     // link field `note`.
-    let mut types = BTreeMap::new();
-    types.insert(
-        TypeName::from("shelf"),
-        TypeGrants {
-            default: None,
-            fields: [("secret".into(), Access::None)].into(),
-        },
-    );
-    types.insert(
-        TypeName::from("sys.link.shelf.room"),
-        TypeGrants {
-            default: None,
-            fields: [("note".into(), Access::None)].into(),
-        },
-    );
-    let clerk = principal(
+    let mut clerk = field_access(
         store.as_ref(),
-        PrincipalKind::Agent,
         "clerk",
-        Grants {
-            default: Access::Read,
-            types,
-            ..Grants::default()
-        },
+        "shelf",
+        &[("secret", Access::None)],
     );
+    let note = lakelands_api::principal::TypeGrants {
+        default: None,
+        fields: [("note".into(), Access::None)].into(),
+    };
+    clerk
+        .grants
+        .types
+        .insert("sys.link.shelf.room".into(), note);
     let d = cat
         .describe_type(&clerk, &TypeName::from("shelf"), ReadAt::default())
         .await

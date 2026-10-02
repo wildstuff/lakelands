@@ -9,13 +9,13 @@ use std::sync::Arc;
 use lakelands_api::ontology::{
     Authority, Cardinality, FieldDecl, FieldType, RelationDecl, StorageKind,
 };
-use lakelands_api::read::{Direction, Order, OrderBy};
+use lakelands_api::read::{Direction, OrderBy};
 use lakelands_api::write::WriteOpts;
 use lakelands_api::{Find, LakeStore, Position, ReadAt};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, field, patch, source_record, type_decl};
+use crate::conformance::fixture::{Lake, Must, field, order, patch, source_record, type_decl};
 
 check!(
     /// `latest` orders by each record's last event.
@@ -25,11 +25,7 @@ check!(
 
 fn latest(dir: Direction) -> Find {
     Find {
-        order_by: vec![Order {
-            field: "".into(),
-            by: OrderBy::Latest,
-            dir,
-        }],
+        order_by: vec![order("", OrderBy::Latest, dir)],
         ..Find::default()
     }
 }
@@ -82,9 +78,7 @@ async fn find_ordered_by_latest_lists_records_by_their_last_event(
         .upsert("invoice", "i1", json!({"note": "late"}))
         .await?
         .position();
-    cat.retire(own, &"invoice".into(), &"i2".into(), WriteOpts::default())
-        .await
-        .must("retiring i2")?;
+    l.retire("invoice", "i2").await?;
     l.ingest(
         "erp",
         vec![source_record("invoice", "i3", json!({"seen": "yes"}))],

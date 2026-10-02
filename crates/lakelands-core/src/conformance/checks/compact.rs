@@ -28,9 +28,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use lakelands_api::ontology::{
-    Authority, EmbedDecl, FieldDecl, FieldType, StorageKind, ValueTypeDecl,
-};
+use lakelands_api::ontology::{FieldDecl, StorageKind, ValueTypeDecl};
 use lakelands_api::query::{Projection, Search, SearchMode, Walk};
 use lakelands_api::write::{CompactReport, Declaration, ProposalFilter, ProposedWrite};
 use lakelands_api::{
@@ -44,8 +42,8 @@ use super::rekey;
 use crate::conformance::Failure;
 use crate::conformance::backing::{EMBED_MODEL, KIND, made, plug, unplug};
 use crate::conformance::fixture::{
-    Caller, Lake, Must, declare, doors, field, join_all, log_events, owner, partner_totals, patch,
-    pattern, read, step, type_decl, upsert,
+    Caller, Lake, Must, computed_by, declare, doors, embedding, field, join_all, log_events, owner,
+    partner_totals, patch, pattern, read, step, type_decl, upsert,
 };
 use crate::export;
 
@@ -126,12 +124,7 @@ async fn places(l: &Lake, token: &str) -> Result<(), Failure> {
     cat.declare(own, function)
         .await
         .must("declaring `lookup`, backed by the suite's backing")?;
-    let name = FieldDecl {
-        authority: Authority::Derived,
-        function: Some("lookup".into()),
-        depends_on: vec!["code".into()],
-        ..field("name", StorageKind::Text)
-    };
+    let name = computed_by("name", StorageKind::Text, "lookup", &["code"]);
     declare(
         cat,
         own,
@@ -147,18 +140,7 @@ async fn places(l: &Lake, token: &str) -> Result<(), Failure> {
 /// `note`, whose `vec` the suite's embedding backend makes from `title`.
 async fn notes(l: &Lake) -> Result<(), Failure> {
     let (cat, own) = (l.cat.as_ref(), &l.own);
-    let vec = FieldDecl {
-        ty: FieldType {
-            dimensions: Some(2),
-            ..FieldType::kind(StorageKind::Vector)
-        },
-        authority: Authority::Derived,
-        embed: Some(EmbedDecl {
-            from: vec!["title".into()],
-            model: EMBED_MODEL.into(),
-        }),
-        ..field("vec", StorageKind::Text)
-    };
+    let vec = embedding("vec", 2, &["title"], EMBED_MODEL);
     declare(
         cat,
         own,
@@ -201,9 +183,7 @@ async fn churned(store: &dyn LakeStore, embedded: bool, token: &str) -> Result<L
         }
     }
     keyed(cat.as_ref(), own).await?;
-    cat.retire(own, &"invoice".into(), &"i1".into(), WriteOpts::default())
-        .await
-        .must("retiring invoice i1")?;
+    l.retire("invoice", "i1").await?;
     store
         .restrict(&"invoice".into(), &"i2".into(), "a retention hold".into())
         .await
@@ -290,10 +270,7 @@ async fn answers(
         }
         let search = Search {
             ty: TypeName::from("invoice"),
-            mode: SearchMode::Lexical {
-                text: "lake note".into(),
-                fields: None,
-            },
+            mode: SearchMode::lexical("lake note"),
             k: 20,
             cursor: None,
             filter: None,
@@ -306,10 +283,7 @@ async fn answers(
         ));
         let vector = Search {
             ty: TypeName::from("note"),
-            mode: SearchMode::Vector {
-                field: "vec".into(),
-                vector: vec![1.0, 0.0],
-            },
+            mode: SearchMode::vector("vec", vec![1.0, 0.0]),
             k: 20,
             cursor: None,
             filter: None,

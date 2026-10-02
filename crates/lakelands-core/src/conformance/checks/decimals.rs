@@ -10,12 +10,12 @@
 use std::sync::Arc;
 
 use lakelands_api::ontology::StorageKind;
-use lakelands_api::read::{AggFunc, AggMeasure, Aggregate};
-use lakelands_api::{FieldName, Find, Found, LakeStore, TypeName};
+use lakelands_api::read::{AggFunc, Aggregate};
+use lakelands_api::{Find, Found, LakeStore, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, all, dec, decimal, field, type_decl, value};
+use crate::conformance::fixture::{Lake, Must, agg, all, dec, decimal, field, type_decl, value};
 
 check!(
     /// A decimal reads back as it was written.
@@ -89,11 +89,7 @@ async fn a_sum_over_decimals_is_exact(store: Arc<dyn LakeStore>) -> Result<(), F
 
     let find = Find {
         aggregate: Some(Aggregate {
-            measures: vec![AggMeasure {
-                name: FieldName::from("total"),
-                func: AggFunc::Sum,
-                field: Some(FieldName::from("amount")),
-            }],
+            measures: vec![agg("total", AggFunc::Sum, Some("amount"))],
             group_by: Vec::new(),
         }),
         ..Find::default()
@@ -169,11 +165,7 @@ async fn a_scaled_decimal_keeps_its_scale_when_derived_and_summed(
     );
     let find = Find {
         aggregate: Some(Aggregate {
-            measures: vec![AggMeasure {
-                name: FieldName::from("total"),
-                func: AggFunc::Sum,
-                field: Some(FieldName::from("gross")),
-            }],
+            measures: vec![agg("total", AggFunc::Sum, Some("gross"))],
             group_by: Vec::new(),
         }),
         ..Find::default()
