@@ -87,40 +87,10 @@ pub fn func_name(f: Func) -> &'static str {
     }
 }
 
-const FUNCS: [Func; 29] = [
-    Func::Now,
-    Func::Today,
-    Func::KnownAt,
-    Func::SeenAt,
-    Func::Previous,
-    Func::Setting,
-    Func::Param,
-    Func::Changed,
-    Func::Retired,
-    Func::Coalesce,
-    Func::If,
-    Func::Lower,
-    Func::Upper,
-    Func::Trim,
-    Func::Len,
-    Func::Concat,
-    Func::Substr,
-    Func::Contains,
-    Func::Replace,
-    Func::StartsWith,
-    Func::Matches,
-    Func::Abs,
-    Func::Round,
-    Func::DateBucket,
-    Func::Count,
-    Func::Sum,
-    Func::Min,
-    Func::Max,
-    Func::Avg,
-];
-
+/// A function by its text name, which is its serde name (`func_name`
+/// spells the same names out).
 fn func_by_name(name: &str) -> Option<Func> {
-    FUNCS.into_iter().find(|f| func_name(*f) == name)
+    serde_json::from_value(serde_json::Value::from(name)).ok()
 }
 
 /// How many arguments a function takes: `(min, max)`, `max` unbounded when
@@ -177,7 +147,11 @@ impl Parser {
     }
 
     fn ws(&mut self) {
-        while self.chars.get(self.pos).is_some_and(|c| c.is_whitespace()) {
+        self.skip(char::is_whitespace);
+    }
+
+    fn skip(&mut self, mut keep: impl FnMut(char) -> bool) {
+        while self.peek().is_some_and(&mut keep) {
             self.pos += 1;
         }
     }
@@ -200,22 +174,8 @@ impl Parser {
     /// A keyword, only when not the prefix of a longer identifier.
     fn keyword(&mut self, kw: &str) -> bool {
         self.ws();
-        let n = kw.chars().count();
-        let matches = self.chars[self.pos..]
-            .iter()
-            .take(n)
-            .copied()
-            .eq(kw.chars());
-        let boundary = !self
-            .chars
-            .get(self.pos + n)
-            .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_');
-        if matches && boundary {
-            self.pos += n;
-            true
-        } else {
-            false
-        }
+        let next = self.chars.get(self.pos + kw.chars().count());
+        !next.is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_') && self.eat(kw)
     }
 
     fn expect(&mut self, s: &str) -> Result<()> {
@@ -287,19 +247,16 @@ impl Parser {
             });
         }
         self.ws();
-        let op = if self.eat("!=") {
-            CmpOp::Ne
-        } else if self.eat("<=") {
-            CmpOp::Le
-        } else if self.eat(">=") {
-            CmpOp::Ge
-        } else if self.eat("=") {
-            CmpOp::Eq
-        } else if self.eat("<") {
-            CmpOp::Lt
-        } else if self.eat(">") {
-            CmpOp::Gt
-        } else {
+        // Longest first: `<=` before `<`.
+        let ops = [
+            ("!=", CmpOp::Ne),
+            ("<=", CmpOp::Le),
+            (">=", CmpOp::Ge),
+            ("=", CmpOp::Eq),
+            ("<", CmpOp::Lt),
+            (">", CmpOp::Gt),
+        ];
+        let Some(&(_, op)) = ops.iter().find(|(s, _)| self.eat(s)) else {
             return Ok(lhs);
         };
         let rhs = self.sum()?;
@@ -311,41 +268,29 @@ impl Parser {
     }
 
     fn sum(&mut self) -> Result<Expr> {
-        let mut lhs = self.product()?;
-        loop {
-            let arith = if self.eat("+") {
-                ArithOp::Add
-            } else if self.eat("-") {
-                ArithOp::Sub
-            } else {
-                return Ok(lhs);
-            };
-            let rhs = self.product()?;
-            lhs = Expr::Arith {
-                arith,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            };
-        }
+        self.arith([("+", ArithOp::Add), ("-", ArithOp::Sub)], Self::product)
     }
 
     fn product(&mut self) -> Result<Expr> {
-        let mut lhs = self.unary()?;
-        loop {
-            let arith = if self.eat("*") {
-                ArithOp::Mul
-            } else if self.eat("/") {
-                ArithOp::Div
-            } else {
-                return Ok(lhs);
-            };
-            let rhs = self.unary()?;
+        self.arith([("*", ArithOp::Mul), ("/", ArithOp::Div)], Self::unary)
+    }
+
+    /// Operands joined by either of two operators, left-associative.
+    fn arith(
+        &mut self,
+        ops: [(&str, ArithOp); 2],
+        operand: fn(&mut Self) -> Result<Expr>,
+    ) -> Result<Expr> {
+        let mut lhs = operand(self)?;
+        while let Some(&(_, arith)) = ops.iter().find(|(op, _)| self.eat(op)) {
+            let rhs = operand(self)?;
             lhs = Expr::Arith {
                 arith,
                 lhs: Box::new(lhs),
                 rhs: Box::new(rhs),
             };
         }
+        Ok(lhs)
     }
 
     fn unary(&mut self) -> Result<Expr> {
@@ -386,9 +331,7 @@ impl Parser {
                 }
                 Some('\'') => {
                     self.pos += 1;
-                    return Ok(Expr::Lit {
-                        value: Literal::Text(s),
-                    });
+                    return Ok(lit(Literal::Text(s)));
                 }
                 Some(c) => {
                     s.push(c);
@@ -400,9 +343,7 @@ impl Parser {
 
     fn number(&mut self) -> Result<Expr> {
         let start = self.pos;
-        while self.peek().is_some_and(|c| c.is_ascii_digit()) {
-            self.pos += 1;
-        }
+        self.skip(|c| c.is_ascii_digit());
         if self.peek() == Some('.')
             && self
                 .chars
@@ -410,9 +351,7 @@ impl Parser {
                 .is_some_and(char::is_ascii_digit)
         {
             self.pos += 1;
-            while self.peek().is_some_and(|c| c.is_ascii_digit()) {
-                self.pos += 1;
-            }
+            self.skip(|c| c.is_ascii_digit());
         }
         let raw: String = self.chars[start..self.pos].iter().collect();
         let unit = match self.peek() {
@@ -431,9 +370,7 @@ impl Parser {
             let micros = duration_micros(&raw, secs).ok_or_else(|| {
                 self.err(format!("`{raw}` is not a duration this grammar can hold"))
             })?;
-            return Ok(Expr::Lit {
-                value: Literal::Duration(micros),
-            });
+            return Ok(lit(Literal::Duration(micros)));
         }
         if self
             .peek()
@@ -441,19 +378,12 @@ impl Parser {
         {
             return Err(self.err("a number runs into a name"));
         }
-        Ok(Expr::Lit {
-            value: Literal::Number(raw),
-        })
+        Ok(lit(Literal::Number(raw)))
     }
 
     fn ident(&mut self) -> String {
         let start = self.pos;
-        while self
-            .peek()
-            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
-        {
-            self.pos += 1;
-        }
+        self.skip(|c| c.is_ascii_alphanumeric() || c == '_');
         self.chars[start..self.pos].iter().collect()
     }
 
@@ -461,21 +391,9 @@ impl Parser {
         let start = self.pos;
         let first = self.ident();
         match first.as_str() {
-            "true" => {
-                return Ok(Expr::Lit {
-                    value: Literal::Bool(true),
-                });
-            }
-            "false" => {
-                return Ok(Expr::Lit {
-                    value: Literal::Bool(false),
-                });
-            }
-            "null" => {
-                return Ok(Expr::Lit {
-                    value: Literal::Null,
-                });
-            }
+            "true" => return Ok(lit(Literal::Bool(true))),
+            "false" => return Ok(lit(Literal::Bool(false))),
+            "null" => return Ok(lit(Literal::Null)),
             kw if KEYWORDS.contains(&kw) => {
                 self.pos = start;
                 return Err(self.err(format!("`{kw}` cannot start a value")));
@@ -549,6 +467,10 @@ impl Parser {
             self.expect(",")?;
         }
     }
+}
+
+fn lit(value: Literal) -> Expr {
+    Expr::Lit { value }
 }
 
 /// A duration literal in microseconds, if it fits and is a whole number of
