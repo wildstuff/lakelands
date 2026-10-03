@@ -326,7 +326,7 @@ the rules are deterministic, so a replay reproduces them.
 | Kind | Payload | Fold |
 |---|---|---|
 | `trigger_fired` | `trigger`, `type`, `key` | A write made a trigger's condition hold. Appended in the same append as that write, with `cause` naming it. The durable fact that something is due; acting on it is the host's (`docs/decisions/004-the-change-feed-is-the-log.md`). |
-| `object_set_changed` | `set`, `type`, `key`, `joined` (boolean) | A write moved a record into (`true`) or out of (`false`) an object set, in the write's append and caused by it; or a set's declaration did, in the declaration's append and caused by its `declared` (lakelands#453); or a migration did, in its append and caused by its `migrated` (lakelands#457). |
+| `object_set_changed` | `set`, `type`, `key`, `joined` (boolean) | A write moved a record into (`true`) or out of (`false`) an object set, in the write's append and caused by it; or a set's declaration did, in the declaration's append and caused by its `declared` (lakelands#453); or a migration did, in its append and caused by its `migrated` (lakelands#457), for a record of the migrated type, of one of its link types, or of another type whose reference to a moved key it rewrites (lakelands#465, lakelands#466). |
 | `output_recorded` | `seam`, `input` (digest), `output`, `field` (optional `[type, key, field]`) | The output of a seam the store called: a function backing, an embedding backend, a verb executor. A replay reads this output instead of calling the seam (`docs/decisions/002-determinism-is-the-boundary.md`). |
 
 `seam` names the seam and what was called in it: `function:<backing

@@ -451,6 +451,11 @@ belongs in the suite, not beside one engine:
 
 - `a_migration_decides_the_membership_of_the_records_it_migrates` — 004, extended: a migration appends, directly after its `migrated` and caused by it, an `object_set_changed` for each record whose membership under a set of the type changes as migrated, and none when it changes nothing a filter reads; its answer names each set joined or left once and `through` the changes, also when it adds a relation carried by links; a re-keyed member stays a member under its new key; past the lake's `max_set_changes` a migration is refused `too_large`, naming a set and the ceiling, and appends nothing; one that is also applied with a stale report, or is not lossless, is refused for that first
 
+**set rewritten**
+
+- `a_rekey_decides_the_sets_that_read_a_rewritten_reference` — 004, extended: a re-keying migration appends, caused by its `migrated`, an `object_set_changed` for each record whose membership changes once its references to the moved keys are rewritten: a record of the migrated type under its new key, and a record of another type that holds such a reference, naming that type; a set whose filter reads no rewritten reference gets none
+- `a_migration_decides_the_sets_over_its_link_types` — 004, extended: a migration that converts a relation's field appends, directly after its `migrated` and caused by it, an `object_set_changed` for each link whose membership under a set of the link type changes, and its answer names those sets; a re-key of the owner moves a link's membership with it and changes only the set that reads a rewritten end; after either, and after the lake is opened again, `find` under each set's filter returns exactly the links the log says are in it, and a later write of the link leaves a set under its new key
+
 **link triggers**
 
 - `a_trigger_on_a_link_type_fires_on_link_rewrite_unlink_and_ingest` — 035 and 004: a trigger naming a relation's link type fires on link, on the link written again, on unlink and on each ingested link, naming the link type and the link's key, caused by that write; its guard reads the link's fields, and `changed(f)` holds on a write that changes f and not on unlink

@@ -186,3 +186,43 @@ stale report is refused for that, and one that is not lossless is refused
 with its report, whether or not it is also past the ceiling: the walk
 stops deciding once the changes pass it, and the refusal waits until the
 report has been compared and found lossless.
+
+## Extended: a migration decides every record it changes (lakelands#465, lakelands#466)
+
+A migration changes more records than those of its type. A re-key
+rewrites every reference to a moved key, in the migrated type and in any
+other, and it moves the links of the type's relations, which are keyed
+by their ends. A migration that changes a relation's fields converts the
+relation's links. The rule is one: **a migration decides again every
+record whose fields it changes, as the fold leaves it**: converted, its
+references to moved keys rewritten, under its key after the migration.
+- **The migrated type's records** are decided after the moves are known,
+  so a reference from the type to itself is read as rewritten.
+- **A record of another type that holds a reference to a moved key** is
+  decided for the sets whose filter reads that reference, and for no
+  other: nothing else of it changes. The type is read again, a page at a
+  time, only when it has such a set.
+- **A link of a relation whose fields the migration converts** is decided
+  for every set of the link type, in the read the preflight already makes
+  of the links.
+
+Each change is an `object_set_changed` naming the record's own type and
+its key after the migration, directly after the migration's `migrated`
+and caused by it, before the link types' own events. The fold of
+`object_set_changed` writes one membership and reads neither a record nor
+a declaration, so the index is the same wherever the event stands in the
+append. All of a migration's changes count against the one
+`max_set_changes`.
+
+**A move alone owes no event.** A re-keyed record, a link among them, is
+in every set under its new key that it was in under its old one, and no
+filter's truth has changed. The `migrated` event lists each move in
+`rekeyed`, for the link types too, and that is what tells a feed
+consumer.
+
+**A filter's text is not rewritten.** A set declared as `boss = 'X'`
+names a key in a literal, and a literal is not known to be a key. After
+a re-key of `X` the filter holds for no record, and the members leave,
+which the events say. A host that means "under this person" declares the
+set again with the new key; that declaration decides the records
+(lakelands#453).
