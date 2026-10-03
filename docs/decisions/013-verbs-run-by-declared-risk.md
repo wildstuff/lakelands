@@ -97,6 +97,19 @@ or reject it. Any other principal lists only the proposals it made
 itself, so a proposer can follow what became of its write, and decides
 none.
 
+## Extended: a proposal is read as its reader's view (lakelands#499)
+
+`proposals` shows a proposed write to its reader as that reader may read
+the record the write is for
+(`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+extended). A reviewer need not know all of what it accepts: the accept
+asks for `review`, and for `schema` where the ontology changes, and
+applies the write as it was logged and checked under the proposer's
+grants, the part its reviewer was not shown too. Trimming what is
+applied to what the reviewer read would make the reviewer's grants
+decide what the proposer wrote, and a write checked whole would be
+applied in part.
+
 ## Extended: a value type's tightening is proposed like a migration (lakelands#476)
 
 A value type that is to accept less could be changed only by a principal

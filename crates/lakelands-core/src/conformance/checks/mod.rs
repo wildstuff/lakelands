@@ -43,6 +43,7 @@ mod provenance;
 mod purge;
 mod reactions;
 mod reactive_depth;
+mod readers_view;
 mod reads_kept;
 mod rebuild;
 mod references;
@@ -211,6 +212,7 @@ pub const ALL: &[Check] = &[
     proposals::ACCEPT_APPLIES,
     proposals::REJECT_AND_DECIDED,
     proposals::WHO_DECIDES,
+    readers_view::VALUES_AS_THE_READERS_VIEW,
     schema_proposals::DECLARED_ON_ACCEPT,
     schema_proposals::SCHEMA_TO_ACCEPT,
     schema_proposals::MIGRATION_PREFLIGHTED_AGAIN,

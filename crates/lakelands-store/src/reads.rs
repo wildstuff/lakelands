@@ -51,7 +51,9 @@ use std::rc::Rc;
 use lakelands_api::describe::{LakeDescription, TypeDescription};
 use lakelands_api::engine::{After, ProjectionView, Scan};
 use lakelands_api::expr::{Expr, Func, Literal};
-use lakelands_api::ontology::{FieldType, MatchPair, RelationDecl, StorageKind, TypeDecl};
+use lakelands_api::ontology::{
+    FieldType, MatchPair, RelationDecl, StorageKind, TypeDecl, VerbEffect,
+};
 use lakelands_api::query::{
     Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Step, Walk,
 };
@@ -1295,7 +1297,8 @@ impl<'a> Reader<'a> {
     /// store logs a migration and a redeclaration completed with the fields
     /// hidden from their author, who reads its own proposal here, and a
     /// field the reader may not know of is left out as `describe` leaves it
-    /// out, a relation's link fields too.
+    /// out, a relation's link fields too. A proposed value is shown where
+    /// a read of the record would show it (024, extended).
     fn known_shape(&self, write: &mut ProposedWrite) {
         let known = |t: &TypeDecl, f: &lakelands_api::ontology::FieldDecl| {
             rights::field_access(self.who, t, f) != Access::None
@@ -1308,7 +1311,28 @@ impl<'a> Reader<'a> {
                 r.fields.retain(|f| known(&link, f));
             }
         };
+        let read = |ty: &TypeName, field: &FieldName| {
+            let t = self.visible_type(ty).ok();
+            let f = t.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == field)?)));
+            f.is_some_and(|(t, f)| rights::field_access(self.who, t, f).reads())
+        };
         match write {
+            // A field the reader may not know of and a masked one both
+            // leave the patch: it holds values, and no place for a name.
+            ProposedWrite::Upsert { ty, patch, .. } => patch.retain(|field, _| read(ty, field)),
+            // A payload is what the verb's fields become: whole to a reader
+            // who may read each field the verb sets, or see the type an
+            // executor acts on, and empty otherwise.
+            ProposedWrite::Call { verb, payload, .. } => {
+                let whole = self.ontology.verb(verb).is_ok_and(|v| match &v.effect {
+                    VerbEffect::Write { set } => set.iter().all(|a| read(&v.on, &a.field)),
+                    VerbEffect::External { .. } => self.visible_type(&v.on).is_ok(),
+                });
+                if !whole {
+                    payload.clear();
+                }
+            }
+            ProposedWrite::Retire { .. } => {}
             ProposedWrite::Migrate { migration, .. } => shown(&mut migration.to),
             ProposedWrite::Declare { declarations } => {
                 for d in declarations {
@@ -1322,14 +1346,8 @@ impl<'a> Reader<'a> {
             // the report's totals stay whole. Its `first` needs no such
             // care: a logged proposal's report fits, so it names no misfit.
             ProposedWrite::MigrateValueType { report, .. } => {
-                let read = |ty: &TypeName, field: &FieldName| {
-                    let t = self.visible_type(ty).ok();
-                    let f = t.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == field)?)));
-                    f.is_some_and(|(t, f)| rights::field_access(self.who, t, f).reads())
-                };
                 report.fields.retain(|u| read(&u.ty, &u.field));
             }
-            _ => {}
         }
     }
 

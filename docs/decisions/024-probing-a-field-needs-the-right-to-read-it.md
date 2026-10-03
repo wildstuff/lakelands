@@ -136,3 +136,31 @@ steps onto it answer alike.
 A principal with the `schema` grant is shown every definition, so the
 field's name tells it nothing new, and it is the one who can act on it:
 it keeps the answer that names the field.
+
+## Extended: a proposed value is shown where the record's is (lakelands#499)
+
+A proposal holds values before they are stored: an upsert's patch, and a
+call's payload, which is what the verb's fields become. `proposals` used
+to show both whole to every reviewer and to the proposer, so a principal
+that holds `review` read the proposed value of a field every other door
+hides from it. The listing now shows them as a read of the record would:
+
+- **A patch** keeps the fields its reader may read. A field the reader
+  may not know of leaves it, and so does a masked one: a patch holds
+  values and has no place for a name without one.
+- **A payload** is shown whole to a reader who may read every field the
+  verb sets, and empty to any other. Showing it member by member would
+  need the payload paths each assignment's value reads, which the
+  declaring rule does not hand out (lakelands#470). For a verb that
+  reaches outside the lake, the payload goes to the executor and is
+  shown to a reader who may see the verb's type.
+- **A write to a type the reader may not see** shows an empty patch or
+  payload. The proposal stays listed, with the type and the key, so that
+  a principal holding `review` and no read grant still finds what it is
+  asked to decide.
+
+The proposer reads its own proposal by the same rule, whole for as long
+as it may read what it wrote. The reader is not told that something was
+left out, and the names a proposal still carries (the type and key
+above, a migration's report, a proposed declaration's condition) are
+not trimmed here.
