@@ -191,6 +191,14 @@ Every root holds the files it held at `60eb52f851`. No row is added.
 **The list is closed for `0.9.0` as of `ccbe5d73a3`.** If the mainline
 moves before the tag, only the commits after it are checked.
 
+**Checked again on 2026-10-03, before the `0.9.0` tag**, against the
+source's mainline at `c8979fff7a`: the mainline had moved, and the 4
+commits after `ccbe5d73a3` (1095 after the freeze in all) were checked
+the same way. None of them touches a root, neither of the two merges
+among them shows a change under one against either parent, and every
+root holds the files it held at `ccbe5d73a3`. No row is added. **The
+list is closed for `0.9.0` as of `c8979fff7a`.**
+
 | Source commit | Behaviour, in one line | Ported in, or not applicable and why |
 |---|---|---|
 | `5914084de9` | One German user-interface sentence in the capabilities module changes its form of address from formal to informal. | Not applicable: the capabilities module was not carried (cut in O2: there is no capability negotiation; see `docs/import-ledger.md`), and no storage behaviour changes: no event, no fold rule, no signature, no stored byte. |
