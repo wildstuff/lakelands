@@ -133,19 +133,17 @@ pub fn window(
         committed += 1;
     }
     drop(view);
-    if drafts.is_empty() {
-        return Ok(Committed {
-            position: w
-                .tip
-                .as_ref()
-                .map_or(lakelands_api::Position::GENESIS, |t| t.0),
-            records: 0,
-            duplicates,
-        });
-    }
-    let events = lake.append_after(&mut w, drafts, pending.into_reads())?;
+    // A window that appends nothing committed no record, and answers the head.
+    let position = if drafts.is_empty() {
+        w.tip
+            .as_ref()
+            .map_or(lakelands_api::Position::GENESIS, |t| t.0)
+    } else {
+        let events = lake.append_after(&mut w, drafts, pending.into_reads())?;
+        events.last().expect("appended").position
+    };
     Ok(Committed {
-        position: events.last().expect("appended").position,
+        position,
         records: committed,
         duplicates,
     })

@@ -48,7 +48,7 @@ use crate::backed::{self, Outputs};
 use crate::ontology::Ontology;
 
 /// The provenance an event gives the fields it writes.
-fn meta_of(event: &Event, origin: Origin) -> FieldMeta {
+pub(crate) fn meta_of(event: &Event, origin: Origin) -> FieldMeta {
     FieldMeta {
         upstream: event.upstream.clone(),
         origin,

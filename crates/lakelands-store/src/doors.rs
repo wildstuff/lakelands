@@ -122,11 +122,7 @@ impl Doors {
         let last = crate::backed::settle(&self.lake, seen).await?;
         let named = matches!(&outcome, Outcome::Applied { set_off, .. } if set_off.names_any());
         let lake = if named {
-            Some(
-                self.read(who, ReadAt::default(), |r| Ok(r.describe()))
-                    .await?
-                    .data,
-            )
+            Some(self.describe(who, ReadAt::default()).await?.data)
         } else {
             None
         };
@@ -175,12 +171,7 @@ impl Doors {
                     params: Default::default(),
                 };
                 let host = self.lake.system("host");
-                let ty = ext.ty.clone();
-                Some(
-                    self.read(&host, ReadAt::default(), move |r| r.get(&ty, &get))
-                        .await?
-                        .data,
-                )
+                Some(self.get(&host, &ext.ty, get).await?.data)
             }
             None => None,
         };
@@ -663,37 +654,25 @@ pub struct Feed {
     lake: Arc<Lake>,
 }
 
-fn type_of(body: &EventBody) -> Option<&TypeName> {
+/// The type an event is about, and the record, by its key: both for the
+/// `record_*` events, `trigger_fired` and `object_set_changed`; the type
+/// for a type's `declared` and `migrated`; the record for `verb_called`.
+fn about(body: &EventBody) -> (Option<&TypeName>, Option<&RecordKey>) {
     match body {
-        EventBody::RecordUpserted { ty, .. }
-        | EventBody::RecordIngested { ty, .. }
-        | EventBody::RecordRetired { ty, .. }
-        | EventBody::RecordRestricted { ty, .. }
-        | EventBody::RecordUnrestricted { ty, .. }
-        | EventBody::TriggerFired { ty, .. }
-        | EventBody::ObjectSetChanged { ty, .. } => Some(ty),
+        EventBody::RecordUpserted { ty, key, .. }
+        | EventBody::RecordIngested { ty, key, .. }
+        | EventBody::RecordRetired { ty, key, .. }
+        | EventBody::RecordRestricted { ty, key, .. }
+        | EventBody::RecordUnrestricted { ty, key, .. }
+        | EventBody::TriggerFired { ty, key, .. }
+        | EventBody::ObjectSetChanged { ty, key, .. } => (Some(ty), Some(key)),
         EventBody::Declared {
             declaration: Declaration::Type(t),
             ..
-        } => Some(&t.name),
-        EventBody::Migrated { migration, .. } => Some(&migration.to.name),
-        _ => None,
-    }
-}
-
-/// The record an event is about, by its key: the `record_*` events,
-/// `trigger_fired`, `object_set_changed` and `verb_called`.
-fn key_of(body: &EventBody) -> Option<&RecordKey> {
-    match body {
-        EventBody::RecordUpserted { key, .. }
-        | EventBody::RecordIngested { key, .. }
-        | EventBody::RecordRetired { key, .. }
-        | EventBody::RecordRestricted { key, .. }
-        | EventBody::RecordUnrestricted { key, .. }
-        | EventBody::TriggerFired { key, .. }
-        | EventBody::ObjectSetChanged { key, .. }
-        | EventBody::VerbCalled { key: Some(key), .. } => Some(key),
-        _ => None,
+        } => (Some(&t.name), None),
+        EventBody::Migrated { migration, .. } => (Some(&migration.to.name), None),
+        EventBody::VerbCalled { key, .. } => (None, key.as_ref()),
+        _ => (None, None),
     }
 }
 
@@ -720,10 +699,11 @@ impl ChangeFeed for Feed {
                     next = e.position.next();
                     let kind_ok =
                         filter.kinds.is_empty() || filter.kinds.iter().any(|k| k == e.body.kind());
-                    let type_ok = filter.types.is_empty()
-                        || type_of(&e.body).is_some_and(|t| filter.types.contains(t));
-                    let key_ok = filter.keys.is_empty()
-                        || key_of(&e.body).is_some_and(|k| filter.keys.contains(k));
+                    let (ty, key) = about(&e.body);
+                    let type_ok =
+                        filter.types.is_empty() || ty.is_some_and(|t| filter.types.contains(t));
+                    let key_ok =
+                        filter.keys.is_empty() || key.is_some_and(|k| filter.keys.contains(k));
                     if kind_ok && type_ok && key_ok {
                         events.push(e);
                         if events.len() >= want {

@@ -17,7 +17,7 @@
 
 use std::collections::BTreeSet;
 
-use lakelands_api::engine::{After, ProjectionView, Scan};
+use lakelands_api::engine::ProjectionView;
 use lakelands_api::event::EventBody;
 use lakelands_api::record::{Origin, StoredRecord, Value};
 use lakelands_api::write::{PurgeReference, PurgeReport, RecordRef, TypeRetired};
@@ -35,9 +35,6 @@ use crate::writes::{self, Call, Pending};
 /// How many co-owned records a refusal names, and how many referring
 /// records a report names per relation.
 const NAMED: usize = 10;
-
-/// The records of a type that can refer into a purge, read at a time.
-const PAGE: u32 = 1024;
 
 /// The fields of a type that name a record, each with the type named.
 type Names<'a> = Vec<(&'a FieldName, &'a TypeName)>;
@@ -145,12 +142,11 @@ fn report<'a>(
         let mut found: Vec<(PurgeReference, Names<'a>)> = Vec::new();
         let mut names = |ty: TypeName, relation: RelationName, fields: Names<'a>| {
             if fields.iter().any(|(_, target)| reached(target)) {
-                let (records, first) = (0, Vec::new());
                 let at = PurgeReference {
                     ty,
                     relation,
-                    records,
-                    first,
+                    records: 0,
+                    first: Vec::new(),
                 };
                 found.push((at, fields));
             }
@@ -169,38 +165,23 @@ fn report<'a>(
         if found.is_empty() {
             continue;
         }
-        let mut scan = Scan {
-            limit: PAGE,
-            ..every(false)
-        };
-        loop {
-            let rows = view.scan(name, &scan)?;
-            for r in &rows {
-                if taken.contains(&(name, &r.key)) {
-                    continue;
-                }
-                for (at, fields) in &mut found {
-                    if fields.iter().any(|(f, t)| inside(t, r.fields.get(*f))) {
-                        at.records += 1;
-                        if at.first.len() < NAMED {
-                            at.first.push(RecordRef {
-                                ty: r.ty.clone(),
-                                key: r.key.clone(),
-                            });
-                        }
+        writes::live(view, name, |r| {
+            if taken.contains(&(name, &r.key)) {
+                return Ok(());
+            }
+            for (at, fields) in &mut found {
+                if fields.iter().any(|(f, t)| inside(t, r.fields.get(*f))) {
+                    at.records += 1;
+                    if at.first.len() < NAMED {
+                        at.first.push(RecordRef {
+                            ty: r.ty.clone(),
+                            key: r.key.clone(),
+                        });
                     }
                 }
             }
-            match rows.last() {
-                Some(last) if rows.len() == PAGE as usize => {
-                    scan.after = Some(After {
-                        values: Vec::new(),
-                        key: last.key.clone(),
-                    })
-                }
-                _ => break,
-            }
-        }
+            Ok(())
+        })?;
         references.extend(found.into_iter().map(|f| f.0).filter(|f| f.records > 0));
     }
     references.sort_by(|a, b| (&a.ty, &a.relation).cmp(&(&b.ty, &b.relation)));

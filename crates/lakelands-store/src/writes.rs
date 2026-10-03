@@ -376,15 +376,14 @@ fn member_of(
 }
 
 /// Every live record of `ty`, restricted ones included, a page at a time.
-fn live(
+pub(crate) fn live(
     view: &dyn ProjectionView,
     ty: &TypeName,
     mut each: impl FnMut(&StoredRecord) -> Result<()>,
 ) -> Result<()> {
     let mut scan = Scan {
         limit: SET_PAGE,
-        restricted: true,
-        ..Scan::default()
+        ..every(false)
     };
     loop {
         let rows = view.scan(ty, &scan)?;
@@ -1863,21 +1862,16 @@ impl Call<'_> {
         let mut drafts = Vec::with_capacity(declarations.len());
         for declaration in declarations {
             let declared = position_after(w, first + drafts.len());
-            let members = match &declaration {
-                Declaration::ObjectSet(set) => self.set_drafts(w, set, declared, now)?,
-                _ => Vec::new(),
-            };
-            let schema_hash = match &declaration {
+            // A type's hash and link types, or the memberships a set decides.
+            let (schema_hash, with) = match &declaration {
                 Declaration::Type(t) => {
-                    Some(shape::schema_hash(t).map_err(|e| invalid(e.to_string()))?)
+                    let hash = shape::schema_hash(t).map_err(|e| invalid(e.to_string()))?;
+                    (Some(hash), link_type_drafts(&w.ontology, t, now)?)
                 }
-                _ => None,
+                Declaration::ObjectSet(set) => (None, self.set_drafts(w, set, declared, now)?),
+                _ => (None, Vec::new()),
             };
             let version = w.ontology.next_version(&declaration);
-            let links = match &declaration {
-                Declaration::Type(t) => link_type_drafts(&w.ontology, t, now)?,
-                _ => Vec::new(),
-            };
             drafts.push(self.draft(
                 now,
                 Origin::Authored,
@@ -1887,8 +1881,7 @@ impl Call<'_> {
                     version,
                 },
             ));
-            drafts.extend(links);
-            drafts.extend(members);
+            drafts.extend(with);
         }
         Ok(drafts)
     }
