@@ -36,3 +36,4 @@ is for, or stand alone.
 | Date | Budget | From → to | For | Reason |
 |---|---|---|---|---|
 | 2026-10-03 | specification | 40 000 → 42 000 | lakelands#434, lakelands#436, lakelands#431, lakelands#419, lakelands#388, lakelands#428, lakelands#437 | The operator's decision on lakelands#20: the checks of a rights fix alone measure 224 lines, and the diets had already taken out about 5 000 lines without losing a check. |
+| 2026-10-03 | product | 36 000 → 36 500 | lakelands#461, lakelands#428, lakelands#477, lakelands#437, lakelands#465, lakelands#466, lakelands#473, lakelands#474, lakelands#475, lakelands#476 | The operator's decision on lakelands#20: a host moving onto a lake found four more things it needs in 0.9.0 after the room was spoken for; the diet had taken out 142 lines and its remaining inventory of about 265 does not cover the peak. |

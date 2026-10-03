@@ -23,7 +23,9 @@ The core's budgets are four:
 4. **It is recorded.** Slot a's word on the issue names the raise, and the raise is one row in `docs/budgets.md`: the date, the budget, from → to, the issues it is for, and the reason in one sentence. The operator may set any ceiling by a decision on lakelands#20, and that decision is a row too.
 5. **The gate holds it.** `core-size`, `seam-width` and `cfg-budget` are red when a ceiling or a ratchet base is higher than on the pull request's base commit, unless the same pull request adds the row whose "to" is the new number.
 
-**The first raise:** the specification, from 40 000 to 42 000 lines, by the operator's decision. The product ceiling stays at 36 000.
+**The first raise:** the specification, from 40 000 to 42 000 lines, by the operator's decision.
+
+**The second raise:** the product code, from 36 000 to 36 500 lines, by the operator's decision, for what a host needs in 0.9.0 to move its data onto a lake (lakelands#481). The diet went on beside it.
 
 ## Why
 
