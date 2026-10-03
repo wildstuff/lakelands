@@ -37,7 +37,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use lakelands_api::engine::{After, ProjectionView, Scan};
+use lakelands_api::engine::ProjectionView;
 use lakelands_api::event::{Digest, Event, EventBody, Procedure};
 use lakelands_api::ontology::{
     Authority, FieldDecl, RelationDecl, Risk, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
@@ -67,10 +67,6 @@ use crate::record;
 /// How many events after an external verb's call a retry reads for the
 /// output recorded for it.
 const RETRY_REACH: u32 = 4_096;
-
-/// How many records a set's declaration reads at a time while it decides
-/// their membership.
-const SET_PAGE: u32 = 1_024;
 
 /// A set membership that changes: the set, the record's type and its key
 /// (after the migration, when one changes it), and whether it joined.
@@ -399,21 +395,7 @@ pub(crate) fn live(
     ty: &TypeName,
     mut each: impl FnMut(&StoredRecord) -> Result<()>,
 ) -> Result<()> {
-    let mut scan = Scan {
-        limit: SET_PAGE,
-        ..every(false)
-    };
-    loop {
-        let rows = view.scan(ty, &scan)?;
-        rows.iter().try_for_each(&mut each)?;
-        let Some(last) = rows.last().filter(|_| rows.len() == SET_PAGE as usize) else {
-            return Ok(());
-        };
-        scan.after = Some(After {
-            values: Vec::new(),
-            key: last.key.clone(),
-        });
-    }
+    crate::lake::walk(view, ty, false, |r| each(&r))
 }
 
 /// The sets of `ty` that `pick` takes, each with its members so far, read

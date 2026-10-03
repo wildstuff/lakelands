@@ -33,6 +33,10 @@ The core's budgets are four:
 
 **The fifth raise:** the specification, from 43 000 to 44 000 lines, by slot a's word under the rule, for three pull requests that need the room at once: the checks of a migration's cost and memory (lakelands#480: what the head indexes answer after a record changes, and what a fold leaves where a later read goes through a migration) and the check of a rule of rights (lakelands#540).
 
+**The sixth raise:** the product code, from 36 500 to 37 000 lines, by slot a's word under the rule, once the diet's inventory was carried out and did not yield the room: for the fold that keeps a migration in place of the records it changed (lakelands#480) and for a value no longer handed to a principal kept from it (lakelands#538).
+
+**The seventh raise:** the specification, from 44 000 to 44 500 lines, by slot a's word under the rule, for the fold's checks (lakelands#480), after the checks of another fix took the room the fifth raise had sized for them.
+
 ## Why
 
 The budgets keep the core small enough for one reader to hold. They have done that: four diets took out about 5 000 lines without losing a check.

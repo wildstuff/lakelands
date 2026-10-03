@@ -20,20 +20,20 @@
 //! §1.3).
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use lakelands_api::engine::{CanonicalEvent, LakeEngine, Lease, OpenMode, ProjectionView};
 use lakelands_api::event::{Digest, Event, EventBody, LOG_FORMAT_BASE, SegmentDigest};
 use lakelands_api::location::{EngineConfig, Limits, Location};
-use lakelands_api::ontology::StorageKind;
+use lakelands_api::ontology::{StorageKind, TypeDecl};
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::Seams;
-use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposalState};
+use lakelands_api::write::{Declaration, Migration, Proposal, ProposalFilter, ProposalState};
 use lakelands_api::{
-    Error, LakeId, Position, ProposalId, RecordKey, Refusal, Result, Timestamp, TypeName, Value,
-    WriteContext,
+    Error, FieldName, LakeId, Position, ProposalId, RecordKey, Refusal, Result, Timestamp,
+    TypeName, Value, WriteContext,
 };
 use lakelands_core::{shape, unavailable};
 
@@ -519,124 +519,99 @@ impl Lake {
         }
     }
 
-    /// Move the records a re-keying migration lists to their new keys,
-    /// keeping their fields, versions and per-field provenance; end each
-    /// old key that is no one's new key; and rewrite every reference to a
-    /// moved key (`crate::rekey`). An ended key reads as not found from
-    /// here on, and a later record at it starts at version 1.
-    fn rekey(
+    /// Fold one `migrated` event's step over every record it reaches: the
+    /// migrated type's, and for a re-key those of every type with moves and
+    /// of every type that references one. Each type is walked once, a page
+    /// of the view at a time, and nothing of the walk is kept: a record
+    /// this transaction wrote is stepped where it is kept, and a later read
+    /// of any other goes through the step ([`Staged::record`]). An old key
+    /// that is no one's new key ends: it reads as not found from here on,
+    /// and a later record at it starts at version 1. Every listed move is
+    /// applied, or the fold fails.
+    fn step(
         &self,
         w: &Writer,
         view: &dyn ProjectionView,
         projection: &dyn lakelands_api::engine::ProjectionStore,
         staged: &mut Staged,
-        e: &Event,
-        rekeyed: &[lakelands_api::write::Rekey],
+        step: Step,
     ) -> Result<()> {
-        let mut moves: crate::rekey::Moves = BTreeMap::new();
-        for r in rekeyed {
-            moves
-                .entry(r.ty.clone())
-                .or_default()
-                .insert(r.from.clone(), r.to.clone());
+        let migrated = &step.migration.to.name;
+        let reached: BTreeSet<&TypeName> = step.decls.keys().chain([migrated]).collect();
+        // The old keys whose records moved.
+        let mut applied = BTreeSet::new();
+        let mut put = |pre: &StoredRecord, post: &StoredRecord| -> Result<()> {
+            if post.ty == *migrated || post != pre {
+                projection.put_record(post)?;
+            }
+            if post.key != pre.key {
+                if !step.arrives(&pre.ty, &pre.key) {
+                    let ended = StoredRecord::ended(pre.ty.clone(), pre.key.clone(), step.at);
+                    projection.put_record(&ended)?;
+                }
+                applied.insert((pre.ty.clone(), pre.key.clone()));
+            }
+            Ok(())
+        };
+        for ty in &reached {
+            walk(view, ty, true, |row| {
+                // A record this transaction wrote is its own, under the
+                // key the earlier steps left it: tested before anything
+                // of the view's row is converted.
+                if staged.wrote(ty, &row.key) {
+                    return Ok(());
+                }
+                let pre = staged.stepped(row)?;
+                put(&pre, &step.apply(pre.clone())?)
+            })?;
         }
-        // Every moved record is read before any is written: a new key may
-        // be another record's old one.
-        let mut moved = Vec::new();
-        for (ty, m) in &moves {
-            let decl = w.ontology.ty(ty)?.clone();
-            for (from, to) in m {
-                let Some(r) = staged.record(view, ty, from)? else {
-                    return Err(unavailable(format!(
-                        "the migration at position {} moves `{ty}` `{from}`, which the lake does \
-                         not hold",
-                        e.position
-                    )));
-                };
-                let fields = crate::rekey::rewritten(&decl, &r.fields, &moves);
-                moved.push((
-                    from.clone(),
-                    StoredRecord {
-                        key: to.clone(),
-                        fields,
-                        position: e.position,
-                        ..r
-                    },
-                ));
+        // What the transaction wrote is stepped where it is kept: all are
+        // taken out before any is put back, a new key may be another's old.
+        let (stepped, kept) = std::mem::take(&mut staged.records)
+            .into_iter()
+            .partition::<Vec<_>, _>(|((ty, _), _)| reached.contains(ty));
+        staged.records = kept.into_iter().collect();
+        for (_, pre) in stepped {
+            let post = step.apply(pre.clone())?;
+            put(&pre, &post)?;
+            staged.put(post);
+        }
+        let listed = (step.moves.iter()).flat_map(|(ty, m)| m.keys().map(move |from| (ty, from)));
+        for (ty, from) in listed {
+            if !applied.contains(&(ty.clone(), from.clone())) {
+                return Err(unavailable(format!(
+                    "the migration at position {} moves `{ty}` `{from}`, which the lake does \
+                     not hold",
+                    step.at
+                )));
             }
         }
-        let arrivals: std::collections::BTreeSet<(TypeName, RecordKey)> = moved
-            .iter()
-            .map(|(_, r)| (r.ty.clone(), r.key.clone()))
-            .collect();
         // Object-set membership moves with the record: the new key is in
-        // every set the old key was in, and an ended key is in none.
+        // every set the old key was in, and an ended key is in none. Every
+        // membership is read before any is put.
         let mut members = Vec::new();
         for s in w.ontology.object_sets.values().map(|s| &s.decl) {
-            if !moves.contains_key(&s.of) {
+            let Some(moves) = step.moves.get(&s.of) else {
                 continue;
-            }
+            };
             // Read once for the set, not looked up for each moved record; a
             // membership this page put is not in the view yet.
             let held = view.members(&s.name, &s.of)?;
-            for (from, r) in moved.iter().filter(|(_, r)| r.ty == s.of) {
-                let (ty, to) = (r.ty.clone(), r.key.clone());
+            for (from, to) in moves {
                 let put = staged
                     .members
-                    .get(&(s.name.clone(), ty.clone(), from.clone()));
+                    .get(&(s.name.clone(), s.of.clone(), from.clone()));
                 let member = put.copied().unwrap_or_else(|| held.contains(from));
-                members.push((s.name.clone(), ty, from.clone(), to, member));
+                members.push((&s.name, &s.of, from, to, member));
             }
         }
         for (set, ty, from, to, member) in members {
-            staged.member(projection, &set, &ty, &to, member, e.position)?;
-            if member && !arrivals.contains(&(ty.clone(), from.clone())) {
-                staged.member(projection, &set, &ty, &from, false, e.position)?;
+            staged.member(projection, set, ty, to, member, step.at)?;
+            if member && !step.arrives(ty, from) {
+                staged.member(projection, set, ty, from, false, step.at)?;
             }
         }
-        for (from, r) in moved {
-            if !arrivals.contains(&(r.ty.clone(), from.clone())) {
-                let ended = StoredRecord::ended(r.ty.clone(), from, e.position);
-                projection.put_record(&ended)?;
-                staged.put(ended);
-            }
-            projection.put_record(&r)?;
-            staged.put(r);
-        }
-        // References to a moved key, in records that did not move.
-        for (name, entry) in &w.ontology.types {
-            let decl = &entry.decl;
-            if decl.view.is_some()
-                || !decl.fields.iter().any(|f| {
-                    f.ty.kind == StorageKind::Reference
-                        && f.ty.target.as_ref().is_some_and(|t| moves.contains_key(t))
-                })
-            {
-                continue;
-            }
-            for r in staged_scan(view, staged, name, true)?
-                .into_iter()
-                .filter(|r| !r.is_ended())
-            {
-                let touched = |k: &RecordKey| {
-                    arrivals.contains(&(name.clone(), k.clone()))
-                        || moves.get(name).is_some_and(|m| m.contains_key(k))
-                };
-                if touched(&r.key) {
-                    continue;
-                }
-                let fields = crate::rekey::rewritten(decl, &r.fields, &moves);
-                if fields != r.fields {
-                    let next = StoredRecord {
-                        fields,
-                        position: e.position,
-                        ..r
-                    };
-                    projection.put_record(&next)?;
-                    staged.put(next);
-                }
-            }
-        }
+        staged.steps.push(step);
         Ok(())
     }
 
@@ -765,7 +740,7 @@ impl Lake {
                 // compute every live record's derived fields again, in this
                 // event.
                 for ty in rederive {
-                    for r in staged_scan(view, staged, &ty, false)? {
+                    for r in staged_scan(view, staged, &ty)? {
                         let mut outputs = Outputs {
                             view,
                             staged: Some(&staged.outputs),
@@ -788,43 +763,12 @@ impl Lake {
                 ..
             } => {
                 let before = w.ontology.ty(&migration.to.name)?.clone();
-                let records = staged_scan(view, staged, &migration.to.name, true)?;
                 let decl = Declaration::Type(migration.to.clone());
                 w.ontology
                     .put(decl.clone(), *version, Some(schema_hash.clone()));
                 projection.put_declaration(&decl, *version, Some(schema_hash), e.position)?;
-                for r in records.into_iter().filter(|r| !r.is_ended()) {
-                    let converted = shape::migrate_record(&before, migration, &r.fields)
-                        .map_err(|err| unavailable(err.to_string()))?
-                        .ok_or_else(|| {
-                            unavailable(format!(
-                                "the migration at position {} cannot convert `{}` `{}`",
-                                e.position, r.ty, r.key
-                            ))
-                        })?;
-                    let mut meta = BTreeMap::new();
-                    for (old, meta_of) in &r.meta {
-                        let new = migration
-                            .renames
-                            .iter()
-                            .find(|(from, _)| from == old)
-                            .map_or(old, |(_, to)| to);
-                        if converted.contains_key(new) {
-                            meta.insert(new.clone(), meta_of.clone());
-                        }
-                    }
-                    let next = StoredRecord {
-                        fields: converted,
-                        meta,
-                        position: e.position,
-                        ..r
-                    };
-                    projection.put_record(&next)?;
-                    staged.put(next);
-                }
-                if !rekeyed.is_empty() {
-                    self.rekey(w, view, projection, staged, e, rekeyed)?;
-                }
+                let step = Step::new(&w.ontology, e.position, before, migration, rekeyed);
+                self.step(w, view, projection, staged, step)?;
             }
             EventBody::RecordUpserted { ty, key, .. }
             | EventBody::RecordIngested { ty, key, .. }
@@ -1343,27 +1287,187 @@ impl Reads {
     }
 }
 
-/// Every record of `ty` as the fold leaves it so far, restricted ones
-/// included and retired ones when `retired`: the view's, with what this
-/// append wrote earlier over it. A fold of many events in one page (a
-/// rebuild, an import) writes records the view it opened does not show yet.
+/// The records of `ty` a view holds, a page at a time by key, restricted
+/// ones included and retired ones when `retired`; an ended key is passed
+/// over. Whether a page is the last, and where the next continues, are
+/// decided on the rows as the view returned them.
+pub(crate) fn walk(
+    view: &dyn ProjectionView,
+    ty: &TypeName,
+    retired: bool,
+    mut each: impl FnMut(StoredRecord) -> Result<()>,
+) -> Result<()> {
+    let mut scan = lakelands_api::engine::Scan {
+        limit: PAGE,
+        ..every(retired)
+    };
+    loop {
+        let rows = view.scan(ty, &scan)?;
+        let last = rows.last().filter(|_| rows.len() == PAGE as usize);
+        let after = last.map(|r| lakelands_api::engine::After {
+            values: Vec::new(),
+            key: r.key.clone(),
+        });
+        rows.into_iter()
+            .filter(|r| !r.is_ended())
+            .try_for_each(&mut each)?;
+        if after.is_none() {
+            return Ok(());
+        }
+        scan.after = after;
+    }
+}
+
+/// Every live record of `ty` as the fold leaves it so far, restricted ones
+/// included, in the order of their keys now: the view's, each as the steps
+/// of this transaction leave it, with what the transaction wrote over
+/// them. A fold of many events in one page (a rebuild, an import) writes
+/// records the view it opened does not show yet. It holds the whole type:
+/// only a recomputation of derived fields asks for it.
 fn staged_scan(
     view: &dyn ProjectionView,
     staged: &Staged,
     ty: &TypeName,
-    retired: bool,
 ) -> Result<Vec<StoredRecord>> {
-    let records = view.scan(ty, &every(retired))?;
-    let mut all: BTreeMap<RecordKey, StoredRecord> =
-        records.into_iter().map(|r| (r.key.clone(), r)).collect();
+    let mut all = BTreeMap::new();
+    walk(view, ty, false, |row| {
+        if !staged.wrote(ty, &row.key) {
+            let r = staged.stepped(row)?;
+            all.insert(r.key.clone(), r);
+        }
+        Ok(())
+    })?;
     all.extend(staged.of_type(ty).map(|r| (r.key.clone(), r.clone())));
     Ok(all.into_values().collect())
+}
+
+/// One `migrated` event a transaction folded: what it does to a record,
+/// kept in place of the records it changed. The fold's walk, the records
+/// the transaction wrote and a later read all take a record through
+/// [`Step::apply`], so the three cannot disagree.
+pub(crate) struct Step {
+    /// The event's position.
+    at: Position,
+    /// The migrated type's declaration before.
+    before: TypeDecl,
+    migration: Migration,
+    /// The moves the event lists, per type: old key to new key.
+    moves: crate::rekey::Moves,
+    /// The same, new key to old.
+    back: crate::rekey::Moves,
+    /// For a step with moves, as declared once the migration is in force:
+    /// every type with moves, and every type, not a view, that has a
+    /// reference field to one.
+    decls: BTreeMap<TypeName, TypeDecl>,
+}
+
+impl Step {
+    fn new(
+        ontology: &Ontology,
+        at: Position,
+        before: TypeDecl,
+        migration: &Migration,
+        rekeyed: &[lakelands_api::write::Rekey],
+    ) -> Step {
+        let (mut moves, mut back) = (crate::rekey::Moves::new(), crate::rekey::Moves::new());
+        for r in rekeyed {
+            let ty = || r.ty.clone();
+            moves
+                .entry(ty())
+                .or_default()
+                .insert(r.from.clone(), r.to.clone());
+            back.entry(ty())
+                .or_default()
+                .insert(r.to.clone(), r.from.clone());
+        }
+        let reaches = |d: &&TypeDecl| {
+            moves.contains_key(&d.name)
+                || d.view.is_none() && !crate::rekey::moved_references(d, &moves).is_empty()
+        };
+        let decls = (ontology.types.values().map(|t| &t.decl).filter(reaches))
+            .map(|d| (d.name.clone(), d.clone()))
+            .collect();
+        Step {
+            at,
+            before,
+            migration: migration.clone(),
+            moves,
+            back,
+            decls,
+        }
+    }
+
+    /// A record, not an ended key, after the step. Of the migrated type:
+    /// its fields converted, its per-field provenance carried over the
+    /// renames for the fields it still has, at the step's position. Under
+    /// a re-key: its references to moved keys rewritten and, when its own
+    /// key moved, its new key; at the step's position when either changed
+    /// it. Its version and its flags are never touched.
+    fn apply(&self, mut r: StoredRecord) -> Result<StoredRecord> {
+        if r.ty == self.migration.to.name {
+            let converted = shape::migrate_record(&self.before, &self.migration, &r.fields)
+                .map_err(|err| unavailable(err.to_string()))?
+                .ok_or_else(|| {
+                    unavailable(format!(
+                        "the migration at position {} cannot convert `{}` `{}`",
+                        self.at, r.ty, r.key
+                    ))
+                })?;
+            let renames = &self.migration.renames;
+            let renamed = |old: FieldName| match renames.iter().find(|(from, _)| *from == old) {
+                Some((_, to)) => to.clone(),
+                None => old,
+            };
+            r.meta = (std::mem::take(&mut r.meta).into_iter())
+                .map(|(old, meta)| (renamed(old), meta))
+                .filter(|(new, _)| converted.contains_key(new))
+                .collect();
+            r.fields = converted;
+            r.position = self.at;
+        }
+        if let Some(decl) = self.decls.get(&r.ty) {
+            let fields = crate::rekey::rewritten(decl, &r.fields, &self.moves);
+            let to = self.moves.get(&r.ty).and_then(|m| m.get(&r.key));
+            if to.is_some() || fields != r.fields {
+                r.position = self.at;
+            }
+            r.key = to.cloned().unwrap_or(r.key);
+            r.fields = fields;
+        }
+        Ok(r)
+    }
+
+    /// Whether `key` is the new key of a move: a record arrives at it.
+    fn arrives(&self, ty: &TypeName, key: &RecordKey) -> bool {
+        self.back.get(ty).is_some_and(|m| m.contains_key(key))
+    }
+
+    /// Where the record at `key` after the step was before it: the old key
+    /// of the move that arrives there, else the key itself; `None` for a
+    /// key that ended at the step, which a record moved away from and none
+    /// arrived at.
+    fn source<'a>(&'a self, ty: &TypeName, key: &'a RecordKey) -> Option<&'a RecordKey> {
+        match self.back.get(ty).and_then(|m| m.get(key)) {
+            Some(old) => Some(old),
+            None => (self.moved(ty, key) == key).then_some(key),
+        }
+    }
+
+    /// The key a record at `key` before the step has after it.
+    fn moved<'a>(&'a self, ty: &TypeName, key: &'a RecordKey) -> &'a RecordKey {
+        let to = self.moves.get(ty).and_then(|m| m.get(key));
+        to.unwrap_or(key)
+    }
 }
 
 /// What one append has written so far, read before the projection.
 #[derive(Default)]
 pub struct Staged {
+    /// The records this transaction wrote, each under the key and in the
+    /// state it has now; never an ended key.
     records: BTreeMap<(TypeName, RecordKey), StoredRecord>,
+    /// The `migrated` events this transaction folded, in order.
+    steps: Vec<Step>,
     /// What the fold and the decision before it read from the projection.
     reads: Reads,
     /// Proposals changed in this append.
@@ -1376,18 +1480,42 @@ pub struct Staged {
 
 impl Staged {
     /// A record as this append leaves it so far: written earlier in it,
-    /// or else as the projection holds it. What the append wrote always
-    /// comes first; a read kept from before it never answers over it.
+    /// or else as the projection holds it, taken through the steps the
+    /// append folded: read at the key it had before them, or ended at the
+    /// step it moved away at. What the append wrote always comes first; a
+    /// read kept from before it never answers over it.
     pub fn record(
         &self,
         view: &dyn ProjectionView,
         ty: &TypeName,
         key: &RecordKey,
     ) -> Result<Option<StoredRecord>> {
-        match self.records.get(&(ty.clone(), key.clone())) {
-            Some(r) => Ok(Some(r.clone())),
-            None => self.reads.get(view, ty, key),
+        if let Some(r) = self.records.get(&(ty.clone(), key.clone())) {
+            return Ok(Some(r.clone()));
         }
+        let mut before = key;
+        for s in self.steps.iter().rev() {
+            match s.source(ty, before) {
+                Some(old) => before = old,
+                None => return Ok(Some(StoredRecord::ended(ty.clone(), key.clone(), s.at))),
+            }
+        }
+        match self.reads.get(view, ty, before)? {
+            Some(r) if !r.is_ended() => self.stepped(r).map(Some),
+            held => Ok(held),
+        }
+    }
+
+    /// A record of the view after every step the append folded.
+    fn stepped(&self, r: StoredRecord) -> Result<StoredRecord> {
+        self.steps.iter().try_fold(r, |r, s| s.apply(r))
+    }
+
+    /// Whether the append wrote the record the view holds at `key`: it is
+    /// kept under the key the steps moved it to.
+    fn wrote(&self, ty: &TypeName, key: &RecordKey) -> bool {
+        let now = self.steps.iter().fold(key, |k, s| s.moved(ty, k));
+        self.records.contains_key(&(ty.clone(), now.clone()))
     }
 
     /// The records of one type written in this append.
@@ -1420,3 +1548,6 @@ impl Staged {
         self.records.insert((r.ty.clone(), r.key.clone()), r);
     }
 }
+
+#[cfg(test)]
+mod tests;

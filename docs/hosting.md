@@ -325,12 +325,14 @@ A host that already has a store of its own moves in four steps.
   `max_limit`. See `docs/decisions/026-the-store-walks-the-graph.md`.
 - **A migration of a large type is a step for a quiet moment.** Applying
   one reads, converts and writes again every record of the type under
-  the writer, and holds them in memory meanwhile; other writes wait. At
+  the writer; other writes wait. The fold holds a page of records at a
+  time, but the check before the append, and on PostgreSQL the engine
+  until its commit, still hold the type's records in memory. At
   100 000 records of four small fields, measured under some load from
   other processes (`tests/set_migrated.rs` in the SQLite and PostgreSQL
   engines, by hand), the writer is held 4 to 5.5 s on SQLite and 10.5 to
-  14 s on PostgreSQL, with a peak of about 330 MB and 1.1 GB. Both grow with
-  the type's records. On PostgreSQL the statements that write a migration
+  14 s on PostgreSQL, with a peak of about 300 MB and 820 MB. Both grow with
+  the type's records: at 400 000 the peak is about 1.2 GB and 3.3 GB. On PostgreSQL the statements that write a migration
   sort and hash a row for every record; at the server's default `work_mem`
   of 4 MB they do it on disk, so a host that migrates large types gives
   the lake's connections more. An object set of the type adds little: its members
