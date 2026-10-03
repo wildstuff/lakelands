@@ -578,21 +578,15 @@ impl Lake {
         // Object-set membership moves with the record: the new key is in
         // every set the old key was in, and an ended key is in none.
         let mut members = Vec::new();
-        for (from, r) in &moved {
-            for s in w
-                .ontology
-                .object_sets
-                .values()
-                .filter(|s| s.decl.of == r.ty)
-            {
-                let name = &s.decl.name;
-                members.push((
-                    name.clone(),
-                    r.ty.clone(),
-                    from.clone(),
-                    r.key.clone(),
-                    view.is_member(name, &r.ty, from)?,
-                ));
+        for s in w.ontology.object_sets.values().map(|s| &s.decl) {
+            if !moves.contains_key(&s.of) {
+                continue;
+            }
+            // Read once for the set, not looked up for each moved record.
+            let held = view.members(&s.name, &s.of)?;
+            for (from, r) in moved.iter().filter(|(_, r)| r.ty == s.of) {
+                let (ty, to) = (r.ty.clone(), r.key.clone());
+                members.push((s.name.clone(), ty, from.clone(), to, held.contains(from)));
             }
         }
         for (set, ty, from, to, member) in members {

@@ -1808,6 +1808,11 @@ impl Call<'_> {
             if w.ontology.ty(ty).is_err() {
                 continue;
             }
+            // The set's members so far, read once: a new set has none.
+            let held = match old {
+                Some(_) => view.members(&set.name, ty)?,
+                None => BTreeSet::new(),
+            };
             let mut scan = Scan {
                 limit: SET_PAGE,
                 restricted: true,
@@ -1816,7 +1821,7 @@ impl Call<'_> {
             loop {
                 let rows = view.scan(ty, &scan)?;
                 for r in &rows {
-                    let was = old.is_some() && view.is_member(&set.name, ty, &r.key)?;
+                    let was = held.contains(&r.key);
                     let is = ty == &set.of && member_of(set, r, w, now)?;
                     if was != is {
                         if out.len() as u64 >= u64::from(max) {
@@ -2032,10 +2037,13 @@ impl Call<'_> {
         // A key the new key fields make differently moves the record, and
         // what names it moves with it (`crate::rekey`). A set of the type
         // decides each record again as migrated (004, extended).
-        let sets: Vec<&ObjectSetDecl> = (w.ontology.object_sets.values())
-            .map(|e| &e.decl)
-            .filter(|s| s.of == m.to.name)
-            .collect();
+        // Each set's members are read once, not looked up for each record.
+        let mut sets = Vec::new();
+        for s in (w.ontology.object_sets.values()).map(|e| &e.decl) {
+            if now.is_some() && s.of == m.to.name {
+                sets.push((s, view.members(&s.name, &before.name)?));
+            }
+        }
         let decide = now.filter(|_| !sets.is_empty());
         let max = self.lake.limits.max_set_changes as usize;
         let mut converted = Vec::new();
@@ -2052,8 +2060,8 @@ impl Call<'_> {
                     ..r.clone()
                 };
                 if let Some(now) = decide.filter(|_| members.len() <= max) {
-                    for s in &sets {
-                        let was = view.is_member(&s.name, &before.name, &r.key)?;
+                    for (s, held) in &sets {
+                        let was = held.contains(&r.key);
                         if was != member_of(s, &after, w, now)? {
                             members.push((s.name.clone(), r.key.clone(), !was));
                         }

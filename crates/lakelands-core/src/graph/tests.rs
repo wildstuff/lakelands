@@ -1,6 +1,7 @@
 pub(super) mod fixture;
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 
 use lakelands_api::engine::{Declared, Scan};
 use lakelands_api::event::{Digest, EventId};
@@ -81,6 +82,9 @@ impl ProjectionView for View {
         unreachable!()
     }
     fn is_member(&self, _: &str, _: &TypeName, _: &RecordKey) -> Result<bool> {
+        unreachable!()
+    }
+    fn members(&self, _: &str, _: &TypeName) -> Result<BTreeSet<RecordKey>> {
         unreachable!()
     }
     fn applied(&self, _: &EventId) -> Result<Option<Position>> {

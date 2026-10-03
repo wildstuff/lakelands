@@ -264,6 +264,7 @@ masking are the store's.
 | `lexical(type, text, fields, k)` | Full-text hits at the position, as below; with `fields`, in those of the type's searchable fields only. |
 | `proposals(filter)` | Every proposal whose latest state at the position matches `filter.state`, `filter.kind` (`upsert`, `retire`, `call`, `declare` or `migrate`) and `filter.type` (a `call`'s type is its verb's `on` type in force at the position; a `declare` touches every type it declares or a declaration of it acts on, a `migrate` its type), newest first — by the position of that latest state, descending, then by id — and at most `filter.limit`. `order_by`, `cursor` and the read position in the filter are the store's and the engine ignores them: the store applies the caller's `order_by` to the engine's answer, and refuses as `Invalid` an `order_by` naming a member a proposal does not have. |
 | `is_member(set, type, key)` | Whether the record is in the object set at the position; false if never put. |
+| `members(set, type)` | The keys of the type's records that are in the object set at the position; empty for a set never put. One read: the store asks it once for a set before it walks a type (a set declared again, a migration, a re-key), where `is_member` for each record would be a statement each on PostgreSQL (lakelands#477). |
 | `applied(id)` | The position `id` was applied at, if that is at or before the view's position. |
 | `output(seam, input)` | The recorded output valid at the position, if any: the latest recorded for that seam and input at or before it. |
 
@@ -646,7 +647,7 @@ holds it to.
 | `scan`'s filter matches the evaluator exactly, including comparisons across kinds and filters that error; the flags and `valid_at` | engine: `scan_filters_exactly_as_the_evaluator_including_mixed_kinds_and_errors`, `scan_honours_retired_restricted_and_valid_at` |
 | `lexical`'s hit set, its language, searchable fields only, live only (restricted included), ties by key, `k`; at an earlier position, visibility from the position and text from the head | engine: `lexical_hits_are_the_pipelines_over_searchable_live_records`, `lexical_finds_every_token_the_pipeline_makes_beyond_ascii`, `lexical_at_an_earlier_position_ranks_by_the_head_and_keeps_what_was_visible_then`, `lexical_over_named_fields_is_the_pipelines_over_those_fields` |
 | `nearest`'s exact top `k` by cosine, ties, a zero vector, a wrong length; `put` replaces; `clear` empties the index | engine: `nearest_ranks_by_cosine_with_ties_by_key`, `a_zero_vector_scores_zero_and_a_wrong_length_is_invalid`, `put_replaces_a_vector_and_remove_forgets_it`, `clear_empties_the_projection_and_the_vector_index` |
-| `declarations`, `is_member`, `output` and `applied` at an earlier position; `mark_applied` keeps the first position | engine: `declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position`, `the_first_applied_position_is_kept` |
+| `declarations`, `is_member`, `members`, `output` and `applied` at an earlier position; `mark_applied` keeps the first position | engine: `declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position`, `the_first_applied_position_is_kept` |
 | `proposals`' filters, a `call`'s type, and its order | engine: `proposals_filter_by_state_and_type_newest_first` |
 
 ## `PrincipalResolver`
@@ -1278,6 +1279,10 @@ A set over a large type is declared in one of two ways:
 
 The walk is not bounded: a type of a million live records holds the
 writer for several seconds even for a set nothing joins.
+
+A set declared again is compared with its members so far, which the walk
+reads once before it starts (`members`), not once for each record. A
+migration and a re-key read each set's members the same way.
 
 A migration decides the membership of the records it migrates again,
 in the walk its preflight makes over the type's records anyway, and
