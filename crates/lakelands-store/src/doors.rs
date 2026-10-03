@@ -161,16 +161,7 @@ impl Doors {
     /// Hand an external verb to its executor and record the answer; the
     /// recorded output is returned, `{"error": …}` when the executor failed.
     async fn execute(&self, ext: External) -> Result<(Position, serde_json::Value)> {
-        let executor = self
-            .lake
-            .seams
-            .executors
-            .iter()
-            .find(|e| e.name() == ext.executor)
-            .cloned()
-            .ok_or_else(|| Error::Unbound {
-                seam: format!("the verb executor `{}`", ext.executor),
-            })?;
+        let executor = writes::bound_executor(&self.lake, &ext.executor)?.clone();
         // The executor is the host's own code: it receives the record whole,
         // unmasked by the grants of whoever made the verb due. The caller
         // sees only the outcome and the recorded output. A verb on its type

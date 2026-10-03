@@ -39,7 +39,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::record::{FieldMeta, Origin, StoredRecord};
-use lakelands_api::{Error, FieldName, Result, Value};
+use lakelands_api::{FieldName, Result, Value};
 use lakelands_core::derive;
 use lakelands_core::rights::Door;
 use lakelands_core::unavailable;
@@ -375,12 +375,10 @@ pub fn resolve_functions(decl: &TypeDecl, ontology: &Ontology) -> TypeDecl {
 pub fn check_required(decl: &TypeDecl, fields: &BTreeMap<FieldName, Value>) -> Result<()> {
     for f in decl.fields.iter().filter(|f| f.required) {
         if fields.get(&f.name).is_none_or(Value::is_null) {
-            return Err(Error::Refused {
-                field: Some(f.name.clone()),
-                reason: lakelands_api::Refusal::Constraint {
-                    message: format!("`{}` requires a value for `{}`", decl.name, f.name),
-                },
-            });
+            return Err(crate::writes::constraint(
+                Some(f.name.clone()),
+                format!("`{}` requires a value for `{}`", decl.name, f.name),
+            ));
         }
     }
     Ok(())

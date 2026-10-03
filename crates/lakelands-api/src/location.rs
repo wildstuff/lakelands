@@ -32,13 +32,11 @@ impl Location {
     /// A lake kept by the SQLite engine in a directory of its own.
     pub fn sqlite(lake: impl Into<LakeId>, dir: impl Into<PathBuf>) -> Location {
         Location {
-            lake: lake.into(),
             engine: EngineConfig::Sqlite {
                 dir: dir.into(),
                 tuning: SqliteTuning::default(),
             },
-            key: None,
-            limits: Limits::default(),
+            ..Location::memory(lake)
         }
     }
 
@@ -46,15 +44,13 @@ impl Location {
     /// in its default schema, over TLS.
     pub fn postgres(lake: impl Into<LakeId>, url: impl Into<String>) -> Location {
         Location {
-            lake: lake.into(),
             engine: EngineConfig::Postgres {
                 url: url.into(),
                 schema: None,
                 tls: PgTls::default(),
                 tuning: PgTuning::default(),
             },
-            key: None,
-            limits: Limits::default(),
+            ..Location::memory(lake)
         }
     }
 

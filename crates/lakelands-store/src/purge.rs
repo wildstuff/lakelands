@@ -116,19 +116,8 @@ pub fn run(lake: &Lake, source: &SourceId) -> Result<PurgeReport> {
                 version: Version(before.version.0 + 1),
             },
         );
-        let cause = writes::position_after(&w, drafts.len());
-        let event = writes::provisional(lake, cause, &d);
-        let after = writes::retired(&w, view.as_ref(), &before, &event)?;
-        drafts.push(d);
-        drafts.extend(call.reactions(
-            &w,
-            view.as_ref(),
-            &mut pending,
-            Some(&before),
-            &after,
-            cause,
-            now,
-        )?);
+        let at = writes::position_after(&w, drafts.len());
+        drafts.extend(call.retiring(&w, view.as_ref(), &mut pending, &before, d, at, now)?);
         match report.types.last_mut() {
             Some(t) if t.ty == before.ty => t.retired += 1,
             _ => report.types.push(TypeRetired {
