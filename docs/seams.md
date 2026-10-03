@@ -1721,7 +1721,10 @@ migration of `invoice`, the object_set declaration `open` reads `status`
 of `invoice`, which the migration renames to `state`"). Declare the
 reader again so that it reads the shape the migration leaves, then
 migrate. For a rename, the reader is declared without the field first,
-and with its new name once the migration is applied.
+and with its new name once the migration is applied. `declare` holds a
+declaration to the same reads: one that reads a field its type does not
+have is refused, naming it and the field
+(`docs/decisions/028-authoring-is-strict-and-whole.md`, extended).
 
 **Many callers, one writer.** A lake has one writing process
 (`docs/decisions/008-one-writer-per-lake.md`), and any number of callers

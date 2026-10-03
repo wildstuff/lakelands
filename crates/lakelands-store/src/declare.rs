@@ -1077,6 +1077,25 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             }
         }
     }
+    // What a declaration reads of its type, the type has (028, extended):
+    // the reads the migration preflight keeps a field by.
+    let on = match d {
+        Declaration::Type(t) => Some(t),
+        Declaration::Verb(v) => o.ty(&v.on).ok(),
+        Declaration::Trigger(t) => o.ty(&t.on).ok(),
+        Declaration::ObjectSet(s) => o.ty(&s.of).ok(),
+        _ => None,
+    };
+    if let Some(on) = on
+        && let reads = lakelands_core::describe::declaration_reads(d, &on.name)
+        && let Some(n) = (reads.iter()).find(|n| !on.fields.iter().any(|f| &f.name == *n))
+    {
+        return Err(invalid(format!(
+            "{} reads `{n}`, which `{}` does not have",
+            d.what(),
+            on.name
+        )));
+    }
     let mut types: Vec<TypeName> = o.types.keys().cloned().collect();
     let mut verbs: Vec<VerbName> = o.verbs.keys().cloned().collect();
     match d {

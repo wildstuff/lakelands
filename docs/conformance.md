@@ -468,6 +468,7 @@ belongs in the suite, not beside one engine:
 **reads kept**
 
 - `a_migration_keeps_the_fields_a_declaration_reads` — 027, extended: a migration that drops a field read by a derived field of its type, by another type's derived relation to it, or by an object set, a trigger or a verb on it (its `requires`, a field it sets, the value it sets one from) is refused as invalid by its preflight, naming the reader and the field, and one that renames such a field names the new name too; a migration that drops a field no declaration reads goes through
+- `a_declaration_reads_only_fields_its_type_has` — 028, extended: `declare` and `apply` refuse as invalid, naming the declaration and the field and appending nothing, a derived field, an object set's `where`, a trigger's `when` (`changed` and `previous` included) and a verb's `requires` or the value it sets a field from that read a field the type does not have; `payload.<name>` in a verb's value, `setting`, `now`, `today` and a guard's `retired` read no field and are accepted
 
 **aggregates**
 
