@@ -407,6 +407,7 @@ belongs in the suite, not beside one engine:
 
 - `a_cursor_stays_on_the_position_of_its_first_page` — the glossary: a cursor is bound to the position its first page was read at, so a page set is stable while the lake is written
 - `a_cursor_continues_only_the_answer_it_was_handed_out_for` — 018 and 029: a page continues only the answer its cursor was handed out for, the same door and the same type: a cursor of `find` on one type continues that `find`, and is refused as invalid by `find` on another type, by `query` and by `search`, naming where it belongs; a cursor of `query` or `search` is refused by `find` alike
+- `a_cursor_handed_to_a_find_of_another_order_length_is_refused` — 018 and lakelands#436: a cursor of `find` holds one sort value per key of the `order_by` its first page was read with; handed to a `find` whose `order_by` is longer or shorter, on a stored type or on a view, it is refused as invalid, naming the order, and never answers a page or `unavailable`
 
 **feed**
 
@@ -588,6 +589,12 @@ belongs in the suite, not beside one engine:
 **settings**
 
 - `a_setting_is_read_as_it_stood_at_the_position_read` — seams, SystemVocabulary: setting('key') in an expression reads the sys.setting record with that key as of the position being read
+
+**fusion**
+
+- `a_record_the_read_may_not_see_moves_no_hybrid_score` — 046 and 024: a hybrid search ranks each list among the hits the read may see, so a restricted record, or one its `where` leaves out, ranked above a visible hit moves neither that hit's rank nor its score
+- `every_page_of_a_hybrid_search_reads_one_ranking` — 046 and 029: a hybrid search fuses each list to the lake's `max_limit` ranks whatever the page, so its pages through a cursor answer the one ranking a single page answers, keys and the scores' bits
+- `a_search_that_reads_no_record_to_rank_answers_what_reading_them_answers` — 046: at the head, a hybrid search by a principal who sees every live record, without `where` or `valid_at`, ranks without reading a record, and answers the keys and the scores' bits the same search answers under a `where` that holds for every record, with restricted and retired records in the lake
 
 **vocabulary**
 

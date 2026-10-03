@@ -2913,56 +2913,69 @@ impl Catalog for MockCatalog {
             }
             SearchMode::Lexical { .. } | SearchMode::Hybrid { .. } => false,
         };
-        let (scored, ranked_by): (Vec<(f64, &StoredRecord)>, &str) = match &search.mode {
-            SearchMode::Vector { field: f, vector }
-            | SearchMode::Hybrid {
+        // A stored vector is read back as the `f32`s it was written as.
+        let nearest = |f: &FieldName, vector: &[f32]| -> Vec<(f64, &StoredRecord)> {
+            let cos = |v: &Value| {
+                let v: Vec<f32> = v
+                    .as_array()?
+                    .iter()
+                    .filter_map(Value::as_f64)
+                    .map(|x| x as f32)
+                    .collect();
+                Some(lakelands_api::query::cosine(&v, vector))
+            };
+            (rows.iter().copied())
+                .filter_map(|r| Some((cos(r.fields.get(f)?)?, r)))
+                .collect()
+        };
+        let matching = |text: &str| -> Vec<(f64, &StoredRecord)> {
+            let words: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
+            (rows.iter().copied())
+                .filter_map(|r| {
+                    let hay: String = searched
+                        .iter()
+                        .filter_map(|f| r.fields.get(*f)?.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .to_lowercase();
+                    let score = words.iter().filter(|w| hay.contains(w.as_str())).count();
+                    (score > 0).then_some((score as f64, r))
+                })
+                .collect()
+        };
+        fn best_first(mut l: Vec<(f64, &StoredRecord)>) -> Vec<(f64, &StoredRecord)> {
+            l.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.key.cmp(&b.1.key)));
+            l
+        }
+        let (scored, ranked_by) = match &search.mode {
+            SearchMode::Vector { field: f, vector } => {
+                readable(&st, who, t, f)?;
+                (nearest(f, vector), if indexed { "index" } else { "vector" })
+            }
+            SearchMode::Hybrid {
+                text,
                 field: f,
                 vector: Some(vector),
                 ..
             } => {
                 readable(&st, who, t, f)?;
-                // A stored vector is read back as the `f32`s it was written as.
-                let cos = |v: &Value| {
-                    let v: Vec<f32> = v
-                        .as_array()?
-                        .iter()
-                        .filter_map(Value::as_f64)
-                        .map(|x| x as f32)
-                        .collect();
-                    Some(lakelands_api::query::cosine(&v, vector))
-                };
-                let s = rows
-                    .into_iter()
-                    .filter_map(|r| Some((cos(r.fields.get(f)?)?, r)))
-                    .collect();
-                let by = match (&search.mode, indexed) {
-                    (SearchMode::Vector { .. }, true) => "index",
-                    (SearchMode::Hybrid { .. }, true) => "hybrid (index)",
-                    _ => "vector",
-                };
-                (s, by)
+                // Both lists fused by reciprocal rank, the lexical first,
+                // each over what the read may see and to `max_limit` (046).
+                let window = self.shared.limits.max_limit as usize;
+                let mut fused: BTreeMap<&RecordKey, (f64, &StoredRecord)> = BTreeMap::new();
+                for list in [best_first(matching(text)), best_first(nearest(f, vector))] {
+                    for (rank, (_, r)) in list.into_iter().take(window).enumerate() {
+                        fused.entry(&r.key).or_insert((0.0, r)).0 += 1.0 / (60.0 + rank as f64);
+                    }
+                }
+                let by = if indexed { "hybrid (index)" } else { "hybrid" };
+                (fused.into_values().collect(), by)
             }
             SearchMode::Lexical { text, .. } | SearchMode::Hybrid { text, .. } => {
-                let words: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
-                let s = rows
-                    .into_iter()
-                    .filter_map(|r| {
-                        let hay: String = searched
-                            .iter()
-                            .filter_map(|f| r.fields.get(*f)?.as_str())
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                            .to_lowercase();
-                        let score = words.iter().filter(|w| hay.contains(w.as_str())).count();
-                        (score > 0).then_some((score as f64, r))
-                    })
-                    .collect();
-                (s, "lexical")
+                (matching(text), "lexical")
             }
         };
-        let mut scored = scored;
-        scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.key.cmp(&b.1.key)));
-        let hits: Vec<Hit> = scored
+        let hits: Vec<Hit> = best_first(scored)
             .into_iter()
             .map(|(score, r)| Hit {
                 record: st.read(who, r, search.with_meta),
