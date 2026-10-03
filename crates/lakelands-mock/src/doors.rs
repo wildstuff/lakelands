@@ -3412,6 +3412,8 @@ impl Catalog for MockCatalog {
             .get(&migration.to.name)
             .map_or(1, |t| t.version + 1);
         let mut batch = Batch::at(&log);
+        let link_types = links::of(&migration.to);
+        let report_id = report.report_id;
         let position = batch.push(Draft::new(
             who,
             Origin::System,
@@ -3419,10 +3421,45 @@ impl Catalog for MockCatalog {
                 schema_hash: report.to_schema_hash.clone(),
                 migration,
                 version,
-                report_id: report.report_id,
+                report_id: report_id.clone(),
                 rekeyed: Vec::new(),
             },
         ));
+        // As the store: each link type in force whose derivation changes
+        // migrates with the type, then a relation new with it gets its link
+        // type declared, in the same append.
+        for lt in &link_types {
+            if let Some(old) = st.types.get(&lt.name).filter(|old| &old.decl != lt) {
+                let migration = Migration {
+                    to: lt.clone(),
+                    renames: Vec::new(),
+                };
+                batch.push(Draft::new(
+                    who,
+                    Origin::System,
+                    EventBody::Migrated {
+                        schema_hash: lakelands_api::shape::schema_hash(lt).unwrap_or_default(),
+                        migration,
+                        version: old.version + 1,
+                        report_id: report_id.clone(),
+                        rekeyed: Vec::new(),
+                    },
+                ));
+            }
+        }
+        for lt in link_types
+            .into_iter()
+            .filter(|lt| !st.types.contains_key(&lt.name))
+        {
+            let declaration = Declaration::Type(lt);
+            let (schema_hash, version) = identity_version(&st, &declaration);
+            let body = EventBody::Declared {
+                declaration,
+                schema_hash,
+                version,
+            };
+            batch.push(Draft::new(who, Origin::System, body));
+        }
         self.commit(&mut log, batch);
         Ok(Outcome::Applied {
             position,
