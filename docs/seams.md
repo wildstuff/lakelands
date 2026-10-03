@@ -1282,7 +1282,9 @@ writer for several seconds even for a set nothing joins.
 
 A set declared again is compared with its members so far, which the walk
 reads once before it starts (`members`), not once for each record. A
-migration and a re-key read each set's members the same way.
+migration and a re-key read each set's members the same way. What a
+migration itself costs at size is in `docs/hosting.md`, "Rules the host
+inherits".
 
 A migration decides the membership of the records it migrates again,
 in the walk its preflight makes over the type's records anyway, and
