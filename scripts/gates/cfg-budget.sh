@@ -9,7 +9,9 @@
 #   - a manifest declares a feature that is not an engine name (the
 #     engine crates are `lakelands-engine-<name>`), or `default`;
 #   - an optional dependency is not hidden behind `dep:` (it would become
-#     an implicit feature of its own).
+#     an implicit feature of its own);
+#   - BUDGET is higher than on the pull request's base commit without the
+#     row in docs/budgets.md that raises it (lib.sh, `raised`).
 . "$(dirname "$0")/lib.sh"
 
 BUDGET=20
@@ -34,6 +36,7 @@ while IFS= read -r -d '' file; do
     ' "$file")
 done < <(tracked_files '*.rs')
 [ "$sites" -le "$BUDGET" ] || fail "$sites cfg(feature) sites, budget is $BUDGET"
+raised "cfg(feature) sites" "the cfg(feature) budget" "$(base_number "$GATE_SELF" BUDGET)" "$BUDGET"
 
 while IFS= read -r -d '' manifest; do
     while IFS= read -r msg; do fail "$manifest: $msg"; done < <(perl -ne '

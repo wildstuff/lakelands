@@ -24,11 +24,17 @@ what it counts.
 | `vocabulary` | the platform's words stay out of `src/` and every `.rs` under `crates/`; one of them stays out of the repository and its commit messages |
 | `single-catalog` | tool names come only from the generator in `lakelands-api` |
 | `seam-width` | the store facade (`LakeStore`) and the engine traits have at most 110 methods together |
-| `core-size` | api + core + store + sqlite and pg engines (`lakelands-api`, `lakelands-core`, `lakelands-store`, `lakelands-engine-sqlite`, `lakelands-engine-pg`) in two budgets, each against a ratchet base that only moves down: the product code at most 36k lines (`core-size.product.base`), and the specification at most 40k (`core-size.spec.base`), which is `src/conformance/**`, every `tests.rs` and everything under a `tests/` directory in `src/`; a product file holding a test, or a `#[cfg(test)]` other than before `mod tests;`, is red |
+| `core-size` | api + core + store + sqlite and pg engines (`lakelands-api`, `lakelands-core`, `lakelands-store`, `lakelands-engine-sqlite`, `lakelands-engine-pg`) in two budgets, each against a ratchet base that only moves down: the product code at most 36k lines (`core-size.product.base`), and the specification at most 42k (`core-size.spec.base`), which is `src/conformance/**`, every `tests.rs` and everything under a `tests/` directory in `src/`; a product file holding a test, or a `#[cfg(test)]` other than before `mod tests;`, is red |
 | `conformance-required` | every engine crate is on `conformance/roster`, and CI runs the suite for every required one |
 | `dco` | every commit is signed off |
 | `no-external-decisions` | no citation of the platform's decision records, planning threads or issue numbers, in files or commit messages |
 | `doc-heads-its-item` | a new item is never inserted between another item and its doc comment: no added `fn`, `struct`, `enum`, `const`, `static`, `type`, `trait`, `impl` or `mod` whose doc block is headed by an unchanged `///` line |
+
+The three budget gates (`core-size`, `seam-width`, `cfg-budget`) let a
+number go down by itself. A ceiling or a ratchet base that is higher
+than on the pull request's base commit is red, unless the same pull
+request adds the row to `docs/budgets.md` that raises it to that number
+(`docs/decisions/047-a-ceiling-is-raised-by-a-recorded-rule.md`).
 
 A gate that has never been red may be blind. A new gate lands with a
 planted violation shown red in its pull request before it goes green.

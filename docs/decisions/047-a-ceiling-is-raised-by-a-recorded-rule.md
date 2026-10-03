@@ -1,0 +1,40 @@
+# 047 — A ceiling is raised by a recorded rule
+
+## What is decided
+
+The core's budgets are four:
+- the product code's lines;
+- the specification's lines;
+- the width of the seams;
+- the `cfg(feature)` sites.
+
+**A budget goes down by itself.** A pull request that cuts lines lowers a ratchet base, and the base stays lowered.
+
+**A ceiling is raised, and a ratchet base raised with it, only when all of this holds** (lakelands#451):
+
+1. **The code that needs the room is decisive.** One of:
+   - it closes a defect;
+   - it is a check that pins a rule of rights, of a refusal's kind or order, or of the integrity of the log and its answers;
+   - it carries a contract a host depends on to run on a lake, named in its issue.
+
+   Convenience is not a reason, nor is a feature no host asked for, nor code a shared helper would replace.
+2. **Cutting came first.** The newest diet inventory for that budget is on record, and it does not yield the room.
+3. **The raise is sized to the need:** the measured lines of the pull requests it is for, rounded up to the next 500.
+4. **It is recorded.** Slot a's word on the issue names the raise, and the raise is one row in `docs/budgets.md`: the date, the budget, from → to, the issues it is for, and the reason in one sentence. The operator may set any ceiling by a decision on lakelands#20, and that decision is a row too.
+5. **The gate holds it.** `core-size`, `seam-width` and `cfg-budget` are red when a ceiling or a ratchet base is higher than on the pull request's base commit, unless the same pull request adds the row whose "to" is the new number.
+
+**The first raise:** the specification, from 40 000 to 42 000 lines, by the operator's decision. The product ceiling stays at 36 000.
+
+## Why
+
+The budgets keep the core small enough for one reader to hold. They have done that: four diets took out about 5 000 lines without losing a check.
+
+**A ceiling that can never move makes the wrong trade**, though, when the code that needs the room is the code that matters most. A check that pins a rights rule is exactly what a host relies on when it moves its data onto a lake. If the only ways to fit it are to weaken it or to drop a feature a host needs, the budget has stopped protecting the reader and started costing them.
+
+**A raise must cost something to ask for**, so that it is never the easy way out of a diet. That is why it needs a decisive reason, cutting first and a size that is measured. And it must stay visible after the fact. That is why it needs a row a reader finds in one place, and a gate that refuses a number which grew without one.
+
+## What it is not
+
+- **It is not a second budget.** The ceilings remain the limits, and the ratchet bases still follow every cut down.
+- **It is not a way to defer a diet.** A raise names the pull requests it is for, and its size is theirs, not a reserve.
+- **It does not change how lines are counted** (`scripts/gates/core-size.sh`).

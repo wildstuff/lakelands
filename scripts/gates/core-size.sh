@@ -16,8 +16,11 @@
 # Red when
 #   - a budget's count exceeds its ratchet base (its BASE file);
 #   - a ratchet base exceeds its CEILING;
-#   - a ratchet base is higher than on the pull request's base commit
-#     (a base only ever moves down, by a decision recorded on lakelands#20);
+#   - a ratchet base or a ceiling is higher than on the pull request's
+#     base commit, unless the same pull request adds the row to
+#     docs/budgets.md that raises it to that number (a budget goes down by
+#     itself and is raised only by the rule of
+#     docs/decisions/047-a-ceiling-is-raised-by-a-recorded-rule.md);
 #   - a product file holds a test (`#[test]`, `#[tokio::test]`) or a
 #     `#[cfg(test)]` anywhere but directly before `mod tests;`.
 . "$(dirname "$0")/lib.sh"
@@ -25,7 +28,7 @@
 CRATES=(lakelands-api lakelands-core lakelands-store lakelands-engine-sqlite lakelands-engine-pg)
 PRODUCT_CEILING=36000
 PRODUCT_BASE=scripts/gates/core-size.product.base
-SPEC_CEILING=40000
+SPEC_CEILING=42000
 SPEC_BASE=scripts/gates/core-size.spec.base
 
 all=()
@@ -42,21 +45,16 @@ for s in "${spec[@]}"; do product+=(":(exclude,glob)${s#:(glob)}"); done
 lines() { git ls-files -z -- "$@" | xargs -0 -r cat | wc -l | tr -d ' '; }
 
 summary=()
-# budget NAME COUNT BASE_FILE CEILING
+# budget NAME COUNT BASE_FILE CEILING CEILING_VARIABLE
 budget() {
-    local name="$1" count="$2" file="$3" ceiling="$4" base prev range
+    local name="$1" count="$2" file="$3" ceiling="$4" variable="$5" base
     [ -f "$file" ] || die "$file is missing"
     base="$(tr -d '[:space:]' < "$file")"
     [[ "$base" =~ ^[0-9]+$ ]] || die "$file does not hold a number"
     [ "$count" -le "$base" ] || fail "$name is $count lines, its ratchet base is $base"
     [ "$base" -le "$ceiling" ] || fail "$name ratchet base $base is above its ceiling $ceiling"
-    range="$(gate_range)"
-    if [ "${range%..HEAD}" != "$range" ]; then
-        prev="$(git show "${range%..HEAD}:$file" 2>/dev/null | tr -d '[:space:]' || true)"
-        if [[ "$prev" =~ ^[0-9]+$ ]] && [ "$base" -gt "$prev" ]; then
-            fail "$name ratchet base rose from $prev to $base; it only moves down"
-        fi
-    fi
+    raised "$name" "the $name ratchet base" "$(base_number "$file")" "$base"
+    raised "$name" "the $name ceiling" "$(base_number "scripts/gates/core-size.sh" "$variable")" "$ceiling"
     summary+=("$name $count of base $base, ceiling $ceiling")
 }
 
@@ -74,7 +72,7 @@ done < <(git ls-files -z -- "${product[@]}" | xargs -0 -r awk '
     { prev = $0 }
 ')
 
-budget product "$(lines "${product[@]}")" "$PRODUCT_BASE" "$PRODUCT_CEILING"
-budget specification "$(lines "${spec[@]}")" "$SPEC_BASE" "$SPEC_CEILING"
+budget product "$(lines "${product[@]}")" "$PRODUCT_BASE" "$PRODUCT_CEILING" PRODUCT_CEILING
+budget specification "$(lines "${spec[@]}")" "$SPEC_BASE" "$SPEC_CEILING" SPEC_CEILING
 
 verdict "${summary[0]}; ${summary[1]}"
