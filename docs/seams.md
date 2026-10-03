@@ -788,6 +788,14 @@ backend's is refused as `Unbound`, naming both: that is a configuration to
 fix, not weather. A vector search, and a hybrid search that brings its
 own vector, never call the backend.
 
+**A search that fuses rankings** weighs each as it asks
+(`docs/decisions/046-a-hybrid-search-fuses-the-ranks-a-read-may-see.md`):
+a hybrid search its text (`text_weight`) and its vector (`weight`), a
+vector search its `field` and every further field it names in `also`.
+The store asks the engine for each ranking on its own, through `lexical`
+and `nearest` as before, and fuses them itself, so an engine sees
+neither a weight nor a second field.
+
 **A field declared with `embed`** is the embedding of text fields of its
 record (`docs/decisions/022-functions-are-declarations.md`, extended):
 

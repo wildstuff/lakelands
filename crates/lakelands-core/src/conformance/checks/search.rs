@@ -12,8 +12,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, doors, embedding, field, field_access, field_writer, get_at, owner, read_at,
-    refused_on, restrict, searchable, type_decl, vector,
+    Lake, Must, doors, embedding, field, field_access, field_writer, get_at, no_such_field, owner,
+    read_at, refused_on, restrict, searchable, type_decl, vector,
 };
 
 check!(
@@ -273,7 +273,7 @@ async fn a_vector_search_over_an_unreadable_vector_field_is_refused(
 check!(
     /// A vector search cannot probe the text a vector is embedded from.
     EMBED_PROBE_REFUSED = a_search_over_a_vector_embedded_from_an_unreadable_field_is_refused,
-    "024: a vector embedded from a field encodes that field, so a vector or hybrid search over it is refused, naming the field, when the principal may not read one of the fields it is embedded from, even though it may read the vector",
+    "024: a vector embedded from a field encodes that field, so a vector or hybrid search over it is refused, naming the field, when the principal may not read one of the fields it is embedded from, even though it may read the vector; a vector field named in `also` is probed like the first, and one the principal may not know of is answered as undeclared",
     embedding
 );
 
@@ -292,6 +292,7 @@ async fn a_search_over_a_vector_embedded_from_an_unreadable_field_is_refused(
             field("title", StorageKind::Text),
             field("body", StorageKind::Text),
             vec,
+            vector("v", 2),
         ],
     ))
     .await?;
@@ -331,12 +332,27 @@ async fn a_search_over_a_vector_embedded_from_an_unreadable_field_is_refused(
             field: "vec".into(),
             vector: Some(vec![1.0, 0.0]),
             fields: None,
+            weight: None,
+            text_weight: None,
         }),
         "body",
         "a hybrid search over `vec`, embedded from `title` and `body`, by a reader who \
          sees `body` only masked,",
     )
-    .await
+    .await?;
+    // Named in `also`, `vec` is probed as the first field is.
+    let also = || doc_search(super::fusion::along(None, "vec", None));
+    let what = "a vector search over `v` and, in `also`, `vec`, by a reader who sees `body` \
+                only masked,";
+    refused(store.as_ref(), &reader, also(), "body", what).await?;
+    let blind = field_access(store.as_ref(), "blind", "doc", &[("vec", Access::None)]);
+    let answer = cat.search(&blind, also()).await;
+    ensure!(
+        no_such_field(&answer, "vec"),
+        "a vector search naming `vec` in `also`, by a principal who may not know of `vec`, \
+         must be answered as for a field `doc` does not declare; it answered {answer:?}"
+    );
+    Ok(())
 }
 
 check!(
@@ -692,6 +708,8 @@ fn hybrid(text: &str, vector: Option<Vec<f32>>) -> SearchMode {
         field: "v".into(),
         vector,
         fields: None,
+        weight: None,
+        text_weight: None,
     }
 }
 

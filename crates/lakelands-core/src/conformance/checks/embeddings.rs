@@ -455,6 +455,8 @@ async fn a_hybrid_search_over_an_embedding_the_bound_backend_does_not_make_is_un
                         field: "vec".into(),
                         vector: None,
                         fields: None,
+                        weight: None,
+                        text_weight: None,
                     })
                 },
             )

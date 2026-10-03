@@ -120,7 +120,7 @@ type SortKey = (Vec<Value>, RecordKey);
 
 /// One ranked list of a search, read to the depth it is given: the
 /// candidates best first, with their scores.
-type Ranking<'a> = &'a dyn Fn(u32) -> Result<Vec<(RecordKey, f64)>>;
+type Ranking<'a> = Box<dyn Fn(u32) -> Result<Vec<(RecordKey, f64)>> + 'a>;
 
 /// The state a cursor carries.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1299,19 +1299,19 @@ impl<'a> Reader<'a> {
                 s.ty
             )));
         }
-        let vector_field = match &s.mode {
-            SearchMode::Vector { field, .. } | SearchMode::Hybrid { field, .. } => {
-                Some(field.clone())
-            }
-            SearchMode::Lexical { .. } => None,
-        };
+        if let Some((field, message)) = s.mode.misfit() {
+            let reason = Refusal::Invalid { message };
+            return Err(Error::Refused { field, reason });
+        }
+        let vectors = s.mode.vectors();
+        let vector_fields: Vec<&FieldName> = vectors.iter().map(|v| v.0).collect();
         let text_fields = match &s.mode {
             SearchMode::Lexical { fields, .. } | SearchMode::Hybrid { fields, .. } => {
                 fields.as_deref()
             }
             SearchMode::Vector { .. } => None,
         };
-        rights::check_search(self.who, &decl, text_fields, vector_field.as_ref())?;
+        rights::check_search(self.who, &decl, text_fields, &vector_fields)?;
         // A search that names no fields reads only the searchable fields
         // the principal knows of (024); none hidden, it reads them all.
         let known: Vec<FieldName>;
@@ -1353,32 +1353,50 @@ impl<'a> Reader<'a> {
                 }),
             }
         };
-        let ranked_by = match &s.mode {
-            SearchMode::Lexical { .. } => "lexical",
-            SearchMode::Vector { field, .. } if self.indexed(&decl, field)? => "index",
-            SearchMode::Vector { .. } => "vector",
-            SearchMode::Hybrid {
-                field,
-                vector: Some(_),
-                ..
-            } if self.indexed(&decl, field)? => "hybrid (index)",
-            SearchMode::Hybrid {
-                vector: Some(_), ..
-            } => "hybrid",
-            SearchMode::Hybrid { vector: None, .. } => {
-                "lexical (no query vector and no embedding backend)"
+        // A search without a query vector ranks its text alone; one over
+        // several vector fields answers an index's set when any of them is
+        // asked for an index.
+        let (mut by_text, mut indexed) = (true, false);
+        if !matches!(&s.mode, SearchMode::Hybrid { vector: None, .. }) {
+            for field in &vector_fields {
+                (by_text, indexed) = (false, indexed || self.indexed(&decl, field)?);
             }
         }
+        let ranked_by = match (&s.mode, indexed) {
+            (SearchMode::Lexical { .. }, _) => "lexical",
+            (SearchMode::Hybrid { .. }, _) if by_text => {
+                "lexical (no query vector and no embedding backend)"
+            }
+            (SearchMode::Hybrid { .. }, true) => "hybrid (index)",
+            (SearchMode::Hybrid { .. }, false) => "hybrid",
+            (SearchMode::Vector { .. }, true) => "index",
+            (SearchMode::Vector { .. }, false) => "vector",
+        }
         .to_owned();
-        let hits = match &s.mode {
+        // The rankings a search fuses, each with its weight, in the order
+        // they are summed (046): a hybrid search's text, then each vector
+        // field. A search of one ranking fuses nothing.
+        let mut lists: Vec<(f64, Ranking<'_>)> = Vec::new();
+        if let (
             SearchMode::Hybrid {
-                text,
-                field,
-                vector: Some(v),
-                ..
-            } => {
-                let lists: [Ranking<'_>; 2] =
-                    [&|pull| lexical(text, pull), &|pull| vector(field, v, pull)];
+                text, text_weight, ..
+            },
+            false,
+        ) = (&s.mode, by_text)
+        {
+            lists.push((
+                text_weight.unwrap_or(1.0),
+                Box::new(move |pull| lexical(text, pull)),
+            ));
+        }
+        for (field, v, weight) in vectors.iter().filter(|_| !by_text) {
+            lists.push((
+                weight.unwrap_or(1.0),
+                Box::new(move |pull| vector(field, v, pull)),
+            ));
+        }
+        let hits = match &s.mode {
+            _ if lists.len() > 1 => {
                 self.fused(&decl, filter.as_ref(), &lists, want, s.with_meta)?
             }
             mode => {
@@ -1388,7 +1406,9 @@ impl<'a> Reader<'a> {
                 let mut pull = u32::try_from(want.saturating_mul(4).max(64)).unwrap_or(u32::MAX);
                 loop {
                     let ranked = match mode {
-                        SearchMode::Vector { field, vector: v } => vector(field, v, pull)?,
+                        SearchMode::Vector {
+                            field, vector: v, ..
+                        } => vector(field, v, pull)?,
                         SearchMode::Lexical { text, .. } | SearchMode::Hybrid { text, .. } => {
                             lexical(text, pull)?
                         }
@@ -1422,7 +1442,7 @@ impl<'a> Reader<'a> {
         })
     }
 
-    /// A hybrid search's hits: its lists fused by reciprocal rank
+    /// A fused search's hits: its lists fused by weighted reciprocal rank
     /// ([`fuse`]), each ranked among the hits this read may see and to the
     /// lake's `max_limit` of them, so a record the read may not see moves
     /// no score and every page reads one ranking (046). The lists
@@ -1432,7 +1452,7 @@ impl<'a> Reader<'a> {
         &self,
         decl: &TypeDecl,
         filter: Option<&Expr>,
-        lists: &[Ranking<'_>],
+        lists: &[(f64, Ranking<'_>)],
         want: usize,
         with_meta: bool,
     ) -> Result<Vec<Hit>> {
@@ -1457,7 +1477,7 @@ impl<'a> Reader<'a> {
             // record it has not ranked yet could still gain from it:
             // nothing once the list is whole or its window full.
             let (mut keyed, mut gain) = (Vec::new(), Vec::new());
-            for list in lists {
+            for (weight, list) in lists {
                 let candidates = list(pull)?;
                 let whole = candidates.len() < pull as usize;
                 let mut seen: Vec<(RecordKey, f64)> = if open {
@@ -1473,13 +1493,13 @@ impl<'a> Reader<'a> {
                 gain.push(if done {
                     0.0
                 } else {
-                    1.0 / (60.0 + seen.len() as f64)
+                    weight / (60.0 + seen.len() as f64)
                 });
-                keyed.push(seen);
+                keyed.push((*weight, seen));
             }
             let fused = fuse(&keyed);
             let ranked: Vec<BTreeSet<&RecordKey>> = (keyed.iter())
-                .map(|l| l.iter().map(|(k, _)| k).collect())
+                .map(|(_, l)| l.iter().map(|(k, _)| k).collect())
                 .collect();
             let slack = |key: &RecordKey| -> f64 {
                 (ranked.iter().zip(&gain))
@@ -2267,16 +2287,17 @@ impl EdgeSource for Visible<'_, '_> {
     }
 }
 
-/// Reciprocal rank fusion of ranked lists: each list adds `1 / (60 +
-/// rank)` for every key it ranks (rank from 0, best first), in the lists'
-/// order. Ties are broken by key, so the fused order is the same on every
-/// engine. A hybrid search hands it only what the read may see (046).
-pub fn fuse(lists: &[Vec<(RecordKey, f64)>]) -> Vec<(RecordKey, f64)> {
+/// Reciprocal rank fusion of ranked lists, each with its weight: a list
+/// adds `weight / (60 + rank)` for every key it ranks (rank from 0, best
+/// first), in the lists' order. Ties are broken by key, so the fused
+/// order is the same on every engine. A search hands it only what the
+/// read may see (046).
+pub fn fuse(lists: &[(f64, Vec<(RecordKey, f64)>)]) -> Vec<(RecordKey, f64)> {
     const K: f64 = 60.0;
     let mut score: BTreeMap<RecordKey, f64> = BTreeMap::new();
-    for list in lists {
+    for (weight, list) in lists {
         for (rank, (key, _)) in list.iter().enumerate() {
-            *score.entry(key.clone()).or_default() += 1.0 / (K + rank as f64);
+            *score.entry(key.clone()).or_default() += weight / (K + rank as f64);
         }
     }
     let mut out: Vec<(RecordKey, f64)> = score.into_iter().collect();

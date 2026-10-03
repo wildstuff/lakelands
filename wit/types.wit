@@ -647,9 +647,17 @@ interface types {
         fields: option<list<field-name>>,
     }
 
+    record vector-term {
+        field: field-name,
+        vector: list<f32>,
+        weight: option<f64>,
+    }
+
     record vector-search {
         field: field-name,
         vector: list<f32>,
+        weight: option<f64>,
+        also: list<vector-term>,
     }
 
     record hybrid-search {
@@ -657,6 +665,8 @@ interface types {
         field: field-name,
         vector: option<list<f32>>,
         fields: option<list<field-name>>,
+        weight: option<f64>,
+        text-weight: option<f64>,
     }
 
     variant search-mode {

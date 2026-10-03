@@ -116,12 +116,12 @@ fn a_search_probes_every_searchable_field_and_the_vector_it_names() {
     decl.fields[2].searchable = true; // iban, sensitive
     let reader = principal(Access::Read, &[("iban", Access::Masked)]);
     assert_eq!(
-        check_search(&reader, &decl, None, None),
+        check_search(&reader, &decl, None, &[]),
         refused_on("iban", Refusal::NotGranted)
     );
     let granted = principal(Access::Read, &[]);
-    assert!(check_search(&granted, &decl, None, None).is_ok());
-    assert!(check_search(&granted, &decl, None, Some(&"nope".into())).is_err());
+    assert!(check_search(&granted, &decl, None, &[]).is_ok());
+    assert!(check_search(&granted, &decl, None, &[&"nope".into()]).is_err());
 }
 
 #[test]
@@ -137,7 +137,7 @@ fn a_search_limited_to_named_fields_probes_those_and_judges_reading_first() {
     };
     let search = |decl: &TypeDecl, named: &[&str]| {
         let named: Vec<FieldName> = named.iter().map(|&n| n.into()).collect();
-        check_search(&reader, decl, Some(&named), None).map_err(|mut e| {
+        check_search(&reader, decl, Some(&named), &[]).map_err(|mut e| {
             if let Error::Refused {
                 reason: Refusal::Invalid { message },
                 ..
@@ -180,15 +180,15 @@ fn a_search_over_an_embedded_vector_probes_the_fields_it_is_embedded_from() {
     let vec = FieldName::from("vec");
     let reader = principal(Access::Read, &[("note", Access::Masked)]);
     assert_eq!(
-        check_search(&reader, &decl, None, Some(&vec)),
+        check_search(&reader, &decl, None, &[&vec]),
         refused_on("note", Refusal::NotGranted),
         "the vector is readable, but it encodes `note`"
     );
     assert!(
-        check_search(&reader, &decl, None, None).is_ok(),
+        check_search(&reader, &decl, None, &[]).is_ok(),
         "no field is searchable"
     );
-    assert!(check_search(&principal(Access::Read, &[]), &decl, None, Some(&vec)).is_ok());
+    assert!(check_search(&principal(Access::Read, &[]), &decl, None, &[&vec]).is_ok());
 }
 
 #[test]

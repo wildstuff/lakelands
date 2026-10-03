@@ -1,19 +1,20 @@
 //! A hybrid search fuses its lexical and its vector ranking by reciprocal
 //! rank, each over the hits the read may see and to the lake's
-//! `max_limit` of them
+//! `max_limit` of them, and a vector search over several fields fuses
+//! theirs, each ranking weighed as the search asks
 //! (`docs/decisions/046-a-hybrid-search-fuses-the-ranks-a-read-may-see.md`).
 
 use std::sync::Arc;
 
 use lakelands_api::ontology::StorageKind;
-use lakelands_api::query::{Hits, Search, SearchMode};
+use lakelands_api::query::{Hits, Search, SearchMode, VectorTerm};
 use lakelands_api::{LakeStore, Principal};
 use serde_json::json;
 
 use super::search::doc_search;
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, field, field_writer, restrict, searchable, type_decl, vector,
+    Lake, Must, field, field_writer, invalid_naming, restrict, searchable, type_decl, vector,
 };
 
 check!(
@@ -34,8 +35,21 @@ check!(
     "046: at the head, a hybrid search by a principal who sees every live record, without `where` or `valid_at`, ranks without reading a record, and answers the keys and the scores' bits the same search answers under a `where` that holds for every record, with restricted and retired records in the lake"
 );
 
+check!(
+    /// Fused rankings are weighed as the search asks.
+    FUSED_BY_WEIGHT = a_search_fuses_its_rankings_each_by_its_weight,
+    "046, extended, and 024: a vector search that names further fields in `also` ranks each field among the hits the read may see and fuses the rankings by weighted reciprocal rank, each adding `weight / (60 + rank)` in the order named, an absent weight being 1; it answers the keys and the scores' bits of that rule on every engine, a record without a vector in a field gains nothing from it, and a restricted record first in every ranking moves no score; a hybrid search weighs its text (`text_weight`) and its vector (`weight`) by the same rule, and weights of 1 answer what no weights answer"
+);
+
+check!(
+    /// A weight that weighs nothing is refused.
+    WEIGHTS_REFUSED = a_weight_that_cannot_weigh_or_a_field_named_twice_is_refused_naming_it,
+    "046, extended: a weight of 0, below 0 or above 1 000 000, a `weight` on a vector search that names no other field, and a vector field named twice are each refused as invalid, naming the field or `text_weight`, before the principal's rights to the field are looked at"
+);
+
 /// A lake of `doc`s: each a key, a text, a unit vector that many degrees
-/// from the query's `(1, 0)`, and a number `n`.
+/// from the query's `(1, 0)`, and a number `n`. A second vector field,
+/// `w`, is left empty.
 async fn docs(
     store: &dyn LakeStore,
     rows: impl IntoIterator<Item = (String, &str, u32, u32)>,
@@ -44,6 +58,7 @@ async fn docs(
     let fields = vec![
         searchable("body"),
         vector("v", 2),
+        vector("w", 2),
         field("n", StorageKind::Number),
     ];
     l.declare(type_decl("doc", fields)).await?;
@@ -62,14 +77,8 @@ async fn harbour(
     filter: Option<&str>,
     s: Search,
 ) -> Result<Hits, Failure> {
-    let mode = SearchMode::Hybrid {
-        text: "harbour".into(),
-        field: "v".into(),
-        vector: Some(vec![1.0, 0.0]),
-        fields: None,
-    };
     let s = Search {
-        mode,
+        mode: weighed(None, None),
         filter: filter.map(Into::into),
         ..s
     };
@@ -204,5 +213,141 @@ async fn a_search_that_reads_no_record_to_rank_answers_what_reading_them_answers
          included, with the same keys and scores' bits whether or not a `where` that holds \
          for every record makes it read them; without it answered {unread:?}, with it {read:?}"
     );
+    Ok(())
+}
+
+/// What weighted reciprocal rank answers for these rankings, each a
+/// weight and its keys best first: every key's sum in the rankings'
+/// order, best first, equal sums by key (046).
+fn fused(lists: &[(f64, &[&str])]) -> Vec<(String, u64)> {
+    let mut sums: Vec<(String, f64)> = Vec::new();
+    for (weight, keys) in lists {
+        for (rank, key) in keys.iter().enumerate() {
+            let gain = weight / (60.0 + rank as f64);
+            match sums.iter_mut().find(|(k, _)| k == key) {
+                Some((_, sum)) => *sum += gain,
+                None => sums.push(((*key).to_owned(), gain)),
+            }
+        }
+    }
+    sums.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    sums.into_iter().map(|(k, s)| (k, s.to_bits())).collect()
+}
+
+/// A vector search along `(1, 0)` over `v` and, in `also`, over `field`.
+pub(super) fn along(weight: Option<f64>, field: &str, also: Option<f64>) -> SearchMode {
+    let (field, vector) = (field.into(), vec![1.0, 0.0]);
+    SearchMode::Vector {
+        field: "v".into(),
+        vector: vector.clone(),
+        weight,
+        also: vec![VectorTerm {
+            field,
+            vector,
+            weight: also,
+        }],
+    }
+}
+
+/// A hybrid search for "harbour" along `(1, 0)` over `v`.
+fn weighed(text_weight: Option<f64>, weight: Option<f64>) -> SearchMode {
+    SearchMode::Hybrid {
+        text: "harbour".into(),
+        field: "v".into(),
+        vector: Some(vec![1.0, 0.0]),
+        fields: None,
+        weight,
+        text_weight,
+    }
+}
+
+async fn a_search_fuses_its_rankings_each_by_its_weight(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    // Along the query, `v` ranks held, a, b, c and `w` ranks held, b, a;
+    // `c` holds no `w`, and it alone holds the word.
+    let rows = [
+        ("held", "quay", 0),
+        ("a", "quay", 10),
+        ("b", "quay", 20),
+        ("c", "harbour", 30),
+    ];
+    let l = docs(
+        store.as_ref(),
+        rows.map(|(k, b, d)| (k.to_owned(), b, d, 0)),
+    )
+    .await?;
+    for (key, degrees) in [("held", 0), ("a", 40), ("b", 5)] {
+        let a = f64::from(degrees).to_radians();
+        l.upsert("doc", key, json!({"w": [a.cos(), a.sin()]}))
+            .await?;
+    }
+    restrict(store.as_ref(), "doc", "held", "legal hold").await?;
+    let reader = field_writer(store.as_ref(), "reader", "doc", &[]);
+    let (v, w, text): (&[&str], &[&str], &[&str]) = (&["a", "b", "c"], &["b", "a"], &["c"]);
+    let one = |weight: Option<f64>| weight.unwrap_or(1.0);
+    let fields = [(None, None), (Some(2.0), None), (Some(1.0), Some(3.0))].map(|(weight, also)| {
+        let want = fused(&[(one(weight), v), (one(also), w)]);
+        (along(weight, "w", also), "vector", want)
+    });
+    let halves = [
+        (None, None),
+        (Some(1.0), Some(1.0)),
+        (Some(3.0), None),
+        (None, Some(100.0)),
+    ];
+    let halves = halves.map(|(text_weight, weight)| {
+        let want = fused(&[(one(text_weight), text), (one(weight), v)]);
+        (weighed(text_weight, weight), "hybrid", want)
+    });
+    for (mode, by, want) in fields.into_iter().chain(halves) {
+        let what = format!("{mode:?}");
+        let got = l
+            .cat
+            .search(&reader, doc_search(mode))
+            .await
+            .must(&what)?
+            .data;
+        ensure!(
+            scored(&got) == want && got.ranked_by == by,
+            "a reader without the restricted grant, searching {what}, must be answered the \
+             weighted reciprocal ranks of what it may see, {want:?} (scores as bits), ranked \
+             by `{by}`; it answered {:?}, ranked by `{}`",
+            scored(&got),
+            got.ranked_by
+        );
+    }
+    Ok(())
+}
+
+async fn a_weight_that_cannot_weigh_or_a_field_named_twice_is_refused_naming_it(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = docs(store.as_ref(), [("a".to_owned(), "harbour", 0, 0)]).await?;
+    // The reader sees `v` only masked: a search over it would be refused
+    // as not granted, were its shape not judged first.
+    let reader = super::search::masking(store.as_ref(), "v");
+    let lone = SearchMode::Vector {
+        field: "v".into(),
+        vector: vec![1.0, 0.0],
+        weight: Some(2.0),
+        also: Vec::new(),
+    };
+    for (mode, names) in [
+        (lone, ["on `v`", "`also`"]),
+        (along(Some(0.0), "w", None), ["on `v`", "weight of `v`"]),
+        (along(None, "w", Some(-1.0)), ["on `w`", "weight of `w`"]),
+        (
+            along(None, "w", Some(1_000_001.0)),
+            ["on `w`", "weight of `w`"],
+        ),
+        (along(None, "v", None), ["on `v`", "named twice"]),
+        (weighed(Some(0.0), None), ["`text_weight`", "above 0"]),
+        (weighed(None, Some(-2.0)), ["on `v`", "weight of `v`"]),
+    ] {
+        let what = format!("{mode:?}, by a reader who sees `v` only masked,");
+        let answer = l.cat.search(&reader, doc_search(mode)).await;
+        invalid_naming(&what, answer.map(|r| scored(&r.data)), &names)?;
+    }
     Ok(())
 }
