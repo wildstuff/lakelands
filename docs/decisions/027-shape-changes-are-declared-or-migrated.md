@@ -180,7 +180,11 @@ field, in the form it uses for a view:
   value it sets one from reads (`payload.<name>` is the call's, no
   field);
 - another type's derived relation to the type: the field of the type
-  each pair matches.
+  each pair matches;
+- an object set or a trigger on the link type of one of the type's
+  relations: the relation's fields it reads. A relation's fields are its
+  link type's, and the type's migration is what changes them, so the
+  refusal names the link type as the one the field is read of.
 
 One function gathers these reads, beside the one for a view. The host
 declares the reader again first, so that it reads the shape the

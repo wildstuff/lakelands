@@ -1715,8 +1715,9 @@ A migration keeps the fields the lake's declarations read
 (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
 extended). Its preflight refuses, as invalid, a migration that drops or
 renames a field read by a view over the type, a derived field of the
-type, an object set, a trigger or a verb on it, or another type's
-derived relation to it, naming the reader and the field ("after the
+type, an object set, a trigger or a verb on it, another type's derived
+relation to it, or an object set or a trigger on the link type of a
+relation whose fields it changes, naming the reader and the field ("after the
 migration of `invoice`, the object_set declaration `open` reads `status`
 of `invoice`, which the migration renames to `state`"). Declare the
 reader again so that it reads the shape the migration leaves, then

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use lakelands_api::LakeStore;
 use lakelands_api::ontology::StorageKind::Text;
-use lakelands_api::ontology::TypeDecl;
+use lakelands_api::ontology::{RelationDecl, TypeDecl};
 use lakelands_api::write::{Declaration, Migration};
 use serde_json::json;
 
@@ -20,7 +20,7 @@ use crate::conformance::fixture::{
 check!(
     /// A migration keeps the fields a declaration reads.
     MIGRATION_KEEPS_READ_FIELDS = a_migration_keeps_the_fields_a_declaration_reads,
-    "027, extended: a migration that drops a field read by a derived field of its type, by another type's derived relation to it, or by an object set, a trigger or a verb on it (its `requires`, a field it sets, the value it sets one from) is refused as invalid by its preflight, naming the reader and the field, and one that renames such a field names the new name too; a migration that drops a field no declaration reads goes through"
+    "027, extended: a migration that drops a field read by a derived field of its type, by another type's derived relation to it, or by an object set, a trigger or a verb on it (its `requires`, a field it sets, the value it sets one from) is refused as invalid by its preflight, naming the reader and the field, and one that renames such a field names the new name too; so is one that drops a relation's field a trigger on the relation's link type reads, naming the link type; a migration that drops a field no declaration reads goes through"
 );
 
 /// `item` with the text fields `names` and `loud`, derived from `a`.
@@ -70,6 +70,28 @@ async fn a_migration_keeps_the_fields_a_declaration_reads(
         "a migration renaming `b`",
         l.cat.migrate(&l.own, renamed).await,
         &["object_set declaration `s`", "reads `b`", "renames to `b2`"],
+    )?;
+    // A relation's fields are its link type's: a trigger on the link type
+    // keeps the one it reads.
+    let doc = |fields| {
+        let mut t = type_decl("doc", vec![field("n", Text)]);
+        t.relations = vec![RelationDecl {
+            fields,
+            ..RelationDecl::to("signed_by", "item")
+        }];
+        t
+    };
+    l.declare(doc(vec![field("ok", Text)])).await?;
+    let on_links = json!({"declare": "trigger", "name": "lt", "on": "sys.link.doc.signed_by",
+                          "when": "ok = 'x'"});
+    l.declare_json(on_links).await?;
+    invalid_naming(
+        "a migration dropping the relation's field `ok`",
+        l.cat.migrate(&l.own, migration(doc(vec![]))).await,
+        &[
+            "trigger declaration `lt`",
+            "reads `ok` of `sys.link.doc.signed_by`",
+        ],
     )?;
     l.migrate(item(&all[..7])).await?;
     Ok(())

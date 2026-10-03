@@ -2053,18 +2053,19 @@ impl Call<'_> {
         after.types.remove(&m.to.name);
         after.put(Declaration::Type(m.to.clone()), 0, None);
         // The refusal of a migration that takes away a field `reader` reads:
-        // one the type has before it and not after.
+        // one the type, or a link type of it, has before it and not after.
         let has = |t: &TypeDecl, n: &FieldName| t.fields.iter().any(|f| &f.name == n);
-        let gone = |reader: String, names: &BTreeSet<FieldName>| {
-            let n = names.iter().find(|n| has(&before, n) && !has(&m.to, n))?;
-            let how = match m.renames.iter().find(|(from, _)| from == n) {
+        let gone = |reader: String, names: &BTreeSet<FieldName>, was: &TypeDecl, is: &TypeDecl| {
+            let n = names.iter().find(|n| has(was, n) && !has(is, n))?;
+            let renamed = |(from, _): &&(FieldName, FieldName)| from == n && is.name == m.to.name;
+            let how = match m.renames.iter().find(renamed) {
                 Some((_, to)) => format!("renames to `{to}`"),
                 None => "drops".to_owned(),
             };
             Some(invalid(format!(
-                "after the migration of `{0}`, {reader} reads `{n}` of `{0}`, which the \
+                "after the migration of `{}`, {reader} reads `{n}` of `{}`, which the \
                  migration {how}",
-                m.to.name
+                m.to.name, is.name
             )))
         };
         for reader in w.ontology.types.values().map(|e| &e.decl) {
@@ -2093,16 +2094,22 @@ impl Call<'_> {
             // rule `describe` uses to show a view.
             for (source, names) in describe::view_reads(v).unwrap_or_default() {
                 if source == m.to.name {
-                    gone(format!("view `{}`", reader.name), &names).map_or(Ok(()), Err)?;
+                    gone(format!("view `{}`", reader.name), &names, &before, &m.to)
+                        .map_or(Ok(()), Err)?;
                 }
             }
         }
         // So does every other declaration in force (027, extended): the
         // type's derived fields, another type's derived relation to it, and
-        // the sets, triggers and verbs on it keep the fields they read.
-        for d in after.declared() {
-            let reads = describe::declaration_reads(&d.declaration, &m.to.name);
-            gone(d.declaration.what(), &reads).map_or(Ok(()), Err)?;
+        // the sets, triggers and verbs on it keep the fields they read; and
+        // those on a link type it changes keep the relation's fields.
+        let links = changed_link_types(&w.ontology, &m.to);
+        let kept = links.iter().map(|(was, is)| (was, is));
+        for (was, is) in std::iter::once((&before, &m.to)).chain(kept) {
+            for d in after.declared() {
+                let reads = describe::declaration_reads(&d.declaration, &was.name);
+                gone(d.declaration.what(), &reads, was, is).map_or(Ok(()), Err)?;
+            }
         }
         let records: Vec<StoredRecord> = view
             .scan(&before.name, &every(true))?
