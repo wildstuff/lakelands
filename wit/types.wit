@@ -615,11 +615,14 @@ interface types {
         position: position,
         proposer: string,
         proposed-at: timestamp,
-        write: proposed-write,
+        /// As far as its reader may see it; absent when it may see nothing.
+        write: option<proposed-write>,
         why: string,
         state: proposal-state,
         decided-by: option<string>,
         reason: option<string>,
+        /// The proposal holds more than its reader is shown.
+        more: bool,
     }
 
     record proposal-filter {

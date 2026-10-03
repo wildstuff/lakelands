@@ -128,6 +128,45 @@ pub fn shown(d: &Declaration, declared: &[Declared], who: &Principal) -> bool {
     }
 }
 
+/// Whether a proposed declaration is listed to `who`, over `declared` as
+/// the proposal would leave it (013, extended): as [`lake`] would describe
+/// it once in force, but a verb by the fields it names and not by who may
+/// call it, since a reviewer need not be one who may.
+pub fn listed(d: &Declaration, declared: &[Declared], who: &Principal) -> bool {
+    let described = |ty: &TypeName| one_type(ty, declared, who).is_some();
+    let holds = |c: Option<&Condition>, ty| condition_visible(c, ty, declared, who);
+    match d {
+        // A view without its definition would read as a stored type.
+        Declaration::Type(t) => {
+            described(&t.name) && (t.view.as_deref()).is_none_or(|v| view_visible(v, declared, who))
+        }
+        Declaration::Trigger(t) => described(&t.on) && holds(t.when.as_ref(), &t.on),
+        Declaration::ObjectSet(s) => described(&s.of) && holds(Some(&s.filter), &s.of),
+        // It names the fields it sets and says something of those it reads.
+        Declaration::Verb(v) => {
+            let VerbEffect::Write { set } = &v.effect else {
+                return described(&v.on) && holds(v.requires.as_ref(), &v.on);
+            };
+            let known = |n: &FieldName| {
+                let t = find_type(declared, &v.on);
+                let f = t.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == n)?)));
+                f.is_some_and(|(t, f)| field_access(who, t, f) != Access::None)
+            };
+            // In a value `payload.<name>` is the call's and no field.
+            let value = |c: &Condition| {
+                let fields = parsed(c).map(|e| crate::derive::verb_reads(&e).0);
+                reads_all(&fields.unwrap_or_default(), &v.on, declared, who)
+            };
+            let all = |a: &lakelands_api::ontology::Assignment| known(&a.field) && value(&a.value);
+            described(&v.on)
+                && holds(v.requires.as_ref(), &v.on)
+                && (who.grants.schema || set.iter().all(all))
+        }
+        Declaration::Function(f) => function_visible(f, declared, who),
+        Declaration::ValueType(_) => true,
+    }
+}
+
 /// Whether a condition over type `ty` may be shown to `who`.
 fn condition_visible(
     c: Option<&Condition>,

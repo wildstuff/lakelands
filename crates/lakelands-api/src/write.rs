@@ -246,8 +246,11 @@ pub struct Proposal {
     pub proposer: String,
     /// When.
     pub proposed_at: Timestamp,
-    /// What it would write.
-    pub write: ProposedWrite,
+    /// What it would write, as far as its reader may see it: absent in a
+    /// listing for a reader who may see nothing of the write. A stored
+    /// proposal always holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write: Option<ProposedWrite>,
     /// Why it waits.
     pub why: String,
     /// Where it stands.
@@ -258,6 +261,10 @@ pub struct Proposal {
     /// The reason given on rejection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Whether the proposal holds more than this reader is shown: a
+    /// listing says so, without a name. A stored proposal holds `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub more: bool,
 }
 
 /// Which proposals to list.

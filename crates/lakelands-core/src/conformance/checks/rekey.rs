@@ -128,7 +128,7 @@ fn account_to(key: &str) -> Migration {
     }
 }
 
-fn to_iban() -> Migration {
+pub(super) fn to_iban() -> Migration {
     account_to("iban")
 }
 

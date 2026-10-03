@@ -857,7 +857,7 @@ async fn a_proposal_holds_the_write_as_checked() {
         .await
         .unwrap()
         .data;
-    let ProposedWrite::Upsert { patch, .. } = &p[0].write else {
+    let Some(ProposedWrite::Upsert { patch, .. }) = &p[0].write else {
         panic!("{:?}", p[0].write);
     };
     assert_eq!(patch["at"], stored, "the proposal holds the checked value");

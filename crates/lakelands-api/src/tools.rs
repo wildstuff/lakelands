@@ -1141,7 +1141,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
         time_axes(&mut p);
         out.push(ToolSpec {
             name: PROPOSALS.into(),
-            description: "List proposals waiting for review, or decided ones; newest first unless ordered otherwise.".into(),
+            description: "List proposals waiting for review, or decided ones; newest first unless ordered otherwise. Each shows its write as far as you may see it, and `more: true` where it holds more than you are shown.".into(),
             input_schema: obj(p, &[]),
             output_schema: reply_schema(json!({"type": "array"})),
             door: Door::Proposals,

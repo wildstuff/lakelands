@@ -397,7 +397,12 @@ belongs in the suite, not beside one engine:
 
 **readers view**
 
-- `a_proposal_shows_its_reader_the_values_it_may_read_and_is_accepted_whole` — 013 and 024, extended (lakelands#499): `proposals` shows a proposed value where a read of the record would: a field its reader may not know of and a masked one are not in a proposed patch, a proposed call's payload is whole only to a reader who may read every field the verb sets, or see the type of a verb that reaches outside, and a write to a type the reader may not see stays listed and shows neither; the proposer reads its own proposal by the same rule; the accept applies the logged write whole, what its reviewer was not shown too
+- `a_proposal_shows_its_reader_the_values_it_may_read_and_is_accepted_whole` — 013 and 024, extended (lakelands#499): `proposals` shows a proposed value where a read of the record would: a field its reader may not know of and a masked one are not in a proposed patch, a proposed call's payload is whole only to a reader who may read every field the verb sets, or see the type of a verb that reaches outside, and a write to a type the reader may not see is listed without its write; every entry that holds more than its reader is shown says `more`, and no other does; the proposer reads its own proposal by the same rule; the accept applies the logged write whole, what its reviewer was not shown too
+
+**proposal names**
+
+- `a_proposed_shape_names_only_what_its_reader_may_know_of` — 013, 024 and 027, extended (lakelands#499): `proposals` shows of a proposed migration the renames, the dropped fields and link fields, the re-keyed types and the rewritten references only where its reader may see the type and know of the field, the totals whole; of a proposed bundle each declaration `describe` would show its reader once in force, a verb by the fields it names; an entry that holds more says `more` and names nothing else, and a bundle with nothing left shows no write
+- `a_listing_is_filtered_on_what_it_shows_and_an_accept_names_no_hidden_field` — 013 and 024, extended (lakelands#499): a proposal on a type its reader may not see, or on a restricted record without the grant, is listed without its write and says `more`; `type` and `kind` are answered on the entry as shown, so a hidden type answers what an undeclared one answers and an entry without a write is of no kind, while the unfiltered listing and `state` hold it; an accept refused because a declaration reads a field the migration takes away names neither to an accepter who may not know of the field
 
 **schema proposals**
 

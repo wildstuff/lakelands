@@ -49,7 +49,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use lakelands_api::describe::{LakeDescription, TypeDescription};
-use lakelands_api::engine::{After, ProjectionView, Scan};
+use lakelands_api::engine::{After, Declared, ProjectionView, Scan};
 use lakelands_api::expr::{Expr, Func, Literal};
 use lakelands_api::ontology::{
     FieldType, MatchPair, RelationDecl, StorageKind, TypeDecl, VerbEffect,
@@ -62,10 +62,10 @@ use lakelands_api::read::{
     Params, ReadAt,
 };
 use lakelands_api::record::StoredRecord;
-use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposedWrite};
+use lakelands_api::write::{Declaration, Migration, Proposal, ProposalFilter, ProposedWrite};
 use lakelands_api::{
     Access, Cursor, Error, FieldName, Missing, Position, Principal, Record, RecordKey, Refusal,
-    RelationName, Result, Timestamp, TypeName, Value,
+    RelationName, Result, Timestamp, TypeName, Value, VerbName,
 };
 use lakelands_core::expr::{self, Place, RecordScope, aggregate};
 use lakelands_core::graph::{self, EdgeSource};
@@ -1275,9 +1275,13 @@ impl<'a> Reader<'a> {
             Some(c) => resume(c, "proposals", None, &Params::new())?.offset as usize,
             None => 0,
         };
+        // The kind and the type are answered on the entry as its reader is
+        // shown it, so they are asked behind the trim, not of the engine.
         let all = self.view.proposals(&ProposalFilter {
             limit: Some(u32::MAX),
             cursor: None,
+            kind: None,
+            ty: None,
             ..filter.clone()
         })?;
         let me = self.who.writer();
@@ -1285,7 +1289,14 @@ impl<'a> Reader<'a> {
             .into_iter()
             .filter(|p| self.who.grants.review || p.proposer == me)
             .collect();
-        mine.iter_mut().for_each(|p| self.known_shape(&mut p.write));
+        let verb_on = |v: &VerbName| self.ontology.verb(v).ok().map(|d| d.on.clone());
+        for p in &mut mine {
+            let logged = p.write.take();
+            let shown = logged.clone();
+            p.write = shown.and_then(|mut w| self.known_shape(&mut w).then_some(w));
+            p.more = p.write != logged;
+        }
+        mine.retain(|p| core_engines::matches(p, filter, verb_on));
         Ok(ordered_proposals(mine, &filter.order_by)?
             .into_iter()
             .skip(offset)
@@ -1293,13 +1304,13 @@ impl<'a> Reader<'a> {
             .collect())
     }
 
-    /// A proposed shape as its reader may know it (027, extended): the
-    /// store logs a migration and a redeclaration completed with the fields
-    /// hidden from their author, who reads its own proposal here, and a
-    /// field the reader may not know of is left out as `describe` leaves it
-    /// out, a relation's link fields too. A proposed value is shown where
-    /// a read of the record would show it (024, extended).
-    fn known_shape(&self, write: &mut ProposedWrite) {
+    /// A proposed write as its reader may know it (013 and 024, extended):
+    /// a value where a read of the record would show it, a name where
+    /// `describe` would. False when the reader may see nothing of it: a
+    /// write to a type it may not see, or to a record it is not answered.
+    /// The store logs a migration and a redeclaration completed with the
+    /// fields hidden from their author, who reads its own proposal here.
+    fn known_shape(&self, write: &mut ProposedWrite) -> bool {
         let known = |t: &TypeDecl, f: &lakelands_api::ontology::FieldDecl| {
             rights::field_access(self.who, t, f) != Access::None
         };
@@ -1311,35 +1322,100 @@ impl<'a> Reader<'a> {
                 r.fields.retain(|f| known(&link, f));
             }
         };
-        let read = |ty: &TypeName, field: &FieldName| {
+        // Whether a shown type holds the field `name`, a link field as a
+        // report names it (`relation.field`) too.
+        let has = |t: &TypeDecl, name: &FieldName| match name.as_str().split_once('.') {
+            Some((r, f)) => (t.relations.iter().filter(|x| x.name.as_str() == r))
+                .any(|x| x.fields.iter().any(|x| x.name.as_str() == f)),
+            None => t.fields.iter().any(|f| &f.name == name),
+        };
+        let field = |ty: &TypeName, field: &FieldName| {
             let t = self.visible_type(ty).ok();
-            let f = t.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == field)?)));
-            f.is_some_and(|(t, f)| rights::field_access(self.who, t, f).reads())
+            t.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == field)?)))
+        };
+        let read = |ty: &TypeName, f: &FieldName| {
+            field(ty, f).is_some_and(|(t, f)| rights::field_access(self.who, t, f).reads())
+        };
+        // A record the reader is not answered: restricted, without the grant.
+        let answered = |ty: &TypeName, key: &RecordKey| {
+            let stored = self.view.get(ty, key).ok().flatten();
+            self.visible_type(ty).is_ok()
+                && (self.who.grants.restricted || !stored.is_some_and(|r| r.restricted))
         };
         match write {
             // A field the reader may not know of and a masked one both
             // leave the patch: it holds values, and no place for a name.
-            ProposedWrite::Upsert { ty, patch, .. } => patch.retain(|field, _| read(ty, field)),
+            ProposedWrite::Upsert { ty, key, patch, .. } => {
+                patch.retain(|field, _| read(ty, field));
+                answered(ty, key)
+            }
+            ProposedWrite::Retire { ty, key, .. } => answered(ty, key),
             // A payload is what the verb's fields become: whole to a reader
             // who may read each field the verb sets, or see the type an
-            // executor acts on, and empty otherwise.
-            ProposedWrite::Call { verb, payload, .. } => {
-                let whole = self.ontology.verb(verb).is_ok_and(|v| match &v.effect {
+            // executor acts on, and empty otherwise. The verb's name is its
+            // type's.
+            ProposedWrite::Call {
+                verb, key, payload, ..
+            } => {
+                let Ok(v) = self.ontology.verb(verb) else {
+                    return false;
+                };
+                let whole = match &v.effect {
                     VerbEffect::Write { set } => set.iter().all(|a| read(&v.on, &a.field)),
-                    VerbEffect::External { .. } => self.visible_type(&v.on).is_ok(),
-                });
+                    VerbEffect::External { .. } => true,
+                };
                 if !whole {
                     payload.clear();
                 }
+                match key {
+                    Some(key) => answered(&v.on, key),
+                    None => self.visible_type(&v.on).is_ok(),
+                }
             }
-            ProposedWrite::Retire { .. } => {}
-            ProposedWrite::Migrate { migration, .. } => shown(&mut migration.to),
+            // The report names what the migration does to the type as it
+            // stands, so a name is judged there; the totals, the hashes and
+            // the report's id stay whole. A logged report is lossless, so
+            // it names no record that would not convert or would collide.
+            ProposedWrite::Migrate { migration, report } => {
+                let Ok(was) = self.visible_type(&migration.to.name) else {
+                    return false;
+                };
+                let (mut was, Migration { to, renames }) = (was.clone(), &mut **migration);
+                shown(&mut was);
+                shown(to);
+                // A conversion names its field as the migration leaves it,
+                // and the one it took its values from where it was renamed.
+                let sourced = |new: &FieldName| {
+                    let mut from = renames.iter().filter(|(_, n)| n == new);
+                    from.all(|(old, _)| has(&was, old))
+                };
+                report
+                    .fields
+                    .retain(|c| has(to, &c.field) && sourced(&c.field));
+                renames.retain(|(old, new)| has(&was, old) && has(to, new));
+                report.dropped.retain(|(f, _)| has(&was, f));
+                report.rekeyed.retain(|r| self.visible_type(&r.ty).is_ok());
+                (report.references)
+                    .retain(|r| field(&r.ty, &r.field).is_some_and(|(t, f)| known(t, f)));
+                true
+            }
+            // Each declaration as `describe` would show it once the bundle
+            // is in force; one it would not show leaves the list.
             ProposedWrite::Declare { declarations } => {
-                for d in declarations {
+                let proposed = declarations.iter().cloned().map(|declaration| Declared {
+                    declaration,
+                    version: 0,
+                    schema_hash: None,
+                    since: Position(0),
+                });
+                let after: Vec<Declared> = proposed.chain(self.declared()).collect();
+                declarations.retain(|d| describe::listed(d, &after, self.who));
+                for d in declarations.iter_mut() {
                     if let Declaration::Type(t) = d {
                         shown(t);
                     }
                 }
+                !declarations.is_empty()
             }
             // A use says something of a field's values, so it is shown only
             // in a field the reader may read, of a type it may see (024);
@@ -1347,6 +1423,7 @@ impl<'a> Reader<'a> {
             // care: a logged proposal's report fits, so it names no misfit.
             ProposedWrite::MigrateValueType { report, .. } => {
                 report.fields.retain(|u| read(&u.ty, &u.field));
+                true
             }
         }
     }

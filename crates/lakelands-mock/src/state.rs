@@ -195,11 +195,12 @@ impl State {
                         position: e.position,
                         proposer: e.writer.clone(),
                         proposed_at: e.known_at,
-                        write: write.clone(),
+                        write: Some(write.clone()),
                         why: why.clone(),
                         state: ProposalState::Pending,
                         decided_by: None,
                         reason: None,
+                        more: false,
                     },
                 );
                 self.remember(
