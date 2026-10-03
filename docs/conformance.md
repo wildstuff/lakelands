@@ -340,7 +340,7 @@ belongs in the suite, not beside one engine:
 - `a_relation_that_allows_one_link_per_target_refuses_a_second` — §2.3: one_to_many and one_to_one allow one live link per `to`; a second link into it is refused as a constraint
 - `a_relations_authority_changes_by_declaration_and_keeps_its_links` — 035, extended: a relation's authority changes by an ordinary declaration; the door its links arrive by swaps, and the links already written stay
 - `ingest_holds_a_source_relations_cardinality_over_the_lake_and_the_window` — §2.3: a link that arrives by ingest holds the relation's cardinality over the lake's live links and the window's, its ends read from the key when the record leaves them out
-- `a_relation_declared_again_with_another_target_is_a_migration` — 027 and 035, extended: a relation removed by migrate keeps its links; declaring it again with another target would reshape them, and is refused, naming the link type
+- `a_relation_declared_again_with_another_target_is_a_migration` — 027 and 035, extended: a relation removed by migrate keeps its links, and the preflight lists it under `dropped` with the number of its live links, or not at all when none is live; declaring it again with another target would reshape them, and is refused, naming the link type
 - `a_restricted_link_is_walked_only_with_the_restricted_grant` — 035 and the retention hold: a link's edge comes from its own record, so a restricted link is walked only by a principal with the `restricted` grant
 - `narrowing_a_relations_cardinality_is_refused_while_links_would_break` — 027 and §2.3: narrowing a relation's cardinality is a migration, and its preflight refuses it while live links would break the narrower rule
 

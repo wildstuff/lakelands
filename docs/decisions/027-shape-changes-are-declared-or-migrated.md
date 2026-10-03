@@ -193,6 +193,22 @@ as before. An aging rule and an index setting are records, not
 declarations, and stay outside the rule: each already skips a field its
 type no longer has.
 
+## Extended: a removed relation is listed as a removed field is (lakelands#437)
+
+A relation carried by link records that a migration removes keeps its
+links as history, and takes them from the head: the walk follows only
+declared relations, and the link doors refuse a relation that is gone.
+That is what a removed field does to its values, so the preflight says
+it the same way: the relation is one entry in the report's `dropped`,
+named by the relation, with the number of its live links. A relation
+whose links are all unlinked removes nothing from the head and is not
+listed. The entry does not make the report lossy, as a removed field
+does not: removal is the migration's intent, named before it is applied.
+
+A relation removed and another added is that and nothing more: the old
+name is listed with its links, and the new relation starts with none. A
+rename of a relation is not inferred, as a field's is not.
+
 ## Extended: the order of refusals (lakelands#338)
 
 The migration doors refuse in this order, in the frame every write
