@@ -237,8 +237,12 @@ impl LakeStore for RemoteLake {
         Err(host_only("age"))
     }
 
-    async fn purge_source(&self, _source: &SourceId) -> Result<PurgeReport> {
+    async fn purge_source(&self, _source: &SourceId, _id: Option<&str>) -> Result<PurgeReport> {
         Err(host_only("purge_source"))
+    }
+
+    async fn purge_preflight(&self, _source: &SourceId) -> Result<PurgeReport> {
+        Err(host_only("purge_preflight"))
     }
 
     async fn position_at(&self, _known_at: Timestamp) -> Result<Option<Position>> {

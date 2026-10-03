@@ -154,8 +154,18 @@ impl LakeStore for Store {
     async fn age(&self, today: lakelands_api::time::Timestamp) -> Result<AgeReport> {
         self.inner.age(today).await
     }
-    async fn purge_source(&self, source: &SourceId) -> Result<lakelands_api::write::PurgeReport> {
-        self.inner.purge_source(source).await
+    async fn purge_source(
+        &self,
+        source: &SourceId,
+        id: Option<&str>,
+    ) -> Result<lakelands_api::write::PurgeReport> {
+        self.inner.purge_source(source, id).await
+    }
+    async fn purge_preflight(
+        &self,
+        source: &SourceId,
+    ) -> Result<lakelands_api::write::PurgeReport> {
+        self.inner.purge_preflight(source).await
     }
     async fn compact(&self) -> Result<lakelands_api::write::CompactReport> {
         self.inner.compact().await

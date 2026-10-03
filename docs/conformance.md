@@ -552,6 +552,8 @@ belongs in the suite, not beside one engine:
 - `a_record_whose_values_from_the_source_were_all_cleared_stays` — 039: whose a record is, is read over the fields that hold a value: a record whose values from the source were all cleared holds nothing of it and stays, whether the source brought it in or set and cleared a value on another source's record, while a record still holding one is purged
 - `a_co_owned_purge_names_the_count_and_the_first_ten` — 039 and seams: a purge refused because records are co-owned names how many there are, and the first ten, never more
 - `a_value_a_backing_filled_makes_no_owner` — 039: a backed output is the lake's own computation, like a derived value; it makes no owner, so the source's purge retires the record
+- `a_preflight_appends_nothing_and_a_purge_that_repeats_its_id_is_stale_once_the_lake_moved` — 039, extended: `purge_preflight` appends nothing and answers the report the purge then answers, under an id; it is refused as the purge is for a co-owned record; a purge that repeats the id is refused as invalid, appending nothing, once the lake has moved or when the id is another source's, and otherwise purges
+- `a_purge_names_the_records_outside_it_that_refer_into_it` — 039, extended, 026 and 035: the preflight and the purge name, per relation, the live records the purge does not take that refer to a record it takes, by a `via` field or as a link record with an end inside, restricted ones included, by type and key only: how many, and the first ten in key order; a retired record, one the purge takes itself and a relation derived from matching values are not named, and the purge is not refused
 
 **value types**
 

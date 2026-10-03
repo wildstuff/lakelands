@@ -235,7 +235,9 @@ fn command() -> Command {
                         .required(true)
                         .value_parser(clap::builder::NonEmptyStringValueParser::new())
                         .help("The source whose records are retired"),
-                ),
+                )
+                .arg(Arg::new("preflight").long("preflight").action(ArgAction::SetTrue).conflicts_with("report").help("Say what the purge would retire and strand, appending nothing"))
+                .arg(Arg::new("report").long("report").value_name("ID").help("Purge only if the lake has not moved since the preflight with this id")),
         )
         .subcommand(Command::new("rebuild").about("Delete the lake's projection and rebuild it from the log"))
         .subcommand(Command::new("compact").about("Give back the storage the lake's projection no longer uses"))
@@ -419,7 +421,11 @@ async fn dispatch(
             commands::feed(out, &store, from, kinds).await
         }
         "age" => commands::age(out, &store, &text(sub, "today").unwrap_or_default()).await,
-        "purge" => commands::purge(out, &store, &text(sub, "source").unwrap_or_default()).await,
+        "purge" => {
+            let (source, report) = (text(sub, "source").unwrap_or_default(), text(sub, "report"));
+            let report = (!sub.get_flag("preflight")).then_some(report.as_deref());
+            commands::purge(out, &store, &source, report).await
+        }
         "rebuild" => commands::rebuild(out, &store).await,
         "compact" => commands::compact(out, &store).await,
         "export" => {
