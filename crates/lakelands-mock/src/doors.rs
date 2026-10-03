@@ -407,16 +407,21 @@ impl MockCatalog {
         Ok((at, State::fold(&log.events[..=at.0 as usize])))
     }
 
-    /// The page a read asks for; a measure's may be as large as the
-    /// lake's `max_graph_nodes`, as the store's (026).
-    fn limit(&self, asked: Option<u32>, measure: bool) -> usize {
+    /// The page a read asks for, refused outside the lake's bounds with
+    /// the store's sentence; a measure's may be as large as the lake's
+    /// `max_graph_nodes`, as the store's (026).
+    fn limit(&self, asked: Option<u32>, measure: bool) -> Result<usize> {
         let l = &self.shared.limits;
         let max = if measure {
             l.max_limit.max(l.max_graph_nodes)
         } else {
             l.max_limit
         };
-        asked.unwrap_or(l.default_limit).clamp(1, max) as usize
+        let asked = asked.unwrap_or(l.default_limit);
+        if asked == 0 || asked > max {
+            return Err(invalid(format!("a limit is between 1 and {max}")));
+        }
+        Ok(asked as usize)
     }
 
     fn commit(&self, log: &mut Log, batch: Batch) {
@@ -2591,7 +2596,7 @@ impl Catalog for MockCatalog {
             rows,
             (position, "find", Some(ty), &of),
             offset + skip,
-            self.limit(find.limit, false),
+            self.limit(find.limit, false)?,
         );
         Ok(Reply {
             position,
@@ -2878,12 +2883,14 @@ impl Catalog for MockCatalog {
             .visible(who, &start.ty)
             .ok_or_else(|| no_type(&start.ty))?;
         bound(&t.decl, &start.params)?;
+        let measure = matches!(pattern.project, Projection::Degree | Projection::Components);
+        let limit = self.limit(pattern.limit, measure)?;
         if start.search.is_some() || pattern.to.is_some() {
             return Err(invalid(
                 "the in-memory mock starts a pattern from a key or a filter only",
             ));
         }
-        if matches!(pattern.project, Projection::Degree | Projection::Components) {
+        if measure {
             measures::check(&pattern)?;
             for step in &pattern.steps {
                 let declared = st.types.values().any(|o| {
@@ -2930,7 +2937,7 @@ impl Catalog for MockCatalog {
                 rows,
                 (position, "query", Some(&pattern.start.ty), &of),
                 offset,
-                self.limit(pattern.limit, true),
+                limit,
             );
             return Ok(Reply {
                 position,
@@ -3088,7 +3095,7 @@ impl Catalog for MockCatalog {
             rows,
             (position, "query", Some(&pattern.start.ty), &of),
             offset,
-            self.limit(pattern.limit, false),
+            limit,
         );
         Ok(Reply {
             position,
@@ -3477,6 +3484,7 @@ impl Catalog for MockCatalog {
         filter: ProposalFilter,
     ) -> Result<Reply<Vec<Proposal>>> {
         self.admit(who)?;
+        let limit = self.limit(filter.limit, false)?;
         let (pinned, offset) = match &filter.cursor {
             Some(c) => {
                 let (p, o) = uncursor(c, "proposals", None, "")?;
@@ -3520,12 +3528,7 @@ impl Catalog for MockCatalog {
             rows.reverse();
         }
         rows.iter_mut().for_each(|p| known_shape(who, &mut p.write));
-        let (rows, _) = page(
-            rows,
-            (position, "proposals", None, ""),
-            offset,
-            self.limit(filter.limit, false),
-        );
+        let (rows, _) = page(rows, (position, "proposals", None, ""), offset, limit);
         Ok(Reply {
             position,
             data: rows,
