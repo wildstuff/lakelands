@@ -117,22 +117,86 @@ fn measures_see_the_measures_before_them() {
     .into_iter()
     .map(|v| serde_json::from_value(v).unwrap())
     .collect();
-    let refs: Vec<_> = data.iter().collect();
-    let out = measures(
-        &refs,
-        &BTreeMap::new(),
-        &[
-            ("margin".into(), parse("sum(rev) - sum(cost)").unwrap()),
-            ("rate".into(), parse("margin / sum(rev)").unwrap()),
-        ],
-        BTreeMap::new(),
-        None,
-        Timestamp(0),
-    )
-    .unwrap();
+    let named = [
+        ("margin".into(), parse("sum(rev) - sum(cost)").unwrap()),
+        ("rate".into(), parse("margin / sum(rev)").unwrap()),
+    ];
+    let out = folded(&data, &named).unwrap();
     assert_eq!(out[&FieldName::from("margin")], json!("50"));
     assert_eq!(
         out[&FieldName::from("rate")],
         json!("0.3333333333333333333333333333")
     );
+}
+
+/// One group's measure `expr` over `rows`: its value, or its error.
+fn measured(rows: &[Value], expr: &str) -> std::result::Result<Value, String> {
+    let rows: Vec<Row> = (rows.iter().cloned())
+        .map(|v| serde_json::from_value(v).unwrap())
+        .collect();
+    let named = [(FieldName::from("m"), parse(expr).unwrap())];
+    folded(&rows, &named)
+        .map(|mut row| row.remove("m").unwrap())
+        .map_err(|e| e.0)
+}
+
+/// One group's `named` measures over `rows`, folded in one at a time.
+fn folded(rows: &[Row], named: &[(FieldName, Expr)]) -> Result<Row> {
+    let mut group = Grouping::new(Vec::new(), named, Timestamp(0));
+    rows.iter().for_each(|r| group.add(r, None));
+    let (by, folds) = group.groups().pop().unwrap_or_default();
+    measures(&folds, &by, named, Row::new(), None, Timestamp(0))
+}
+
+#[test]
+fn a_group_folded_a_record_at_a_time_answers_what_folding_it_at_once_did() {
+    let mix = [
+        json!({"x": "abc", "d": 1}),
+        json!({"x": "1", "d": 0}),
+        json!({"x": 2, "d": 2}),
+    ];
+    let max = "79228162514264337593543950335";
+    let big = [json!({"x": max}), json!({"x": max}), json!({"x": "abc"})];
+    let dec = [json!({"x": "1.10"}), json!({"x": "2.205"}), json!({})];
+    let tie = [json!({"x": 1}), json!({"x": "1.0"}), json!({"x": "1.00"})];
+    let text = "sum() met the text 'abc', which is not a number";
+    let zero = "division by zero";
+    let over = "the sum is too large for exact arithmetic";
+    let cases: [(&[Value], &str, std::result::Result<&str, &str>); 21] = [
+        // An argument that fails on a later record comes before a value
+        // that is not a number on an earlier one, for every aggregate.
+        (&mix, "sum(x)", Err(text)),
+        (&mix, "avg(x)", Err(text)),
+        (&mix, "sum(if(d > 0, x, x / d))", Err(zero)),
+        (&mix, "min(if(d > 0, x, x / d))", Err(zero)),
+        (&mix, "count(if(d > 0, x, x / d))", Err(zero)),
+        (&mix, "sum(x) + sum(if(d > 0, x, x / d))", Err(text)),
+        // An aggregate in a branch not taken is never read.
+        (
+            &mix,
+            "if(count() < 0, sum(if(d > 0, x, x / d)), 7)",
+            Ok("7"),
+        ),
+        (&mix, "coalesce(count(), sum(x))", Ok("3")),
+        (&mix, "coalesce(min(none), sum(x))", Err(text)),
+        // The first error of a sum stands, whatever follows it.
+        (&big, "sum(x)", Err(over)),
+        (&big, "avg(x)", Err(over)),
+        (&mix, "min(x)", Ok("1")),
+        (&mix, "max(x)", Ok("abc")),
+        (&mix, "min(d - 1) + max(d) + avg(d + d) + count(x)", Ok("6")),
+        (&mix, "sum(d) + sum(d)", Ok("6")),
+        (&dec, "sum(x)", Ok("3.305")),
+        (&dec, "avg(x)", Ok("1.65250")),
+        (&dec, "count(x) + count()", Ok("5")),
+        // Of values that compare equal, the first met is kept.
+        (&tie, "min(x)", Ok("1")),
+        (&tie, "max(x)", Ok("1")),
+        (&[], "sum(x) + count() + coalesce(avg(x), 0)", Ok("0")),
+    ];
+    for (rows, expr, want) in cases {
+        let want = want.map(|v| json!(v)).map_err(String::from);
+        assert_eq!(measured(rows, expr), want, "{expr}");
+    }
+    assert_eq!(measured(&[], "min(x)"), Ok(Value::Null));
 }

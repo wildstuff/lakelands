@@ -112,8 +112,8 @@ mod measures;
 /// form, and as the literals `param()` is replaced by.
 type Bound = (Params, BTreeMap<String, Literal>);
 
-/// One source of a view as read: its members and its measures, bound.
-type Source = (Vec<StoredRecord>, Vec<(FieldName, Expr)>);
+/// One source of a view as read: its members, folded, and its measures, bound.
+type Source = (aggregate::Grouping, Vec<(FieldName, Expr)>);
 
 /// A row's sort values and its tiebreak.
 type SortKey = (Vec<Value>, RecordKey);
@@ -530,23 +530,15 @@ impl<'a> Reader<'a> {
     /// How many records of a type [`Self::records`] would answer, holding
     /// no more than a page of a stored type: the engine counts what it can
     /// select itself, and a filter only the store evaluates is applied a
-    /// page at a time. A view's records are computed whole first.
+    /// page at a time. A view's records, one per group, are computed first.
     fn count(&self, decl: &TypeDecl, filter: Option<&Expr>) -> Result<u64> {
         if let Some(v) = &decl.view {
             return Ok(self.view_records(decl, v, filter)?.len() as u64);
         }
         if let Some(e) = filter.filter(|e| needs_store(e)) {
-            let (mut n, mut after) = (0, None);
-            loop {
-                let rows = self.page(decl, Some(e), &[], after.take(), COUNT_PAGE)?;
-                n += rows.len() as u64;
-                match rows.last() {
-                    Some(last) if rows.len() == COUNT_PAGE => {
-                        after = Some((Vec::new(), last.key.clone()));
-                    }
-                    _ => return Ok(n),
-                }
-            }
+            let mut n = 0;
+            self.each_member(decl, Some(e), |_| n += 1)?;
+            return Ok(n);
         }
         let scan = Scan {
             filter: filter.cloned(),
@@ -555,6 +547,30 @@ impl<'a> Reader<'a> {
             ..Default::default()
         };
         self.view.count(&decl.name, &scan)
+    }
+
+    /// The records [`Self::records`] would answer, handed to `each` one at
+    /// a time in key order: a stored type's are read a page at a time and
+    /// never held together, a view's are computed first.
+    fn each_member(
+        &self,
+        decl: &TypeDecl,
+        filter: Option<&Expr>,
+        mut each: impl FnMut(&StoredRecord),
+    ) -> Result<()> {
+        if decl.view.is_some() {
+            self.records(decl, filter)?.iter().for_each(each);
+            return Ok(());
+        }
+        let mut after = None;
+        loop {
+            let rows = self.page(decl, filter, &[], after, COUNT_PAGE)?;
+            rows.iter().for_each(&mut each);
+            if rows.len() < COUNT_PAGE {
+                return Ok(());
+            }
+            after = rows.last().map(|r| (Vec::new(), r.key.clone()));
+        }
     }
 
     /// At most `want` records of a stored type the principal may see, in
@@ -685,7 +701,7 @@ impl<'a> Reader<'a> {
         };
         // A view without `group_by` is one total, kept over no records too,
         // under the key reserved for it: the rule over no fields makes none.
-        let ungrouped = v.group_by.is_empty();
+        let (ungrouped, none) = (v.group_by.is_empty(), aggregate::Folds::default());
         let key_of = |by: &BTreeMap<FieldName, Value>| {
             if ungrouped {
                 Some(RecordKey::from(lakelands_api::key::UNGROUPED))
@@ -693,18 +709,14 @@ impl<'a> Reader<'a> {
                 lakelands_core::log::record_key(&keyed_by, by)
             }
         };
-        let rows: Vec<&BTreeMap<FieldName, Value>> = members.iter().map(|r| &r.fields).collect();
-        type Group<'g> = (
-            BTreeMap<FieldName, Value>,
-            Vec<&'g BTreeMap<FieldName, Value>>,
-        );
-        let mut groups: BTreeMap<RecordKey, Group<'_>> = BTreeMap::new();
-        for (by, group) in aggregate::groups(&rows, &v.group_by) {
+        // A group keeps its values and its folds, never its members.
+        let mut groups: BTreeMap<RecordKey, (aggregate::Row, aggregate::Folds)> = BTreeMap::new();
+        for (by, folds) in members.groups() {
             if by.values().any(Value::is_null) {
                 continue;
             }
             if let Some(key) = key_of(&by) {
-                groups.insert(key, (by, group));
+                groups.insert(key, (by, folds));
             }
         }
         if ungrouped {
@@ -713,11 +725,11 @@ impl<'a> Reader<'a> {
                 .or_default();
         }
         // One group's measures, seeing the values `given` by name.
-        let measured = |rows: &[&BTreeMap<FieldName, Value>],
+        let measured = |folds: &aggregate::Folds,
                         by: &BTreeMap<FieldName, Value>,
                         measures: &[(FieldName, Expr)],
                         given| {
-            aggregate::measures(rows, by, measures, given, Some(&self.settings), self.now)
+            aggregate::measures(folds, by, measures, given, Some(&self.settings), self.now)
                 .map_err(|e| invalid(format!("view `{}`: {e}", decl.name)))
         };
         // Each merged source's measures by key; a key it lacks is measured
@@ -731,10 +743,8 @@ impl<'a> Reader<'a> {
                 &m.measures,
                 &literals,
             )?;
-            let rows: Vec<&BTreeMap<FieldName, Value>> =
-                members.iter().map(|r| &r.fields).collect();
             let mut at = BTreeMap::new();
-            for (own, group) in aggregate::groups(&rows, &m.group_by) {
+            for (own, folds) in members.groups() {
                 if own.values().any(Value::is_null) {
                     continue;
                 }
@@ -747,16 +757,16 @@ impl<'a> Reader<'a> {
                 let Some(key) = key_of(&by) else {
                     continue;
                 };
-                let values = measured(&group, &own, &measures, BTreeMap::new())?;
+                let values = measured(&folds, &own, &measures, BTreeMap::new())?;
                 groups
                     .entry(key.clone())
-                    .or_insert_with(|| (by, Vec::new()));
+                    .or_insert_with(|| (by, none.clone()));
                 at.insert(key, values);
             }
             merged.push((m, measures, at));
         }
         let mut out = Vec::new();
-        for (key, (by, group)) in groups {
+        for (key, (by, folds)) in groups {
             let mut given = BTreeMap::new();
             for (m, measures, at) in &merged {
                 let values = match at.get(&key) {
@@ -768,12 +778,12 @@ impl<'a> Reader<'a> {
                             .zip(&v.group_by)
                             .map(|(from, to)| (from.clone(), by[to].clone()))
                             .collect();
-                        measured(&[], &own, measures, BTreeMap::new())?
+                        measured(&none, &own, measures, BTreeMap::new())?
                     }
                 };
                 given.extend(values);
             }
-            let values = measured(&group, &by, &measures, given)?;
+            let values = measured(&folds, &by, &measures, given)?;
             let mut fields = by.clone();
             // A measure lands in the kind the view type declares for it.
             for (name, v) in values {
@@ -802,8 +812,9 @@ impl<'a> Reader<'a> {
         Ok(out)
     }
 
-    /// One source of a view, read as a read of that source: its records
-    /// its `where` covers, the parameters bound, and its measures, after
+    /// One source of a view, read as a read of that source: the records
+    /// its `where` covers, the parameters bound, folded into their groups
+    /// as they are read, and its measures, after
     /// the principal is found to read every field they and the grouping
     /// read (024).
     fn view_source(
@@ -841,15 +852,17 @@ impl<'a> Reader<'a> {
         // A `where` that read a parameter is evaluated here, never handed to
         // an engine: a bound date is text, and its arithmetic is the
         // evaluator's.
-        let members = if literals.is_empty() {
-            self.records(&source, where_.as_ref())?
-        } else {
-            let mut all = self.records(&source, None)?;
-            if let Some(w) = &where_ {
-                all.retain(|r| self.holds(w, &r.fields, Some(&r.meta)));
-            }
-            all
+        let (down, here) = match literals.is_empty() {
+            true => (where_.as_ref(), None),
+            false => (None, where_.as_ref()),
         };
+        let keys = group_by.iter().map(|f| (f.clone(), None)).collect();
+        let mut members = aggregate::Grouping::new(keys, &measures, self.now);
+        self.each_member(&source, down, |r| {
+            if here.is_none_or(|w| self.holds(w, &r.fields, Some(&r.meta))) {
+                members.add(&r.fields, Some(&self.settings));
+            }
+        })?;
         Ok((members, measures))
     }
 
@@ -982,8 +995,7 @@ impl<'a> Reader<'a> {
                     }],
                 });
             }
-            let rows = self.records(&decl, filter.as_ref())?;
-            return self.aggregated(&decl, &rows, a);
+            return self.aggregated(&decl, filter.as_ref(), a);
         }
         let limit = self.limit(find.limit)?;
         let find_read = read_of((&find.filter, &find.order_by, find.at.valid_at));
@@ -1181,10 +1193,13 @@ impl<'a> Reader<'a> {
         Ok((values, a.key.clone()))
     }
 
-    fn aggregated(&self, decl: &TypeDecl, rows: &[StoredRecord], a: &Aggregate) -> Result<Found> {
-        let fields: Vec<&BTreeMap<FieldName, Value>> = rows.iter().map(|r| &r.fields).collect();
-        let mut groups = aggregate::aggregate(&fields, a, self.now)
-            .map_err(|e| invalid(format!("aggregate over `{}`: {e}", decl.name)))?;
+    /// `find`'s aggregate over the records `filter` holds for, folded into
+    /// their groups as they are read.
+    fn aggregated(&self, decl: &TypeDecl, filter: Option<&Expr>, a: &Aggregate) -> Result<Found> {
+        let named = |e| invalid(format!("aggregate over `{}`: {e}", decl.name));
+        let mut grouping = aggregate::grouping(a, self.now).map_err(named)?;
+        self.each_member(decl, filter, |r| grouping.add(&r.fields, None))?;
+        let mut groups = aggregate::answer(grouping, a).map_err(named)?;
         // A sum, minimum or maximum of a decimal field whose value type
         // declares a scale answers at that scale, so a sum over nothing is
         // `0.00` and not `0`.

@@ -320,7 +320,11 @@ answers without reading a state. The store counts through it: `find`
 with only `count()` measures and no `group_by` asks `count` with the
 filter the engine can apply, and a filter only the store can evaluate
 is applied over engine pages read one after another and dropped, as for
-`find`. A view is computed whole before it is counted (lakelands#388).
+`find`. A grouped aggregate and a view read their records the same way:
+each record is folded into its group's count, sum and best value and
+dropped with its batch, so `find`'s aggregate over a stored type, and a
+view counted or read, hold a batch and the groups, never the records
+(lakelands#388). A view that reads another view computes that one first.
 
 **The ceiling of `find`.** `find` asks the engine for its page,
 never the type: its order, the row it continues after, and `limit + 1`
