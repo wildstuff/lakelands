@@ -36,7 +36,7 @@ check!(
 check!(
     /// A guard tells a retirement from an update.
     RETIREMENT = a_guard_tells_a_retirement_from_an_update,
-    "004, extended: a guard `status = 'closed' and not retired()` fires on closing a record and on updating a closed one but not on retiring it, and a guard `retired()` fires on the retirement only; the declaration calling `retired` is written in log format 7"
+    "004, extended: a guard `status = 'closed' and not retired()` fires on closing a record and on updating a closed one but not on retiring it, and a guard `retired()` fires on the retirement only, caused by it, as it does on a proposed retirement when it is accepted; the declaration calling `retired` is written in log format 7"
 );
 
 check!(
@@ -219,6 +219,39 @@ async fn a_guard_tells_a_retirement_from_an_update(
         got == [false, true],
         "retiring the closed `a` must fire `retired` and not `closed`, whose fields still hold; \
          it fired {names:?} as {got:?}"
+    );
+
+    // A retirement that was proposed reacts when it is accepted.
+    l.upsert("job", "b", json!({"status": "closed"})).await?;
+    let write = ProposedWrite::Retire {
+        ty: "job".into(),
+        key: "b".into(),
+        opts: Default::default(),
+    };
+    let proposed = cat.propose(own, write, "done".into()).await;
+    let Outcome::Proposed { proposal, .. } = proposed.must("proposing to retire `b`")? else {
+        return Err(Failure::new("a proposed retirement answers `proposed`"));
+    };
+    let at = store.head().await.must("reading the head")?;
+    cat.accept(own, &proposal)
+        .await
+        .must("accepting the retirement of `b`")?;
+    let events = events_after(store.as_ref(), at).await?;
+    let retired = events
+        .iter()
+        .find(|e| matches!(e.body, EventBody::RecordRetired { .. }))
+        .map(|e| e.position);
+    let fired: Vec<_> = events
+        .iter()
+        .filter_map(|e| match &e.body {
+            EventBody::TriggerFired { trigger, .. } => Some((trigger.as_str(), e.cause)),
+            _ => None,
+        })
+        .collect();
+    ensure!(
+        retired.is_some() && fired == [("retired", retired)],
+        "accepting the proposed retirement of the closed `b` must retire it and fire `retired` \
+         alone, caused by the retirement at {retired:?}; it fired {fired:?}"
     );
     Ok(())
 }

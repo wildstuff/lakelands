@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use lakelands_api::ontology::StorageKind;
+use lakelands_api::write::ProposedWrite;
 use lakelands_api::{
     Catalog, Error, IdempotencyKey, LakeStore, Outcome, Principal, PrincipalKind, TypeName,
     Version, WriteOpts,
@@ -14,7 +15,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, declare, doors, field, get_at, head_unmoved, owner, patch, principal,
+    Lake, Must, declare, doors, events_from, field, get_at, head_unmoved, owner, patch, principal,
     refused_unmoved, type_decl, value,
 };
 
@@ -33,7 +34,7 @@ check!(
 check!(
     /// A retry with the same key is the same write.
     IDEMPOTENT_RETRY = a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_appends_nothing,
-    "016 and the log format: one idempotency key from one principal is one write in the whole lake"
+    "016 and the log format: one idempotency key from one principal is one write in the whole lake; a proposal made with a key carries it, and its retry answers the proposal and appends nothing"
 );
 
 check!(
@@ -213,6 +214,40 @@ async fn a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_app
         theirs != first && theirs.position() > after,
         "the key is scoped to its principal: another principal's write with the same \
          key is a write of its own and must append; it answered {theirs:?}"
+    );
+
+    let key = IdempotencyKey::from("retry-2");
+    let propose = || {
+        let write = ProposedWrite::Upsert {
+            ty: counter.clone(),
+            key: "p".into(),
+            patch: patch(json!({"n": 3})),
+            opts: WriteOpts {
+                idempotency_key: Some(key.clone()),
+                ..keyed()
+            },
+        };
+        cat.propose(own, write, "for review".into())
+    };
+    let proposed = propose()
+        .await
+        .must("proposing `p` with idempotency key `retry-2`")?;
+    let head = store.head().await.must("reading the head")?;
+    let event = events_from(store.as_ref(), proposed.position()).await?;
+    ensure!(
+        matches!(proposed, Outcome::Proposed { .. })
+            && event.first().and_then(|e| e.idempotency_key.as_ref()) == Some(&key),
+        "a proposal made with idempotency key `retry-2` must answer `proposed` and its event \
+         must carry the key; it answered {proposed:?}, and the event carries {:?}",
+        event.first().map(|e| &e.idempotency_key)
+    );
+    let again = propose().await.must("retrying the proposal")?;
+    let after = store.head().await.must("reading the head")?;
+    ensure!(
+        again == proposed && after == head,
+        "a retried proposal with the same idempotency key must answer the first one, \
+         {proposed:?}, and append nothing; it answered {again:?} and the head went from {head} \
+         to {after}"
     );
     Ok(())
 }
