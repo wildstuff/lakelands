@@ -1,6 +1,6 @@
 # Gates
 
-Nine scripts that hold the rules of `CLAUDE.md` mechanically. CI runs
+Ten scripts that hold the rules of `CLAUDE.md` mechanically. CI runs
 each one as its own job on every pull request; run them locally before
 pushing:
 
@@ -28,6 +28,7 @@ what it counts.
 | `conformance-required` | every engine crate is on `conformance/roster`, and CI runs the suite for every required one |
 | `dco` | every commit is signed off |
 | `no-external-decisions` | no citation of the platform's decision records, planning threads or issue numbers, in files or commit messages |
+| `doc-heads-its-item` | a new item is never inserted between another item and its doc comment: no added `fn`, `struct`, `enum`, `const`, `static`, `type`, `trait`, `impl` or `mod` whose doc block is headed by an unchanged `///` line |
 
 A gate that has never been red may be blind. A new gate lands with a
 planted violation shown red in its pull request before it goes green.

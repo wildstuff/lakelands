@@ -6,13 +6,13 @@ fn created() -> (Event, CanonicalEvent) {
     seal(&"finance".into(), Position(0), &Digest::zero(), 1, d)
 }
 
-/// `finance` sealed at format `v`, the event at `position` with the
-/// previous digest zero and the lease's `fence`.
 /// A system draft at time 0 carrying `body`.
 fn draft(body: EventBody) -> Draft {
     Draft::system(Timestamp(0), body)
 }
 
+/// `finance` sealed at format `v`, the event at `position` with the
+/// previous digest zero and the lease's `fence`.
 fn sealed(v: u32, position: u64, fence: u64, d: Draft) -> (Event, CanonicalEvent) {
     seal_at(
         v,
