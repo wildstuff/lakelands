@@ -593,7 +593,8 @@ fn import_seams() -> lakelands_api::seam::Seams {
 /// relation (version 6) and a derived `date_bucket` field, a trigger whose
 /// guard calls `retired` (version 7), a view with a parameter and a verb
 /// called on its type (version 8), a view that merges a second source
-/// (version 9), a record ingested with an upstream,
+/// (version 9), a proposed tightening of a value type (version 10), a
+/// record ingested with an upstream,
 /// a second checkpoint and more invoices.
 /// Answers the
 /// second writer's handle and a position before the second checkpoint.
@@ -667,6 +668,19 @@ async fn exported_lake(
                             "measures": [{"name": "ticks", "expr": "count()"}]}]}
     }))
     .await?;
+    // Format version 10: a proposed tightening of a value type.
+    let state = |one_of: Value| json!({"name": "stamp_state", "kind": "text", "one_of": one_of});
+    let wide = serde_json::from_value(state(json!(["new", "seen"]))).expect("a value type");
+    let declared = lakelands_api::write::Declaration::ValueType(wide);
+    cat.declare(own, declared)
+        .await
+        .must("declaring `stamp_state`")?;
+    let narrower = lakelands_api::write::ProposedWrite::MigrateValueType {
+        to: serde_json::from_value(state(json!(["new"]))).expect("a value type"),
+        report: Default::default(),
+    };
+    let proposed = cat.propose(own, narrower, "one state".into()).await;
+    proposed.must("proposing a narrower `stamp_state`")?;
     // Format version 8 too: a verb on its type, called with no key.
     l.declare_json(json!({
         "declare": "verb", "name": "print_stamp", "on": "stamp", "scope": "type",

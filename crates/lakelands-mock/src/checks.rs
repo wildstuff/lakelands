@@ -162,6 +162,7 @@ macro_rules! door_checks {
             a_vector_index_setting_names_vector_fields_and_search_says_it_ranked_by_the_index,
             an_ingested_upstream_is_answered_per_field,
             a_schema_proposal_is_refused_by_kind_at_propose_and_at_accept,
+            a_value_types_tightening_is_proposed_and_accepted_while_it_fits,
             an_order_by_latest_takes_no_field_and_no_view,
             #[views] a_view_reads_the_parameters_each_read_binds,
             a_parameter_its_type_does_not_declare_is_refused,
@@ -2824,6 +2825,106 @@ pub async fn an_ingested_upstream_is_answered_per_field(store: Arc<dyn LakeStore
         got.meta.get("amount").and_then(|m| m.upstream.clone()),
         Some(from),
         "`amount` names the lake and position it was read from"
+    );
+}
+
+/// A value type's tightening can be proposed by a principal without the
+/// `schema` grant and holds its preflight's report; while a stored value
+/// would not fit, the proposal and the accept are refused with the count
+/// alone, and an accept after the value type was declared again is
+/// refused; accepted, the value type accepts less
+/// (`docs/decisions/013-verbs-run-by-declared-risk.md`, extended).
+pub async fn a_value_types_tightening_is_proposed_and_accepted_while_it_fits(
+    store: Arc<dyn LakeStore>,
+) {
+    use lakelands_api::write::{ProposalFilter, ProposalKind, ProposedWrite};
+    let f = setup(store).await;
+    let (c, own, clerk) = (&f.catalog, &f.cast.owner, &f.cast.clerk);
+    let states = |one_of: &[&str]| -> lakelands_api::ontology::ValueTypeDecl {
+        serde_json::from_value(json!({"name": "memo_state", "kind": "text", "one_of": one_of}))
+            .unwrap()
+    };
+    let narrower = || ProposedWrite::MigrateValueType {
+        to: Box::new(states(&["open", "filed"])),
+        report: Default::default(),
+    };
+    let wide = Declaration::ValueType(states(&["open", "filed", "void"]));
+    c.declare(own, wide).await.expect("the states are declared");
+    let memo = json!({"declare": "type", "name": "memo", "fields": [
+        {"name": "state", "type": {"kind": "text", "value_type": "memo_state"}}]});
+    let memo = serde_json::from_value(memo).unwrap();
+    c.declare(own, memo).await.expect("`memo` is declared");
+    let write = |k: &'static str, state: &'static str| {
+        let (c, own) = (c.clone(), own.clone());
+        let fields = patch(&[("state", json!(state))]);
+        async move {
+            c.upsert(&own, &ty("memo"), &key(k), fields, WriteOpts::default())
+                .await
+        }
+    };
+    write("m1", "open").await.expect("`m1` is open");
+    let proposed = c.propose(clerk, narrower(), "no memo is void".into()).await;
+    let Ok(Outcome::Proposed { proposal, .. }) = proposed else {
+        panic!("the clerk, without the schema grant, proposes the tightening: {proposed:?}")
+    };
+    let by_kind = ProposalFilter {
+        kind: Some(ProposalKind::MigrateValueType),
+        ..ProposalFilter::default()
+    };
+    let listed = c.proposals(own, by_kind).await.unwrap().data;
+    assert!(
+        matches!(listed.as_slice(), [p] if matches!(&p.write,
+            ProposedWrite::MigrateValueType { report, .. } if report.fits && report.fields.len() == 1)),
+        "the proposal holds a report that fits, with its one use: {listed:?}"
+    );
+    // One `void` stored: the accept and a new proposal say the count alone.
+    write("m2", "void").await.expect("`void` is still a state");
+    let counted = |e: &Error| {
+        matches!(refusal(e).1, Refusal::Invalid { message }
+            if message.contains("1 stored value(s)") && !message.contains("m2"))
+    };
+    let late = c
+        .accept(own, &proposal)
+        .await
+        .expect_err("it no longer fits");
+    let again = c
+        .propose(clerk, narrower(), "again".into())
+        .await
+        .expect_err("it does not fit");
+    assert!(counted(&late) && counted(&again), "{late:?} {again:?}");
+    // Accepted on the declaration it was proposed on, it is in force.
+    write("m2", "open").await.expect("`m2` is open again");
+    c.accept(own, &proposal)
+        .await
+        .expect("the owner accepts the tightening");
+    write("m2", "void")
+        .await
+        .expect_err("`void` is no longer a state");
+    // Proposed on one declaration and accepted on another, it is refused.
+    let proposed = c
+        .propose(
+            clerk,
+            ProposedWrite::MigrateValueType {
+                to: Box::new(states(&["open"])),
+                report: Default::default(),
+            },
+            "open only".into(),
+        )
+        .await;
+    let Ok(Outcome::Proposed { proposal, .. }) = proposed else {
+        panic!("a second tightening is proposed: {proposed:?}")
+    };
+    let wider = Declaration::ValueType(states(&["open", "filed", "held"]));
+    c.declare(own, wider)
+        .await
+        .expect("a state more is declared");
+    let stale = c
+        .accept(own, &proposal)
+        .await
+        .expect_err("the value type changed");
+    assert!(
+        matches!(refusal(&stale).1, Refusal::Invalid { message } if message.contains("changed since")),
+        "{stale:?}"
     );
 }
 

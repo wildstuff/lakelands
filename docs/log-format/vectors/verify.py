@@ -12,7 +12,7 @@ export or a SQLite lake directory holds it instead, reading only
 `<dir>/log/` (log-format §4.2): canonical lines each ending in a line
 feed, positions consecutive from 0 and naming their files in 20 digits,
 the hash chain from 64 zeros, every checkpoint against the position,
-the hash and the files before it, format versions from 1 to 9 that
+the hash and the files before it, format versions from 1 to 10 that
 never go down, a verb on its type (declared with `scope: type`, called or
 proposed with no `key`) only from version 8 on, a derived relation only from version 6 on, a declaration's `annotations` only from version 5 on, a proposed declaration or migration only from version 4 on, `upstream` only from version 3 on and only on a
 `record_ingested` event, and every `known_at` in its one form and never before
@@ -126,7 +126,7 @@ def check(ok, what):
         sys.exit(1)
 
 
-FIRST_FORMAT, NEWEST_FORMAT = 1, 9
+FIRST_FORMAT, NEWEST_FORMAT = 1, 10
 ONE_FORM = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z")
 
 
@@ -450,6 +450,22 @@ def main():
     check(sha(canonical(body)) == negative9["hash"], "v9.json: the negative line's hash is its own")
     check(negative9["v"] == 8 and negative9["body"]["declaration"]["view"]["merge"],
           "v9.json: the negative line declares a merge in format 8, which a reader refuses")
+    v10 = json.loads((HERE / "v10.json").read_text("utf-8"))
+    narrows = lambda e: e["body"].get("write", {}).get("write") == "migrate_value_type"
+    for line, want in zip(v10["lines"], v10["hashes"]):
+        event = json.loads(line)
+        check(canonical(event) == line.encode("utf-8"), f"v10.json: position {event['position']} is canonical")
+        check(event["v"] == (10 if narrows(event) else 9),
+              f"v10.json: position {event['position']} is format 10 only where it proposes a tightening")
+        body = {k: v for k, v in event.items() if k != "hash"}
+        check(sha(canonical(body)) == event["hash"] == want, f"v10.json: hash {want[:12]}…")
+        check(event["prev"] == prev, f"v10.json: position {event['position']} follows the one before it")
+        prev = event["hash"]
+    negative10 = json.loads(v10["negative"])
+    body = {k: v for k, v in negative10.items() if k != "hash"}
+    check(sha(canonical(body)) == negative10["hash"], "v10.json: the negative line's hash is its own")
+    check(negative10["v"] == 9 and narrows(negative10),
+          "v10.json: the negative line proposes a tightening in format 9, which a reader refuses")
     for name in ("negative_verb", "negative_call"):
         negative = json.loads(v8[name])
         body = {k: v for k, v in negative.items() if k != "hash"}

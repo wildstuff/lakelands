@@ -124,6 +124,13 @@ reshapes stored records is a migration there too, preflighted when it is
 proposed and again when it is accepted
 (`docs/decisions/013-verbs-run-by-declared-risk.md`, extended).
 
+A value type's tightening may be proposed the same way (lakelands#476):
+its preflight runs at the proposal and again at the acceptance, and it
+is applied only while every stored value fits and the value type is
+still the declaration it was proposed on. The refusal of a narrowed
+declaration names both ways: the preflight, for a holder of `schema`,
+and the proposal.
+
 ## Extended: an annotation is a change of meaning
 
 A revision that changes only a declaration's `annotations` reshapes no

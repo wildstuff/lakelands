@@ -1319,7 +1319,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | ProposedWrite::Retire { .. }
             | ProposedWrite::Call { .. }
             | ProposedWrite::Declare { .. }
-            | ProposedWrite::Migrate { .. } => {}
+            | ProposedWrite::Migrate { .. }
+            | ProposedWrite::MigrateValueType { .. } => {}
         }
     }
     let _ = writes;
@@ -1353,6 +1354,10 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                         renames: vec![],
                     }),
                     report: Box::new(migration_report()),
+                },
+                ProposedWrite::MigrateValueType {
+                    to: serde_json::from_value(json!({"name": "v", "kind": "text"})).unwrap(),
+                    report: Default::default(),
                 },
             ],
             Some("write"),

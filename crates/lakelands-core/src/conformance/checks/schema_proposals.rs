@@ -22,8 +22,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, doors, events_after, field_writer, head_unmoved, migration, reason, reviewer,
-    type_of,
+    Lake, Must, doors, events_after, field_access, field_writer, head_unmoved, migration, reason,
+    reviewer, type_of,
 };
 
 check!(
@@ -54,6 +54,17 @@ check!(
     /// A rejected schema proposal changes nothing.
     REJECTED_UNTOUCHED = a_rejected_schema_proposal_leaves_the_ontology_untouched,
     "013, extended: a rejected declaration leaves the ontology as it was, and proposals can be listed by kind"
+);
+check!(
+    /// A value type's tightening is proposed without `schema` and applied on accept.
+    TIGHTENING_PROPOSED = a_value_types_tightening_is_proposed_without_schema_and_applied_on_accept,
+    "013 and 027, extended (lakelands#476), and log format §6: a principal without the schema grant may propose a value type that accepts less; the proposal is written in format 10 and holds the preflight's report, whose uses a reader of the listing sees only in fields it may read, the totals whole; accepting it takes schema beside review, and then the value type is in force and a value it no longer accepts is refused"
+);
+
+check!(
+    /// A tightening that does not fit, or is no longer what was proposed, is held back.
+    TIGHTENING_HELD_BACK = a_tightening_is_refused_while_a_value_would_not_fit_or_the_value_type_changed,
+    "013 and 027, extended (lakelands#476): a value type's tightening is refused at the proposal while a stored value would not fit, as invalid, saying how many and naming none, with nothing appended; at the acceptance it is preflighted again and refused the same way, and it is refused when the value type was declared again since the proposal; each time the proposal stays pending and the value type as it was; a narrowed declaration's refusal points to the proposal"
 );
 
 /// A principal without the `schema` grant that writes `memo`'s title.
@@ -347,4 +358,160 @@ async fn a_proposed_migration_is_accepted_only_on_the_shape_it_was_proposed_on(
         a.fields
     );
     head_unmoved(store.as_ref(), before, "the refused accept").await
+}
+
+const STATES: &str = "ticket_state";
+
+fn states(one_of: &[&str]) -> lakelands_api::ontology::ValueTypeDecl {
+    serde_json::from_value(json!({"name": STATES, "kind": "text", "one_of": one_of}))
+        .expect("a value type")
+}
+
+/// `ticket_state` over open, paid and void, used by `ticket.state` and by
+/// `ticket.inner`; `t1` is open and `t2` paid in both. Answers the lake and
+/// a clerk without the `schema` grant who may not know of `inner`.
+async fn tickets(store: &dyn LakeStore) -> Result<(Lake, lakelands_api::Principal), Failure> {
+    let l = Lake::of(store);
+    declare_states(&l, &["open", "paid", "void"]).await?;
+    let state = json!({"kind": "text", "value_type": STATES});
+    l.declare_json(json!({"declare": "type", "name": "ticket", "fields": [
+        {"name": "state", "type": state}, {"name": "inner", "type": state}]}))
+        .await?;
+    for (key, s) in [("t1", "open"), ("t2", "paid")] {
+        l.upsert("ticket", key, json!({"state": s, "inner": s}))
+            .await?;
+    }
+    let hidden = [("inner", lakelands_api::Access::None)];
+    Ok((l, field_access(store, "clerk", "ticket", &hidden)))
+}
+
+async fn declare_states(l: &Lake, one_of: &[&str]) -> Result<Outcome, Failure> {
+    let d = Declaration::ValueType(states(one_of));
+    l.cat.declare(&l.own, d).await.must("declaring the states")
+}
+
+/// The uses the proposal's report names to `who`, how many records it
+/// scanned and whether it fits.
+async fn report_of(
+    l: &Lake,
+    who: &lakelands_api::Principal,
+    id: &ProposalId,
+) -> Result<(Vec<String>, u64, bool), Failure> {
+    let listed = l.cat.proposals(who, ProposalFilter::default()).await;
+    let mine = listed.must("listing the proposals")?.data;
+    match mine.into_iter().find(|p| p.id == *id).map(|p| p.write) {
+        Some(ProposedWrite::MigrateValueType { report, .. }) => {
+            let uses = (report.fields.iter())
+                .map(|u| format!("{}.{}={}", u.ty, u.field, u.values_scanned));
+            Ok((uses.collect(), report.records_scanned, report.fits))
+        }
+        other => Err(Failure::new(format!("the proposal is listed as {other:?}"))),
+    }
+}
+
+/// `who` proposing `ticket_state` over `one_of`.
+async fn propose_states(
+    l: &Lake,
+    who: &lakelands_api::Principal,
+    one_of: &[&str],
+) -> lakelands_api::Result<Outcome> {
+    let write = ProposedWrite::MigrateValueType {
+        to: Box::new(states(one_of)),
+        report: Default::default(),
+    };
+    l.cat.propose(who, write, "fewer states".into()).await
+}
+
+async fn a_value_types_tightening_is_proposed_without_schema_and_applied_on_accept(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let (l, clerk) = tickets(store.as_ref()).await?;
+    let before = store.head().await.must("reading the head")?;
+    let o = propose_states(&l, &clerk, &["open", "paid"]).await;
+    let id = proposed(&o.must("the clerk proposing `ticket_state` without `void`")?)?;
+    let v: Vec<u32> = (events_after(store.as_ref(), before).await?.iter())
+        .map(|e| e.v)
+        .collect();
+    let (whole, shown) = (
+        report_of(&l, &l.own, &id).await?,
+        report_of(&l, &clerk, &id).await?,
+    );
+    let both = vec!["ticket.state=2".to_owned(), "ticket.inner=2".to_owned()];
+    ensure!(
+        v == [10]
+            && whole == (both, 2, true)
+            && shown == (vec!["ticket.state=2".to_owned()], 2, true),
+        "the proposal must be one event in format 10 whose report fits and names both uses to \
+         the owner, and to its proposer, who may not know of `inner`, only `state`, the \
+         totals whole; it was written as {v:?}, the owner reads {whole:?}, the clerk {shown:?}"
+    );
+    let refused = l.cat.accept(&reviewer(store.as_ref(), false), &id).await;
+    ensure!(
+        matches!(reason(&refused), Some(Refusal::NotGranted))
+            && pending(store.as_ref(), true, &id).await?,
+        "accepting a tightening without the schema grant must be refused as not granted, the \
+         proposal pending; it answered {refused:?}"
+    );
+    let architect = reviewer(store.as_ref(), true);
+    l.cat
+        .accept(&architect, &id)
+        .await
+        .must("accepting the tightening")?;
+    let void = l.upsert("ticket", "t3", json!({"state": "void"})).await;
+    let paid = l.upsert("ticket", "t3", json!({"state": "paid"})).await;
+    ensure!(
+        void.is_err() && paid.is_ok(),
+        "once accepted, `ticket_state` must refuse `void` and still take `paid`; writing \
+         `void` answered {void:?}"
+    );
+    Ok(())
+}
+
+async fn a_tightening_is_refused_while_a_value_would_not_fit_or_the_value_type_changed(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let (l, clerk) = tickets(store.as_ref()).await?;
+    let architect = reviewer(store.as_ref(), true);
+    // Whether an answer is refused as invalid saying `says`, never `t3`.
+    let held = |answer: &lakelands_api::Result<Outcome>, says: &str| {
+        matches!(reason(answer), Some(Refusal::Invalid { message })
+            if message.contains(says) && !message.contains("t3"))
+    };
+    let narrowed = ProposedWrite::Declare {
+        declarations: vec![Declaration::ValueType(states(&["open", "paid"]))],
+    };
+    let pointed = l.cat.propose(&clerk, narrowed, "fewer".into()).await;
+    ensure!(
+        held(&pointed, "propose it as a value type's migration"),
+        "a narrowed declaration's refusal must point to the proposal; it answered {pointed:?}"
+    );
+    // Proposed while it fits; then a `void` is written, a second proposal
+    // made, and the value type declared again with one state more.
+    let o = propose_states(&l, &clerk, &["open", "paid"]).await;
+    let waiting = proposed(&o.must("proposing while every value fits")?)?;
+    l.upsert("ticket", "t3", json!({"state": "void"})).await?;
+    let before = store.head().await.must("reading the head")?;
+    let (late, again) = (
+        l.cat.accept(&architect, &waiting).await,
+        propose_states(&l, &clerk, &["open", "paid"]).await,
+    );
+    ensure!(
+        held(&late, "1 stored value(s)") && held(&again, "1 stored value(s)"),
+        "with one `void` stored, the accept and a new proposal must each be refused as invalid, \
+         saying the count and naming no record; they answered {late:?} and {again:?}"
+    );
+    head_unmoved(store.as_ref(), before, "a tightening that does not fit").await?;
+    l.upsert("ticket", "t3", json!({"state": "open"})).await?;
+    declare_states(&l, &["open", "paid", "void", "held"]).await?;
+    let before = store.head().await.must("reading the head")?;
+    let stale = l.cat.accept(&architect, &waiting).await;
+    ensure!(
+        held(&stale, "changed since") && pending(store.as_ref(), true, &waiting).await?,
+        "a tightening proposed before `held` was added must be refused as invalid when accepted \
+         after, and stay pending; the accept answered {stale:?}"
+    );
+    head_unmoved(store.as_ref(), before, "the refused accept").await?;
+    l.upsert("ticket", "t3", json!({"state": "void"}))
+        .await
+        .map(|_| ())
 }

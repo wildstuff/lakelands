@@ -477,6 +477,7 @@ impl Catalog for Doors {
         to: ValueTypeDecl,
     ) -> Result<Reply<ValueTypeReport>> {
         self.write(who, move |c| {
+            crate::writes::granted(c.who.grants.schema)?;
             let w = c.lake.writer();
             let view = c.lake.engine.view(None)?;
             Ok(Reply {

@@ -889,7 +889,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                         return Err(invalid(format!(
                             "value type `{}` would accept less than it does: stored values may \
                              stop fitting it; tighten it through `migrate`, whose preflight \
-                             counts them",
+                             counts them, or propose it as a value type's migration",
                             v.name
                         )));
                     }

@@ -1704,7 +1704,11 @@ since. What it appends is one `declared` at the next version: no record
 is rewritten. A change of `kind` or `scale` rewrites stored values, so it
 is not a value-type migration; the fields that use the value type are
 migrated instead. The `migrate` tool and REST route take `value_type`
-instead of `to`, one of the two, never both. The preflight checks stored
+instead of `to`, one of the two, never both. A principal without the
+`schema` grant proposes a tightening instead (`propose` with the write
+`migrate_value_type`): it is preflighted at the proposal and again at the
+acceptance, and a reviewer holding `schema` accepts it
+(`docs/decisions/013-verbs-run-by-declared-risk.md`, extended). The preflight checks stored
 values only: a condition that compares with a value the type no longer
 admits (a trigger's `when`, an object set's `where`) is not checked, and
 simply never holds afterwards; an aging rule whose `from` or `to` the

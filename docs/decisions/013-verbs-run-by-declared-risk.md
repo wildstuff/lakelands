@@ -97,6 +97,40 @@ or reject it. Any other principal lists only the proposals it made
 itself, so a proposer can follow what became of its write, and decides
 none.
 
+## Extended: a value type's tightening is proposed like a migration (lakelands#476)
+
+A value type that is to accept less could be changed only by a principal
+holding `schema`, through its preflight and apply (027, extended). A
+principal without the grant could propose that a set gains a value and
+not that it loses one, and the refusal of the narrowed declaration
+pointed at a door it may not use.
+
+A tightening is the third change of the ontology that can be proposed,
+beside a set of declarations and a type's migration. The proposal
+carries the value type's new declaration. It is preflighted when it is
+made, without the `schema` grant, and the report replaces whatever the
+proposer sent and is logged with the proposal, for the reviewer.
+
+- **A report that does not fit refuses the proposal,** as invalid, and
+  nothing is appended. The refusal says how many stored values would not
+  fit and names none: a misfit names a record and a field, and the
+  proposer may know of neither. A reviewer runs the preflight to see
+  them.
+- **Accepting it takes `schema` beside `review`,** as for the other two.
+  It is preflighted again on the head and refused the same way when a
+  value no longer fits. It is also refused when the value type was
+  declared again since the proposal: `to` is the value type's whole
+  declaration, and a value the set gained in between would leave it
+  again, shown to no one. Either refusal leaves the proposal pending.
+  Accepted, it writes what the apply door writes: one `declared` at the
+  next version, as the proposer, caused by the acceptance.
+- **A listing shows the report's uses only in fields its reader may
+  read,** of types it may see, as a proposed shape is shown
+  (lakelands#475). The totals stay whole: a count names nothing. A
+  logged report fits, so it names no misfit to anyone.
+- **The log format is 10** from the append that holds the first such
+  proposal (`docs/log-format.md` §6).
+
 ## Extended: a declaration is proposed like a write
 
 A set of declarations, or a type's migration, can be proposed as a
@@ -212,8 +246,9 @@ through the record checks; a retirement as `retire` from the type on; a
 call as `call` from the verb on, its executor included, and for a write
 effect through its assignments and the record checks; a declaration as
 `apply` checks a set; a migration by its preflight, then `migration` if
-it is not lossless. No `schema` grant is needed to propose a change of
-the ontology.
+it is not lossless; a value type's tightening by its preflight, then
+`invalid` with the count if a stored value would not fit. No `schema`
+grant is needed to propose a change of the ontology.
 
 **`accept`**: the `review` grant (`not_granted`); the proposal exists
 (`not_found`); it is pending (`decided`); a change of the ontology also
@@ -223,7 +258,9 @@ and version; a call for its verb, its scope, a view, the verb declared
 differently since (`invalid`), its executor, then as `call` from the
 record on; a declaration as `apply` checks a set; a migration for the
 shape it was proposed on (`invalid`, lakelands#489), then by its
-preflight, then `migration`, then its embedding model (`unbound`). Any
+preflight, then `migration`, then its embedding model (`unbound`); a
+value type's tightening for the declaration it was proposed on
+(`invalid`), then by its preflight, then `invalid` with the count. Any
 refusal leaves the proposal pending.
 
 **`reject`**: the `review` grant, the proposal exists, it is pending.

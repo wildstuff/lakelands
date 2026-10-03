@@ -590,15 +590,23 @@ interface types {
         report: migration-report,
     }
 
+    /// A value type's tightening and the report its preflight answered
+    /// when it was proposed.
+    record migrate-value-type-write {
+        to: value-type-decl,
+        report: value-type-report,
+    }
+
     variant proposed-write {
         upsert(upsert-write),
         retire(retire-write),
         call(call-write),
         declare(declare-write),
         migrate(migrate-write),
+        migrate-value-type(migrate-value-type-write),
     }
 
-    enum proposal-kind { upsert, retire, call, declare, migrate }
+    enum proposal-kind { upsert, retire, call, declare, migrate, migrate-value-type }
 
     enum proposal-state { pending, accepted, rejected }
 
