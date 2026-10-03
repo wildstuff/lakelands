@@ -34,7 +34,8 @@ use lakelands_api::ontology::{
 };
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{
-    Depth, Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Start, Step, Walk,
+    Depth, Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Start, Step,
+    VectorTerm, Walk,
 };
 use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Direction, Group, Order, OrderBy};
 use lakelands_api::seam::{FeedBatch, FeedFilter};
@@ -536,6 +537,8 @@ fn search_mode() -> SearchMode {
         field: "f".into(),
         vector: Some(vec![1.0]),
         fields: Some(vec!["f".into()]),
+        weight: None,
+        text_weight: None,
     }
 }
 
@@ -792,6 +795,14 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             }),
         ),
         ("depth", members(&Depth { min: 1, max: 2 })),
+        (
+            "vector_term",
+            members(&VectorTerm {
+                field: "f".into(),
+                vector: vec![1.0],
+                weight: Some(2.0),
+            }),
+        ),
         (
             "start",
             members(&Start {
@@ -1423,6 +1434,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 SearchMode::Vector {
                     field: "f".into(),
                     vector: vec![],
+                    weight: None,
+                    also: Vec::new(),
                 },
                 search_mode(),
             ],

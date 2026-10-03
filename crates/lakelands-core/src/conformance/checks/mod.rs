@@ -358,6 +358,8 @@ pub const ALL: &[Check] = &[
     fusion::HIDDEN_MOVES_NO_SCORE,
     fusion::PAGES_ONE_RANKING,
     fusion::SAME_LIST_UNREAD,
+    fusion::FUSED_BY_WEIGHT,
+    fusion::WEIGHTS_REFUSED,
     vocabulary::HOST_TYPES_AT_OPEN,
     vocabulary::RESERVED_NAME_REFUSES_OPEN,
     backings::FAILURE_RETRIED,

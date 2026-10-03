@@ -2880,26 +2880,26 @@ impl Catalog for MockCatalog {
                 search.ty
             )));
         }
+        if let Some((field, message)) = search.mode.misfit() {
+            let reason = Refusal::Invalid { message };
+            return Err(Error::Refused { field, reason });
+        }
         // A search probes every searchable field, or the ones it names,
-        // then the vector field it names and the fields that vector is
-        // embedded from; one the caller may not read refuses the search
-        // whole (024), in the store's order. A named field is judged
-        // readable before searchable.
+        // then each vector field it names, after the fields that vector
+        // is embedded from; one the caller may not read refuses the
+        // search whole (024), in the store's order. A named field is
+        // judged readable before searchable.
         let text_fields = match &search.mode {
             SearchMode::Lexical { fields, .. } | SearchMode::Hybrid { fields, .. } => {
                 fields.as_deref()
             }
             SearchMode::Vector { .. } => None,
         };
-        let vector_field = match &search.mode {
-            SearchMode::Vector { field, .. } | SearchMode::Hybrid { field, .. } => Some(field),
-            SearchMode::Lexical { .. } => None,
-        };
-        let embedded_from = vector_field
-            .and_then(|v| field(&t.decl, v))
-            .and_then(|f| f.embed.as_ref())
-            .into_iter()
-            .flat_map(|e| e.from.iter());
+        let vectors = search.mode.vectors();
+        let probed = vectors.iter().flat_map(|(v, ..)| {
+            let embed = field(&t.decl, v).and_then(|f| f.embed.as_ref());
+            embed.into_iter().flat_map(|e| e.from.iter()).chain([*v])
+        });
         let searched: Vec<&FieldName> = match text_fields {
             // Naming none, it reads the searchable fields the caller knows
             // of; one it may not know of is never searched.
@@ -2927,38 +2927,30 @@ impl Catalog for MockCatalog {
                 named.into_iter().collect()
             }
         };
-        for name in searched
-            .iter()
-            .copied()
-            .chain(embedded_from)
-            .chain(vector_field)
-        {
+        for name in searched.iter().copied().chain(probed) {
             readable(&st, who, t, name)?;
         }
         let e = filter(&st, who, t, search.filter.as_ref())?;
         let rows = candidates(&st, who, t, search.at, e.as_ref())?;
         // A field the lake asks an index for at the head answers the
         // index's set, and says so; the mock's set is the exact ranking.
-        let indexed = match &search.mode {
-            SearchMode::Vector { field, .. }
-            | SearchMode::Hybrid {
-                field,
-                vector: Some(_),
-                ..
-            } => {
-                let later;
-                let head = match pinned {
-                    Some(_) => {
-                        later = self.state_at(&self.log(), None)?.1;
-                        &later
-                    }
-                    None => &st,
-                };
-                head.types.get(&search.ty).is_some_and(|h| {
-                    index_fields(head, &h.decl, VECTOR_INDEX_SETTING, indexable).contains(field)
-                })
-            }
-            SearchMode::Lexical { .. } | SearchMode::Hybrid { .. } => false,
+        let by_text = matches!(
+            &search.mode,
+            SearchMode::Lexical { .. } | SearchMode::Hybrid { vector: None, .. }
+        );
+        let indexed = !by_text && {
+            let later;
+            let head = match pinned {
+                Some(_) => {
+                    later = self.state_at(&self.log(), None)?.1;
+                    &later
+                }
+                None => &st,
+            };
+            head.types.get(&search.ty).is_some_and(|h| {
+                let asked = index_fields(head, &h.decl, VECTOR_INDEX_SETTING, indexable);
+                vectors.iter().any(|(f, ..)| asked.contains(*f))
+            })
         };
         // A stored vector is read back as the `f32`s it was written as.
         let nearest = |f: &FieldName, vector: &[f32]| -> Vec<(f64, &StoredRecord)> {
@@ -2994,32 +2986,48 @@ impl Catalog for MockCatalog {
             l.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.key.cmp(&b.1.key)));
             l
         }
-        let (scored, ranked_by) = match &search.mode {
-            SearchMode::Vector { field: f, vector } => {
-                readable(&st, who, t, f)?;
-                (nearest(f, vector), if indexed { "index" } else { "vector" })
-            }
+        // The rankings a search fuses, each with its weight, in the
+        // order they are summed: a hybrid search's text, then each vector
+        // field (046).
+        let mut lists = Vec::new();
+        if let (
             SearchMode::Hybrid {
-                text,
-                field: f,
-                vector: Some(vector),
-                ..
-            } => {
-                readable(&st, who, t, f)?;
-                // Both lists fused by reciprocal rank, the lexical first,
-                // each over what the read may see and to `max_limit` (046).
+                text, text_weight, ..
+            },
+            false,
+        ) = (&search.mode, by_text)
+        {
+            lists.push((text_weight.unwrap_or(1.0), matching(text)));
+        }
+        for (f, vector, weight) in vectors.iter().filter(|_| !by_text) {
+            lists.push((weight.unwrap_or(1.0), nearest(f, vector)));
+        }
+        let (scored, ranked_by) = match &search.mode {
+            SearchMode::Lexical { text, .. } | SearchMode::Hybrid { text, .. } if by_text => {
+                (matching(text), "lexical")
+            }
+            // One list keeps its own score.
+            SearchMode::Vector { also, .. } if also.is_empty() => {
+                let by = if indexed { "index" } else { "vector" };
+                (lists.remove(0).1, by)
+            }
+            mode => {
+                // Fused by weighted reciprocal rank, each list over what
+                // the read may see and to `max_limit` (046).
                 let window = self.shared.limits.max_limit as usize;
                 let mut fused: BTreeMap<&RecordKey, (f64, &StoredRecord)> = BTreeMap::new();
-                for list in [best_first(matching(text)), best_first(nearest(f, vector))] {
-                    for (rank, (_, r)) in list.into_iter().take(window).enumerate() {
-                        fused.entry(&r.key).or_insert((0.0, r)).0 += 1.0 / (60.0 + rank as f64);
+                for (weight, list) in lists {
+                    for (rank, (_, r)) in best_first(list).into_iter().take(window).enumerate() {
+                        fused.entry(&r.key).or_insert((0.0, r)).0 += weight / (60.0 + rank as f64);
                     }
                 }
-                let by = if indexed { "hybrid (index)" } else { "hybrid" };
+                let by = match (mode, indexed) {
+                    (SearchMode::Vector { .. }, true) => "index",
+                    (SearchMode::Vector { .. }, false) => "vector",
+                    (_, true) => "hybrid (index)",
+                    (_, false) => "hybrid",
+                };
                 (fused.into_values().collect(), by)
-            }
-            SearchMode::Lexical { text, .. } | SearchMode::Hybrid { text, .. } => {
-                (matching(text), "lexical")
             }
         };
         let hits: Vec<Hit> = best_first(scored)

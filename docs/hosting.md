@@ -313,7 +313,9 @@ them:
   example, `FieldDecl { searchable: true, ..FieldDecl::of("note",
   StorageKind::Text) }`, `TypeDecl { fields, ..TypeDecl::named("invoice") }`,
   `RelationDecl::to("partner", "partner")`, and `SearchMode::lexical(text)`,
-  `::vector` and `::hybrid`. `TypeDecl`, `FieldDecl`, `RelationDecl`,
+  `::vector` and `::hybrid` (0.9.0 added `weight` and `also` to a vector
+  search and `weight` and `text_weight` to a hybrid one; a mode built by
+  its constructor leaves them out). `TypeDecl`, `FieldDecl`, `RelationDecl`,
   `TypeDescription`, `FieldDescription`, `LakeDescription` and
   `TypeLifecycle` all implement `Default`. A name left at its default is
   empty, and the store refuses it at declare. A field's kind defaults to

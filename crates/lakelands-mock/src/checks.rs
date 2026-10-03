@@ -33,7 +33,7 @@ use lakelands_api::ontology::{
     StorageKind, TriggerDecl, TypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl, ViewParam,
 };
 use lakelands_api::principal::{Access, Grants, Principal, PrincipalKind, TypeGrants};
-use lakelands_api::query::{Pattern, Search, SearchMode, Step, Walk};
+use lakelands_api::query::{Pattern, Search, SearchMode, Step, VectorTerm, Walk};
 use lakelands_api::read::{After, Direction, Find, Found, Get, Order, OrderBy, ReadAt};
 use lakelands_api::record::{Origin, Patch, Record, SourceRecord, Value};
 use lakelands_api::seam::FeedFilter;
@@ -5134,12 +5134,16 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
     let by_vector = |field: &str| SearchMode::Vector {
         field: field.into(),
         vector: vec![1.0, 0.0],
+        weight: None,
+        also: Vec::new(),
     };
     let hybrid = || SearchMode::Hybrid {
         text: "quay".into(),
         field: "v".into(),
         vector: Some(vec![1.0, 0.0]),
         fields: None,
+        weight: None,
+        text_weight: None,
     };
     assert!(indexed().await.is_empty(), "no setting, nothing indexed");
     assert_eq!(ranked_by(by_vector("v"), None).await, "vector");
@@ -5700,6 +5704,8 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
                     field: "v".into(),
                     vector: None,
                     fields: None,
+                    weight: None,
+                    text_weight: None,
                 },
             ),
             (
@@ -5709,6 +5715,8 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
                     field: "v".into(),
                     vector: Some(vec![0.0, 1.0]),
                     fields: None,
+                    weight: None,
+                    text_weight: None,
                 },
             ),
         ]
@@ -5912,6 +5920,9 @@ pub async fn a_search_limited_to_named_fields_matches_and_probes_only_those(
 /// by reciprocal rank, the lexical first, ties by key, and says `hybrid`:
 /// `b` alone holds the word and is the vector's third, so it ranks first
 /// at 1/60 + 1/62, above `a` (the vector's first, 1/60) and `c` (1/61).
+/// Each ranking is weighed as the search asks, a vector search over a
+/// second field fuses the same way, and a weight that cannot weigh, or a
+/// field named twice, is refused as invalid.
 pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let owner = &f.cast.owner;
@@ -5924,13 +5935,8 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
                 searchable: true,
                 ..text("title")
             },
-            FieldDecl {
-                ty: FieldType {
-                    dimensions: Some(2),
-                    ..FieldType::kind(StorageKind::Vector)
-                },
-                ..text("v")
-            },
+            vector("v"),
+            vector("w"),
         ],
         relations: Vec::new(),
         view: None,
@@ -5945,12 +5951,14 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
         .declare(owner, Declaration::Type(doc))
         .await
         .expect("the owner declares `doc`");
-    for (k, title, v) in [
-        ("a", "quay", [1.0, 0.0]),
-        ("b", "harbour", [0.5, 0.5]),
-        ("c", "quay", [0.8, 0.2]),
+    // In `w` the order is c, b, and `a` holds no `w`.
+    for (k, title, v, w) in [
+        ("a", "quay", [1.0, 0.0], None),
+        ("b", "harbour", [0.5, 0.5], Some([0.5, 0.5])),
+        ("c", "quay", [0.8, 0.2], Some([1.0, 0.0])),
     ] {
-        let fields = [("title", json!(title)), ("v", json!(v))];
+        let mut fields = vec![("title", json!(title)), ("v", json!(v))];
+        fields.extend(w.map(|w| ("w", json!(w))));
         f.catalog
             .upsert(
                 owner,
@@ -5962,37 +5970,117 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
             .await
             .expect("a doc is written");
     }
-    let search = Search {
+    let search = |mode| Search {
         ty: ty("doc"),
-        mode: SearchMode::Hybrid {
-            text: "harbour".into(),
-            field: "v".into(),
-            vector: Some(vec![1.0, 0.0]),
-            fields: None,
-        },
+        mode,
         k: 5,
         cursor: None,
         filter: None,
         with_meta: false,
         at: ReadAt::default(),
     };
-    let got = f
-        .catalog
-        .search(owner, search)
-        .await
-        .expect("the owner's hybrid search")
-        .data;
-    let scored: Vec<(&str, f64)> = (got.hits.iter())
-        .map(|h| (h.record.key.as_str(), h.score))
-        .collect();
-    let want = [
-        ("b", 1.0 / 60.0 + 1.0 / 62.0),
-        ("a", 1.0 / 60.0),
-        ("c", 1.0 / 61.0),
-    ];
-    assert_eq!(
-        (scored.as_slice(), got.ranked_by.as_str()),
-        (want.as_slice(), "hybrid"),
-        "a hybrid search fuses both rankings by reciprocal rank"
-    );
+    let hybrid = |text_weight, weight| SearchMode::Hybrid {
+        text: "harbour".into(),
+        field: "v".into(),
+        vector: Some(vec![1.0, 0.0]),
+        fields: None,
+        weight,
+        text_weight,
+    };
+    let fields = |weight, also: &str, also_weight| SearchMode::Vector {
+        field: "v".into(),
+        vector: vec![1.0, 0.0],
+        weight,
+        also: vec![VectorTerm {
+            field: also.into(),
+            vector: vec![1.0, 0.0],
+            weight: also_weight,
+        }],
+    };
+    let (t, v) = (1.0 / 60.0, [1.0 / 60.0, 1.0 / 61.0, 1.0 / 62.0]);
+    for (mode, by, want) in [
+        (
+            hybrid(None, None),
+            "hybrid",
+            [("b", t + v[2]), ("a", v[0]), ("c", v[1])],
+        ),
+        (
+            hybrid(Some(1.0), Some(1.0)),
+            "hybrid",
+            [("b", t + v[2]), ("a", v[0]), ("c", v[1])],
+        ),
+        (
+            hybrid(None, Some(100.0)),
+            "hybrid",
+            [
+                ("a", 100.0 / 60.0),
+                ("c", 100.0 / 61.0),
+                ("b", t + 100.0 / 62.0),
+            ],
+        ),
+        (
+            fields(Some(2.0), "w", None),
+            "vector",
+            [
+                ("c", 2.0 / 61.0 + 1.0 / 60.0),
+                ("b", 2.0 / 62.0 + 1.0 / 61.0),
+                ("a", 2.0 / 60.0),
+            ],
+        ),
+    ] {
+        let what = format!("{mode:?}");
+        let got = f
+            .catalog
+            .search(owner, search(mode))
+            .await
+            .expect(&what)
+            .data;
+        let scored: Vec<(&str, f64)> = (got.hits.iter())
+            .map(|h| (h.record.key.as_str(), h.score))
+            .collect();
+        assert_eq!(
+            (scored.as_slice(), got.ranked_by.as_str()),
+            (want.as_slice(), by),
+            "{what} fuses its rankings by weighted reciprocal rank"
+        );
+    }
+    let lone = SearchMode::Vector {
+        field: "v".into(),
+        vector: vec![1.0, 0.0],
+        weight: Some(2.0),
+        also: Vec::new(),
+    };
+    for (mode, on) in [
+        (lone, Some("v")),
+        (fields(Some(0.0), "w", None), Some("v")),
+        (fields(None, "w", Some(1_000_001.0)), Some("w")),
+        (fields(None, "v", None), Some("v")),
+        (hybrid(Some(-1.0), None), None),
+    ] {
+        let what = format!("{mode:?}");
+        match f.catalog.search(owner, search(mode)).await {
+            Err(Error::Refused {
+                field,
+                reason: Refusal::Invalid { .. },
+            }) => {
+                assert_eq!(
+                    field.as_ref().map(|f| f.as_str()),
+                    on,
+                    "{what} names its field"
+                )
+            }
+            other => panic!("{what} must be refused as invalid; it answered {other:?}"),
+        }
+    }
+}
+
+/// A vector field of two dimensions.
+fn vector(name: &str) -> FieldDecl {
+    FieldDecl {
+        ty: FieldType {
+            dimensions: Some(2),
+            ..FieldType::kind(StorageKind::Vector)
+        },
+        ..text(name)
+    }
 }

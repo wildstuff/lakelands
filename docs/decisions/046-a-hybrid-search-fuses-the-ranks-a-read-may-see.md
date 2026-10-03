@@ -59,4 +59,52 @@ same wherever the lists are.
 - It does not make the lexical half's order the same on every engine.
   That order is each engine's own within the one match set (025). Only
   the fusion is the same.
-- It does not weigh the two halves. That is a separate decision.
+
+## Extended: a ranking has a weight, and a vector search may fuse several fields
+
+A host that keeps more than one vector per record, a title's and a
+body's, wants one search over both and wants to say which counts for
+more (lakelands#428). And a hybrid search may want its words to count
+for more than its vector, or less.
+
+- **A vector search names further fields in `also`.** Each is a vector
+  field of the type with its own query vector. Every field is ranked by
+  the one cosine, among the hits the read may see and to `max_limit`, as
+  above, and the rankings are fused: `field`'s first, then `also`'s in
+  the order named. A record without a vector in a field gains nothing
+  from that field. The answer says `vector`, or `index` when any named
+  field is asked for an index (043).
+- **Every ranking has a weight.** A ranking adds `weight / (60 + rank)`.
+  A vector search carries `weight` for `field` and one per entry of
+  `also`; a hybrid search carries `text_weight` for its words and
+  `weight` for its vector. An absent weight is 1, and with every weight
+  at 1 the sum is the one above, to the bit.
+- **A weight is above 0 and at most 1 000 000.** Anything else is
+  refused as invalid, naming the field (or `text_weight`). So is a
+  `weight` on a vector search that names no other field, and a field
+  named twice. These are judged before the principal's rights: they say
+  nothing the caller did not write.
+- **A vector search of one field is not fused.** It answers its cosines,
+  as before.
+- **Rights.** Each named vector field is probed as the first is (024):
+  the fields it is embedded from, then the field itself, in the order
+  named. A field the principal may not know of is answered as
+  undeclared.
+
+Weights apply to ranks and not to scores, for the reason ranks are fused
+at all. The cosines of two fields spread differently: short titles may
+all lie near 0.8 and long bodies near 0.3, so in a weighted sum of
+scores the spread would decide, not the number the caller wrote. A
+weight on a rank means what it says on every engine.
+
+A weight of 0 is refused, not read as "leave this ranking out": the
+ranking would still be read and its field still probed, and its records
+would join the hits at a score of 0. A caller who wants a field ignored
+leaves it out. A negative weight is refused because reciprocal rank
+over the nearest records cannot say "away from": a far record is in no
+ranking, so it would outrank a near one, and the order would depend on
+how far the store read. The ceiling keeps every sum finite; weights are
+relative, so it takes nothing a caller needs.
+
+A hybrid search does not take `also`: its text is embedded by one
+model, and several fields may have several.
