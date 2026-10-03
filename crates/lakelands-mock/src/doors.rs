@@ -3393,7 +3393,19 @@ impl Catalog for MockCatalog {
                 }
                 None
             }
-            ProposedWrite::Migrate { migration, .. } => {
+            ProposedWrite::Migrate {
+                migration,
+                report: shown,
+            } => {
+                // The shape is the type's whole: on a type changed since
+                // the proposal it would remove what was added since.
+                let ty = &migration.to.name;
+                let on = st.types.get(ty).map(|t| &t.schema_hash);
+                if on != Some(&shown.from_schema_hash) {
+                    return Err(invalid(format!(
+                        "`{ty}` changed since this migration was proposed; propose it again"
+                    )));
+                }
                 let head = Position(accepted.0.saturating_sub(1));
                 let report = preflight(&st, head, &migration)?;
                 if !report.lossless {

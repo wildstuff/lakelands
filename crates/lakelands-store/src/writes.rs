@@ -1552,7 +1552,17 @@ impl Call<'_> {
                 let own = self.bundle_drafts(&w, declarations.clone(), now, drafts.len())?;
                 drafts.extend(own.into_iter().map(&as_accepted));
             }
-            ProposedWrite::Migrate { migration, .. } => {
+            ProposedWrite::Migrate { migration, report } => {
+                // The shape is the type's whole: on a type changed since the
+                // proposal it would remove what was added, shown to no one
+                // (013, extended).
+                let ty = &migration.to.name;
+                let head = shape::schema_hash(w.ontology.ty(ty)?).ok();
+                if head.as_ref() != Some(&report.from_schema_hash) {
+                    return Err(invalid(format!(
+                        "`{ty}` changed since this migration was proposed; propose it again"
+                    )));
+                }
                 let plan = self.preflight_plan(&w, view.as_ref(), migration, Some(now))?;
                 let first = drafts.len();
                 let own = self.migration_drafts(&w, (**migration).clone(), plan, now, first)?;

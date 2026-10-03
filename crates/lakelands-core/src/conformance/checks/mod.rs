@@ -212,6 +212,7 @@ pub const ALL: &[Check] = &[
     schema_proposals::DECLARED_ON_ACCEPT,
     schema_proposals::SCHEMA_TO_ACCEPT,
     schema_proposals::MIGRATION_PREFLIGHTED_AGAIN,
+    schema_proposals::MIGRATION_ON_ITS_SHAPE,
     schema_proposals::REJECTED_UNTOUCHED,
     annotations::ROUND_TRIP,
     annotations::VERSION_NOT_HASH,
