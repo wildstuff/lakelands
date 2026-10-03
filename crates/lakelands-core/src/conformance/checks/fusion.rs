@@ -1,0 +1,208 @@
+//! A hybrid search fuses its lexical and its vector ranking by reciprocal
+//! rank, each over the hits the read may see and to the lake's
+//! `max_limit` of them
+//! (`docs/decisions/046-a-hybrid-search-fuses-the-ranks-a-read-may-see.md`).
+
+use std::sync::Arc;
+
+use lakelands_api::ontology::StorageKind;
+use lakelands_api::query::{Hits, Search, SearchMode};
+use lakelands_api::{LakeStore, Principal};
+use serde_json::json;
+
+use super::search::doc_search;
+use crate::conformance::Failure;
+use crate::conformance::fixture::{
+    Lake, Must, field, field_writer, restrict, searchable, type_decl, vector,
+};
+
+check!(
+    /// A record the read may not see moves no hybrid score.
+    HIDDEN_MOVES_NO_SCORE = a_record_the_read_may_not_see_moves_no_hybrid_score,
+    "046 and 024: a hybrid search ranks each list among the hits the read may see, so a restricted record, or one its `where` leaves out, ranked above a visible hit moves neither that hit's rank nor its score"
+);
+
+check!(
+    /// Every page of a hybrid search reads one ranking.
+    PAGES_ONE_RANKING = every_page_of_a_hybrid_search_reads_one_ranking,
+    "046 and 029: a hybrid search fuses each list to the lake's `max_limit` ranks whatever the page, so its pages through a cursor answer the one ranking a single page answers, keys and the scores' bits"
+);
+
+check!(
+    /// Ranking without reading a record answers what reading them answers.
+    SAME_LIST_UNREAD = a_search_that_reads_no_record_to_rank_answers_what_reading_them_answers,
+    "046: at the head, a hybrid search by a principal who sees every live record, without `where` or `valid_at`, ranks without reading a record, and answers the keys and the scores' bits the same search answers under a `where` that holds for every record, with restricted and retired records in the lake"
+);
+
+/// A lake of `doc`s: each a key, a text, a unit vector that many degrees
+/// from the query's `(1, 0)`, and a number `n`.
+async fn docs(
+    store: &dyn LakeStore,
+    rows: impl IntoIterator<Item = (String, &str, u32, u32)>,
+) -> Result<Lake, Failure> {
+    let l = Lake::of(store);
+    let fields = vec![
+        searchable("body"),
+        vector("v", 2),
+        field("n", StorageKind::Number),
+    ];
+    l.declare(type_decl("doc", fields)).await?;
+    for (key, body, degrees, n) in rows {
+        let a = f64::from(degrees).to_radians();
+        let v = json!({"body": body, "v": [a.cos(), a.sin()], "n": n});
+        l.upsert("doc", &key, v).await?;
+    }
+    Ok(l)
+}
+
+/// `who`'s hybrid search for "harbour" along `(1, 0)`.
+async fn harbour(
+    l: &Lake,
+    who: &Principal,
+    filter: Option<&str>,
+    s: Search,
+) -> Result<Hits, Failure> {
+    let mode = SearchMode::Hybrid {
+        text: "harbour".into(),
+        field: "v".into(),
+        vector: Some(vec![1.0, 0.0]),
+        fields: None,
+    };
+    let s = Search {
+        mode,
+        filter: filter.map(Into::into),
+        ..s
+    };
+    Ok(l.cat
+        .search(who, s)
+        .await
+        .must("a hybrid search for \"harbour\"")?
+        .data)
+}
+
+/// A page of `k` from `cursor`.
+fn page(k: u32, cursor: Option<lakelands_api::Cursor>) -> Search {
+    Search {
+        k,
+        cursor,
+        ..doc_search(SearchMode::lexical(""))
+    }
+}
+
+/// The hits as keys and the bits of their scores.
+fn scored(h: &Hits) -> Vec<(String, u64)> {
+    (h.hits.iter())
+        .map(|h| (h.record.key.0.clone(), h.score.to_bits()))
+        .collect()
+}
+
+/// The fused score of a record at these ranks, one per list that ranks
+/// it, summed as the store sums them: the lexical list first (046).
+fn rrf(ranks: &[u32]) -> u64 {
+    (ranks.iter())
+        .fold(0.0f64, |s, r| s + 1.0 / (60.0 + f64::from(*r)))
+        .to_bits()
+}
+
+async fn a_record_the_read_may_not_see_moves_no_hybrid_score(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    // `held` and `out` point along the query, `a` beside it: in the
+    // vector list both rank above `a`. Only `held` and `a` hold the word.
+    let rows = [
+        ("held", "harbour", 0, 0),
+        ("out", "quay", 0, 1),
+        ("a", "harbour", 5, 0),
+    ];
+    let l = docs(
+        store.as_ref(),
+        rows.map(|(k, b, d, n)| (k.to_owned(), b, d, n)),
+    )
+    .await?;
+    restrict(store.as_ref(), "doc", "held", "legal hold").await?;
+    let reader = field_writer(store.as_ref(), "reader", "doc", &[]);
+    // Under `where n = 0` the reader sees `a` alone, first in both lists;
+    // without it, `out` too, first in the vector list only.
+    for (filter, want) in [
+        (Some("n = 0"), vec![("a", rrf(&[0, 0]))]),
+        (None, vec![("a", rrf(&[0, 1])), ("out", rrf(&[0]))]),
+    ] {
+        let got = scored(&harbour(&l, &reader, filter, page(10, None)).await?);
+        let want: Vec<(String, u64)> = want.into_iter().map(|(k, s)| (k.to_owned(), s)).collect();
+        ensure!(
+            got == want,
+            "a reader without the restricted grant, searching {filter:?}: `held` (restricted) \
+             and, under the `where`, `out` (n = 1) must move neither rank nor score; it \
+             answered {got:?}, not {want:?} (scores as bits)"
+        );
+    }
+    Ok(())
+}
+
+async fn every_page_of_a_hybrid_search_reads_one_ranking(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    // `r00` to `r79` point ever further from the query, a degree apart;
+    // only `r70` holds the word, so it is the lexical list's one hit and
+    // the vector list's 71st: it fuses to 1/60 + 1/130 and ranks first,
+    // whichever page reads it.
+    let rows = (0..80).map(|i| {
+        (
+            format!("r{i:02}"),
+            if i == 70 { "harbour" } else { "quay" },
+            i,
+            0,
+        )
+    });
+    let l = docs(store.as_ref(), rows).await?;
+    let whole = scored(&harbour(&l, &l.own, None, page(100, None)).await?);
+    let (mut paged, mut cursor) = (Vec::new(), None);
+    for _ in 0..3 {
+        let one = harbour(&l, &l.own, None, page(1, cursor)).await?;
+        paged.extend(scored(&one));
+        cursor = one.next_cursor;
+    }
+    let first = ("r70".to_owned(), rrf(&[0, 70]));
+    ensure!(
+        whole.len() == 80 && whole.first() == Some(&first) && paged[..] == whole[..3],
+        "a hybrid search for \"harbour\" must rank `r70` first at 1/60 + 1/130, in one page \
+         of 100 and in three pages of one alike; one page began {:?}, three pages answered \
+         {paged:?}",
+        &whole[..whole.len().min(3)]
+    );
+    Ok(())
+}
+
+async fn a_search_that_reads_no_record_to_rank_answers_what_reading_them_answers(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    // Twelve records five degrees apart, every other one holding the word;
+    // two restricted, which the owner sees, and two retired, which no one does.
+    let rows = (0..12).map(|i| {
+        (
+            format!("r{i:02}"),
+            if i % 2 == 0 { "harbour" } else { "quay" },
+            i * 5,
+            i,
+        )
+    });
+    let l = docs(store.as_ref(), rows).await?;
+    for k in ["r03", "r06"] {
+        restrict(store.as_ref(), "doc", k, "legal hold").await?;
+    }
+    for k in ["r04", "r09"] {
+        l.retire("doc", k).await?;
+    }
+    // Without a `where` the owner reads no record to rank; with one that
+    // holds for every record it reads each candidate.
+    let unread = scored(&harbour(&l, &l.own, None, page(20, None)).await?);
+    let read = scored(&harbour(&l, &l.own, Some("n >= 0"), page(20, None)).await?);
+    let keys: Vec<&str> = unread.iter().map(|(k, _)| k.as_str()).collect();
+    ensure!(
+        unread == read && keys.len() == 10 && keys.contains(&"r06") && !keys.contains(&"r04"),
+        "the owner's hybrid search must answer the ten live records, restricted ones \
+         included, with the same keys and scores' bits whether or not a `where` that holds \
+         for every record makes it read them; without it answered {unread:?}, with it {read:?}"
+    );
+    Ok(())
+}
