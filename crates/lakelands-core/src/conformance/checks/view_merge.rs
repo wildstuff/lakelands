@@ -7,15 +7,15 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::{StorageKind, TypeDecl, ViewDecl, ViewParam, ViewSource};
+use lakelands_api::ontology::{StorageKind, TypeDecl, ViewParam, ViewSource};
 use lakelands_api::read::Find;
-use lakelands_api::write::Declaration;
 use lakelands_api::{Access, Error, FieldName, LakeStore, Params, Refusal, Value};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, field, field_access, log_events, measure, no_such_field, reason, type_decl,
+    Lake, bound, field, field_access, log_events, measure, no_such_field, param, reason, type_decl,
+    view_of,
 };
 
 check!(
@@ -82,30 +82,24 @@ fn energy_balance(
     food: Option<&str>,
     work: Option<&str>,
 ) -> TypeDecl {
-    TypeDecl {
-        key: vec![FieldName::from("day")],
-        view: Some(Box::new(ViewDecl {
-            source: "food_log".into(),
-            params,
-            r#where: food.map(Into::into),
-            group_by: vec![FieldName::from("day")],
-            measures: vec![
-                measure("calories_in", "sum(kcal)"),
-                measure("net_balance", "calories_in - calories_out"),
-            ],
-            merge: vec![workouts(work)],
-        })),
-        ..type_decl(
-            name,
-            vec![
-                field("day", StorageKind::DateTime),
-                field("calories_in", StorageKind::Decimal),
-                field("calories_out", StorageKind::Decimal),
-                field("hardest", StorageKind::Decimal),
-                field("net_balance", StorageKind::Decimal),
-            ],
-        )
+    let fields = vec![
+        field("day", StorageKind::DateTime),
+        field("calories_in", StorageKind::Decimal),
+        field("calories_out", StorageKind::Decimal),
+        field("hardest", StorageKind::Decimal),
+        field("net_balance", StorageKind::Decimal),
+    ];
+    let measures = [
+        ("calories_in", "sum(kcal)"),
+        ("net_balance", "calories_in - calories_out"),
+    ];
+    let mut t = view_of(name, "food_log", &["day"], fields, &measures);
+    if let Some(v) = t.view.as_mut() {
+        v.params = params;
+        v.r#where = food.map(Into::into);
+        v.merge = vec![workouts(work)];
     }
+    t
 }
 
 /// The two logs, three meals and two workouts over three days; the
@@ -132,16 +126,18 @@ async fn lake(store: &dyn LakeStore) -> Result<Lake, Failure> {
     Ok(l)
 }
 
+/// The merged source `source`, grouped by `by`, measuring `name` as `expr`.
+fn merged(source: &str, by: &str, name: &str, expr: &str) -> ViewSource {
+    ViewSource {
+        source: source.into(),
+        r#where: None,
+        group_by: vec![FieldName::from(by)],
+        measures: vec![measure(name, expr)],
+    }
+}
+
 async fn rows(l: &Lake, view: &str, params: Params) -> Result<Value, Failure> {
-    let found = l
-        .all_found(
-            view,
-            Find {
-                params,
-                ..Find::default()
-            },
-        )
-        .await?;
+    let found = l.all_found(view, bound(params)).await?;
     Ok(json!(found.iter().map(|r| &r.fields).collect::<Vec<_>>()))
 }
 
@@ -183,30 +179,16 @@ async fn keys_from_two_sources_meet_only_when_their_values_are_identical(
     }
     l.upsert("left_log", "a", json!({"code": "010"})).await?;
     l.upsert("right_log", "b", json!({"code": "10"})).await?;
-    let view = TypeDecl {
-        key: vec![FieldName::from("code")],
-        view: Some(Box::new(ViewDecl {
-            source: "left_log".into(),
-            params: Vec::new(),
-            r#where: None,
-            group_by: vec![FieldName::from("code")],
-            measures: vec![measure("left", "count()")],
-            merge: vec![ViewSource {
-                source: "right_log".into(),
-                r#where: None,
-                group_by: vec![FieldName::from("code")],
-                measures: vec![measure("right", "count()")],
-            }],
-        })),
-        ..type_decl(
-            "codes",
-            vec![
-                field("code", StorageKind::Text),
-                field("left", StorageKind::Number),
-                field("right", StorageKind::Number),
-            ],
-        )
-    };
+    let fields = vec![
+        field("code", StorageKind::Text),
+        field("left", StorageKind::Number),
+        field("right", StorageKind::Number),
+    ];
+    let left = [("left", "count()")];
+    let mut view = view_of("codes", "left_log", &["code"], fields, &left);
+    if let Some(v) = view.view.as_mut() {
+        v.merge = vec![merged("right_log", "code", "right", "count()")];
+    }
     l.declare(view).await?;
     let got = rows(&l, "codes", Params::new()).await?;
     let want = json!([
@@ -225,23 +207,15 @@ async fn a_views_parameters_bind_every_source_it_merges(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref()).await?;
-    let until = ViewParam {
-        name: "until".into(),
-        kind: StorageKind::DateTime,
-    };
     l.declare(energy_balance(
         "energy_until",
-        vec![until],
+        vec![param("until", StorageKind::DateTime)],
         Some("day <= param('until')"),
         Some("date <= param('until')"),
     ))
     .await?;
-    let got = rows(
-        &l,
-        "energy_until",
-        [("until".into(), json!("2026-06-02"))].into(),
-    )
-    .await?;
+    let bind: Params = [("until".into(), json!("2026-06-02"))].into();
+    let got = rows(&l, "energy_until", bind).await?;
     let want = json!([
         {"day": "2026-06-01T00:00:00.000000Z", "calories_in": "2500.00", "calories_out": "300.00",
          "hardest": "300.00", "net_balance": "2200.00"},
@@ -290,7 +264,7 @@ async fn a_merge_declared_badly_is_refused_naming_it(
         vec!["workout_log", "hardest"],
     ));
     for (what, t, names) in cases {
-        let r = l.cat.declare(&l.own, Declaration::Type(t)).await;
+        let r = l.try_declare(t).await;
         ensure!(
             invalid_naming(&r, &names),
             "a view that {what} must be refused as invalid, naming {names:?}; declare \
@@ -298,25 +272,16 @@ async fn a_merge_declared_badly_is_refused_naming_it(
         );
     }
     // A view with parameters as a source, main or merged.
-    let until = ViewParam {
-        name: "until".into(),
-        kind: StorageKind::DateTime,
-    };
     l.declare(energy_balance(
         "energy_until",
-        vec![until],
+        vec![param("until", StorageKind::DateTime)],
         Some("day <= param('until')"),
         None,
     ))
     .await?;
     let mut t = base();
-    t.view.as_mut().expect("a view").merge[0] = ViewSource {
-        source: "energy_until".into(),
-        r#where: None,
-        group_by: vec![FieldName::from("day")],
-        measures: vec![measure("over", "count()")],
-    };
-    let r = l.cat.declare(&l.own, Declaration::Type(t)).await;
+    t.view.as_mut().expect("a view").merge[0] = merged("energy_until", "day", "over", "count()");
+    let r = l.try_declare(t).await;
     ensure!(
         invalid_naming(&r, &["energy_until", "until"]),
         "a view merging `energy_until`, a view with the parameter `until`, must be refused, \
@@ -334,13 +299,8 @@ async fn a_merge_declared_badly_is_refused_naming_it(
     b.fields.truncate(2);
     l.declare(b).await?;
     let mut a = energy_balance("cycle_a", Vec::new(), None, None);
-    a.view.as_mut().expect("a view").merge[0] = ViewSource {
-        source: "cycle_b".into(),
-        r#where: None,
-        group_by: vec![FieldName::from("day")],
-        measures: vec![measure("calories_out", "count()")],
-    };
-    let r = l.cat.declare(&l.own, Declaration::Type(a)).await;
+    a.view.as_mut().expect("a view").merge[0] = merged("cycle_b", "day", "calories_out", "count()");
+    let r = l.try_declare(a).await;
     ensure!(
         invalid_naming(&r, &["cycle_a", "cycle_b"]),
         "`cycle_a` merging `cycle_b`, which reads `cycle_a`, closes a cycle and must be \
@@ -355,20 +315,11 @@ async fn a_merged_sources_fields_are_probed_as_a_read_of_it(
     let l = lake(store.as_ref()).await?;
     l.declare(energy_balance("energy_balance", Vec::new(), None, None))
         .await?;
-    let blind = field_access(
-        store.as_ref(),
-        "blind",
-        "workout_log",
-        &[("kcal", Access::None)],
-    );
+    let kcal = |id, access| field_access(store.as_ref(), id, "workout_log", &[("kcal", access)]);
+    let blind = kcal("blind", Access::None);
     // describe answers the definition only to a principal who reads what
     // every source's measures aggregate.
-    let reader = field_access(
-        store.as_ref(),
-        "reader",
-        "workout_log",
-        &[("kcal", Access::Read)],
-    );
+    let reader = kcal("reader", Access::Read);
     for (who, sees) in [(&reader, true), (&blind, false)] {
         let d = l
             .cat
@@ -411,16 +362,10 @@ async fn a_view_that_merges_is_written_in_log_format_9(
         v.merge.clear();
         v.measures.truncate(1);
     }
-    plain
-        .fields
-        .retain(|f| f.name == "day" || f.name == "calories_in");
+    plain.fields.truncate(2);
     l.declare(plain).await?;
-    let highest = log_events(store.as_ref())
-        .await?
-        .iter()
-        .map(|e| e.v)
-        .max()
-        .unwrap_or(0);
+    let events = log_events(store.as_ref()).await?;
+    let highest = events.iter().map(|e| e.v).max().unwrap_or(0);
     ensure!(
         highest < 9,
         "a view without a merge needs no format 9, yet the lake writes {highest}"

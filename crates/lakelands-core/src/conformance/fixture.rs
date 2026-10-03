@@ -15,7 +15,7 @@ use std::task::{Context, Poll};
 
 use futures_core::Stream;
 use lakelands_api::ontology::{
-    Authority, EmbedDecl, FieldDecl, Measure, StorageKind, TypeDecl, ViewDecl,
+    Authority, EmbedDecl, FieldDecl, Measure, StorageKind, TypeDecl, ViewDecl, ViewParam,
 };
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{Depth, Pattern, Projection, Start, Step, Walk};
@@ -23,8 +23,8 @@ use lakelands_api::read::{AggFunc, AggMeasure, Direction, Order, OrderBy};
 use lakelands_api::write::Declaration;
 use lakelands_api::{
     Access, Catalog, Committed, Error, FieldName, Find, Found, Get, Grants, LakeStore, Outcome,
-    Patch, Position, Principal, PrincipalKind, ReadAt, Record, RecordKey, Refusal, SourceId,
-    SourceRecord, SourceStream, TypeName, Value, WriteContext, WriteOpts,
+    Params, Patch, Position, Principal, PrincipalKind, ReadAt, Record, RecordKey, Refusal,
+    SourceId, SourceRecord, SourceStream, TypeName, Value, WriteContext, WriteOpts,
 };
 use rust_decimal::Decimal;
 
@@ -473,6 +473,22 @@ pub fn count_view(name: &str, source: &str, by: &str) -> TypeDecl {
         field("n", StorageKind::Number),
     ];
     view_of(name, source, &[by], fields, &[("n", "count()")])
+}
+
+/// A find of every record, binding `params`.
+pub fn bound(params: Params) -> Find {
+    Find {
+        params,
+        ..Find::default()
+    }
+}
+
+/// A view's parameter `name`, of `kind`.
+pub fn param(name: &str, kind: StorageKind) -> ViewParam {
+    ViewParam {
+        name: name.into(),
+        kind,
+    }
 }
 
 /// A find of the records `filter` holds for.

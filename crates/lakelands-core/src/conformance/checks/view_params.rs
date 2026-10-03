@@ -8,18 +8,16 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::{
-    Derived, MatchPair, RelationDecl, StorageKind, TypeDecl, ViewDecl, ViewParam,
-};
+use lakelands_api::ontology::{Derived, MatchPair, RelationDecl, StorageKind, TypeDecl, ViewDecl};
 use lakelands_api::query::{Pattern, Projection, QueryResult, Walk};
 use lakelands_api::read::{Find, Found, Get};
-use lakelands_api::write::Declaration;
 use lakelands_api::{Error, LakeStore, Params, Refusal, Value};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, field, find_where, log_events, pattern, reason, step, type_decl, view_of,
+    Lake, Must, bound, field, find_where, log_events, param, pattern, reason, step, type_decl,
+    view_of,
 };
 
 check!(
@@ -109,25 +107,30 @@ async fn lake(store: &dyn LakeStore) -> Result<Lake, Failure> {
         ("p4", "a", "2026-06-30", "1.25"),
         ("p5", "b", "2026-06-08", "7.00"),
     ] {
-        l.upsert(
-            "payment",
-            key,
-            json!({"account": account, "date": date, "amount": amount}),
-        )
-        .await?;
+        let fields = json!({"account": account, "date": date, "amount": amount});
+        l.upsert("payment", key, fields).await?;
     }
     Ok(l)
 }
 
+/// `payment` with `window`, a relation derived from its account to the
+/// account's window.
+fn paid() -> TypeDecl {
+    let mut paid = payment();
+    paid.relations = vec![RelationDecl {
+        derived: Some(Derived {
+            pairs: vec![MatchPair {
+                from: "account".into(),
+                to: "account".into(),
+            }],
+        }),
+        ..RelationDecl::to("window", "account_window")
+    }];
+    paid
+}
+
 /// A change that spoils a view's declaration.
 type Change = fn(&mut ViewDecl);
-
-fn param(name: &str, kind: StorageKind) -> ViewParam {
-    ViewParam {
-        name: name.into(),
-        kind,
-    }
-}
 
 fn anchor(date: &str) -> Params {
     [("anchor".into(), json!(date))].into()
@@ -153,35 +156,22 @@ async fn the_same_view_read_at_two_anchors_answers_two_windows(
                    {"account": "b", "total": "7.00", "last_day": 0}]),
         ),
     ] {
-        let rows = l
-            .all_found(
-                "account_window",
-                Find {
-                    params: anchor(date),
-                    ..Find::default()
-                },
-            )
-            .await?;
+        let rows = l.all_found("account_window", bound(anchor(date))).await?;
         let got = json!(rows.iter().map(|r| &r.fields).collect::<Vec<_>>());
         ensure!(
             got == want,
             "the window of the seven days up to {date} must be {want}; it is {got}. A view \
              whose parameter is not bound answers the same window, or none, for every anchor"
         );
-        let a = l
-            .cat
-            .get(
-                &l.own,
-                &"account_window".into(),
-                Get {
-                    key: "a".into(),
-                    with_meta: false,
-                    at: Default::default(),
-                    params: anchor(date),
-                },
-            )
-            .await
-            .must(&format!("getting account a's window up to {date}"))?;
+        let get = Get {
+            key: "a".into(),
+            with_meta: false,
+            at: Default::default(),
+            params: anchor(date),
+        };
+        let what = format!("getting account a's window up to {date}");
+        let a = l.cat.get(&l.own, &"account_window".into(), get).await;
+        let a = a.must(&what)?;
         ensure!(
             json!(a.data.fields) == want[0],
             "`get` of account a's window up to {date} must answer {}, as `find` does; it \
@@ -197,10 +187,6 @@ async fn a_missing_unknown_or_wrongly_kinded_parameter_is_refused_naming_it(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref()).await?;
-    let find = |params: Params| Find {
-        params,
-        ..Find::default()
-    };
     for (what, ty, params, name) in [
         (
             "leaving `anchor` out",
@@ -243,7 +229,7 @@ async fn a_missing_unknown_or_wrongly_kinded_parameter_is_refused_naming_it(
             "anchor",
         ),
     ] {
-        let r = l.cat.find(&l.own, &ty.into(), find(params)).await;
+        let r = l.cat.find(&l.own, &ty.into(), bound(params)).await;
         ensure!(
             invalid_naming(&r, name),
             "a read of `{ty}` {what} must be refused as invalid, naming `{name}`; it answered \
@@ -257,25 +243,15 @@ async fn param_outside_a_views_where_and_measures_is_refused(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref()).await?;
-    let r = l
-        .cat
-        .find(
-            &l.own,
-            &"payment".into(),
-            find_where("date <= param('anchor')"),
-        )
-        .await;
+    let filter = "date <= param('anchor')";
+    let find = find_where(filter);
+    let r = l.cat.find(&l.own, &"payment".into(), find).await;
     ensure!(
         invalid_naming(&r, "param()"),
         "a `find` whose `where` calls param() must be refused as invalid, naming it; it \
          answered {r:?}"
     );
-    let pattern = start_on(
-        "payment",
-        None,
-        Some("date <= param('anchor')"),
-        Params::new(),
-    );
+    let pattern = start_on("payment", None, Some(filter), Params::new());
     let r = l.cat.query(&l.own, pattern).await;
     ensure!(
         invalid_naming(&r, "param()"),
@@ -287,7 +263,7 @@ async fn param_outside_a_views_where_and_measures_is_refused(
     let mut ty = payment();
     ty.name = "payment_late".into();
     ty.fields.push(derived);
-    let r = l.cat.declare(&l.own, Declaration::Type(ty)).await;
+    let r = l.try_declare(ty).await;
     ensure!(
         invalid_naming(&r, "param()"),
         "a derived field that calls param() must be refused as invalid, naming it; declare \
@@ -305,37 +281,29 @@ async fn a_view_declaring_its_parameters_badly_is_refused(
     let cases: [(&str, Change, &str); 4] = [
         (
             "reads param('day'), which it does not declare",
-            |v| {
-                v.r#where = Some("date <= param('day')".into());
-            },
+            |v| v.r#where = Some("date <= param('day')".into()),
             "day",
         ),
         (
             "declares `spare`, which nothing reads",
-            |v| {
-                v.params.push(param("spare", StorageKind::Text));
-            },
+            |v| v.params.push(param("spare", StorageKind::Text)),
             "spare",
         ),
         (
             "declares `anchor` twice",
-            |v| {
-                v.params.push(param("anchor", StorageKind::DateTime));
-            },
+            |v| v.params.push(param("anchor", StorageKind::DateTime)),
             "anchor",
         ),
         (
             "declares `anchor` as json",
-            |v| {
-                v.params[0].kind = StorageKind::Json;
-            },
+            |v| v.params[0].kind = StorageKind::Json,
             "anchor",
         ),
     ];
     for (what, change, name) in cases {
         let mut ty = account_window();
         change(ty.view.as_mut().expect("a view"));
-        let r = l.cat.declare(&l.own, Declaration::Type(ty)).await;
+        let r = l.try_declare(ty).await;
         ensure!(
             invalid_naming(&r, name),
             "a view that {what} must be refused as invalid, naming `{name}`; declare \
@@ -350,10 +318,9 @@ async fn a_cursor_continues_only_with_the_parameters_it_was_handed_out_for(
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref()).await?;
     let page = |date: &str, cursor| Find {
-        params: anchor(date),
         limit: Some(1),
         cursor,
-        ..Find::default()
+        ..bound(anchor(date))
     };
     let first = l
         .cat
@@ -370,28 +337,16 @@ async fn a_cursor_continues_only_with_the_parameters_it_was_handed_out_for(
              a cursor",
         ));
     };
-    let other = l
-        .cat
-        .find(
-            &l.own,
-            &"account_window".into(),
-            page("2026-06-12", Some(cursor.clone())),
-        )
-        .await;
+    let p = page("2026-06-12", Some(cursor.clone()));
+    let other = l.cat.find(&l.own, &"account_window".into(), p).await;
     ensure!(
         invalid_naming(&other, "parameters"),
         "a cursor handed out for the anchor 2026-06-30 must be refused with the anchor \
          2026-06-12, naming the parameters; it answered {other:?}"
     );
-    let same = l
-        .cat
-        .find(
-            &l.own,
-            &"account_window".into(),
-            page("2026-06-30", Some(cursor)),
-        )
-        .await
-        .must("continuing the window up to 2026-06-30 with its own cursor")?;
+    let p = page("2026-06-30", Some(cursor));
+    let same = l.cat.find(&l.own, &"account_window".into(), p).await;
+    let same = same.must("continuing the window up to 2026-06-30 with its own cursor")?;
     let Found::Records { rows, .. } = same.data else {
         return Err(Failure::new("a page of records answered groups"));
     };
@@ -434,14 +389,8 @@ async fn a_pattern_started_on_a_view_binds_its_parameters(
         let what = format!(
             "a pattern started on `account_window` (key {key:?}, where {filter:?}) up to {date}"
         );
-        let reply = l
-            .cat
-            .query(
-                &l.own,
-                start_on("account_window", key, filter, anchor(date)),
-            )
-            .await
-            .must(&what)?;
+        let p = start_on("account_window", key, filter, anchor(date));
+        let reply = l.cat.query(&l.own, p).await.must(&what)?;
         let QueryResult::Graph { nodes, .. } = reply.data else {
             return Err(Failure::new(format!(
                 "{what} answered something other than a graph"
@@ -453,26 +402,11 @@ async fn a_pattern_started_on_a_view_binds_its_parameters(
             "{what} must hold the window's record {want}; it holds {got}"
         );
     }
-    let mut paid = payment();
-    paid.relations = vec![RelationDecl {
-        derived: Some(Derived {
-            pairs: vec![MatchPair {
-                from: "account".into(),
-                to: "account".into(),
-            }],
-        }),
-        ..RelationDecl::to("window", "account_window")
-    }];
-    l.declare(paid).await?;
-    let degree = |key: Option<&str>| {
-        let mut p = pattern(
-            "account_window",
-            key,
-            vec![step("window", Walk::In)],
-            Projection::Degree,
-        );
-        p.start.params = anchor("2026-06-30");
-        p
+    l.declare(paid()).await?;
+    let degree = |key: Option<&str>| Pattern {
+        steps: vec![step("window", Walk::In)],
+        project: Projection::Degree,
+        ..start_on("account_window", key, None, anchor("2026-06-30"))
     };
     let mut rows = Vec::new();
     for key in [None, Some("a")] {
@@ -496,13 +430,8 @@ async fn a_pattern_started_on_a_view_binds_its_parameters(
          view's row for `a`, {of_a:?}; it answered {:?}",
         rows[1]
     );
-    let r = l
-        .cat
-        .query(
-            &l.own,
-            start_on("account_window", Some("a"), None, Params::new()),
-        )
-        .await;
+    let unbound = start_on("account_window", Some("a"), None, Params::new());
+    let r = l.cat.query(&l.own, unbound).await;
     ensure!(
         invalid_naming(&r, "anchor"),
         "a pattern started on `account_window` without its `anchor` must be refused as \
@@ -515,44 +444,17 @@ async fn a_step_arriving_at_a_view_with_parameters_is_refused_before_reading(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let mut paid = payment();
-    paid.relations = vec![RelationDecl {
-        derived: Some(Derived {
-            pairs: vec![MatchPair {
-                from: "account".into(),
-                to: "account".into(),
-            }],
-        }),
-        ..RelationDecl::to("window", "account_window")
-    }];
     l.declare(payment()).await?;
     l.declare(account_window()).await?;
-    l.declare(paid).await?;
-    let rows = || {
-        pattern(
-            "payment",
-            None,
-            vec![step("window", Walk::Out)],
-            Projection::Rows { fields: Vec::new() },
-        )
-    };
-    let degree = || {
-        pattern(
-            "payment",
-            None,
-            vec![step("window", Walk::Out)],
-            Projection::Degree,
-        )
-    };
+    l.declare(paid()).await?;
+    let hop = || vec![step("window", Walk::Out)];
+    let rows = || pattern("payment", None, hop(), Projection::Rows { fields: vec![] });
+    let degree = || pattern("payment", None, hop(), Projection::Degree);
     // The answer does not depend on the data: with no payment and with one.
     for (when, write) in [("with no payment", false), ("with one payment", true)] {
         if write {
-            l.upsert(
-                "payment",
-                "p1",
-                json!({"account": "a", "date": "2026-06-10", "amount": "10.00"}),
-            )
-            .await?;
+            let p1 = json!({"account": "a", "date": "2026-06-10", "amount": "10.00"});
+            l.upsert("payment", "p1", p1).await?;
         }
         for (what, p) in [("rows", rows()), ("a degree", degree())] {
             let r = l.cat.query(&l.own, p).await;
@@ -565,13 +467,11 @@ async fn a_step_arriving_at_a_view_with_parameters_is_refused_before_reading(
         }
     }
     // Started on the view with its parameters, a step out is answered.
-    let mut out = pattern(
-        "account_window",
-        Some("a"),
-        vec![step("window", Walk::In)],
-        Projection::Rows { fields: Vec::new() },
-    );
-    out.start.params = anchor("2026-06-12");
+    let out = Pattern {
+        steps: vec![step("window", Walk::In)],
+        project: Projection::Rows { fields: Vec::new() },
+        ..start_on("account_window", Some("a"), None, anchor("2026-06-12"))
+    };
     l.cat
         .query(&l.own, out)
         .await
@@ -600,12 +500,8 @@ async fn a_view_with_parameters_is_written_in_log_format_8(
         "a view without parameters needs no format 8, yet the lake writes {highest}"
     );
     let declared = l.declare(account_window()).await?.position();
-    l.upsert(
-        "payment",
-        "p1",
-        json!({"account": "a", "date": "2026-06-30", "amount": "1.00"}),
-    )
-    .await?;
+    let p1 = json!({"account": "a", "date": "2026-06-30", "amount": "1.00"});
+    l.upsert("payment", "p1", p1).await?;
     for e in log_events(store.as_ref()).await? {
         let want = if e.position >= declared {
             8
