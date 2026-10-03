@@ -2271,7 +2271,7 @@ fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationRepor
     }
     // Fields the new declaration no longer has under any name: the
     // migration drops them, and the report says how many values that is.
-    let dropped: Vec<(FieldName, u64)> = t
+    let mut dropped: Vec<(FieldName, u64)> = t
         .decl
         .fields
         .iter()
@@ -2284,6 +2284,20 @@ fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationRepor
             (old.name.clone(), holding)
         })
         .collect();
+    // A relation the migration removes takes its live links from the
+    // head: it is listed with their number, as the store lists it.
+    for lt in links::of(&t.decl) {
+        let live = st
+            .records
+            .values()
+            .filter(|r| r.ty == lt.name && !r.retired);
+        let relation = links::parts(&lt.name).map(|(_, r)| r);
+        if let (Some(r), n @ 1..) = (relation, live.count() as u64)
+            && !m.to.relations.iter().any(|kept| kept.name == r)
+        {
+            dropped.push((FieldName::from(r.as_str()), n));
+        }
+    }
     let mut report = MigrationReport {
         ty: ty.clone(),
         from_schema_hash: t.schema_hash.clone(),

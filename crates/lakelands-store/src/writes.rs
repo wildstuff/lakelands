@@ -2136,6 +2136,22 @@ impl Call<'_> {
                 .dropped
                 .extend(lr.dropped.into_iter().map(|(f, n)| (named(&f), n)));
         }
+        // A relation carried by link records that the migration removes
+        // takes its live links from the head, as a removed field takes its
+        // values: it is listed with their number. A relation of another
+        // name is another relation; a rename is not inferred.
+        let removed = |r: &&RelationDecl| {
+            links::carried_by_links(r) && !m.to.relations.iter().any(|n| n.name == r.name)
+        };
+        for r in before.relations.iter().filter(removed) {
+            let lt = links::link_type_name(&m.to.name, &r.name);
+            let live = view.scan(&lt, &every(false))?.len() as u64;
+            if live > 0 {
+                report
+                    .dropped
+                    .push((FieldName::from(r.name.as_str()), live));
+            }
+        }
         report.rekeyed = plan.rekeyed.clone();
         report.references = plan.references.clone();
         report.sample_collisions = plan.collisions.clone();

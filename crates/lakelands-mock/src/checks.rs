@@ -4505,6 +4505,11 @@ pub async fn a_relation_declared_again_with_another_target_reshapes_its_links(
         renames: vec![],
     };
     let report = c.migrate(own, m.clone()).await.unwrap();
+    assert_eq!(
+        report.data.dropped,
+        [("signed_by".into(), 1)],
+        "the preflight lists the relation with its one live link"
+    );
     c.migrate_apply(own, m, &report.data.report_id)
         .await
         .unwrap();

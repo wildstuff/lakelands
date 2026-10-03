@@ -608,9 +608,10 @@ pub struct MigrationReport {
     /// Per field whose type changes: how many values convert.
     pub fields: Vec<FieldConversion>,
     /// Fields the migration removes, and how many records hold a value
-    /// that removing them discards. Removal is the migration's intent,
-    /// named here before anything is applied; it does not make the
-    /// report lossy.
+    /// that removing them discards; and each relation carried by link
+    /// records it removes, by the relation's name, with the number of its
+    /// live links. Removal is the migration's intent, named here before
+    /// anything is applied; it does not make the report lossy.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dropped: Vec<(FieldName, u64)>,
     /// Per type a re-key moves: its records, and the new keys that

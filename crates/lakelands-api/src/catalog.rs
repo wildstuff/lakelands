@@ -193,7 +193,8 @@ pub trait Catalog: Send + Sync {
     /// The preflight of a migration: what it would do, changing nothing —
     /// every field whose values convert and how many would not, and in
     /// `dropped` every field the migration removes with how many values
-    /// that discards.
+    /// that discards, and every relation carried by link records it
+    /// removes with how many live links.
     async fn migrate(
         &self,
         who: &Principal,

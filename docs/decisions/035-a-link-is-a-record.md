@@ -92,6 +92,11 @@ through the doors that check the relation's authority and cardinality.
   - Narrowing a relation's cardinality is a migration. Its preflight
     counts the live links that would break the narrower rule, and
     refuses while any would.
+  - Removing a relation is a migration. Its preflight lists the relation
+    under `dropped` with the number of its live links, as it lists a
+    removed field with its values
+    (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+    extended); the links stay as history.
   - The link type is checked as any type is, when its owner is declared:
     its fields' kinds, functions and embeddings. A field that cannot work
     fails at `declare`, not at the first write.
