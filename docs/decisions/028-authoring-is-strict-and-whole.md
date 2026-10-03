@@ -97,6 +97,40 @@ named. A
 declaration already in force is not checked again until it is declared
 again.
 
+## Extended: in a verb's value only `payload.<name>` is the call's (lakelands#470)
+
+The rule above left the name `payload` out of what a verb's value
+reads, wherever it stood. But the call's payload is reached by exactly
+one form, `payload.<name>`: a bare `payload`, a longer path such as
+`payload.note.deep`, and either of them inside a function are the
+record's field of that name. On a type without such a field they were
+accepted and read null at every call, so the verb cleared the field it
+sets; and a migration could take a field named `payload` away while a
+verb read it bare, with the same end.
+
+One function now says which path is the call's, and the verb's scope
+that evaluates a value and the rule that gathers what a declaration
+reads both ask it:
+
+- **`payload.<name>`** is the call's payload and reads no field.
+- **Every other path** is the record's and reads its first segment,
+  `payload` included. `declare`, `apply` and an accepted proposal refuse
+  it on a type that has no such field, as for any other missing field,
+  and the migration preflight keeps the field while a verb reads it.
+- **A member the verb's payload does not declare** is refused too,
+  naming the verb, the field it sets and the member. A call's payload is
+  checked against the verb's list, so such a member is never given and
+  the value would read null at every call.
+
+A type may have a field named `payload`, and a verb on it is not
+refused: the two readings sit one segment apart, and the rule is total.
+What follows is that a verb's value cannot read a member of a json field
+named `payload`, since `payload.<name>` is always the call's. A lake
+that needs it names the field otherwise, or reads it whole.
+
+A verb already in force with a bare `payload` opens and runs as before;
+it is held to the rule when it is declared again.
+
 ## Extended: the order of refusals (lakelands#338)
 
 The schema doors refuse in this order, in the frame every write door

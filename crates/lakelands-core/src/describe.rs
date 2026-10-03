@@ -179,8 +179,8 @@ pub fn view_reads(v: &ViewDecl) -> Option<Vec<(TypeName, std::collections::BTree
 /// field's expression on `ty` itself, the fields of `ty` a derived
 /// relation matches as its target, a set's `where`, a trigger's `when`,
 /// and a verb's `requires`, the fields it sets and what it sets them from
-/// (where `payload` is the call's). A condition that does not parse reads
-/// nothing here.
+/// (where `payload.<name>` is the call's and reads no field). A condition
+/// that does not parse reads nothing here.
 pub fn declaration_reads(d: &Declaration, ty: &TypeName) -> std::collections::BTreeSet<FieldName> {
     let of = |c: &Condition| named(c).unwrap_or_default();
     match d {
@@ -202,7 +202,8 @@ pub fn declaration_reads(d: &Declaration, ty: &TypeName) -> std::collections::BT
             let mut names = v.requires.as_ref().map(of).unwrap_or_default();
             if let VerbEffect::Write { set } = &v.effect {
                 for a in set {
-                    names.extend(of(&a.value).into_iter().filter(|n| n.as_str() != "payload"));
+                    let value = parsed(&a.value).map(|e| crate::derive::verb_reads(&e).0);
+                    names.extend(value.unwrap_or_default());
                     names.insert(a.field.clone());
                 }
             }

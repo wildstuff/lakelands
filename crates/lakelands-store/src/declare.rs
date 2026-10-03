@@ -957,11 +957,22 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                                 v.name, a.field, v.on
                             )));
                         }
-                        condition(
+                        let value = condition(
                             &a.value,
                             Place::Record,
                             &format!("verb `{}`, `{}`", v.name, a.field),
                         )?;
+                        // A member the verb's payload does not have is never
+                        // given: the value would read null at every call.
+                        let (_, members) = lakelands_core::derive::verb_reads(&value);
+                        let has = |m: &&FieldName| v.payload.iter().any(|f| &f.name == *m);
+                        if let Some(m) = members.iter().find(|m| !has(m)) {
+                            return Err(invalid(format!(
+                                "verb `{}` sets `{}` from `payload.{m}`, which its payload does \
+                                 not have",
+                                v.name, a.field
+                            )));
+                        }
                     }
                 }
                 VerbEffect::External { executor } => name("executor", executor)?,

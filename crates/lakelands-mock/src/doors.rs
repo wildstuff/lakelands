@@ -2107,7 +2107,7 @@ fn view_reads(v: &ViewDecl) -> Vec<(TypeName, Vec<FieldName>)> {
 /// counts them: a derived field's expression on `ty` itself, the fields of
 /// `ty` a derived relation matches as its target, a set's `where`, a
 /// trigger's `when`, and a verb's `requires`, the fields it sets and what
-/// it sets them from (where `payload` is the call's).
+/// it sets them from (where `payload.<name>` is the call's).
 fn declaration_reads(d: &Declaration, ty: &TypeName) -> BTreeSet<FieldName> {
     let of = |c: &Condition| named(c).unwrap_or_default();
     match d {
@@ -2129,7 +2129,9 @@ fn declaration_reads(d: &Declaration, ty: &TypeName) -> BTreeSet<FieldName> {
             let mut names = v.requires.as_ref().map(of).unwrap_or_default();
             if let VerbEffect::Write { set } = &v.effect {
                 for a in set {
-                    names.extend(of(&a.value).into_iter().filter(|n| n.as_str() != "payload"));
+                    let record = value_paths(&a.value).into_iter();
+                    let record = record.filter(|p| expr::payload_member(p).is_none());
+                    names.extend(record.filter_map(|p| p.first().cloned()));
                     names.insert(a.field.clone());
                 }
             }
@@ -2139,9 +2141,34 @@ fn declaration_reads(d: &Declaration, ty: &TypeName) -> BTreeSet<FieldName> {
     }
 }
 
+/// The paths a verb's value reads; none when it does not parse.
+fn value_paths(value: &Condition) -> Vec<Vec<FieldName>> {
+    let mut paths = vec![];
+    if let Ok(e) = expr::typed(value) {
+        expr::paths(&e, &mut paths);
+    }
+    paths
+}
+
 /// As the store: a declaration reads only fields its type has, the link
-/// type's when it names one.
+/// type's when it names one, and a verb's value only members its payload
+/// has.
 fn reads_its_type(st: &State, d: &Declaration) -> Result<()> {
+    if let Declaration::Verb(v) = d
+        && let VerbEffect::Write { set } = &v.effect
+    {
+        for a in set {
+            let paths = value_paths(&a.value);
+            let has = |m: &&FieldName| v.payload.iter().any(|f| &f.name == *m);
+            let members = paths.iter().filter_map(|p| expr::payload_member(p));
+            if let Some(m) = members.into_iter().find(|m| !has(m)) {
+                return Err(invalid(format!(
+                    "verb `{}` sets `{}` from `payload.{m}`, which its payload does not have",
+                    v.name, a.field
+                )));
+            }
+        }
+    }
     let on = match d {
         Declaration::Type(t) => Some(t),
         Declaration::Verb(v) => st.types.get(&v.on).map(|o| &o.decl),
