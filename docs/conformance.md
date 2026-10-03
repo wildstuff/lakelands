@@ -443,6 +443,10 @@ belongs in the suite, not beside one engine:
 - `a_trigger_fires_on_a_verbs_write` — 004 and 013: a verb's write fires the triggers whose guard holds and changes object sets in the same append, caused by that write, as any other write does
 - `a_sets_filter_from_describe_finds_the_members_its_events_record` — 004, and seams `Reading an object set`: for records written after a set is declared, `find` under the filter `describe` answers for the set returns exactly the records the latest `object_set_changed` of each says are in it, and `(f1) and not (f2)` returns the members of one set that are not in the other
 
+**set declared**
+
+- `a_sets_declaration_decides_the_membership_of_the_records_there` — 004, extended: a set declared over records already written appends, in its declaration's append and caused by its `declared`, an `object_set_changed` joining each live record its filter holds for and no other; declared again with another filter, it joins and leaves exactly the records the change moves; declared again unchanged, it appends none; and a later write decides against the membership so kept; past the lake's `max_set_changes` a declaration is refused `too_large`, naming the set and the ceiling, and appends nothing
+
 **link triggers**
 
 - `a_trigger_on_a_link_type_fires_on_link_rewrite_unlink_and_ingest` — 035 and 004: a trigger naming a relation's link type fires on link, on the link written again, on unlink and on each ingested link, naming the link type and the link's key, caused by that write; its guard reads the link's fields, and `changed(f)` holds on a write that changes f and not on unlink

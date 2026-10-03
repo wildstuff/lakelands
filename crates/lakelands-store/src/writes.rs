@@ -36,7 +36,7 @@
 
 use std::collections::BTreeMap;
 
-use lakelands_api::engine::ProjectionView;
+use lakelands_api::engine::{After, ProjectionView, Scan};
 use lakelands_api::event::{Digest, Event, EventBody, Procedure};
 use lakelands_api::ontology::{
     Authority, RelationDecl, Risk, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
@@ -44,8 +44,8 @@ use lakelands_api::ontology::{
 use lakelands_api::principal::WriteContext;
 use lakelands_api::record::{Origin, StoredRecord};
 use lakelands_api::write::{
-    Declaration, Migration, MigrationReport, Misfit, Outcome, ProposalState, ProposedWrite,
-    ValueTypeReport, ValueTypeUse, WriteOpts,
+    Declaration, Migration, MigrationReport, Misfit, ObjectSetDecl, Outcome, ProposalState,
+    ProposedWrite, ValueTypeReport, ValueTypeUse, WriteOpts,
 };
 use lakelands_api::{
     Error, FieldName, IdempotencyKey, Missing, Patch, Position, Principal, ProposalId, RecordKey,
@@ -64,6 +64,10 @@ use crate::record;
 /// How many events after an external verb's call a retry reads for the
 /// output recorded for it.
 const RETRY_REACH: u32 = 4_096;
+
+/// How many records a set's declaration reads at a time while it decides
+/// their membership.
+const SET_PAGE: u32 = 1_024;
 
 /// The record a call names, checked against the verb's scope before
 /// anything is read (013, extended): a verb on a record needs its key, a
@@ -303,8 +307,10 @@ impl Call<'_> {
 
 /// An append's outcome, as [`own_outcome`] tells it, with what the write
 /// set off: the reactions that follow its own event in the append, each
-/// caused by it, and the position of the last of them. The names are all
-/// of them; [`crate::doors`] keeps those the caller may know of.
+/// caused by it, and the position of the last of them. Each name is
+/// listed once: a set's declaration moves many records, a write one. The
+/// names are all of them; [`crate::doors`] keeps those the caller may
+/// know of.
 fn outcome_of(events: &[Event]) -> Outcome {
     let mut outcome = own_outcome(events);
     if let Outcome::Applied {
@@ -319,18 +325,43 @@ fn outcome_of(events: &[Event]) -> Outcome {
         {
             match &e.body {
                 EventBody::TriggerFired { trigger, .. } => set_off.fired.push(trigger.clone()),
-                EventBody::ObjectSetChanged { set, joined, .. } => if *joined {
-                    &mut set_off.joined
-                } else {
-                    &mut set_off.left
+                EventBody::ObjectSetChanged { set, joined, .. } => {
+                    let names = if *joined {
+                        &mut set_off.joined
+                    } else {
+                        &mut set_off.left
+                    };
+                    if !names.contains(set) {
+                        names.push(set.clone());
+                    }
                 }
-                .push(set.clone()),
                 _ => break,
             }
             set_off.through = Some(e.position);
         }
     }
     outcome
+}
+
+/// Whether `record` is a member of `set`: live, and the set's filter holds
+/// over its fields at `now`, the time of the write or the declaration that
+/// decides it. A write and a set's declaration decide by this one rule.
+fn member_of(
+    set: &ObjectSetDecl,
+    record: &StoredRecord,
+    w: &Writer,
+    now: Timestamp,
+) -> Result<bool> {
+    if record.retired {
+        return Ok(false);
+    }
+    let e = declare::condition(&set.filter, Place::Record, "object set")?;
+    let scope = RecordScope {
+        fields: &record.fields,
+        settings: Some(&w.settings),
+        now,
+    };
+    Ok(expr::holds(&e, &scope).unwrap_or(false))
 }
 
 /// The outcome the first of an append's events stands for. A verb call or
@@ -855,18 +886,7 @@ impl Call<'_> {
             .filter(|s| s.of == after.ty)
         {
             let was = pending.member(view, &s.name, &after.ty, &after.key)?;
-            let is = !after.retired && {
-                let e = declare::condition(&s.filter, Place::Record, "object set")?;
-                expr::holds(
-                    &e,
-                    &RecordScope {
-                        fields: &after.fields,
-                        settings: Some(&w.settings),
-                        now,
-                    },
-                )
-                .unwrap_or(false)
-            };
+            let is = member_of(s, after, w, now)?;
             if was != is {
                 pending
                     .members
@@ -1592,7 +1612,7 @@ impl Call<'_> {
             // the store derives stay the system's.
             ProposedWrite::Declare { declarations } => {
                 self.check_bundle(&w.ontology, declarations)?;
-                let own = self.bundle_drafts(&w, declarations.clone(), now)?;
+                let own = self.bundle_drafts(&w, declarations.clone(), now, drafts.len())?;
                 drafts.extend(own.into_iter().map(&as_accepted));
             }
             ProposedWrite::Migrate { migration, .. } => {
@@ -1710,29 +1730,8 @@ impl Call<'_> {
         let mut w = self.lake.writer();
         declare::check_declaration(&w.ontology, &declaration, false)?;
         self.check_bound(&declaration)?;
-        let schema_hash = match &declaration {
-            Declaration::Type(t) => {
-                Some(shape::schema_hash(t).map_err(|e| invalid(e.to_string()))?)
-            }
-            _ => None,
-        };
-        let version = w.ontology.next_version(&declaration);
         let now = self.lake.clock(&mut w);
-        let links = match &declaration {
-            Declaration::Type(t) => link_type_drafts(&w.ontology, t, now)?,
-            _ => Vec::new(),
-        };
-        let d = self.draft(
-            now,
-            Origin::Authored,
-            EventBody::Declared {
-                declaration,
-                schema_hash,
-                version,
-            },
-        );
-        let mut drafts = vec![d];
-        drafts.extend(links);
+        let drafts = self.bundle_drafts(&w, vec![declaration], now, 0)?;
         let events = self.lake.append(&mut w, drafts)?;
         Ok(outcome_of(&events))
     }
@@ -1749,7 +1748,7 @@ impl Call<'_> {
         let mut w = self.lake.writer();
         self.check_bundle(&w.ontology, &declarations)?;
         let now = self.lake.clock(&mut w);
-        let drafts = self.bundle_drafts(&w, declarations, now)?;
+        let drafts = self.bundle_drafts(&w, declarations, now, 0)?;
         let events = self.lake.append(&mut w, drafts)?;
         Ok(Outcome::Applied {
             position: events.last().expect("the set is not empty").position,
@@ -1821,9 +1820,15 @@ impl Call<'_> {
         w: &Writer,
         declarations: Vec<Declaration>,
         now: Timestamp,
+        first: usize,
     ) -> Result<Vec<Draft>> {
         let mut drafts = Vec::with_capacity(declarations.len());
         for declaration in declarations {
+            let declared = position_after(w, first + drafts.len());
+            let members = match &declaration {
+                Declaration::ObjectSet(set) => self.set_drafts(w, set, declared, now)?,
+                _ => Vec::new(),
+            };
             let schema_hash = match &declaration {
                 Declaration::Type(t) => {
                     Some(shape::schema_hash(t).map_err(|e| invalid(e.to_string()))?)
@@ -1845,8 +1850,81 @@ impl Call<'_> {
                 },
             ));
             drafts.extend(links);
+            drafts.extend(members);
         }
         Ok(drafts)
+    }
+
+    /// The membership a set's declaration decides for the records already
+    /// there: an `object_set_changed` for each record of its type whose
+    /// membership under `set` differs from the index, read a page at a
+    /// time, each caused by the `declared` at `declared` (004, extended).
+    /// A set declared again unchanged decides nothing; one declared again
+    /// over another type lets go of that type's members. Past the lake's
+    /// `max_set_changes` the declaration is refused `too_large`, naming the
+    /// set, before anything is appended; the walk stops there.
+    fn set_drafts(
+        &self,
+        w: &Writer,
+        set: &ObjectSetDecl,
+        declared: Position,
+        now: Timestamp,
+    ) -> Result<Vec<Draft>> {
+        let old = w.ontology.object_sets.get(&set.name).map(|e| &e.decl);
+        if old.is_some_and(|o| o.of == set.of && o.filter == set.filter) {
+            return Ok(Vec::new());
+        }
+        let view = self.lake.engine.view(None)?;
+        let mut types = vec![&set.of];
+        types.extend(old.map(|o| &o.of).filter(|t| *t != &set.of));
+        let max = self.lake.limits.max_set_changes;
+        let mut out = Vec::new();
+        for ty in types {
+            if w.ontology.ty(ty).is_err() {
+                continue;
+            }
+            let mut scan = Scan {
+                limit: SET_PAGE,
+                restricted: true,
+                ..Scan::default()
+            };
+            loop {
+                let rows = view.scan(ty, &scan)?;
+                for r in &rows {
+                    let was = old.is_some() && view.is_member(&set.name, ty, &r.key)?;
+                    let is = ty == &set.of && member_of(set, r, w, now)?;
+                    if was != is {
+                        if out.len() as u64 >= u64::from(max) {
+                            return Err(Error::Refused {
+                                field: Some(set.name.as_str().into()),
+                                reason: Refusal::TooLarge { max },
+                            });
+                        }
+                        let body = EventBody::ObjectSetChanged {
+                            set: set.name.clone(),
+                            ty: ty.clone(),
+                            key: r.key.clone(),
+                            joined: is,
+                        };
+                        out.push(Draft {
+                            cause: Some(declared),
+                            context: self.context,
+                            ..Draft::system(now, body)
+                        });
+                    }
+                }
+                match rows.last() {
+                    Some(last) if rows.len() == SET_PAGE as usize => {
+                        scan.after = Some(After {
+                            values: Vec::new(),
+                            key: last.key.clone(),
+                        });
+                    }
+                    _ => break,
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// `add_field`.

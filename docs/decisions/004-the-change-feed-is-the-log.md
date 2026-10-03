@@ -113,3 +113,44 @@ and `retired()` is false. A declaration calling `retired` is written in
 log format 7 (`docs/log-format.md` §6), so a reader that does not know
 the function refuses the log instead of keeping a trigger it cannot
 evaluate, which would never fire.
+
+## Extended: a set's declaration decides the records already there (lakelands#453)
+
+A set's membership was decided only when a record was written. A set
+declared over records that already hold its filter, or declared again
+with another filter, left them as they were. A consumer of the feed never
+learned of those memberships, and the lake's membership disagreed with
+the filter until each record was written again.
+
+Now a set's declaration decides them. In the declaration's own append,
+after its `declared` (and the link types a type brings), the store
+appends an `object_set_changed` for each record of the set's type whose
+membership the declaration changes. Each is caused by the `declared`,
+written by the system and carries the declaration's context. The filter
+is evaluated as a write evaluates it, with the time of the declaration
+as `now`, and a retired record is never a member. A write and a
+declaration decide by one rule.
+
+- **A set declared again unchanged** appends nothing.
+- **One declared again over another type** lets go of the old type's
+  members.
+- **The same in every way in:** `declare`, `apply` and an accepted
+  declaration proposal.
+- **The declaration's answer names each set once,** however many
+  records it moves, and its `through` is the last change (015,
+  extended).
+
+The event is the existing one, and the fold already applies it. Only its
+cause is new: an `object_set_changed` may now name a `declared`, not
+only a record's write. No log format changes.
+
+**One append, bounded by the lake's `max_set_changes` (20 000 unless the
+location sets it).** A declaration that would change more is refused
+`too_large`, naming the set and the ceiling, and appends nothing:
+- windows of their own after the `declared` would leave the index and
+  the events wrong after a crash;
+- a new event carrying the keys would be a second shape every consumer
+  must learn.
+
+What it costs, and how a host declares a set over a large type, is in
+`docs/seams.md`, "Declaring a set over a large type".

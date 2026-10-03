@@ -109,7 +109,7 @@ async fn a_sets_filter_from_describe_finds_the_members_its_events_record(
             .await?;
     }
     // Written after both sets are declared, `i5` leaving `open` again; a set
-    // declared over records already written is lakelands#453.
+    // declared over records already written is SET_DECLARED_OVER_RECORDS's.
     let from = store.head().await.must("reading the head")?.next();
     let rows = [("i1", "open", 50), ("i2", "open", 200), ("i3", "paid", 300)];
     for (key, status, amount) in rows
