@@ -26,6 +26,7 @@
 //! changes no answer, only a plan; a failed one leaves the commit as it
 //! is.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
@@ -55,6 +56,9 @@ struct Transaction {
     latest: Option<Position>,
     types: HeadTypes,
     buffer: Buffer,
+    /// The types declared in it, each with the position of its latest
+    /// declaration: the commit indexes their older records under it.
+    redeclared: BTreeMap<TypeName, Position>,
 }
 
 /// The records a writer puts between two analyses of its tables.
@@ -395,11 +399,20 @@ impl ProjectionStore for PgLake {
             return db.end(Err(refused));
         }
         let Transaction {
-            mut types, buffer, ..
+            mut types,
+            buffer,
+            redeclared,
+            ..
         } = t;
         let put = buffer.records_put() as u64;
         let written = buffer
             .write(&mut db, &self.names, &mut types, self.pgvector.as_ref())
+            .and_then(|()| {
+                let older = |(ty, at): (&TypeName, &Position)| {
+                    projection::index_older(&mut db, &self.names, &mut types, ty, *at)
+                };
+                redeclared.iter().try_for_each(older)
+            })
             .and_then(|()| projection::set_folded(&mut db, &self.names, through));
         db.end(written)?;
         // Once enough records went in since the last analysis, the planner
@@ -444,7 +457,9 @@ impl ProjectionStore for PgLake {
         };
         t.latest = t.latest.max(Some(at));
         let mut db = lock(&writing.projection);
-        projection::put_declaration(&mut db, &self.names, &mut t.types, &d)?;
+        if let Some(ty) = projection::put_declaration(&mut db, &self.names, &mut t.types, &d)? {
+            t.redeclared.insert(ty, at);
+        }
         // A redeclaration may change a field's dimensions or drop it: the
         // type's vector indexes are built again under it.
         if let Declaration::Type(ty) = declaration {

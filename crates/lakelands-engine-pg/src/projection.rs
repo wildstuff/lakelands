@@ -568,7 +568,6 @@ pub(crate) fn declared_type(state: Option<String>) -> Result<Option<TypeDecl>> {
     })
 }
 
-/// The latest states of one type's records, in key order.
 /// At most `n` latest states of one type's records, in key order after
 /// `after`: a page of the type, so a pass over it holds a page at a time.
 pub(crate) fn head_records_after(
@@ -585,16 +584,6 @@ pub(crate) fn head_records_after(
             names.t("records")
         ),
         &[&ty.as_str(), &after, &n],
-    )
-}
-
-pub(crate) fn head_records(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Vec<StoredRecord>> {
-    db.records(
-        &format!(
-            "SELECT state FROM {} WHERE ty = $1 AND until IS NULL ORDER BY key COLLATE \"C\"",
-            names.t("records")
-        ),
-        &[&ty.as_str()],
     )
 }
 
@@ -880,39 +869,61 @@ impl Buffer {
     }
 }
 
-/// Put a declaration and, for a type now in force at the head, rewrite
-/// the head indexes of its records in the table under it. `types`
-/// forgets every head declaration it held, since this one may change one.
-/// Records the transaction buffered are indexed at its commit, under the
-/// declaration in force then.
+/// Put a declaration. `types` forgets every head declaration it held,
+/// since this one may change one. For a type now in force at the head its
+/// records' head indexes are to be rewritten under it, and it answers the
+/// type: the commit does that with [`index_older`], for the records the
+/// transaction has not put again by then. Records the transaction buffered
+/// are indexed at its commit, under the declaration in force then.
 pub(crate) fn put_declaration(
     db: &mut Db,
     names: &Names,
     types: &mut HeadTypes,
     d: &Declared,
-) -> Result<()> {
+) -> Result<Option<TypeName>> {
     types.0.clear();
     let ident = engines::declaration_key(&d.declaration);
     let state = serde_json::to_string(d).expect("a declaration serialises");
     DECLARATIONS.put(db, names, &[&ident], d.since, &state)?;
-    if let Declaration::Type(t) = &d.declaration {
-        let head = types.get(db, names, &t.name)?;
-        if head.decl.as_ref() == Some(t) {
-            // The rows go whole: the declaration may have dropped a field
-            // the index kept.
-            db.execute(
-                &format!("DELETE FROM {} WHERE ty = $1", names.t("sort_index")),
-                &[&t.name.as_str()],
-            )?;
-            let records = head_records(db, names, &t.name)?;
-            let indexed: Vec<(&HeadType, &StoredRecord)> =
-                records.iter().map(|r| (&head, r)).collect();
-            let stale: Vec<(&str, &str)> = records
-                .iter()
-                .map(|r| (r.ty.as_str(), r.key.as_str()))
-                .collect();
-            index_records(db, names, &indexed, &stale)?;
-        }
+    let Declaration::Type(t) = &d.declaration else {
+        return Ok(None);
+    };
+    if types.get(db, names, &t.name)?.decl.as_ref() != Some(t) {
+        return Ok(None);
     }
-    Ok(())
+    // The rows go whole: the declaration may have dropped a field the index
+    // kept.
+    db.execute(
+        &format!("DELETE FROM {} WHERE ty = $1", names.t("sort_index")),
+        &[&t.name.as_str()],
+    )?;
+    Ok(Some(t.name.clone()))
+}
+
+/// Rewrite the head indexes of the records of `ty` whose latest state is
+/// older than `at`, under the type's declaration at the head. A record put
+/// at `at` or after is indexed under that declaration by the commit that
+/// writes it: a migration puts every record again, and nothing is left to
+/// do here.
+pub(crate) fn index_older(
+    db: &mut Db,
+    names: &Names,
+    types: &mut HeadTypes,
+    ty: &TypeName,
+    at: Position,
+) -> Result<()> {
+    let head = types.get(db, names, ty)?;
+    let records = db.records(
+        &format!(
+            "SELECT state FROM {} WHERE ty = $1 AND until IS NULL AND since < $2 \
+             ORDER BY key COLLATE \"C\"",
+            names.t("records")
+        ),
+        &[&ty.as_str(), &(at.0 as i64)],
+    )?;
+    let indexed: Vec<(&HeadType, &StoredRecord)> = records.iter().map(|r| (&head, r)).collect();
+    let stale: Vec<(&str, &str)> = (records.iter())
+        .map(|r| (r.ty.as_str(), r.key.as_str()))
+        .collect();
+    index_records(db, names, &indexed, &stale)
 }
