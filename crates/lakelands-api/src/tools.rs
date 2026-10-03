@@ -1097,15 +1097,17 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             kind("declare", json!({"declarations": {"type": "array", "items": {"type": "object"}}}),
                  &["declarations"]),
             kind("migrate", json!({"migration": {"type": "object"}}), &["migration"]),
+            kind("migrate_value_type", json!({"to": {"type": "object",
+                 "description": "The value type's new, narrower declaration."}}), &["to"]),
         ]});
         out.push(ToolSpec {
             name: PROPOSE.into(),
             description: "Record a write as a proposal for review instead of applying it: a \
                 record write, a verb call, declarations (as apply takes them) or a migration \
-                (as migrate takes it). A record write or a verb call needs the grants it would \
-                need applied: a proposal waits for review, it does not lift a grant. \
-                Declarations and a migration need no `schema` grant to propose; a reviewer \
-                holding it accepts them."
+                (as migrate takes it), of a type or of a value type that is to accept less. A \
+                record write or a verb call needs the grants it would need applied: a proposal \
+                waits for review, it does not lift a grant. Declarations and a migration need \
+                no `schema` grant to propose; a reviewer holding it accepts them."
                 .into(),
             input_schema: obj(
                 props([("write", write), ("why", json!({"type": "string"}))]),
@@ -1125,7 +1127,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             ("type", names(|_| true)),
             (
                 "kind",
-                json!({"enum": ["upsert", "retire", "call", "declare", "migrate"]}),
+                json!({"enum": ["upsert", "retire", "call", "declare", "migrate", "migrate_value_type"]}),
             ),
             (
                 "order_by",

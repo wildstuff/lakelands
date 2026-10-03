@@ -1195,6 +1195,8 @@ fn touched(
             })
             .collect(),
         ProposedWrite::Migrate { migration, .. } => vec![migration.to.name.clone()],
+        // A value type's tightening names no type, as its declaration names none.
+        ProposedWrite::MigrateValueType { .. } => Vec::new(),
     }
 }
 

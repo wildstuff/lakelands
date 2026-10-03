@@ -1349,7 +1349,7 @@ impl Call<'_> {
             ProposedWrite::Upsert { opts, .. }
             | ProposedWrite::Retire { opts, .. }
             | ProposedWrite::Call { opts, .. } => opts.idempotency_key.clone(),
-            ProposedWrite::Declare { .. } | ProposedWrite::Migrate { .. } => None,
+            _ => None,
         };
         if let Some(o) = self.replay(&w, &key_opt, view.as_ref())? {
             return Ok(o);
@@ -1443,6 +1443,9 @@ impl Call<'_> {
                     }));
                 }
                 **report = found;
+            }
+            ProposedWrite::MigrateValueType { to, report } => {
+                **report = fits(self.preflight_value_type(&w, view.as_ref(), to)?, false)?;
             }
         }
         let position = position_after(&w, 0);
@@ -1630,6 +1633,20 @@ impl Call<'_> {
                 let first = drafts.len();
                 let own = self.migration_drafts(&w, (**migration).clone(), plan, now, first)?;
                 drafts.extend(own.into_iter().map(&as_accepted));
+            }
+            ProposedWrite::MigrateValueType { to, report } => {
+                // As a migration is accepted only on the shape it was
+                // proposed on: a value type declared again since would lose
+                // what that added, shown to no one (013, extended).
+                let head = w.ontology.value_types.get(to.name.as_str());
+                if head.map(|v| v.version) != Some(report.from_version) {
+                    return Err(invalid(format!(
+                        "value type `{}` changed since this was proposed; propose it again",
+                        to.name
+                    )));
+                }
+                fits(self.preflight_value_type(&w, view.as_ref(), to)?, false)?;
+                drafts.push(as_accepted(self.tightened(&w, (**to).clone(), now)));
             }
         }
         drop(view);
@@ -2410,14 +2427,14 @@ impl Call<'_> {
 impl Call<'_> {
     /// The preflight of a value type's new declaration: every value stored
     /// under it, in every type and field that uses it, retired and
-    /// restricted records included, checked as a write would check it.
+    /// restricted records included, checked as a write would check it. It
+    /// asks for no grant: its door asks for `schema`, a proposal for none.
     pub fn preflight_value_type(
         &self,
         w: &Writer,
         view: &dyn ProjectionView,
         to: &ValueTypeDecl,
     ) -> Result<ValueTypeReport> {
-        granted(self.who.grants.schema)?;
         let current = w
             .ontology
             .value_types
@@ -2516,6 +2533,7 @@ impl Call<'_> {
     /// was shown: one `declared` at the next version, no record changed.
     pub fn migrate_value_type_apply(&self, to: ValueTypeDecl, report_id: &str) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
+        granted(self.who.grants.schema)?;
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
         let report = self.preflight_value_type(&w, view.as_ref(), &to)?;
@@ -2524,36 +2542,49 @@ impl Call<'_> {
                 "the lake moved since that preflight report; run the preflight again",
             ));
         }
-        if !report.fits {
-            let first: Vec<String> = report
-                .first
-                .iter()
-                .map(|m| format!("`{}` `{}`.`{}`", m.ty, m.key, m.field))
-                .collect();
-            return Err(invalid(format!(
-                "value type `{}` is not tightened: {} stored value(s) would not fit it; change \
-                 them first. First: {}",
-                to.name,
-                report.misfits,
-                first.join(", ")
-            )));
-        }
-        let declaration = Declaration::ValueType(to);
-        let version = w.ontology.next_version(&declaration);
+        fits(report, true)?;
         let now = self.lake.clock(&mut w);
-        let d = self.draft(
-            now,
-            Origin::Authored,
-            EventBody::Declared {
-                declaration,
-                schema_hash: None,
-                version,
-            },
-        );
+        let d = self.tightened(&w, to, now);
         drop(view);
         let events = self.lake.append(&mut w, vec![d])?;
         Ok(outcome_of(&events))
     }
+
+    /// The `declared` that puts a tightened value type in force at its
+    /// next version; no record changes.
+    fn tightened(&self, w: &Writer, to: ValueTypeDecl, now: Timestamp) -> Draft {
+        let declaration = Declaration::ValueType(to);
+        let version = w.ontology.next_version(&declaration);
+        let schema_hash = None;
+        let body = EventBody::Declared {
+            declaration,
+            schema_hash,
+            version,
+        };
+        self.draft(now, Origin::Authored, body)
+    }
+}
+
+/// A value type's preflight report, refused while a stored value would not
+/// fit: with how many, and, for a caller with the `schema` grant
+/// (`named`), the first of them. A proposal is told the count alone, so no
+/// record is named in a field its proposer may not know of.
+fn fits(report: ValueTypeReport, named: bool) -> Result<ValueTypeReport> {
+    if report.fits {
+        return Ok(report);
+    }
+    let first = (report.first.iter().filter(|_| named))
+        .map(|m| format!("`{}` `{}`.`{}`", m.ty, m.key, m.field))
+        .collect::<Vec<_>>();
+    let first = match named {
+        true => format!(" First: {}", first.join(", ")),
+        false => String::new(),
+    };
+    Err(invalid(format!(
+        "value type `{}` is not tightened: {} stored value(s) would not fit it; change them \
+         first.{first}",
+        report.value_type, report.misfits
+    )))
 }
 
 /// Reads `to`, a migration's or a redeclaration's shape of the type

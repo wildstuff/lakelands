@@ -1884,6 +1884,27 @@ fn plan_run(
     plan_upsert(&by, batch, &v.on, key, patch, opts)
 }
 
+/// The preflight's report of a value type's tightening, refused while a
+/// stored value would not fit, with the count alone: a proposal names no
+/// misfit, as the store's does not.
+fn tightening(
+    st: &State,
+    who: &Principal,
+    head: Position,
+    to: &lakelands_api::ontology::ValueTypeDecl,
+) -> Result<lakelands_api::write::ValueTypeReport> {
+    check_new_value_type(st, who, to)?;
+    let report = crate::valuetypes::preflight(st, head, to)?;
+    if !report.fits {
+        return Err(invalid(format!(
+            "value type `{}` is not tightened: {} stored value(s) would not fit it; change \
+             them first.",
+            to.name, report.misfits
+        )));
+    }
+    Ok(report)
+}
+
 fn plan_propose(
     st: &State,
     batch: &mut Batch,
@@ -1934,7 +1955,7 @@ fn plan_propose(
         // A change of the ontology is checked as its door would check it;
         // the proposer needs no `schema` grant.
         ProposedWrite::Declare { declarations } => check_set(st, who, declarations)?,
-        ProposedWrite::Migrate { .. } => {}
+        ProposedWrite::Migrate { .. } | ProposedWrite::MigrateValueType { .. } => {}
     }
     let write = match write {
         ProposedWrite::Migrate { migration, .. } => {
@@ -1949,6 +1970,11 @@ fn plan_propose(
                 migration,
                 report: Box::new(report),
             }
+        }
+        ProposedWrite::MigrateValueType { to, .. } => {
+            let head = Position(batch.peek().0.saturating_sub(1));
+            let report = Box::new(tightening(st, who, head, &to)?);
+            ProposedWrite::MigrateValueType { to, report }
         }
         other => other,
     };
@@ -2221,7 +2247,7 @@ fn redeclared(st: &State, who: &Principal, declarations: &mut [Declaration]) -> 
 
 /// A proposed shape without the fields its reader may not know of, a
 /// relation's link fields too: the proposal holds the completed shape.
-fn known_shape(who: &Principal, write: &mut ProposedWrite) {
+fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite) {
     let shown = |t: &mut TypeDecl| {
         let whole = t.clone();
         t.fields.retain(|f| access(who, &whole, f) != Access::None);
@@ -2238,6 +2264,14 @@ fn known_shape(who: &Principal, write: &mut ProposedWrite) {
                     shown(t);
                 }
             }
+        }
+        // A use is shown only in a field the reader may read; the report's
+        // totals stay whole, and a logged report fits, so it names no misfit.
+        ProposedWrite::MigrateValueType { report, .. } => {
+            let read = |ty: &TypeName, f: &FieldName| {
+                (st.types.get(ty)).is_some_and(|t| readable(st, who, t, f).is_ok())
+            };
+            report.fields.retain(|u| read(&u.ty, &u.field));
         }
         _ => {}
     }
@@ -3463,6 +3497,29 @@ impl Catalog for MockCatalog {
                 batch.push(d);
                 None
             }
+            ProposedWrite::MigrateValueType { to, report: shown } => {
+                // As a migration: accepted only on the declaration it was
+                // proposed on, and only while every stored value fits.
+                let declaration = Declaration::ValueType((*to).clone());
+                let (schema_hash, version) = identity_version(&st, &declaration);
+                if version != shown.from_version + 1 {
+                    return Err(invalid(format!(
+                        "value type `{}` changed since this was proposed; propose it again",
+                        to.name
+                    )));
+                }
+                let head = Position(accepted.0.saturating_sub(1));
+                tightening(&st, &proposer, head, &to)?;
+                let body = EventBody::Declared {
+                    declaration,
+                    schema_hash,
+                    version,
+                };
+                let mut d = Draft::new(&proposer, Origin::System, body);
+                d.cause = Some(accepted);
+                batch.push(d);
+                None
+            }
         };
         let position = Position(batch.peek().0 - 1);
         self.commit(&mut log, batch);
@@ -3528,6 +3585,7 @@ impl Catalog for MockCatalog {
                 Declaration::ValueType(_) | Declaration::Function(_) => false,
             }),
             ProposedWrite::Migrate { migration, .. } => &migration.to.name == ty,
+            ProposedWrite::MigrateValueType { .. } => false,
         };
         // A reviewer sees every proposal; anyone else sees their own, so
         // that a proposer can follow what became of it.
@@ -3551,7 +3609,8 @@ impl Catalog for MockCatalog {
         if !asc {
             rows.reverse();
         }
-        rows.iter_mut().for_each(|p| known_shape(who, &mut p.write));
+        rows.iter_mut()
+            .for_each(|p| known_shape(&st, who, &mut p.write));
         let (rows, _) = page(rows, (position, "proposals", None, ""), offset, limit);
         Ok(Reply {
             position,

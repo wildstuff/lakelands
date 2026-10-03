@@ -167,6 +167,17 @@ pub enum ProposedWrite {
         #[serde(default)]
         report: Box<MigrationReport>,
     },
+    /// A value type's tightening, as `migrate_value_type_apply` applies it,
+    /// with the report its preflight answered when it was proposed (log
+    /// format version 10).
+    MigrateValueType {
+        /// The new declaration.
+        to: Box<ValueTypeDecl>,
+        /// The preflight's report at the proposal, for the reviewer. The
+        /// store answers it; whatever a proposer sends is replaced.
+        #[serde(default)]
+        report: Box<ValueTypeReport>,
+    },
 }
 
 impl ProposedWrite {
@@ -178,6 +189,7 @@ impl ProposedWrite {
             ProposedWrite::Call { .. } => ProposalKind::Call,
             ProposedWrite::Declare { .. } => ProposalKind::Declare,
             ProposedWrite::Migrate { .. } => ProposalKind::Migrate,
+            ProposedWrite::MigrateValueType { .. } => ProposalKind::MigrateValueType,
         }
     }
 
@@ -186,7 +198,9 @@ impl ProposedWrite {
     pub fn is_schema(&self) -> bool {
         matches!(
             self,
-            ProposedWrite::Declare { .. } | ProposedWrite::Migrate { .. }
+            ProposedWrite::Declare { .. }
+                | ProposedWrite::Migrate { .. }
+                | ProposedWrite::MigrateValueType { .. }
         )
     }
 }
@@ -205,6 +219,8 @@ pub enum ProposalKind {
     Declare,
     /// A migration.
     Migrate,
+    /// A value type's tightening.
+    MigrateValueType,
 }
 
 /// Where a proposal stands.
@@ -755,7 +771,9 @@ pub struct TypeRetired {
 /// The preflight of a value type's migration: what its new declaration
 /// would refuse among the values stored under it, computed before
 /// anything changes (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// The empty report (`Default`) is what a proposer sends with a proposed
+/// tightening, which the store replaces with the preflight's.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValueTypeReport {
     /// The value type migrated.
     pub value_type: ValueTypeName,

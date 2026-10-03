@@ -1311,6 +1311,18 @@ impl<'a> Reader<'a> {
                     }
                 }
             }
+            // A use says something of a field's values, so it is shown only
+            // in a field the reader may read, of a type it may see (024);
+            // the report's totals stay whole. Its `first` needs no such
+            // care: a logged proposal's report fits, so it names no misfit.
+            ProposedWrite::MigrateValueType { report, .. } => {
+                let read = |ty: &TypeName, field: &FieldName| {
+                    let t = self.visible_type(ty).ok();
+                    let f = t.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == field)?)));
+                    f.is_some_and(|(t, f)| rights::field_access(self.who, t, f).reads())
+                };
+                report.fields.retain(|u| read(&u.ty, &u.field));
+            }
             _ => {}
         }
     }
