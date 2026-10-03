@@ -252,9 +252,17 @@ A minor release `vX.Y.0` is tagged on `develop`. A fix to it ships as
 `vX.Y.1` on `main`, so that `develop`, which already holds work for the
 next minor, does not ship with it.
 
-1. **`main` holds `vX.Y.0`.** If it does not yet, a pull request whose
-   head is exactly the tagged commit merges into `main`, and adds nothing
-   else.
+1. **`main` holds `vX.Y.0`.** If it does not yet, a pull request brings
+   it there and adds nothing else:
+   - When `main` is an ancestor of the tag, the pull request's head is
+     exactly the tagged commit.
+   - When `main` already carries an earlier patch (`vX.W.1`), the tag
+     does not descend from it, and a head of exactly the tag would
+     conflict. A branch `release/main-takes-X.Y.0` starts at the tag
+     instead and merges `main` keeping the tag's tree:
+     `git switch -c release/main-takes-X.Y.0 vX.Y.0`, then
+     `git merge -s ours --signoff origin/main`. `git diff vX.Y.0 HEAD`
+     must be empty, and `main` is then an ancestor of the head.
 2. **The patch branch starts at the tag:**
    `git switch -c release/X.Y.1 vX.Y.0`.
 3. **The fix is fitted to the release's tree.** The tree of `vX.Y.0` is
