@@ -223,6 +223,30 @@ which is already a row. Every root holds the files it held at
 `d628b79a19`. No row is added. **The list is closed for `0.9.0` as of
 `3918187ec1`**, the commit the tag's message names.
 
+**Checked on 2026-10-03, before the `0.9.1` tag**, against the source's
+mainline at `f1747cedea`: the 22 commits after `3918187ec1` (1138 after
+the freeze in all), checked the same way.
+- **One commit touches a root, and it is the last row.** `e766e2b5ca`
+  reached the mainline through `478943fa9c`. It adds one variant to the
+  error type among the moved `{types}` files in their new crate, six
+  lines, so that the source's adapter gives a store limit its own kind
+  of refusal. It changes no storage behaviour.
+- **None of the 11 merges** among them adds anything of its own under
+  the roots: what each shows against one parent is what the other
+  parent brought since their merge base, and by patch id that is this
+  commit's change or `3aa65077c6`'s, which is already a row.
+
+Every root holds the files it held at `3918187ec1`. **The list is
+closed for `0.9.1` as of `f1747cedea`**, the commit the tag's message
+names.
+
+**Checked on 2026-10-03, after the `0.9.1` tag**, against the source's
+mainline at `c492aa07a6`: the 5 commits after `f1747cedea` (1143 after
+the freeze in all), checked the same way. None of them touches a root,
+neither of the two merges among them shows a change under one against
+either parent, and every root holds the files it held at `f1747cedea`.
+No row is added. The next check starts after `c492aa07a6`.
+
 | Source commit | Behaviour, in one line | Ported in, or not applicable and why |
 |---|---|---|
 | `5914084de9` | One German user-interface sentence in the capabilities module changes its form of address from formal to informal. | Not applicable: the capabilities module was not carried (cut in O2: there is no capability negotiation; see `docs/import-ledger.md`), and no storage behaviour changes: no event, no fold rule, no signature, no stored byte. |
@@ -241,3 +265,4 @@ which is already a row. Every root holds the files it held at
 | `d741fe684e` | The flow lint gains a check that warns, before a flow's first run, when a step files a record under a key an agent step produced with no confirm step between, since a retry could produce another key and file the record twice. | Not applicable: the flow lint (`{store}/src/flow_lint.rs`) was never imported, being a product feature (`docs/import-ledger.md`), and Lakelands has no flows. An idempotency key is the caller's own, and the same key answers the same outcome (`docs/decisions/016-two-write-doors-by-origin.md`). |
 | `580a645406` | The delete guard's rule for which relations hold a record alive moves into a public function, beside a public refusal helper, so that an engine counting its own referrers asks the same question and refuses in the same words. Two ownership functions become public. The field-grant set gains an accessor, and the error type gains a refusal for an operation the source's lake adapter does not carry. | Not applicable: the source exposes its own guard and helpers to its adapter. No event, fold rule, signature of ours or stored byte changes, and the guard's rule and wording stay as they were. |
 | `3aa65077c6` | The function of `{store}` that describes a type as its declaration states it becomes public, and `{engine}` re-exports it, so that the source's adapter onto a lake can answer a description. Two `use` lines change; the function itself does not. | Not applicable: only a visibility changes, for the source's own adapter. No event, fold rule, signature or stored byte changes. Lakelands answers a type's description through `describe_type`, which is a door of its contract already. |
+| `e766e2b5ca` | The error type among the moved `{types}` files gains one variant, for a limit of the store that was reached: a graph measure past the lake's node limit, or a chain of reactive writes past its depth. The source's adapter onto a lake maps those two refusals to it. Six added lines; nothing else under a root changes. | Not applicable: the variant is the source's own name for two refusals at its adapter. No event, fold rule, signature or stored byte changes. Lakelands answers both in its contract already, each with its own kind: `too_large` for a measure past the node limit and `too_deep` for a reactive chain past its depth. |
