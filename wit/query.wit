@@ -1,4 +1,4 @@
-package lakelands:data@0.8.0;
+package lakelands:data@0.9.0;
 
 /// Reading across records: the one pattern query
 /// (`docs/decisions/018-one-pattern-query.md`) and search. Search is a

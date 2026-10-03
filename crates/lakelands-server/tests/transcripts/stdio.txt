@@ -3,7 +3,7 @@
 
 # The handshake, then a ping.
 > {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"transcript","version":"1"}}}
-< {"id":1,"jsonrpc":"2.0","result":{"capabilities":{"experimental":{"lakelands/changes":{}},"tools":{"listChanged":true}},"instructions":"This session serves one lake, `finance`. Every answer carries the position it was read or written at. Call `describe` to see what the lake holds.","protocolVersion":"2025-11-25","serverInfo":{"name":"lakelands","version":"0.8.0"}}}
+< {"id":1,"jsonrpc":"2.0","result":{"capabilities":{"experimental":{"lakelands/changes":{}},"tools":{"listChanged":true}},"instructions":"This session serves one lake, `finance`. Every answer carries the position it was read or written at. Call `describe` to see what the lake holds.","protocolVersion":"2025-11-25","serverInfo":{"name":"lakelands","version":"0.9.0"}}}
 > {"jsonrpc":"2.0","method":"notifications/initialized"}
 > {"jsonrpc":"2.0","id":2,"method":"ping"}
 < {"id":2,"jsonrpc":"2.0","result":{}}
