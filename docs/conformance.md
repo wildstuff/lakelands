@@ -465,6 +465,10 @@ belongs in the suite, not beside one engine:
 - `a_write_referencing_a_record_that_does_not_exist_is_refused` — 011 and the log format §5: a reference is the key of a record of its target type; a write naming no such record is refused whole, one naming an existing record is accepted
 - `a_reference_to_a_record_earlier_in_the_same_ingest_resolves` — 016 and the log format §5: an ingest's records are written in order, so a record may refer to one delivered before it in the same window
 
+**reads kept**
+
+- `a_migration_keeps_the_fields_a_declaration_reads` — 027, extended: a migration that drops a field read by a derived field of its type, by another type's derived relation to it, or by an object set, a trigger or a verb on it (its `requires`, a field it sets, the value it sets one from) is refused as invalid by its preflight, naming the reader and the field, and one that renames such a field names the new name too; a migration that drops a field no declaration reads goes through
+
 **aggregates**
 
 - `an_aggregate_over_no_records_answers_zero` — the read contract and 011: an aggregate over an empty set answers one group with a count of 0 and a sum of zero, kept at the field's scale

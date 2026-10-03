@@ -34,7 +34,7 @@
 //! refused whole on that field. Retiring a record that others refer to
 //! stays allowed.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::engine::{After, ProjectionView, Scan};
 use lakelands_api::event::{Digest, Event, EventBody, Procedure};
@@ -2052,6 +2052,21 @@ impl Call<'_> {
         let mut after = probe.clone();
         after.types.remove(&m.to.name);
         after.put(Declaration::Type(m.to.clone()), 0, None);
+        // The refusal of a migration that takes away a field `reader` reads:
+        // one the type has before it and not after.
+        let has = |t: &TypeDecl, n: &FieldName| t.fields.iter().any(|f| &f.name == n);
+        let gone = |reader: String, names: &BTreeSet<FieldName>| {
+            let n = names.iter().find(|n| has(&before, n) && !has(&m.to, n))?;
+            let how = match m.renames.iter().find(|(from, _)| from == n) {
+                Some((_, to)) => format!("renames to `{to}`"),
+                None => "drops".to_owned(),
+            };
+            Some(invalid(format!(
+                "after the migration of `{0}`, {reader} reads `{n}` of `{0}`, which the \
+                 migration {how}",
+                m.to.name
+            )))
+        };
         for reader in w.ontology.types.values().map(|e| &e.decl) {
             let Some(v) = reader.view.as_deref() else {
                 continue;
@@ -2077,24 +2092,17 @@ impl Call<'_> {
             // fields its `where` and measures read are checked here, by the
             // rule `describe` uses to show a view.
             for (source, names) in describe::view_reads(v).unwrap_or_default() {
-                if source != m.to.name {
-                    continue;
-                }
-                if let Some(gone) = names
-                    .iter()
-                    .find(|n| !m.to.fields.iter().any(|f| &f.name == *n))
-                {
-                    let how = match m.renames.iter().find(|(from, _)| from == gone) {
-                        Some((_, to)) => format!("renames to `{to}`"),
-                        None => "drops".to_owned(),
-                    };
-                    return Err(invalid(format!(
-                        "after the migration of `{}`, view `{}` reads `{gone}` of `{source}`, \
-                         which the migration {how}",
-                        m.to.name, reader.name
-                    )));
+                if source == m.to.name {
+                    gone(format!("view `{}`", reader.name), &names).map_or(Ok(()), Err)?;
                 }
             }
+        }
+        // So does every other declaration in force (027, extended): the
+        // type's derived fields, another type's derived relation to it, and
+        // the sets, triggers and verbs on it keep the fields they read.
+        for d in after.declared() {
+            let reads = describe::declaration_reads(&d.declaration, &m.to.name);
+            gone(d.declaration.what(), &reads).map_or(Ok(()), Err)?;
         }
         let records: Vec<StoredRecord> = view
             .scan(&before.name, &every(true))?

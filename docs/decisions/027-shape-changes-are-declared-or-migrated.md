@@ -163,6 +163,32 @@ is also checked as `declare` would check it against the new shape, so a
 grouping field whose kind no key is made of is refused too. A field no
 view reads migrates as before.
 
+## Extended: a migration keeps what a declaration reads (lakelands#461)
+
+A view is not the only declaration that reads a type's fields. A field a
+migration drops or renames away evaluates as null from then on, so a
+set's filter, a trigger's guard or a verb's `requires` over it would
+stop holding, or hold where it should not, and nothing would say so. So
+the preflight refuses a migration that drops or renames a field read by
+a declaration in force, as invalid, naming the declaration and the
+field, in the form it uses for a view:
+- a derived field of the migrated type: what its expression reads;
+- an object set of the type: its `where`;
+- a trigger on the type: its `when`, `changed(f)` and `previous(f)`
+  included;
+- a verb on the type: its `requires`, each field it sets, and what the
+  value it sets one from reads (`payload.<name>` is the call's, no
+  field);
+- another type's derived relation to the type: the field of the type
+  each pair matches.
+
+One function gathers these reads, beside the one for a view. The host
+declares the reader again first, so that it reads the shape the
+migration leaves, then migrates. A field no declaration reads migrates
+as before. An aging rule and an index setting are records, not
+declarations, and stay outside the rule: each already skips a field its
+type no longer has.
+
 ## Extended: the order of refusals (lakelands#338)
 
 The migration doors refuse in this order, in the frame every write
@@ -171,8 +197,10 @@ door shares (016, extended).
 **`migrate_apply`**: the `schema` grant (`not_granted`); the preflight:
 the type is declared (`not_found`), not every key field is taken away
 (`invalid`), every new key field is required (`invalid`, naming it),
-the new declaration's own checks, its history converts, a narrowed
-cardinality breaks no live link (`constraint`); then the report id is
+the new declaration's own checks, every field a view or another
+declaration in force reads is kept (`invalid`, naming the reader), its
+history converts, a narrowed cardinality breaks no live link
+(`constraint`); then the report id is
 the one the preflight answered (`invalid`); then the migration is
 lossless (`migration`, with the report); then each embedding's model is
 bound (`unbound`).
