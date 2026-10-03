@@ -27,6 +27,12 @@ check!(
 );
 
 check!(
+    /// A cursor continues only the read it was handed out for.
+    CURSOR_ONE_READ = a_cursor_continues_only_the_read_it_was_handed_out_for,
+    "018 and lakelands#419: a cursor carries a digest of the read it was handed out for, so `find` under another `where` or an `order_by` of the same length, `search` for other words or in named fields, and `query` with another start `where` or projection refuse it as invalid; another page size, `with_meta` or `total` continue it"
+);
+
+check!(
     /// Later pages read where the first page was read.
     CURSOR_STAYS = a_cursor_stays_on_the_position_of_its_first_page,
     "the glossary: a cursor is bound to the position its first page was read at, so a page set is stable while the lake is written"
@@ -271,5 +277,158 @@ async fn a_cursor_handed_to_a_find_of_another_order_length_is_refused(
         }
     }
     ensure!(wrong.is_empty(), "{}", wrong.join("; "));
+    Ok(())
+}
+
+async fn a_cursor_continues_only_the_read_it_was_handed_out_for(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    let name = FieldDecl {
+        searchable: true,
+        ..field("name", StorageKind::Text)
+    };
+    l.declare(type_decl(
+        "item",
+        vec![name, field("n", StorageKind::Number)],
+    ))
+    .await?;
+    for (i, k) in ["a", "b", "c", "d"].iter().enumerate() {
+        l.upsert("item", k, json!({"name": "same words", "n": i}))
+            .await?;
+    }
+    let item = TypeName::from("item");
+    let by = |f: &str| vec![order(f, OrderBy::Value, Direction::Asc)];
+    let find = |cursor, filter: &str, order_by| Find {
+        limit: Some(1),
+        cursor,
+        filter: Some(filter.into()),
+        order_by,
+        ..Find::default()
+    };
+    let search = |cursor, mode| Search {
+        ty: item.clone(),
+        mode,
+        k: 1,
+        cursor,
+        filter: None,
+        with_meta: false,
+        at: ReadAt::default(),
+    };
+    let query = |cursor, fields: Vec<String>, filter: &str| {
+        let mut p = pattern("item", None, Vec::new(), Projection::Rows { fields });
+        (p.limit, p.cursor, p.start.filter) = (Some(1), cursor, Some(filter.into()));
+        p
+    };
+    let next = |c: Option<Cursor>, what: &str| {
+        c.ok_or_else(|| Failure::new(format!("a first page of {what} hands out a cursor")))
+    };
+    let of_find = match cat.find(own, &item, find(None, "n >= 0", by("name"))).await {
+        Ok(r) => match r.data {
+            Found::Records { next_cursor, .. } => next(next_cursor, "`find`")?,
+            Found::Groups { .. } => return Err(Failure::new("`find` answered groups")),
+        },
+        Err(e) => {
+            return Err(Failure::new(format!(
+                "the first page of `find` failed: {e}"
+            )));
+        }
+    };
+    let of_search = next(
+        (cat.search(own, search(None, SearchMode::lexical("same")))
+            .await)
+            .must("the first page of `search`")?
+            .data
+            .next_cursor,
+        "`search`",
+    )?;
+    let of_query = match (cat.query(own, query(None, Vec::new(), "n >= 0")).await)
+        .must("the first page of `query`")?
+        .data
+    {
+        QueryResult::Rows { next_cursor, .. } => next(next_cursor, "`query`")?,
+        _ => return Err(Failure::new("a pattern's rows answered something else")),
+    };
+    // Another page size, `total` and `with_meta` read the same rows.
+    let wider = Find {
+        limit: Some(2),
+        total: true,
+        with_meta: true,
+        ..find(Some(of_find.clone()), "n >= 0", by("name"))
+    };
+    cat.find(own, &item, wider)
+        .await
+        .must("continuing `find` with another page size, `total` and `with_meta`")?;
+    let wider = Search {
+        k: 2,
+        with_meta: true,
+        ..search(Some(of_search.clone()), SearchMode::lexical("same"))
+    };
+    cat.search(own, wider)
+        .await
+        .must("continuing `search` with another page size and `with_meta`")?;
+    let mut wider = query(Some(of_query.clone()), Vec::new(), "n >= 0");
+    wider.limit = Some(2);
+    cat.query(own, wider)
+        .await
+        .must("continuing `query` with another page size")?;
+    let named = SearchMode::Lexical {
+        text: "same".into(),
+        fields: Some(vec!["name".into()]),
+    };
+    let refused = [
+        (
+            "`find` under another `where`",
+            (cat.find(
+                own,
+                &item,
+                find(Some(of_find.clone()), "n >= 1", by("name")),
+            )
+            .await)
+                .map(drop),
+        ),
+        (
+            "`find` in another order of the same length",
+            (cat.find(own, &item, find(Some(of_find), "n >= 0", by("n")))
+                .await)
+                .map(drop),
+        ),
+        (
+            "`search` for other words",
+            (cat.search(
+                own,
+                search(Some(of_search.clone()), SearchMode::lexical("words")),
+            )
+            .await)
+                .map(drop),
+        ),
+        (
+            "`search` in named fields",
+            (cat.search(own, search(Some(of_search), named)).await).map(drop),
+        ),
+        (
+            "`query` under another start `where`",
+            (cat.query(own, query(Some(of_query.clone()), Vec::new(), "n >= 1"))
+                .await)
+                .map(drop),
+        ),
+        (
+            "`query` projecting other fields",
+            (cat.query(own, query(Some(of_query), vec!["name".into()], "n >= 0"))
+                .await)
+                .map(drop),
+        ),
+    ];
+    let wrong: Vec<String> = (refused.into_iter())
+        .filter(|(_, r)| !(is_invalid(r) && format!("{r:?}").contains("handed out for another")))
+        .map(|(what, r)| format!("{what} answered {r:?}"))
+        .collect();
+    ensure!(
+        wrong.is_empty(),
+        "a cursor continues only the read it was handed out for, so each of these must be \
+         refused as invalid: {}",
+        wrong.join("; ")
+    );
     Ok(())
 }

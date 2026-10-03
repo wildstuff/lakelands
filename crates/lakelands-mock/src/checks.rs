@@ -128,6 +128,7 @@ macro_rules! door_checks {
             a_cursor_keeps_its_page_set_while_writes_land,
             a_page_answers_its_total_and_jumps_by_offset,
             a_cursor_continues_only_its_own_answer,
+            a_cursor_continues_only_the_read_it_began,
             after_walks_the_pages_the_cursor_walks,
             after_is_refused_naming_the_member,
             a_principal_of_another_lake_is_refused,
@@ -2905,6 +2906,61 @@ pub async fn a_cursor_continues_only_its_own_answer(store: Arc<dyn LakeStore>) {
         matches!(refusal(&queried).1, Refusal::Invalid { .. }),
         "{queried:?}"
     );
+}
+
+/// A cursor continues only the read it was handed out for: `find` under
+/// another `where` or another order of the same length, and `query`
+/// projecting other fields, refuse it as invalid; another page size
+/// continues it (018).
+pub async fn a_cursor_continues_only_the_read_it_began(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    f.sortable().await;
+    let read = |cursor, filter: &str, by: &str| Find {
+        limit: Some(1),
+        cursor,
+        filter: Some(filter.into()),
+        order_by: vec![serde_json::from_value(json!({"field": by})).expect("an order")],
+        ..Find::default()
+    };
+    let (_, Some(c)) = f.page(read(None, "status = 'open'", "note")).await else {
+        panic!("a first page of one open invoice hands out a cursor");
+    };
+    f.page(Find {
+        limit: Some(2),
+        ..read(Some(c.clone()), "status = 'open'", "note")
+    })
+    .await;
+    for other in [
+        read(Some(c.clone()), "status = 'paid'", "note"),
+        read(Some(c), "status = 'open'", "verdict"),
+    ] {
+        let e = (f.catalog.find(&f.cast.owner, &ty(INVOICE), other).await).unwrap_err();
+        assert!(matches!(refusal(&e).1, Refusal::Invalid { .. }), "{e:?}");
+    }
+    let rows = |fields: Value, cursor: Option<Cursor>| {
+        let mut p: Pattern = serde_json::from_value(json!({
+            "start": {"type": INVOICE},
+            "project": {"as": "rows", "fields": fields},
+            "limit": 1
+        }))
+        .expect("a pattern");
+        p.cursor = cursor;
+        p
+    };
+    let first = (f.catalog.query(&f.cast.owner, rows(json!([]), None)).await).map(|r| r.data);
+    let Ok(lakelands_api::query::QueryResult::Rows {
+        next_cursor: Some(c),
+        ..
+    }) = first
+    else {
+        panic!("a first page of one row hands out a cursor: {first:?}");
+    };
+    let e = (f
+        .catalog
+        .query(&f.cast.owner, rows(json!(["note"]), Some(c)))
+        .await)
+        .unwrap_err();
+    assert!(matches!(refusal(&e).1, Refusal::Invalid { .. }), "{e:?}");
 }
 
 impl Fixture {

@@ -23,6 +23,7 @@ fn a_cursor_round_trips_and_a_foreign_one_is_refused() {
         params: Default::default(),
         door: "find".into(),
         ty: Some("note".into()),
+        of: String::new(),
     });
     let back = decode(&c).unwrap();
     assert_eq!(back.at, Position(7));

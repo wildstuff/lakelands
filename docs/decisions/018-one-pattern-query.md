@@ -124,7 +124,15 @@ only that `find` on that type, a page of `query` that query, a page of
 where the cursor belongs (lakelands#367). A cursor of `find` holds one
 sort value per key of the order its first page was read in; handed to a
 `find` with more or fewer keys, it is refused as invalid before anything
-is compared (lakelands#436). The cursor's bytes are opaque
+is compared (lakelands#436). It also carries a digest of the read it
+continues: for `find` its `where`, `order_by` and `valid_at`; for
+`search` its mode with every member, its `where` and `valid_at`; for
+`query` the whole pattern but its cursor, its `limit` and `as_of`. A read
+with another digest refuses the cursor as invalid, so a page taken by
+another filter, order, search or pattern is never answered as if it
+continued the first (lakelands#419). The page size, `with_meta` and
+`total` may change from page to page; `as_of` is the cursor's own. The
+cursor's bytes are opaque
 and change freely; no log format changes. Views are computed on read,
 so nothing is kept per binding.
 
