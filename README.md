@@ -75,33 +75,22 @@ of changes without polling, `propose`, `proposals`, `accept` and
 `add_field` and `migrate` for the schema. Served over MCP (stdio and
 HTTP) and REST from one catalog. Agents never write a query language.
 
-> **Status: `0.9.0`.** Lakelands `0.9.0` is the `lakelands` CLI, its MCP
+> **Status: `0.9.1`.** Lakelands `0.9.1` is the `lakelands` CLI, its MCP
 > server (stdio and streamable HTTP) and its REST door over the SQLite,
 > in-memory and PostgreSQL engines, all three passing the whole
-> conformance suite (349 checks through the doors and 56 through the
+> conformance suite (351 checks through the doors and 56 through the
 > engine seam), with 47 decision records and the event log at format
 > version 10, installable from the release. Its budgets: the store
 > facade and engine traits hold 56 of 110 methods, the core crates'
-> product code 36 182 of 36 500 lines and their specification 41 969 of
-> 42 000, and 2 of 20 `cfg(feature)` sites. A ceiling rises only by a
-> recorded rule (decision 047): the product's rose to 36 500 for what a
-> host needs here, after a diet took 402 lines out. Beside what `0.8.1`
-> held, an object set is decided for the records already there when it
-> is declared, and again by a migration, a re-key and a rebuild, a link
-> type's sets included; a read can name a set, and combine sets of one
-> type. A migration keeps what a declaration reads, naming the reader
-> only to one who is shown it, lists a removed link relation with its
-> live links, and is read as its author's view: a field its author may
-> not know of stays. A proposed migration is accepted only on the shape
-> it was proposed on, and a value type's tightening can be proposed
-> (log format 10). A write's answer says where its append ended and
-> what it set off, `describe` says whether a verb's executor is bound,
-> and a host can ask what a purge would retire before it is appended. A
-> vector search reads several vector fields, each with a weight; a
-> cursor continues only the read it was handed out for; a view folds
-> its sources as they are read, and a whole-graph measure is read in
-> one page. The mock answers as the store does where the two had
-> parted, a limit outside its bounds included.
+> product code 36 205 of 36 500 lines and their specification 42 148 of
+> 42 500, and 2 of 20 `cfg(feature)` sites. A ceiling rises only by a
+> recorded rule (decision 047): the specification's rose to 42 500 for
+> the two checks of this patch, each of which pins a rule of rights.
+> Beside what `0.9.0` held, a read of a view names no field its reader
+> may not know of: where the view's `where`, grouping or measures read
+> such a field, the read is refused as not granted, on no field. And a
+> migration that takes a field a view reads names that view only to an
+> author who is shown its definition.
 
 ## Try it
 
