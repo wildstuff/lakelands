@@ -207,6 +207,18 @@ shown the reader (lakelands#495). At an acceptance the refusal goes to
 the one who accepts, who holds the `schema` grant and is shown every
 declaration.
 
+A view is such a reader too, and it is shown only when its definition
+is: `describe` lists a view's type to a principal who may not read all
+the definition reads, with the definition withheld. An author who is not
+shown the view, by its type or by its definition, is told that a
+declaration reads the field it took away, as above. Where the view could
+no longer be declared over the migrated shape for another reason (a
+field it groups by converted to a kind no key holds, or to another kind
+than the merged source it lines up with), no field is gone, and such an
+author is told that a declaration over the type could no longer be
+declared, without the view and without the reason. An author who is
+shown the view keeps the sentences that name it (lakelands#504).
+
 One function gathers these reads, beside the one for a view. The host
 declares the reader again first, so that it reads the shape the
 migration leaves, then migrates. A field no declaration reads migrates
