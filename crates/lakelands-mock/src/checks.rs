@@ -20,6 +20,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use lakelands_api::describe::ExecutorDescription;
 use lakelands_api::error::{Error, Missing, Refusal};
 use lakelands_api::expr::Condition;
 use lakelands_api::id::{
@@ -1247,7 +1248,9 @@ async fn declare_register(f: &Fixture) {
 
 /// The tool of a verb on its type takes no `key` and no
 /// `expected_version`, since it has no record and no record version, and
-/// says it is called on the type; a verb on a record keeps both.
+/// says it is called on the type; a verb on a record keeps both. An
+/// external verb is described with its executor and whether it is bound,
+/// and its tool says so; a verb that sets fields has no executor.
 pub async fn a_verb_on_its_type_has_a_tool_without_a_key(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     declare_register(&f).await;
@@ -1287,6 +1290,31 @@ pub async fn a_verb_on_its_type_has_a_tool_without_a_key(store: Arc<dyn LakeStor
     for present in ["key", "expected_version"] {
         assert!(props.contains_key(present), "`approve` takes `{present}`");
     }
+    // No lake in these checks binds an executor, so every one says `crm`
+    // is not bound, and its tool says what a call does here.
+    let executor = |verb: &str| {
+        let v = d.data.verbs.iter().find(|v| v.name.as_str() == verb);
+        v.and_then(|v| v.executor.clone())
+    };
+    assert_eq!(
+        executor("register"),
+        Some(ExecutorDescription {
+            name: "crm".into(),
+            bound: false
+        })
+    );
+    assert_eq!(
+        executor("approve"),
+        None,
+        "a verb that sets fields has none"
+    );
+    assert!(
+        register
+            .description
+            .contains("`crm`; that executor is not bound in this lake"),
+        "{:?}",
+        register.description
+    );
 }
 
 /// A call's key is held to the verb's scope before anything else is read:
@@ -1367,8 +1395,9 @@ pub async fn a_verb_on_its_type_is_called_without_a_key(store: Arc<dyn LakeStore
 /// A verb's tool says what a call does by the verb's risk: a `low` verb
 /// runs at once, whether its effect writes fields or reaches outside the
 /// lake; a riskier one is recorded as a proposal. A verb that reaches
-/// outside the lake also says that it runs through an executor its host
-/// binds, and that a call is refused, writing nothing, where none is.
+/// outside the lake also names its executor and says whether it is bound
+/// here, and that a call (or a proposal) is refused, writing nothing,
+/// where it is not.
 pub async fn a_verb_tool_says_what_its_risk_does(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let owner = &f.cast.owner;
@@ -1402,13 +1431,15 @@ pub async fn a_verb_tool_says_what_its_risk_does(store: Arc<dyn LakeStore>) {
     };
     let runs = "It runs at once";
     let proposed = "It is recorded as a proposal and runs when accepted";
-    let through = ", through an executor the lake's host binds; where none is bound, a call is \
-                   refused and writes nothing.";
+    // No lake in these checks binds `mailer`.
+    let unbound = ", through its executor `mailer`; that executor is not bound in this lake, so";
+    let call = format!("{unbound} a call is refused and writes nothing.");
+    let either = format!("{unbound} a call or a proposal is refused and writes nothing.");
     for (verb, how, end) in [
         ("approve", runs, "."),
-        ("notify", runs, through),
+        ("notify", runs, call.as_str()),
         ("pay", proposed, "."),
-        ("escalate", proposed, through),
+        ("escalate", proposed, either.as_str()),
     ] {
         let said = says(verb);
         assert!(

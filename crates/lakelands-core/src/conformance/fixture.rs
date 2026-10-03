@@ -210,6 +210,14 @@ impl Lake {
         Ok(d.must("describing the lake as the owner")?.data)
     }
 
+    /// The executor `describe` names for `verb` to the owner, and whether
+    /// it says it is bound.
+    pub async fn executor_of(&self, verb: &str) -> Result<Option<(String, bool)>, Failure> {
+        let d = self.describe().await?;
+        let v = d.verbs.into_iter().find(|v| v.name.as_str() == verb);
+        Ok(v.and_then(|v| v.executor).map(|e| (e.name, e.bound)))
+    }
+
     /// The type `ty` as `describe` answers it to the owner at the head.
     pub async fn describe_type(
         &self,

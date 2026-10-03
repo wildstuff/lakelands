@@ -905,6 +905,10 @@ There is no default: a verb whose executor is not bound is refused as
 `Unbound`, never faked. The store checks it when the verb is called or
 a call of it is proposed, and again when a proposal to call it is
 accepted, before anything is written.
+`describe` names each external verb's executor and says whether one of
+that name is bound when it answers, at any position, and the verb's tool
+says the same (`docs/decisions/013-verbs-run-by-declared-risk.md`,
+extended).
 
 ## `ChangeFeed`
 

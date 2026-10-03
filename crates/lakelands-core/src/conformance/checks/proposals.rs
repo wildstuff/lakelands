@@ -28,7 +28,7 @@ check!(
 check!(
     /// A verb that reaches outside needs its executor.
     EXTERNAL_UNBOUND = an_external_verb_without_an_executor_is_unbound,
-    "013 and 015: a verb whose effect reaches outside the lake runs only through a bound executor; without one, calling it at any risk or proposing a call of it answers `unbound` naming the executor, after the grant and before the payload (013, extended), and nothing is appended"
+    "013 and 015: a verb whose effect reaches outside the lake runs only through a bound executor; `describe` names the executor and says beforehand that it is not bound; without one, calling it at any risk or proposing a call of it answers `unbound` naming the executor, after the grant and before the payload (013, extended), and nothing is appended"
 );
 
 check!(
@@ -239,6 +239,14 @@ async fn an_external_verb_without_an_executor_is_unbound(
                           "effect": "external", "executor": "mailer"}),
     )
     .await?;
+    for v in ["remind", "chase"] {
+        let said = l.executor_of(v).await?;
+        ensure!(
+            said == Some(("mailer".into(), false)),
+            "`describe` says before any call that `{v}`'s executor `mailer` is not bound; it \
+             said {said:?}"
+        );
+    }
     let Lake { own, cat } = &l;
     let before = store.head().await.must("reading the head")?;
     let proposed = |verb: &str, payload| ProposedWrite::Call {
@@ -700,7 +708,7 @@ check!(
     /// An external verb's output is recorded and the verb runs once; a
     /// retry answers the first call's outcome, its position and output.
     EXECUTOR_RECORDED = an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_position,
-    "seams, VerbExecutor, and 013: the executor's answer is recorded as output_recorded caused by the event that made the verb due and returned in the outcome's output; a failure is recorded as {\"error\": …} at a real position; a retry of the same call answers the first outcome, its position and output, and like a rebuild runs nothing again"
+    "seams, VerbExecutor, and 013: `describe` says the bound executor is bound; the executor's answer is recorded as output_recorded caused by the event that made the verb due and returned in the outcome's output; a failure is recorded as {\"error\": …} at a real position; a retry of the same call answers the first outcome, its position and output, and like a rebuild runs nothing again"
 );
 
 async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_position(
@@ -717,6 +725,12 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
         "payload": [{"name": "fail", "type": {"kind": "boolean"}}],
         "effect": "external", "executor": EXECUTOR}))
         .await?;
+    let said = l.executor_of("dispatch").await?;
+    ensure!(
+        said == Some((EXECUTOR.into(), true)),
+        "`describe` says `dispatch`'s executor `{EXECUTOR}`, which the runner binds, is \
+         bound; it said {said:?}"
+    );
     let key = "executor-job";
     l.upsert("job", key, json!({"status": "open"})).await?;
     let dispatch = |payload: serde_json::Value, opts: WriteOpts| {

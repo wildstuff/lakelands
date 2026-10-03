@@ -16,8 +16,8 @@
 //! neither. A field's own `function` still names its function.
 
 use lakelands_api::describe::{
-    FieldDescription, LakeDescription, LakeRights, TypeAccess, TypeDescription, TypeLifecycle,
-    TypeLineage, TypeRights, VerbDescription,
+    ExecutorDescription, FieldDescription, LakeDescription, LakeRights, TypeAccess,
+    TypeDescription, TypeLifecycle, TypeLineage, TypeRights, VerbDescription,
 };
 use lakelands_api::engine::Declared;
 use lakelands_api::expr::{Condition, Expr};
@@ -395,6 +395,14 @@ fn verb_description(
             .collect(),
         risk: v.risk,
         external: matches!(v.effect, VerbEffect::External { .. }),
+        // Whether the host binds it is the store's to say.
+        executor: match &v.effect {
+            VerbEffect::External { executor } => Some(ExecutorDescription {
+                name: executor.clone(),
+                bound: false,
+            }),
+            VerbEffect::Write { .. } => None,
+        },
         description: v.description.clone(),
     })
 }

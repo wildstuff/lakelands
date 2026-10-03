@@ -22,8 +22,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use lakelands_api::describe::{
-    FieldDescription, LakeDescription, LakeRights, TypeAccess, TypeDescription, TypeLifecycle,
-    TypeLineage, TypeRights, VerbDescription,
+    ExecutorDescription, FieldDescription, LakeDescription, LakeRights, TypeAccess,
+    TypeDescription, TypeLifecycle, TypeLineage, TypeRights, VerbDescription,
 };
 use lakelands_api::expr::Condition;
 use lakelands_api::location::Limits;
@@ -888,7 +888,18 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 payload: vec![field_description()],
                 risk: Risk::High,
                 external: true,
+                executor: Some(ExecutorDescription {
+                    name: "ledger".into(),
+                    bound: true,
+                }),
                 description: Some("d".into()),
+            }),
+        ),
+        (
+            "executor_description",
+            members(&ExecutorDescription {
+                name: "ledger".into(),
+                bound: true,
             }),
         ),
         (
@@ -903,6 +914,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     payload: vec![],
                     risk: Risk::Low,
                     external: false,
+                    executor: None,
                     description: None,
                 }],
                 value_types: vec![ValueTypeDecl {

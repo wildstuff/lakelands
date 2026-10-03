@@ -381,6 +381,12 @@ impl<'a> Reader<'a> {
         for t in &mut lake.types {
             self.name_sorted(t);
         }
+        // Whether the host binds a verb's executor is the binding now, at
+        // any position: it is not in the log.
+        let executors = &self.lake.seams.executors;
+        for e in lake.verbs.iter_mut().filter_map(|v| v.executor.as_mut()) {
+            e.bound = executors.iter().any(|x| x.name() == e.name);
+        }
         lake
     }
 
