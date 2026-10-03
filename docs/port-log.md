@@ -176,6 +176,21 @@ mainline at `60eb52f851`. That covers the 26 commits after `318aae2bdc`,
 Every root holds the files it held at `318aae2bdc`. **The list is
 closed for `0.8.1` as of `60eb52f851`.**
 
+**Checked on 2026-10-03, before the `0.9.0` tag**, against the source's
+mainline at `ccbe5d73a3`. That covers the 62 commits after `60eb52f851`,
+1091 since the freeze in all, checked the same way.
+- **No commit touches a root.** The roots are byte for byte what they
+  were at `60eb52f851`.
+- **Four merges** show a change under the roots only when compared with
+  their side parent: three on the mainline and one inside a branch. Each
+  side parent branched before `580a645406` reached the mainline, and the
+  change is exactly that commit's, by patch id, which is already a row.
+  Compared with their first parent, they change nothing under the roots.
+
+Every root holds the files it held at `60eb52f851`. No row is added.
+**The list is closed for `0.9.0` as of `ccbe5d73a3`.** If the mainline
+moves before the tag, only the commits after it are checked.
+
 | Source commit | Behaviour, in one line | Ported in, or not applicable and why |
 |---|---|---|
 | `5914084de9` | One German user-interface sentence in the capabilities module changes its form of address from formal to informal. | Not applicable: the capabilities module was not carried (cut in O2: there is no capability negotiation; see `docs/import-ledger.md`), and no storage behaviour changes: no event, no fold rule, no signature, no stored byte. |
