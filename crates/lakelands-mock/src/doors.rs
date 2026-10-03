@@ -1128,6 +1128,16 @@ fn condition_visible(st: &State, who: &Principal, ty: &TypeName, c: Option<&Cond
     who.grants.schema || c.is_none_or(|c| named(c).is_some_and(|n| reads_all(st, who, ty, &n)))
 }
 
+/// As the store: a read of a view probes what its definition reads, so a
+/// reader `describe` withholds the definition from is not granted it, and
+/// no field of its source is named.
+fn view_readable(st: &State, who: &Principal, t: &DeclaredType) -> Result<()> {
+    match t.decl.view.as_deref() {
+        Some(v) if !view_visible(st, who, v) => Err(refused(Refusal::NotGranted)),
+        _ => Ok(()),
+    }
+}
+
 /// A view is shown whole on the same rule, over its source's fields.
 fn view_visible(st: &State, who: &Principal, v: &ViewDecl) -> bool {
     if who.grants.schema {
@@ -2566,6 +2576,7 @@ impl Catalog for MockCatalog {
         let (position, st) = self.state_at(&self.log(), pinned)?;
         let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
         bound(&t.decl, &find.params)?;
+        view_readable(&st, who, t)?;
         let after = find
             .after
             .as_ref()
@@ -2671,6 +2682,7 @@ impl Catalog for MockCatalog {
         let (position, st) = self.state_at(&self.log(), get.at.as_of)?;
         let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
         bound(&t.decl, &get.params)?;
+        view_readable(&st, who, t)?;
         valid_time_readable(&st, who, t, get.at)?;
         let r = st
             .live(ty, &get.key)
@@ -2941,6 +2953,7 @@ impl Catalog for MockCatalog {
             .visible(who, &start.ty)
             .ok_or_else(|| no_type(&start.ty))?;
         bound(&t.decl, &start.params)?;
+        view_readable(&st, who, t)?;
         let measure = matches!(pattern.project, Projection::Degree | Projection::Components);
         let limit = self.limit(pattern.limit, measure)?;
         if start.search.is_some() || pattern.to.is_some() {
@@ -3082,6 +3095,7 @@ impl Catalog for MockCatalog {
                     .is_some()
             };
             let next = st.visible(who, &target).ok_or_else(|| no_type(&target))?;
+            view_readable(&st, who, next)?;
             unbound_view(&t.decl.name, next, &step.relation)?;
             if let Some(ty) = &step.ty
                 && ty != &target

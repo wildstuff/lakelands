@@ -66,6 +66,7 @@ mod verbs_on_type;
 mod versions;
 mod view_merge;
 mod view_params;
+mod view_rights;
 mod views;
 mod vocabulary;
 mod walks;
@@ -236,6 +237,7 @@ pub const ALL: &[Check] = &[
     retire::READABLE_BEFORE_RETIREMENT,
     ingest::REVERT_IS_A_CHANGE,
     views::VIEW_KEY_IS_ITS_GROUP,
+    view_rights::VIEW_OVER_A_HIDDEN_FIELD,
     keys::KEY_AND_KEY_FIELDS_AGREE,
     keys::KEY_FIELDS_FROM_THE_KEY,
     restriction::HOLD_WITHHOLDS_AND_KEEPS,
