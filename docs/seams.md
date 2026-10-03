@@ -1285,7 +1285,9 @@ appends the changes in its own append, directly after its `migrated` and
 caused by it. Its changes count against the same `max_set_changes`, over all sets of the
 type; past it the migration is refused `too_large`, naming a set. Narrow
 the sets first (declare them again with a narrower filter), migrate, then
-widen them in steps.
+widen them in steps. A migration that drops or renames a field a set's
+filter reads never gets that far: its preflight refuses it, naming the
+set and the field.
 
 ## `SystemVocabulary`
 
@@ -1716,6 +1718,22 @@ write of an old key's bare string with no key field has the key field
 filled from it and is a new record at version 1. A migration that takes
 every key field away, names a key field that is not required or of a
 kind no key is made of, or would re-key a view is refused.
+
+A migration keeps the fields the lake's declarations read
+(`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+extended). Its preflight refuses, as invalid, a migration that drops or
+renames a field read by a view over the type, a derived field of the
+type, an object set, a trigger or a verb on it, another type's derived
+relation to it, or an object set or a trigger on the link type of a
+relation whose fields it changes, naming the reader and the field ("after the
+migration of `invoice`, the object_set declaration `open` reads `status`
+of `invoice`, which the migration renames to `state`"). Declare the
+reader again so that it reads the shape the migration leaves, then
+migrate. For a rename, the reader is declared without the field first,
+and with its new name once the migration is applied. `declare` holds a
+declaration to the same reads: one that reads a field its type does not
+have is refused, naming it and the field
+(`docs/decisions/028-authoring-is-strict-and-whole.md`, extended).
 
 **Many callers, one writer.** A lake has one writing process
 (`docs/decisions/008-one-writer-per-lake.md`), and any number of callers

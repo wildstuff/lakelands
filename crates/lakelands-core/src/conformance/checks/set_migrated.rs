@@ -8,18 +8,19 @@ use lakelands_api::location::Limits;
 use lakelands_api::ontology::StorageKind::{self, Boolean, Text};
 use lakelands_api::ontology::{RelationDecl, TypeDecl};
 use lakelands_api::seam::Seams;
-use lakelands_api::{LakeStore, Outcome, Position, Refusal};
+use lakelands_api::{Error, LakeStore, Outcome, Position, Refusal};
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, Must, events_from, head_unmoved, limits, migration, object_set_on, refused_on, type_of,
+    Lake, Must, events_from, head_unmoved, invalid_naming, limits, migration, object_set_on,
+    refused_on, type_of,
 };
 use crate::conformance::{Failure, Given};
 
 check!(
     /// A migration decides set membership again.
     SET_MIGRATED = a_migration_decides_the_membership_of_the_records_it_migrates,
-    "004, extended: a migration appends, directly after its `migrated` and caused by it, an `object_set_changed` for each record whose membership under a set of the type changes as migrated, and none when it changes nothing a filter reads; its answer names each set joined or left once and `through` the changes, also when it adds a relation carried by links; a re-keyed member stays a member under its new key; past the lake's `max_set_changes` a migration is refused `too_large`, naming a set and the ceiling, and appends nothing",
+    "004, extended: a migration appends, directly after its `migrated` and caused by it, an `object_set_changed` for each record whose membership under a set of the type changes as migrated, and none when it changes nothing a filter reads; its answer names each set joined or left once and `through` the changes, also when it adds a relation carried by links; a re-keyed member stays a member under its new key; past the lake's `max_set_changes` a migration is refused `too_large`, naming a set and the ceiling, and appends nothing; one that is also applied with a stale report, or is not lossless, is refused for that first",
     given
 );
 
@@ -155,17 +156,38 @@ async fn a_migration_decides_the_membership_of_the_records_it_migrates(
     let store = (given.relimit)(store, Seams::default(), lower)
         .await
         .map_err(|e| Failure::new(format!("opening the lake again with a lower ceiling: {e}")))?;
-    let (l, before) = (
-        Lake::of(store.as_ref()),
-        store.head().await.must("the head")?,
-    );
+    let l = Lake::of(store.as_ref());
     let m = migration(linked(Boolean));
-    let report = l
+    // Past the ceiling too, a stale report and a record that does not
+    // convert are refused first: `C`'s `flag` is no boolean.
+    let c = |flag: &str| json!({"flag": flag, "code": "C", "status": "shut"});
+    l.upsert("item", "C", c("maybe")).await?;
+    let preflight = |m| async { Ok(l.cat.migrate(&l.own, m).await.must("the preflight")?.data) };
+    let stale = l.cat.migrate_apply(&l.own, m.clone(), "stale").await;
+    invalid_naming(
+        "a stale report past the ceiling",
+        stale,
+        &["the lake moved"],
+    )?;
+    let report = preflight(m.clone()).await?;
+    let r = l
         .cat
-        .migrate(&l.own, m.clone())
-        .await
-        .must("the preflight")?
-        .data;
+        .migrate_apply(&l.own, m.clone(), &report.report_id)
+        .await;
+    ensure!(
+        matches!(
+            &r,
+            Err(Error::Refused {
+                reason: Refusal::Migration { .. },
+                ..
+            })
+        ),
+        "a migration past the ceiling that is not lossless is refused with its report; it \
+         answered {r:?}"
+    );
+    l.upsert("item", "C", c("false")).await?;
+    let before = store.head().await.must("the head")?;
+    let report = preflight(m.clone()).await?;
     let r = l.cat.migrate_apply(&l.own, m, &report.report_id).await;
     ensure!(
         matches!(

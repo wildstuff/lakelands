@@ -156,6 +156,43 @@ pub fn view_reads(v: &ViewDecl) -> Option<Vec<(TypeName, std::collections::BTree
         .collect()
 }
 
+/// The fields of `ty` a declaration other than a view reads: a derived
+/// field's expression on `ty` itself, the fields of `ty` a derived
+/// relation matches as its target, a set's `where`, a trigger's `when`,
+/// and a verb's `requires`, the fields it sets and what it sets them from
+/// (where `payload` is the call's). A condition that does not parse reads
+/// nothing here.
+pub fn declaration_reads(d: &Declaration, ty: &TypeName) -> std::collections::BTreeSet<FieldName> {
+    let of = |c: &Condition| named(c).unwrap_or_default();
+    match d {
+        Declaration::Type(t) => {
+            let own = t.fields.iter().filter(|_| &t.name == ty);
+            let matched = t.relations.iter().filter(|r| &r.target == ty);
+            own.filter_map(|f| f.derived.as_ref())
+                .flat_map(of)
+                .chain(
+                    matched
+                        .filter_map(|r| r.derived.as_ref())
+                        .flat_map(|m| m.pairs.iter().map(|p| p.to.clone())),
+                )
+                .collect()
+        }
+        Declaration::ObjectSet(s) if &s.of == ty => of(&s.filter),
+        Declaration::Trigger(t) if &t.on == ty => t.when.as_ref().map(of).unwrap_or_default(),
+        Declaration::Verb(v) if &v.on == ty => {
+            let mut names = v.requires.as_ref().map(of).unwrap_or_default();
+            if let VerbEffect::Write { set } = &v.effect {
+                for a in set {
+                    names.extend(of(&a.value).into_iter().filter(|n| n.as_str() != "payload"));
+                    names.insert(a.field.clone());
+                }
+            }
+            names
+        }
+        _ => Default::default(),
+    }
+}
+
 /// The fields a measure reads from its source's records: the paths inside
 /// an aggregate's arguments. A name outside an aggregate is read from the
 /// group, an earlier measure or a grouping field, and is no source field.

@@ -42,6 +42,7 @@ mod provenance;
 mod purge;
 mod reactions;
 mod reactive_depth;
+mod reads_kept;
 mod rebuild;
 mod references;
 mod rekey;
@@ -250,6 +251,8 @@ pub const ALL: &[Check] = &[
     migrate::VIA_REMOVAL_REFUSED,
     migrate::DROPPED_REPORTED,
     migrate::VIEW_NOT_MIGRATED,
+    reads_kept::MIGRATION_KEEPS_READ_FIELDS,
+    reads_kept::DECLARATION_READS_ITS_TYPE,
     migrate::VIEW_SOURCE_KEPT,
     schema::REORDERED_FIELDS,
     aggregates::EMPTY_AGGREGATE,
