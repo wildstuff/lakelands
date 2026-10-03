@@ -22,7 +22,7 @@
 use std::sync::Arc;
 
 use lakelands_api::ontology::{Authority, FieldDecl, StorageKind};
-use lakelands_api::query::{Search, SearchMode};
+use lakelands_api::query::{Search, SearchMode, VectorTerm};
 use lakelands_api::{LakeStore, Position, Principal, SourceRecord, TypeName};
 use serde_json::json;
 
@@ -33,7 +33,7 @@ use crate::conformance::{Failure, Given};
 check!(
     /// An indexed vector field answers its index's set, at the engine's recall floor.
     VECTOR_INDEX_RECALL = an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_floor,
-    "043, 025 and 029: a search over a vector field the `vector_index.<type>` setting names says `ranked_by: index`, ranks the index's candidates by the one cosine with ties by key, answers the same bytes when asked again, and finds on average at least the engine's floor of the brute-force reference's hits for k = 1, 10 and 100, with and without a filter, at the head and at an earlier position, after records were retired, vectors cleared and rewritten and records added; an engine without such an index answers the reference, a recall of 1",
+    "043, 025 and 029: a search over a vector field the `vector_index.<type>` setting names says `ranked_by: index`, ranks the index's candidates by the one cosine with ties by key, answers the same bytes when asked again, and finds on average at least the engine's floor of the brute-force reference's hits for k = 1, 10 and 100, with and without a filter, at the head and at an earlier position, after records were retired, vectors cleared and rewritten and records added; an engine without such an index answers the reference, a recall of 1; a vector search fused over several fields says `index` when any of them is named",
     given
 );
 
@@ -179,8 +179,11 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
         ..f
     };
     let v = source(vector("v", DIMENSIONS as u32));
+    // A second vector field, which the setting does not name and no
+    // record holds.
+    let w = source(vector("w", DIMENSIONS as u32));
     let group = source(field("group", StorageKind::Number));
-    l.declare(type_decl(TY, vec![v, group])).await?;
+    l.declare(type_decl(TY, vec![v, w, group])).await?;
     let mut points: Vec<Point> = (0..POINTS).map(corpus_point).collect();
     deliver(
         store.as_ref(),
@@ -326,6 +329,31 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
             }
         }
     }
+    // Fused over `w` and, in `also`, the indexed `v`, the answer is the
+    // index's set too, and says so (046, extended).
+    let fused = SearchMode::Vector {
+        field: "w".into(),
+        vector: query(0),
+        weight: None,
+        also: vec![VectorTerm {
+            field: "v".into(),
+            vector: query(0),
+            weight: None,
+        }],
+    };
+    let fused = Search {
+        ty: TypeName::from(TY),
+        ..doc_search(fused)
+    };
+    let got = cat.search(own, fused).await;
+    let got = got.must("a vector search over `w` and `v`")?.data;
+    ensure!(
+        got.ranked_by == "index" && !got.hits.is_empty(),
+        "a vector search fused over `w` and the indexed `v` must say it ranked by the index; \
+         it said {:?} over {} hits",
+        got.ranked_by,
+        got.hits.len()
+    );
     ensure!(
         short.is_empty(),
         "an indexed field on `{}` must find on average at least its floor of the reference's \
