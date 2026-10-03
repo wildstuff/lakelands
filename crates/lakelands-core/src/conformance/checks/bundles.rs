@@ -9,7 +9,6 @@
 use std::sync::Arc;
 
 use lakelands_api::ontology::{FieldType, StorageKind};
-use lakelands_api::read::ReadAt;
 use lakelands_api::write::{Declaration, Outcome};
 use lakelands_api::{Error, LakeStore};
 
@@ -55,16 +54,8 @@ async fn a_bundle_with_forward_references_is_applied_whole_or_not_at_all(
         "applying two declarations answered {applied:?} and moved the head from {before} to \
          {after}; it must append both in one append and answer the last position"
     );
-    let described = cat
-        .describe(own, ReadAt::default())
-        .await
-        .must("describing the lake")?;
-    let names: Vec<String> = described
-        .data
-        .types
-        .iter()
-        .map(|t| t.name.to_string())
-        .collect();
+    let described = l.describe().await?;
+    let names: Vec<String> = described.types.iter().map(|t| t.name.to_string()).collect();
     ensure!(
         names.iter().any(|n| n == "invoice") && names.iter().any(|n| n == "partner"),
         "after the bundle the lake describes {names:?}; it must hold `invoice` and `partner`"
@@ -93,16 +84,9 @@ async fn a_bundle_with_forward_references_is_applied_whole_or_not_at_all(
         "a bundle with two broken references answered {refused:?} and moved the head from \
          {after} to {unmoved}; it must be refused whole, naming both problems, appending nothing"
     );
-    let described = cat
-        .describe(own, ReadAt::default())
-        .await
-        .must("describing the lake")?;
+    let described = l.describe().await?;
     ensure!(
-        described
-            .data
-            .types
-            .iter()
-            .all(|t| t.name.as_str() != "fine"),
+        described.types.iter().all(|t| t.name.as_str() != "fine"),
         "the refused bundle's valid declaration `fine` reached the lake"
     );
     Ok(())

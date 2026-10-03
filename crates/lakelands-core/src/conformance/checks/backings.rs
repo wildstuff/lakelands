@@ -14,9 +14,7 @@
 use std::sync::Arc;
 
 use lakelands_api::event::EventBody;
-use lakelands_api::expr::Condition;
-use lakelands_api::ontology::{Authority, FieldDecl, StorageKind, TriggerDecl};
-use lakelands_api::seam::FeedFilter;
+use lakelands_api::ontology::StorageKind;
 use lakelands_api::write::Declaration;
 use lakelands_api::{Error, LakeStore, Origin, Refusal, Version};
 use serde_json::{Value, json};
@@ -24,13 +22,14 @@ use serde_json::{Value, json};
 use crate::conformance::Failure;
 use crate::conformance::backing::{KIND, made, plug, unplug};
 use crate::conformance::fixture::{
-    Lake, Must, field, head_unmoved, recorded_outputs, type_decl, value,
+    Lake, Must, computed_by, derived, events_from, field, head_unmoved, reason, recorded_outputs,
+    trigger_on, type_decl, value,
 };
 
 check!(
     /// A function of a kind no backing is bound for is refused.
     UNBOUND_KIND_REFUSED = a_function_of_a_backing_kind_nobody_bound_is_refused_at_declare,
-    "022, extended: a function computed outside the store is declared only where the host bound a backing of its kind; otherwise the declaration is refused as unbound, naming the kind"
+    "022, extended: a function computed outside the store is declared only where the host bound a backing of its kind; otherwise the declaration is refused as unbound, naming the kind, after its own checks (028, extended)"
 );
 
 check!(
@@ -84,30 +83,14 @@ check!(
 /// Declares `lookup`, a function of the suite's backing that echoes its
 /// input `input`.
 async fn lookup(store: &dyn LakeStore, input: &str, config: Value) -> Result<Lake, Failure> {
-    let l = Lake::of(store);
-    let Lake { cat, own } = &l;
-    let function: Declaration = serde_json::from_value(json!({
-        "declare": "function", "name": "lookup", "backing": KIND,
-        "inputs": [{"name": input, "type": {"kind": "text"}}],
-        "config": config
-    }))
-    .map_err(|e| Failure::new(format!("the check's function does not read: {e}")))?;
-    cat.declare(own, function)
-        .await
-        .must("declaring `lookup`, backed by the suite's backing")?;
-    Ok(l)
+    echoing(store, "lookup", input, config).await
 }
 
 /// Declares `lookup`, a function of the suite's backing that echoes its
 /// input `code`, and the type `place`, whose `name` it computes.
-async fn places(store: &dyn LakeStore, config: Value) -> Result<Lake, Failure> {
+pub(super) async fn places(store: &dyn LakeStore, config: Value) -> Result<Lake, Failure> {
     let l = lookup(store, "code", config).await?;
-    let name = FieldDecl {
-        authority: Authority::Derived,
-        function: Some("lookup".into()),
-        depends_on: vec!["code".into()],
-        ..field("name", StorageKind::Text)
-    };
+    let name = computed_by("name", StorageKind::Text, "lookup", &["code"]);
     l.declare(type_decl(
         "place",
         vec![field("code", StorageKind::Text), name],
@@ -128,11 +111,19 @@ async fn a_function_of_a_backing_kind_nobody_bound_is_refused_at_declare(
         "config": {"url": "https://geo.example/lookup"}
     }))
     .map_err(|e| Failure::new(format!("the check's function does not read: {e}")))?;
-    let answer = cat.declare(own, function).await;
+    let answer = cat.declare(own, function.clone()).await;
+    // The declaration's own checks before its backing (028, extended).
+    let Declaration::Function(mut misnamed) = function else {
+        unreachable!("a function declaration")
+    };
+    misnamed.name = "not a name".into();
+    let first = cat.declare(own, Declaration::Function(misnamed)).await;
     ensure!(
-        matches!(&answer, Err(Error::Unbound { seam }) if seam.contains("nowhere")),
+        matches!(&answer, Err(Error::Unbound { seam }) if seam.contains("nowhere"))
+            && matches!(reason(&first), Some(Refusal::Invalid { .. })),
         "no backing of the kind `nowhere` is bound, so declaring a function of that kind \
-         must be refused as unbound, naming the kind; it answered {answer:?}"
+         must be refused as unbound, naming the kind, and one whose name is no name as \
+         invalid first; it answered {answer:?} and {first:?}"
     );
     head_unmoved(store.as_ref(), before, "a refused function declaration").await?;
     Ok(())
@@ -335,35 +326,16 @@ async fn a_filled_field_recomputes_what_reads_it_and_fires_its_triggers(
     .await?;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
-    let name = FieldDecl {
-        authority: Authority::Derived,
-        function: Some("lookup".into()),
-        depends_on: vec!["code".into()],
-        ..field("name", StorageKind::Text)
-    };
-    let greeting = FieldDecl {
-        authority: Authority::Derived,
-        derived: Some("concat(name, '!')".into()),
-        depends_on: vec!["name".into()],
-        ..field("greeting", StorageKind::Text)
-    };
+    let name = computed_by("name", StorageKind::Text, "lookup", &["code"]);
+    let greeting = greeting();
     l.declare(type_decl(
         "place",
         vec![field("code", StorageKind::Text), name, greeting],
     ))
     .await?;
-    cat.declare(
-        own,
-        Declaration::Trigger(TriggerDecl {
-            max_depth: None,
-            name: "named".into(),
-            on: "place".into(),
-            when: Some(Condition::from("name = 'AT'")),
-            description: None,
-        }),
-    )
-    .await
-    .must("declaring the trigger `named` on `place`")?;
+    cat.declare(own, trigger_on("named", "place", Some("name = 'AT'")))
+        .await
+        .must("declaring the trigger `named` on `place`")?;
     l.upsert("place", "p1", json!({"code": "AT"})).await?;
 
     let r = l.read("place", "p1").await?;
@@ -379,12 +351,8 @@ async fn a_filled_field_recomputes_what_reads_it_and_fires_its_triggers(
             "no `output_recorded` in the log after the write",
         ));
     };
-    let feed = store
-        .feed()
-        .poll(output.position, &FeedFilter::default(), u32::MAX)
-        .await
-        .must("reading the feed from the recorded output")?;
-    let fired = feed.events.iter().any(|e| {
+    let events = events_from(store.as_ref(), output.position).await?;
+    let fired = events.iter().any(|e| {
         e.cause == Some(output.position)
             && matches!(&e.body, EventBody::TriggerFired { trigger, .. } if trigger.as_str() == "named")
     });
@@ -393,12 +361,22 @@ async fn a_filled_field_recomputes_what_reads_it_and_fires_its_triggers(
         "the fill made `name = 'AT'` hold, so the trigger `named` fires, caused by the \
          `output_recorded` at {}; the feed from there holds {:?}",
         output.position,
-        feed.events
+        events
             .iter()
             .map(|e| (e.position, e.body.kind(), e.cause))
             .collect::<Vec<_>>()
     );
     Ok(())
+}
+
+/// `greeting`, derived from `name` as concat(name, '!').
+fn greeting() -> lakelands_api::ontology::FieldDecl {
+    derived(
+        "greeting",
+        StorageKind::Text,
+        "concat(name, '!')",
+        &["name"],
+    )
 }
 
 async fn computed_fields_that_read_each_other_in_a_cycle_are_refused(
@@ -414,29 +392,16 @@ async fn computed_fields_that_read_each_other_in_a_cycle_are_refused(
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
-    let name = FieldDecl {
-        authority: Authority::Derived,
-        function: Some("lookup".into()),
-        depends_on: vec!["label".into()],
-        ..field("name", StorageKind::Text)
-    };
-    let label = FieldDecl {
-        authority: Authority::Derived,
-        derived: Some("concat(name, '-')".into()),
-        depends_on: vec!["name".into()],
-        ..field("label", StorageKind::Text)
-    };
+    let name = computed_by("name", StorageKind::Text, "lookup", &["label"]);
+    let label = derived("label", StorageKind::Text, "concat(name, '-')", &["name"]);
     let answer = cat
         .declare(
             own,
             Declaration::Type(type_decl("place", vec![name, label])),
         )
         .await;
-    let named_both = match &answer {
-        Err(Error::Refused {
-            reason: Refusal::Invalid { message },
-            ..
-        }) => message.contains("name") && message.contains("label"),
+    let named_both = match reason(&answer) {
+        Some(Refusal::Invalid { message }) => message.contains("name") && message.contains("label"),
         _ => false,
     };
     ensure!(
@@ -454,53 +419,34 @@ async fn echoing(
     name: &str,
     input: &str,
     config: Value,
-) -> Result<(), Failure> {
+) -> Result<Lake, Failure> {
     let l = Lake::of(store);
-    let Lake { cat, own } = &l;
-    let function: Declaration = serde_json::from_value(json!({
+    l.declare_json(json!({
         "declare": "function", "name": name, "backing": KIND,
         "inputs": [{"name": input, "type": {"kind": "text"}}],
         "config": config
     }))
-    .map_err(|e| Failure::new(format!("the check's function does not read: {e}")))?;
-    cat.declare(own, function).await.must(&format!(
-        "declaring `{name}`, backed by the suite's backing"
-    ))?;
-    Ok(())
-}
-
-fn computed_by(name: &str, function: &str, input: &str) -> FieldDecl {
-    FieldDecl {
-        authority: Authority::Derived,
-        function: Some(function.into()),
-        depends_on: vec![input.into()],
-        ..field(name, StorageKind::Text)
-    }
+    .await?;
+    Ok(l)
 }
 
 async fn a_second_record_with_the_same_input_has_its_derived_fields_right(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let token = "recorded_fill_reacts";
-    echoing(
+    let l = echoing(
         store.as_ref(),
         "lookup",
         "code",
         json!({"token": token, "echo": "code"}),
     )
     .await?;
-    let l = Lake::of(store.as_ref());
-    let greeting = FieldDecl {
-        authority: Authority::Derived,
-        derived: Some("concat(name, '!')".into()),
-        depends_on: vec!["name".into()],
-        ..field("greeting", StorageKind::Text)
-    };
+    let greeting = greeting();
     l.declare(type_decl(
         "place",
         vec![
             field("code", StorageKind::Text),
-            computed_by("name", "lookup", "code"),
+            computed_by("name", StorageKind::Text, "lookup", &["code"]),
             greeting,
         ],
     ))
@@ -537,21 +483,20 @@ async fn a_backed_field_reading_another_waits_for_its_output(
     .await?;
     // `second` fails on a null input: a call made before `a` was computed
     // would leave `b` with an error instead of a value.
-    echoing(
+    let l = echoing(
         store.as_ref(),
         "second",
         "a",
         json!({"token": second, "echo": "a", "fail_on": null}),
     )
     .await?;
-    let l = Lake::of(store.as_ref());
     // `b` is declared before the field it reads.
     l.declare(type_decl(
         "place",
         vec![
             field("code", StorageKind::Text),
-            computed_by("b", "second", "a"),
-            computed_by("a", "first", "code"),
+            computed_by("b", StorageKind::Text, "second", &["a"]),
+            computed_by("a", StorageKind::Text, "first", &["code"]),
         ],
     ))
     .await?;
@@ -598,12 +543,7 @@ async fn a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds(
     );
 
     plug(token);
-    let name = FieldDecl {
-        authority: Authority::Derived,
-        function: Some("lookup".into()),
-        depends_on: vec!["code".into()],
-        ..field("name", StorageKind::Text)
-    };
+    let name = computed_by("name", StorageKind::Text, "lookup", &["code"]);
     l.declare(type_decl(
         "place",
         vec![field("code", StorageKind::Text), name],

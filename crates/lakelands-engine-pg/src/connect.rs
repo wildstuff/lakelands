@@ -43,7 +43,8 @@ use std::time::Duration;
 
 use lakelands_api::error::Result;
 use lakelands_api::location::{PgTls, PgTlsMode, PgTuning};
-use postgres::types::ToSql;
+use lakelands_api::record::StoredRecord;
+use postgres::types::{FromSql, ToSql};
 use postgres::{Client, NoTls, Row, SimpleQueryMessage, Statement};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
@@ -157,14 +158,31 @@ impl Db {
         Ok((client, statement))
     }
 
-    pub(crate) fn execute(&mut self, statement: &str, params: Params<'_>) -> Result<u64> {
+    pub(crate) fn execute(&mut self, statement: &str, params: Params<'_>) -> Result<()> {
         let (client, statement) = self.prepared(statement)?;
-        driver(move || client.execute(&statement, params)).map_err(sql)
+        driver(move || client.execute(&statement, params).map(drop)).map_err(sql)
     }
 
     pub(crate) fn query(&mut self, statement: &str, params: Params<'_>) -> Result<Vec<Row>> {
         let (client, statement) = self.prepared(statement)?;
         driver(move || client.query(&statement, params)).map_err(sql)
+    }
+
+    /// The first column of every row a query answers.
+    pub(crate) fn column<T: for<'r> FromSql<'r>, C: FromIterator<T>>(
+        &mut self,
+        text: &str,
+        args: Params<'_>,
+    ) -> Result<C> {
+        Ok(self.query(text, args)?.iter().map(|r| r.get(0)).collect())
+    }
+
+    /// The records whose states the first column of a query's rows holds.
+    pub(crate) fn records(&mut self, query: &str, params: Params<'_>) -> Result<Vec<StoredRecord>> {
+        self.query(query, params)?
+            .iter()
+            .map(|r| crate::projection::decode_record(&r.get::<_, String>(0)))
+            .collect()
     }
 
     pub(crate) fn query_opt(&mut self, statement: &str, params: Params<'_>) -> Result<Option<Row>> {
@@ -206,7 +224,14 @@ impl Db {
         f: impl FnOnce(&mut Db) -> Result<R>,
     ) -> Result<R> {
         self.batch(begin)?;
-        match f(self) {
+        let answer = f(self);
+        self.end(answer)
+    }
+
+    /// End the open transaction: commit it when `answer` is `Ok`, roll it
+    /// back otherwise, and hand `answer` on.
+    pub(crate) fn end<R>(&mut self, answer: Result<R>) -> Result<R> {
+        match answer {
             Ok(r) => {
                 self.batch("COMMIT")?;
                 Ok(r)

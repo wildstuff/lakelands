@@ -19,7 +19,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all, before, declare, doors, field, get_at, owner, type_decl, value,
+    Lake, Must, all, all_found, before, declare, doors, field, get_at, log_events, owner, read_at,
+    reason, type_decl, value,
 };
 
 check!(
@@ -167,13 +168,10 @@ async fn a_read_as_of_a_write_sees_that_write_and_nothing_later(
     );
 
     let find = Find {
-        at: ReadAt {
-            as_of: Some(first.position()),
-            valid_at: None,
-        },
+        at: read_at(Some(first.position())),
         ..Find::default()
     };
-    let rows = crate::conformance::fixture::all_found(cat.as_ref(), own, "counter", find).await?;
+    let rows = all_found(cat.as_ref(), own, "counter", find).await?;
     let keys: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
     ensure!(
         keys == ["k"],
@@ -213,9 +211,7 @@ async fn retiring_a_record_does_not_erase_its_history(
     let Lake { cat, own } = &l;
     let counter = TypeName::from("counter");
     let written = l.upsert("counter", "k", json!({"n": 7})).await?;
-    cat.retire(own, &counter, &"k".into(), Default::default())
-        .await
-        .must("retiring `k`")?;
+    l.retire(counter.as_str(), "k").await?;
 
     let live = cat.get(own, &counter, get_at("k", None)).await;
     ensure!(
@@ -255,10 +251,7 @@ async fn a_read_as_of_a_position_past_the_head_is_refused_as_out_of_range(
         .get(own, &TypeName::from("counter"), get_at("k", Some(beyond)))
         .await;
     ensure!(
-        matches!(
-            &got,
-            Err(Error::Refused { reason: Refusal::OutOfRange { head: h }, .. }) if *h == head
-        ),
+        matches!(reason(&got), Some(Refusal::OutOfRange { head: h }) if *h == head),
         "a read as of position {beyond}, past the head {head}, must be refused as out of \
          range naming the head; it answered {got:?}"
     );
@@ -280,16 +273,7 @@ async fn position_at_answers_the_last_position_at_or_before_an_instant(
         written.push((key, n, o.position()));
     }
     let head = store.head().await.must("reading the head")?;
-    let events = store
-        .feed()
-        .poll(
-            Position::GENESIS,
-            &lakelands_api::seam::FeedFilter::default(),
-            10_000,
-        )
-        .await
-        .must("reading the log")?
-        .events;
+    let events = log_events(store.as_ref()).await?;
     let at = |t: lakelands_api::Timestamp| {
         let store = store.clone();
         async move {

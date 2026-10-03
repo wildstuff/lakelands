@@ -61,15 +61,13 @@ pub fn window(
     let mut seen: BTreeSet<EventId> = BTreeSet::new();
     let mut drafts = Vec::new();
     let mut committed = 0u32;
-    let mut window_links: Vec<(
-        lakelands_api::TypeName,
-        lakelands_api::RecordKey,
-        lakelands_api::RecordKey,
-    )> = Vec::new();
+    let mut window_links = Vec::new();
     let mut duplicates = 0u32;
     for r in records {
         let decl = w.ontology.ty(&r.ty)?;
-        // The door first: a patch that carries a field the source is not
+        // The key's form before the door, as `upsert` checks it.
+        crate::writes::check_key(&r.key)?;
+        // Then the door: a patch that carries a field the source is not
         // the authority on is refused whole, even when that field's value
         // is the one already stored.
         lakelands_core::rights::check_write(who, decl, Door::Source, &r.fields)?;
@@ -78,8 +76,7 @@ pub fn window(
         // relation's cardinality, over the lake's live links and those
         // earlier in this window.
         if links::is_link_type(&r.ty) {
-            let types: Vec<&lakelands_api::ontology::TypeDecl> =
-                w.ontology.types.values().map(|e| &e.decl).collect();
+            let types = w.ontology.types.values().map(|e| &e.decl);
             if let Some((t, relation)) = links::relation_of(types, &r.ty) {
                 // The ends from the patch, or from the key's components
                 // when the patch leaves them out: the key rule fills them.
@@ -129,8 +126,7 @@ pub fn window(
         plan.draft.source = Some(source.clone());
         plan.draft.seen_at = r.seen_at;
         plan.draft.upstream = r.upstream.clone();
-        let cause =
-            lakelands_api::Position(w.tip.as_ref().map_or(0, |t| t.0.0 + 1) + drafts.len() as u64);
+        let cause = crate::writes::position_after(&w, drafts.len());
         drafts.push(plan.draft);
         drafts.extend(call.reactions(
             &w,
@@ -146,12 +142,11 @@ pub fn window(
     }
     drop(view);
     if drafts.is_empty() {
-        let head = w
-            .tip
-            .as_ref()
-            .map_or(lakelands_api::Position::GENESIS, |t| t.0);
         return Ok(Committed {
-            position: head,
+            position: w
+                .tip
+                .as_ref()
+                .map_or(lakelands_api::Position::GENESIS, |t| t.0),
             records: 0,
             duplicates,
         });

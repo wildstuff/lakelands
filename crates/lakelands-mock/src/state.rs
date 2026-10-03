@@ -309,8 +309,8 @@ impl State {
             meta: BTreeMap::new(),
         };
         for (f, v) in &rec.fields {
-            let granted = match decl.and_then(|d| field(d, f)) {
-                Some(fd) => access(who, &rec.ty, fd),
+            let granted = match decl.and_then(|d| Some((d, field(d, f)?))) {
+                Some((d, fd)) => access(who, d, fd),
                 None => Access::None,
             };
             match granted {
@@ -350,11 +350,48 @@ fn decl_key(d: &Declaration) -> Option<String> {
     }
 }
 
-/// The access a principal has to one field: its grant, except that a
-/// field declared sensitive is masked rather than dropped.
-pub(crate) fn access(who: &Principal, ty: &TypeName, f: &FieldDecl) -> Access {
-    match who.grants.access(ty, &f.name) {
-        Access::None if f.sensitive => Access::Masked,
+/// The access a principal has to one field of `decl`: its grant, read no
+/// further than every field it is computed or embedded from, except that
+/// a field declared sensitive is masked rather than dropped.
+pub(crate) fn access(who: &Principal, decl: &TypeDecl, f: &FieldDecl) -> Access {
+    access_seen(who, decl, f, &mut Vec::new())
+}
+
+fn access_seen<'d>(
+    who: &Principal,
+    decl: &'d TypeDecl,
+    f: &'d FieldDecl,
+    seen: &mut Vec<&'d FieldName>,
+) -> Access {
+    let mut a = who.grants.access(&decl.name, &f.name);
+    let mut from_source = false;
+    seen.push(&f.name);
+    let sources = f
+        .depends_on
+        .iter()
+        .chain(f.embed.iter().flat_map(|e| &e.from));
+    for name in sources {
+        if seen.contains(&name) {
+            continue;
+        }
+        if let Some(source) = decl.fields.iter().find(|s| &s.name == name) {
+            a = match access_seen(who, decl, source, seen) {
+                s if s.reads() => a,
+                Access::Masked if a.reads() => Access::Masked,
+                Access::Masked => a,
+                _ => {
+                    from_source = true;
+                    Access::None
+                }
+            };
+        }
+    }
+    seen.pop();
+    // `sensitive` shows a field nobody granted or denied by name as masked;
+    // a `none` given by name, or handed down by a source, hides it.
+    let named = (who.grants.types.get(&decl.name)).is_some_and(|t| t.fields.contains_key(&f.name));
+    match a {
+        Access::None if f.sensitive && !named && !from_source => Access::Masked,
         a => a,
     }
 }

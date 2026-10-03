@@ -118,7 +118,12 @@ fn fill(engine: &dyn LakeEngine) {
 /// The exact ranking of the lake's vectors for `query`, at most `k`.
 fn exact(query: &[f32], k: u32) -> Vec<(RecordKey, f64)> {
     let mut all: Vec<(RecordKey, f64)> = (0..RECORDS)
-        .map(|i| (record(i).key, engines::cosine(query, &vector(i))))
+        .map(|i| {
+            (
+                record(i).key,
+                lakelands_api::query::cosine(query, &vector(i)),
+            )
+        })
         .collect();
     engines::rank(&mut all, k);
     all
@@ -220,7 +225,7 @@ fn an_indexed_field_reads_its_index_and_every_other_field_scans() {
         let i: u64 = key.as_str()[1..].parse().unwrap();
         assert_eq!(
             score.to_bits(),
-            engines::cosine(&query, &vector(i)).to_bits(),
+            lakelands_api::query::cosine(&query, &vector(i)).to_bits(),
             "`{key}` scores the one cosine"
         );
     }

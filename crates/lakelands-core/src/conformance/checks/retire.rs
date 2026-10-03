@@ -4,19 +4,19 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::{Authority, StorageKind};
+use lakelands_api::ontology::StorageKind::{self, Decimal, Text};
 use lakelands_api::{Access, Error, LakeStore, ReadAt, Refusal, TypeName, WriteOpts};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, field, field_writer, get_at, head_unmoved, type_decl,
+    Lake, Must, field_writer, get_at, head_unmoved, reason, refused_on, sourced, type_decl, type_of,
 };
 
 check!(
     /// Retiring takes a write grant on every field.
     RETIRE_NEEDS_EVERY_FIELD = a_principal_who_may_write_only_some_fields_cannot_retire,
-    "006 and TypeRights::retire: retiring removes every field of a record, so it needs a write grant on every field of the type"
+    "006 and TypeRights::retire: retiring removes every field of a record, so it needs a write grant on every field of the type, checked before the record is looked up, and the record before the expected version (016, extended)"
 );
 
 check!(
@@ -30,11 +30,6 @@ async fn a_type_whose_fields_all_come_from_a_source_has_no_upsert(
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
-    let sourced = |name: &str, kind| {
-        let mut f = field(name, kind);
-        f.authority = Authority::Source;
-        f
-    };
     l.declare(type_decl(
         "rate",
         vec![
@@ -68,13 +63,7 @@ async fn a_type_whose_fields_all_come_from_a_source_has_no_upsert(
         .must_fail("the owner upserting `rate`, whose fields all come from a source")?;
     head_unmoved(store.as_ref(), before, "upserting a source-only type").await?;
     ensure!(
-        matches!(
-            &err,
-            Error::Refused {
-                field: Some(f),
-                reason: Refusal::WrongDoor,
-            } if f.as_str() == "currency"
-        ),
+        matches!(refused_on(&err), Some(("currency", Refusal::WrongDoor))),
         "an upsert of `rate`'s source field `currency` must be refused as the wrong door, \
          naming `currency`; it failed with {err:?}"
     );
@@ -92,14 +81,8 @@ async fn a_principal_who_may_write_only_some_fields_cannot_retire(
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
     let Lake { cat, .. } = &l;
-    l.declare(type_decl(
-        "invoice",
-        vec![
-            field("status", StorageKind::Text),
-            field("amount", StorageKind::Decimal),
-        ],
-    ))
-    .await?;
+    l.declare(type_of("invoice", &[("status", Text), ("amount", Decimal)]))
+        .await?;
     l.upsert("invoice", "i", json!({"status": "open", "amount": "1.00"}))
         .await?;
     let clerk = field_writer(store.as_ref(), "clerk", "invoice", &["status"]);
@@ -123,13 +106,7 @@ async fn a_principal_who_may_write_only_some_fields_cannot_retire(
         .must_fail("the clerk retiring `i`")?;
     head_unmoved(store.as_ref(), before, "the clerk retiring `i`").await?;
     ensure!(
-        matches!(
-            err,
-            Error::Refused {
-                reason: Refusal::NotGranted,
-                ..
-            }
-        ),
+        matches!(reason(&err), Some(Refusal::NotGranted)),
         "retiring as a principal who may write only `status` must be refused as not \
          granted; it failed with {err:?}"
     );
@@ -149,6 +126,23 @@ async fn a_principal_who_may_write_only_some_fields_cannot_retire(
     head_unmoved(store.as_ref(), before, "retiring without write on `amount`").await?;
 
     let all = field_writer(store.as_ref(), "keeper", "invoice", &["status", "amount"]);
+    // In retire's order, the grant before the record, the record before
+    // the version (016, extended).
+    let gone = lakelands_api::RecordKey::from("gone");
+    let ungranted = cat
+        .retire(&clerk, &invoice, &gone, WriteOpts::default())
+        .await;
+    let at = WriteOpts {
+        expected_version: Some(lakelands_api::Version(3)),
+        ..WriteOpts::default()
+    };
+    let missing = cat.retire(&all, &invoice, &gone, at).await;
+    ensure!(
+        matches!(reason(&ungranted), Some(Refusal::NotGranted))
+            && matches!(missing, Err(lakelands_api::Error::NotFound { .. })),
+        "retiring a key never written is refused for the grant first, then as not found \
+         before a version is compared; it answered {ungranted:?} and {missing:?}"
+    );
     cat.retire(&all, &invoice, &"i".into(), WriteOpts::default())
         .await
         .must("retiring `i` as a principal who may write every field")?;
@@ -159,20 +153,12 @@ async fn a_record_retired_at_a_position_is_readable_just_before_it(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
-    l.declare(type_decl(
-        "invoice",
-        vec![field("status", StorageKind::Text)],
-    ))
-    .await?;
+    let Lake { cat, .. } = &l;
+    l.declare(type_of("invoice", &[("status", Text)])).await?;
     l.upsert("invoice", "i1", json!({"status": "open"})).await?;
     let reader = field_writer(store.as_ref(), "reader", "invoice", &[]);
     let invoice = TypeName::from("invoice");
-    let retired = cat
-        .retire(own, &invoice, &"i1".into(), WriteOpts::default())
-        .await
-        .must("retiring `i1`")?
-        .position();
+    let retired = l.retire(invoice.as_str(), "i1").await?.position();
     let before = lakelands_api::Position(retired.0 - 1);
     let then = cat
         .get(&reader, &invoice, get_at("i1", Some(before)))

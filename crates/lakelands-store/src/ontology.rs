@@ -48,67 +48,30 @@ impl Ontology {
 
     /// Put one declaration in force, replacing an earlier version.
     pub fn put(&mut self, declaration: Declaration, version: u32, schema_hash: Option<String>) {
+        fn put<K: Ord, T>(
+            m: &mut BTreeMap<K, Entry<T>>,
+            name: K,
+            decl: T,
+            v: u32,
+            h: Option<String>,
+        ) {
+            m.insert(
+                name,
+                Entry {
+                    decl,
+                    version: v,
+                    schema_hash: h,
+                },
+            );
+        }
+        let (v, h) = (version, schema_hash);
         match declaration {
-            Declaration::Type(t) => {
-                self.types.insert(
-                    t.name.clone(),
-                    Entry {
-                        decl: t,
-                        version,
-                        schema_hash,
-                    },
-                );
-            }
-            Declaration::ValueType(v) => {
-                self.value_types.insert(
-                    v.name.to_string(),
-                    Entry {
-                        decl: v,
-                        version,
-                        schema_hash,
-                    },
-                );
-            }
-            Declaration::Verb(v) => {
-                self.verbs.insert(
-                    v.name.clone(),
-                    Entry {
-                        decl: v,
-                        version,
-                        schema_hash,
-                    },
-                );
-            }
-            Declaration::Trigger(t) => {
-                self.triggers.insert(
-                    t.name.to_string(),
-                    Entry {
-                        decl: t,
-                        version,
-                        schema_hash,
-                    },
-                );
-            }
-            Declaration::ObjectSet(s) => {
-                self.object_sets.insert(
-                    s.name.clone(),
-                    Entry {
-                        decl: s,
-                        version,
-                        schema_hash,
-                    },
-                );
-            }
-            Declaration::Function(f) => {
-                self.functions.insert(
-                    f.name.clone(),
-                    Entry {
-                        decl: f,
-                        version,
-                        schema_hash,
-                    },
-                );
-            }
+            Declaration::Type(t) => put(&mut self.types, t.name.clone(), t, v, h),
+            Declaration::ValueType(t) => put(&mut self.value_types, t.name.to_string(), t, v, h),
+            Declaration::Verb(t) => put(&mut self.verbs, t.name.clone(), t, v, h),
+            Declaration::Trigger(t) => put(&mut self.triggers, t.name.to_string(), t, v, h),
+            Declaration::ObjectSet(t) => put(&mut self.object_sets, t.name.clone(), t, v, h),
+            Declaration::Function(t) => put(&mut self.functions, t.name.clone(), t, v, h),
         }
     }
 
@@ -119,6 +82,16 @@ impl Ontology {
             .map(|e| &e.decl)
             .ok_or_else(|| Error::NotFound {
                 missing: Missing::Type { name: name.clone() },
+            })
+    }
+
+    /// The declaration of a verb, or `NotFound`.
+    pub fn verb(&self, name: &VerbName) -> Result<&VerbDecl, Error> {
+        self.verbs
+            .get(name)
+            .map(|e| &e.decl)
+            .ok_or_else(|| Error::NotFound {
+                missing: Missing::Verb { name: name.clone() },
             })
     }
 

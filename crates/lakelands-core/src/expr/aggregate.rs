@@ -27,7 +27,7 @@ use lakelands_api::read::{AggFunc, Aggregate, Group, GroupKey};
 use lakelands_api::{FieldName, Timestamp, Value};
 use rust_decimal::Decimal;
 
-use super::eval::{EvalError, RecordScope, Result, Scope, Val, compare, eval};
+use super::eval::{EvalError, RecordScope, Result, Scope, Val, compare, err, eval};
 
 /// The scope of one group: its records, its grouping values, and the
 /// measures computed before the one being evaluated.
@@ -98,9 +98,7 @@ fn exact_sum(values: &[Val]) -> Result<Decimal> {
                 EvalError(format!("sum() met the text '{s}', which is not a number"))
             })?,
             other => {
-                return Err(EvalError(format!(
-                    "sum() met {other:?}, which is not a number"
-                )));
+                return err(format!("sum() met {other:?}, which is not a number"));
             }
         };
         acc.checked_add(n)
@@ -118,10 +116,7 @@ fn fold(
     let Some(arg) = arg else {
         return match func {
             Func::Count => Ok(Val::Num(Decimal::from(rows.len()))),
-            _ => Err(EvalError(format!(
-                "{}() needs a field",
-                super::func_name(func)
-            ))),
+            _ => err(format!("{}() needs a field", super::func_name(func))),
         };
     };
     let values = row_values(arg, rows, settings, now)?;
@@ -150,10 +145,7 @@ fn fold(
             }
             Ok(best.unwrap_or(Val::Null))
         }
-        _ => Err(EvalError(format!(
-            "{}() is not an aggregate",
-            super::func_name(func)
-        ))),
+        _ => err(format!("{}() is not an aggregate", super::func_name(func))),
     }
 }
 
@@ -181,19 +173,8 @@ pub type Grouped<'a> = (Row, Vec<&'a Row>);
 
 /// Split records into groups by the values of `by`, in canonical key order.
 pub fn groups<'a>(rows: &[&'a Row], by: &[FieldName]) -> Vec<Grouped<'a>> {
-    let mut map: BTreeMap<Vec<u8>, Grouped<'a>> = BTreeMap::new();
-    for row in rows {
-        let key: BTreeMap<FieldName, Value> = by
-            .iter()
-            .map(|f| (f.clone(), row.get(f).cloned().unwrap_or(Value::Null)))
-            .collect();
-        let bytes = crate::canonical::of(&key);
-        map.entry(bytes)
-            .or_insert_with(|| (key, Vec::new()))
-            .1
-            .push(row);
-    }
-    map.into_values().collect()
+    let keys: Vec<(FieldName, Option<Expr>)> = by.iter().map(|f| (f.clone(), None)).collect();
+    keyed_groups(rows, &keys, Timestamp(0))
 }
 
 /// An aggregate's group keys, resolved: each key's name and, for a named
@@ -301,15 +282,17 @@ pub fn aggregate(
 }
 
 /// One group's measures, each computed in declaration order and visible to
-/// the measures after it.
+/// the measures after it, as are the values `given` (a merged source's
+/// measures), which the answer holds too.
 pub fn measures(
     members: &[&BTreeMap<FieldName, Value>],
     by: &BTreeMap<FieldName, Value>,
     measures: &[(FieldName, Expr)],
+    given: BTreeMap<FieldName, Value>,
     settings: Option<&BTreeMap<String, Value>>,
     now: Timestamp,
 ) -> Result<BTreeMap<FieldName, Value>> {
-    let mut earlier = BTreeMap::new();
+    let mut earlier = given;
     for (name, expr) in measures {
         let scope = GroupScope {
             rows: members,

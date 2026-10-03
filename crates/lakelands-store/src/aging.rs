@@ -20,7 +20,6 @@
 
 use std::collections::BTreeMap;
 
-use lakelands_api::engine::Scan;
 use lakelands_api::event::Procedure;
 use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::ontology::Authority;
@@ -28,8 +27,7 @@ use lakelands_api::principal::{WriteContext, WriteOrigin};
 use lakelands_api::record::Origin;
 use lakelands_api::write::{AgeReport, RuleRun};
 use lakelands_api::{
-    Error, FieldName, Grants, Patch, Position, Principal, PrincipalKind, Refusal, Result,
-    Timestamp, TypeName, Value,
+    Error, FieldName, Patch, Position, Principal, Refusal, Result, Timestamp, TypeName, Value,
 };
 use lakelands_core::derive;
 use lakelands_core::expr::{self, Place, RecordScope};
@@ -37,7 +35,7 @@ use lakelands_core::rights::{self, Door};
 use lakelands_core::{canonical, names};
 
 use crate::declare;
-use crate::lake::{AGING_RULE_TYPE, Lake};
+use crate::lake::{AGING_RULE_TYPE, Lake, every};
 use crate::log;
 use crate::ontology::Ontology;
 use crate::writes::{self, Call, Pending};
@@ -134,7 +132,7 @@ pub fn check(
         Place::Record,
         "an aging rule's `when`",
     )
-    .map_err(|e| ("when".into(), message(e)))?;
+    .map_err(|e| ("when".into(), crate::backed::why(&e)))?;
     Ok(Rule {
         on,
         field,
@@ -157,18 +155,10 @@ pub fn check_authority(who: &Principal, ontology: &Ontology, rule: &Rule) -> Res
     rights::check_probe(who, decl, derive::reads(&rule.when).iter())
 }
 
-fn message(e: Error) -> String {
-    match e {
-        Error::Refused {
-            reason: Refusal::Invalid { message },
-            ..
-        } => message,
-        e => e.to_string(),
-    }
-}
-
-/// Refuse a `today` that is not a date: a time other than UTC midnight.
-pub fn check_today(today: Timestamp) -> Result<()> {
+/// Run every live rule once for `today`, in rule-name order, one append
+/// per rule that moves anything.
+pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
+    // `today` is a date: a time other than UTC midnight is refused.
     if today.0.rem_euclid(MICROS_PER_DAY) != 0 {
         return Err(Error::Refused {
             field: Some("today".into()),
@@ -177,19 +167,7 @@ pub fn check_today(today: Timestamp) -> Result<()> {
             },
         });
     }
-    Ok(())
-}
-
-/// Run every live rule once for `today`, in rule-name order, one append
-/// per rule that moves anything.
-pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
-    check_today(today)?;
-    let system = Principal {
-        kind: PrincipalKind::System,
-        id: "lakelands".into(),
-        lake: lake.id.clone(),
-        grants: Grants::owner(),
-    };
+    let system = lake.system("lakelands");
     let call = Call {
         lake,
         who: &system,
@@ -199,11 +177,7 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
             depth: 0,
         },
     };
-    let all = Scan {
-        limit: u32::MAX,
-        restricted: true,
-        ..Default::default()
-    };
+    let all = every(false);
     let mut w = lake.writer();
     let mut rules = lake
         .engine

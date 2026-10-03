@@ -9,17 +9,15 @@
 use std::sync::Arc;
 
 use lakelands_api::event::{Event, EventBody};
-use lakelands_api::expr::Condition;
-use lakelands_api::ontology::{
-    Authority, Cardinality, FieldDecl, FieldType, RelationDecl, StorageKind, TriggerDecl,
-};
-use lakelands_api::seam::FeedFilter;
-use lakelands_api::write::{Declaration, WriteOpts};
-use lakelands_api::{Error, LakeStore, Position, Refusal, TypeName};
+use lakelands_api::ontology::{Authority, Cardinality, FieldDecl, RelationDecl, StorageKind};
+use lakelands_api::write::WriteOpts;
+use lakelands_api::{Error, LakeStore, Position, Refusal};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, field, patch, source_record, type_decl};
+use crate::conformance::fixture::{
+    Lake, Must, events_from, field, patch, reference, source_record, trigger_on, type_decl,
+};
 use crate::links::{link_key, link_type_name};
 
 check!(
@@ -51,16 +49,6 @@ fn relation(
     }
 }
 
-fn trigger(name: &str, on: &TypeName, when: Option<&str>) -> Declaration {
-    Declaration::Trigger(TriggerDecl {
-        max_depth: None,
-        name: name.into(),
-        on: on.clone(),
-        when: when.map(Condition::from),
-        description: None,
-    })
-}
-
 async fn a_trigger_on_a_link_type_fires_on_link_rewrite_unlink_and_ingest(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
@@ -82,14 +70,13 @@ async fn a_trigger_on_a_link_type_fires_on_link_rewrite_unlink_and_ingest(
     let approved = link_type_name(&"invoice".into(), &"approved_by".into());
     let sourced = link_type_name(&"invoice".into(), &"sourced_by".into());
     for t in [
-        trigger("any_approval", &approved, None),
-        trigger("noted_x", &approved, Some("note = 'x'")),
-        trigger("note_changed", &approved, Some("changed(note)")),
-        trigger("any_source", &sourced, None),
+        trigger_on("any_approval", approved.as_str(), None),
+        trigger_on("noted_x", approved.as_str(), Some("note = 'x'")),
+        trigger_on("note_changed", approved.as_str(), Some("changed(note)")),
+        trigger_on("any_source", sourced.as_str(), None),
     ] {
-        cat.declare(own, t)
-            .await
-            .must("declaring a trigger on a link type")?;
+        l.declare_as(t, "declaring a trigger on a link type")
+            .await?;
     }
     l.upsert("partner", "p1", json!({"name": "one"})).await?;
     for i in ["i1", "i2", "i3"] {
@@ -140,17 +127,12 @@ async fn a_trigger_on_a_link_type_fires_on_link_rewrite_unlink_and_ingest(
     .await
     .must("ingesting two `sourced_by` links in one window")?;
 
-    let feed = store
-        .feed()
-        .poll(Position(first.0), &FeedFilter::default(), 200)
-        .await
-        .must("reading the feed from the first link")?;
-    let by_position = |p: Position| feed.events.iter().find(|e| e.position == p);
+    let feed = events_from(store.as_ref(), first).await?;
+    let by_position = |p: Position| feed.iter().find(|e| e.position == p);
     // Each firing of `name`: the link it names and the kind of the write
     // that caused it.
     let fired = |name: &str| -> Vec<(String, String, &'static str)> {
-        feed.events
-            .iter()
+        feed.iter()
             .filter_map(|e: &Event| match &e.body {
                 EventBody::TriggerFired { trigger, ty, key } if trigger.as_str() == name => {
                     let cause = e
@@ -213,16 +195,7 @@ async fn a_trigger_on_the_link_type_of_a_reference_relation_is_refused(
     let Lake { cat, own } = &l;
     l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))
         .await?;
-    let mut invoice = type_decl(
-        "invoice",
-        vec![FieldDecl {
-            ty: FieldType {
-                target: Some("partner".into()),
-                ..FieldType::kind(StorageKind::Reference)
-            },
-            ..field("billed", StorageKind::Text)
-        }],
-    );
+    let mut invoice = type_decl("invoice", vec![reference("billed", "partner")]);
     invoice.relations = vec![relation(
         "billed_by",
         Some("billed"),
@@ -232,7 +205,7 @@ async fn a_trigger_on_the_link_type_of_a_reference_relation_is_refused(
     l.declare(invoice).await?;
     let on = link_type_name(&"invoice".into(), &"billed_by".into());
     let e = cat
-        .declare(own, trigger("billing", &on, None))
+        .declare(own, trigger_on("billing", on.as_str(), None))
         .await
         .expect_err("a trigger on the link type of a reference relation is refused");
     let Error::Refused {

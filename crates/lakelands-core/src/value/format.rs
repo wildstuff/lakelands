@@ -102,11 +102,7 @@ fn is_iban(s: &str) -> bool {
     let mut rem: u32 = 0;
     for c in tail.chars().chain(head.chars()) {
         let v = c.to_digit(36).expect("checked alphanumeric");
-        rem = if v >= 10 {
-            (rem * 100 + v) % 97
-        } else {
-            (rem * 10 + v) % 97
-        };
+        rem = (rem * if v >= 10 { 100 } else { 10 } + v) % 97;
     }
     rem == 1
 }

@@ -12,16 +12,16 @@
 
 use std::collections::BTreeMap;
 
+use lakelands_api::Refusal;
 use lakelands_api::engine::{LakeEngine, ProjectionStore, ProjectionView};
 use lakelands_api::id::{Position, RecordKey, RelationName, TypeName, Version};
 use lakelands_api::query::Walk;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::Declaration;
-use lakelands_api::{Error, Refusal};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::Must;
+use crate::conformance::fixture::{Must, is_invalid, reason};
 
 engine_check!(
     /// A view at a position reads the states valid then.
@@ -150,11 +150,19 @@ pub(super) fn fold(
         .must(&format!("committing through position {through}"))
 }
 
+/// One record folded in a transaction of its own, committed through
+/// `through`: the same begin, put and commit as `fold`.
+pub(super) fn fold_one(
+    engine: &dyn LakeEngine,
+    through: u64,
+    state: StoredRecord,
+) -> Result<(), Failure> {
+    fold(engine, through, |p| p.put_record(&state))
+}
+
 fn a_view_at_a_position_sees_the_states_then(engine: &dyn LakeEngine) -> Result<(), Failure> {
     for (n, at) in [(1, 1), (2, 2), (3, 4)] {
-        fold(engine, at, |p| {
-            p.put_record(&record("counter", "k", json!({"n": n}), at))
-        })?;
+        fold_one(engine, at, record("counter", "k", json!({"n": n}), at))?;
     }
     let ty = TypeName::from("counter");
     let key = RecordKey::from("k");
@@ -183,28 +191,17 @@ fn a_view_at_a_position_sees_the_states_then(engine: &dyn LakeEngine) -> Result<
 fn a_view_past_the_folded_position_is_refused(engine: &dyn LakeEngine) -> Result<(), Failure> {
     let refused = engine.view(Some(Position(0))).map(|v| v.position());
     ensure!(
-        matches!(
-            refused,
-            Err(Error::Refused {
-                reason: Refusal::OutOfRange { .. },
-                ..
-            })
-        ),
+        matches!(reason(&refused), Some(Refusal::OutOfRange { .. })),
         "a view at position 0 of a projection that has folded nothing answered {refused:?}; \
          it must be refused as out of range"
     );
-    fold(engine, 2, |p| {
-        p.put_record(&record("counter", "k", json!({}), 2))
-    })?;
+    fold_one(engine, 2, record("counter", "k", json!({}), 2))?;
     view(engine, Some(Position(2)))?;
     let past = engine.view(Some(Position(3))).map(|v| v.position());
     ensure!(
         matches!(
-            past,
-            Err(Error::Refused {
-                reason: Refusal::OutOfRange { head: Position(2) },
-                ..
-            })
+            reason(&past),
+            Some(Refusal::OutOfRange { head: Position(2) })
         ),
         "a view at position 3 of a projection folded through 2 answered {past:?}; it must be \
          refused as out of range with head 2"
@@ -213,9 +210,7 @@ fn a_view_past_the_folded_position_is_refused(engine: &dyn LakeEngine) -> Result
 }
 
 fn a_rolled_back_transaction_leaves_nothing(engine: &dyn LakeEngine) -> Result<(), Failure> {
-    fold(engine, 0, |p| {
-        p.put_record(&record("counter", "a", json!({}), 0))
-    })?;
+    fold_one(engine, 0, record("counter", "a", json!({}), 0))?;
     let p = engine.projection();
     p.begin().must("beginning a transaction")?;
     p.put_record(&record("counter", "b", json!({}), 1))
@@ -229,9 +224,7 @@ fn a_rolled_back_transaction_leaves_nothing(engine: &dyn LakeEngine) -> Result<(
     );
     // The next append folds position 1 again; the abandoned put must not
     // ride along with it.
-    fold(engine, 1, |p| {
-        p.put_record(&record("counter", "c", json!({}), 1))
-    })?;
+    fold_one(engine, 1, record("counter", "c", json!({}), 1))?;
     let at = view(engine, None)?;
     let counter = TypeName::from("counter");
     let b = at
@@ -414,21 +407,12 @@ fn edges_to_a_retired_record_are_returned(engine: &dyn LakeEngine) -> Result<(),
 fn a_commit_backwards_or_with_a_put_past_through_is_invalid(
     engine: &dyn LakeEngine,
 ) -> Result<(), Failure> {
-    fold(engine, 4, |p| p.put_record(&record("t", "a", json!({}), 4)))?;
+    fold_one(engine, 4, record("t", "a", json!({}), 4))?;
     let p = engine.projection();
-    let invalid = |r: &lakelands_api::Result<()>| {
-        matches!(
-            r,
-            Err(Error::Refused {
-                reason: Refusal::Invalid { .. },
-                ..
-            })
-        )
-    };
     p.begin().must("beginning a transaction")?;
     let backwards = p.commit(Position(3));
     ensure!(
-        invalid(&backwards),
+        is_invalid(&backwards),
         "committing through 3 a projection folded through 4 answered {backwards:?}; it must be \
          refused as invalid"
     );
@@ -437,7 +421,7 @@ fn a_commit_backwards_or_with_a_put_past_through_is_invalid(
         .must("putting a record")?;
     let late = p.commit(Position(5));
     ensure!(
-        invalid(&late),
+        is_invalid(&late),
         "committing through 5 a state valid from 9 answered {late:?}; it must be refused as \
          invalid"
     );
@@ -454,9 +438,7 @@ fn a_commit_backwards_or_with_a_put_past_through_is_invalid(
 }
 
 fn a_view_does_not_see_an_open_transaction(engine: &dyn LakeEngine) -> Result<(), Failure> {
-    fold(engine, 1, |p| {
-        p.put_record(&record("t", "a", json!({"n": 1}), 1))
-    })?;
+    fold_one(engine, 1, record("t", "a", json!({"n": 1}), 1))?;
     let p = engine.projection();
     p.begin().must("beginning a transaction")?;
     p.put_record(&record("t", "a", json!({"n": 2}), 2))
@@ -494,9 +476,7 @@ fn a_view_does_not_see_an_open_transaction(engine: &dyn LakeEngine) -> Result<()
 }
 
 fn a_view_keeps_its_position_after_later_commits(engine: &dyn LakeEngine) -> Result<(), Failure> {
-    fold(engine, 1, |p| {
-        p.put_record(&record("t", "a", json!({"n": 1}), 1))
-    })?;
+    fold_one(engine, 1, record("t", "a", json!({"n": 1}), 1))?;
     let early = view(engine, None)?;
     fold(engine, 2, |p| {
         p.put_record(&record("t", "a", json!({"n": 2}), 2))?;
@@ -529,9 +509,7 @@ fn a_view_keeps_its_position_after_later_commits(engine: &dyn LakeEngine) -> Res
 fn a_put_at_the_same_position_replaces_the_state_there(
     engine: &dyn LakeEngine,
 ) -> Result<(), Failure> {
-    fold(engine, 1, |p| {
-        p.put_record(&record("t", "a", json!({"n": 1}), 1))
-    })?;
+    fold_one(engine, 1, record("t", "a", json!({"n": 1}), 1))?;
     fold(engine, 2, |p| {
         p.put_record(&record("t", "a", json!({"n": 2}), 2))?;
         p.put_record(&record("t", "a", json!({"n": 3}), 2))
@@ -556,7 +534,7 @@ fn clear_empties_the_projection_and_the_vector_index(
     engine: &dyn LakeEngine,
 ) -> Result<(), Failure> {
     let ty = TypeName::from("t");
-    fold(engine, 1, |p| p.put_record(&record("t", "a", json!({}), 1)))?;
+    fold_one(engine, 1, record("t", "a", json!({}), 1))?;
     if let Some(index) = engine.vectors() {
         index
             .put(&ty, &RecordKey::from("a"), "emb", &[1.0, 0.0])
@@ -602,12 +580,8 @@ fn a_put_before_a_later_state_ends_where_that_state_begins(
         p.put_declaration(&words, 1, None, Position(0))?;
         p.put_record(&record("t", "a", json!({"word": "one"}), 1))
     })?;
-    fold(engine, 5, |p| {
-        p.put_record(&record("t", "a", json!({"word": "five"}), 5))
-    })?;
-    fold(engine, 5, |p| {
-        p.put_record(&record("t", "a", json!({"word": "three"}), 3))
-    })?;
+    fold_one(engine, 5, record("t", "a", json!({"word": "five"}), 5))?;
+    fold_one(engine, 5, record("t", "a", json!({"word": "three"}), 3))?;
     let (ty, key) = (TypeName::from("t"), RecordKey::from("a"));
     for (as_of, expected) in [
         (Some(1), "one"),

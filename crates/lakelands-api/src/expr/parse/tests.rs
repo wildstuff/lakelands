@@ -6,10 +6,12 @@ fn path(p: &str) -> Expr {
     }
 }
 
+fn lit(value: Literal) -> Expr {
+    Expr::Lit { value }
+}
+
 fn num(n: &str) -> Expr {
-    Expr::Lit {
-        value: Literal::Number(n.into()),
-    }
+    lit(Literal::Number(n.into()))
 }
 
 #[test]
@@ -43,37 +45,15 @@ fn chains_flatten() {
 
 #[test]
 fn literals() {
-    assert_eq!(
-        parse("'it''s'").unwrap(),
-        Expr::Lit {
-            value: Literal::Text("it's".into())
-        }
-    );
+    assert_eq!(parse("'it''s'").unwrap(), lit(Literal::Text("it's".into())));
     assert_eq!(parse("12.50").unwrap(), num("12.50"));
     assert_eq!(
         parse("30d").unwrap(),
-        Expr::Lit {
-            value: Literal::Duration(30 * 86_400_000_000)
-        }
+        lit(Literal::Duration(30 * 86_400_000_000))
     );
-    assert_eq!(
-        parse("1.5s").unwrap(),
-        Expr::Lit {
-            value: Literal::Duration(1_500_000)
-        }
-    );
-    assert_eq!(
-        parse("null").unwrap(),
-        Expr::Lit {
-            value: Literal::Null
-        }
-    );
-    assert_eq!(
-        parse("true").unwrap(),
-        Expr::Lit {
-            value: Literal::Bool(true)
-        }
-    );
+    assert_eq!(parse("1.5s").unwrap(), lit(Literal::Duration(1_500_000)));
+    assert_eq!(parse("null").unwrap(), lit(Literal::Null));
+    assert_eq!(parse("true").unwrap(), lit(Literal::Bool(true)));
 }
 
 #[test]
@@ -165,4 +145,51 @@ fn printing_adds_only_needed_parentheses() {
         print(&parse("a and (b and c)").unwrap()),
         "a and b and c".replace("b and c", "(b and c)")
     );
+}
+
+/// Every function of the contract. A function added to `Func` is added here.
+const ALL_FUNCS: [Func; 29] = [
+    Func::Now,
+    Func::Today,
+    Func::KnownAt,
+    Func::SeenAt,
+    Func::Previous,
+    Func::Setting,
+    Func::Param,
+    Func::Changed,
+    Func::Retired,
+    Func::Coalesce,
+    Func::If,
+    Func::Lower,
+    Func::Upper,
+    Func::Trim,
+    Func::Len,
+    Func::Concat,
+    Func::Substr,
+    Func::Contains,
+    Func::Replace,
+    Func::StartsWith,
+    Func::Matches,
+    Func::Abs,
+    Func::Round,
+    Func::DateBucket,
+    Func::Count,
+    Func::Sum,
+    Func::Min,
+    Func::Max,
+    Func::Avg,
+];
+
+#[test]
+fn a_function_is_parsed_by_the_name_it_is_printed_and_serialized_with() {
+    for f in ALL_FUNCS {
+        let name = func_name(f);
+        assert_eq!(serde_json::to_value(f).unwrap(), name, "{f:?}");
+        let arg = if takes_field(f) { "a" } else { "'k'" };
+        let text = format!("{name}({})", vec![arg; arity(f).0].join(", "));
+        match parse(&text) {
+            Ok(Expr::Call { func, .. }) => assert_eq!(func, f, "{text}"),
+            other => panic!("{text}: {other:?}"),
+        }
+    }
 }

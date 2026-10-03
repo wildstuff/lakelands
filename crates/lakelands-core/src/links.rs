@@ -20,9 +20,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::id::{RecordKey, RelationName, TypeName};
-use lakelands_api::ontology::{
-    Authority, FieldDecl, FieldType, RelationDecl, StorageKind, TypeDecl,
-};
+use lakelands_api::ontology::{Authority, FieldDecl, RelationDecl, StorageKind, TypeDecl};
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::record::{StoredRecord, Value};
 
@@ -54,25 +52,11 @@ pub fn carried_by_links(r: &RelationDecl) -> bool {
 }
 
 fn key_field(name: &str, target: &TypeName, authority: Authority) -> FieldDecl {
-    FieldDecl {
-        annotations: Default::default(),
-        name: name.into(),
-        ty: FieldType {
-            target: Some(target.clone()),
-            ..FieldType::kind(StorageKind::Reference)
-        },
-        required: true,
-        authority,
-        derived: None,
-        function: None,
-        depends_on: vec![],
-        on_input_change: Default::default(),
-        sensitive: false,
-        searchable: false,
-        description: None,
-        label: None,
-        embed: None,
-    }
+    let mut f = FieldDecl::of(name, StorageKind::Reference);
+    f.ty.target = Some(target.clone());
+    f.required = true;
+    f.authority = authority;
+    f
 }
 
 /// The link type of relation `r` on type `t`.
@@ -83,21 +67,14 @@ pub fn link_type(t: &TypeName, r: &RelationDecl) -> TypeDecl {
     ];
     fields.extend(r.fields.iter().cloned());
     TypeDecl {
-        annotations: Default::default(),
-        name: link_type_name(t, &r.name),
         key: vec![FROM.into(), TO.into()],
         fields,
-        relations: vec![],
-        view: None,
-        valid_from: None,
-        valid_to: None,
         field_meta: true,
-        language: None,
         description: Some(format!(
             "The links of relation `{}` of `{t}` to `{}`.",
             r.name, r.target
         )),
-        label: None,
+        ..TypeDecl::named(link_type_name(t, &r.name))
     }
 }
 

@@ -5,13 +5,13 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::{FieldDecl, FieldType, RelationDecl, StorageKind};
+use lakelands_api::ontology::{RelationDecl, StorageKind};
 use lakelands_api::query::{Depth, Pattern, QueryResult, Step, Walk};
 use lakelands_api::{Error, LakeStore, RecordKey, Refusal, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, field, limits, type_decl};
+use crate::conformance::fixture::{Lake, Must, field, limits, reason, reference, type_decl};
 
 check!(
     /// A step must follow a declared relation.
@@ -38,13 +38,7 @@ async fn org(store: &dyn LakeStore) -> Result<Lake, Failure> {
         "person",
         vec![
             field("name", StorageKind::Text),
-            FieldDecl {
-                ty: FieldType {
-                    target: Some("person".into()),
-                    ..FieldType::kind(StorageKind::Reference)
-                },
-                ..field("boss", StorageKind::Text)
-            },
+            reference("boss", "person"),
         ],
     );
     ty.relations = vec![RelationDecl {
@@ -71,12 +65,10 @@ async fn org(store: &dyn LakeStore) -> Result<Lake, Failure> {
 }
 
 fn step(relation: &str, walk: Walk, min: u32, max: u32) -> Step {
+    let depth = Depth { min, max };
     Step {
-        relation: relation.into(),
-        walk,
-        ty: None,
-        filter: None,
-        depth: Depth { min, max },
+        depth,
+        ..crate::conformance::fixture::step(relation, walk)
     }
 }
 
@@ -97,13 +89,7 @@ async fn a_step_over_a_relation_the_type_does_not_declare_is_refused(
         .await
         .must_fail("walking the undeclared relation `audited_by`")?;
     ensure!(
-        matches!(
-            err,
-            Error::Refused {
-                reason: Refusal::Invalid { .. },
-                ..
-            }
-        ),
+        matches!(reason(&err), Some(Refusal::Invalid { .. })),
         "a step over the undeclared relation `audited_by` must be refused as invalid; \
          it failed with {err:?}"
     );

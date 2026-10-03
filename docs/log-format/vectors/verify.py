@@ -12,7 +12,7 @@ export or a SQLite lake directory holds it instead, reading only
 `<dir>/log/` (log-format §4.2): canonical lines each ending in a line
 feed, positions consecutive from 0 and naming their files in 20 digits,
 the hash chain from 64 zeros, every checkpoint against the position,
-the hash and the files before it, format versions from 1 to 8 that
+the hash and the files before it, format versions from 1 to 9 that
 never go down, a verb on its type (declared with `scope: type`, called or
 proposed with no `key`) only from version 8 on, a derived relation only from version 6 on, a declaration's `annotations` only from version 5 on, a proposed declaration or migration only from version 4 on, `upstream` only from version 3 on and only on a
 `record_ingested` event, and every `known_at` in its one form and never before
@@ -126,7 +126,7 @@ def check(ok, what):
         sys.exit(1)
 
 
-FIRST_FORMAT, NEWEST_FORMAT = 1, 8
+FIRST_FORMAT, NEWEST_FORMAT = 1, 9
 ONE_FORM = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z")
 
 
@@ -435,6 +435,21 @@ def main():
     check(sha(canonical(body)) == negative8["hash"], "v8.json: the negative line's hash is its own")
     check(negative8["v"] == 7 and negative8["body"]["declaration"]["view"]["params"],
           "v8.json: the negative line declares a view's parameters in format 7, which a reader refuses")
+    v9 = json.loads((HERE / "v9.json").read_text("utf-8"))
+    for line, want in zip(v9["lines"], v9["hashes"]):
+        event = json.loads(line)
+        check(canonical(event) == line.encode("utf-8"), f"v9.json: position {event['position']} is canonical")
+        check(event["v"] == 9 and event["body"]["declaration"]["view"]["merge"],
+              f"v9.json: position {event['position']} is a format 9 view that merges sources")
+        body = {k: v for k, v in event.items() if k != "hash"}
+        check(sha(canonical(body)) == event["hash"] == want, f"v9.json: hash {want[:12]}…")
+        check(event["prev"] == prev, f"v9.json: position {event['position']} follows the one before it")
+        prev = event["hash"]
+    negative9 = json.loads(v9["negative"])
+    body = {k: v for k, v in negative9.items() if k != "hash"}
+    check(sha(canonical(body)) == negative9["hash"], "v9.json: the negative line's hash is its own")
+    check(negative9["v"] == 8 and negative9["body"]["declaration"]["view"]["merge"],
+          "v9.json: the negative line declares a merge in format 8, which a reader refuses")
     for name in ("negative_verb", "negative_call"):
         negative = json.loads(v8[name])
         body = {k: v for k, v in negative.items() if k != "hash"}

@@ -259,6 +259,7 @@ masking are the store's.
 | `get(type, key)` | One record's latest state at or before the position, retired and restricted included; none if it had none by then. |
 | `get_many(type, keys)` | What `get` answers for each of the keys, in one read: each record once, in key order, a key with no record left out. The store's walks read the far ends of a page of links through it (lakelands#227). |
 | `scan(type, scan)` | The records of `type` whose latest state at the position qualifies, as below. |
+| `count(type, scan)` | How many records `scan(type, scan)` would answer with its order, `after` and `limit` ignored: the flags, `valid_at`, `equal` and `filter` qualify them as below. Its cost is in **The ceiling of a count**, below. |
 | `edges(type, keys, relation, walk)` | The links of some records of one type, one list per key in the keys' order, each what the key alone answers; a link between two of the keys is in both lists. An engine answers them in one read, not one per key: the store's walks ask a page of records at a time (`lakelands_core::graph::PAGE`, 256), and PostgreSQL reads each page in a fixed number of statements (lakelands#227). For each record, its links over one relation or all: `Out` those it declares, `In` those that point at it, `Both` their union with each link once (a link from a record to itself included). Links to a retired or missing record are returned as they are; hiding that end is the store's (`docs/decisions/026-the-store-walks-the-graph.md`). No order is promised; the store's walks order their own answers. A relation with `via` is carried by that reference field: a record links to the target whose key is the field's text value, and `Edge.fields` is empty. A relation without `via` is carried by the live records of its link type `sys.link.<type>.<relation>` at the position (`docs/log-format.md` §2.3): `Out` gives the links whose `from` is the record, `In` those whose `to` is, and `Edge.fields` holds each link's own fields, `from` and `to` left out. A removed (retired) link is no edge. The rule is `lakelands_core::links::link_edges`: at the head an engine may find a link type's candidates through its own index (SQLite and PostgreSQL look `from` and `to` up in their exact-text index), and at an earlier position it reads the link type's records there. |
 | `lexical(type, text, fields, k)` | Full-text hits at the position, as below; with `fields`, in those of the type's searchable fields only. |
 | `proposals(filter)` | Every proposal whose latest state at the position matches `filter.state`, `filter.kind` (`upsert`, `retire`, `call`, `declare` or `migrate`) and `filter.type` (a `call`'s type is its verb's `on` type in force at the position; a `declare` touches every type it declares or a declaration of it acts on, a `migrate` its type), newest first — by the position of that latest state, descending, then by id — and at most `filter.limit`. `order_by`, `cursor` and the read position in the filter are the store's and the engine ignores them: the store applies the caller's `order_by` to the engine's answer, and refuses as `Invalid` an `order_by` naming a member a proposal does not have. |
@@ -308,11 +309,28 @@ one row more than it answers. An engine's paging is an
 optimisation that may never change an answer
 (`docs/decisions/029-every-answer-has-one-order.md`).
 
+**The ceiling of a count.** `count` holds one batch of the type at a
+time, never the type: every engine reads the type's states in key order,
+1 024 at a time, and counts those that qualify by the one rule
+(`lakelands_core::engines::count_in_key_order`), so its memory is a batch
+and its time is linear in the type. At the head, a count that qualifies
+records by the flags alone (no `filter`, no `equal`, no `valid_at`) is
+SQLite's and PostgreSQL's `COUNT(*)` over the states in force, which
+answers without reading a state. The store counts through it: `find`
+with only `count()` measures and no `group_by` asks `count` with the
+filter the engine can apply, and a filter only the store can evaluate
+is applied over engine pages read one after another and dropped, as for
+`find`. A view is computed whole before it is counted (lakelands#388).
+
 **The ceiling of `find`.** `find` asks the engine for its page,
 never the type: its order, the row it continues after, and `limit + 1`
 rows. A filter only the store can evaluate is applied over engine pages
 read one after another, so its cost is the rows read to fill the page:
-bounded in memory, linear in time. A page ordered by key reads about
+bounded in memory, linear in time. An `offset` reads the rows it skips
+the same way, a page at a time, and drops them, so a jump holds one
+page and costs the rows it skips; `total` is the count above, at the
+same position
+(`docs/decisions/045-a-table-reads-a-page-and-its-total.md`). A page ordered by key reads about
 `limit` rows, not the type; every engine reads it in key order from
 `after` and stops when it is full (`lakelands_core::engines::
 scan_in_key_order`). **A page ordered by a field reads its page when the
@@ -330,13 +348,26 @@ about 0.1 ms in memory, 0.3 ms on SQLite and 2 ms on PostgreSQL.
 `describe_type` names a type's indexed fields in its lifecycle
 (`sorted`). The index is used only while it describes the head; a lake
 whose index a writer did not keep sorts as below until a writer's open
-rebuilds it. **Its ceilings:** with several sort fields, the first
+rebuilds it. **At an earlier position** — every page of a walk after a
+write, which its cursor keeps at the first page's position — a page reads
+the head's index too, passing over the keys of the type changed since the
+position and merging in their states there, read in the same snapshot
+(`scan_in_field_order_at`): SQLite and PostgreSQL find those keys by two
+range reads, into `records_since (ty, since)` and `records_at`, the
+memory engine in a per-type log of the states put. More than `min(10 ×
+limit, 4 096)` states put since, or keys changed, and the page sorts the
+type as below. At 100 000 records a page of 50 with 500 keys changed
+takes 2 ms on SQLite and 8 ms on PostgreSQL, against 0.18 s and 0.24 s for
+the sort; `records_since` costs a write about 1 to 2 %
+(`docs/decisions/041-a-sorted-page-reads-its-page.md`, extended).
+**Its ceilings:** with several sort fields, the first
 field's index orders runs of equal values and each run is read whole and
 sorted, so a first field with few values reads most of the type (a
 boolean first: about 0.3 s in memory, 0.45 s on SQLite and 1.3 s on
 PostgreSQL at 100 000 records). A field the lake did not ask an index
-for, an earlier position, an order by `known_at`, `seen_at` or `latest`,
-and a view type read the type at the position and sort it by `sort_key`,
+for, an earlier position past the ceiling above, an order by `known_at`,
+`seen_at` or `latest`, and a view type read the type at the position and
+sort it by `sort_key`,
 holding it only for that answer: about 0.2 s in memory, 0.5 s on SQLite
 and 0.6 s on PostgreSQL for a page of 50 over 100 000 records. Because
 each such engine page sorts the type again, a filter only the store
@@ -478,7 +509,7 @@ earlier position ranks by the index at the head and keeps only the
 candidates visible at that position.
 
 **The ceiling.** Every engine searches by brute force with the one
-cosine (`lakelands_core::engines::cosine`) and keeps the best `k` as it
+cosine (`lakelands_api::query::cosine`) and keeps the best `k` as it
 goes (`lakelands_core::engines::TopK`), whose answer is what ranking
 every vector and cutting at `k` answers, to the bit. So what a search
 holds is `k` entries, whatever the field holds; SQLite steps its
@@ -568,6 +599,7 @@ holds it to.
 | a put of the same thing at the same position replaces it | engine: `a_put_at_the_same_position_replaces_the_state_there` |
 | `scan`'s order, `after` and `limit`, including a limit of 0 and values of mixed kinds | engine: `mixed_kinds_sort_the_same_on_every_engine`, `a_scan_continues_strictly_after_its_keyset_position` |
 | a key-ordered `scan` read in batches answers as one scan over every state | engine: `a_key_ordered_scan_answers_across_its_batches_as_one_scan` |
+| `count` is the number of records its scan selects, across batches, at the head and earlier; `find`'s `count()` is a full walk's length, holding a batch | engine: `a_count_is_the_number_of_records_its_scan_selects`; suite: `a_count_answers_as_many_records_as_a_full_find_walk`, the streaming check's `count` rows |
 | a `find` page crosses the seam as about `limit` rows, with or without a filter only the store evaluates | store: `tests/find_pages.rs` |
 | `scan`'s filter matches the evaluator exactly, including comparisons across kinds and filters that error; the flags and `valid_at` | engine: `scan_filters_exactly_as_the_evaluator_including_mixed_kinds_and_errors`, `scan_honours_retired_restricted_and_valid_at` |
 | `lexical`'s hit set, its language, searchable fields only, live only (restricted included), ties by key, `k`; at an earlier position, visibility from the position and text from the head | engine: `lexical_hits_are_the_pipelines_over_searchable_live_records`, `lexical_finds_every_token_the_pipeline_makes_beyond_ascii`, `lexical_at_an_earlier_position_ranks_by_the_head_and_keeps_what_was_visible_then`, `lexical_over_named_fields_is_the_pipelines_over_those_fields` |
@@ -870,9 +902,9 @@ the lake took that many other events while the executor ran) is answered
 as none; the position stands, and nothing runs again.
 
 There is no default: a verb whose executor is not bound is refused as
-`Unbound`, never faked. The store checks it when the verb is called and
-again when a proposal to call it is accepted, before anything is
-written.
+`Unbound`, never faked. The store checks it when the verb is called or
+a call of it is proposed, and again when a proposal to call it is
+accepted, before anything is written.
 
 ## `ChangeFeed`
 
@@ -890,7 +922,11 @@ once, possibly empty, never waiting for new events:
   trigger on a relation carried by link records watches its link type,
   `sys.link.<type>.<relation>`, so its `trigger_fired` events carry that
   type and the link's key; `docs/decisions/035-a-link-is-a-record.md`); an
-  event without one passes only a filter with no types. The kinds are
+  event without one passes only a filter with no types. A verb's events
+  name no type, even for a verb on its type: `verb_called`,
+  `write_proposed`, `write_accepted` and `output_recorded` pass no
+  filter that names types, while `proposals` filtered by type lists a
+  proposed call under its verb's type. The kinds are
   free strings, so a relay may name one a newer format adds;
   `lakelands_api::event::KINDS` lists the kinds of this format version.
   A non-empty `filter.keys` admits only events about a record with one

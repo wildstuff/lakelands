@@ -7,7 +7,8 @@
 //! never waits on storage. There is no other hand-off in this crate: no
 //! nested runtime, no thread that parks the caller.
 
-use lakelands_api::{Error, Result};
+use lakelands_api::Result;
+use lakelands_core::unavailable;
 
 /// Run `work` on the blocking pool and answer its result. A panic inside
 /// the work is reported as the lake being unavailable, never propagated
@@ -19,8 +20,8 @@ where
 {
     match tokio::task::spawn_blocking(work).await {
         Ok(answer) => answer,
-        Err(e) => Err(Error::Unavailable {
-            message: format!("the store's work on this lake stopped unexpectedly: {e}"),
-        }),
+        Err(e) => Err(unavailable(format!(
+            "the store's work on this lake stopped unexpectedly: {e}"
+        ))),
     }
 }

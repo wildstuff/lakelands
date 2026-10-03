@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{
     Assignment, EmbedDecl, FieldDecl, FieldType, Measure, RelationDecl, StorageKind, TriggerDecl,
-    TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, ViewDecl, ViewParam,
+    TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, ViewDecl, ViewParam, ViewSource,
 };
 use lakelands_api::write::{AnnotationFault, Declaration, FunctionDecl, ObjectSetDecl};
 use lakelands_api::{
@@ -35,25 +35,13 @@ pub(super) const EXPR_BACKING: &str = "expr";
 pub(super) struct Known {
     /// Value types, with their storage kind when their file parsed.
     pub value_types: BTreeMap<String, Option<StorageKind>>,
-    /// Types.
     pub types: BTreeSet<String>,
 }
 
-/// The name a storage kind has in a bundle (`date_time`, `vector`).
-pub(super) fn kind_name(kind: StorageKind) -> String {
-    match serde_json::to_value(kind) {
-        Ok(serde_json::Value::String(s)) => s,
-        _ => String::new(),
-    }
-}
+pub(super) use crate::value::kind_name;
 
 fn kind_named(name: &str) -> Option<StorageKind> {
     StorageKind::ALL.into_iter().find(|k| kind_name(*k) == name)
-}
-
-/// Why a name cannot be declared, if it cannot (`crate::names`).
-pub(super) fn name_fault(what: &str, name: &str) -> Option<String> {
-    crate::names::fault(what, name)
 }
 
 /// The lowering of one file.
@@ -74,15 +62,12 @@ impl<'a> Lower<'a> {
     }
 
     fn fail(&mut self, problem: Problem, message: String) {
-        self.errors.push(BundleError {
-            file: self.file.to_owned(),
-            problem,
-            message,
-        });
+        self.errors
+            .push(BundleError::new(self.file, problem, message));
     }
 
     fn name(&mut self, what: &str, name: &str) {
-        if let Some(fault) = name_fault(what, name) {
+        if let Some(fault) = crate::names::fault(what, name) {
             self.fail(Problem::BadName, fault);
         }
     }
@@ -140,20 +125,9 @@ impl<'a> Lower<'a> {
             StrOr::Str(short) => {
                 let ty = self.field_type(&at, StrOr::Str(short));
                 return FieldDecl {
-                    annotations: Default::default(),
                     name: FieldName::new(name),
                     ty,
-                    required: false,
-                    authority: Default::default(),
-                    derived: None,
-                    function: None,
-                    depends_on: Vec::new(),
-                    on_input_change: Default::default(),
-                    sensitive: false,
-                    searchable: false,
-                    description: None,
-                    label: None,
-                    embed: None,
+                    ..FieldDecl::default()
                 };
             }
             StrOr::Map(body) => body,
@@ -329,7 +303,6 @@ fn split_call(s: &str) -> Option<(&str, Option<&str>)> {
     }
 }
 
-/// A value type.
 pub(super) fn value_type(l: &mut Lower<'_>, doc: ValueTypeDoc) -> ValueTypeDecl {
     if kind_named(&doc.name).is_some() {
         l.fail(
@@ -451,12 +424,38 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
                 }
             })
             .collect();
+        let merge = v
+            .merge
+            .into_iter()
+            .map(|m| {
+                let at = format!("view, merged source `{}`", m.source);
+                ViewSource {
+                    source: l.type_ref(&at, &m.source),
+                    r#where: l.opt_cond(&format!("{at}, `where`"), m.filter),
+                    group_by: l.names("group_by field", m.group_by.0),
+                    measures: m
+                        .measures
+                        .0
+                        .into_iter()
+                        .map(|(name, expr)| {
+                            l.name("measure", &name);
+                            let expr = l.cond(&format!("{at}, measure `{name}`"), expr);
+                            Measure {
+                                name: FieldName::new(name),
+                                expr,
+                            }
+                        })
+                        .collect(),
+                }
+            })
+            .collect();
         ViewDecl {
             source,
             r#where: filter,
             group_by,
             measures,
             params,
+            merge,
         }
     });
     let t = TypeDecl {
@@ -526,7 +525,6 @@ pub(super) fn verb(l: &mut Lower<'_>, doc: VerbDoc) -> VerbDecl {
     v
 }
 
-/// A trigger.
 pub(super) fn trigger(l: &mut Lower<'_>, doc: TriggerDoc) -> TriggerDecl {
     let on = l.type_ref("`on`", &doc.on);
     let when = l.opt_cond("`when`", doc.when);
@@ -539,7 +537,6 @@ pub(super) fn trigger(l: &mut Lower<'_>, doc: TriggerDoc) -> TriggerDecl {
     }
 }
 
-/// An object set.
 pub(super) fn object_set(l: &mut Lower<'_>, doc: ObjectSetDoc) -> ObjectSetDecl {
     let of = l.type_ref("`of`", &doc.of);
     let filter = l.cond("`where`", doc.filter);

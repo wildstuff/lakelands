@@ -240,16 +240,22 @@ cargo run -q -p lakelands-server --example mcp_call -- --server "lakelands serve
 **5. `query`** from P-500, at 19 (this session's lease; the moved lake's
 head was 18): component 0 of size 2, P-500 and P-600.
 
-**6. `query`** from the whole type: refused, and `mcp_call` stops with
+**6. `query`** from the whole type: refused. `mcp_call` prints the
+tool error whole, its two sentences and the error as JSON, and exits 1:
 
 ```
 error: refused: a graph measure may reach 5 records, no more
   what to do: start from fewer records, or raise the lake's `max_graph_nodes` in its location
+{
+  "error": "refused",
+  "reason": {
+    "max": 5,
+    "refusal": "too_large"
+  }
+}
 ```
 
-The tool's result is an error whose structured part is `{ "error":
-"refused", "reason": { "refusal": "too_large", "max": 5 } }`. Nothing
-partial is answered.
+Nothing partial is answered.
 
 **The agent's answer:**
 

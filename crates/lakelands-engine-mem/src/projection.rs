@@ -27,8 +27,7 @@ use lakelands_api::query::Edge;
 use lakelands_api::read::Direction;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
-
-use crate::invalid;
+use lakelands_core::engines;
 
 /// The states of one thing, each valid from a position, oldest first.
 #[derive(Clone, Debug)]
@@ -137,6 +136,9 @@ pub(crate) struct Projection {
     pub(crate) outputs: BTreeMap<(String, Digest), History<Value>>,
     pub(crate) applied: BTreeMap<EventId, Position>,
     pub(crate) folded: Option<Position>,
+    /// Per type, every record state put, by position and key: the keys a
+    /// page at an earlier position reads apart from the order index.
+    changes: BTreeMap<TypeName, BTreeSet<(Position, RecordKey)>>,
     /// The order index of the head (`engines::order_rows`): per type and
     /// declared field, the head records holding it, by sort key and key.
     pub(crate) sorted: BTreeMap<(TypeName, FieldName), SortedRows>,
@@ -175,17 +177,9 @@ impl Projection {
     /// a commit behind the projection, or a put valid only after
     /// `through`, refuses the transaction and changes nothing.
     pub(crate) fn commit(&mut self, puts: Vec<Put>, through: Position) -> Result<()> {
-        if let Some(folded) = self.folded.filter(|f| *f > through) {
-            return Err(invalid(format!(
-                "the projection reflects the log through position {folded}; a transaction \
-                 cannot commit through the earlier position {through}"
-            )));
-        }
-        if let Some(late) = puts.iter().map(Put::own_position).find(|p| *p > through) {
-            return Err(invalid(format!(
-                "a state valid from position {late} cannot be committed through the earlier \
-                 position {through}"
-            )));
+        let late = puts.iter().map(Put::own_position).find(|p| *p > through);
+        if let Some(refused) = engines::commit_refusal(self.folded, late, through) {
+            return Err(refused);
         }
         let mut records = BTreeSet::new();
         let mut types = BTreeSet::new();
@@ -241,6 +235,39 @@ impl Projection {
         }
         self.folded = Some(through);
         Ok(())
+    }
+
+    /// The keys of `ty` with a state put after `at`, and their states at
+    /// `at`; `None` past `ceiling` states put.
+    pub(crate) fn changed(
+        &self,
+        ty: &TypeName,
+        at: Position,
+        ceiling: usize,
+    ) -> Option<engines::Changed> {
+        let after = (Position(at.0 + 1), RecordKey::from(""));
+        let put = self
+            .changes
+            .get(ty)
+            .into_iter()
+            .flat_map(|c| c.range(after.clone()..));
+        let mut keys = BTreeSet::new();
+        for (n, (_, key)) in put.enumerate() {
+            if n >= ceiling {
+                return None;
+            }
+            keys.insert(key.clone());
+        }
+        let states = keys
+            .iter()
+            .filter_map(|k| {
+                self.records
+                    .get(&(ty.clone(), k.clone()))?
+                    .at(Some(at))
+                    .cloned()
+            })
+            .collect();
+        Some(engines::Changed { keys, states })
     }
 
     /// The fields of `ty` whose order index the lake keeps: those its
@@ -431,6 +458,10 @@ impl Projection {
             }
             Put::Record(r) => {
                 let from = r.position;
+                self.changes
+                    .entry(r.ty.clone())
+                    .or_default()
+                    .insert((from, r.key.clone()));
                 self.records
                     .entry((r.ty.clone(), r.key.clone()))
                     .or_default()

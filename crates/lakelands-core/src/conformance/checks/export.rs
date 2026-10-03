@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use lakelands_api::event::EventBody;
+use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::{Error, LakeStore, Position, Refusal};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -19,7 +20,9 @@ use sha2::{Digest as _, Sha256};
 use super::rekey;
 use crate::canonical;
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, doors, field, log_events, owner, type_decl, upsert};
+use crate::conformance::fixture::{
+    Lake, Must, count_view, doors, find_at, log_events, owner, reason, type_of,
+};
 use crate::export::{self, Manifest};
 
 check!(
@@ -101,16 +104,16 @@ check!(
 
 /// The check's scratch directory, cleared of anything an earlier run
 /// left, and removed again when the check ends, however it ends.
-struct Scratch(PathBuf);
+pub(super) struct Scratch(PathBuf);
 
 impl Scratch {
-    fn new(base: PathBuf) -> Scratch {
+    pub(super) fn new(base: PathBuf) -> Scratch {
         let _ = fs::remove_dir_all(&base);
         Scratch(base)
     }
 
     /// A directory for one export, not yet created.
-    fn dir(&self, what: &str) -> PathBuf {
+    pub(super) fn dir(&self, what: &str) -> PathBuf {
         self.0.join(what)
     }
 }
@@ -145,20 +148,8 @@ fn files(dir: &Path) -> Result<Vec<String>, Failure> {
 /// A lake with an `invoice` type and `n` invoices written.
 async fn invoices(store: &dyn LakeStore, from: u32, n: u32) -> Result<Position, Failure> {
     let l = Lake::of(store);
-    let Lake { cat, own } = &l;
     if from == 0 {
-        crate::conformance::fixture::declare(
-            cat.as_ref(),
-            own,
-            type_decl(
-                "invoice",
-                vec![field(
-                    "amount",
-                    lakelands_api::ontology::StorageKind::Number,
-                )],
-            ),
-        )
-        .await?;
+        l.declare(type_of("invoice", &[("amount", Number)])).await?;
     }
     let mut at = Position::GENESIS;
     for i in from..from + n {
@@ -382,8 +373,7 @@ async fn an_export_into_a_directory_that_holds_anything_is_refused(
     let said = export::write(store.as_ref(), &dir).await;
     let named = dir.display().to_string();
     ensure!(
-        matches!(&said, Err(Error::Refused { reason: Refusal::Precondition { message }, .. })
-            if message.contains(&named)),
+        matches!(reason(&said), Some(Refusal::Precondition { message }) if message.contains(&named)),
         "an export into {named}, which holds a file, is refused as a failed precondition naming \
          it, and it answered {said:?}"
     );
@@ -450,19 +440,12 @@ async fn a_damaged_export_is_refused_naming_the_position(
 ) -> Result<(), Failure> {
     let scratch = Scratch::new(scratch);
     // A re-key, so the last events are format 2; a checkpoint, so two files.
-    rekey::lake(store.as_ref(), rekey::IBANS).await?;
+    let l = rekey::lake(store.as_ref(), rekey::IBANS).await?;
     rekey::apply(store.as_ref()).await?;
     let sealed_at = store.checkpoint().await.must("checkpointing")?;
-    let cat = doors(store.as_ref());
     for holder in ["after", "later"] {
-        upsert(
-            cat.as_ref(),
-            &owner(store.as_ref()),
-            "account",
-            "DE2",
-            json!({"holder": holder}),
-        )
-        .await?;
+        l.upsert("account", "DE2", json!({"holder": holder}))
+            .await?;
     }
     let head = store.head().await.must("reading the head")?;
     let (first, active) = (
@@ -603,13 +586,14 @@ fn import_seams() -> lakelands_api::seam::Seams {
     }
 }
 
-/// A lake with two writers, two sealed segments and six format
+/// A lake with two writers, two sealed segments and seven format
 /// versions: invoices, a checkpoint, the lake opened again by a second
 /// writer (a second lease, a greater fence), a re-key (version 2), a
 /// restricted and a retired invoice, an annotated type with a derived
 /// relation (version 6) and a derived `date_bucket` field, a trigger whose
 /// guard calls `retired` (version 7), a view with a parameter and a verb
-/// called on its type (version 8), a record ingested with an upstream,
+/// called on its type (version 8), a view that merges a second source
+/// (version 9), a record ingested with an upstream,
 /// a second checkpoint and more invoices.
 /// Answers the
 /// second writer's handle and a position before the second checkpoint.
@@ -625,26 +609,19 @@ async fn exported_lake(
     let store = writer.as_ref();
     rekey::lake(store, rekey::IBANS).await?;
     rekey::apply(store).await?;
-    let own = owner(store);
-    let cat = doors(store);
+    let l = Lake::of(store);
+    let Lake { cat, own } = &l;
     let invoice = lakelands_api::TypeName::from("invoice");
     store
         .restrict(&invoice, &"i1".into(), "held".into())
         .await
         .must("restricting `i1`")?;
-    cat.retire(
-        &own,
-        &invoice,
-        &"i2".into(),
-        lakelands_api::WriteOpts::default(),
-    )
-    .await
-    .must("retiring `i2`")?;
+    l.retire(invoice.as_str(), "i2").await?;
     // Format version 3: a derived field calling date_bucket, and a record
     // ingested with the lake and position it was read from. Format version
     // 5: the type, a field and a relation carry annotations. Format version
     // 6: a relation derived from matching values.
-    let stamp: lakelands_api::write::Declaration = serde_json::from_value(json!({
+    l.declare_json(json!({
         "declare": "type", "name": "stamp",
         "annotations": {"acme.icon": "clock", "acme.package": {"name": "audit", "weight": 1.5}},
         "fields": [
@@ -658,20 +635,14 @@ async fn exported_lake(
             {"name": "same_at", "target": "stamp", "derived": {"match": [{"from": "at", "to": "at"}]}}
         ]
     }))
-    .expect("a declaration");
-    cat.declare(&own, stamp)
-        .await
-        .must("declaring an annotated type with a derived field calling date_bucket")?;
+    .await?;
     // Format version 7: a trigger whose guard calls `retired`.
-    let gone: lakelands_api::write::Declaration = serde_json::from_value(json!({
+    l.declare_json(json!({
         "declare": "trigger", "name": "stamp_retired", "on": "stamp", "when": "retired()"
     }))
-    .expect("a declaration");
-    cat.declare(&own, gone)
-        .await
-        .must("declaring a trigger whose guard calls retired")?;
+    .await?;
     // Format version 8: a view with a parameter.
-    let up_to: lakelands_api::write::Declaration = serde_json::from_value(json!({
+    l.declare_json(json!({
         "declare": "type", "name": "stamps_up_to", "key": ["month"],
         "fields": [{"name": "month", "type": {"kind": "date_time"}},
                    {"name": "stamps", "type": {"kind": "number"}}],
@@ -679,21 +650,31 @@ async fn exported_lake(
                  "where": "at <= param('until')", "group_by": ["month"],
                  "measures": [{"name": "stamps", "expr": "count()"}]}
     }))
-    .expect("a declaration");
-    cat.declare(&own, up_to)
-        .await
-        .must("declaring a view with a parameter")?;
+    .await?;
+    // Format version 9: a view that merges a second source on its key.
+    l.declare_json(json!({
+        "declare": "type", "name": "tick", "fields": [{"name": "at", "type": {"kind": "date_time"}}]
+    }))
+    .await?;
+    l.declare_json(json!({
+        "declare": "type", "name": "stamps_and_ticks", "key": ["month"],
+        "fields": [{"name": "month", "type": {"kind": "date_time"}},
+                   {"name": "stamps", "type": {"kind": "number"}},
+                   {"name": "ticks", "type": {"kind": "number"}}],
+        "view": {"source": "stamp", "group_by": ["month"],
+                 "measures": [{"name": "stamps", "expr": "count()"}],
+                 "merge": [{"source": "tick", "group_by": ["at"],
+                            "measures": [{"name": "ticks", "expr": "count()"}]}]}
+    }))
+    .await?;
     // Format version 8 too: a verb on its type, called with no key.
-    let print: lakelands_api::write::Declaration = serde_json::from_value(json!({
+    l.declare_json(json!({
         "declare": "verb", "name": "print_stamp", "on": "stamp", "scope": "type",
         "risk": "low", "effect": "external", "executor": crate::conformance::backing::EXECUTOR
     }))
-    .expect("a declaration");
-    cat.declare(&own, print)
-        .await
-        .must("declaring a verb on its type")?;
+    .await?;
     cat.call(
-        &own,
+        own,
         &"print_stamp".into(),
         None,
         Default::default(),
@@ -710,7 +691,7 @@ async fn exported_lake(
         lake: "upstream-lake".into(),
         position: Position(42),
     });
-    crate::conformance::fixture::ingest(cat.as_ref(), &own, "mirror", vec![read_from])
+    crate::conformance::fixture::ingest(cat.as_ref(), own, "mirror", vec![read_from])
         .await
         .must("ingesting `s1` with an upstream")?;
     let earlier = store.head().await.must("reading the head")?;
@@ -747,12 +728,7 @@ async fn answers(store: &dyn LakeStore, earlier: Position) -> Result<Value, Fail
                     &t.name,
                     Find {
                         limit: Some(1_000),
-                        with_meta: true,
-                        at: ReadAt {
-                            as_of: at,
-                            valid_at: None,
-                        },
-                        ..Find::default()
+                        ..find_at(at)
                     },
                 )
                 .await;
@@ -873,23 +849,11 @@ async fn an_import_is_refused_for_a_damaged_export_another_lake_or_a_lake_holdin
     let from = scratch.dir("from");
     write(store.as_ref(), &from).await?;
     let lake = store.lake().clone();
-    let refused = |e: Result<crate::conformance::ImportedLake, Error>, what: &str| match e {
-        Ok(_) => Err(Failure::new(format!(
-            "{what} must be refused; it was imported"
-        ))),
-        Err(e) => Ok(e),
-    };
     // Refused as asked: the caller's precondition, not a lake that may
     // answer later.
     let precondition = |e: &Error, what: &str| {
         ensure!(
-            matches!(
-                e,
-                Error::Refused {
-                    reason: Refusal::Precondition { .. },
-                    ..
-                }
-            ),
+            matches!(reason(&e), Some(Refusal::Precondition { .. })),
             "{what} must be refused as a failed precondition; it was refused as {e:?}"
         );
         Ok(())
@@ -969,15 +933,9 @@ async fn an_import_refuses_a_declaration_member_it_does_not_know_naming_it(
         e["body"]["declaration"]["icon"] = json!("receipt");
     })?;
     rewrite(&from, &file, &lines)?;
-    let why = match (given.import)(from, store.lake().clone(), None, import_seams()).await {
-        Ok(_) => {
-            return Err(Failure::new(
-                "an export whose declaration of `invoice` carries `icon` must be refused; it \
-                 was imported",
-            ));
-        }
-        Err(e) => e.to_string(),
-    };
+    let imported = (given.import)(from, store.lake().clone(), None, import_seams()).await;
+    let what = "an export whose declaration of `invoice` carries `icon`";
+    let why = refused(imported, what)?.to_string();
     ensure!(
         why.contains("`icon`") && why.contains("`invoice`"),
         "an export whose declaration of `invoice` carries `icon` must be refused naming the \
@@ -1016,14 +974,8 @@ async fn an_import_refuses_a_context_carrying_cause_naming_it(
         e["context"]["cause"] = json!(0);
     })?;
     rewrite(&from, &file, &lines)?;
-    let why = match (given.import)(from, store.lake().clone(), None, import_seams()).await {
-        Ok(_) => {
-            return Err(Failure::new(
-                "an export whose `context` carries `cause` must be refused; it was imported",
-            ));
-        }
-        Err(e) => e.to_string(),
-    };
+    let imported = (given.import)(from, store.lake().clone(), None, import_seams()).await;
+    let why = refused(imported, "an export whose `context` carries `cause`")?.to_string();
     ensure!(
         why.contains("`context` carries `cause`"),
         "an export whose `context` carries `cause` must be refused naming it; it was refused \
@@ -1032,27 +984,20 @@ async fn an_import_refuses_a_context_carrying_cause_naming_it(
     Ok(())
 }
 
+/// The error an import was refused with, or a failure naming `what` if
+/// it was imported.
+fn refused(
+    e: Result<crate::conformance::ImportedLake, Error>,
+    what: &str,
+) -> Result<Error, Failure> {
+    e.map(|_| ())
+        .err()
+        .ok_or_else(|| Failure::new(format!("{what} must be refused; it was imported")))
+}
+
 /// A view over `source`, counting its records by `k`.
 fn tally_view(name: &str, source: &str) -> lakelands_api::ontology::TypeDecl {
-    let mut t = type_decl(
-        name,
-        vec![
-            field("k", lakelands_api::ontology::StorageKind::Text),
-            field("n", lakelands_api::ontology::StorageKind::Number),
-        ],
-    );
-    t.key = vec!["k".into()];
-    t.view = Some(Box::new(lakelands_api::ontology::ViewDecl {
-        source: source.into(),
-        params: Vec::new(),
-        r#where: None,
-        group_by: vec!["k".into()],
-        measures: vec![lakelands_api::ontology::Measure {
-            name: "n".into(),
-            expr: "count()".into(),
-        }],
-    }));
-    t
+    count_view(name, source, "k")
 }
 
 async fn a_cycle_of_views_from_an_imported_log_is_refused_on_read(
@@ -1061,10 +1006,7 @@ async fn a_cycle_of_views_from_an_imported_log_is_refused_on_read(
 ) -> Result<(), Failure> {
     let scratch = Scratch::new(given.scratch.clone());
     let l = Lake::of(store.as_ref());
-    let mut tally = type_decl(
-        "tally",
-        vec![field("k", lakelands_api::ontology::StorageKind::Text)],
-    );
+    let mut tally = type_of("tally", &[("k", Text)]);
     tally.key = vec!["k".into()];
     l.declare(tally).await?;
     l.upsert("tally", "x", json!({"k": "x"})).await?;
@@ -1122,8 +1064,7 @@ async fn a_cycle_of_views_from_an_imported_log_is_refused_on_read(
             .find(&own, &view.into(), lakelands_api::read::Find::default())
             .await;
         ensure!(
-            matches!(&r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
-                if message.contains("`view_a`") && message.contains("`view_b`")),
+            matches!(reason(&r), Some(Refusal::Invalid { message }) if message.contains("`view_a`") && message.contains("`view_b`")),
             "`{view}` reads itself through the other view in the imported log, so a read of it \
              must be refused as invalid, naming both; it answered {r:?}"
         );

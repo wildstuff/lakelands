@@ -14,17 +14,101 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
-use lakelands_api::ontology::{FieldDecl, StorageKind, TypeDecl};
+use lakelands_api::ontology::{
+    Authority, EmbedDecl, FieldDecl, Measure, StorageKind, TypeDecl, ViewDecl,
+};
 use lakelands_api::principal::TypeGrants;
+use lakelands_api::query::{Depth, Pattern, Projection, Start, Step, Walk};
+use lakelands_api::read::{AggFunc, AggMeasure, Direction, Order, OrderBy};
 use lakelands_api::write::Declaration;
 use lakelands_api::{
     Access, Catalog, Committed, Error, FieldName, Find, Found, Get, Grants, LakeStore, Outcome,
-    Patch, Position, Principal, PrincipalKind, ReadAt, Record, RecordKey, SourceId, SourceRecord,
-    SourceStream, TypeName, Value, WriteContext, WriteOpts,
+    Patch, Position, Principal, PrincipalKind, ReadAt, Record, RecordKey, Refusal, SourceId,
+    SourceRecord, SourceStream, TypeName, Value, WriteContext, WriteOpts,
 };
 use rust_decimal::Decimal;
 
 use super::Failure;
+
+/// An answer a refusal may be in: an error, or a result that may hold one.
+pub trait Answer {
+    /// The error the answer holds, if any.
+    fn error(&self) -> Option<&Error>;
+}
+
+impl Answer for Error {
+    fn error(&self) -> Option<&Error> {
+        Some(self)
+    }
+}
+
+impl<T> Answer for lakelands_api::Result<T> {
+    fn error(&self) -> Option<&Error> {
+        self.as_ref().err()
+    }
+}
+
+impl<A: Answer + ?Sized> Answer for &A {
+    fn error(&self) -> Option<&Error> {
+        (**self).error()
+    }
+}
+
+/// Why an answer is a refusal, if it is one.
+pub fn reason(a: &impl Answer) -> Option<&Refusal> {
+    match a.error() {
+        Some(Error::Refused { reason, .. }) => Some(reason),
+        _ => None,
+    }
+}
+
+/// The field an answer's refusal names, and why, if it is a refusal that
+/// names one.
+pub fn refused_on(a: &impl Answer) -> Option<(&str, &Refusal)> {
+    match a.error() {
+        Some(Error::Refused {
+            field: Some(f),
+            reason,
+        }) => Some((f.as_str(), reason)),
+        _ => None,
+    }
+}
+
+/// Whether an answer is the one for a field the type does not declare,
+/// naming `name`: also the answer for a field the principal may not know
+/// of (`docs/decisions/006-grants-not-roles.md`).
+pub fn no_such_field(a: &impl Answer, name: &str) -> bool {
+    matches!(refused_on(a), Some((f, Refusal::Invalid { message }))
+        if f == name && message.contains("has no field"))
+}
+
+/// Whether an answer is a refusal as invalid.
+pub fn is_invalid(a: &impl Answer) -> bool {
+    matches!(reason(a), Some(Refusal::Invalid { .. }))
+}
+
+/// `answer`, to `what`, must be a refusal as invalid whose text names each
+/// of `names`.
+pub fn invalid_naming<T: Debug>(
+    what: &str,
+    answer: lakelands_api::Result<T>,
+    names: &[&str],
+) -> Result<(), Failure> {
+    match answer {
+        Err(e) if is_invalid(&e) => {
+            let why = e.to_string();
+            if names.iter().all(|n| why.contains(n)) {
+                return Ok(());
+            }
+            Err(Failure::new(format!(
+                "{what} must be refused naming {names:?}; it said: {why}"
+            )))
+        }
+        other => Err(Failure::new(format!(
+            "{what} must be refused as invalid; it answered {other:?}"
+        ))),
+    }
+}
 
 /// Turns the result of a contract call into the check's own result.
 pub trait Must<T> {
@@ -103,6 +187,13 @@ impl Lake {
         }
     }
 
+    /// Writes the setting `key` as the owner.
+    pub async fn set(&self, key: &str, value: Value) -> Result<Outcome, Failure> {
+        let setting = serde_json::json!({"key": key, "value": value});
+        self.upsert(lakelands_api::seam::SETTING_TYPE, key, setting)
+            .await
+    }
+
     /// Declares a type as the owner.
     pub async fn declare(&self, ty: TypeDecl) -> Result<Outcome, Failure> {
         declare(self.cat.as_ref(), &self.own, ty).await
@@ -111,6 +202,60 @@ impl Lake {
     /// Upserts `fields` into one record as the owner, with no options.
     pub async fn upsert(&self, ty: &str, key: &str, fields: Value) -> Result<Outcome, Failure> {
         upsert(self.cat.as_ref(), &self.own, ty, key, fields).await
+    }
+
+    /// The lake as `describe` answers it to the owner at the head.
+    pub async fn describe(&self) -> Result<lakelands_api::describe::LakeDescription, Failure> {
+        let d = self.cat.describe(&self.own, ReadAt::default()).await;
+        Ok(d.must("describing the lake as the owner")?.data)
+    }
+
+    /// The type `ty` as `describe` answers it to the owner at the head.
+    pub async fn describe_type(
+        &self,
+        ty: &str,
+    ) -> Result<lakelands_api::describe::TypeDescription, Failure> {
+        let (t, what) = (
+            TypeName::from(ty),
+            format!("describing `{ty}` as the owner"),
+        );
+        let d = self.cat.describe_type(&self.own, &t, ReadAt::default());
+        Ok(d.await.must(&what)?.data)
+    }
+
+    /// Declares `d` as the owner; `what` names it if that fails.
+    pub async fn declare_as(&self, d: Declaration, what: &str) -> Result<Outcome, Failure> {
+        self.cat.declare(&self.own, d).await.must(what)
+    }
+
+    /// Declares, as the owner, the declaration `json` describes.
+    pub async fn declare_json(&self, json: Value) -> Result<Outcome, Failure> {
+        let what = format!("declaring {json}");
+        let d: Declaration = serde_json::from_value(json)
+            .map_err(|e| Failure::new(format!("the check's declaration does not read: {e}")))?;
+        self.cat.declare(&self.own, d).await.must(&what)
+    }
+
+    /// Declares a type as the owner, answering the store's raw result.
+    pub async fn try_declare(&self, ty: TypeDecl) -> lakelands_api::Result<Outcome> {
+        self.cat.declare(&self.own, Declaration::Type(ty)).await
+    }
+
+    /// Migrates a type to `to` as the owner: the preflight, then the apply
+    /// of the report it answered.
+    pub async fn migrate(&self, to: TypeDecl) -> Result<Outcome, Failure> {
+        let what = format!("migrating `{}`", to.name);
+        let report = self.cat.migrate(&self.own, migration(to.clone()));
+        let id = report.await.must(&what)?.data.report_id;
+        let applied = self.cat.migrate_apply(&self.own, migration(to), &id);
+        applied.await.must(&what)
+    }
+
+    /// Retires one record as the owner.
+    pub async fn retire(&self, ty: &str, key: &str) -> Result<Outcome, Failure> {
+        let (t, k) = (TypeName::from(ty), RecordKey::from(key));
+        let retired = self.cat.retire(&self.own, &t, &k, WriteOpts::default());
+        retired.await.must(&format!("retiring `{ty}` `{key}`"))
     }
 
     /// Reads one record at the head as the owner, with provenance.
@@ -148,29 +293,127 @@ pub fn principal(
     }
 }
 
-/// An agent that reads everything and may write only `fields` of `ty`.
-pub fn field_writer(store: &dyn LakeStore, id: &str, ty: &str, fields: &[&str]) -> Principal {
+/// A reviewer holding `review`, and `schema` when asked.
+pub fn reviewer(store: &dyn LakeStore, schema: bool) -> Principal {
+    principal(
+        store,
+        PrincipalKind::Human,
+        if schema { "architect" } else { "reviewer" },
+        Grants {
+            review: true,
+            schema,
+            ..Grants::default()
+        },
+    )
+}
+
+/// An agent `id` that reads everything but holds `fields` of `ty`, each
+/// with its own access.
+pub fn field_access(
+    store: &dyn LakeStore,
+    id: &str,
+    ty: &str,
+    fields: &[(&str, Access)],
+) -> Principal {
     let mut grants = Grants {
         default: Access::Read,
         ..Grants::default()
     };
+    let fields = fields.iter().map(|(f, a)| (FieldName::from(*f), *a));
     grants.types.insert(
         TypeName::from(ty),
         TypeGrants {
             default: None,
-            fields: fields
-                .iter()
-                .map(|f| (FieldName::from(*f), Access::Write))
-                .collect(),
+            fields: fields.collect(),
         },
     );
     principal(store, PrincipalKind::Agent, id, grants)
+}
+
+/// An agent that reads everything and may write only `fields` of `ty`.
+pub fn field_writer(store: &dyn LakeStore, id: &str, ty: &str, fields: &[&str]) -> Principal {
+    let fields: Vec<_> = fields.iter().map(|f| (*f, Access::Write)).collect();
+    field_access(store, id, ty, &fields)
 }
 
 /// A field of a bare storage kind, authored, optional, with every other
 /// member at its default.
 pub fn field(name: &str, kind: StorageKind) -> FieldDecl {
     FieldDecl::of(name, kind)
+}
+
+/// A field only a source writes.
+pub fn sourced(name: &str, kind: StorageKind) -> FieldDecl {
+    FieldDecl {
+        authority: Authority::Source,
+        ..field(name, kind)
+    }
+}
+
+/// A field derived by `expr` from the fields `deps`.
+pub fn derived(name: &str, kind: StorageKind, expr: &str, deps: &[&str]) -> FieldDecl {
+    FieldDecl {
+        authority: Authority::Derived,
+        derived: Some(expr.into()),
+        depends_on: deps.iter().map(|d| FieldName::from(*d)).collect(),
+        ..field(name, kind)
+    }
+}
+
+/// A field computed by the function `function` from the fields `deps`.
+pub fn computed_by(name: &str, kind: StorageKind, function: &str, deps: &[&str]) -> FieldDecl {
+    FieldDecl {
+        authority: Authority::Derived,
+        function: Some(function.into()),
+        depends_on: deps.iter().map(|d| FieldName::from(*d)).collect(),
+        ..field(name, kind)
+    }
+}
+
+/// A vector field of `dims` dimensions.
+pub fn vector(name: &str, dims: u32) -> FieldDecl {
+    let mut f = field(name, StorageKind::Vector);
+    f.ty.dimensions = Some(dims);
+    f
+}
+
+/// A vector field of `dims` dimensions, the embedding by `model` of the
+/// fields `from`.
+pub fn embedding(name: &str, dims: u32, from: &[&str], model: &str) -> FieldDecl {
+    let from = from.iter().map(|f| FieldName::from(*f)).collect();
+    FieldDecl {
+        authority: Authority::Derived,
+        embed: Some(EmbedDecl {
+            from,
+            model: model.into(),
+        }),
+        ..vector(name, dims)
+    }
+}
+
+/// A type whose records are keyed by the writer, of plain fields, each a
+/// name and its kind.
+pub fn type_of(name: &str, fields: &[(&str, StorageKind)]) -> TypeDecl {
+    type_decl(name, fields.iter().map(|(n, k)| field(n, *k)).collect())
+}
+
+/// A field that refers to a record of `target`.
+pub fn reference(name: &str, target: &str) -> FieldDecl {
+    FieldDecl {
+        ty: lakelands_api::ontology::FieldType {
+            target: Some(target.into()),
+            ..lakelands_api::ontology::FieldType::kind(StorageKind::Reference)
+        },
+        ..field(name, StorageKind::Text)
+    }
+}
+
+/// A searchable text field.
+pub fn searchable(name: &str) -> FieldDecl {
+    FieldDecl {
+        searchable: true,
+        ..field(name, StorageKind::Text)
+    }
 }
 
 /// A type whose records are keyed by the writer, with these fields.
@@ -182,43 +425,255 @@ pub fn type_decl(name: &str, fields: Vec<FieldDecl>) -> TypeDecl {
     }
 }
 
+/// A view's measure: `name`, computed as `expr`.
+pub fn measure(name: &str, expr: &str) -> Measure {
+    Measure {
+        name: FieldName::from(name),
+        expr: expr.into(),
+    }
+}
+
+/// A view `name` over `source`, keyed and grouped by `by`, declaring
+/// `fields` and computing `measures`, each a name and its expression.
+pub fn view_of(
+    name: &str,
+    source: &str,
+    by: &[&str],
+    fields: Vec<FieldDecl>,
+    measures: &[(&str, &str)],
+) -> TypeDecl {
+    let by: Vec<FieldName> = by.iter().map(|f| FieldName::from(*f)).collect();
+    TypeDecl {
+        key: by.clone(),
+        view: Some(Box::new(ViewDecl {
+            source: TypeName::from(source),
+            params: Vec::new(),
+            r#where: None,
+            group_by: by,
+            measures: measures.iter().map(|(n, e)| measure(n, e)).collect(),
+            merge: Vec::new(),
+        })),
+        ..type_decl(name, fields)
+    }
+}
+
+/// A view `name` counting the records of `source` by the text field `by`,
+/// into `n`.
+pub fn count_view(name: &str, source: &str, by: &str) -> TypeDecl {
+    let fields = vec![
+        field(by, StorageKind::Text),
+        field("n", StorageKind::Number),
+    ];
+    view_of(name, source, &[by], fields, &[("n", "count()")])
+}
+
+/// A find of the records `filter` holds for.
+pub fn find_where(filter: &str) -> Find {
+    Find {
+        filter: Some(filter.into()),
+        ..Find::default()
+    }
+}
+
+/// One sort key: `field`'s `by`, in `dir`.
+pub fn order(field: &str, by: OrderBy, dir: Direction) -> Order {
+    Order {
+        field: FieldName::from(field),
+        by,
+        dir,
+    }
+}
+
+/// An aggregate's measure `name`: `func` over `field`, or over the records.
+pub fn agg(name: &str, func: AggFunc, field: Option<&str>) -> AggMeasure {
+    AggMeasure {
+        name: FieldName::from(name),
+        func,
+        field: field.map(FieldName::from),
+    }
+}
+
+/// The trigger `name` on `on`, firing when `when` holds (on every change
+/// without one), with no ceiling and no description.
+pub fn trigger_on(name: &str, on: &str, when: Option<&str>) -> Declaration {
+    Declaration::Trigger(lakelands_api::ontology::TriggerDecl {
+        max_depth: None,
+        name: name.into(),
+        on: on.into(),
+        when: when.map(Into::into),
+        description: None,
+    })
+}
+
+/// A low-risk verb `name` on the records of `on` that sets `field` to
+/// the expression `value`, taking no payload.
+pub fn write_verb(name: &str, on: &str, field: &str, value: &str) -> Declaration {
+    use lakelands_api::ontology::{Assignment, Risk, VerbDecl, VerbEffect};
+    let set = vec![Assignment {
+        field: field.into(),
+        value: value.into(),
+    }];
+    Declaration::Verb(VerbDecl {
+        name: name.into(),
+        on: on.into(),
+        scope: Default::default(),
+        payload: vec![],
+        risk: Risk::Low,
+        requires: None,
+        effect: VerbEffect::Write { set },
+        description: None,
+    })
+}
+
+/// The object set `name` of the records of `of` that `filter` holds for.
+pub fn object_set_on(name: &str, of: &str, filter: &str) -> Declaration {
+    Declaration::ObjectSet(lakelands_api::write::ObjectSetDecl {
+        name: name.into(),
+        of: of.into(),
+        filter: filter.into(),
+        description: None,
+    })
+}
+
+/// One hop over `relation`, in the direction `walk`.
+pub fn step(relation: &str, walk: Walk) -> Step {
+    Step {
+        relation: relation.into(),
+        walk,
+        ty: None,
+        filter: None,
+        depth: Depth::default(),
+    }
+}
+
+/// A pattern from the records of `ty`, or the one at `key`, over `steps`,
+/// answering `project`; no filter, order, limit or time axis.
+pub fn pattern(ty: &str, key: Option<&str>, steps: Vec<Step>, project: Projection) -> Pattern {
+    Pattern {
+        start: Start {
+            ty: ty.into(),
+            key: key.map(Into::into),
+            filter: None,
+            search: None,
+            params: Default::default(),
+        },
+        steps,
+        to: None,
+        project,
+        order_by: Vec::new(),
+        limit: None,
+        cursor: None,
+        at: ReadAt::default(),
+    }
+}
+
 /// Declares a type as `who`.
 pub async fn declare(cat: &dyn Catalog, who: &Principal, ty: TypeDecl) -> Result<Outcome, Failure> {
     let what = format!("declaring type `{}`", ty.name);
     cat.declare(who, Declaration::Type(ty)).await.must(&what)
 }
 
-/// Every event of the lake's log, oldest first (at most ten thousand).
+/// The lake's log, oldest first: up to 10 000 events.
 pub async fn log_events(
     store: &dyn LakeStore,
 ) -> Result<Vec<lakelands_api::event::Event>, Failure> {
-    Ok(store
-        .feed()
-        .poll(
-            Position::GENESIS,
-            &lakelands_api::seam::FeedFilter::default(),
-            10_000,
-        )
-        .await
-        .must("reading the log")?
-        .events)
+    events_from(store, Position::GENESIS).await
+}
+
+/// The lake's events from `from` on, oldest first: up to 10 000.
+pub async fn events_from(
+    store: &dyn LakeStore,
+    from: Position,
+) -> Result<Vec<lakelands_api::event::Event>, Failure> {
+    let all = lakelands_api::seam::FeedFilter::default();
+    let polled = store.feed().poll(from, &all, 10_000).await;
+    Ok(polled.must(&format!("reading the log from {from}"))?.events)
+}
+
+/// The lake's events after `after`, oldest first: up to 10 000.
+pub async fn events_after(
+    store: &dyn LakeStore,
+    after: Position,
+) -> Result<Vec<lakelands_api::event::Event>, Failure> {
+    events_from(store, after.next()).await
+}
+
+/// A host's reactive context `depth` deep, naming `cause`.
+pub fn reactive(depth: u32, cause: Option<Position>) -> WriteContext {
+    WriteContext {
+        origin: lakelands_api::principal::WriteOrigin::Reactive,
+        depth,
+        cause,
+    }
+}
+
+/// A migration of a type to `to`, with no field renamed.
+pub fn migration(to: TypeDecl) -> lakelands_api::write::Migration {
+    lakelands_api::write::Migration {
+        to,
+        renames: Vec::new(),
+    }
+}
+
+/// A value type `name` of `kind`, with no constraint, choices, format or
+/// scale.
+pub fn value_type(name: &str, kind: StorageKind) -> lakelands_api::ontology::ValueTypeDecl {
+    lakelands_api::ontology::ValueTypeDecl {
+        name: name.into(),
+        kind,
+        constraint: None,
+        one_of: Vec::new(),
+        format: None,
+        scale: None,
+        description: None,
+    }
+}
+
+/// An agent of the lake that holds no grant at all.
+pub fn nobody(store: &dyn LakeStore) -> Principal {
+    principal(store, PrincipalKind::Agent, "nobody", Grants::default())
+}
+
+/// An agent `id` that reads every field and writes none.
+pub fn reads_all(store: &dyn LakeStore, id: &str) -> Principal {
+    let grants = Grants {
+        default: Access::Read,
+        ..Grants::default()
+    };
+    principal(store, PrincipalKind::Agent, id, grants)
+}
+
+/// Restricts one record of `ty` for `why`, at the store's own door.
+pub async fn restrict(
+    store: &dyn LakeStore,
+    ty: &str,
+    key: impl Into<RecordKey>,
+    why: &str,
+) -> Result<Position, Failure> {
+    let (t, k) = (TypeName::from(ty), key.into());
+    let what = format!("restricting `{ty}` `{}`", k.as_str());
+    store.restrict(&t, &k, why.into()).await.must(&what)
 }
 
 /// The `output_recorded` events of the lake's log, oldest first.
 pub async fn recorded_outputs(
     store: &dyn LakeStore,
 ) -> Result<Vec<lakelands_api::event::Event>, Failure> {
-    Ok(store
-        .feed()
-        .poll(
-            Position::GENESIS,
-            &lakelands_api::seam::FeedFilter {
-                kinds: vec!["output_recorded".into()],
-                ..Default::default()
-            },
-            u32::MAX,
-        )
-        .await
+    outputs_from(store, Position::GENESIS).await
+}
+
+/// The `output_recorded` events of the lake's log from `from` on, oldest
+/// first.
+pub async fn outputs_from(
+    store: &dyn LakeStore,
+    from: Position,
+) -> Result<Vec<lakelands_api::event::Event>, Failure> {
+    let outputs = lakelands_api::seam::FeedFilter {
+        kinds: vec!["output_recorded".into()],
+        ..Default::default()
+    };
+    let polled = store.feed().poll(from, &outputs, u32::MAX).await;
+    Ok(polled
         .must("reading the recorded outputs from the feed")?
         .events)
 }
@@ -227,32 +682,13 @@ pub async fn recorded_outputs(
 /// the partner's `amount`s, as a field of kind `total`, and `invoices`
 /// their count.
 pub fn partner_totals(name: &str, total: StorageKind) -> TypeDecl {
-    use lakelands_api::ontology::{Measure, ViewDecl};
-    let measure = |name: &str, expr: &str| Measure {
-        name: FieldName::from(name),
-        expr: expr.into(),
-    };
-    TypeDecl {
-        key: vec![FieldName::from("partner")],
-        view: Some(Box::new(ViewDecl {
-            source: TypeName::from("invoice"),
-            r#where: None,
-            group_by: vec![FieldName::from("partner")],
-            measures: vec![
-                measure("total", "sum(amount)"),
-                measure("invoices", "count()"),
-            ],
-            params: Default::default(),
-        })),
-        ..type_decl(
-            name,
-            vec![
-                field("partner", StorageKind::Text),
-                field("total", total),
-                field("invoices", StorageKind::Number),
-            ],
-        )
-    }
+    let fields = vec![
+        field("partner", StorageKind::Text),
+        field("total", total),
+        field("invoices", StorageKind::Number),
+    ];
+    let measures = [("total", "sum(amount)"), ("invoices", "count()")];
+    view_of(name, "invoice", &["partner"], fields, &measures)
 }
 
 /// A patch from a JSON object; anything but an object is an empty patch.
@@ -283,17 +719,45 @@ pub async fn upsert(
     .must(&what)
 }
 
+/// An upsert of `fields` into one record with no options, its answer as
+/// it came: for a check that expects a refusal.
+pub async fn try_upsert(
+    cat: &dyn Catalog,
+    who: &Principal,
+    ty: &str,
+    key: &str,
+    fields: Value,
+) -> lakelands_api::Result<Outcome> {
+    let (t, k) = (TypeName::from(ty), RecordKey::from(key));
+    cat.upsert(who, &t, &k, patch(fields), WriteOpts::default())
+        .await
+}
+
 /// A `get` of one record, with provenance, at `as_of` (the head when
 /// `None`).
 pub fn get_at(key: &str, as_of: Option<Position>) -> Get {
     Get {
         key: RecordKey::from(key),
         with_meta: true,
-        at: ReadAt {
-            as_of,
-            valid_at: None,
-        },
+        at: read_at(as_of),
         params: Default::default(),
+    }
+}
+
+/// A read at `as_of` (the head when `None`), with no valid time.
+pub fn read_at(as_of: Option<Position>) -> ReadAt {
+    ReadAt {
+        as_of,
+        valid_at: None,
+    }
+}
+
+/// A `find` of every record, with provenance, at `as_of`.
+pub fn find_at(as_of: Option<Position>) -> Find {
+    Find {
+        with_meta: true,
+        at: read_at(as_of),
+        ..Find::default()
     }
 }
 
@@ -333,7 +797,9 @@ pub async fn all_found(
             .await
             .must(&format!("finding `{ty}` records"))?;
         match reply.data {
-            Found::Records { rows, next_cursor } => {
+            Found::Records {
+                rows, next_cursor, ..
+            } => {
                 out.extend(rows);
                 match next_cursor {
                     Some(cursor) => find.cursor = Some(cursor),
@@ -423,6 +889,33 @@ pub async fn head_unmoved(
              a refused write must append nothing"
         )))
     }
+}
+
+/// Feeds `records` from `source` as `l`'s owner and checks that the
+/// windows it answers reach the head; `what` names the delivery.
+pub async fn delivered(
+    store: &dyn LakeStore,
+    l: &Lake,
+    source: &str,
+    records: Vec<SourceRecord>,
+    what: &str,
+) -> Result<Vec<Committed>, Failure> {
+    let windows = l.ingest(source, records).await.must(what)?;
+    windows_reach_head(store, &windows, what).await?;
+    Ok(windows)
+}
+
+/// The error a refused `answer` holds, once the head is still `before`;
+/// `what` names the attempt in either failure.
+pub async fn refused_unmoved<T: Debug>(
+    store: &dyn LakeStore,
+    before: Position,
+    what: &str,
+    answer: lakelands_api::Result<T>,
+) -> Result<Error, Failure> {
+    let err = answer.must_fail(what)?;
+    head_unmoved(store, before, what).await?;
+    Ok(err)
 }
 
 /// Fail unless an ingest's windows answer positions in log order and the

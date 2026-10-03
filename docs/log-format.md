@@ -1,6 +1,6 @@
 # The log format
 
-**Format version 8.** Reviewed so that a verifier can be written from
+**Format version 9.** Reviewed so that a verifier can be written from
 this document alone (lakelands#14). `0.1.0` is tagged, so every change
 to the format bumps the version, and a lake writes the version it had
 until an event needs a newer one (§6). Version 2 adds one member,
@@ -10,7 +10,8 @@ and reads exactly as before. Version 3 adds the envelope member
 the proposal of a declaration or a migration. Version 5 adds a
 declaration's `annotations`. Version 6 adds a derived relation and a trigger's `max_depth`.
 Version 7 adds a call of `retired` in a declaration. Version 8 adds a
-view's `params` and a call of `param`, and a verb called on its type. §6 says
+view's `params` and a call of `param`, and a verb called on its type.
+Version 9 adds a view's `merge`. §6 says
 which event needs which version.
 
 A lake's event log is its truth (`docs/decisions/001-the-log-is-the-truth.md`).
@@ -196,7 +197,10 @@ this object:
   that declares parameters has a fifth member, `params`, the list of
   `{ "name", "kind" }` in declared order; a view without them has no
   `params` member, so its hash is the one it had before views could take
-  parameters.
+  parameters. A view that merges sources has a member `merge` likewise,
+  the list of `{ "source", "where", "group_by", "measures" }` in declared
+  order, each in the form of the view's own members; a view without one
+  has no `merge` member.
 - All four members are always present: an empty `key`, `fields` or
   `relations` is written `[]`, and a type that is not a view has
   `"view": null`.
@@ -587,6 +591,7 @@ event raises it; "that append" is the append that holds it.
 | 6 | A derived relation, a relation declaration's `derived`, and a trigger's `max_depth` (Appendix A). A lake writes the version it had until the append that holds its first event whose declaration holds a relation with `derived` or is a trigger with `max_depth` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`); that append carries `v` 6, as does every event after it; a version-5 (or older) event that carries one is refused, naming it. A version-5 reader refuses the version-6 events rather than refusing a member it does not know. `derived` is never part of the schema hash (§2.2). Version 6 took both members while it was untagged; a tagged version is closed. |
 | 7 | A call of `retired` in a declaration's expressions (Appendix B): in a trigger's `when`, the one place it means something. A lake writes the version it had until the append that holds its first event whose declaration calls `retired` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`); that append carries `v` 7, as does every event after it; a version-6 (or older) event that calls it is refused, naming it. A version-6 reader refuses the version-7 events rather than reading a guard it cannot evaluate, which would never fire. |
 | 8 | A view's `params` and a call of `param` in a declaration's expressions (Appendix A, Appendix B): a view may declare parameters, which a read binds and its `where` and measures read with `param('name')`. A lake writes the version it had until the append that holds its first event whose declaration is a view with a non-empty `params`, or calls `param` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`); that append carries `v` 8, as does every event after it; a version-7 (or older) event that carries either is refused, naming it. A version-7 reader refuses the version-8 events rather than computing a view whose parameters it cannot bind. `params` is part of the schema hash only when it is not empty (§2.2). The same version adds a verb called on its type (`docs/decisions/013-verbs-run-by-declared-risk.md`, extended): a verb declaration's `scope: type` (in a `declared` event or a proposed `declare`); a `verb_called` without `key`; and a proposed `call` without `key`. A lake writes the version it had until the append that holds its first such event; that append carries `v` 8, as does every event after it, and a version-7 (or older) event that carries one is refused, naming it. Version 8 took both while it was untagged. |
+| 9 | A view's `merge` (Appendix A): further sources a view merges on its key, each with its own `where`, `group_by` lined up with the view's by position, and aggregate measures the view's measures read by name. A lake writes the version it had until its first event whose declaration is a view with a non-empty `merge` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`), which carries `v` 9, as does every event after it; a version-8 (or older) event that carries one is refused, naming it. A version-8 reader refuses the version-9 events rather than computing a view from its main source alone. `merge` is part of the schema hash only when it is not empty (§2.2). |
 
 ## Appendix A. Encodings
 
@@ -618,7 +623,7 @@ with that declaration's members beside it. Every member not marked
 | a field (in `fields`, a relation's `fields`, a verb's `payload`, a function's `inputs`) | `name` and `type` (required), `required` (`false`), `authority` (`authored`), `derived` (none), `depends_on` (`[]`), `on_input_change` (`keep`), `sensitive` (`false`), `searchable` (`false`), `description`, `label` (none), `annotations` (`{}`, version 5) |
 | a field's `type` | `kind` (required), `value_type`, `target`, `dimensions` (none) |
 | a relation | `name` and `target` (required), `cardinality` (`many_to_one`), `authority` (`authored`; who writes its links, when it has no `via`), `inverse`, `via` (none), `fields` (`[]`), `description` (none), `annotations` (`{}`, version 5), `derived` (none, version 6: `{ "match": [ { "from", "to" } ] }`, a field of the owner and one of the target per pair) |
-| a `view` | `source` and `measures` (required; each measure `{ "name", "expr" }`), `where` (none), `group_by` (`[]`), `params` (`[]`, version 8: each `{ "name", "kind" }`, a kind of `text`, `number`, `decimal`, `boolean` or `date_time`) |
+| a `view` | `source` and `measures` (required; each measure `{ "name", "expr" }`), `where` (none), `group_by` (`[]`), `params` (`[]`, version 8: each `{ "name", "kind" }`, a kind of `text`, `number`, `decimal`, `boolean` or `date_time`), `merge` (`[]`, version 9: each `{ "source", "where", "group_by", "measures" }`; `source` and `measures` required, `where` none, `group_by` `[]`) |
 | `value_type` | `name` and `kind` (required), `constraint` (none), `one_of` (`[]`), `format`, `scale`, `description` (none) |
 | `verb` | `name`, `on`, `risk` and `effect` (required), `payload` (`[]`), `requires` (none), `description` (none); `effect: write` carries `set`, a list of `{ "field", "value" }`; `effect: external` carries `executor` |
 | `trigger` | `name` and `on` (required), `when`, `description` (none), `max_depth` (none, version 6: an integer at most the lake's `max_reactive_depth`) |

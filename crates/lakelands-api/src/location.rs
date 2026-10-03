@@ -244,6 +244,9 @@ pub struct Limits {
     /// The most records a whole-graph measure may reach; past it the
     /// measure is refused `too_large`, never cut.
     pub max_graph_nodes: u32,
+    /// The most rows a `find` may skip with `offset`; past it the read is
+    /// refused `too_large`, never cut.
+    pub max_offset: u32,
 }
 
 impl Default for Limits {
@@ -255,6 +258,7 @@ impl Default for Limits {
             max_reactive_depth: 8,
             commit_window_events: 32,
             max_graph_nodes: 100_000,
+            max_offset: 100_000,
         }
     }
 }

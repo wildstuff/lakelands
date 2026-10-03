@@ -295,6 +295,12 @@ pub trait ProjectionView {
     /// Records of one type.
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>>;
 
+    /// How many records of one type `scan` selects: its flags, `valid_at`,
+    /// `equal` and `filter` as for [`ProjectionView::scan`], its order,
+    /// keyset position and limit ignored. Counting holds no more than one
+    /// batch of the type at a time.
+    fn count(&self, ty: &TypeName, scan: &Scan) -> Result<u64>;
+
     /// Many records of one type; a key with no record is left out.
     /// Retired and restricted records included; ordered by key.
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>>;

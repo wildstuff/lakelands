@@ -18,11 +18,13 @@
 //! For `tools/list` it prints each tool's name and description, and with
 //! `--schemas` its input and output JSON schemas too, so the doors'
 //! schemas can be read as the server derives them from the types and the
-//! caller's rights; for a
-//! `tools/call`, the position line and the result's structured content as
-//! pretty JSON, or the tool error's two sentences. It exits 0 when every
-//! request succeeded, 1 when one failed (and stops there), and 2 when the
-//! command line was not understood.
+//! caller's rights; for a `tools/call`, the position line and the result's
+//! structured content as pretty JSON. A tool error goes to stderr whole,
+//! as an agent reads it: its two sentences, what and what to do, then the
+//! error as pretty JSON when the result carries it; the session goes on
+//! with the next request. It exits 0 when every request succeeded, 1 when
+//! a tool refused one or a request failed (a failed request stops the
+//! session there), and 2 when the command line was not understood.
 //!
 //! ```sh
 //! cargo run -p lakelands-server --example mcp_call -- \
@@ -146,6 +148,7 @@ async fn main() -> ExitCode {
 }
 
 async fn run(client: &RunningService<RoleClient, ()>, requests: Vec<Request>) -> ExitCode {
+    let mut refused = false;
     for request in requests {
         match request {
             Request::List(schemas) => match client.list_all_tools().await {
@@ -185,11 +188,17 @@ async fn run(client: &RunningService<RoleClient, ()>, requests: Vec<Request>) ->
                     }
                 };
                 if result["isError"] == Value::Bool(true) {
-                    // The tool error's text: two sentences, what and what to do.
-                    if let Some(text) = result["content"][0]["text"].as_str() {
-                        eprint!("{text}");
+                    // Every part of the tool error: the text of two
+                    // sentences, and the error as JSON beside it.
+                    for part in result["content"].as_array().into_iter().flatten() {
+                        let text = part["text"].as_str().unwrap_or_default();
+                        match serde_json::from_str::<Value>(text) {
+                            Ok(v @ Value::Object(_)) => eprintln!("{}", pretty(&v)),
+                            _ => eprint!("{text}"),
+                        }
                     }
-                    return ExitCode::FAILURE;
+                    refused = true;
+                    continue;
                 }
                 let structured = &result["structuredContent"];
                 println!("position {}", structured["position"]);
@@ -197,7 +206,11 @@ async fn run(client: &RunningService<RoleClient, ()>, requests: Vec<Request>) ->
             }
         }
     }
-    ExitCode::SUCCESS
+    if refused {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 fn pretty(v: &Value) -> String {

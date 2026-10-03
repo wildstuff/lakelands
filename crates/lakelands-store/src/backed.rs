@@ -43,6 +43,7 @@ use lakelands_api::record::{FieldMeta, Origin, Patch};
 use lakelands_api::seam::FunctionCall;
 use lakelands_api::write::FunctionDecl;
 use lakelands_api::{FieldName, LakeId, Position, RecordKey, Result, TypeName, Value};
+use lakelands_core::unavailable;
 use serde_json::json;
 
 use crate::backing::EXPR;
@@ -440,13 +441,12 @@ pub fn settle_fields(
     if backed.is_empty() {
         return Ok(changed);
     }
-    let order =
-        computed_order(ontology, decl).map_err(|why| lakelands_api::Error::Unavailable {
-            message: format!(
-                "the fold cannot order the computed fields of `{}`: {why}",
-                decl.name
-            ),
-        })?;
+    let order = computed_order(ontology, decl).map_err(|why| {
+        unavailable(format!(
+            "the fold cannot order the computed fields of `{}`: {why}",
+            decl.name
+        ))
+    })?;
     let mut waiting: BTreeSet<FieldName> = BTreeSet::new();
     for (name, reads) in order {
         let reads_waiting = reads.iter().any(|r| waiting.contains(r));
@@ -466,10 +466,7 @@ pub fn settle_fields(
             continue;
         }
         let call = computer.call(fields);
-        let moved = match before {
-            None => true,
-            Some(b) => computer.call(b) != call,
-        };
+        let moved = before.is_none_or(|b| computer.call(b) != call);
         let unsettled =
             !fields.contains_key(&name) && metas.get(&name).is_none_or(|m| m.error.is_none());
         if !force && !moved && !unsettled {
@@ -841,7 +838,7 @@ async fn settle_embeddings(lake: &Arc<Lake>, drain: &mut Drain, batch: &[Due]) -
 }
 
 /// A backing's failure, in its own words.
-fn why(e: &lakelands_api::Error) -> String {
+pub(crate) fn why(e: &lakelands_api::Error) -> String {
     use lakelands_api::{Error, Refusal};
     match e {
         Error::Unavailable { message }
@@ -902,12 +899,7 @@ fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Posi
         )?;
         if let Some(after) = after {
             fills = true;
-            let host = lakelands_api::Principal {
-                kind: lakelands_api::PrincipalKind::System,
-                id: "lakelands".into(),
-                lake: lake.id.clone(),
-                grants: lakelands_api::Grants::owner(),
-            };
+            let host = lake.system("lakelands");
             let call = crate::writes::Call {
                 lake,
                 who: &host,

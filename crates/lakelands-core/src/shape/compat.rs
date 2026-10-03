@@ -13,8 +13,8 @@
 //! - **Declared** — nothing stored has to change: a change of meaning
 //!   only (descriptions, labels, authority, indexing marks); a new
 //!   optional field; a required field made optional; a new relation; a
-//!   relation whose cardinality only widens; a change to a view, which
-//!   stores nothing.
+//!   relation whose cardinality only widens; any change to a view, which
+//!   stores nothing, a view becoming a stored type included.
 //! - **Migrated** — a stored record could stop matching: a field or
 //!   relation removed; a field's type changed (its kind, value type,
 //!   reference target or vector length); an optional field made
@@ -277,8 +277,8 @@ fn list(names: &[FieldName]) -> String {
 ///
 /// Only shape is compared, exactly the members the schema hash covers,
 /// so a revision whose schema hash is unchanged is always
-/// `Declare { changes: [] }`. When both declarations are views nothing is
-/// stored, and every change is declared.
+/// `Declare { changes: [] }`. When `before` is a view nothing is stored, so
+/// every change is declared, a view becoming a stored type included.
 pub fn classify(before: &TypeDecl, after: &TypeDecl) -> Change {
     let mut all = Vec::new();
     diff_fields(&before.fields, &after.fields, None, &mut all);
@@ -304,7 +304,9 @@ pub fn classify(before: &TypeDecl, after: &TypeDecl) -> Change {
         }
     }
 
-    let stores_nothing = before.view.is_some() && after.view.is_some();
+    // A view stores nothing, whatever it becomes: no change of it reshapes
+    // a stored record.
+    let stores_nothing = before.view.is_some();
     let (reasons, changes): (Vec<Reason>, Vec<Reason>) = all
         .into_iter()
         .partition(|r| !stores_nothing && r.reshapes());

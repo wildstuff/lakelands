@@ -33,11 +33,13 @@ use lakelands_api::engine::{
     CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
     Reclaimed, VectorIndex,
 };
-use lakelands_api::error::{Error, Refusal, Result};
+use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
+use lakelands_api::query::cosine;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
+use lakelands_core::engines::{self, vector_bytes, vector_of};
 
 use crate::connect::{self, Db, Target};
 use crate::projection::{self, Buffer, HeadTypes, Names, PROJECTION_TABLES};
@@ -91,8 +93,8 @@ impl PgLake {
                 target.schema
             )));
         }
-        let writing = match mode {
-            OpenMode::Read => None,
+        let (writing, pgvector) = match mode {
+            OpenMode::Read => (None, vector_index::find(&mut reader, false).ok()),
             OpenMode::Write | OpenMode::Create => {
                 let lease = connect::session_keeping_state(&target)?;
                 let mut projection = connect::connect(&target)?;
@@ -108,19 +110,13 @@ impl PgLake {
                     found.as_ref().map_err(String::as_str),
                     lake.as_str(),
                 )?;
-                Some((
-                    Writing {
-                        lease: Mutex::new(lease),
-                        projection: Mutex::new(projection),
-                        unanalysed: AtomicU64::new(0),
-                    },
-                    found.ok(),
-                ))
+                let writing = Writing {
+                    lease: Mutex::new(lease),
+                    projection: Mutex::new(projection),
+                    unanalysed: AtomicU64::new(0),
+                };
+                (Some(writing), found.ok())
             }
-        };
-        let (writing, pgvector) = match writing {
-            Some((w, found)) => (Some(w), found),
-            None => (None, vector_index::find(&mut reader, false).ok()),
         };
         check_name(&mut reader, &names, &target.schema, &lake)?;
         Ok(PgLake {
@@ -155,6 +151,19 @@ impl PgLake {
         })
     }
 
+    /// The lease connection, when this handle holds `lease`; otherwise
+    /// nothing was `what`.
+    fn holding(&self, lease: &Lease, what: &str) -> Result<MutexGuard<'_, Db>> {
+        let writing = self.writing()?;
+        if lock(&self.held).as_ref() != Some(lease) {
+            return Err(unavailable(format!(
+                "the lease with fence {} is not held by this handle; nothing was {what}",
+                lease.fence
+            )));
+        }
+        Ok(lock(&writing.lease))
+    }
+
     /// Take a put into the open transaction: `f` holds it in the buffer,
     /// which the commit writes.
     fn stage(&self, position: Position, f: impl FnOnce(&mut Buffer)) -> Result<()> {
@@ -182,14 +191,10 @@ enum Shape {
 /// Look at the schema: empty, a lake's, or something else, which is
 /// refused. One schema holds one lake and nothing beside it.
 fn shape(db: &mut Db, schema: &str) -> Result<Shape> {
-    let tables: Vec<String> = db
-        .query(
-            "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = $1 ORDER BY tablename",
-            &[&schema],
-        )?
-        .iter()
-        .map(|r| r.get(0))
-        .collect();
+    let tables: Vec<String> = db.column(
+        "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = $1 ORDER BY tablename",
+        &[&schema],
+    )?;
     if tables.is_empty() {
         return Ok(Shape::Empty);
     }
@@ -274,13 +279,9 @@ impl Drop for PgLake {
     /// A handle that is dropped gives up the lease it holds, as a session
     /// that ends does.
     fn drop(&mut self) {
-        if let (Some(lease), Some(writing)) = (lock(&self.held).take(), self.writing.as_ref()) {
-            let _ = lease::release(
-                &mut lock(&writing.lease),
-                &self.names,
-                &self.target.schema,
-                &lease,
-            );
+        let held = lock(&self.held).clone();
+        if let Some(lease) = held {
+            let _ = self.release_lease(&lease);
         }
     }
 }
@@ -334,25 +335,13 @@ impl LakeEngine for PgLake {
     }
 
     fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        let writing = self.writing()?;
-        if lock(&self.held).as_ref() != Some(lease) {
-            return Err(unavailable(format!(
-                "the lease with fence {} is not held by this handle; nothing was appended",
-                lease.fence
-            )));
-        }
-        log::append(&mut lock(&writing.lease), &self.names, lease, events, false)
+        let mut db = self.holding(lease, "appended")?;
+        log::append(&mut db, &self.names, lease, events, false)
     }
 
     fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        let writing = self.writing()?;
-        if lock(&self.held).as_ref() != Some(lease) {
-            return Err(unavailable(format!(
-                "the lease with fence {} is not held by this handle; nothing was appended",
-                lease.fence
-            )));
-        }
-        log::append(&mut lock(&writing.lease), &self.names, lease, events, true)
+        let mut db = self.holding(lease, "appended")?;
+        log::append(&mut db, &self.names, lease, events, true)
     }
 
     fn read(&self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>> {
@@ -360,14 +349,8 @@ impl LakeEngine for PgLake {
     }
 
     fn seal_segment(&self, lease: &Lease) -> Result<Option<SegmentDigest>> {
-        let writing = self.writing()?;
-        if lock(&self.held).as_ref() != Some(lease) {
-            return Err(unavailable(format!(
-                "the lease with fence {} is not held by this handle; nothing was sealed",
-                lease.fence
-            )));
-        }
-        log::seal(&mut lock(&writing.lease), &self.names, lease)
+        let mut db = self.holding(lease, "sealed")?;
+        log::seal(&mut db, &self.names, lease)
     }
 
     fn segments(&self) -> Result<Vec<SegmentDigest>> {
@@ -380,18 +363,7 @@ impl LakeEngine for PgLake {
 
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>> {
         let folded = projection::folded(&mut self.reader(), &self.names)?;
-        let at = match (as_of, folded) {
-            (None, folded) => folded,
-            (Some(p), Some(head)) if p <= head => Some(p),
-            (Some(_), head) => {
-                return Err(Error::Refused {
-                    field: None,
-                    reason: Refusal::OutOfRange {
-                        head: head.unwrap_or_default(),
-                    },
-                });
-            }
-        };
+        let at = engines::view_at(as_of, folded)?;
         Ok(Box::new(PgView { lake: self, at }))
     }
 
@@ -422,27 +394,9 @@ impl ProjectionStore for PgLake {
             .take()
             .ok_or_else(|| invalid("there is no transaction to commit: call `begin` first"))?;
         let mut db = lock(&writing.projection);
-        let refuse = |db: &mut Db, message: String| {
-            let _ = db.batch("ROLLBACK");
-            Err(invalid(message))
-        };
-        if let Some(folded) = projection::folded(&mut db, &self.names)?.filter(|f| *f > through) {
-            return refuse(
-                &mut db,
-                format!(
-                    "the projection reflects the log through position {folded}; a transaction \
-                     cannot commit through the earlier position {through}"
-                ),
-            );
-        }
-        if let Some(late) = t.latest.filter(|p| *p > through) {
-            return refuse(
-                &mut db,
-                format!(
-                    "a state valid from position {late} cannot be committed through the earlier \
-                     position {through}"
-                ),
-            );
+        let folded = projection::folded(&mut db, &self.names)?;
+        if let Some(refused) = engines::commit_refusal(folded, t.latest, through) {
+            return db.end(Err(refused));
         }
         let Transaction {
             mut types, buffer, ..
@@ -451,11 +405,7 @@ impl ProjectionStore for PgLake {
         let written = buffer
             .write(&mut db, &self.names, &mut types, self.pgvector.as_ref())
             .and_then(|()| projection::set_folded(&mut db, &self.names, through));
-        if let Err(e) = written {
-            let _ = db.batch("ROLLBACK");
-            return Err(e);
-        }
-        db.batch("COMMIT")?;
+        db.end(written)?;
         // Once enough records went in since the last analysis, the planner
         // learns of them, after the commit and outside it (module doc).
         if writing.unanalysed.fetch_add(put, Ordering::Relaxed) + put >= ANALYZE_AFTER {
@@ -598,24 +548,9 @@ fn size(db: &mut Db, schema: &str, tables: &[&str]) -> Result<u64> {
     Ok(row.get::<_, i64>(0) as u64)
 }
 
-/// A vector as the index stores it: its components as little-endian
-/// `f32`s.
-fn vector_bytes(v: &[f32]) -> Vec<u8> {
-    v.iter().flat_map(|x| x.to_le_bytes()).collect()
-}
-
-pub(crate) fn vector_of(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|c| f32::from_le_bytes(*c))
-        .collect()
-}
-
 /// The vector index: each field's vectors in one table, searched by brute
 /// force with the one cosine every engine uses
-/// (`lakelands_core::engines::cosine`), so its answers are those of every
+/// (`lakelands_api::query::cosine`), so its answers are those of every
 /// other engine to the last bit. A query streams every vector of the
 /// field from the server a row at a time and keeps only the best `k`
 /// (`lakelands_core::engines::TopK`), so its cost grows linearly with them
@@ -640,7 +575,7 @@ impl VectorIndex for PgLake {
                     &vector_index::mark(ty, field),
                     &vector_index::unit_text(vector),
                 ],
-            )?,
+            ),
             None => db.execute(
                 &format!(
                     "INSERT INTO {} (ty, field, key, data) VALUES ($1, $2, $3, $4) \
@@ -648,9 +583,8 @@ impl VectorIndex for PgLake {
                     self.names.t("vectors")
                 ),
                 &[&ty.as_str(), &field, &key.as_str(), &vector_bytes(vector)],
-            )?,
-        };
-        Ok(())
+            ),
+        }
     }
 
     fn remove(&self, ty: &TypeName, key: &RecordKey, field: &str) -> Result<()> {
@@ -661,8 +595,7 @@ impl VectorIndex for PgLake {
                 self.names.t("vectors")
             ),
             &[&ty.as_str(), &field, &key.as_str()],
-        )?;
-        Ok(())
+        )
     }
 
     fn nearest(
@@ -673,6 +606,22 @@ impl VectorIndex for PgLake {
         k: u32,
     ) -> Result<Vec<(RecordKey, f64)>> {
         let mut top = lakelands_core::engines::TopK::new(k);
+        // The exact scan checks every vector's dimensions; the index holds
+        // only vectors of the query's.
+        let mut rank = |row: &postgres::Row, exact: bool| {
+            let key: String = row.get(0);
+            let v = vector_of(&row.get::<_, Vec<u8>>(1));
+            if exact && v.len() != query.len() {
+                return Err(invalid(format!(
+                    "the query vector has {} dimensions, but `{ty}.{field}` holds vectors \
+                     of {} (record `{key}`)",
+                    query.len(),
+                    v.len()
+                )));
+            }
+            top.push(&RecordKey::from(key), cosine(query, &v));
+            Ok(())
+        };
         let mut db = self.reader();
         // A field the lake asks an index for, whose index describes the
         // head, answers the index's `k` candidates, ranked by the one
@@ -684,15 +633,7 @@ impl VectorIndex for PgLake {
             let sql = vector_index::candidates_sql(&self.names, v, ty, field, n);
             db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED READ ONLY", |db| {
                 db.batch(&vector_index::search_settings(k))?;
-                db.query_each(&sql, &[&unit, &i64::from(k)], |row| {
-                    let key: String = row.get(0);
-                    let v = vector_of(&row.get::<_, Vec<u8>>(1));
-                    top.push(
-                        &RecordKey::from(key),
-                        lakelands_core::engines::cosine(query, &v),
-                    );
-                    Ok(())
-                })
+                db.query_each(&sql, &[&unit, &i64::from(k)], |row| rank(row, false))
             })?;
             return Ok(top.into_ranked());
         }
@@ -702,23 +643,7 @@ impl VectorIndex for PgLake {
                 self.names.t("vectors")
             ),
             &[&ty.as_str(), &field],
-            |row| {
-                let key: String = row.get(0);
-                let v = vector_of(&row.get::<_, Vec<u8>>(1));
-                if v.len() != query.len() {
-                    return Err(invalid(format!(
-                        "the query vector has {} dimensions, but `{ty}.{field}` holds vectors \
-                         of {} (record `{key}`)",
-                        query.len(),
-                        v.len()
-                    )));
-                }
-                top.push(
-                    &RecordKey::from(key),
-                    lakelands_core::engines::cosine(query, &v),
-                );
-                Ok(())
-            },
+            |row| rank(row, true),
         )?;
         Ok(top.into_ranked())
     }

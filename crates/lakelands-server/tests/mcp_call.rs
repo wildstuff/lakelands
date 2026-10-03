@@ -97,18 +97,30 @@ fn tools_list_with_schemas_prints_each_doors_schemas() {
 }
 
 #[test]
-fn a_tool_error_is_its_two_sentences_and_exit_1() {
+fn a_tool_error_is_shown_whole_and_the_session_goes_on_to_exit_1() {
     let server = example("mock_stdio");
     let out = Command::new(example("mcp_call"))
         .args(["--server", &server.display().to_string()])
         .args(["tools/call", "invoice_get", r#"{"key": "no-such-invoice"}"#])
+        .args(["tools/call", "pin", "{}"])
         .output()
         .expect("mcp_call runs");
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(1), "a refused call fails the run");
     let stderr = String::from_utf8_lossy(&out.stderr);
+    // The two sentences, then the error as JSON, as an agent reads them.
+    let (text, json) = stderr
+        .split_once("\n{")
+        .unwrap_or_else(|| panic!("the error's JSON follows its text:\n{stderr}"));
     assert!(
-        stderr
-            .starts_with("error: there is no `invoice` with key `no-such-invoice`\n  what to do: "),
+        text.starts_with("error: there is no `invoice` with key `no-such-invoice`\n  what to do: "),
         "{stderr}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&format!("{{{json}")).unwrap();
+    assert_eq!(json["error"], "not_found", "{json}");
+    // The call after the refusal still runs, in the same session.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("\"pinned\": 7"),
+        "the pin after the refusal answers:\n{stdout}"
     );
 }

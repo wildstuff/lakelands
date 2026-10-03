@@ -2,7 +2,7 @@ use lakelands_api::expr::{Condition, Expr, Literal};
 use lakelands_api::ontology::{
     Assignment, Authority, Cardinality, FieldDecl, FieldType, Measure, OnInputChange, RelationDecl,
     Risk, StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect, VerbScope,
-    ViewDecl,
+    ViewDecl, ViewSource,
 };
 use lakelands_api::write::{Declaration, FunctionDecl, ObjectSetDecl};
 use lakelands_api::{FieldName, RelationName, TypeName, ValueTypeName, VerbName};
@@ -36,9 +36,24 @@ fn one(fs: &[(&str, &str)], problem: Problem) -> BundleError {
     errors.into_iter().next().unwrap()
 }
 
+/// The type `name` the bundle declares.
+fn ty<'b>(b: &'b Bundle, name: &str) -> &'b TypeDecl {
+    let found = b.declarations.iter().find_map(|d| match d {
+        Declaration::Type(t) if t.name.as_str() == name => Some(t),
+        _ => None,
+    });
+    found.unwrap_or_else(|| panic!("the bundle declares no type `{name}`"))
+}
+
 const PARTNER: (&str, &str) = (
     "types/partner.yaml",
     "name: partner\nkey: id\nfields:\n  id: text\n",
+);
+
+/// The type the documented merge reads beside the invoices.
+const PAYMENT: (&str, &str) = (
+    "types/payment.yaml",
+    "name: payment\nfields:\n  payer: reference(partner)\n  amount: decimal\n",
 );
 
 fn field(name: &str, ty: FieldType) -> FieldDecl {
@@ -264,6 +279,7 @@ fn complete_declarations() -> Vec<Declaration> {
                     expr: text("sum(net)"),
                 }],
                 params: Default::default(),
+                merge: Default::default(),
             })),
             fields: vec![
                 field(
@@ -567,14 +583,7 @@ fn the_short_field_types_mean_their_object_forms() {
         ),
     ])
     .expect("loads");
-    let t = bundle
-        .declarations
-        .iter()
-        .find_map(|d| match d {
-            Declaration::Type(t) if t.name.as_str() == "t" => Some(t),
-            _ => None,
-        })
-        .expect("type t");
+    let t = ty(&bundle, "t");
     let tys: Vec<&FieldType> = t.fields.iter().map(|f| &f.ty).collect();
     assert_eq!(
         tys,
@@ -655,7 +664,7 @@ fn the_documented_examples_load() {
         .map(|l| l.strip_prefix(' ').unwrap_or(l))
         .collect::<Vec<_>>()
         .join("\n");
-    let mut fs = vec![PARTNER];
+    let mut fs = vec![PARTNER, PAYMENT];
     let mut owned = Vec::new();
     for block in doc.split("```yaml\n").skip(1) {
         let body = block.split("```").next().unwrap_or_default();
@@ -677,7 +686,7 @@ fn the_documented_examples_load() {
         };
         owned.push((format!("{lane}/{}.yaml", owned.len()), body.to_owned()));
     }
-    assert_eq!(owned.len(), 10, "every documented example is found");
+    assert_eq!(owned.len(), 11, "every documented example is found");
     fs.extend(owned.iter().map(|(p, c)| (p.as_str(), c.as_str())));
     load(&fs).expect("the documented examples load");
 }
@@ -1234,14 +1243,11 @@ fn a_json_field_may_not_carry_the_name_of_a_type() {
         Problem::Contradiction,
     );
     assert!(
-        parse(&[
+        load(&[
+            ("types/partner.yaml", "name: partner\nfields:\n  a: text\n"),
             (
-                "types/partner.yaml".into(),
-                "name: partner\nfields:\n  a: text\n".into()
-            ),
-            (
-                "types/t.yaml".into(),
-                "name: t\nfields:\n  partner: reference(partner)\n".into()
+                "types/t.yaml",
+                "name: t\nfields:\n  partner: reference(partner)\n"
             ),
         ])
         .is_ok(),
@@ -1256,14 +1262,7 @@ fn annotations_lower_as_json_and_a_bad_key_is_reported_against_its_file() {
         "name: shelf\nkey: code\nannotations:\n  acme.icon: books\n  acme.package: {name: library, weight: 1.5}\nfields:\n  code:\n    type: text\n    annotations:\n      acme.format: shelf-code\nrelations:\n  partner:\n    target: partner\n    annotations:\n      acme.plural: partners\n",
     );
     let bundle = load(&[PARTNER, shelf]).expect("the bundle loads");
-    let t = bundle
-        .declarations
-        .iter()
-        .find_map(|d| match d {
-            Declaration::Type(t) if t.name.as_str() == "shelf" => Some(t),
-            _ => None,
-        })
-        .expect("`shelf` is declared");
+    let t = ty(&bundle, "shelf");
     assert_eq!(t.annotations["acme.icon"], serde_json::json!("books"));
     assert_eq!(
         t.annotations["acme.package"],
@@ -1299,14 +1298,7 @@ fn a_derived_relation_lowers_from_its_yaml_match() {
         "name: invoice\nkey: number\nfields:\n  number: text\n  partner_id: text\nrelations:\n  partner:\n    target: partner\n    derived:\n      match:\n        - from: partner_id\n          to: id\n",
     );
     let bundle = load(&[PARTNER, invoice]).expect("the bundle loads");
-    let t = bundle
-        .declarations
-        .iter()
-        .find_map(|d| match d {
-            Declaration::Type(t) if t.name.as_str() == "invoice" => Some(t),
-            _ => None,
-        })
-        .expect("`invoice` is declared");
+    let t = ty(&bundle, "invoice");
     let d = t.relations[0]
         .derived
         .as_ref()
@@ -1343,13 +1335,9 @@ fn a_views_parameters_arrive_in_the_order_they_were_written() {
          measures:\n    invoices: \"count()\"\n",
     );
     let bundle = load(&[INVOICE, view]).expect("a view with parameters loads");
-    let params = bundle
-        .declarations
-        .iter()
-        .find_map(|d| match d {
-            Declaration::Type(t) if t.name == "window" => t.view.as_ref().map(|v| v.params.clone()),
-            _ => None,
-        })
+    let view = ty(&bundle, "window").view.as_ref();
+    let params = view
+        .map(|v| v.params.clone())
         .expect("the view is declared");
     let got: Vec<(&str, StorageKind)> = params.iter().map(|p| (p.name.as_str(), p.kind)).collect();
     assert_eq!(
@@ -1372,5 +1360,35 @@ fn a_view_parameter_of_no_storage_kind_is_refused_naming_it() {
     assert!(
         e.message.contains("`until`") && e.message.contains("`date`"),
         "{e}"
+    );
+}
+
+#[test]
+fn a_views_merged_source_arrives_whole() {
+    let view = (
+        "types/paid.yaml",
+        "name: paid\nfields:\n  partner: reference(partner)\n  invoices: number\n  paid: decimal\n\
+         view:\n  source: invoice\n  group_by: partner\n  measures:\n    invoices: \"count()\"\n  \
+         merge:\n    - source: payment\n      where: \"amount > 0\"\n      group_by: payer\n      \
+         measures:\n        paid: \"sum(amount)\"\n",
+    );
+    let invoice = (
+        "types/invoice.yaml",
+        "name: invoice\nfields:\n  partner: reference(partner)\n",
+    );
+    let bundle = load(&[PARTNER, PAYMENT, invoice, view]).expect("a view with a merge loads");
+    let view = ty(&bundle, "paid").view.as_ref();
+    let merge = view.map(|v| v.merge.clone()).expect("the view is declared");
+    assert_eq!(
+        merge,
+        [ViewSource {
+            source: TypeName::new("payment"),
+            r#where: Some(text("amount > 0")),
+            group_by: vec![FieldName::new("payer")],
+            measures: vec![Measure {
+                name: FieldName::new("paid"),
+                expr: text("sum(amount)"),
+            }],
+        }]
     );
 }

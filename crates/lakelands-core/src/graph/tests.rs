@@ -55,6 +55,9 @@ impl ProjectionView for View {
     fn scan(&self, _: &TypeName, _: &Scan) -> Result<Vec<StoredRecord>> {
         unreachable!()
     }
+    fn count(&self, _: &TypeName, _: &Scan) -> Result<u64> {
+        unreachable!()
+    }
     fn edges(
         &self,
         _: &TypeName,

@@ -10,11 +10,19 @@ use std::sync::Arc;
 use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl};
 use lakelands_api::tools::{Door, GENERIC_TOOLS, tools};
 use lakelands_api::write::Declaration;
-use lakelands_api::{Error, LakeStore, ReadAt, Refusal, TypeName};
+use lakelands_api::{Error, Grants, LakeStore, PrincipalKind, ReadAt, Refusal, TypeName};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, doors, field, head_unmoved, owner, type_decl};
+use crate::conformance::fixture::{
+    Lake, Must, field, head_unmoved, principal, reason, refused_unmoved, type_decl,
+};
+
+check!(
+    /// add_field asks for the schema grant before it looks.
+    ADD_FIELD_GRANT_FIRST = add_field_without_the_schema_grant_is_refused_before_it_looks_at_the_type,
+    "006 and 024, extended: add_field without the schema grant is refused not_granted whether the type is undeclared or already has the field, so the refusal tells nothing about the ontology"
+);
 
 check!(
     /// The schema hash is the log format's, byte for byte.
@@ -59,7 +67,6 @@ async fn the_schema_hash_of_the_log_formats_vector_is_the_one_it_pins(
 
     let l = Lake::of(store.as_ref());
 
-    let Lake { cat, own } = &l;
     // The view reads an invoice with the fields its measures name.
     let invoice = type_decl(
         "invoice",
@@ -73,11 +80,7 @@ async fn the_schema_hash_of_the_log_formats_vector_is_the_one_it_pins(
     l.declare(invoice).await?;
     let name = decl.name.clone();
     l.declare(decl).await?;
-    let d = cat
-        .describe_type(own, &name, ReadAt::default())
-        .await
-        .must(&format!("describing `{name}`"))?
-        .data;
+    let d = l.describe_type(name.as_str()).await?;
     ensure!(
         d.lifecycle.schema_hash == want,
         "`{name}` declared from the log format's vector describes schema hash {}, but \
@@ -88,11 +91,7 @@ async fn the_schema_hash_of_the_log_formats_vector_is_the_one_it_pins(
 }
 
 async fn hash_of(store: &dyn LakeStore, ty: &str) -> Result<(String, u32), Failure> {
-    let d = doors(store)
-        .describe_type(&owner(store), &TypeName::from(ty), ReadAt::default())
-        .await
-        .must(&format!("describing `{ty}`"))?
-        .data;
+    let d = Lake::of(store).describe_type(ty).await?;
     Ok((d.lifecycle.schema_hash, d.lifecycle.version))
 }
 
@@ -156,15 +155,9 @@ async fn declare_refuses_a_revision_that_reshapes_stored_records(
         ("requiring `title`", required),
     ] {
         let before = store.head().await.must("reading the head")?;
-        cat.declare(own, Declaration::Type(decl))
-            .await
-            .must_fail(&format!("redeclaring `memo` {what}"))?;
-        head_unmoved(
-            store.as_ref(),
-            before,
-            &format!("redeclaring `memo` {what}"),
-        )
-        .await?;
+        let answer = cat.declare(own, Declaration::Type(decl)).await;
+        let what = format!("redeclaring `memo` {what}");
+        refused_unmoved(store.as_ref(), before, &what, answer).await?;
     }
 
     let mut added = first;
@@ -232,11 +225,9 @@ async fn declare_refuses_bad_names_unknown_references_and_tool_name_collisions(
     cases.push((find_what, verb(&find_tool)?));
     for (what, decl) in cases {
         let before = store.head().await.must("reading the head")?;
-        let err = cat
-            .declare(own, decl)
-            .await
-            .must_fail(&format!("declaring {what}"))?;
-        head_unmoved(store.as_ref(), before, &format!("declaring {what}")).await?;
+        let answer = cat.declare(own, decl).await;
+        let err =
+            refused_unmoved(store.as_ref(), before, &format!("declaring {what}"), answer).await?;
         ensure!(
             matches!(err, Error::Refused { .. } | Error::NotFound { .. }),
             "declaring {what} must be refused; it failed with {err:?}"
@@ -251,22 +242,12 @@ async fn an_ordinary_principal_cannot_declare_a_sys_type(
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
-    let err = cat
-        .declare(
-            own,
-            Declaration::Type(type_decl("sys.mine", vec![field("v", StorageKind::Text)])),
-        )
-        .await
-        .must_fail("the owner declaring `sys.mine`")?;
-    head_unmoved(store.as_ref(), before, "the owner declaring `sys.mine`").await?;
+    let mine = type_decl("sys.mine", vec![field("v", StorageKind::Text)]);
+    let answer = cat.declare(own, Declaration::Type(mine)).await;
+    let what = "the owner declaring `sys.mine`";
+    let err = refused_unmoved(store.as_ref(), before, what, answer).await?;
     ensure!(
-        matches!(
-            err,
-            Error::Refused {
-                reason: Refusal::Reserved,
-                ..
-            }
-        ),
+        matches!(reason(&err), Some(Refusal::Reserved)),
         "declaring `sys.mine` as the owner must be refused as reserved; it failed with {err:?}"
     );
 
@@ -311,4 +292,46 @@ async fn redeclaring_a_type_with_its_fields_reordered_keeps_its_schema_hash(
         version + 1
     );
     Ok(())
+}
+
+async fn add_field_without_the_schema_grant_is_refused_before_it_looks_at_the_type(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl("note", vec![field("text", StorageKind::Text)]))
+        .await?;
+    let writer = principal(
+        store.as_ref(),
+        PrincipalKind::Agent,
+        "writer",
+        Grants {
+            schema: false,
+            ..Grants::owner()
+        },
+    );
+    let before = store.head().await.must("reading the head")?;
+    let mut red = Vec::new();
+    for (what, ty) in [
+        ("an undeclared type", "nothing"),
+        ("a field `note` has", "note"),
+    ] {
+        let got = l
+            .cat
+            .add_field(
+                &writer,
+                &TypeName::from(ty),
+                field("text", StorageKind::Text),
+            )
+            .await;
+        if !matches!(reason(&got), Some(Refusal::NotGranted)) {
+            red.push(format!("add_field of {what} answered {got:?}"));
+        }
+    }
+    ensure!(
+        red.is_empty(),
+        "add_field by a principal without the schema grant is refused not_granted before \
+         the type is looked up: {}",
+        red.join("; ")
+    );
+    head_unmoved(store.as_ref(), before, "add_field without the schema grant").await
 }

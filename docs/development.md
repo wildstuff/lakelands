@@ -40,7 +40,11 @@ Each slot carries two files that are never committed:
 
 - `.claude/settings.local.json` — the agent's environment: its own
   `CARGO_TARGET_DIR` and a `CARGO_BUILD_JOBS` cap, so that five agents
-  compiling at once do not starve the machine.
+  compiling at once do not starve the machine, and `CARGO_INCREMENTAL`
+  off. Incremental data grows by the tens of gigabytes per target
+  directory, and a full run, which rebuilds after every change anyway,
+  gains little from it; five slots with it on once filled the cache
+  disk.
 - `CLAUDE.local.md` — instructions for this slot that don't belong in
   the repository: the slot's name, where the developer keeps the source
   material the organs are imported from, the commit they are read at,
@@ -106,7 +110,8 @@ cat > "$dir/.claude/settings.local.json" <<JSON
 {
   "env": {
     "CARGO_TARGET_DIR": "$HOME/.cache/cargo-target-lakelands-agent-$slot",
-    "CARGO_BUILD_JOBS": "$JOBS"
+    "CARGO_BUILD_JOBS": "$JOBS",
+    "CARGO_INCREMENTAL": "0"
   }
 }
 JSON
@@ -230,11 +235,45 @@ git push origin v0.1.0
 the titles of the pull requests merged since the previous tag, followed
 by "Changes a host must make" since that tag
 (`scripts/release/host-changes.sh`: `cargo-semver-checks` over
-`lakelands-api` and `lakelands-client`, and the script's own checks of
-the public traits of `lakelands-api`: a required method added, and a
-method whose signature changed with its parameter count unchanged; one
-plain line per change, and a line saying so when there is none). The `host-changes` job of `ci.yml`
+`lakelands-api`, `lakelands-client`, `lakelands-core` and
+`lakelands-store`, and the script's own checks of the same crates: a
+required trait method added; a trait method, function or inherent
+method whose signature changed with its parameter count unchanged; and
+a public field, named or positional, whose type changed; one plain line
+per change, and a line saying so when there is none). The `host-changes` job of `ci.yml`
 reports the same list on every pull request, and never fails; a release
 pull request copies its report into its body. A
 pre-release `vX.Y.Z-<suffix>` may be tagged on any branch to rehearse
 one. Nothing is published to crates.io yet.
+
+### A patch release
+
+A minor release `vX.Y.0` is tagged on `develop`. A fix to it ships as
+`vX.Y.1` on `main`, so that `develop`, which already holds work for the
+next minor, does not ship with it.
+
+1. **`main` holds `vX.Y.0`.** If it does not yet, a pull request whose
+   head is exactly the tagged commit merges into `main`, and adds nothing
+   else.
+2. **The patch branch starts at the tag:**
+   `git switch -c release/X.Y.1 vX.Y.0`.
+3. **The fix is fitted to the release's tree.** The tree of `vX.Y.0` is
+   not `develop`'s, so the fix is written or adapted for it, with its own
+   test, red first. It does not take `develop`'s other changes with it.
+4. **The release commit** comes next, as on `develop`: the version in the
+   workspace, the lock file, the server transcripts' `serverInfo`, the
+   WIT package and the README status.
+5. **A pull request from `release/X.Y.1` to `main`.** CI runs on pull
+   requests to `main` as it does on those to `develop`. The gates read
+   the range from the pull request's base, so the DCO gate checks only
+   the commits the patch branch adds, not the history `main` already
+   holds.
+6. **The tag goes on `main`**, on the merge commit, signed off as above.
+   `check-tag.sh` accepts a release on `main`.
+   - The notes list the pull requests merged into `main` since
+     `vX.Y.0`: the one of step 1, if it was needed, and the patch's.
+   - "Changes a host must make" compares the same two tags.
+7. **`develop` gets the fix through its own pull request**, written
+   against `develop`'s tree, with the issue the fix closes. The patch
+   branch is never merged into `develop`. `develop` keeps its own version
+   until its next minor release.

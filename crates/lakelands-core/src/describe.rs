@@ -118,16 +118,13 @@ fn reads_all<'a>(
         t.fields
             .iter()
             .find(|f| &f.name == n)
-            .is_some_and(|f| field_access(who, ty, f).reads())
+            .is_some_and(|f| field_access(who, t, f).reads())
     })
 }
 
 /// The fields a condition names; `None` when it does not parse.
 fn named(c: &Condition) -> Option<std::collections::BTreeSet<FieldName>> {
-    match c {
-        Condition::Expr(e) => Some(crate::derive::reads(e)),
-        Condition::Text(t) => crate::expr::parse(t).ok().map(|e| crate::derive::reads(&e)),
-    }
+    parsed(c).map(|e| crate::derive::reads(&e))
 }
 
 /// Whether a condition over type `ty` may be shown to `who`.
@@ -144,24 +141,37 @@ fn condition_visible(
 /// Whether a view may be shown whole to `who`: every source field it names
 /// is read.
 fn view_visible(v: &ViewDecl, declared: &[Declared], who: &Principal) -> bool {
-    if who.grants.schema {
-        return true;
-    }
-    let mut names = std::collections::BTreeSet::new();
-    if let Some(w) = &v.r#where {
-        match named(w) {
-            Some(n) => names.extend(n),
-            None => return false,
-        }
-    }
-    for m in &v.measures {
-        match parsed(&m.expr) {
-            Some(e) => aggregated(&e, false, &mut names),
-            None => return false,
-        }
-    }
-    names.extend(v.group_by.iter().cloned());
-    reads_all(&names, &v.source, declared, who)
+    who.grants.schema
+        || view_reads(v).is_some_and(|reads| {
+            reads
+                .iter()
+                .all(|(source, names)| reads_all(names, source, declared, who))
+        })
+}
+
+/// The fields a view reads from each of its sources, its own and the
+/// merged ones in order: a source is read as a read of it (024), so its
+/// `where`, its grouping and what its measures aggregate. `None` when one
+/// of its conditions does not parse.
+pub fn view_reads(v: &ViewDecl) -> Option<Vec<(TypeName, std::collections::BTreeSet<FieldName>)>> {
+    std::iter::once((&v.source, v.r#where.as_ref(), &v.group_by, &v.measures))
+        .chain(
+            v.merge
+                .iter()
+                .map(|m| (&m.source, m.r#where.as_ref(), &m.group_by, &m.measures)),
+        )
+        .map(|(source, filter, group_by, measures)| {
+            let mut names: std::collections::BTreeSet<FieldName> =
+                group_by.iter().cloned().collect();
+            if let Some(f) = filter {
+                names.extend(named(f)?);
+            }
+            for m in measures {
+                aggregated(&parsed(&m.expr)?, false, &mut names);
+            }
+            Some((source.clone(), names))
+        })
+        .collect()
 }
 
 /// The fields a measure reads from its source's records: the paths inside
@@ -170,25 +180,10 @@ fn view_visible(v: &ViewDecl, declared: &[Declared], who: &Principal) -> bool {
 fn aggregated(e: &Expr, inside: bool, out: &mut std::collections::BTreeSet<FieldName>) {
     match e {
         Expr::Path { path } if inside => out.extend(path.first().cloned()),
-        Expr::Path { .. } | Expr::Lit { .. } => {}
-        Expr::Call { func, args } => {
-            let inside = inside || func.is_aggregate();
-            args.iter().for_each(|a| aggregated(a, inside, out));
+        Expr::Call { func, .. } if func.is_aggregate() => {
+            crate::expr::children(e).for_each(|a| aggregated(a, true, out));
         }
-        Expr::Cmp { lhs, rhs, .. } | Expr::Arith { lhs, rhs, .. } => {
-            aggregated(lhs, inside, out);
-            aggregated(rhs, inside, out);
-        }
-        Expr::Neg { arg } | Expr::Not { arg } | Expr::IsNull { arg } => {
-            aggregated(arg, inside, out);
-        }
-        Expr::And { args } | Expr::Or { args } => {
-            args.iter().for_each(|a| aggregated(a, inside, out));
-        }
-        Expr::In { arg, list } => {
-            aggregated(arg, inside, out);
-            list.iter().for_each(|a| aggregated(a, inside, out));
-        }
+        _ => crate::expr::children(e).for_each(|a| aggregated(a, inside, out)),
     }
 }
 
@@ -248,7 +243,7 @@ fn type_description(
     let fields: Vec<FieldDescription> = t
         .fields
         .iter()
-        .map(|f| (f, field_access(who, &t.name, f)))
+        .map(|f| (f, field_access(who, t, f)))
         .filter(|(_, a)| *a != Access::None)
         .map(|(f, a)| FieldDescription::of(f, a))
         .collect();
@@ -281,7 +276,7 @@ fn type_description(
                     .filter(|f| {
                         f.name.as_str() == crate::links::FROM || f.name.as_str() == crate::links::TO
                     })
-                    .all(|f| field_access(who, &lt.name, f).writes())
+                    .all(|f| field_access(who, &lt, f).writes())
             })
             .map(|r| r.name.clone())
             .collect(),
@@ -343,8 +338,11 @@ fn type_description(
 /// what it is computed from, what it means or how the host marked it
 /// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
 fn relation_description(t: &TypeName, r: &RelationDecl, who: &Principal) -> RelationDecl {
-    let link = crate::links::link_type_name(t, &r.name);
+    let link = crate::links::link_type(t, r);
     let mut r = r.clone();
+    // A link field the principal may not know of is not described at all.
+    r.fields
+        .retain(|f| field_access(who, &link, f) != Access::None);
     for f in &mut r.fields {
         if !field_access(who, &link, f).reads() {
             f.derived = None;

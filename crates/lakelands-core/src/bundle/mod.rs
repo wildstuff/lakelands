@@ -160,6 +160,32 @@
 //!     invoices: "count()"
 //! ```
 //!
+//! A view may `merge` further sources on its key: each groups its own
+//! records by fields of its own that line up with the view's `group_by`
+//! in order, and has measures of its own, which the view's measures read
+//! by name. A key one source lacks is measured over its empty group, so a
+//! sum there is 0:
+//!
+//! ```yaml
+//! name: payments_against_invoices
+//! fields:
+//!   partner: reference(partner)
+//!   invoiced: decimal
+//!   paid: decimal
+//!   open: decimal
+//! view:
+//!   source: invoice
+//!   group_by: partner
+//!   measures:
+//!     invoiced: "sum(net)"
+//!     open: "invoiced - paid"
+//!   merge:
+//!     - source: payment
+//!       group_by: payer
+//!       measures:
+//!         paid: "sum(amount)"
+//! ```
+//!
 //! A function, `functions/gross.yaml`. The backing is `expr` unless
 //! named; an `expr` function carries `expr`, any other backing carries
 //! `config` (any YAML) and no `expr`:
@@ -260,7 +286,7 @@ use lakelands_api::write::Declaration;
 use lakelands_api::{Patch, TypeName, VerbName};
 
 use doc::{AgingRuleDoc, FunctionDoc, ObjectSetDoc, TriggerDoc, TypeDoc, ValueTypeDoc, VerbDoc};
-use lower::{Known, Lower, name_fault};
+use lower::{Known, Lower};
 
 /// A bundle, loaded: its declarations in the order a lake takes them.
 #[derive(Clone, Debug, PartialEq)]
@@ -291,6 +317,17 @@ impl fmt::Display for BundleError {
 }
 
 impl std::error::Error for BundleError {}
+
+impl BundleError {
+    fn new(file: &str, problem: Problem, message: String) -> BundleError {
+        let file = file.to_owned();
+        BundleError {
+            file,
+            problem,
+            message,
+        }
+    }
+}
 
 /// The kinds of problem a bundle can have.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -431,17 +468,13 @@ struct Reading<'a> {
 
 impl<'a> Reading<'a> {
     fn fail(&mut self, file: &str, problem: Problem, message: String) {
-        self.errors.push(BundleError {
-            file: file.to_owned(),
-            problem,
-            message,
-        });
+        self.errors.push(BundleError::new(file, problem, message));
     }
 
     /// Record that `file` declares `name`; false when the bundle already
     /// declares it, and the document is then left out.
     fn declare(&mut self, file: &'a str, what: &str, name: &str) -> bool {
-        if let Some(fault) = name_fault(what, name) {
+        if let Some(fault) = crate::names::fault(what, name) {
             self.fail(file, Problem::BadName, fault);
         }
         if let Some(first) = self.declared.get(name) {
@@ -624,11 +657,7 @@ fn check_references(
         types.iter().map(|(_, t)| (t.name.as_str(), t)).collect();
     for (file, t) in types {
         let mut fail = |problem: Problem, message: String| {
-            errors.push(BundleError {
-                file: (*file).to_owned(),
-                problem,
-                message,
-            });
+            errors.push(BundleError::new(file, problem, message));
         };
         let has =
             |ty: &lakelands_api::ontology::TypeDecl, f: &str| ty.fields.iter().any(|d| d.name == f);
@@ -752,14 +781,11 @@ fn lower_all(
         if let Some((_, t)) = on
             && !t.fields.iter().any(|f| f.name.as_str() == r.field)
         {
-            errors.push(BundleError {
-                file: (*file).to_owned(),
-                problem: Problem::UnknownReference,
-                message: format!(
-                    "`field` names `{}`, which is not a field of `{}`",
-                    r.field, r.on
-                ),
-            });
+            let message = format!(
+                "`field` names `{}`, which is not a field of `{}`",
+                r.field, r.on
+            );
+            errors.push(BundleError::new(file, Problem::UnknownReference, message));
         }
     }
     let aging_rules = each(aging_rules, known, errors, lower::aging_rule)
@@ -838,11 +864,8 @@ fn tool_error(file: &str, problems: &[NameProblem], other: Option<&str>) -> Bund
             .map(|n| format!("`{n}`"))
             .collect::<Vec<_>>()
             .join(", ");
-        if names.len() == 1 {
-            format!("tool name {list}")
-        } else {
-            format!("tool names {list}")
-        }
+        let s = if names.len() == 1 { "" } else { "s" };
+        format!("tool name{s} {list}")
     };
     let mut collisions: BTreeMap<&Vec<String>, Vec<&String>> = BTreeMap::new();
     let mut too_long = Vec::new();
@@ -874,11 +897,7 @@ fn tool_error(file: &str, problems: &[NameProblem], other: Option<&str>) -> Bund
     if let Some(other) = other {
         message.push_str(&format!(" (see {other})"));
     }
-    BundleError {
-        file: file.to_owned(),
-        problem: Problem::ToolName,
-        message,
-    }
+    BundleError::new(file, Problem::ToolName, message)
 }
 
 /// Read a bundle's directory and [`parse`] it. The only I/O in this
@@ -900,10 +919,8 @@ fn walk(
     files: &mut Vec<(String, String)>,
     errors: &mut Vec<BundleError>,
 ) {
-    let unreadable = |file: String, e: &dyn fmt::Display| BundleError {
-        file,
-        problem: Problem::Unreadable,
-        message: e.to_string(),
+    let unreadable = |file: String, e: &dyn fmt::Display| {
+        BundleError::new(&file, Problem::Unreadable, e.to_string())
     };
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,

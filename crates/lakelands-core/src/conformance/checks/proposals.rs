@@ -8,29 +8,39 @@ use std::sync::Arc;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::seam::FeedFilter;
-use lakelands_api::write::{Declaration, ProposalFilter, ProposalState, ProposedWrite};
-use lakelands_api::{
-    Error, Grants, LakeStore, Outcome, Position, PrincipalKind, ProposalId, Refusal, Version,
-    WriteOpts,
-};
+use lakelands_api::write::{ProposalFilter, ProposalState, ProposedWrite};
+use lakelands_api::{Error, LakeStore, Outcome, Position, ProposalId, Refusal, Version, WriteOpts};
 use serde_json::json;
 
 use crate::conformance::Failure;
+use crate::conformance::backing::EXECUTOR;
 use crate::conformance::fixture::{
-    Lake, Must, doors, field, field_writer, head_unmoved, owner, patch, principal, read, type_decl,
-    value,
+    Lake, Must, doors, field, field_writer, head_unmoved, outputs_from, owner, patch, read, reason,
+    refused_on, reviewer, type_decl, value,
 };
 
 check!(
     /// A verb runs or waits by its declared risk.
     VERB_BY_RISK = a_low_verb_runs_and_a_higher_one_is_proposed,
-    "013: a `low` verb that writes authored fields runs at once; any other risk is recorded as a proposal and runs only when accepted"
+    "013: a `low` verb that writes authored fields runs at once; any other risk is recorded as a proposal and runs only when accepted; a call is refused for its payload before its record, for its record before its version, and a retry answers before the grants (013, extended)"
 );
 
 check!(
     /// A verb that reaches outside needs its executor.
     EXTERNAL_UNBOUND = an_external_verb_without_an_executor_is_unbound,
-    "013 and 015: a verb whose effect reaches outside the lake runs only through a bound executor; without one the answer is `unbound`, and nothing is appended"
+    "013 and 015: a verb whose effect reaches outside the lake runs only through a bound executor; without one, calling it at any risk or proposing a call of it answers `unbound` naming the executor, after the grant and before the payload (013, extended), and nothing is appended"
+);
+
+check!(
+    /// A riskier call that could not run now is not proposed.
+    NOT_PROPOSED_IF_IT_COULD_NOT_RUN = a_riskier_call_that_could_not_run_now_is_not_proposed,
+    "013, extended, and 024, extended: a call that would become a proposal is checked as if it ran now: at a stale version it is a conflict, and where its `requires` does not hold it is refused as a precondition, the version first; nothing is appended"
+);
+
+check!(
+    /// Accept applies what was checked.
+    ACCEPT_AFTER_REDECLARE = accepting_a_call_after_its_verb_was_declared_differently_is_refused,
+    "013, extended (lakelands#371): accepting a call whose verb was declared differently after the call was proposed, its effect or its payload changed, is refused as invalid naming the verb and leaves the proposal pending, as a scope that no longer fits does; a verb declared again with the same content, or changed and changed back, is accepted"
 );
 
 check!(
@@ -48,7 +58,7 @@ check!(
 check!(
     /// Reviewers decide; proposers see their own.
     WHO_DECIDES = only_a_reviewer_decides_and_a_proposer_sees_its_own_proposals,
-    "006, 013 and Catalog::proposals: accept and reject need the review grant; without it, `proposals` lists only the principal's own"
+    "006, 013 and Catalog::proposals: accept and reject need the review grant, checked before the proposal is looked up (013, extended); without it, `proposals` lists only the principal's own"
 );
 
 check!(
@@ -59,7 +69,6 @@ check!(
 
 async fn ledger(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
-    let Lake { cat, own } = &l;
     let ty = type_decl(
         "invoice",
         vec![
@@ -78,9 +87,7 @@ async fn ledger(store: &dyn LakeStore) -> Result<Lake, Failure> {
         json!({"declare": "verb", "name": "remind", "on": "invoice", "risk": "low",
                "effect": "external", "executor": "mailer"}),
     ] {
-        let d: Declaration = serde_json::from_value(verb)
-            .map_err(|e| Failure::new(format!("the check's verb does not read: {e}")))?;
-        cat.declare(own, d).await.must("declaring a verb")?;
+        l.declare_json(verb).await?;
     }
     l.upsert("invoice", "i", json!({"status": "open"})).await?;
     Ok(l)
@@ -179,23 +186,285 @@ async fn a_low_verb_runs_and_a_higher_one_is_proposed(
          position holds {:?}",
         logged.iter().map(EventBody::kind).collect::<Vec<_>>()
     );
+    // In call's order (013, extended): the payload before the record, the
+    // record before the version, and a retry before the grants.
+    let approve = |who: &lakelands_api::Principal, key: &str, payload, opts| {
+        let (cat, who, key) = (
+            l.cat.clone(),
+            who.clone(),
+            lakelands_api::RecordKey::from(key),
+        );
+        async move {
+            cat.call(&who, &"approve".into(), Some(&key), patch(payload), opts)
+                .await
+        }
+    };
+    let at = WriteOpts {
+        expected_version: Some(Version(3)),
+        ..WriteOpts::default()
+    };
+    let payload = approve(own, "gone", json!({"bogus": 1}), WriteOpts::default()).await;
+    let record = approve(own, "gone", json!({}), at).await;
+    let once = WriteOpts {
+        idempotency_key: Some("once".into()),
+        ..WriteOpts::default()
+    };
+    let first = approve(own, "i", json!({}), once.clone())
+        .await
+        .must("approving `i` once")?;
+    let bare = lakelands_api::Principal {
+        grants: Default::default(),
+        ..own.clone()
+    };
+    let retry = approve(&bare, "i", json!({}), once).await;
+    ensure!(
+        matches!(
+            refused_on(&payload),
+            Some(("bogus", Refusal::Invalid { .. }))
+        ) && matches!(record, Err(Error::NotFound { .. }))
+            && retry.as_ref().ok() == Some(&first),
+        "a payload `approve` does not take, on a key never written, answered {payload:?}; \
+         a call there at a version answered {record:?}; a retry without grants answered \
+         {retry:?} where the first was {first:?}"
+    );
     Ok(())
 }
 
 async fn an_external_verb_without_an_executor_is_unbound(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    ledger(store.as_ref()).await?;
-    let own = owner(store.as_ref());
+    let l = ledger(store.as_ref()).await?;
+    l.declare_json(
+        json!({"declare": "verb", "name": "chase", "on": "invoice", "risk": "high",
+                          "effect": "external", "executor": "mailer"}),
+    )
+    .await?;
+    let Lake { own, cat } = &l;
     let before = store.head().await.must("reading the head")?;
-    let err = call(store.as_ref(), &own, "remind", json!({}))
-        .await
-        .must_fail("calling `remind`, whose executor `mailer` is not bound")?;
-    head_unmoved(store.as_ref(), before, "calling an unbound external verb").await?;
+    let proposed = |verb: &str, payload| ProposedWrite::Call {
+        verb: verb.into(),
+        key: Some("i".into()),
+        payload: patch(payload),
+        opts: WriteOpts::default(),
+    };
+    let nobody = lakelands_api::Principal {
+        grants: Default::default(),
+        ..own.clone()
+    };
+    let ungranted = call(store.as_ref(), &nobody, "remind", json!({})).await;
     ensure!(
-        matches!(err, Error::Unbound { .. }),
-        "calling an external verb with no executor bound must answer `unbound`; it \
-         failed with {err:?}"
+        matches!(reason(&ungranted), Some(Refusal::NotGranted)),
+        "the grant comes before the executor: `remind` called with no grant answered \
+         {ungranted:?}"
+    );
+    for (what, answer) in [
+        (
+            "calling the low-risk `remind`",
+            call(store.as_ref(), own, "remind", json!({})).await,
+        ),
+        (
+            "calling `remind` with a payload it does not take, judged after the executor",
+            call(store.as_ref(), own, "remind", json!({"bogus": 1})).await,
+        ),
+        (
+            "calling the high-risk `chase`, which would be proposed",
+            call(store.as_ref(), own, "chase", json!({})).await,
+        ),
+        (
+            "proposing a call of `remind`",
+            cat.propose(own, proposed("remind", json!({})), "later".into())
+                .await,
+        ),
+        (
+            "proposing `remind` with a payload it does not take",
+            cat.propose(own, proposed("remind", json!({"bogus": 1})), "later".into())
+                .await,
+        ),
+        (
+            "proposing a call of `chase`",
+            cat.propose(own, proposed("chase", json!({})), "later".into())
+                .await,
+        ),
+    ] {
+        ensure!(
+            matches!(&answer, Err(Error::Unbound { seam }) if seam.contains("mailer")),
+            "{what}, whose executor `mailer` is not bound, must answer `unbound` naming \
+             `mailer`, and never record a proposal that could not run; it answered {answer:?}"
+        );
+    }
+    head_unmoved(store.as_ref(), before, "the unbound external verbs").await?;
+    Ok(())
+}
+
+async fn a_riskier_call_that_could_not_run_now_is_not_proposed(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = ledger(store.as_ref()).await?;
+    for verb in [
+        json!({"declare": "verb", "name": "settle", "on": "invoice", "risk": "high",
+               "requires": "status = 'open'", "effect": "write",
+               "set": [{"field": "status", "value": "'settled'"}]}),
+        json!({"declare": "verb", "name": "dun", "on": "invoice", "risk": "high",
+               "requires": "status = 'open'", "effect": "external", "executor": EXECUTOR}),
+    ] {
+        l.declare_json(verb).await?;
+    }
+    l.upsert("invoice", "i", json!({"status": "closed"}))
+        .await?;
+    let before = store.head().await.must("reading the head")?;
+    let mut red = Vec::new();
+    for verb in ["settle", "dun"] {
+        for (version, proposed) in [
+            (None, false),
+            (Some(1), false),
+            (None, true),
+            (Some(1), true),
+        ] {
+            let opts = WriteOpts {
+                expected_version: version.map(Version),
+                ..WriteOpts::default()
+            };
+            let got = if proposed {
+                let write = ProposedWrite::Call {
+                    verb: verb.into(),
+                    key: Some("i".into()),
+                    payload: patch(json!({})),
+                    opts,
+                };
+                l.cat.propose(&l.own, write, "later".into()).await
+            } else {
+                let key = Some("i".into());
+                l.cat
+                    .call(&l.own, &verb.into(), key.as_ref(), patch(json!({})), opts)
+                    .await
+            };
+            let ok = match (&got, version) {
+                (Err(Error::Conflict { expected, actual }), Some(_)) => {
+                    *expected == Version(1) && *actual == Version(2)
+                }
+                (other, None) => matches!(reason(other), Some(Refusal::Precondition { .. })),
+                _ => false,
+            };
+            if !ok {
+                let door = if proposed { "propose" } else { "call" };
+                red.push(format!("{door} `{verb}` at {version:?} answered {got:?}"));
+            }
+        }
+    }
+    ensure!(
+        red.is_empty(),
+        "`i` is at version 2 and closed, so a high-risk call on it could not run now and is \
+         not proposed: at version 1 it is a conflict, the version first; with no version, \
+         a precondition: {}",
+        red.join("; ")
+    );
+    head_unmoved(store.as_ref(), before, "calls that could not run").await
+}
+
+async fn accepting_a_call_after_its_verb_was_declared_differently_is_refused(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = ledger(store.as_ref()).await?;
+    let Lake { cat, own } = &l;
+    let review = reviewer(store.as_ref(), false);
+    let write = |name: &str, status: &str| {
+        json!({"declare": "verb", "name": name, "on": "invoice", "risk": "medium",
+               "effect": "write", "set": [{"field": "status", "value": format!("'{status}'")}]})
+    };
+    let external = |name: &str, scope: &str| {
+        json!({"declare": "verb", "name": name, "on": "invoice", "risk": "medium",
+               "scope": scope, "effect": "external", "executor": EXECUTOR})
+    };
+    let c2_again = json!({"declare": "verb", "name": "c2", "on": "invoice", "risk": "medium",
+        "payload": [{"name": "reason", "type": {"kind": "text"}, "required": true}],
+        "effect": "write", "set": [{"field": "status", "value": "'approved'"},
+                                   {"field": "paid_ref", "value": "payload.reason"}]});
+    // Each row: the verb as proposed, what it is declared as before the
+    // accept, and whether the accept applies.
+    let rows = [
+        (
+            "C1, its effect changed",
+            write("c1", "approved"),
+            vec![write("c1", "rejected")],
+            false,
+        ),
+        (
+            "C2, a required payload field added",
+            write("c2", "approved"),
+            vec![c2_again],
+            false,
+        ),
+        (
+            "C3, its scope turned to the type",
+            external("c3", "record"),
+            vec![external("c3", "type")],
+            false,
+        ),
+        (
+            "nothing declared again",
+            write("c4", "approved"),
+            vec![],
+            true,
+        ),
+        (
+            "declared again, the same",
+            write("c5", "approved"),
+            vec![write("c5", "approved")],
+            true,
+        ),
+        (
+            "changed and changed back",
+            write("c6", "approved"),
+            vec![write("c6", "rejected"), write("c6", "approved")],
+            true,
+        ),
+    ];
+    let mut red = Vec::new();
+    for (what, proposed, again, applies) in rows {
+        let name = proposed["name"].as_str().expect("a name").to_owned();
+        l.declare_json(proposed).await?;
+        let (_, id) = proposal(
+            &call(store.as_ref(), own, &name, json!({}))
+                .await
+                .must(what)?,
+        )?;
+        for d in again {
+            l.declare_json(d).await?;
+        }
+        let head = store.head().await.must("reading the head")?;
+        let got = cat.accept(&review, &id).await;
+        let state = cat
+            .proposals(&review, ProposalFilter::default())
+            .await
+            .must("listing proposals")?
+            .data
+            .into_iter()
+            .find(|p| p.id == id)
+            .map(|p| p.state);
+        let ok = if applies {
+            got.is_ok() && state == Some(ProposalState::Accepted)
+        } else {
+            let names = got
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.to_string().contains(&format!("`{name}`")));
+            matches!(reason(&got), Some(Refusal::Invalid { .. }))
+                && names
+                && state == Some(ProposalState::Pending)
+                && store.head().await.must("reading the head")? == head
+        };
+        if !ok {
+            red.push(format!(
+                "{what}: accept answered {got:?}, the proposal is {state:?}"
+            ));
+        }
+    }
+    ensure!(
+        red.is_empty(),
+        "the reviewer applies what was checked: an accept after the verb was declared \
+         differently is refused as invalid naming it, the proposal pending; the same content \
+         is accepted: {}",
+        red.join("; ")
     );
     Ok(())
 }
@@ -206,15 +475,7 @@ async fn accepting_a_proposal_applies_its_write_as_the_proposers(
     ledger(store.as_ref()).await?;
     let cat = doors(store.as_ref());
     let clerk = field_writer(store.as_ref(), "clerk", "invoice", &["status", "paid_ref"]);
-    let reviewer = principal(
-        store.as_ref(),
-        PrincipalKind::Human,
-        "reviewer",
-        Grants {
-            review: true,
-            ..Grants::default()
-        },
-    );
+    let reviewer = reviewer(store.as_ref(), false);
     let (at, id) = proposal(
         &call(store.as_ref(), &clerk, "pay", json!({"reference": "TX-9"}))
             .await
@@ -325,13 +586,7 @@ async fn a_rejected_proposal_writes_nothing_and_a_decided_one_stays_decided(
         )
         .await?;
         ensure!(
-            matches!(
-                err,
-                Error::Refused {
-                    reason: Refusal::Decided,
-                    ..
-                }
-            ),
+            matches!(reason(&err), Some(Refusal::Decided)),
             "{what} a decided proposal must be refused as decided; it failed with {err:?}"
         );
     }
@@ -373,15 +628,19 @@ async fn only_a_reviewer_decides_and_a_proposer_sees_its_own_proposals(
         .must_fail("the clerk, without the review grant, accepting its own proposal")?;
     head_unmoved(store.as_ref(), before, "accepting without the review grant").await?;
     ensure!(
-        matches!(
-            err,
-            Error::Refused {
-                reason: Refusal::NotGranted,
-                ..
-            }
-        ),
+        matches!(reason(&err), Some(Refusal::NotGranted)),
         "accepting without the review grant must be refused as not granted; it failed \
          with {err:?}"
+    );
+    // The review grant before the proposal is looked up (013, extended).
+    let unknown = ProposalId::from("none");
+    let accept = cat.accept(&clerk, &unknown).await;
+    let reject = cat.reject(&clerk, &unknown, "no".into()).await;
+    ensure!(
+        matches!(reason(&accept), Some(Refusal::NotGranted))
+            && matches!(reason(&reject), Some(Refusal::NotGranted)),
+        "deciding a proposal that does not exist, without the review grant, answers \
+         {accept:?} and {reject:?}"
     );
 
     let ids = |who: lakelands_api::Principal| {
@@ -453,12 +712,11 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
     let Lake { cat, own } = &l;
     l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
         .await?;
-    let verb: Declaration = serde_json::from_value(json!({
+    l.declare_json(json!({
         "declare": "verb", "name": "dispatch", "on": "job", "risk": "low",
         "payload": [{"name": "fail", "type": {"kind": "boolean"}}],
         "effect": "external", "executor": EXECUTOR}))
-    .map_err(|e| Failure::new(format!("the check's verb does not read: {e}")))?;
-    cat.declare(own, verb).await.must("declaring `dispatch`")?;
+        .await?;
     let key = "executor-job";
     l.upsert("job", key, json!({"status": "open"})).await?;
     let dispatch = |payload: serde_json::Value, opts: WriteOpts| {
@@ -500,19 +758,7 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
          outcome carries {output} after {} runs",
         executed(key)
     );
-    let recorded = store
-        .feed()
-        .poll(
-            *position,
-            &lakelands_api::seam::FeedFilter {
-                kinds: vec!["output_recorded".into()],
-                ..Default::default()
-            },
-            u32::MAX,
-        )
-        .await
-        .must("reading the recorded outputs")?
-        .events;
+    let recorded = outputs_from(store.as_ref(), *position).await?;
     ensure!(
         recorded.iter().any(|e| e.cause == Some(*position)
             && matches!(&e.body, lakelands_api::event::EventBody::OutputRecorded { output: o, .. } if o == output)),
@@ -544,19 +790,7 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
          position with {{\"error\": …}} as its output; it answered {failed:?}"
     );
     let failed_at = failed.position();
-    let recorded = store
-        .feed()
-        .poll(
-            failed_at,
-            &lakelands_api::seam::FeedFilter {
-                kinds: vec!["output_recorded".into()],
-                ..Default::default()
-            },
-            u32::MAX,
-        )
-        .await
-        .must("reading the recorded outputs after the failed call")?
-        .events;
+    let recorded = outputs_from(store.as_ref(), failed_at).await?;
     ensure!(
         recorded.iter().any(|e| e.cause == Some(failed_at)
             && matches!(&e.body, lakelands_api::event::EventBody::OutputRecorded { output: o, .. }
@@ -621,7 +855,6 @@ async fn host_write(store: &dyn LakeStore, key: &str, cause: Position) -> Result
 async fn jobs(store: &dyn LakeStore, risk: &str) -> Result<Lake, Failure> {
     use crate::conformance::backing::EXECUTOR;
     let l = Lake::of(store);
-    let Lake { cat, own } = &l;
     l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
         .await?;
     for verb in [
@@ -632,9 +865,7 @@ async fn jobs(store: &dyn LakeStore, risk: &str) -> Result<Lake, Failure> {
         json!({"declare": "verb", "name": "close", "on": "job", "risk": "low",
                "effect": "write", "set": [{"field": "status", "value": "'closed'"}]}),
     ] {
-        let d: Declaration = serde_json::from_value(verb)
-            .map_err(|e| Failure::new(format!("the check's verb does not read: {e}")))?;
-        cat.declare(own, d).await.must("declaring a verb")?;
+        l.declare_json(verb).await?;
     }
     Ok(l)
 }
@@ -747,15 +978,7 @@ async fn a_retried_proposed_call_answers_its_proposal_after_it_is_accepted(
         .await
         .must("calling `ship_medium`")?;
     let (at, id) = proposal(&first)?;
-    let reviewer = principal(
-        store.as_ref(),
-        PrincipalKind::Human,
-        "reviewer",
-        Grants {
-            review: true,
-            ..Grants::default()
-        },
-    );
+    let reviewer = reviewer(store.as_ref(), false);
     l.cat
         .accept(&reviewer, &id)
         .await

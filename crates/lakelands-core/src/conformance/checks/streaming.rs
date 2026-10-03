@@ -43,7 +43,13 @@
 //! own, as its largest page: a page holds its rows, not the type
 //! (lakelands#134), and the first pages ordered by a field the lake's
 //! `sort_index.<type>` setting names, which read the order index and not
-//! the type (lakelands#137), and the rebuild, which folds the log a page
+//! the type (lakelands#137), and the same pages with writes between them,
+//! to another type and then to records the later pages answer, which the
+//! cursor keeps out of the walk: a page at its earlier position reads the
+//! head's index and the keys changed since (lakelands#382). Each of these
+//! pages is also held to the rows the engine reads for it, counted by
+//! [`crate::engines::rows_read_in_process`]: its page, the one row more the
+//! store asks for, three more, and two per key changed since. And the rebuild, which folds the log a page
 //! at a time (lakelands#130), and the reopen, which reads the log a page at a time
 //! and on SQLite keeps a mark per 256 events of its index, not the index
 //! (lakelands#133), and a walk over link records: a pattern query of
@@ -74,6 +80,8 @@
 //! bound and reported, but never fails the check: the same first pages
 //! ordered by a field, before the setting asks for its index: a page then
 //! sorts the type, which is that order's stated ceiling (lakelands#193).
+//! The rows it reads are held, to the type and one page: a page sorts the
+//! type once. Every walk ordered by `note` answers the keys this one does.
 //!
 //! **What a green run does not show.** Two limits of the measurement:
 //!
@@ -111,13 +119,11 @@ use std::time::{Duration, Instant};
 use futures_core::Stream;
 use lakelands_api::event::{Digest, EventBody};
 use lakelands_api::ontology::{
-    Authority, Cardinality, EmbedDecl, FieldDecl, FieldType, RelationDecl, StorageKind, TypeDecl,
+    Authority, Cardinality, FieldDecl, RelationDecl, StorageKind, TypeDecl,
 };
-use lakelands_api::query::{
-    Depth, Pattern, Projection, QueryResult, Search, SearchMode, Step, Walk,
-};
-use lakelands_api::read::{Direction, Order, OrderBy};
-use lakelands_api::seam::{FeedFilter, Seams};
+use lakelands_api::query::{Pattern, Projection, QueryResult, Search, SearchMode, Walk};
+use lakelands_api::read::{Direction, OrderBy};
+use lakelands_api::seam::{FeedFilter, SETTING_TYPE, Seams};
 use lakelands_api::{
     Find, Found, LakeStore, Position, Principal, ReadAt, RecordKey, SourceId, SourceRecord,
     TypeName,
@@ -126,7 +132,10 @@ use serde_json::json;
 use sha2::{Digest as _, Sha256};
 
 use crate::conformance::backing::EMBED_MODEL;
-use crate::conformance::fixture::{Must, declare, doors, field, limits, owner, pause, type_decl};
+use crate::conformance::fixture::{
+    Lake, Must, declare, doors, embedding, limits, order, owner, pattern, pause, reason,
+    source_record, sourced, step, type_decl,
+};
 use crate::conformance::{Failure, Given, Meter, backing, next};
 use crate::export;
 use crate::links::{link_key, link_type_name};
@@ -134,7 +143,7 @@ use crate::links::{link_key, link_type_name};
 check!(
     /// A large lake goes through ingest, the feed and export in bounded memory.
     STREAMS = a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it,
-    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification and its import into a new lake, each page of a walk of a type through find, a rebuild, a reopen, a three-hop walk over link records, a three-hop walk over a derived relation, a hybrid search with k = 10 over every record's vector, without and with a vector index asked for, the ten records of highest degree over the whole type, and components refused at the lake's max_graph_nodes, hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB, and the search answers what it must",
+    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification and its import into a new lake, each page of a walk of a type through find, the first pages of a walk ordered by an indexed field, with and without writes between them, each also reading its page and a few rows more, not the type, a rebuild, a reopen, a three-hop walk over link records, a three-hop walk over a derived relation, a hybrid search with k = 10 over every record's vector, without and with a vector index asked for, the ten records of highest degree over the whole type, and components refused at the lake's max_graph_nodes, hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB, and the search answers what it must",
     given,
     embedding
 );
@@ -176,33 +185,17 @@ const K: u32 = 10;
 /// and every record holds a vector. `follows` links a record to two
 /// earlier ones, by link records that arrive from a source.
 fn reading() -> TypeDecl {
-    let source = |name: &str, kind| {
-        let mut f = field(name, kind);
-        f.authority = Authority::Source;
-        f
-    };
     let mut ty = type_decl(
         TY,
         vec![
-            source("seq", StorageKind::Number),
-            source("site", StorageKind::Text),
-            source("value", StorageKind::Number),
+            sourced("seq", StorageKind::Number),
+            sourced("site", StorageKind::Text),
+            sourced("value", StorageKind::Number),
             FieldDecl {
                 searchable: true,
-                ..source("note", StorageKind::Text)
+                ..sourced("note", StorageKind::Text)
             },
-            FieldDecl {
-                ty: FieldType {
-                    dimensions: Some(2),
-                    ..FieldType::kind(StorageKind::Vector)
-                },
-                authority: Authority::Derived,
-                embed: Some(EmbedDecl {
-                    from: vec!["site".into()],
-                    model: EMBED_MODEL.into(),
-                }),
-                ..field("vec", StorageKind::Text)
-            },
+            embedding("vec", 2, &["site"], EMBED_MODEL),
         ],
     );
     ty.relations = vec![RelationDecl {
@@ -234,19 +227,21 @@ fn note(i: u64) -> String {
 }
 
 /// Record `i` of the source, as first delivered.
-fn content(i: u64, value: f64) -> SourceRecord {
-    SourceRecord {
-        upstream: None,
-        ty: TypeName::from(TY),
-        key: key(i),
-        fields: crate::conformance::fixture::patch(json!({
-            "seq": i,
-            "site": format!("site-{}", i % 97),
-            "value": value,
-            "note": note(i),
-        })),
-        seen_at: None,
+/// The seams a reopened or imported lake is given: the suite's backings,
+/// embedder and executors.
+fn seams() -> Seams {
+    Seams {
+        backings: backing::backings(),
+        embed: Some(backing::embedder()),
+        executors: backing::executors(),
+        ..Seams::default()
     }
+}
+
+fn content(i: u64, value: f64) -> SourceRecord {
+    let fields =
+        json!({"seq": i, "site": format!("site-{}", i % 97), "value": value, "note": note(i)});
+    source_record(TY, key(i).as_str(), fields)
 }
 
 fn first_value(i: u64) -> f64 {
@@ -312,20 +307,7 @@ fn follows(i: u64, first: u64) -> impl Iterator<Item = u64> {
 
 /// A whole-graph measure of every record over `follows`, both ways.
 fn measure(project: Projection) -> Pattern {
-    let mut p = Pattern::traverse(
-        TypeName::from(TY),
-        key(0),
-        vec![Step {
-            relation: FOLLOWS.into(),
-            walk: Walk::Both,
-            ty: None,
-            filter: None,
-            depth: Depth::default(),
-        }],
-    );
-    p.start.key = None;
-    p.project = project;
-    p
+    pattern(TY, None, vec![step(FOLLOWS, Walk::Both)], project)
 }
 
 /// The records of the largest component over `follows` in a lake of
@@ -371,15 +353,9 @@ impl Stream for Links {
             self.at += 1;
             let first = self.first;
             self.ahead = follows(i, first)
-                .map(|t| SourceRecord {
-                    upstream: None,
-                    ty: link.clone(),
-                    key: link_key(&key(i), &key(t)),
-                    fields: crate::conformance::fixture::patch(json!({
-                        "from": key(i).as_str(),
-                        "to": key(t).as_str(),
-                    })),
-                    seen_at: None,
+                .map(|t| {
+                    let fields = json!({"from": key(i).as_str(), "to": key(t).as_str()});
+                    source_record(link.as_str(), link_key(&key(i), &key(t)).as_str(), fields)
                 })
                 .collect();
         }
@@ -525,7 +501,10 @@ async fn answers(store: &dyn LakeStore, who: &Principal) -> Result<(u64, String)
             .find(who, &TypeName::from(TY), find.clone())
             .await
             .must("finding every `reading`")?;
-        let Found::Records { rows, next_cursor } = reply.data else {
+        let Found::Records {
+            rows, next_cursor, ..
+        } = reply.data
+        else {
             return Err(Failure::new(
                 "finding `reading` records without an aggregate answered groups",
             ));
@@ -789,14 +768,8 @@ impl Size<'_> {
         // The export imported as a new lake of the engine (lakelands#215):
         // on the memory engine the imported lake stays on the heap by
         // design, so, as for ingest, what it held beyond what it leaves.
-        let seams = lakelands_api::seam::Seams {
-            backings: crate::conformance::backing::backings(),
-            embed: Some(crate::conformance::backing::embedder()),
-            executors: crate::conformance::backing::executors(),
-            ..lakelands_api::seam::Seams::default()
-        };
         let m = Measure::start(&self.given.meter, true);
-        let imported = (self.given.import)(dir.to_path_buf(), store.lake().clone(), None, seams)
+        let imported = (self.given.import)(dir.to_path_buf(), store.lake().clone(), None, seams())
             .await
             .map_err(|e| Failure::new(format!("importing {}: {e}", dir.display())))?
             .store;
@@ -812,6 +785,106 @@ impl Size<'_> {
         imported.close().await.must("closing the imported lake")?;
         self.row("import", Claim::Held, records, log.events, what, measured);
         let _ = fs::remove_dir_all(dir);
+        Ok(())
+    }
+
+    /// Count every `reading` through `find`'s `count()`, once with a filter
+    /// the engine applies and once with one only the store evaluates, each
+    /// measured: a count holds a batch, whatever the size of the type.
+    async fn counts(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+        let cat = doors(store);
+        let head = store.head().await.must("reading the head")?;
+        for (phase, filter) in [
+            ("count", "seq >= 0"),
+            ("count-store", "seq >= 0 and now() > now() - 1d"),
+        ] {
+            let find = Find {
+                filter: Some(filter.into()),
+                aggregate: Some(lakelands_api::read::Aggregate {
+                    measures: vec![crate::conformance::fixture::agg(
+                        "n",
+                        lakelands_api::read::AggFunc::Count,
+                        None,
+                    )],
+                    group_by: Vec::new(),
+                }),
+                ..Find::default()
+            };
+            let started = Instant::now();
+            let m = Measure::start(&self.given.meter, false);
+            let reply = cat
+                .find(&self.own, &TypeName::from(TY), find)
+                .await
+                .must(&format!("counting `reading` where {filter}"))?;
+            let (heap, _) = m.stop();
+            let counted = match &reply.data {
+                Found::Groups { rows } => rows
+                    .first()
+                    .and_then(|g| g.values.get("n"))
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|n| n.parse::<u64>().ok()),
+                Found::Records { .. } => None,
+            };
+            ensure!(
+                counted == Some(self.live),
+                "counting `reading` where {filter} must answer the {} live records; it \
+                 answered {:?}",
+                self.live,
+                reply.data
+            );
+            self.row(
+                phase,
+                Claim::Held,
+                records,
+                head.0 + 1,
+                format!("a count of {} where {filter}", self.live),
+                (heap, started.elapsed()),
+            );
+        }
+        Ok(())
+    }
+
+    /// Jump to the last page of `reading` with `offset`, asking for its
+    /// `total`, measured: the rows skipped are read and dropped a page at
+    /// a time, and the total counted a batch at a time, whatever the size
+    /// of the type (045).
+    async fn jump(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+        let cat = doors(store);
+        let head = store.head().await.must("reading the head")?;
+        let limit = 25u32;
+        let skip = self.live.saturating_sub(u64::from(limit));
+        let find = Find {
+            offset: Some(u32::try_from(skip).unwrap_or(u32::MAX)),
+            limit: Some(limit),
+            total: true,
+            ..Find::default()
+        };
+        let started = Instant::now();
+        let m = Measure::start(&self.given.meter, false);
+        let reply = cat
+            .find(&self.own, &TypeName::from(TY), find)
+            .await
+            .must(&format!("jumping {skip} rows into `reading`"))?;
+        let (heap, _) = m.stop();
+        let Found::Records { rows, total, .. } = reply.data else {
+            return Err(Failure::new("a page of `reading` answered groups"));
+        };
+        ensure!(
+            rows.len() as u64 == self.live - skip && total == Some(self.live),
+            "the page {skip} rows into `reading` holds its last {} records and a total of {}; \
+             it held {} and {total:?}",
+            self.live - skip,
+            self.live,
+            rows.len()
+        );
+        self.row(
+            "jump",
+            Claim::Held,
+            records,
+            head.0 + 1,
+            format!("a page {skip} rows in, with its total"),
+            (heap, started.elapsed()),
+        );
         Ok(())
     }
 
@@ -846,6 +919,7 @@ impl Size<'_> {
             let Found::Records {
                 rows: page,
                 next_cursor,
+                ..
             } = reply.data
             else {
                 return Err(Failure::new(
@@ -892,86 +966,154 @@ impl Size<'_> {
 
     /// Walk the first pages of `reading` ordered by its `note`, a text field
     /// every record holds with its own value, first as a lake without an
-    /// order index sorts them (reported: a page holds the type,
-    /// lakelands#193), then after the setting `sort_index.reading` asks for
-    /// the index on `note` (held: a page holds its rows, lakelands#137);
-    /// then retire the setting.
+    /// order index sorts them: a page holds the type, its heap reported
+    /// (lakelands#193), the rows it reads held to the type and a page. Then
+    /// after the setting `sort_index.reading` asks for the index on `note`:
+    /// a page holds its rows (lakelands#137) and reads at most three more.
+    /// Then the same walk with writes between its pages, which the cursor
+    /// keeps out of it: to another type before the second page, and to `n`
+    /// of the walk's own records before the fourth; a page reads at most
+    /// three rows more than it answers, and two per record changed since
+    /// its position. Every walk answers what the first, a sort of the
+    /// type, answered. Then retire the setting.
     async fn sorted_walks(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
-        self.sorted_walk(
-            store,
-            records,
-            "find-sorted-fallback",
-            Claim::Reported("lakelands#193"),
-        )
-        .await?;
-        doors(store)
-            .upsert(
-                &self.own,
-                &TypeName::from(lakelands_api::seam::SETTING_TYPE),
-                &RecordKey::from("sort_index.reading"),
-                [
-                    ("key".into(), json!("sort_index.reading")),
-                    ("value".into(), json!(["note"])),
-                ]
-                .into(),
-                lakelands_api::WriteOpts::default(),
-            )
-            .await
-            .must("asking for the order index on `note`")?;
-        self.sorted_walk(store, records, "find-sorted", Claim::Held)
+        let limit = u64::from(limits().max_limit);
+        // The store asks the engine for a page and one more row, which
+        // tells it whether another page follows.
+        let asked = limit + 1;
+        let live = self.live;
+        let sorted = self
+            .sorted_walk(store, records, "find-sorted-fallback", None, |_| {
+                live + asked
+            })
             .await?;
-        // Retired, so the next size's first walk sorts again.
-        doors(store)
-            .retire(
-                &self.own,
-                &TypeName::from(lakelands_api::seam::SETTING_TYPE),
-                &RecordKey::from("sort_index.reading"),
-                lakelands_api::WriteOpts::default(),
+        let l = Lake::of(store);
+        l.set("sort_index.reading", json!(["note"])).await?;
+        let indexed = self
+            .sorted_walk(store, records, "find-sorted", None, |_| asked + 3)
+            .await?;
+        // Eight records the fourth and fifth pages answer, spread over both.
+        let changing: Vec<RecordKey> = sorted
+            .iter()
+            .skip(3 * limit as usize)
+            .step_by((limit as usize / 4).max(1))
+            .take(8)
+            .cloned()
+            .collect();
+        let n = changing.len() as u64;
+        let written = self
+            .sorted_walk(
+                store,
+                records,
+                "find-sorted-after-writes",
+                Some(&changing),
+                |page| asked + 3 + if page >= 4 { 2 * n } else { 0 },
             )
-            .await
-            .must("retiring the order index on `note`")?;
+            .await?;
+        for (phase, keys) in [
+            ("find-sorted", indexed),
+            ("find-sorted-after-writes", written),
+        ] {
+            ensure!(
+                keys == sorted,
+                "{phase} answered {} keys, the first walk, a sort of the type, {}; from the \
+                 first that differs on, {:?} against {:?}",
+                keys.len(),
+                sorted.len(),
+                keys.iter().zip(&sorted).find(|(a, b)| a != b),
+                sorted
+                    .iter()
+                    .zip(&keys)
+                    .find(|(a, b)| a != b)
+                    .map(|(a, _)| a)
+            );
+        }
+        // Retired, so the next size's first walk sorts again.
+        l.retire(SETTING_TYPE, "sort_index.reading").await?;
         Ok(())
     }
 
     /// Walk the first pages of `reading` ordered by its `note`, a page of
     /// `max_limit` at a time with the cursor, measuring each page on its
-    /// own, as `phase`.
+    /// own, as `phase`, and holding the rows the engine reads for page `p`
+    /// to `most(p)`. With records `changing`, a setting is written before
+    /// the second page and those records are delivered again, with another
+    /// value, before the fourth (at the first size the walk may end
+    /// sooner). Answers the keys walked.
     async fn sorted_walk(
         &mut self,
         store: &dyn LakeStore,
         records: u64,
         phase: &'static str,
-        claim: Claim,
-    ) -> Result<(), Failure> {
+        changing: Option<&[RecordKey]>,
+        most: impl Fn(u64) -> u64,
+    ) -> Result<Vec<RecordKey>, Failure> {
         const PAGES: u64 = 5;
         let cat = doors(store);
         let head = store.head().await.must("reading the head")?;
         let limit = limits().max_limit;
         let mut find = Find {
             limit: Some(limit),
-            order_by: vec![Order {
-                field: "note".into(),
-                by: OrderBy::Value,
-                dir: Direction::Asc,
-            }],
+            order_by: vec![order("note", OrderBy::Value, Direction::Asc)],
             ..Find::default()
         };
         let mut previous: Option<String> = None;
+        let mut walked = Vec::new();
         let mut worst: Option<Heap> = None;
         let started = Instant::now();
         for page in 1..=PAGES {
+            if changing.is_some() && page == 2 {
+                Lake::of(store)
+                    .set("streaming.between", json!(page))
+                    .await?;
+            }
+            if let Some(changing) = changing.filter(|_| page == 4) {
+                // The value only, one this size has not delivered: the
+                // note, and so the order, stays.
+                let again = changing
+                    .iter()
+                    .filter_map(|k| k.as_str().strip_prefix('r')?.parse::<u64>().ok())
+                    .map(|i| content(i, first_value(i) + records as f64 + 0.5))
+                    .collect();
+                let windows = lakelands_api::catalog::ingest_all(
+                    cat.as_ref(),
+                    &self.own,
+                    &SourceId::from(SOURCE),
+                    again,
+                )
+                .await
+                .must("delivering records of `reading` again")?;
+                let put: u64 = windows.iter().map(|w| u64::from(w.records)).sum();
+                ensure!(
+                    put == changing.len() as u64,
+                    "delivering {} records of `reading` again with another value put {put}",
+                    changing.len()
+                );
+            }
             let m = Measure::start(&self.given.meter, false);
+            let before = crate::engines::rows_read_in_process();
             let reply = cat
                 .find(&self.own, &TypeName::from(TY), find.clone())
                 .await
                 .must(&format!("finding page {page} of `reading` by `note`"))?;
+            let read = crate::engines::rows_read_in_process() - before;
             let (heap, _) = m.stop();
             if let Some(h) = heap
                 && worst.is_none_or(|w| h.held() > w.held())
             {
                 worst = Some(h);
             }
-            let Found::Records { rows, next_cursor } = reply.data else {
+            ensure!(
+                read <= most(page),
+                "{phase}: page {page} of {limit} by `note` read {read} rows of the type's {}; \
+                 at most {} are allowed",
+                self.live,
+                most(page)
+            );
+            let Found::Records {
+                rows, next_cursor, ..
+            } = reply.data
+            else {
                 return Err(Failure::new(
                     "finding `reading` records without an aggregate answered groups",
                 ));
@@ -987,12 +1129,18 @@ impl Size<'_> {
                     "walking `reading` by `note` answered {note:?} after {previous:?}"
                 );
                 previous = note;
+                walked.push(r.key.clone());
             }
             match next_cursor {
                 Some(c) => find.cursor = Some(c),
                 None => break,
             }
         }
+        let claim = match phase {
+            // A page sorts the type, which is that order's stated ceiling.
+            "find-sorted-fallback" => Claim::Reported("lakelands#193"),
+            _ => Claim::Held,
+        };
         self.row(
             phase,
             claim,
@@ -1001,7 +1149,7 @@ impl Size<'_> {
             format!("{PAGES} pages of at most {limit} by `note`; the largest page"),
             (worst, started.elapsed()),
         );
-        Ok(())
+        Ok(walked)
     }
 
     /// Link every record delivered from `from` to `size` to the two it
@@ -1043,36 +1191,12 @@ impl Size<'_> {
     /// setting is retired again, so the lake grows without the index.
     async fn searches(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
         self.search(store, records, "search", "hybrid").await?;
-        self.ask_vector_index(store, json!(["vec"]))
-            .await
-            .must("asking for the vector index on `vec`")?;
+        let l = Lake::of(store);
+        l.set("vector_index.reading", json!(["vec"])).await?;
         self.search(store, records, "search-indexed", "hybrid (index)")
             .await?;
-        self.ask_vector_index(store, json!([]))
-            .await
-            .must("asking for no vector index again")?;
+        l.set("vector_index.reading", json!([])).await?;
         Ok(())
-    }
-
-    /// Write the setting `vector_index.reading` with `value`.
-    async fn ask_vector_index(
-        &self,
-        store: &dyn LakeStore,
-        value: serde_json::Value,
-    ) -> lakelands_api::Result<lakelands_api::Outcome> {
-        doors(store)
-            .upsert(
-                &self.own,
-                &TypeName::from(lakelands_api::seam::SETTING_TYPE),
-                &RecordKey::from("vector_index.reading"),
-                [
-                    ("key".into(), json!("vector_index.reading")),
-                    ("value".into(), value),
-                ]
-                .into(),
-                lakelands_api::WriteOpts::default(),
-            )
-            .await
     }
 
     /// One hybrid search for the note of [`SOUGHT`], reported as `phase`;
@@ -1142,17 +1266,10 @@ impl Size<'_> {
         let head = store.head().await.must("reading the head")?;
         let first = u64::from(self.given.large_lake.max(20));
         let want = walk_rows(records, first);
-        let step = || Step {
-            relation: FOLLOWS.into(),
-            walk: Walk::In,
-            ty: None,
-            filter: None,
-            depth: Depth { min: 1, max: 1 },
-        };
         let mut pattern = Pattern::traverse(
             TypeName::from(TY),
             key(WALK_FROM),
-            (0..HOPS).map(|_| step()).collect(),
+            vec![step(FOLLOWS, Walk::In); HOPS],
         );
         pattern.limit = Some(limits().max_limit);
         let cat = doors(store);
@@ -1203,17 +1320,10 @@ impl Size<'_> {
     /// record whatever the lake's size, never the type (044).
     async fn derived_walk(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
         let head = store.head().await.must("reading the head")?;
-        let step = || Step {
-            relation: SAME_NOTE.into(),
-            walk: Walk::Out,
-            ty: None,
-            filter: None,
-            depth: Depth { min: 1, max: 1 },
-        };
         let pattern = Pattern::traverse(
             TypeName::from(TY),
             key(WALK_FROM),
-            (0..HOPS).map(|_| step()).collect(),
+            vec![step(SAME_NOTE, Walk::Out); HOPS],
         );
         let m = Measure::start(&self.given.meter, false);
         let reply = doors(store)
@@ -1359,13 +1469,7 @@ impl Size<'_> {
             .await;
         let measured = m.stop();
         ensure!(
-            matches!(
-                answer,
-                Err(lakelands_api::Error::Refused {
-                    reason: lakelands_api::Refusal::TooLarge { max },
-                    ..
-                }) if max == cap
-            ),
+            matches!(reason(&answer), Some(lakelands_api::Refusal::TooLarge { max }) if *max == cap),
             "the components of {} records under a cap of {cap} are refused as too_large; \
              the measure answered {answer:?}",
             self.live
@@ -1427,14 +1531,8 @@ impl Size<'_> {
     ) -> Result<Arc<dyn LakeStore>, Failure> {
         let head = store.head().await.must("reading the head")?;
         let before = answers(store.as_ref(), &self.own).await?;
-        let seams = Seams {
-            backings: backing::backings(),
-            embed: Some(backing::embedder()),
-            executors: backing::executors(),
-            ..Seams::default()
-        };
         let m = Measure::start(&self.given.meter, false);
-        let store = (self.given.reopen)(store, seams)
+        let store = (self.given.reopen)(store, seams())
             .await
             .map_err(|e| Failure::new(format!("opening the large lake again failed: {e}")))?;
         let measured = m.stop();
@@ -1493,6 +1591,8 @@ async fn a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_doe
         let dir = given.scratch.join(format!("export-{records}"));
         size.export(store.as_ref(), records, &log, &dir).await?;
         size.find_walk(store.as_ref(), records).await?;
+        size.counts(store.as_ref(), records).await?;
+        size.jump(store.as_ref(), records).await?;
         size.sorted_walks(store.as_ref(), records).await?;
         size.searches(store.as_ref(), records).await?;
         size.traverse(store.as_ref(), records).await?;

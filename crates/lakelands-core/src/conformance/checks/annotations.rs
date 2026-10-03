@@ -19,16 +19,14 @@ use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{
     ANNOTATIONS_MAX_BYTES, Annotations, RelationDecl, StorageKind, TypeDecl,
 };
-use lakelands_api::principal::TypeGrants;
-use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::Declaration;
-use lakelands_api::{
-    Access, Error, Grants, LakeStore, Position, PrincipalKind, ReadAt, Refusal, TypeName,
-};
+use lakelands_api::{Access, LakeStore, Position, ReadAt, Refusal, TypeName};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, field, head_unmoved, principal, type_decl};
+use crate::conformance::fixture::{
+    Lake, Must, events_from, field, field_access, head_unmoved, reason, type_decl,
+};
 
 check!(
     /// Annotations come back as declared.
@@ -143,12 +141,7 @@ async fn declared_event(
     after: Position,
     name: &str,
 ) -> Result<TypeDecl, Failure> {
-    let events = store
-        .feed()
-        .poll(after, &FeedFilter::default(), 10_000)
-        .await
-        .must("reading the feed")?
-        .events;
+    let events = events_from(store, after).await?;
     events
         .into_iter()
         .rev()
@@ -168,13 +161,9 @@ async fn annotations_round_trip_through_declare_the_feed_and_describe(
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
-    cat.declare(own, Declaration::Type(room()))
-        .await
-        .must("declaring `room`")?;
+    l.declare(room()).await?;
     let shelf = shelf();
-    cat.declare(own, Declaration::Type(shelf.clone()))
-        .await
-        .must("declaring the annotated `shelf`")?;
+    l.declare(shelf.clone()).await?;
     let want = canonical(&declared_maps(&shelf));
     let logged = declared_event(store.as_ref(), before, "shelf").await?;
     let got = canonical(&declared_maps(&logged));
@@ -183,11 +172,7 @@ async fn annotations_round_trip_through_declare_the_feed_and_describe(
         "the feed's `declared` event of `shelf` must carry its annotations as declared; it \
          carried {got:?}, declared {want:?}"
     );
-    let d = cat
-        .describe_type(own, &TypeName::from("shelf"), ReadAt::default())
-        .await
-        .must("describing `shelf` as the owner")?
-        .data;
+    let d = l.describe_type("shelf").await?;
     let got = canonical(&described_maps(&d, &["code", "secret"]));
     ensure!(
         got == want,
@@ -201,11 +186,7 @@ async fn annotations_round_trip_through_declare_the_feed_and_describe(
     cat.apply(own, vec![Declaration::Type(crate_.clone())])
         .await
         .must("applying the annotated `crate`")?;
-    let d = cat
-        .describe_type(own, &TypeName::from("crate"), ReadAt::default())
-        .await
-        .must("describing `crate` as the owner")?
-        .data;
+    let d = l.describe_type("crate").await?;
     let (want, got) = (
         canonical(&declared_maps(&crate_)),
         canonical(&described_maps(&d, &["code", "secret"])),
@@ -222,36 +203,19 @@ async fn an_annotation_change_alone_moves_the_version_and_not_the_schema_hash(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
-    cat.declare(own, Declaration::Type(room()))
-        .await
-        .must("declaring `room`")?;
+    l.declare(room()).await?;
     let mut shelf = shelf();
-    cat.declare(own, Declaration::Type(shelf.clone()))
-        .await
-        .must("declaring `shelf`")?;
+    l.declare(shelf.clone()).await?;
     let lifecycle = |d: TypeDescription| d.lifecycle;
-    let first = lifecycle(
-        cat.describe_type(own, &TypeName::from("shelf"), ReadAt::default())
-            .await
-            .must("describing `shelf`")?
-            .data,
-    );
+    let first = lifecycle(l.describe_type("shelf").await?);
     shelf
         .annotations
         .insert("acme.icon".into(), json!("bookcase"));
     shelf.fields[0]
         .annotations
         .insert("acme.width".into(), json!(80));
-    cat.declare(own, Declaration::Type(shelf))
-        .await
-        .must("re-declaring `shelf` with only its annotations changed")?;
-    let second = lifecycle(
-        cat.describe_type(own, &TypeName::from("shelf"), ReadAt::default())
-            .await
-            .must("describing `shelf` again")?
-            .data,
-    );
+    l.declare(shelf).await?;
+    let second = lifecycle(l.describe_type("shelf").await?);
     ensure!(
         second.version == first.version + 1,
         "an annotation change must move the version by one; it went from {} to {}",
@@ -271,41 +235,26 @@ async fn a_masked_field_is_described_without_its_annotations(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
-    cat.declare(own, Declaration::Type(room()))
-        .await
-        .must("declaring `room`")?;
+    let Lake { cat, .. } = &l;
+    l.declare(room()).await?;
     let shelf = shelf();
-    cat.declare(own, Declaration::Type(shelf.clone()))
-        .await
-        .must("declaring `shelf`")?;
-    // Reads everything but `secret` (masked: it is sensitive) and the
-    // link field `note`.
-    let mut types = BTreeMap::new();
-    types.insert(
-        TypeName::from("shelf"),
-        TypeGrants {
-            default: None,
-            fields: [("secret".into(), Access::None)].into(),
-        },
-    );
-    types.insert(
-        TypeName::from("sys.link.shelf.room"),
-        TypeGrants {
-            default: None,
-            fields: [("note".into(), Access::None)].into(),
-        },
-    );
-    let clerk = principal(
+    l.declare(shelf.clone()).await?;
+    // Reads everything but `secret` and the link field `note`, which it
+    // sees masked.
+    let mut clerk = field_access(
         store.as_ref(),
-        PrincipalKind::Agent,
         "clerk",
-        Grants {
-            default: Access::Read,
-            types,
-            ..Grants::default()
-        },
+        "shelf",
+        &[("secret", Access::Masked)],
     );
+    let note = lakelands_api::principal::TypeGrants {
+        default: None,
+        fields: [("note".into(), Access::Masked)].into(),
+    };
+    clerk
+        .grants
+        .types
+        .insert("sys.link.shelf.room".into(), note);
     let d = cat
         .describe_type(&clerk, &TypeName::from("shelf"), ReadAt::default())
         .await
@@ -411,15 +360,9 @@ async fn an_unnamespaced_reserved_null_or_oversized_annotation_is_refused_naming
             }
             Err(e) => e,
         };
-        let kind_ok = match &e {
-            Error::Refused {
-                reason: Refusal::Reserved,
-                ..
-            } => reserved,
-            Error::Refused {
-                reason: Refusal::Invalid { .. },
-                ..
-            } => !reserved,
+        let kind_ok = match reason(&e) {
+            Some(Refusal::Reserved) => reserved,
+            Some(Refusal::Invalid { .. }) => !reserved,
             _ => false,
         };
         ensure!(
@@ -436,8 +379,6 @@ async fn an_unnamespaced_reserved_null_or_oversized_annotation_is_refused_naming
     }
     let mut t = type_decl("tag", vec![field("code", StorageKind::Text)]);
     t.fields[0].annotations = blob(ANNOTATIONS_MAX_BYTES);
-    cat.declare(own, Declaration::Type(t))
-        .await
-        .must("declaring a type holding exactly the ceiling of annotations")?;
+    l.declare(t).await?;
     Ok(())
 }

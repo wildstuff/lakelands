@@ -12,14 +12,13 @@ use std::sync::Arc;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::read::{Aggregate, Direction, Order, OrderBy};
 use lakelands_api::{
-    After, Catalog, Error, FieldName, Find, Found, LakeStore, Position, Principal, ReadAt, Record,
-    Refusal, TypeName, Value, WriteOpts,
+    After, Catalog, Find, Found, LakeStore, Position, Principal, Record, Refusal, TypeName, Value,
 };
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all_found, declare, field, type_decl, upsert, value,
+    Lake, Must, all_found, read_at, reason, refused_on, type_of, upsert, value,
 };
 
 check!(
@@ -58,7 +57,9 @@ async fn page(
         .await
         .must(what)?;
     match reply.data {
-        Found::Records { rows, next_cursor } => Ok((rows, next_cursor)),
+        Found::Records {
+            rows, next_cursor, ..
+        } => Ok((rows, next_cursor)),
         Found::Groups { .. } => Err(Failure::new(format!(
             "{what}: `find` without an aggregate answered groups"
         ))),
@@ -107,11 +108,7 @@ async fn by_after(
 }
 
 fn order(dir: Direction, two: bool) -> Vec<Order> {
-    let by = |f: &str, dir| Order {
-        field: FieldName::from(f),
-        by: OrderBy::Value,
-        dir,
-    };
+    let by = |f: &str, dir| crate::conformance::fixture::order(f, OrderBy::Value, dir);
     let other = match dir {
         Direction::Asc => Direction::Desc,
         Direction::Desc => Direction::Asc,
@@ -143,17 +140,10 @@ async fn item(
 async fn after_resumes_where_the_cursor_would(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
     let (cat, own) = (l.cat.as_ref(), &l.own);
-    declare(
-        cat,
-        own,
-        type_decl(
-            "item",
-            vec![
-                field("n", StorageKind::Number),
-                field("s", StorageKind::Text),
-            ],
-        ),
-    )
+    l.declare(type_of(
+        "item",
+        &[("n", StorageKind::Number), ("s", StorageKind::Text)],
+    ))
     .await?;
     // Ties on `n`, ties on `(n, s)`, and records without either, written
     // out of key order.
@@ -193,10 +183,7 @@ async fn after_resumes_where_the_cursor_would(store: Arc<dyn LakeStore>) -> Resu
                         filter: filter.map(Into::into),
                         order_by: order(dir, two),
                         limit: Some(LIMIT),
-                        at: ReadAt {
-                            as_of,
-                            valid_at: None,
-                        },
+                        at: read_at(as_of),
                         ..Find::default()
                     };
                     let cursor = by_cursor(cat, own, find.clone()).await?;
@@ -232,14 +219,7 @@ async fn after_resumes_where_the_cursor_would(store: Arc<dyn LakeStore>) -> Resu
         .position(|k| k.as_str() == gone.key.as_str())
         .ok_or_else(|| Failure::new("the first page's last row is not in the walk"))?;
     let expected = listed[at + 1..].to_vec();
-    cat.retire(
-        own,
-        &TypeName::from("item"),
-        &gone.key,
-        WriteOpts::default(),
-    )
-    .await
-    .must("retiring the first page's last row")?;
+    l.retire("item", gone.key.as_str()).await?;
     let resumed: Vec<String> = by_after(
         cat,
         own,
@@ -295,8 +275,7 @@ async fn after_resumes_where_the_cursor_would(store: Arc<dyn LakeStore>) -> Resu
             .await
             .must_fail(what)?;
         ensure!(
-            matches!(&refused, Error::Refused { reason: Refusal::Invalid { message }, .. }
-                if message.contains("`after")),
+            matches!(reason(&refused), Some(Refusal::Invalid { message }) if message.contains("`after")),
             "{what} must be refused as invalid, naming `after`; it answered {refused:?}"
         );
     }
@@ -312,8 +291,7 @@ async fn after_resumes_where_the_cursor_would(store: Arc<dyn LakeStore>) -> Resu
         .await
         .must_fail("a text `after` value for the number `n`")?;
     ensure!(
-        matches!(&refused, Error::Refused { field: Some(f), reason: Refusal::Invalid { message } }
-            if f.as_str() == "n" && message.contains("`after")),
+        matches!(refused_on(&refused), Some(("n", Refusal::Invalid { message })) if message.contains("`after")),
         "a text `after` value for the number `n` must be refused as invalid on `n`, \
          naming `after`; it answered {refused:?}"
     );

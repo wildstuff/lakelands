@@ -19,18 +19,16 @@
 //! towards another centre with their group moved, and 200 records added.
 //! 50 queries lie near the centres or between two of them.
 
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 
-use futures_core::Stream;
-use lakelands_api::ontology::{Authority, FieldDecl, FieldType, StorageKind};
+use lakelands_api::ontology::{Authority, FieldDecl, StorageKind};
 use lakelands_api::query::{Search, SearchMode};
-use lakelands_api::{LakeStore, Position, Principal, ReadAt, SourceId, SourceRecord, TypeName};
+use lakelands_api::{LakeStore, Position, Principal, SourceRecord, TypeName};
 use serde_json::json;
 
-use crate::conformance::fixture::{Lake, Must, doors, field, type_decl};
-use crate::conformance::{Failure, Given, next};
+use super::search::doc_search;
+use crate::conformance::fixture::{self, Lake, Must, doors, field, read_at, type_decl, vector};
+use crate::conformance::{Failure, Given};
 
 check!(
     /// An indexed vector field answers its index's set, at the engine's recall floor.
@@ -113,24 +111,24 @@ struct Point {
 }
 
 fn source_record(key: &str, vector: Option<&[f32]>, group: u32) -> SourceRecord {
-    SourceRecord {
-        upstream: None,
-        ty: TypeName::from(TY),
-        key: key.into(),
-        fields: crate::conformance::fixture::patch(json!({"v": vector, "group": group})),
-        seen_at: None,
+    fixture::source_record(TY, key, json!({"v": vector, "group": group}))
+}
+
+/// The `i`th `point` of the corpus, as first written.
+fn corpus_point(i: u64) -> Point {
+    Point {
+        key: format!("p{i:05}"),
+        vector: Some(corpus_vector(i)),
+        group: (i % 4) as u32,
+        retired: false,
+        then: None,
     }
 }
 
-/// A delivery of records already made.
-struct Delivery(std::vec::IntoIter<SourceRecord>);
-
-impl Stream for Delivery {
-    type Item = SourceRecord;
-
-    fn poll_next(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<SourceRecord>> {
-        Poll::Ready(self.0.next())
-    }
+/// A search's hits as their keys and the bits of their scores.
+fn bits(h: &lakelands_api::query::Hits) -> Vec<(String, u64)> {
+    let hit = |h: &lakelands_api::query::Hit| (h.record.key.0.clone(), h.score.to_bits());
+    h.hits.iter().map(hit).collect()
 }
 
 async fn deliver(
@@ -139,17 +137,9 @@ async fn deliver(
     records: Vec<SourceRecord>,
 ) -> Result<(), Failure> {
     let what = format!("ingesting {} points", records.len());
-    let mut commits = doors(store)
-        .ingest(
-            own,
-            &SourceId::from(SOURCE),
-            Box::pin(Delivery(records.into_iter())),
-        )
+    crate::conformance::fixture::ingest(doors(store).as_ref(), own, SOURCE, records)
         .await
-        .map_err(|e| Failure::new(format!("{what} was refused: {e}")))?;
-    while let Some(w) = next(&mut commits).await {
-        w.must(&what)?;
-    }
+        .must(&what)?;
     Ok(())
 }
 
@@ -172,7 +162,7 @@ fn reference(
             let seen = if earlier { p.then } else { Some(p.group) };
             seen.is_some_and(|g| group.is_none_or(|want| g == want))
         })
-        .map(|(p, v)| (p.key.as_str().into(), crate::engines::cosine(q, v)))
+        .map(|(p, v)| (p.key.as_str().into(), lakelands_api::query::cosine(q, v)))
         .collect();
     crate::engines::rank(&mut all, k);
     all.into_iter().map(|(key, _)| key.0).collect()
@@ -182,31 +172,16 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
     store: Arc<dyn LakeStore>,
     given: Given,
 ) -> Result<(), Failure> {
-    use lakelands_api::WriteOpts;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let source = |f: FieldDecl| FieldDecl {
         authority: Authority::Source,
         ..f
     };
-    let v = source(FieldDecl {
-        ty: FieldType {
-            dimensions: Some(DIMENSIONS as u32),
-            ..FieldType::kind(StorageKind::Vector)
-        },
-        ..field("v", StorageKind::Text)
-    });
+    let v = source(vector("v", DIMENSIONS as u32));
     let group = source(field("group", StorageKind::Number));
     l.declare(type_decl(TY, vec![v, group])).await?;
-    let mut points: Vec<Point> = (0..POINTS)
-        .map(|i| Point {
-            key: format!("p{i:05}"),
-            vector: Some(corpus_vector(i)),
-            group: (i % 4) as u32,
-            retired: false,
-            then: None,
-        })
-        .collect();
+    let mut points: Vec<Point> = (0..POINTS).map(corpus_point).collect();
     deliver(
         store.as_ref(),
         own,
@@ -216,12 +191,7 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
             .collect(),
     )
     .await?;
-    l.upsert(
-        lakelands_api::seam::SETTING_TYPE,
-        "vector_index.point",
-        json!({"key": "vector_index.point", "value": ["v"]}),
-    )
-    .await?;
+    l.set("vector_index.point", json!(["v"])).await?;
     let then = store.head().await.must("reading the head")?;
     for p in &mut points {
         p.then = Some(p.group);
@@ -233,9 +203,7 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
         match i % 100 {
             5 => {
                 p.retired = true;
-                cat.retire(own, &point, &p.key.as_str().into(), WriteOpts::default())
-                    .await
-                    .must(&format!("retiring `{}`", p.key))?;
+                l.retire(point.as_str(), p.key.as_str()).await?;
             }
             17 => {
                 p.vector = Some(near((i as u64 + 11) % CENTRES, i as u64 + 50_000, 0.35));
@@ -250,13 +218,7 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
         }
     }
     for i in POINTS..POINTS + ADDED {
-        let p = Point {
-            key: format!("p{i:05}"),
-            vector: Some(corpus_vector(i)),
-            group: (i % 4) as u32,
-            retired: false,
-            then: None,
-        };
+        let p = corpus_point(i);
         changed.push(source_record(&p.key, p.vector.as_deref(), p.group));
         points.push(p);
     }
@@ -270,18 +232,10 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
                 &own,
                 Search {
                     ty: TypeName::from(TY),
-                    mode: SearchMode::Vector {
-                        field: "v".into(),
-                        vector: q,
-                    },
                     k,
-                    cursor: None,
                     filter: group.map(|g| format!("group = {g}").as_str().into()),
-                    with_meta: false,
-                    at: ReadAt {
-                        as_of: earlier.then_some(Position(then.0)),
-                        valid_at: None,
-                    },
+                    at: read_at(earlier.then_some(Position(then.0))),
+                    ..doc_search(SearchMode::vector("v", q))
                 },
             )
             .await
@@ -315,16 +269,12 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
                          it said {:?}",
                         got.ranked_by
                     );
-                    let hits: Vec<(String, u64)> = got
-                        .hits
-                        .iter()
-                        .map(|h| (h.record.key.0.clone(), h.score.to_bits()))
-                        .collect();
+                    let hits = bits(&got);
                     for (key, bits) in &hits {
                         let head = by_key
                             .get(key.as_str())
                             .and_then(|p| p.vector.as_ref())
-                            .map(|v| crate::engines::cosine(&q, v).to_bits());
+                            .map(|v| lakelands_api::query::cosine(&q, v).to_bits());
                         ensure!(
                             head == Some(*bits),
                             "{what}, query {qi}: `{key}` must score the one cosine of its vector \
@@ -350,11 +300,7 @@ async fn an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_flo
                         let again = search(q.clone(), k, group, earlier)
                             .await
                             .must(&format!("the same search again, {what}"))?;
-                        let again: Vec<(String, u64)> = again
-                            .hits
-                            .iter()
-                            .map(|h| (h.record.key.0.clone(), h.score.to_bits()))
-                            .collect();
+                        let again = bits(&again);
                         ensure!(
                             again == hits,
                             "{what}: the same search asked twice must answer the same bytes; \

@@ -136,15 +136,15 @@ fn no_record(ty: &TypeName, key: &RecordKey) -> Error {
 /// a new field required; the key changed; a relation removed or
 /// retargeted, or its cardinality narrowed; a stored type turned into a
 /// view. A change of meaning, an added optional field or relation, a
-/// loosened requirement or cardinality, a view ceasing to be one, is a
-/// declaration; and between two views nothing is stored, so every change
-/// is.
+/// loosened requirement or cardinality, is a declaration; and a view
+/// stores nothing, so every change of one is, a view ceasing to be one
+/// included.
 fn reshapes(
     old: &lakelands_api::ontology::TypeDecl,
     new: &lakelands_api::ontology::TypeDecl,
 ) -> bool {
     use lakelands_api::ontology::Cardinality;
-    if old.view.is_some() && new.view.is_some() {
+    if old.view.is_some() {
         return false;
     }
     if old.view.is_none() && new.view.is_some() {
@@ -190,14 +190,38 @@ fn reserved(name: &str, who: &Principal) -> bool {
 
 /// A page token: the position the first page was read at, and how many
 /// rows came before this page.
-fn cursor(p: Position, offset: usize) -> Cursor {
-    Cursor(format!("{}.{offset}", p.0))
+/// A cursor for the page at `offset` of an answer read at `p` through
+/// `door` on `ty`: it continues that answer and no other (018).
+fn cursor(p: Position, offset: usize, door: &str, ty: Option<&TypeName>) -> Cursor {
+    let ty = ty.map_or("", TypeName::as_str);
+    Cursor(format!("{}.{offset}.{door}.{ty}", p.0))
 }
 
-fn uncursor(c: &Cursor) -> Result<(Position, usize)> {
-    c.0.split_once('.')
-        .and_then(|(p, o)| Some((Position(p.parse().ok()?), o.parse().ok()?)))
-        .ok_or_else(|| invalid("the cursor was not issued by this lake"))
+/// A cursor's position and offset, when it was handed out for `door` on
+/// `ty`; any other use is refused, naming what differs.
+fn uncursor(c: &Cursor, door: &str, ty: Option<&TypeName>) -> Result<(Position, usize)> {
+    let mut parts = c.0.splitn(4, '.');
+    let (Some(p), Some(o), Some(d), Some(t)) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(invalid("the cursor was not issued by this lake"));
+    };
+    let (Ok(p), Ok(o)) = (p.parse(), o.parse()) else {
+        return Err(invalid("the cursor was not issued by this lake"));
+    };
+    let on = |door: &str, ty: &str| match ty {
+        "" => format!("`{door}`"),
+        ty => format!("`{door}` on `{ty}`"),
+    };
+    let here = ty.map_or("", TypeName::as_str);
+    if d != door || t != here {
+        return Err(invalid(format!(
+            "the cursor was handed out for {}, not {}; continue it there",
+            on(d, t),
+            on(door, here)
+        )));
+    }
+    Ok((Position(p), o))
 }
 
 /// The one order of `find`: sort values in turn, a missing value last in
@@ -294,10 +318,15 @@ fn resume_after(
 }
 
 /// A page of `rows` from `offset`, and the cursor after it.
-fn page<T>(rows: Vec<T>, at: Position, offset: usize, limit: usize) -> (Vec<T>, Option<Cursor>) {
+fn page<T>(
+    rows: Vec<T>,
+    (at, door, ty): (Position, &str, Option<&TypeName>),
+    offset: usize,
+    limit: usize,
+) -> (Vec<T>, Option<Cursor>) {
     let more = rows.len() > offset + limit;
     let rows: Vec<T> = rows.into_iter().skip(offset).take(limit).collect();
-    (rows, more.then(|| cursor(at, offset + limit)))
+    (rows, more.then(|| cursor(at, offset + limit, door, ty)))
 }
 
 impl MockCatalog {
@@ -434,6 +463,7 @@ fn link_relation(
     // not carry by link records is invalid; one the principal may not
     // write the links of is not granted.
     let t = st.types.get(ty).ok_or_else(|| no_type(ty))?;
+    not_a_view(&t.decl)?;
     let r = t
         .decl
         .relations
@@ -449,6 +479,18 @@ fn link_relation(
         return Err(refused(Refusal::NotGranted));
     }
     Ok(r)
+}
+
+/// As the store: a view at a door that writes or holds a record is
+/// refused in one sentence.
+fn not_a_view(decl: &TypeDecl) -> Result<()> {
+    match decl.view {
+        Some(_) => Err(invalid(format!(
+            "`{}` is a view; it is computed, never written",
+            decl.name
+        ))),
+        None => Ok(()),
+    }
 }
 
 /// The relation's cardinality over live links, the link from `from` to
@@ -615,6 +657,24 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
             } else {
                 types.push(t.name.clone());
             }
+            // As the store: a view reads only fields its sources have.
+            if let Some(v) = t.view.as_deref() {
+                for (from, reads) in view_reads(v) {
+                    let Some(source) = st.types.get(&from) else {
+                        continue;
+                    };
+                    if let Some(n) = reads
+                        .iter()
+                        .find(|n| !source.decl.fields.iter().any(|f| &f.name == *n))
+                    {
+                        return Err(invalid(format!(
+                            "type `{}`: its view reads `{n}` of `{from}`, which `{from}` does not \
+                             have",
+                            t.name
+                        )));
+                    }
+                }
+            }
             // Its link types too, as the store: a relation dropped by a
             // migration and declared again with another target would
             // reshape the links it kept.
@@ -644,6 +704,21 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
                 }
             }
             for r in &t.relations {
+                // As the store: a view's records are computed, so only a
+                // relation derived from matching values starts from one.
+                if t.view.is_some() && r.derived.is_none() {
+                    let carrier = if r.via.is_some() {
+                        "a `via` field"
+                    } else {
+                        "link records"
+                    };
+                    return Err(invalid(format!(
+                        "type `{}`, relation `{}`: `{}` is a view, whose records are computed \
+                         and never written, so a relation carried by {carrier} could never hold \
+                         an edge; a relation on a view is derived from matching values",
+                        t.name, r.name, t.name
+                    )));
+                }
                 if !known(&r.target, Some(&t.name)) {
                     return Err(invalid(format!(
                         "type `{}`, relation `{}`: `{}` is not a declared type",
@@ -753,6 +828,46 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
                         _ => format!("`{ty}` is not declared"),
                     }));
                 }
+                // As the store: a view is never written, so a trigger on
+                // one never fires, and an object set holds stored records.
+                if st.types.get(ty).is_some_and(|o| o.decl.view.is_some()) {
+                    match other {
+                        Declaration::Trigger(t) => {
+                            return Err(Error::Refused {
+                                field: Some("on".into()),
+                                reason: Refusal::Invalid {
+                                    message: format!(
+                                        "trigger `{}` watches `{ty}`, a view; a view is never \
+                                         written, so no write of it fires a trigger",
+                                        t.name
+                                    ),
+                                },
+                            });
+                        }
+                        Declaration::ObjectSet(s) => {
+                            return Err(Error::Refused {
+                                field: Some("of".into()),
+                                reason: Refusal::Invalid {
+                                    message: format!(
+                                        "object set `{}` holds `{ty}`, a view; a view's records \
+                                         are computed on read, and an object set holds stored \
+                                         records only",
+                                        s.name
+                                    ),
+                                },
+                            });
+                        }
+                        // A verb on a record of a view could never act.
+                        Declaration::Verb(v) if v.scope == VerbScope::Record => {
+                            return Err(invalid(format!(
+                                "verb `{}` is declared on a record of `{ty}`, a view, whose \
+                                 records are computed and never written",
+                                v.name
+                            )));
+                        }
+                        _ => {}
+                    }
+                }
                 // As the store: a trigger may watch any declared type, the
                 // link types of relations carried by link records among them.
                 if reserved(ty.as_str(), who) && !matches!(other, Declaration::Trigger(_)) {
@@ -797,7 +912,7 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
 fn authored_writable(who: &Principal, t: &DeclaredType) -> bool {
     t.decl.fields.iter().any(|f| {
         matches!(f.authority, Authority::Authored | Authority::Shared)
-            && access(who, &t.decl.name, f).writes()
+            && access(who, &t.decl, f).writes()
     })
 }
 
@@ -817,7 +932,7 @@ fn callable(st: &State, who: &Principal, v: &VerbDecl) -> bool {
     match &v.effect {
         VerbEffect::Write { set } => set
             .iter()
-            .all(|a| field(&t.decl, &a.field).is_some_and(|f| access(who, &v.on, f).writes())),
+            .all(|a| field(&t.decl, &a.field).is_some_and(|f| access(who, &t.decl, f).writes())),
         // Carrying it out writes nothing of the record, so it asks for
         // write access to the type, as the store does.
         VerbEffect::External { .. } => who
@@ -835,7 +950,7 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
     let fields: Vec<FieldDescription> = d
         .fields
         .iter()
-        .filter_map(|f| match access(who, &d.name, f) {
+        .filter_map(|f| match access(who, d, f) {
             Access::None => None,
             a => Some(FieldDescription::of(f, a)),
         })
@@ -867,8 +982,9 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
             .map(|r| {
                 // A link field the principal may not read is described by
                 // its shape alone, as a type's own field is.
-                let link = crate::links::name(&d.name, &r.name);
+                let link = crate::links::link_type(&d.name, r);
                 let mut r = r.clone();
+                r.fields.retain(|f| access(who, &link, f) != Access::None);
                 for f in &mut r.fields {
                     if !access(who, &link, f).reads() {
                         f.derived = None;
@@ -907,9 +1023,7 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
                 })
                 .filter(|r| {
                     let lt = links::link_type(&d.name, r);
-                    lt.fields[..2]
-                        .iter()
-                        .all(|f| access(who, &lt.name, f).writes())
+                    lt.fields[..2].iter().all(|f| access(who, &lt, f).writes())
                 })
                 .map(|r| r.name.clone())
                 .collect(),
@@ -955,7 +1069,7 @@ fn reads_all<'a>(
     };
     names
         .into_iter()
-        .all(|n| field(&t.decl, n).is_some_and(|f| access(who, ty, f).reads()))
+        .all(|n| field(&t.decl, n).is_some_and(|f| access(who, &t.decl, f).reads()))
 }
 
 /// The fields a condition names: the first segment of each path.
@@ -1119,16 +1233,32 @@ fn filter(
 
 /// Refuse a field the type does not declare or the principal may not read.
 fn readable(_: &State, who: &Principal, t: &DeclaredType, name: &FieldName) -> Result<()> {
-    let f = field(&t.decl, name).ok_or_else(|| {
-        on(
-            name,
-            Refusal::Invalid {
-                message: format!("`{}` has no field `{name}`", t.decl.name),
-            },
-        )
-    })?;
-    if !access(who, &t.decl.name, f).reads() {
-        return Err(on(name, Refusal::NotGranted));
+    let f = field(&t.decl, name).ok_or_else(|| no_field(&t.decl.name, name))?;
+    match access(who, &t.decl, f) {
+        Access::None => Err(no_field(&t.decl.name, name)),
+        a if !a.reads() => Err(on(name, Refusal::NotGranted)),
+        _ => Ok(()),
+    }
+}
+
+/// The answer for a field the type does not declare, which is also the
+/// answer for one the principal may not know of.
+fn no_field(ty: &TypeName, name: &FieldName) -> Error {
+    on(
+        name,
+        Refusal::Invalid {
+            message: format!("`{ty}` has no field `{name}`"),
+        },
+    )
+}
+
+/// A read at a valid time filters on the type's valid-time fields, so it
+/// probes them as a filter on them would (024).
+fn valid_time_readable(st: &State, who: &Principal, t: &DeclaredType, at: ReadAt) -> Result<()> {
+    if at.valid_at.is_some() {
+        for f in t.decl.valid_from.iter().chain(&t.decl.valid_to) {
+            readable(st, who, t, f)?;
+        }
     }
     Ok(())
 }
@@ -1163,6 +1293,7 @@ fn candidates<'a>(
     at: ReadAt,
     filter: Option<&Expr>,
 ) -> Result<Vec<&'a StoredRecord>> {
+    valid_time_readable(st, who, t, at)?;
     let mut out = Vec::new();
     for r in st.records.values() {
         if r.ty != t.decl.name || r.retired || (r.restricted && !who.grants.restricted) {
@@ -1202,9 +1333,7 @@ fn check_patch<'a>(
     // Records of a `sys.` type are written under grants like any other;
     // only declaring such a type is reserved.
     let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
-    if t.decl.view.is_some() {
-        return Err(invalid(format!("`{ty}` is a view and is never written")));
-    }
+    not_a_view(&t.decl)?;
     for (name, v) in patch {
         let f = field(&t.decl, name).ok_or_else(|| {
             on(
@@ -1214,10 +1343,13 @@ fn check_patch<'a>(
                 },
             )
         })?;
+        if access(who, &t.decl, f) == Access::None {
+            return Err(no_field(&t.decl.name, name));
+        }
         if !door_writes(door, f.authority) {
             return Err(on(name, Refusal::WrongDoor));
         }
-        if !access(who, ty, f).writes() {
+        if !access(who, &t.decl, f).writes() {
             return Err(on(name, Refusal::NotGranted));
         }
         if !v.is_null()
@@ -1319,10 +1451,13 @@ fn with_key_fields(
                 _ => Value::String(part),
             };
             let v = value::canonical(&f.ty, &v);
+            if access(who, &t.decl, f) == Access::None {
+                return Err(no_field(&t.decl.name, name));
+            }
             if !door_writes(door, f.authority) {
                 return Err(on(name, Refusal::WrongDoor));
             }
-            if !access(who, &t.decl.name, f).writes() {
+            if !access(who, &t.decl, f).writes() {
                 return Err(on(name, Refusal::NotGranted));
             }
             if let Some(message) = value::misfit(&f.ty, &v, &st.value_types) {
@@ -1410,7 +1545,7 @@ fn check_rule(st: &State, who: &Principal, key: &RecordKey, patch: &Patch) -> Re
     expr::paths(&rule.when, &mut read);
     for name in read.iter().filter_map(|p| p.first()) {
         match field(&t.decl, name) {
-            Some(f) if access(who, &rule.on, f).reads() => {}
+            Some(f) if access(who, &t.decl, f).reads() => {}
             Some(_) => return Err(on(name, Refusal::NotGranted)),
             None => {
                 return Err(on(
@@ -1554,6 +1689,7 @@ fn plan_retire(
 ) -> Result<Version> {
     let By { st, who, cause } = *by;
     let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
+    not_a_view(&t.decl)?;
     if !may_retire(who, t) {
         return Err(refused(Refusal::NotGranted));
     }
@@ -1590,6 +1726,12 @@ fn check_call<'a>(
     })?;
     // The key against the scope comes before anything else is read.
     let key = scoped(v, key, opts)?;
+    // A record of a view is computed, never written or acted on.
+    if key.is_some()
+        && let Some(t) = st.types.get(&v.on)
+    {
+        not_a_view(&t.decl)?;
+    }
     // A declared verb the caller may not call is refused, as the store
     // refuses it; only an undeclared one is not found.
     if !callable(st, who, v) {
@@ -1623,6 +1765,11 @@ fn check_call<'a>(
                 },
             ));
         }
+    }
+    // The version before `requires` is judged on the record, whether the
+    // call runs or is proposed (013 and 024, extended).
+    if let (Some(_), Some(key)) = (rec, key) {
+        check_version(st, &v.on, key, opts)?;
     }
     // A verb on its type declares no `requires`: declaring refuses it.
     if let (Some(req), Some(rec), Some(key)) = (&v.requires, rec, key) {
@@ -1722,7 +1869,15 @@ fn plan_propose(
             payload,
             opts,
         } => {
-            check_call(st, who, verb, key.as_ref(), payload, opts)?;
+            // The mock binds no executor: a call that could not run when
+            // accepted is not proposed.
+            if let VerbEffect::External { executor } =
+                &check_call(st, who, verb, key.as_ref(), payload, opts)?.effect
+            {
+                return Err(Error::Unbound {
+                    seam: format!("the verb executor `{executor}`"),
+                });
+            }
         }
         // A change of the ontology is checked as its door would check it;
         // the proposer needs no `schema` grant.
@@ -1835,14 +1990,100 @@ fn risk_word(r: Risk) -> &'static str {
     }
 }
 
+/// The fields a view reads from each source, its own first: its grouping,
+/// what its `where` names and what its measures aggregate, as the store
+/// counts them.
+fn view_reads(v: &ViewDecl) -> Vec<(TypeName, Vec<FieldName>)> {
+    std::iter::once((&v.source, v.r#where.as_ref(), &v.group_by, &v.measures))
+        .chain(
+            v.merge
+                .iter()
+                .map(|s| (&s.source, s.r#where.as_ref(), &s.group_by, &s.measures)),
+        )
+        .map(|(source, filter, group_by, measures)| {
+            let mut reads: Vec<FieldName> = group_by.clone();
+            if let Some(n) = filter.and_then(named) {
+                reads.extend(n);
+            }
+            for m in measures {
+                if let Ok(e) = expr::typed(&m.expr) {
+                    expr::aggregated(&e, false, &mut reads);
+                }
+            }
+            (source.clone(), reads)
+        })
+        .collect()
+}
+
+/// As the store: a view with parameters is bound only by a read that names
+/// it, so a pattern's step that arrives at one other than its start is
+/// refused before anything is read.
+fn unbound_view(start: &TypeName, reached: &DeclaredType, relation: &RelationName) -> Result<()> {
+    match reached.decl.view.as_deref().and_then(|v| v.params.first()) {
+        Some(param) if &reached.decl.name != start => Err(invalid(format!(
+            "a step over `{relation}` arrives at view `{}`, which needs parameter `{}`, and only \
+             a read that names the view binds it",
+            reached.decl.name, param.name
+        ))),
+        _ => Ok(()),
+    }
+}
+
 /// The migration's preflight over the lake as it stands.
 fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationReport> {
     let ty = &m.to.name;
     let t = st.types.get(ty).ok_or_else(|| no_type(ty))?;
+    // As the store: a view changes, or becomes a stored type, by being
+    // declared again; a stored type never becomes a view.
+    if t.decl.view.is_some() || m.to.view.is_some() {
+        return Err(invalid(
+            match (t.decl.view.is_some(), m.to.view.is_some()) {
+                (true, true) => format!(
+                    "`{ty}` is a view, and a view changes by being declared again, never by a \
+                 migration"
+                ),
+                (true, false) => format!(
+                    "`{ty}` is a view, and it becomes a stored type by being declared as one, never \
+                 by a migration"
+                ),
+                _ => format!(
+                    "the migration would turn the stored type `{ty}` into a view; declare the view \
+                 under another name (`{ty}` keeps its name and its records)"
+                ),
+            },
+        ));
+    }
     if t.decl.key != m.to.key {
         return Err(invalid(format!(
             "the in-memory mock does not re-key: `{ty}` keeps its key fields here"
         )));
+    }
+    // As the store: a view over the type, as its source or a merged one,
+    // reads the shape the migration leaves, so every field it reads
+    // (grouping, `where`, what its measures aggregate) must remain.
+    for o in st.types.values() {
+        let Some(v) = o.decl.view.as_deref() else {
+            continue;
+        };
+        for (source, reads) in view_reads(v) {
+            if &source != ty {
+                continue;
+            }
+            if let Some(gone) = reads
+                .iter()
+                .find(|n| !m.to.fields.iter().any(|f| &f.name == *n))
+            {
+                let how = match m.renames.iter().find(|(from, _)| from == gone) {
+                    Some((_, to)) => format!("renames to `{to}`"),
+                    None => "drops".to_owned(),
+                };
+                return Err(invalid(format!(
+                    "after the migration of `{ty}`, view `{}` reads `{gone}` of `{ty}`, which \
+                     the migration {how}",
+                    o.decl.name
+                )));
+            }
+        }
     }
     let renamed = |old: &FieldName| -> FieldName {
         m.renames
@@ -1981,7 +2222,7 @@ impl Catalog for MockCatalog {
         self.admit(who)?;
         let (pinned, offset) = match &find.cursor {
             Some(c) => {
-                let (p, o) = uncursor(c)?;
+                let (p, o) = uncursor(c, "find", Some(ty))?;
                 (Some(p), o)
             }
             None => (find.at.as_of, 0),
@@ -1994,6 +2235,31 @@ impl Catalog for MockCatalog {
             .as_ref()
             .map(|a| resume_after(&st, t, &find, a))
             .transpose()?;
+        if find.total && find.aggregate.is_some() {
+            return Err(invalid(
+                "`total` counts the records a page lists; an `aggregate` answers groups, so give one",
+            ));
+        }
+        let skip = match find.offset {
+            None => 0,
+            Some(skip) => {
+                let beside = [
+                    (find.cursor.is_some(), "cursor"),
+                    (find.after.is_some(), "after"),
+                    (find.aggregate.is_some(), "aggregate"),
+                ];
+                if let Some((_, other)) = beside.iter().find(|(given, _)| *given) {
+                    return Err(invalid(format!(
+                        "`offset` and `{other}` both say where the answer starts; give one"
+                    )));
+                }
+                let max = self.shared.limits.max_offset;
+                if skip > max {
+                    return Err(on(&"offset".into(), Refusal::TooLarge { max }));
+                }
+                skip as usize
+            }
+        };
         if find.aggregate.is_some() {
             return Err(invalid("the in-memory mock does not aggregate"));
         }
@@ -2016,6 +2282,7 @@ impl Catalog for MockCatalog {
             }
         }
         let mut rows = candidates(&st, who, t, find.at, e.as_ref())?;
+        let total = find.total.then_some(rows.len() as u64);
         let sort_key = |r: &StoredRecord| -> Vec<Option<Value>> {
             find.order_by
                 .iter()
@@ -2047,10 +2314,19 @@ impl Catalog for MockCatalog {
             .into_iter()
             .map(|r| st.read(who, r, find.with_meta))
             .collect();
-        let (rows, next_cursor) = page(rows, position, offset, self.limit(find.limit));
+        let (rows, next_cursor) = page(
+            rows,
+            (position, "find", Some(ty)),
+            offset + skip,
+            self.limit(find.limit),
+        );
         Ok(Reply {
             position,
-            data: Found::Records { rows, next_cursor },
+            data: Found::Records {
+                rows,
+                next_cursor,
+                total,
+            },
         })
     }
 
@@ -2059,6 +2335,7 @@ impl Catalog for MockCatalog {
         let (position, st) = self.state_at(&self.log(), get.at.as_of)?;
         let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
         bound(&t.decl, &get.params)?;
+        valid_time_readable(&st, who, t, get.at)?;
         let r = st
             .live(ty, &get.key)
             .filter(|r| !r.restricted || who.grants.restricted)
@@ -2167,7 +2444,6 @@ impl Catalog for MockCatalog {
             ));
         }
         let lt = links::name(ty, relation);
-        link_cardinality(&st, &lt, &r, key, to)?;
         let mut patch = fields;
         patch.insert(links::FROM.into(), Value::from(key.as_str()));
         patch.insert(links::TO.into(), Value::from(to.as_str()));
@@ -2185,6 +2461,8 @@ impl Catalog for MockCatalog {
             patch,
             &opts,
         )?;
+        // The cardinality reads other links: after the grants (024).
+        link_cardinality(&st, &lt, &r, key, to)?;
         let position = batch.peek().0 - 1;
         self.commit(&mut log, batch);
         Ok(Outcome::Applied {
@@ -2302,7 +2580,7 @@ impl Catalog for MockCatalog {
         self.admit(who)?;
         let (pinned, offset) = match &pattern.cursor {
             Some(c) => {
-                let (p, o) = uncursor(c)?;
+                let (p, o) = uncursor(c, "query", Some(&pattern.start.ty))?;
                 (Some(p), o)
             }
             None => (pattern.at.as_of, 0),
@@ -2335,6 +2613,16 @@ impl Catalog for MockCatalog {
                         t.decl.name, step.relation
                     )));
                 }
+                // Either end of the relation the measure may arrive at.
+                for o in st.types.values() {
+                    for r in o.decl.relations.iter().filter(|r| r.name == step.relation) {
+                        for end in [&o.decl.name, &r.target] {
+                            if let Some(e) = st.types.get(end) {
+                                unbound_view(&t.decl.name, e, &step.relation)?;
+                            }
+                        }
+                    }
+                }
             }
             let e = filter(&st, who, t, start.filter.as_ref())?;
             let mut seeds: Vec<(TypeName, RecordKey)> =
@@ -2351,7 +2639,12 @@ impl Catalog for MockCatalog {
                 seeds,
                 self.shared.limits.max_graph_nodes,
             )?;
-            let (rows, next_cursor) = page(rows, position, offset, self.limit(pattern.limit));
+            let (rows, next_cursor) = page(
+                rows,
+                (position, "query", Some(&pattern.start.ty)),
+                offset,
+                self.limit(pattern.limit),
+            );
             return Ok(Reply {
                 position,
                 data: QueryResult::Rows { rows, next_cursor },
@@ -2360,6 +2653,16 @@ impl Catalog for MockCatalog {
         let Projection::Rows { fields } = &pattern.project else {
             return Err(invalid("the in-memory mock projects patterns as rows only"));
         };
+        // Rows are ordered by their paths, `type.field`: each probes its
+        // field as `find`'s order does (024). The mock answers its rows in
+        // walk order whatever the order asks for.
+        for o in &pattern.order_by {
+            if let Some((ty, field)) = o.field.as_str().rsplit_once('.')
+                && let Some(ot) = st.types.get(&TypeName::from(ty))
+            {
+                readable(&st, who, ot, &FieldName::from(field))?;
+            }
+        }
         let e = filter(&st, who, t, start.filter.as_ref())?;
         let mut paths: Vec<Vec<&StoredRecord>> = candidates(&st, who, t, pattern.at, e.as_ref())?
             .into_iter()
@@ -2432,6 +2735,7 @@ impl Catalog for MockCatalog {
                     .is_some()
             };
             let next = st.visible(who, &target).ok_or_else(|| no_type(&target))?;
+            unbound_view(&t.decl.name, next, &step.relation)?;
             if let Some(ty) = &step.ty
                 && ty != &target
             {
@@ -2498,7 +2802,12 @@ impl Catalog for MockCatalog {
                 row
             })
             .collect();
-        let (rows, next_cursor) = page(rows, position, offset, self.limit(pattern.limit));
+        let (rows, next_cursor) = page(
+            rows,
+            (position, "query", Some(&pattern.start.ty)),
+            offset,
+            self.limit(pattern.limit),
+        );
         Ok(Reply {
             position,
             data: QueryResult::Rows { rows, next_cursor },
@@ -2509,7 +2818,7 @@ impl Catalog for MockCatalog {
         self.admit(who)?;
         let (pinned, offset) = match &search.cursor {
             Some(c) => {
-                let (p, o) = uncursor(c)?;
+                let (p, o) = uncursor(c, "search", Some(&search.ty))?;
                 (Some(p), o)
             }
             None => (search.at.as_of, 0),
@@ -2545,11 +2854,13 @@ impl Catalog for MockCatalog {
             .into_iter()
             .flat_map(|e| e.from.iter());
         let searched: Vec<&FieldName> = match text_fields {
+            // Naming none, it reads the searchable fields the caller knows
+            // of; one it may not know of is never searched.
             None => t
                 .decl
                 .fields
                 .iter()
-                .filter(|f| f.searchable)
+                .filter(|f| f.searchable && access(who, &t.decl, f) != Access::None)
                 .map(|f| &f.name)
                 .collect(),
             Some([]) => return Err(invalid("`fields` names no field")),
@@ -2572,8 +2883,8 @@ impl Catalog for MockCatalog {
         for name in searched
             .iter()
             .copied()
-            .chain(vector_field)
             .chain(embedded_from)
+            .chain(vector_field)
         {
             readable(&st, who, t, name)?;
         }
@@ -2610,13 +2921,15 @@ impl Catalog for MockCatalog {
                 ..
             } => {
                 readable(&st, who, t, f)?;
+                // A stored vector is read back as the `f32`s it was written as.
                 let cos = |v: &Value| {
-                    let v: Vec<f64> = v.as_array()?.iter().filter_map(Value::as_f64).collect();
-                    let dot: f64 = v.iter().zip(vector).map(|(a, b)| a * f64::from(*b)).sum();
-                    let n = |x: f64| x.sqrt();
-                    let na = n(v.iter().map(|a| a * a).sum());
-                    let nb = n(vector.iter().map(|b| f64::from(*b).powi(2)).sum());
-                    (na > 0.0 && nb > 0.0).then(|| dot / (na * nb))
+                    let v: Vec<f32> = v
+                        .as_array()?
+                        .iter()
+                        .filter_map(Value::as_f64)
+                        .map(|x| x as f32)
+                        .collect();
+                    Some(lakelands_api::query::cosine(&v, vector))
                 };
                 let s = rows
                     .into_iter()
@@ -2656,7 +2969,12 @@ impl Catalog for MockCatalog {
                 score,
             })
             .collect();
-        let (hits, next_cursor) = page(hits, position, offset, search.k.max(1) as usize);
+        let (hits, next_cursor) = page(
+            hits,
+            (position, "search", Some(&search.ty)),
+            offset,
+            search.k.max(1) as usize,
+        );
         Ok(Reply {
             position,
             data: Hits {
@@ -2737,7 +3055,18 @@ impl Catalog for MockCatalog {
                 opts,
             } => {
                 // The scope is checked again at the head: the verb may have
-                // been declared again while the proposal waited.
+                // been declared again while the proposal waited. Declared
+                // differently since, it is not what was checked (013).
+                if let Some(now) = st.verbs.get(&verb) {
+                    scoped(now, key.as_ref(), &opts)?;
+                    let (_, then) = self.state_at(&log, Some(p.position))?;
+                    if then.verbs.get(&verb) != Some(now) {
+                        return Err(invalid(format!(
+                            "verb `{verb}` was declared again, differently, after this call \
+                             was proposed; propose the call again"
+                        )));
+                    }
+                }
                 let v = check_call(&st, &proposer, &verb, key.as_ref(), &payload, &opts)?.clone();
                 let key = record_key(&v, key.as_ref())?;
                 check_version(&st, &v.on, key, &opts)?;
@@ -2828,7 +3157,7 @@ impl Catalog for MockCatalog {
         self.admit(who)?;
         let (pinned, offset) = match &filter.cursor {
             Some(c) => {
-                let (p, o) = uncursor(c)?;
+                let (p, o) = uncursor(c, "proposals", None)?;
                 (Some(p), o)
             }
             None => (filter.at.as_of, 0),
@@ -2868,7 +3197,12 @@ impl Catalog for MockCatalog {
         if !asc {
             rows.reverse();
         }
-        let (rows, _) = page(rows, position, offset, self.limit(filter.limit));
+        let (rows, _) = page(
+            rows,
+            (position, "proposals", None),
+            offset,
+            self.limit(filter.limit),
+        );
         Ok(Reply {
             position,
             data: rows,

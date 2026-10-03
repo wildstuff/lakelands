@@ -36,10 +36,7 @@ pub fn anchor(value: Option<&Value>) -> Option<Timestamp> {
 
 /// Whether an interval holds at `t`.
 pub fn holds(valid_from: Option<Timestamp>, valid_to: Option<Timestamp>, t: Timestamp) -> bool {
-    match valid_from {
-        Some(from) => from <= t && valid_to.is_none_or(|to| t < to),
-        None => false,
-    }
+    valid_from.is_some_and(|from| from <= t && valid_to.is_none_or(|to| t < to))
 }
 
 /// Whether a record of `ty` holds at `t`. A type that is not valid-timed

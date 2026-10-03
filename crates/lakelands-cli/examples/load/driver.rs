@@ -1632,7 +1632,9 @@ impl Worker {
                     .await
                     .map_err(remote_oops)?;
                 match r.data {
-                    Found::Records { rows, next_cursor } => {
+                    Found::Records {
+                        rows, next_cursor, ..
+                    } => {
                         json!({"rows": rows, "next_cursor": next_cursor})
                     }
                     Found::Groups { .. } => return Err("a find answered groups".into()),

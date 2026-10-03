@@ -6,12 +6,8 @@ fn fields(v: Value) -> BTreeMap<FieldName, Value> {
     serde_json::from_value(v).unwrap()
 }
 
-fn at(v: Value) -> BTreeMap<FieldName, Value> {
-    fields(v)
-}
-
 fn run(text: &str, record: Value) -> Result<Val> {
-    let f = at(record);
+    let f = fields(record);
     eval(
         &parse(text).unwrap(),
         &RecordScope {
@@ -22,14 +18,26 @@ fn run(text: &str, record: Value) -> Result<Val> {
     )
 }
 
+/// `run`'s answer, which must be a value.
+fn ok(text: &str, record: Value) -> Val {
+    run(text, record).unwrap()
+}
+
+fn num(s: &str) -> Val {
+    Val::Num(Decimal::from_str(s).unwrap())
+}
+
+fn text(s: &str) -> Val {
+    Val::Text(s.into())
+}
+
 fn yes(text: &str, record: Value) -> bool {
     run(text, record).map(|v| truthy(&v)).unwrap()
 }
 
 #[test]
 fn date_bucket_answers_the_utc_start_of_its_bucket() {
-    let bucket =
-        |d: &str, unit: &str| run(&format!("date_bucket(d, '{unit}')"), json!({"d": d})).unwrap();
+    let bucket = |d: &str, unit: &str| ok(&format!("date_bucket(d, '{unit}')"), json!({"d": d}));
     let t = |s: &str| Val::Time(Timestamp::parse(s).unwrap());
     let d = "2026-08-19T17:45:12.250000Z";
     assert_eq!(bucket(d, "day"), t("2026-08-19T00:00:00Z"));
@@ -54,15 +62,9 @@ fn date_bucket_answers_the_utc_start_of_its_bucket() {
         t("1969-12-29T00:00:00Z")
     );
     // Missing, or not an instant: null.
-    assert_eq!(run("date_bucket(d, 'day')", json!({})).unwrap(), Val::Null);
-    assert_eq!(
-        run("date_bucket(d, 'day')", json!({"d": "soon"})).unwrap(),
-        Val::Null
-    );
-    assert_eq!(
-        run("date_bucket(d, 'day')", json!({"d": 7})).unwrap(),
-        Val::Null
-    );
+    assert_eq!(ok("date_bucket(d, 'day')", json!({})), Val::Null);
+    assert_eq!(ok("date_bucket(d, 'day')", json!({"d": "soon"})), Val::Null);
+    assert_eq!(ok("date_bucket(d, 'day')", json!({"d": 7})), Val::Null);
 }
 
 #[test]
@@ -221,25 +223,16 @@ fn matches_refuses_what_is_not_i_regexp() {
 
 #[test]
 fn decimal_arithmetic_is_exact_and_checked() {
-    assert_eq!(
-        run("0.1 + 0.2", json!({})).unwrap(),
-        Val::Num(Decimal::from_str("0.3").unwrap())
-    );
-    assert_eq!(
-        run("a * 1.19", json!({"a": "100.00"})).unwrap(),
-        Val::Num(Decimal::from_str("119.0000").unwrap())
-    );
+    assert_eq!(ok("0.1 + 0.2", json!({})), num("0.3"));
+    assert_eq!(ok("a * 1.19", json!({"a": "100.00"})), num("119.0000"));
     assert!(run("1 / 0", json!({})).is_err());
     assert!(run("a + 1", json!({"a": "x"})).is_err());
-    assert_eq!(run("a + 1", json!({})).unwrap(), Val::Null);
+    assert_eq!(ok("a + 1", json!({})), Val::Null);
 }
 
 #[test]
 fn a_float_enters_by_its_shortest_decimal_form() {
-    assert_eq!(
-        run("a", json!({"a": 0.1})).unwrap(),
-        Val::Num(Decimal::from_str("0.1").unwrap())
-    );
+    assert_eq!(ok("a", json!({"a": 0.1})), num("0.1"));
 }
 
 #[test]
@@ -247,7 +240,7 @@ fn and_or_and_if_are_lazy() {
     assert!(yes("b != 0 and a / b > 1", json!({"a": 4, "b": 2})));
     assert!(!yes("b != 0 and a / b > 1", json!({"a": 4, "b": 0})));
     assert_eq!(
-        run("if(b != 0, a / b, 0)", json!({"a": 1, "b": 0})).unwrap(),
+        ok("if(b != 0, a / b, 0)", json!({"a": 1, "b": 0})),
         Val::Num(Decimal::ZERO)
     );
     assert!(yes("b = 0 or a / b > 1", json!({"a": 1, "b": 0})));
@@ -256,33 +249,27 @@ fn and_or_and_if_are_lazy() {
 #[test]
 fn text_functions_count_characters() {
     assert_eq!(
-        run("len(name)", json!({"name": "Müller"})).unwrap(),
+        ok("len(name)", json!({"name": "Müller"})),
         Val::Num(Decimal::from(6))
     );
     assert_eq!(
-        run("substr(name, 1, 3)", json!({"name": "Müller"})).unwrap(),
-        Val::Text("üll".into())
+        ok("substr(name, 1, 3)", json!({"name": "Müller"})),
+        text("üll")
     );
+    assert_eq!(ok("substr(name, 4)", json!({"name": "Müller"})), text("er"));
     assert_eq!(
-        run("substr(name, 4)", json!({"name": "Müller"})).unwrap(),
-        Val::Text("er".into())
-    );
-    assert_eq!(
-        run("substr(name, 99)", json!({"name": "ab"})).unwrap(),
+        ok("substr(name, 99)", json!({"name": "ab"})),
         Val::Text(String::new())
     );
     assert_eq!(
-        run("replace(name, '', 'x')", json!({"name": "ab"})).unwrap(),
-        Val::Text("ab".into())
+        ok("replace(name, '', 'x')", json!({"name": "ab"})),
+        text("ab")
     );
     assert_eq!(
-        run("concat(a, '-', b)", json!({"a": "x", "b": 2})).unwrap(),
-        Val::Text("x-2".into())
+        ok("concat(a, '-', b)", json!({"a": "x", "b": 2})),
+        text("x-2")
     );
-    assert_eq!(
-        run("upper(a)", json!({"a": "straße"})).unwrap(),
-        Val::Text("STRASSE".into())
-    );
+    assert_eq!(ok("upper(a)", json!({"a": "straße"})), text("STRASSE"));
 }
 
 #[test]
@@ -300,36 +287,27 @@ fn matches_is_whole_text() {
 
 #[test]
 fn round_is_half_away_from_zero() {
-    assert_eq!(
-        run("round(2.345, 2)", json!({})).unwrap(),
-        Val::Num(Decimal::from_str("2.35").unwrap())
-    );
-    assert_eq!(
-        run("round(-2.345, 2)", json!({})).unwrap(),
-        Val::Num(Decimal::from_str("-2.35").unwrap())
-    );
-    assert_eq!(
-        run("round(2.5)", json!({})).unwrap(),
-        Val::Num(Decimal::from(3))
-    );
+    assert_eq!(ok("round(2.345, 2)", json!({})), num("2.35"));
+    assert_eq!(ok("round(-2.345, 2)", json!({})), num("-2.35"));
+    assert_eq!(ok("round(2.5)", json!({})), Val::Num(Decimal::from(3)));
 }
 
 #[test]
 fn the_clock_is_the_scopes() {
     assert_eq!(
-        run("now()", json!({})).unwrap(),
+        ok("now()", json!({})),
         Val::Time(Timestamp::parse("2026-09-24T10:00:00Z").unwrap())
     );
     assert_eq!(
-        run("today()", json!({})).unwrap(),
+        ok("today()", json!({})),
         Val::Time(Timestamp::parse("2026-09-24").unwrap())
     );
 }
 
 #[test]
 fn changed_and_previous_read_the_write() {
-    let before = at(json!({"status": "open", "amount": "21.00"}));
-    let after = at(json!({"status": "paid", "amount": 21}));
+    let before = fields(json!({"status": "open", "amount": "21.00"}));
+    let after = fields(json!({"status": "paid", "amount": 21}));
     let scope = WriteScope {
         after: &after,
         before: Some(&before),
@@ -356,7 +334,7 @@ fn changed_and_previous_read_the_write() {
 
 #[test]
 fn retired_reads_whether_the_write_retires() {
-    let fields = at(json!({"status": "closed"}));
+    let fields = fields(json!({"status": "closed"}));
     let update = WriteScope {
         after: &fields,
         before: Some(&fields),
@@ -393,7 +371,7 @@ fn guard_functions_have_no_meaning_outside_a_write() {
 
 #[test]
 fn settings_and_provenance_come_from_the_scope() {
-    let after = at(json!({"amount": "100"}));
+    let after = fields(json!({"amount": "100"}));
     let settings: BTreeMap<String, Value> = [("vat_rate".to_owned(), json!("0.19"))].into();
     let meta: BTreeMap<FieldName, FieldMeta> = [(
         FieldName::from("amount"),
@@ -419,7 +397,7 @@ fn settings_and_provenance_come_from_the_scope() {
         now: Timestamp(0),
     };
     let v = eval(&parse("amount * setting('vat_rate')").unwrap(), &scope).unwrap();
-    assert_eq!(v, Val::Num(Decimal::from_str("19.00").unwrap()));
+    assert_eq!(v, num("19.00"));
     assert!(
         holds(
             &parse("known_at(amount) < '2026-09-02' and seen_at(amount) is null").unwrap(),
@@ -432,11 +410,11 @@ fn settings_and_provenance_come_from_the_scope() {
 #[test]
 fn time_arithmetic() {
     assert_eq!(
-        run("due + 1d", json!({"due": "2026-09-01T00:00:00Z"})).unwrap(),
+        ok("due + 1d", json!({"due": "2026-09-01T00:00:00Z"})),
         Val::Time(Timestamp::parse("2026-09-02").unwrap())
     );
     assert_eq!(
-        run("b - a", json!({"a": "2026-09-01", "b": "2026-09-02"})).unwrap(),
+        ok("b - a", json!({"a": "2026-09-01", "b": "2026-09-02"})),
         Val::Duration(86_400_000_000)
     );
     assert!(run("due * 2d", json!({"due": "2026-09-01"})).is_err());
@@ -445,16 +423,16 @@ fn time_arithmetic() {
 #[test]
 fn landing_in_a_field_follows_its_kind() {
     use lakelands_api::ontology::StorageKind as K;
-    let n = Val::Num(Decimal::from_str("2.345").unwrap());
+    let n = num("2.345");
     assert_eq!(to_json(&n, K::Decimal, Some(2)), Some(json!("2.35")));
     assert_eq!(to_json(&n, K::Decimal, None), Some(json!("2.345")));
     assert_eq!(
         to_json(&Val::Num(Decimal::from(7)), K::Number, None),
         Some(json!(7))
     );
-    assert_eq!(to_json(&Val::Text("x".into()), K::Number, None), None);
+    assert_eq!(to_json(&text("x"), K::Number, None), None);
     assert_eq!(
-        to_json(&Val::Text("2026-09-01".into()), K::DateTime, None),
+        to_json(&text("2026-09-01"), K::DateTime, None),
         Some(json!("2026-09-01T00:00:00.000000Z"))
     );
     assert_eq!(to_json(&Val::Null, K::Text, None), Some(Value::Null));

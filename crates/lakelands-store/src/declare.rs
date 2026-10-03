@@ -32,7 +32,7 @@
 //!   value type's `one_of`, `constraint`, `scale` and `format` constrain
 //!   stored values, so changing them is not a declaration either.
 
-use lakelands_api::expr::{Condition, Expr};
+use lakelands_api::expr::{Condition, Expr, Func};
 use lakelands_api::ontology::{
     Authority, Derived, FieldDecl, RelationDecl, StorageKind, TypeDecl, ValueTypeDecl, VerbEffect,
     VerbScope,
@@ -43,20 +43,12 @@ use lakelands_api::{Error, FieldName, Refusal, RelationName, Result, TypeName, V
 use lakelands_core::expr::{Place, check, parse};
 use lakelands_core::rights::is_system;
 use lakelands_core::shape::{self, Change};
-use lakelands_core::{derive, links, names, value};
+use lakelands_core::{derive, invalid, links, names, value};
 
 use crate::ontology::Ontology;
 
-fn invalid(message: impl Into<String>) -> Error {
-    Error::Refused {
-        field: None,
-        reason: Refusal::Invalid {
-            message: message.into(),
-        },
-    }
-}
-
-fn invalid_field(field: &FieldName, message: impl Into<String>) -> Error {
+/// A refusal of `field`'s value as not well-formed.
+pub(crate) fn invalid_field(field: &FieldName, message: impl Into<String>) -> Error {
     Error::Refused {
         field: Some(field.clone()),
         reason: Refusal::Invalid {
@@ -77,28 +69,47 @@ fn declared(c: &Condition, place: Place, at: &str) -> Result<Expr> {
     condition(c, place, at)
 }
 
-/// Whether `t`'s view comes back to `t` by following each view's `source`
-/// through `o`, in which `t` stands for its declared self: the chain, as
-/// "`a` reads `b`, `b` reads `c` and `c` reads `a`", if it does. A cycle
-/// that does not pass through `t` is an earlier one, the reader's to refuse.
+/// Whether `t`'s view comes back to `t` by following every source a view
+/// reads, its `source` and its merged ones, through `o`, in which `t`
+/// stands for its declared self: the chain, as "`a` reads `b`, `b` reads
+/// `c` and `c` reads `a`", if it does. A cycle that does not pass through
+/// `t` is an earlier one, the reader's to refuse.
 fn source_cycle(
     o: &Ontology,
     t: &TypeDecl,
     v: &lakelands_api::ontology::ViewDecl,
 ) -> std::result::Result<(), String> {
-    let mut chain: Vec<&TypeName> = vec![&t.name];
-    let mut next = &v.source;
-    while *next != t.name {
-        if chain.contains(&next) {
-            return Ok(());
+    fn walk<'a>(
+        o: &'a Ontology,
+        t: &'a TypeDecl,
+        v: &'a lakelands_api::ontology::ViewDecl,
+        path: &mut Vec<&'a TypeName>,
+        seen: &mut std::collections::BTreeSet<&'a TypeName>,
+    ) -> bool {
+        let sources = std::iter::once(&v.source).chain(v.merge.iter().map(|m| &m.source));
+        for next in sources {
+            if *next == t.name {
+                path.push(&t.name);
+                return true;
+            }
+            if !seen.insert(next) {
+                continue;
+            }
+            let Some(view) = o.ty(next).ok().and_then(|u| u.view.as_deref()) else {
+                continue;
+            };
+            path.push(next);
+            if walk(o, t, view, path, seen) {
+                return true;
+            }
+            path.pop();
         }
-        let Some(view) = o.ty(next).ok().and_then(|u| u.view.as_deref()) else {
-            return Ok(());
-        };
-        chain.push(next);
-        next = &view.source;
+        false
     }
-    chain.push(&t.name);
+    let mut chain: Vec<&TypeName> = vec![&t.name];
+    if !walk(o, t, v, &mut chain, &mut std::collections::BTreeSet::new()) {
+        return Ok(());
+    }
     let links: Vec<String> = chain
         .windows(2)
         .map(|w| format!("`{}` reads `{}`", w[0], w[1]))
@@ -108,6 +119,121 @@ fn source_cycle(
         Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
         None => String::new(),
     })
+}
+
+/// The field `g` of `source` a view groups by, one a key may be, since the
+/// grouping values are the view record's key; refused naming it at `at`.
+fn grouped_field<'a>(source: &'a TypeDecl, g: &FieldName, at: &str) -> Result<&'a FieldDecl> {
+    let f = source.fields.iter().find(|f| &f.name == g).ok_or_else(|| {
+        invalid(format!(
+            "{at} groups by `{g}`, which `{}` does not have",
+            source.name
+        ))
+    })?;
+    if !lakelands_core::log::keyable(f.ty.kind) {
+        return Err(invalid(format!(
+            "{at} groups by `{g}`, whose kind cannot be part of a key"
+        )));
+    }
+    Ok(f)
+}
+
+/// A view's source may not be a view with parameters: only a read that
+/// names a view binds them, and a view reading another names it to no one.
+fn unbound_source(owner: &str, source: &TypeDecl) -> Result<()> {
+    match source.view.as_deref().and_then(|v| v.params.first()) {
+        Some(p) => Err(invalid(format!(
+            "{owner}: its view reads `{}`, a view with the parameter `{}`; only a read that \
+             names a view binds its parameters, so no view reads one",
+            source.name, p.name
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// A view's merged sources: each declared, read once and not as the view's
+/// own source, not a view with parameters, grouped by as many fields as the
+/// view, each of the kind of the main source's field it lines up with and
+/// one a key may be, with measures named uniquely in the view. The
+/// parameters their expressions read are added to `read`.
+fn merged_sources(
+    o: &Ontology,
+    owner: &str,
+    v: &lakelands_api::ontology::ViewDecl,
+    main: &TypeDecl,
+    read: &mut std::collections::BTreeSet<String>,
+) -> Result<()> {
+    let mut names: Vec<&FieldName> = v.measures.iter().map(|m| &m.name).collect();
+    for (i, m) in v.merge.iter().enumerate() {
+        let at = format!("{owner}, merged source `{}`", m.source);
+        if m.source == v.source || v.merge[..i].iter().any(|n| n.source == m.source) {
+            return Err(invalid(format!(
+                "{at}: a view reads each source once, and `{}` is read already",
+                m.source
+            )));
+        }
+        let source = o
+            .ty(&m.source)
+            .map_err(|_| invalid(format!("{at}: `{}` is not declared", m.source)))?;
+        unbound_source(owner, source)?;
+        if m.group_by.len() != v.group_by.len() {
+            return Err(invalid(format!(
+                "{at}: it groups by {} field(s), and the view by {}; each lines up with one \
+                 of the view's, in order",
+                m.group_by.len(),
+                v.group_by.len()
+            )));
+        }
+        for (g, to) in m.group_by.iter().zip(&v.group_by) {
+            let kind = grouped_field(source, g, &at)?.ty.kind;
+            if main
+                .fields
+                .iter()
+                .find(|f| &f.name == to)
+                .map(|f| f.ty.kind)
+                != Some(kind)
+            {
+                return Err(invalid(format!(
+                    "{at}: its `{g}` lines up with the view's `{to}`, of another kind, so no \
+                     group would meet"
+                )));
+            }
+        }
+        if let Some(w) = &m.r#where {
+            let e = declared(w, Place::View, &format!("{at}, `where`"))?;
+            lakelands_core::expr::params_read(&e, read);
+        }
+        for x in &m.measures {
+            name("measure", x.name.as_str())?;
+            let e = declared(
+                &x.expr,
+                Place::Group,
+                &format!("{at}, measure `{}`", x.name),
+            )?;
+            // A merged measure measures its source's group; one with no
+            // aggregate would read nothing of it.
+            if !lakelands_core::versions::calls(&e, &Func::is_aggregate) {
+                return Err(invalid(format!(
+                    "{at}, measure `{}`: it calls no aggregate, so it measures nothing of `{}`",
+                    x.name, m.source
+                )));
+            }
+            lakelands_core::expr::params_read(&e, read);
+        }
+        names.extend(m.measures.iter().map(|x| &x.name));
+    }
+    if let Some(n) = names
+        .iter()
+        .enumerate()
+        .find(|(i, n)| names[..*i].contains(n))
+        .map(|(_, n)| n)
+    {
+        return Err(invalid(format!(
+            "{owner}: its view names the measure `{n}` twice; a view's measures and its merged \
+             sources' share one set of names"
+        )));
+    }
+    Ok(())
 }
 
 /// A view's declared fields are exactly what it computes: a field for each
@@ -120,6 +246,11 @@ fn view_fields(owner: &str, t: &TypeDecl, v: &lakelands_api::ontology::ViewDecl)
         .iter()
         .map(|g| (g, "group_by field"))
         .chain(v.measures.iter().map(|m| (&m.name, "measure")))
+        .chain(
+            v.merge
+                .iter()
+                .flat_map(|m| m.measures.iter().map(|x| (&x.name, "merged measure"))),
+        )
         .collect();
     if let Some((n, what)) = computed
         .iter()
@@ -385,6 +516,19 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
     }
     for r in &t.relations {
         name("relation", r.name.as_str())?;
+        // A view's records are computed, never written: no link names one
+        // as its live `from`, and it has no stored field for `via` to
+        // read. Only a relation derived from matching values reaches out.
+        if t.view.is_some() && r.derived.is_none() {
+            return Err(invalid(format!(
+                "{owner}, relation `{}`: `{}` is a view, whose records are computed and never \
+                 written, so a relation carried by {} could never hold an edge; a relation on a \
+                 view is derived from matching values",
+                r.name,
+                t.name,
+                carrier(r)
+            )));
+        }
         // A relation is carried by its `via` field or by link records,
         // never both (`docs/decisions/035-a-link-is-a-record.md`).
         if r.via.is_some() && !r.fields.is_empty() {
@@ -480,24 +624,14 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
                 v.source
             ))
         })?;
+        unbound_source(&owner, source)?;
         let mut read = std::collections::BTreeSet::new();
         if let Some(w) = &v.r#where {
             let e = declared(w, Place::View, &format!("{owner}, view `where`"))?;
             lakelands_core::expr::params_read(&e, &mut read);
         }
         for g in &v.group_by {
-            let Some(f) = source.fields.iter().find(|f| &f.name == g) else {
-                return Err(invalid(format!(
-                    "{owner}: its view groups by `{g}`, which `{}` does not have",
-                    v.source
-                )));
-            };
-            // The group_by values are the view record's key.
-            if !lakelands_core::log::keyable(f.ty.kind) {
-                return Err(invalid(format!(
-                    "{owner}: its view groups by `{g}`, whose kind cannot be part of a key"
-                )));
-            }
+            grouped_field(source, g, &format!("{owner}: its view"))?;
         }
         for m in &v.measures {
             name("measure", m.name.as_str())?;
@@ -507,6 +641,23 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
                 &format!("{owner}, measure `{}`", m.name),
             )?;
             lakelands_core::expr::params_read(&e, &mut read);
+        }
+        merged_sources(o, &owner, v, source, &mut read)?;
+        // Every field the view reads from a source, in its `where` or in
+        // what its measures aggregate, is one that source has (028): the
+        // same rule `describe` and the migration preflight read it by.
+        for (from, names) in lakelands_core::describe::view_reads(v).unwrap_or_default() {
+            let Ok(s) = o.ty(&from) else {
+                continue;
+            };
+            if let Some(n) = names
+                .iter()
+                .find(|n| !s.fields.iter().any(|f| &f.name == *n))
+            {
+                return Err(invalid(format!(
+                    "{owner}: its view reads `{n}` of `{from}`, which `{from}` does not have"
+                )));
+            }
         }
         view_fields(&owner, t, v)?;
         view_params(&owner, v, &read)?;
@@ -761,6 +912,15 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     v.name, v.on
                 ))
             })?;
+            // A verb on a record of a view could never act: there is no
+            // stored record to write or to hand an executor.
+            if t.view.is_some() && v.scope == VerbScope::Record {
+                return Err(invalid(format!(
+                    "verb `{}` is declared on a record of `{}`, a view, whose records are \
+                     computed and never written",
+                    v.name, v.on
+                )));
+            }
             for f in &v.payload {
                 field_type(o, &format!("verb `{}`, payload", v.name), f, &v.on)?;
             }
@@ -801,36 +961,58 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     .find(|r| r.name == relation)
                     .and_then(|r| r.via.as_ref())
             {
-                return Err(Error::Refused {
-                    field: Some("on".into()),
-                    reason: Refusal::Invalid {
-                        message: format!(
-                            "trigger `{}` watches `{}`, but `{relation}` is carried by the \
-                             reference field `{via}`, not by link records; watch `{owner}` \
-                             with `changed({via})`",
-                            t.name, t.on
-                        ),
-                    },
-                });
+                return Err(invalid_field(
+                    &"on".into(),
+                    format!(
+                        "trigger `{}` watches `{}`, but `{relation}` is carried by the reference \
+                         field `{via}`, not by link records; watch `{owner}` with \
+                         `changed({via})`",
+                        t.name, t.on
+                    ),
+                ));
             }
-            o.ty(&t.on).map_err(|_| {
+            let on = o.ty(&t.on).map_err(|_| {
                 invalid(format!(
                     "trigger `{}` watches `{}`, which is not declared",
                     t.name, t.on
                 ))
             })?;
+            // A view is computed on read and never written, so no write
+            // of it can fire a trigger: a trigger on one could never act.
+            if on.view.is_some() {
+                return Err(invalid_field(
+                    &"on".into(),
+                    format!(
+                        "trigger `{}` watches `{}`, a view; a view is never written, so no \
+                         write of it fires a trigger",
+                        t.name, t.on
+                    ),
+                ));
+            }
             if let Some(w) = &t.when {
                 declared(w, Place::Guard, &format!("trigger `{}`", t.name))?;
             }
         }
         Declaration::ObjectSet(s) => {
             name("object set", &s.name)?;
-            o.ty(&s.of).map_err(|_| {
+            let of = o.ty(&s.of).map_err(|_| {
                 invalid(format!(
                     "object set `{}` holds `{}`, which is not declared",
                     s.name, s.of
                 ))
             })?;
+            // A set holds stored records; a view's are computed on read,
+            // and no set is evaluated over them.
+            if of.view.is_some() {
+                return Err(invalid_field(
+                    &"of".into(),
+                    format!(
+                        "object set `{}` holds `{}`, a view; a view's records are computed on \
+                         read, and an object set holds stored records only",
+                        s.name, s.of
+                    ),
+                ));
+            }
             declared(
                 &s.filter,
                 Place::Record,

@@ -1,13 +1,16 @@
+use rust_stemmers::Algorithm;
+
+use super::snowball::algorithm;
 use super::*;
 
 #[test]
 fn the_primary_subtag_selects_the_language() {
-    assert_eq!(Language::for_tag("de"), Some(Language::German));
-    assert_eq!(Language::for_tag("de-CH"), Some(Language::German));
-    assert_eq!(Language::for_tag("EN-gb"), Some(Language::English));
-    assert_eq!(Language::for_tag("nb-NO"), Some(Language::Norwegian));
-    assert_eq!(Language::for_tag("zh-Hant"), None);
-    assert_eq!(Language::for_tag(""), None);
+    assert_eq!(algorithm("de"), Some(Algorithm::German));
+    assert_eq!(algorithm("de-CH"), Some(Algorithm::German));
+    assert_eq!(algorithm("EN-gb"), Some(Algorithm::English));
+    assert_eq!(algorithm("nb-NO"), Some(Algorithm::Norwegian));
+    assert_eq!(algorithm("zh-Hant"), None);
+    assert_eq!(algorithm(""), None);
 }
 
 #[test]

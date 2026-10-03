@@ -636,6 +636,40 @@ fn the_version_8_verb_on_its_type_recomputes_and_a_version_7_one_is_refused() {
     assert_eq!(verb.scope, lakelands_api::ontology::VerbScope::Type);
 }
 
+#[test]
+fn the_version_9_view_that_merges_recomputes_and_a_version_8_one_is_refused() {
+    let v8 = read_json("v8.json");
+    let v9 = read_json("v9.json");
+    let line = v9["lines"][0].as_str().unwrap();
+    let value: Value = serde_json::from_str(line).unwrap();
+    assert_eq!(
+        canonical::to_vec(&value),
+        line.as_bytes(),
+        "the line is canonical"
+    );
+    let event: Event = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(
+        canonical::of(&event),
+        line.as_bytes(),
+        "the contract writes it as the line"
+    );
+    let mut body = value;
+    body.as_object_mut().unwrap().remove("hash");
+    assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
+    assert_eq!(event.hash.0, v9["hashes"][0].as_str().unwrap());
+    let last = v8["hashes"].as_array().unwrap().last().unwrap();
+    assert_eq!(event.prev.0, last.as_str().unwrap(), "it follows v8.json");
+    assert_eq!(event.v, 9);
+    assert_eq!(lakelands_core::versions::needed(&event.body, false), 9);
+    let negative: Event = serde_json::from_str(v9["negative"].as_str().unwrap()).unwrap();
+    assert_eq!(negative.v, 8);
+    let why = lakelands_core::versions::below(&negative).expect("refused");
+    assert!(
+        why.contains("merges sources") && why.contains("format 9 added"),
+        "{why}"
+    );
+}
+
 /// The negative vector `negative/known-at-goes-back`: the first segment
 /// of the vectors with the last event's `known_at` set before the one
 /// before it, its hash made right. `export::verify` refuses it at that

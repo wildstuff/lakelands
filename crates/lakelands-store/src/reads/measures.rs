@@ -73,7 +73,7 @@ impl Reader<'_> {
     /// have been checked against the declarations.
     pub(super) fn measure(&self, p: &Pattern, limit: usize) -> Result<QueryResult> {
         let params = self.bound_params(&p.start.ty);
-        let offset = super::offset(p.cursor.as_ref(), &params)?;
+        let offset = super::offset(p.cursor.as_ref(), &p.start.ty, &params)?;
         let hidden = Visible { reader: self };
         let (rows, more) = match p.project {
             Projection::Degree => {
@@ -148,6 +148,8 @@ impl Reader<'_> {
                 after: None,
                 offset: (offset + limit) as u64,
                 params,
+                door: "query".into(),
+                ty: Some(p.start.ty.clone()),
             })
         });
         Ok(QueryResult::Rows { rows, next_cursor })
@@ -164,7 +166,7 @@ impl Reader<'_> {
                 key: key.clone(),
                 with_meta: false,
                 at: ReadAt::default(),
-                params: Default::default(),
+                params: p.start.params.clone(),
             };
             return match self.get(&ty, &get) {
                 Ok(_) => each((ty, key.clone())),

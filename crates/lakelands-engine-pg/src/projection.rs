@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS {s}.records (
     PRIMARY KEY (ty, key, since)
 );
 CREATE INDEX IF NOT EXISTS records_at ON {s}.records (ty, until, key);
+CREATE INDEX IF NOT EXISTS records_since ON {s}.records (ty, since);
 CREATE INDEX IF NOT EXISTS records_key_c ON {s}.records (ty, key COLLATE \"C\", since);
 CREATE TABLE IF NOT EXISTS {s}.proposals (
     id TEXT NOT NULL, since BIGINT NOT NULL, until BIGINT, state TEXT NOT NULL,
@@ -145,7 +146,8 @@ CREATE TABLE IF NOT EXISTS {s}.vectors (
     }
 }
 
-/// Every table of a lake's schema.
+/// Every table of a lake's schema: the log's and the lease's, then the
+/// projection's.
 pub(crate) const LAKE_TABLES: [&str; 15] = [
     "meta",
     "lease",
@@ -166,19 +168,7 @@ pub(crate) const LAKE_TABLES: [&str; 15] = [
 
 /// The projection's tables, cleared by a rebuild; the log, its segments,
 /// the lease and the lake's name stay.
-pub(crate) const PROJECTION_TABLES: [&str; 11] = [
-    "declarations",
-    "records",
-    "proposals",
-    "members",
-    "outputs",
-    "applied",
-    "text_index",
-    "edges",
-    "full_text",
-    "sort_index",
-    "vectors",
-];
+pub(crate) const PROJECTION_TABLES: &[&str] = LAKE_TABLES.split_at(4).1;
 
 /// A history table: its name and the columns naming one thing in it.
 pub(crate) struct History {
@@ -188,40 +178,27 @@ pub(crate) struct History {
     pub(crate) state: &'static str,
 }
 
-pub(crate) const DECLARATIONS: History = History {
-    table: "declarations",
-    ident: &["ident"],
-    state: "text",
-};
-pub(crate) const RECORDS: History = History {
-    table: "records",
-    ident: &["ty", "key"],
-    state: "text",
-};
-pub(crate) const PROPOSALS: History = History {
-    table: "proposals",
-    ident: &["id"],
-    state: "text",
-};
-pub(crate) const OUTPUTS: History = History {
-    table: "outputs",
-    ident: &["seam", "input"],
-    state: "text",
-};
-pub(crate) const MEMBERS: History = History {
-    table: "members",
-    ident: &["object_set", "ty", "key"],
-    state: "boolean",
-};
+pub(crate) const DECLARATIONS: History = History::new("declarations", &["ident"], "text");
+pub(crate) const RECORDS: History = History::new("records", &["ty", "key"], "text");
+pub(crate) const PROPOSALS: History = History::new("proposals", &["id"], "text");
+pub(crate) const OUTPUTS: History = History::new("outputs", &["seam", "input"], "text");
+pub(crate) const MEMBERS: History =
+    History::new("members", &["object_set", "ty", "key"], "boolean");
 
 impl History {
-    fn ident_where(&self, from: usize) -> String {
-        self.ident
-            .iter()
-            .enumerate()
-            .map(|(i, c)| format!("{c} = ${}", i + from))
-            .collect::<Vec<_>>()
-            .join(" AND ")
+    const fn new(table: &'static str, ident: &'static [&'static str], state: &'static str) -> Self {
+        History {
+            table,
+            ident,
+            state,
+        }
+    }
+
+    /// The identifying columns, each as `f` writes it with its number
+    /// (from 1), joined by `sep`.
+    fn each(&self, sep: &str, f: impl Fn(usize, &str) -> String) -> String {
+        let all: Vec<String> = (1..).zip(self.ident).map(|(i, c)| f(i, c)).collect();
+        all.join(sep)
     }
 
     /// Put a state of one thing valid from `since`, keeping every other
@@ -257,14 +234,13 @@ impl History {
                  INSERT INTO {table} ({columns}, since, until, state) VALUES ({marks}, \
                  (SELECT min(since) FROM {table} WHERE {w} AND since > ${s}), ${v}) \
                  ON CONFLICT ({columns}, since) DO UPDATE SET state = EXCLUDED.state",
-                w = self.ident_where(1),
+                w = self.each(" AND ", |i, c| format!("{c} = ${i}")),
                 s = n + 1,
                 v = n + 2,
                 marks = marks.join(", "),
             ),
             &args,
-        )?;
-        Ok(())
+        )
     }
 
     /// Put the states a transaction buffered, all in one statement, as
@@ -304,13 +280,6 @@ impl History {
         args.push(&since);
         args.push(&states);
         let columns = self.ident.join(", ");
-        let on = |a: &str, b: &str| {
-            self.ident
-                .iter()
-                .map(|c| format!("{a}.{c} = {b}.{c}"))
-                .collect::<Vec<_>>()
-                .join(" AND ")
-        };
         let arrays: Vec<String> = (1..=n).map(|i| format!("${i}::text[]")).collect();
         let answer = db.query(
             &format!(
@@ -345,12 +314,12 @@ impl History {
                 s = n + 1,
                 v = n + 2,
                 ty = self.state,
-                tcolumns = prefixed("t", self.ident),
-                bcolumns = prefixed("b", self.ident),
-                ncolumns = prefixed("n", self.ident),
-                tf = on("t", "f"),
-                tn = on("t", "n"),
-                bn = on("b", "n"),
+                tcolumns = self.each(", ", |_, c| format!("t.{c}")),
+                bcolumns = self.each(", ", |_, c| format!("b.{c}")),
+                ncolumns = self.each(", ", |_, c| format!("n.{c}")),
+                tf = self.each(" AND ", |_, c| format!("t.{c} = f.{c}")),
+                tn = self.each(" AND ", |_, c| format!("t.{c} = n.{c}")),
+                bn = self.each(" AND ", |_, c| format!("b.{c} = n.{c}")),
             ),
             &args,
         )?;
@@ -359,15 +328,6 @@ impl History {
             .map(|row| ((0..n).map(|i| row.get(i)).collect(), row.get(n)))
             .collect())
     }
-}
-
-/// Columns named with a table's alias.
-fn prefixed(alias: &str, columns: &[&str]) -> String {
-    columns
-        .iter()
-        .map(|c| format!("{alias}.{c}"))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 /// The declarations of types in force at the head, as read in the fold's
@@ -459,8 +419,7 @@ pub(crate) fn set_folded(db: &mut Db, names: &Names, through: Position) -> Resul
             m = names.t("meta")
         ),
         &[&(through.0 as i64)],
-    )?;
-    Ok(())
+    )
 }
 
 /// The records an order index's rebuild reads at a time.
@@ -499,11 +458,10 @@ pub(crate) fn rebuild_sorted(
     )?;
     let head = head_type(db, names, ty)?;
     if head.sorted.is_empty() {
-        db.execute(
+        return db.execute(
             &format!("DELETE FROM {} WHERE k = $1", names.t("meta")),
             &[&sorted_mark(ty)],
-        )?;
-        return Ok(());
+        );
     }
     // A page of the type at a time, so the pass holds a page, not the type.
     let mut after = String::new();
@@ -537,8 +495,7 @@ pub(crate) fn rebuild_sorted(
             names.t("meta"),
         ),
         &[&sorted_mark(ty), &(through.0 as i64)],
-    )?;
-    Ok(())
+    )
 }
 
 /// At a writer's open: rebuild, in one transaction, every order index
@@ -550,26 +507,22 @@ pub(crate) fn catch_up_sorted(db: &mut Db, names: &Names) -> Result<()> {
         let Some(folded) = folded(db, names)? else {
             return Ok(());
         };
-        let behind: Vec<String> = db
-            .query(
-                &format!(
-                    "SELECT substr(r.key, $1) FROM {r} r WHERE r.ty = $2 AND left(r.key, $1 - 1) = $3 \
-                       AND r.until IS NULL AND NOT EXISTS (SELECT 1 FROM {m} m \
-                       WHERE m.k = 'sorted.' || substr(r.key, $1) AND m.n = $4) \
-                     UNION SELECT substr(k, 8) FROM {m} WHERE k LIKE 'sorted.%' AND n <> $4",
-                    r = names.t("records"),
-                    m = names.t("meta"),
-                ),
-                &[
-                    &(SORT_INDEX_SETTING.len() as i32 + 1),
-                    &SETTING_TYPE,
-                    &SORT_INDEX_SETTING,
-                    &(folded.0 as i64),
-                ],
-            )?
-            .iter()
-            .map(|r| r.get(0))
-            .collect();
+        let behind: Vec<String> = db.column(
+            &format!(
+                "SELECT substr(r.key, $1) FROM {r} r WHERE r.ty = $2 AND left(r.key, $1 - 1) = $3 \
+                   AND r.until IS NULL AND NOT EXISTS (SELECT 1 FROM {m} m \
+                   WHERE m.k = 'sorted.' || substr(r.key, $1) AND m.n = $4) \
+                 UNION SELECT substr(k, 8) FROM {m} WHERE k LIKE 'sorted.%' AND n <> $4",
+                r = names.t("records"),
+                m = names.t("meta"),
+            ),
+            &[
+                &(SORT_INDEX_SETTING.len() as i32 + 1),
+                &SETTING_TYPE,
+                &SORT_INDEX_SETTING,
+                &(folded.0 as i64),
+            ],
+        )?;
         for ty in behind {
             rebuild_sorted(db, names, &TypeName::from(ty), folded)?;
         }
@@ -626,30 +579,24 @@ pub(crate) fn head_records_after(
     after: &str,
     n: i64,
 ) -> Result<Vec<StoredRecord>> {
-    db.query(
+    db.records(
         &format!(
             "SELECT state FROM {} WHERE ty = $1 AND until IS NULL AND key COLLATE \"C\" > $2 \
              ORDER BY key COLLATE \"C\" LIMIT $3",
             names.t("records")
         ),
         &[&ty.as_str(), &after, &n],
-    )?
-    .iter()
-    .map(|r| decode_record(&r.get::<_, String>(0)))
-    .collect()
+    )
 }
 
 pub(crate) fn head_records(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Vec<StoredRecord>> {
-    db.query(
+    db.records(
         &format!(
             "SELECT state FROM {} WHERE ty = $1 AND until IS NULL ORDER BY key COLLATE \"C\"",
             names.t("records")
         ),
         &[&ty.as_str()],
-    )?
-    .iter()
-    .map(|r| decode_record(&r.get::<_, String>(0)))
-    .collect()
+    )
 }
 
 /// The latest state of one record.
@@ -795,8 +742,7 @@ pub(crate) fn index_records(
             edges = names.t("edges"),
         ),
         &params,
-    )?;
-    Ok(())
+    )
 }
 
 /// The puts of the fold's open transaction, held until it commits and
@@ -875,37 +821,8 @@ impl Buffer {
         PROPOSALS.put_many(db, names, &self.proposals)?;
         OUTPUTS.put_many(db, names, &self.outputs)?;
         MEMBERS.put_many(db, names, &self.members)?;
-        // A `sort_index.<type>` setting whose head state the buffer holds
-        // changes which fields of its type are indexed: read again.
-        let settings: Vec<(TypeName, Position)> = heads
-            .iter()
-            .filter_map(|(ident, _)| {
-                let r = self
-                    .records
-                    .range((ident.clone(), i64::MIN)..=(ident.clone(), i64::MAX))
-                    .next_back()?
-                    .1;
-                Some((engines::sort_index_type(r)?, r.position))
-            })
-            .collect();
-        for (ty, _) in &settings {
-            types.0.remove(ty);
-        }
-        // A `vector_index.<type>` setting whose head state the buffer holds
-        // rebuilds its type's vector indexes, after the records are in.
-        let vector_settings: Vec<(TypeName, Position)> = heads
-            .iter()
-            .filter_map(|(ident, _)| {
-                let r = self
-                    .records
-                    .range((ident.clone(), i64::MIN)..=(ident.clone(), i64::MAX))
-                    .next_back()?
-                    .1;
-                Some((engines::vector_index_type(r)?, r.position))
-            })
-            .collect();
-        let mut indexed = Vec::with_capacity(heads.len());
-        let mut stale = Vec::new();
+        let mut latest = Vec::with_capacity(heads.len());
+        let (mut settings, mut vector_settings) = (Vec::new(), Vec::new());
         for (ident, had) in &heads {
             let r = self
                 .records
@@ -913,9 +830,25 @@ impl Buffer {
                 .next_back()
                 .map(|(_, r)| r)
                 .expect("a head the buffer put");
+            // A `sort_index.<type>` setting whose head state the buffer holds
+            // changes which fields of its type are indexed: read again.
+            if let Some(ty) = engines::sort_index_type(r) {
+                types.0.remove(&ty);
+                settings.push((ty, r.position));
+            }
+            // A `vector_index.<type>` setting whose head state the buffer
+            // holds rebuilds its type's vector indexes, after the records are in.
+            if let Some(ty) = engines::vector_index_type(r) {
+                vector_settings.push((ty, r.position));
+            }
+            latest.push((r, *had));
+        }
+        let mut indexed = Vec::with_capacity(latest.len());
+        let mut stale = Vec::new();
+        for (r, had) in latest {
             indexed.push((types.get(db, names, &r.ty)?, r));
-            if *had {
-                stale.push((ident[0].as_str(), ident[1].as_str()));
+            if had {
+                stale.push((r.ty.as_str(), r.key.as_str()));
             }
         }
         let indexed: Vec<(&HeadType, &StoredRecord)> =

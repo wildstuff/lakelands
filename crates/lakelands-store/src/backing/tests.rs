@@ -1,4 +1,5 @@
 use super::*;
+use lakelands_api::Error;
 use serde_json::json;
 
 fn call(expr: Value, inputs: Value) -> FunctionCall {

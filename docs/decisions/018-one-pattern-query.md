@@ -81,7 +81,15 @@ view is not searched: the indexes a search reads hold stored records
 only, so a search of computed records could only answer nothing. A view
 field that is searchable, carries an embedding or is a vector is
 refused when the view is declared, and a search on a view is refused,
-naming it; neither is answered empty.
+naming it; neither is answered empty. For the same reason a declaration
+that could never act on a view is refused when declared, naming both.
+A trigger on a view would never fire, since no write has the view's
+type. An object set holds stored records, and a set evaluated over
+computed records would be a feature of its own. A relation on a view is
+refused unless it is derived from matching values. A link names a live,
+written record as its `from` (035), so a relation carried by link
+records could never hold an edge. A view has no stored field for `via`
+to read. The refusal names the view and the relation.
 
 ## Extended: a view may take parameters bound at read
 
@@ -109,8 +117,45 @@ each other. A view's parameters are part of its shape, so changing them
 is a change of shape like any other. A view that declares none keeps the
 schema hash it had. A cursor carries the parameters its first page was
 read with, and continuing it with others is refused, since the pages
-would belong to two answers. Views are computed on read, so nothing is
-kept per binding.
+would belong to two answers. For the same reason a cursor carries the
+door and the type it was handed out for: a page of `find` continues
+only that `find` on that type, a page of `query` that query, a page of
+`search` that search, and any other use is refused as invalid, naming
+where the cursor belongs (lakelands#367). The cursor's bytes are opaque
+and change freely; no log format changes. Views are computed on read,
+so nothing is kept per binding.
+
+A pattern binds only the view it starts on. Suppose one of its steps, in
+rows or in a measure, arrives at a view with parameters other than its
+start. That view has nothing to read it with, so the pattern is refused
+before any record is read, naming the view and the relation. Refusing
+only once the walk had reached a record would make the answer depend on
+the data, an empty answer with no records and a refusal with some
+(029). A derived relation to or from such a view stays declarable: a
+pattern that starts on the view binds it, and may step out and back.
+
+## Extended: a view may merge sources on its key
+
+A view may read more than one type: beside its `source` it may `merge`
+further sources, each with its own `where`, its own aggregate measures,
+and a `group_by` of its own fields that lines up with the view's by
+position. An energy balance reads meals and workouts, which know nothing
+of each other, and nets them by day. The groups of the sources meet where
+their keys are identical, by the identity of the values, as a derived
+relation's match does (044), not by 017's `=`: the text `010` and the
+text `10` are two keys, and a date written as a day and as midnight of
+that day is one.
+
+Every key any source holds is a record of the view. A source that lacks
+a key measures its empty group by the aggregates' own rules, so a sum
+there is 0 and a minimum is none; a balance has a day with meals and no
+workout without a declared default. The view's own measures come after
+the merged ones and read them by name. The view's parameters bind every
+source, and each source is read as a read of that source, so a field a
+principal may not read refuses the view, naming it (024). A source may
+not be a view with parameters, since only a read that names a view binds
+them, and a view may not read itself through any of its sources. A view
+that merges is written in log format 9.
 
 ## Extended: a whole-graph measure is a projection
 
@@ -127,3 +172,26 @@ Components hold every record they reach, so the lake bounds them by its
 `max_graph_nodes`; past it they are refused `too_large`, naming the
 ceiling, for the reason a step too deep is refused: a partition of part
 of the graph would look like the whole of it.
+
+## Extended: a view is refused alike at every door (lakelands#370)
+
+A view's records are computed, never written, so every door that writes
+or holds a record refuses a view in the same words, as `invalid` naming
+it: `upsert`, `retire`, `link` and `unlink` from a view, `ingest`, a
+proposal of an upsert or a retirement, the host's `restrict` and
+`unrestrict`, and a call of a verb on a record of a view. Each door
+refuses it where it first knows the type: after the type is looked up,
+before its grants or any record. Until 0.8.0 `retire` answered
+`not_granted` to the owner and `restrict` answered `not_found` for a
+record `get` returns, each telling the caller something untrue.
+
+A verb on a record of a view is refused when it is declared, naming the
+verb and the view, because it could never act: a write effect has
+nothing to write, and an external effect finds no stored record to hand
+its executor. Handing it a computed record would be a new capability,
+not a fix. A verb on the view's type that reaches outside the lake can
+act: it holds no record and writes nothing to the view. It is taken, as
+it was before. A lake declared before 0.8.0 may still hold a verb on a
+record of a view, since replay does not judge a declaration again; a
+call of it is refused at the door as above.
+

@@ -1,5 +1,5 @@
 //! The drift check between this crate and the WIT package in `wit/`
-//! (`lakelands:data@0.7.1`). The crate is the source; the WIT mirrors it,
+//! (`lakelands:data@0.8.0`). The crate is the source; the WIT mirrors it,
 //! and this test fails as soon as the two disagree.
 //!
 //! Three things are compared:
@@ -30,7 +30,7 @@ use lakelands_api::location::Limits;
 use lakelands_api::ontology::{
     Assignment, Authority, Cardinality, EmbedDecl, FieldDecl, FieldType, Measure, OnInputChange,
     RelationDecl, Risk, StorageKind, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
-    VerbScope, ViewDecl, ViewParam,
+    VerbScope, ViewDecl, ViewParam, ViewSource,
 };
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{
@@ -302,6 +302,16 @@ fn view_decl() -> ViewDecl {
         group_by: vec!["f".into()],
         measures: vec![measure()],
         params: vec![view_param()],
+        merge: vec![view_source()],
+    }
+}
+
+fn view_source() -> ViewSource {
+    ViewSource {
+        source: "payment".into(),
+        r#where: Some(cond()),
+        group_by: vec!["f".into()],
+        measures: vec![measure()],
     }
 }
 
@@ -609,6 +619,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
         ("relation_decl", members(&relation_decl())),
         ("measure", members(&measure())),
         ("view_param", members(&view_param())),
+        ("view_source", members(&view_source())),
         ("view_decl", members(&view_decl())),
         ("type_decl", members(&type_decl())),
         (
@@ -690,6 +701,8 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     limit: Some(1),
                     cursor: Some(Cursor("c".into())),
                     after: Some(after_row()),
+                    offset: Some(7),
+                    total: true,
                     aggregate: Some(aggregate()),
                     with_meta: true,
                     at: read_at(),
@@ -1028,6 +1041,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 max_reactive_depth: 4,
                 commit_window_events: 5,
                 max_graph_nodes: 6,
+                max_offset: 7,
             }),
         ),
         (
@@ -1118,7 +1132,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
         PrincipalKind,
         [Human, Agent, Service, System]
     );
-    units!("access", Access, [None, Masked, Read, Write]);
+    units!("access", Access, [None, Masked, Read, Write, WriteOnly]);
     units!("write_origin", WriteOrigin, [Direct, Reactive, Scheduled]);
     units!("walk", Walk, [Out, In, Both]);
 
@@ -1305,6 +1319,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 Found::Records {
                     rows: vec![],
                     next_cursor: None,
+                    total: Some(3),
                 },
                 Found::Groups { rows: vec![] },
             ],

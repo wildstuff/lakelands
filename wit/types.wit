@@ -1,4 +1,4 @@
-package lakelands:data@0.7.1;
+package lakelands:data@0.8.0;
 
 /// The types every interface of the package shares: the contract of
 /// `lakelands-api`, type for type.
@@ -65,7 +65,7 @@ interface types {
 
     enum principal-kind { human, agent, service, system }
 
-    enum access { none, masked, read, write }
+    enum access { none, masked, read, write, write-only }
 
     /// A field's access, one entry of a type's grants.
     record field-access {
@@ -212,6 +212,17 @@ interface types {
     record view-decl {
         source: type-name,
         params: list<view-param>,
+        where: option<condition>,
+        group-by: list<field-name>,
+        measures: list<measure>,
+        /// Further sources merged on the view's key.
+        merge: list<view-source>,
+    }
+
+    /// A further source of a view, grouped by its own fields in the
+    /// view's key order.
+    record view-source {
+        source: type-name,
         where: option<condition>,
         group-by: list<field-name>,
         measures: list<measure>,
@@ -467,6 +478,11 @@ interface types {
         limit: option<u32>,
         cursor: option<cursor>,
         after: option<after-row>,
+        /// Rows of the order skipped before the page: at most the lake's
+        /// `max-offset`; refused with `cursor`, `after` or `aggregate`.
+        offset: option<u32>,
+        /// Answer how many records match, at the answer's position.
+        total: bool,
         aggregate: option<aggregate>,
         with-meta: bool,
         /// The values bound to a view's parameters, each as JSON.
@@ -490,6 +506,8 @@ interface types {
     record records-page {
         rows: list<%record>,
         next-cursor: option<cursor>,
+        /// How many records match, when `total` asked for it.
+        total: option<u64>,
     }
 
     variant found {
@@ -990,6 +1008,7 @@ interface types {
         max-reactive-depth: u32,
         commit-window-events: u32,
         max-graph-nodes: u32,
+        max-offset: u32,
     }
 
     record feed-filter {

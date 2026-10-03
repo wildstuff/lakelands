@@ -43,19 +43,15 @@ pub fn is_type_name(name: &str) -> bool {
 /// Why a name of this kind cannot be declared, if it cannot. `what` is
 /// the kind of thing named (`type`, `field`, …), for the message.
 pub fn fault(what: &str, name: &str) -> Option<String> {
-    let ok = if what == "type" {
-        is_type_name(name)
+    let (ok, rule) = if what == "type" {
+        (is_type_name(name), "ASCII identifiers joined by `.`")
     } else {
-        is_identifier(name)
+        let rule = "an ASCII identifier: a letter or `_`, then letters, digits or `_`";
+        (is_identifier(name), rule)
     };
     if ok {
         return None;
     }
-    let rule = if what == "type" {
-        "ASCII identifiers joined by `.`"
-    } else {
-        "an ASCII identifier: a letter or `_`, then letters, digits or `_`"
-    };
     Some(if name.is_empty() {
         format!("a {what} name must not be empty")
     } else {

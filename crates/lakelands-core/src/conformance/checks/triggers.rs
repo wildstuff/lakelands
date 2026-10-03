@@ -13,17 +13,19 @@ use std::sync::Arc;
 
 use lakelands_api::event::EventBody;
 use lakelands_api::expr::Condition;
+use lakelands_api::location::Limits;
 use lakelands_api::ontology::{StorageKind, TriggerDecl};
-use lakelands_api::principal::{WriteContext, WriteOrigin};
-use lakelands_api::seam::FeedFilter;
-use lakelands_api::write::Declaration;
-use lakelands_api::{Error, Find, LakeStore, Position, Refusal, TypeName, WriteOpts};
+use lakelands_api::principal::WriteContext;
+use lakelands_api::seam::Seams;
+use lakelands_api::write::{Declaration, ProposedWrite};
+use lakelands_api::{LakeStore, Outcome, Position, Refusal, TypeName};
 use serde_json::json;
 
-use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, declare, doors, field, head_unmoved, limits, owner, patch, type_decl, upsert,
+    Lake, Must, events_after, field, find_where, head_unmoved, invalid_naming, limits, reactive,
+    reason, try_upsert, type_decl,
 };
+use crate::conformance::{Failure, Given};
 
 check!(
     /// A transition guard fires on its transition only.
@@ -58,7 +60,8 @@ check!(
 check!(
     /// A trigger's ceiling lies within the lake's.
     TRIGGER_CEILING = a_trigger_max_depth_above_the_lakes_ceiling_is_refused,
-    "021, extended: a trigger whose `max_depth` is above the lake's `max_reactive_depth` is refused as invalid naming the trigger and both numbers; the lake's ceiling itself and 0 are taken"
+    "021, extended: a trigger whose `max_depth` is above the lake's `max_reactive_depth` is refused as invalid naming the trigger and both numbers, by `declare`, `apply` and `propose`, and by `accept` once the lake is opened again with a lower ceiling; the lake's ceiling itself and 0 are taken",
+    given
 );
 
 fn trigger(name: &str, when: Option<&str>, max_depth: Option<u32>) -> Declaration {
@@ -89,12 +92,8 @@ async fn fired_after(
     after: Position,
     name: &str,
 ) -> Result<Vec<Position>, Failure> {
-    Ok(store
-        .feed()
-        .poll(after.next(), &FeedFilter::default(), 10_000)
-        .await
-        .must("reading the feed")?
-        .events
+    Ok(events_after(store, after)
+        .await?
         .into_iter()
         .filter(|e| matches!(&e.body, EventBody::TriggerFired { trigger, .. } if trigger.as_str() == name))
         .map(|e| e.position)
@@ -104,16 +103,12 @@ async fn fired_after(
 async fn a_transition_guard_fires_on_open_to_closed_only(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("job", vec![field("status", StorageKind::Text)]),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
+        .await?;
     cat.declare(
-        &own,
+        own,
         trigger(
             "closed",
             Some("previous(status) = 'open' and status = 'closed'"),
@@ -131,7 +126,7 @@ async fn a_transition_guard_fires_on_open_to_closed_only(
         let mut fires = Vec::new();
         for status in &states {
             let before = store.head().await.must("reading the head")?;
-            upsert(cat.as_ref(), &own, "job", key, json!({"status": status})).await?;
+            l.upsert("job", key, json!({"status": status})).await?;
             fires.push(
                 !fired_after(store.as_ref(), before, "closed")
                     .await?
@@ -149,68 +144,41 @@ async fn a_transition_guard_fires_on_open_to_closed_only(
             }
         );
     }
-    match cat
-        .find(
-            &own,
+    invalid_naming(
+        "`previous` outside a guard",
+        cat.find(
+            own,
             &TypeName::from("job"),
-            Find {
-                filter: Some(Condition::from("previous(status) = 'open'")),
-                ..Find::default()
-            },
+            find_where("previous(status) = 'open'"),
         )
-        .await
-    {
-        Err(
-            e @ Error::Refused {
-                reason: Refusal::Invalid { .. },
-                ..
-            },
-        ) => {
-            let why = e.to_string();
-            ensure!(
-                why.contains("previous"),
-                "`previous` in a find must be refused naming it; it said: {why}"
-            );
-        }
-        other => {
-            return Err(Failure::new(format!(
-                "`previous` outside a guard must be refused as invalid; it answered {other:?}"
-            )));
-        }
-    }
+        .await,
+        &["previous"],
+    )?;
     Ok(())
 }
 
 async fn a_guard_tells_a_retirement_from_an_update(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl(
-            "job",
-            vec![
-                field("status", StorageKind::Text),
-                field("note", StorageKind::Text),
-            ],
-        ),
-    )
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl(
+        "job",
+        vec![
+            field("status", StorageKind::Text),
+            field("note", StorageKind::Text),
+        ],
+    ))
     .await?;
     let before = store.head().await.must("reading the head")?;
     for d in [
         trigger("closed", Some("status = 'closed' and not retired()"), None),
         trigger("retired", Some("retired()"), None),
     ] {
-        cat.declare(&own, d).await.must("declaring the triggers")?;
+        cat.declare(own, d).await.must("declaring the triggers")?;
     }
-    let declared = store
-        .feed()
-        .poll(before.next(), &FeedFilter::default(), 100)
-        .await
-        .must("reading the feed")?
-        .events
+    let declared = events_after(store.as_ref(), before)
+        .await?
         .into_iter()
         .find(|e| {
             matches!(&e.body, EventBody::Declared { declaration: Declaration::Trigger(t), .. }
@@ -237,7 +205,7 @@ async fn a_guard_tells_a_retirement_from_an_update(
         ),
     ] {
         let at = store.head().await.must("reading the head")?;
-        upsert(cat.as_ref(), &own, "job", "a", write).await?;
+        l.upsert("job", "a", write).await?;
         let got = fires(store.as_ref(), at, &names).await?;
         ensure!(
             got == want,
@@ -245,14 +213,7 @@ async fn a_guard_tells_a_retirement_from_an_update(
         );
     }
     let at = store.head().await.must("reading the head")?;
-    cat.retire(
-        &own,
-        &TypeName::from("job"),
-        &"a".into(),
-        WriteOpts::default(),
-    )
-    .await
-    .must("retiring `a`")?;
+    l.retire("job", "a").await?;
     let got = fires(store.as_ref(), at, &names).await?;
     ensure!(
         got == [false, true],
@@ -263,16 +224,12 @@ async fn a_guard_tells_a_retirement_from_an_update(
 }
 
 async fn a_revival_is_a_creation_to_a_guard(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("job", vec![field("status", StorageKind::Text)]),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
+        .await?;
     cat.declare(
-        &own,
+        own,
         trigger(
             "created",
             Some("previous(status) is null and changed(status) and not retired()"),
@@ -294,23 +251,16 @@ async fn a_revival_is_a_creation_to_a_guard(store: Arc<dyn LakeStore>) -> Result
         }
     };
     let at = store.head().await.must("reading the head")?;
-    upsert(cat.as_ref(), &own, "job", "r", json!({"status": "open"})).await?;
+    l.upsert("job", "r", json!({"status": "open"})).await?;
     fired("creating `r`", true, at).await?;
     let at = store.head().await.must("reading the head")?;
-    upsert(cat.as_ref(), &own, "job", "r", json!({"status": "open"})).await?;
+    l.upsert("job", "r", json!({"status": "open"})).await?;
     fired("writing `r` again", false, at).await?;
     let at = store.head().await.must("reading the head")?;
-    cat.retire(
-        &own,
-        &TypeName::from("job"),
-        &"r".into(),
-        WriteOpts::default(),
-    )
-    .await
-    .must("retiring `r`")?;
+    l.retire("job", "r").await?;
     fired("retiring `r`", false, at).await?;
     let at = store.head().await.must("reading the head")?;
-    upsert(cat.as_ref(), &own, "job", "r", json!({"status": "open"})).await?;
+    l.upsert("job", "r", json!({"status": "open"})).await?;
     fired(
         "reviving `r` (`previous` null, `changed` true, `retired()` false)",
         true,
@@ -322,32 +272,10 @@ async fn a_revival_is_a_creation_to_a_guard(store: Arc<dyn LakeStore>) -> Result
 async fn retired_outside_a_triggers_guard_is_refused_naming_it(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("job", vec![field("status", StorageKind::Text)]),
-    )
-    .await?;
-    let invalid_naming_retired = |what: &str, answer: Result<(), Error>| match answer {
-        Err(
-            e @ Error::Refused {
-                reason: Refusal::Invalid { .. },
-                ..
-            },
-        ) => {
-            let why = e.to_string();
-            ensure!(
-                why.contains("retired"),
-                "{what} must be refused naming `retired`; it said: {why}"
-            );
-            Ok(())
-        }
-        other => Err(Failure::new(format!(
-            "{what} must be refused as invalid; it answered {other:?}"
-        ))),
-    };
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
+        .await?;
     for (what, d) in [
         (
             "an object set filtering on `retired()`",
@@ -372,48 +300,29 @@ async fn retired_outside_a_triggers_guard_is_refused_naming_it(
     ] {
         let d: Declaration = serde_json::from_value(d).expect("a declaration");
         let before = store.head().await.must("reading the head")?;
-        invalid_naming_retired(what, cat.declare(&own, d).await.map(|_| ()))?;
+        invalid_naming(what, cat.declare(own, d).await, &["retired"])?;
         head_unmoved(store.as_ref(), before, what).await?;
     }
-    invalid_naming_retired(
+    invalid_naming(
         "a find filtering on `retired()`",
-        cat.find(
-            &own,
-            &TypeName::from("job"),
-            Find {
-                filter: Some(Condition::from("retired()")),
-                ..Find::default()
-            },
-        )
-        .await
-        .map(|_| ()),
+        cat.find(own, &TypeName::from("job"), find_where("retired()"))
+            .await,
+        &["retired"],
     )
-}
-
-fn host(depth: u32, cause: Option<Position>) -> WriteContext {
-    WriteContext {
-        origin: WriteOrigin::Reactive,
-        depth,
-        cause,
-    }
 }
 
 async fn a_reaction_past_its_triggers_max_depth_is_refused_naming_it(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("job", vec![field("n", StorageKind::Number)]),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("job", vec![field("n", StorageKind::Number)]))
+        .await?;
     for d in [
         trigger("once", None, Some(1)),
         trigger("always", None, None),
     ] {
-        cat.declare(&own, d).await.must("declaring the triggers")?;
+        cat.declare(own, d).await.must("declaring the triggers")?;
     }
     ensure!(
         limits().max_reactive_depth > 1,
@@ -432,39 +341,26 @@ async fn a_reaction_past_its_triggers_max_depth_is_refused_naming_it(
     let write = |ctx: WriteContext, key: &'static str| {
         let (store, own) = (store.clone(), own.clone());
         async move {
-            store
-                .catalog(ctx)
-                .upsert(
-                    &own,
-                    &TypeName::from("job"),
-                    &key.into(),
-                    patch(json!({"n": 1})),
-                    WriteOpts::default(),
-                )
-                .await
+            let cat = store.catalog(ctx);
+            try_upsert(cat.as_ref(), &own, "job", key, json!({"n": 1})).await
         }
     };
     // The direct write fires both triggers at depth 0.
     let head = store.head().await.must("reading the head")?;
-    upsert(cat.as_ref(), &own, "job", "j0", json!({"n": 0})).await?;
+    l.upsert("job", "j0", json!({"n": 0})).await?;
     let once_0 = firing(head, "once").await?;
     // The reaction to it at depth 1 is within `once`'s ceiling, and fires
     // `once` again at depth 1.
     let head = store.head().await.must("reading the head")?;
-    write(host(1, Some(once_0)), "j1")
+    write(reactive(1, Some(once_0)), "j1")
         .await
         .must("a depth-1 reaction naming `once`'s firing")?;
     let once_1 = firing(head, "once").await?;
     let always_1 = firing(head, "always").await?;
     // A reaction to that firing at depth 2 passes `once`'s ceiling.
     let head = store.head().await.must("reading the head")?;
-    match write(host(2, Some(once_1)), "j2").await {
-        Err(
-            e @ Error::Refused {
-                reason: Refusal::TooDeep { max: 1 },
-                ..
-            },
-        ) => {
+    match write(reactive(2, Some(once_1)), "j2").await {
+        Err(e) if matches!(reason(&e), Some(Refusal::TooDeep { max: 1 })) => {
             let why = e.to_string();
             ensure!(
                 why.contains("once"),
@@ -484,10 +380,10 @@ async fn a_reaction_past_its_triggers_max_depth_is_refused_naming_it(
         "a reaction past its trigger's ceiling",
     )
     .await?;
-    write(host(2, Some(always_1)), "j3")
+    write(reactive(2, Some(always_1)), "j3")
         .await
         .must("a depth-2 reaction naming `always`'s firing")?;
-    write(host(2, None), "j4")
+    write(reactive(2, None), "j4")
         .await
         .must("a depth-2 reaction naming no cause")?;
     Ok(())
@@ -495,49 +391,72 @@ async fn a_reaction_past_its_triggers_max_depth_is_refused_naming_it(
 
 async fn a_trigger_max_depth_above_the_lakes_ceiling_is_refused(
     store: Arc<dyn LakeStore>,
+    given: Given,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("job", vec![field("n", StorageKind::Number)]),
-    )
-    .await?;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("job", vec![field("n", StorageKind::Number)]))
+        .await?;
     let ceiling = limits().max_reactive_depth;
     let head = store.head().await.must("reading the head")?;
-    match cat
-        .declare(&own, trigger("deep", None, Some(ceiling + 1)))
-        .await
-    {
-        Err(
-            e @ Error::Refused {
-                reason: Refusal::Invalid { .. },
-                ..
-            },
-        ) => {
-            let why = e.to_string();
-            ensure!(
-                why.contains("deep")
-                    && why.contains(&(ceiling + 1).to_string())
-                    && why.contains(&ceiling.to_string()),
-                "a max_depth above the ceiling must be refused naming the trigger and both \
-                 numbers; it said: {why}"
-            );
-        }
-        other => {
-            return Err(Failure::new(format!(
-                "a max_depth of {} above the lake's {ceiling} must be refused as invalid; it \
-                 answered {other:?}",
-                ceiling + 1
-            )));
-        }
+    let deep = || trigger("deep", None, Some(ceiling + 1));
+    let named = ["deep", &(ceiling + 1).to_string(), &ceiling.to_string()];
+    for (door, answer) in [
+        ("declare", cat.declare(own, deep()).await),
+        ("apply", cat.apply(own, vec![deep()]).await),
+        (
+            "propose",
+            cat.propose(
+                own,
+                ProposedWrite::Declare {
+                    declarations: vec![deep()],
+                },
+                "deeper".into(),
+            )
+            .await,
+        ),
+    ] {
+        let what = format!(
+            "`{door}`: a max_depth of {} above the lake's {ceiling}",
+            ceiling + 1
+        );
+        invalid_naming(&what, answer, &named)?;
     }
     head_unmoved(store.as_ref(), head, "a trigger above the ceiling").await?;
+    let pending = cat
+        .propose(
+            own,
+            ProposedWrite::Declare {
+                declarations: vec![trigger("pending", None, Some(ceiling))],
+            },
+            "at the ceiling".into(),
+        )
+        .await
+        .must("proposing a trigger with max_depth at the ceiling")?;
+    let Outcome::Proposed { proposal, .. } = pending else {
+        return Err(Failure::new(format!(
+            "a proposal answers `proposed`; it answered {pending:?}"
+        )));
+    };
     for (name, m) in [("at_ceiling", ceiling), ("never", 0)] {
-        cat.declare(&own, trigger(name, None, Some(m)))
+        cat.declare(own, trigger(name, None, Some(m)))
             .await
             .must(&format!("declaring a trigger with max_depth {m}"))?;
     }
-    Ok(())
+    let lower = Limits {
+        max_reactive_depth: ceiling - 1,
+        ..limits()
+    };
+    let store = (given.relimit)(store, Seams::default(), lower)
+        .await
+        .map_err(|e| Failure::new(format!("opening the lake again with a lower ceiling: {e}")))?;
+    let l = Lake::of(store.as_ref());
+    invalid_naming(
+        &format!(
+            "accepting `pending` (max_depth {ceiling}) under a ceiling of {}",
+            ceiling - 1
+        ),
+        l.cat.accept(&l.own, &proposal).await,
+        &["pending", &ceiling.to_string(), &(ceiling - 1).to_string()],
+    )
 }

@@ -4,14 +4,14 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::{Authority, FieldDecl, FieldType, StorageKind};
+use lakelands_api::ontology::{Authority, StorageKind};
 use lakelands_api::{Error, LakeStore, TypeName, WriteOpts};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, committed, field, head_unmoved, patch, source_record, type_decl, value,
-    windows_reach_head,
+    Lake, Must, committed, field, head_unmoved, patch, reference, refused_on, source_record,
+    type_decl, value, windows_reach_head,
 };
 
 check!(
@@ -25,16 +25,6 @@ check!(
     REFERENCE_WITHIN_A_WINDOW = a_reference_to_a_record_earlier_in_the_same_ingest_resolves,
     "016 and the log format §5: an ingest's records are written in order, so a record may refer to one delivered before it in the same window"
 );
-
-fn reference(name: &str, target: &str) -> FieldDecl {
-    FieldDecl {
-        ty: FieldType {
-            target: Some(target.into()),
-            ..FieldType::kind(StorageKind::Reference)
-        },
-        ..field(name, StorageKind::Text)
-    }
-}
 
 async fn partners_and_invoices(
     store: &dyn LakeStore,
@@ -68,8 +58,7 @@ async fn a_write_referencing_a_record_that_does_not_exist_is_refused(
         .must_fail("writing an invoice whose `partner` names no partner")?;
     head_unmoved(store.as_ref(), before, "writing a dangling reference").await?;
     ensure!(
-        matches!(&err, Error::Refused { field: Some(f), .. } if f.as_str() == "partner")
-            || matches!(err, Error::NotFound { .. }),
+        matches!(refused_on(&err), Some(("partner", _))) || matches!(err, Error::NotFound { .. }),
         "a reference to a partner that does not exist must be refused on `partner`; \
          it failed with {err:?}"
     );

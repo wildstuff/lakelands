@@ -18,6 +18,14 @@ fn value_type(name: &str, k: StorageKind) -> ValueTypeDecl {
     }
 }
 
+/// `value_type(name, k)` carrying the format `format`.
+fn formatted(name: &str, k: StorageKind, format: &str) -> ValueTypeDecl {
+    ValueTypeDecl {
+        format: Some(format.into()),
+        ..value_type(name, k)
+    }
+}
+
 fn typed(k: StorageKind, vt: &str) -> FieldType {
     FieldType {
         value_type: Some(vt.into()),
@@ -35,12 +43,13 @@ fn field(name: &str, ty: FieldType) -> FieldDecl {
     }
 }
 
+/// Whether `check` refuses `v` as too large to hold exactly.
+fn too_large(v: &serde_json::Value, ty: &FieldType, value_type: Option<&ValueTypeDecl>) -> bool {
+    matches!(check(v, ty, value_type), Err(ValueError::TooLarge(_)))
+}
+
 fn iban() -> ValueTypeDecl {
-    ValueTypeDecl {
-        format: Some("iban".into()),
-        scale: None,
-        ..value_type("iban", StorageKind::Text)
-    }
+    formatted("iban", StorageKind::Text, "iban")
 }
 
 #[test]
@@ -184,11 +193,7 @@ fn a_known_format_is_enforced() {
 
 #[test]
 fn a_format_on_a_non_text_value_type_refuses_what_is_not_a_string() {
-    let vt = ValueTypeDecl {
-        format: Some("email".into()),
-        scale: None,
-        ..value_type("odd", StorageKind::Number)
-    };
+    let vt = formatted("odd", StorageKind::Number, "email");
     let ty = typed(StorageKind::Number, "odd");
     assert!(matches!(
         check(&json!(42), &ty, Some(&vt)),
@@ -200,28 +205,20 @@ fn a_format_on_a_non_text_value_type_refuses_what_is_not_a_string() {
 fn integers_beyond_two_to_the_fifty_three_are_refused() {
     let n = kind(StorageKind::Number);
     assert!(check(&json!(9_007_199_254_740_991_i64), &n, None).is_ok());
-    assert!(matches!(
-        check(&json!(9_007_199_254_740_992_i64), &n, None),
-        Err(ValueError::TooLarge(_))
-    ));
-    assert!(matches!(
-        check(&json!(-9_007_199_254_740_992_i64), &n, None),
-        Err(ValueError::TooLarge(_))
-    ));
+    assert!(too_large(&json!(9_007_199_254_740_992_i64), &n, None));
+    assert!(too_large(&json!(-9_007_199_254_740_992_i64), &n, None));
     let j = kind(StorageKind::Json);
-    assert!(matches!(
-        check(&json!({"a": [1, 18_446_744_073_709_551_615_u64]}), &j, None),
-        Err(ValueError::TooLarge(_))
+    assert!(too_large(
+        &json!({"a": [1, 18_446_744_073_709_551_615_u64]}),
+        &j,
+        None
     ));
     let g = kind(StorageKind::Geo);
     assert!(check(&json!({"type": "Point", "coordinates": [1, 2]}), &g, None).is_ok());
-    assert!(matches!(
-        check(
-            &json!({"type": "Point", "coordinates": [9_007_199_254_740_992_i64, 2]}),
-            &g,
-            None
-        ),
-        Err(ValueError::TooLarge(_))
+    assert!(too_large(
+        &json!({"type": "Point", "coordinates": [9_007_199_254_740_992_i64, 2]}),
+        &g,
+        None
     ));
 }
 
@@ -229,10 +226,7 @@ fn integers_beyond_two_to_the_fifty_three_are_refused() {
 /// and again here, should one ever reach a write.
 #[test]
 fn an_unknown_format_name_is_refused_never_ignored() {
-    let vt = ValueTypeDecl {
-        format: Some("#,##0.00".into()),
-        ..value_type("money", StorageKind::Decimal)
-    };
+    let vt = formatted("money", StorageKind::Decimal, "#,##0.00");
     let ty = typed(StorageKind::Decimal, "money");
     assert!(matches!(
         check(&json!("12.50"), &ty, Some(&vt)),

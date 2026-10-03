@@ -389,28 +389,16 @@ impl std::fmt::Debug for Seams {
         f.debug_struct("Seams")
             .field(
                 "engines",
-                &self
-                    .engines
-                    .iter()
-                    .map(|e| e.name().to_owned())
-                    .collect::<Vec<_>>(),
+                &self.engines.iter().map(|e| e.name()).collect::<Vec<_>>(),
             )
             .field(
                 "backings",
-                &self
-                    .backings
-                    .iter()
-                    .map(|b| b.kind().to_owned())
-                    .collect::<Vec<_>>(),
+                &self.backings.iter().map(|b| b.kind()).collect::<Vec<_>>(),
             )
             .field("embed", &self.embed.as_ref().map(|e| e.model().to_owned()))
             .field(
                 "executors",
-                &self
-                    .executors
-                    .iter()
-                    .map(|e| e.name().to_owned())
-                    .collect::<Vec<_>>(),
+                &self.executors.iter().map(|e| e.name()).collect::<Vec<_>>(),
             )
             .field("vocabulary", &self.vocabulary.is_some())
             .finish()

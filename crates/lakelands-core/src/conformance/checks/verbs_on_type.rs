@@ -14,18 +14,25 @@ use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{StorageKind, VerbScope};
 use lakelands_api::principal::{Access, TypeGrants};
 use lakelands_api::seam::FeedFilter;
-use lakelands_api::write::{Declaration, ProposedWrite};
+use lakelands_api::write::{Declaration, ProposalFilter, ProposedWrite};
 use lakelands_api::{
-    Error, Grants, IdempotencyKey, LakeStore, Outcome, Position, Principal, PrincipalKind, ReadAt,
+    Grants, IdempotencyKey, LakeStore, Outcome, Position, Principal, PrincipalKind, ReadAt,
     Refusal, TypeName, Version, WriteOpts,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::backing::{EXECUTOR, executed};
 use crate::conformance::fixture::{
-    Lake, Must, field, head_unmoved, owner, patch, principal, type_decl,
+    Lake, Must, events_from, field, head_unmoved, invalid_naming, nobody, owner, patch, principal,
+    reason, reviewer, type_decl,
 };
+
+check!(
+    /// A verb's events name no type.
+    VERB_EVENTS_UNTYPED = a_feed_filtered_by_type_passes_none_of_a_verbs_events,
+    "004 and seams §ChangeFeed: a verb's events name no type, even for a verb on its type, so a feed filtered by that type passes none of `verb_called`, `write_proposed`, `write_accepted` and `output_recorded`, which a feed with no types passes; `proposals` filtered by the type lists the proposed call"
+);
 
 check!(
     /// A verb on its type runs under its type's grants and records its
@@ -82,11 +89,23 @@ fn type_writer(store: &dyn LakeStore, id: &str, ty: &str) -> Principal {
     principal(store, PrincipalKind::Agent, id, grants)
 }
 
+/// `who` calling `verb` on its type with `payload`, with no options.
+async fn on_type(
+    l: &Lake,
+    who: &Principal,
+    verb: &str,
+    payload: Value,
+) -> lakelands_api::Result<Outcome> {
+    let opts = WriteOpts::default();
+    l.cat
+        .call(who, &verb.into(), None, patch(payload), opts)
+        .await
+}
+
 /// `payment` and `partner`, and the external verbs on them: `name` on
 /// `payment`'s type at `risk`, and `register` on a `partner` record.
 async fn ledger(store: &dyn LakeStore, name: &str, risk: &str) -> Result<Lake, Failure> {
     let l = Lake::of(store);
-    let Lake { cat, own } = &l;
     l.declare(type_decl("payment", vec![field("ref", StorageKind::Text)]))
         .await?;
     l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))
@@ -98,23 +117,9 @@ async fn ledger(store: &dyn LakeStore, name: &str, risk: &str) -> Result<Lake, F
         json!({"declare": "verb", "name": "register", "on": "partner", "risk": "low",
                "effect": "external", "executor": EXECUTOR}),
     ] {
-        let d: Declaration = serde_json::from_value(verb)
-            .map_err(|e| Failure::new(format!("the check's verb does not read: {e}")))?;
-        cat.declare(own, d).await.must("declaring a verb")?;
+        l.declare_json(verb).await?;
     }
     Ok(l)
-}
-
-async fn events_from(
-    store: &dyn LakeStore,
-    from: Position,
-) -> Result<Vec<lakelands_api::event::Event>, Failure> {
-    Ok(store
-        .feed()
-        .poll(from, &FeedFilter::default(), 1_000)
-        .await
-        .must("reading the feed")?
-        .events)
 }
 
 /// The `verb_called` events of `verb` in `events`, with their keys.
@@ -152,15 +157,7 @@ async fn a_verb_on_its_type_runs_under_its_types_grants_and_records_its_output(
     );
     let before = store.head().await.must("reading the head")?;
     let runs = executed("create_payment");
-    let outcome = l
-        .cat
-        .call(
-            &clerk,
-            &"create_payment".into(),
-            None,
-            patch(json!({"amount": 12})),
-            WriteOpts::default(),
-        )
+    let outcome = on_type(&l, &clerk, "create_payment", json!({"amount": 12}))
         .await
         .must("the clerk calling `create_payment` on its type")?;
     let Outcome::Applied {
@@ -207,15 +204,7 @@ async fn a_verb_on_its_type_at_medium_risk_is_proposed_and_runs_when_accepted(
     let l = ledger(store.as_ref(), "open_ticket", "medium").await?;
     let clerk = type_writer(store.as_ref(), "clerk", "payment");
     let runs = executed("open_ticket");
-    let proposed = l
-        .cat
-        .call(
-            &clerk,
-            &"open_ticket".into(),
-            None,
-            patch(json!({"amount": 3})),
-            WriteOpts::default(),
-        )
+    let proposed = on_type(&l, &clerk, "open_ticket", json!({"amount": 3}))
         .await
         .must("the clerk calling `open_ticket` on its type")?;
     let Outcome::Proposed {
@@ -237,15 +226,7 @@ async fn a_verb_on_its_type_at_medium_risk_is_proposed_and_runs_when_accepted(
         events.first().map(|e| &e.body),
         executed("open_ticket") - runs
     );
-    let reviewer = principal(
-        store.as_ref(),
-        PrincipalKind::Human,
-        "reviewer",
-        Grants {
-            review: true,
-            ..Grants::default()
-        },
-    );
+    let reviewer = reviewer(store.as_ref(), false);
     l.cat
         .accept(&reviewer, proposal)
         .await
@@ -282,21 +263,8 @@ async fn a_verb_on_its_type_without_write_on_its_type_is_not_granted(
     let outsider = type_writer(store.as_ref(), "outsider", "partner");
     let before = store.head().await.must("reading the head")?;
     let runs = executed("settle_payment");
-    match l
-        .cat
-        .call(
-            &outsider,
-            &"settle_payment".into(),
-            None,
-            patch(json!({})),
-            WriteOpts::default(),
-        )
-        .await
-    {
-        Err(Error::Refused {
-            reason: Refusal::NotGranted,
-            ..
-        }) => {}
+    match on_type(&l, &outsider, "settle_payment", json!({})).await {
+        Err(e) if matches!(reason(&e), Some(Refusal::NotGranted)) => {}
         other => {
             return Err(Failure::new(format!(
                 "a principal that only reads `payment` is refused not_granted calling a verb on \
@@ -365,12 +333,7 @@ async fn a_key_that_does_not_fit_the_verbs_scope_is_refused_naming_the_verb(
     l.upsert("partner", "p1", json!({"name": "Acme"})).await?;
     // A principal with no grant at all: the key is checked before the
     // grants are, so the refusal is `invalid`, not `not_granted`.
-    let nobody = principal(
-        store.as_ref(),
-        PrincipalKind::Agent,
-        "nobody",
-        Grants::default(),
-    );
+    let nobody = nobody(store.as_ref());
     let at_version = WriteOpts {
         expected_version: Some(Version(1)),
         ..WriteOpts::default()
@@ -397,29 +360,13 @@ async fn a_key_that_does_not_fit_the_verbs_scope_is_refused_naming_the_verb(
     ] {
         let before = store.head().await.must("reading the head")?;
         let key = key.map(lakelands_api::RecordKey::from);
-        match l
-            .cat
-            .call(&nobody, &verb.into(), key.as_ref(), patch(json!({})), opts)
-            .await
-        {
-            Err(
-                e @ Error::Refused {
-                    reason: Refusal::Invalid { .. },
-                    ..
-                },
-            ) => {
-                let why = e.to_string();
-                ensure!(
-                    why.contains(verb),
-                    "{what} must be refused naming `{verb}`; it said: {why}"
-                );
-            }
-            other => {
-                return Err(Failure::new(format!(
-                    "{what} must be refused as invalid; it answered {other:?}"
-                )));
-            }
-        }
+        invalid_naming(
+            what,
+            l.cat
+                .call(&nobody, &verb.into(), key.as_ref(), patch(json!({})), opts)
+                .await,
+            &[verb],
+        )?;
         head_unmoved(store.as_ref(), before, what).await?;
     }
     Ok(())
@@ -449,26 +396,78 @@ async fn a_verb_on_its_type_with_a_write_effect_or_requires_is_refused(
         let d: Declaration = serde_json::from_value(verb)
             .map_err(|e| Failure::new(format!("the check's verb does not read: {e}")))?;
         let before = store.head().await.must("reading the head")?;
-        match l.cat.declare(&own, d).await {
-            Err(
-                e @ Error::Refused {
-                    reason: Refusal::Invalid { .. },
-                    ..
-                },
-            ) => {
-                let why = e.to_string();
-                ensure!(
-                    why.contains(&name),
-                    "{what} must be refused naming `{name}`; it said: {why}"
-                );
-            }
-            other => {
-                return Err(Failure::new(format!(
-                    "{what} must be refused as invalid; it answered {other:?}"
-                )));
-            }
-        }
+        invalid_naming(what, l.cat.declare(&own, d).await, &[&name])?;
         head_unmoved(store.as_ref(), before, what).await?;
     }
+    Ok(())
+}
+
+async fn a_feed_filtered_by_type_passes_none_of_a_verbs_events(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = ledger(store.as_ref(), "open_ticket", "medium").await?;
+    let from = store.head().await.must("reading the head")?.next();
+    let proposed = on_type(&l, &l.own, "open_ticket", json!({"amount": 3}))
+        .await
+        .must("calling `open_ticket` on its type")?;
+    let Outcome::Proposed { proposal, .. } = &proposed else {
+        return Err(Failure::new(format!(
+            "a medium verb on its type is proposed; it answered {proposed:?}"
+        )));
+    };
+    let filter = ProposalFilter {
+        ty: Some("payment".into()),
+        ..ProposalFilter::default()
+    };
+    let listed = l
+        .cat
+        .proposals(&l.own, filter)
+        .await
+        .must("listing `payment`'s proposals")?
+        .data;
+    ensure!(
+        listed.iter().any(|p| &p.id == proposal),
+        "proposals filtered by `payment` list the call of `open_ticket`, a verb on it; they \
+         listed {listed:?}"
+    );
+    l.cat
+        .accept(&reviewer(store.as_ref(), false), proposal)
+        .await
+        .must("accepting the call")?;
+    let kinds = |types: Vec<TypeName>| {
+        let store = store.clone();
+        async move {
+            let filter = FeedFilter {
+                types,
+                ..FeedFilter::default()
+            };
+            let batch = store.feed().poll(from, &filter, 100).await;
+            Ok::<_, Failure>(
+                batch
+                    .must("reading the feed")?
+                    .events
+                    .iter()
+                    .map(|e| e.body.kind())
+                    .collect::<Vec<_>>(),
+            )
+        }
+    };
+    let verbs = [
+        "write_proposed",
+        "write_accepted",
+        "verb_called",
+        "output_recorded",
+    ];
+    let all = kinds(Vec::new()).await?;
+    ensure!(
+        verbs.iter().all(|k| all.contains(k)),
+        "a feed with no types passes all four of the call's events {verbs:?}; it passed {all:?}"
+    );
+    let typed = kinds(vec!["payment".into()]).await?;
+    ensure!(
+        typed.iter().all(|k| !verbs.contains(k)),
+        "a verb's events name no type, so a feed filtered by `payment` passes none of \
+         {verbs:?}; it passed {typed:?}"
+    );
     Ok(())
 }

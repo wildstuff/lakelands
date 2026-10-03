@@ -57,7 +57,7 @@ impl Vectors {
                     v.len()
                 )));
             }
-            top.push(key, lakelands_core::engines::cosine(query, v));
+            top.push(key, lakelands_api::query::cosine(query, v));
         }
         Ok(top.into_ranked())
     }

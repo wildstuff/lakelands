@@ -14,12 +14,13 @@ use lakelands_api::engine::{
     CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
     Reclaimed, VectorIndex,
 };
-use lakelands_api::error::{Error, Refusal, Result};
+use lakelands_api::error::Result;
 use lakelands_api::event::{Digest, EventId, SegmentDigest};
 use lakelands_api::id::{LakeId, Position, RecordKey, TypeName};
 use lakelands_api::location::SqliteTuning;
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal};
+use lakelands_core::engines::{self, vector_bytes, vector_of};
 use rusqlite::{Connection, OpenFlags, params};
 
 use crate::lease::{Held, LeaseFile};
@@ -173,10 +174,12 @@ impl SqliteLake {
         }
     }
 
-    /// Refuses a lease that is not the one this handle holds, or whose
-    /// fencing token the lease file no longer records: the lock can be lost
-    /// without the process knowing, and the token is what says so.
+    /// Refuses a handle opened read-only, and a lease that is not the one
+    /// this handle holds, or whose fencing token the lease file no longer
+    /// records: the lock can be lost without the process knowing, and the
+    /// token is what says so.
     fn check_lease(&self, lease: &Lease) -> Result<()> {
+        self.writable()?;
         let (fence, holder) = self.lease_file.current()?;
         if lock(&self.held).as_ref().is_some_and(|h| h.lease == *lease) && fence == lease.fence {
             return Ok(());
@@ -294,13 +297,11 @@ impl LakeEngine for SqliteLake {
     }
 
     fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        self.writable()?;
         self.check_lease(lease)?;
         lock(&self.log).append(Some(lease.fence), events)
     }
 
     fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        self.writable()?;
         self.check_lease(lease)?;
         let mut held = lock(&self.held);
         let held = held
@@ -331,7 +332,6 @@ impl LakeEngine for SqliteLake {
     }
 
     fn seal_segment(&self, lease: &Lease) -> Result<Option<SegmentDigest>> {
-        self.writable()?;
         self.check_lease(lease)?;
         lock(&self.log).seal()
     }
@@ -346,18 +346,7 @@ impl LakeEngine for SqliteLake {
 
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>> {
         let folded = projection::folded(&*self.reader()?)?;
-        let at = match (as_of, folded) {
-            (None, folded) => folded,
-            (Some(p), Some(head)) if p <= head => Some(p),
-            (Some(_), head) => {
-                return Err(Error::Refused {
-                    field: None,
-                    reason: Refusal::OutOfRange {
-                        head: head.unwrap_or_default(),
-                    },
-                });
-            }
-        };
+        let at = engines::view_at(as_of, folded)?;
         Ok(Box::new(SqliteView { lake: self, at }))
     }
 
@@ -372,9 +361,7 @@ impl ProjectionStore for SqliteLake {
     fn begin(&self) -> Result<()> {
         let mut transaction = lock(&self.transaction);
         self.write(|conn| {
-            if !conn.is_autocommit() {
-                conn.execute_batch("ROLLBACK").map_err(sql)?;
-            }
+            abandon(conn)?;
             conn.execute_batch("BEGIN IMMEDIATE").map_err(sql)
         })?;
         *transaction = Some(Transaction::default());
@@ -387,21 +374,10 @@ impl ProjectionStore for SqliteLake {
             .take()
             .ok_or_else(|| invalid("there is no transaction to commit: call `begin` first"))?;
         self.write(|conn| {
-            let refuse = |message: String| {
+            let folded = projection::folded(conn)?;
+            if let Some(refused) = engines::commit_refusal(folded, t.latest, through) {
                 let _ = conn.execute_batch("ROLLBACK");
-                Err(invalid(message))
-            };
-            if let Some(folded) = projection::folded(conn)?.filter(|f| *f > through) {
-                return refuse(format!(
-                    "the projection reflects the log through position {folded}; a transaction \
-                     cannot commit through the earlier position {through}"
-                ));
-            }
-            if let Some(late) = t.latest.filter(|p| *p > through) {
-                return refuse(format!(
-                    "a state valid from position {late} cannot be committed through the earlier \
-                     position {through}"
-                ));
+                return Err(refused);
             }
             projection::set_folded(conn, through)?;
             projection::mark_sorted(conn, through)?;
@@ -411,12 +387,7 @@ impl ProjectionStore for SqliteLake {
 
     fn rollback(&self) {
         *lock(&self.transaction) = None;
-        let _ = self.write(|conn| {
-            if !conn.is_autocommit() {
-                conn.execute_batch("ROLLBACK").map_err(sql)?;
-            }
-            Ok(())
-        });
+        let _ = self.write(abandon);
     }
 
     fn folded_through(&self) -> Result<Option<Position>> {
@@ -484,9 +455,7 @@ impl ProjectionStore for SqliteLake {
     fn clear(&self) -> Result<()> {
         *lock(&self.transaction) = None;
         self.write(|conn| {
-            if !conn.is_autocommit() {
-                conn.execute_batch("ROLLBACK").map_err(sql)?;
-            }
+            abandon(conn)?;
             let statements: String = projection::TABLES
                 .iter()
                 .map(|t| format!("DELETE FROM {t};"))
@@ -510,9 +479,7 @@ impl ProjectionStore for SqliteLake {
         self.write(|conn| {
             // A transaction a failed commit left open is abandoned, as
             // `begin` and `clear` abandon it.
-            if !conn.is_autocommit() {
-                conn.execute_batch("ROLLBACK").map_err(sql)?;
-            }
+            abandon(conn)?;
             let before = self.size()?;
             if !truncate_journal(conn)? {
                 return Err(unavailable(format!(
@@ -540,6 +507,14 @@ impl ProjectionStore for SqliteLake {
     }
 }
 
+/// Roll back the transaction `conn` holds open, if any.
+fn abandon(conn: &Connection) -> Result<()> {
+    if !conn.is_autocommit() {
+        conn.execute_batch("ROLLBACK").map_err(sql)?;
+    }
+    Ok(())
+}
+
 /// Checkpoint the write-ahead journal into `projection.db` and truncate
 /// it; `false` when a reader holding a snapshot past the busy timeout kept
 /// it from being truncated. Either way no answer has changed.
@@ -550,24 +525,9 @@ fn truncate_journal(conn: &Connection) -> Result<bool> {
     Ok(busy == 0)
 }
 
-/// A vector as the index stores it: its components as little-endian
-/// `f32`s.
-fn vector_bytes(v: &[f32]) -> Vec<u8> {
-    v.iter().flat_map(|x| x.to_le_bytes()).collect()
-}
-
-fn vector_of(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|c| f32::from_le_bytes(*c))
-        .collect()
-}
-
 /// The vector index: each field's vectors in one table, searched by
 /// brute force with the one cosine every engine uses
-/// (`lakelands_core::engines::cosine`), so its answers are those of every
+/// (`lakelands_api::query::cosine`), so its answers are those of every
 /// other engine to the last bit. A query steps through every vector of
 /// the field and keeps only the best `k`
 /// (`lakelands_core::engines::TopK`), so its cost grows linearly with them
@@ -577,20 +537,12 @@ fn vector_of(bytes: &[u8]) -> Vec<f32> {
 impl VectorIndex for SqliteLake {
     fn put(&self, ty: &TypeName, key: &RecordKey, field: &str, vector: &[f32]) -> Result<()> {
         self.write(|conn| {
-            conn.prepare_cached(
+            projection::run(
+                conn,
                 "INSERT INTO vectors (ty, field, key, data) VALUES (?1, ?2, ?3, ?4) \
                  ON CONFLICT (ty, field, key) DO UPDATE SET data = ?4",
+                params![ty.as_str(), field, key.as_str(), vector_bytes(vector)],
             )
-            .and_then(|mut s| {
-                s.execute(params![
-                    ty.as_str(),
-                    field,
-                    key.as_str(),
-                    vector_bytes(vector)
-                ])
-            })
-            .map(|_| ())
-            .map_err(sql)
         })
     }
 
@@ -635,7 +587,7 @@ impl VectorIndex for SqliteLake {
             }
             top.push(
                 &RecordKey::from(key),
-                lakelands_core::engines::cosine(query, &v),
+                lakelands_api::query::cosine(query, &v),
             );
         }
         Ok(top.into_ranked())

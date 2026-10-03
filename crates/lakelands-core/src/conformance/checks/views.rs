@@ -14,10 +14,10 @@ use std::sync::Arc;
 
 use lakelands_api::key::UNGROUPED;
 use lakelands_api::ontology::{
-    Authority, Cardinality, Derived, MatchPair, Measure, RelationDecl, StorageKind, TypeDecl,
-    ViewDecl, ViewParam,
+    Authority, Cardinality, Derived, MatchPair, RelationDecl, StorageKind, TypeDecl, ViewParam,
+    ViewSource,
 };
-use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Start, Step, Walk};
+use lakelands_api::query::{Pattern, Projection, QueryResult, Step, Walk};
 use lakelands_api::read::Find;
 use lakelands_api::{Error, FieldName, LakeStore, Principal, Record, Refusal, TypeName, Value};
 use rust_decimal::Decimal;
@@ -25,8 +25,9 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all, all_found, dec, decimal, doors, field, get_at, partner_totals, source_record,
-    type_decl, upsert, value, windows_reach_head,
+    Lake, Must, all, all_found, count_view, dec, decimal, doors, field, field_access, get_at,
+    head_unmoved, measure, partner_totals, pattern, reason, source_record, step, type_decl, upsert,
+    value, view_of, windows_reach_head,
 };
 
 check!(
@@ -38,7 +39,7 @@ check!(
 check!(
     /// A view without `group_by` holds one record.
     UNGROUPED_HOLDS_ONE = an_ungrouped_view_holds_one_record_keyed_all_even_over_none,
-    "018, extended: a view without `group_by` holds exactly one record, keyed `all`, the totals over every source record its `where` keeps, even when it keeps none (a count and a sum of none are 0, a minimum null); `get` answers it by that key and no other, and a read's parameters measure into the same record"
+    "018, extended: a view without `group_by` holds exactly one record, keyed `all`, the totals over every source record its `where` keeps, even when it keeps none (a count and a sum of none are 0, a minimum null); `get` answers it by that key and no other, and a read's parameters and a merged source measure into the same record"
 );
 
 check!(
@@ -78,6 +79,24 @@ check!(
 );
 
 check!(
+    /// Nothing that could never act is declared on a view.
+    NO_TRIGGER_OR_SET_ON_A_VIEW = a_trigger_or_object_set_on_a_view_is_refused,
+    "018, extended: a view is never written, so `declare` and `apply` refuse a trigger on a view, which no write would fire, and an object set over one, which holds stored records, naming both; nothing is appended"
+);
+
+check!(
+    /// A relation on a view is derived.
+    VIEW_RELATIONS_DERIVED = a_relation_on_a_view_is_derived_or_refused,
+    "018, extended, and 035: a view's records are computed and never written, so `declare` and `apply` refuse a relation on a view carried by link records or by a `via` field, which could never hold an edge, naming the view and the relation; a relation derived from matching values is taken"
+);
+
+check!(
+    /// A view reads only what its sources have.
+    VIEW_READS_ITS_SOURCES = a_view_reading_a_field_its_source_lacks_is_refused,
+    "028 and 018: `declare` and `apply` refuse a view whose `where` names, or whose measures aggregate, a field its source or a merged source does not have, naming the view, the source and the field; a name outside an aggregate is an earlier measure or a grouping field, and is taken"
+);
+
+check!(
     /// A view is not searched.
     VIEW_NOT_SEARCHED = a_search_on_a_view_is_refused_naming_it,
     "018: a view's records are computed on read and no index holds them, so a lexical, vector or hybrid search on a view is refused as invalid, naming the view, never answered empty"
@@ -105,6 +124,12 @@ check!(
     /// Ingest keeps a view current.
     CURRENT_AFTER_INGEST = a_view_over_an_ingested_source_is_current_once_the_ingest_is_committed,
     "016 and the ontology: both write doors are folded by the same rules, so a view over ingested records is kept like any other"
+);
+
+check!(
+    /// Every door refuses a view alike.
+    REFUSED_ALIKE = every_door_that_writes_or_holds_a_record_refuses_a_view_alike,
+    "018, extended (lakelands#370): upsert, retire, link, unlink, ingest, propose, restrict and unrestrict each refuse a view as invalid naming it, as upsert does, before the grants; declaring a verb on a record of a view is refused naming both, while a verb on the view's type that reaches outside is taken"
 );
 
 /// The source type, its `partner` and `amount` written by `authority`.
@@ -257,7 +282,7 @@ async fn a_view_drops_a_group_whose_last_member_is_retired(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
+    let Lake { own, .. } = &l;
     l.declare(invoices(Authority::Authored)).await?;
     l.declare(partner_totals("partner_totals", StorageKind::Decimal))
         .await?;
@@ -267,9 +292,7 @@ async fn a_view_drops_a_group_whose_last_member_is_retired(
 
     let invoice = TypeName::from("invoice");
     for nr in ["i2", "i1"] {
-        cat.retire(own, &invoice, &nr.into(), Default::default())
-            .await
-            .must(&format!("retiring invoice `{nr}`"))?;
+        l.retire(invoice.as_str(), nr).await?;
     }
 
     let got = view_totals(store.as_ref(), own, "partner_totals").await?;
@@ -334,26 +357,20 @@ async fn a_view_record_is_keyed_by_its_group_by_fields(
     let mut source = invoices(Authority::Authored);
     source.fields.push(field("region", StorageKind::Text));
     l.declare(source).await?;
-    let mut view = type_decl(
+    let fields = vec![
+        field("partner", StorageKind::Text),
+        field("region", StorageKind::Text),
+        field("invoices", StorageKind::Number),
+    ];
+    let by = ["partner", "region"];
+    l.declare(view_of(
         "by_both",
-        vec![
-            field("partner", StorageKind::Text),
-            field("region", StorageKind::Text),
-            field("invoices", StorageKind::Number),
-        ],
-    );
-    view.key = vec![FieldName::from("partner"), FieldName::from("region")];
-    view.view = Some(Box::new(ViewDecl {
-        source: TypeName::from("invoice"),
-        r#where: None,
-        group_by: vec![FieldName::from("partner"), FieldName::from("region")],
-        measures: vec![Measure {
-            name: FieldName::from("invoices"),
-            expr: "count()".into(),
-        }],
-        params: Default::default(),
-    }));
-    l.declare(view).await?;
+        "invoice",
+        &by,
+        fields,
+        &[("invoices", "count()")],
+    ))
+    .await?;
     for (k, partner, region) in [
         ("1", "acme", "north"),
         ("2", "acme", "south:east"),
@@ -387,28 +404,17 @@ async fn a_view_record_is_keyed_by_its_group_by_fields(
     Ok(())
 }
 
-/// A pattern over `ty` from a start, with its steps and projection.
-fn pattern(ty: &str, key: Option<&str>, filter: Option<&str>, steps: Vec<Step>) -> Pattern {
-    Pattern {
-        start: Start {
-            ty: ty.into(),
-            key: key.map(Into::into),
-            filter: filter.map(Into::into),
-            search: None,
-            params: Default::default(),
-        },
-        project: if steps.is_empty() {
-            Projection::Graph
-        } else {
-            Projection::Rows { fields: vec![] }
-        },
-        steps,
-        to: None,
-        order_by: Vec::new(),
-        limit: None,
-        cursor: None,
-        at: Default::default(),
-    }
+/// A pattern over `ty` from a start, with its steps: a graph without
+/// steps, rows with them.
+fn from(ty: &str, key: Option<&str>, filter: Option<&str>, steps: Vec<Step>) -> Pattern {
+    let project = if steps.is_empty() {
+        Projection::Graph
+    } else {
+        Projection::Rows { fields: vec![] }
+    };
+    let mut p = pattern(ty, key, steps, project);
+    p.start.filter = filter.map(Into::into);
+    p
 }
 
 /// The `type:key` of every node a graph answers, or every `far` key a
@@ -481,7 +487,7 @@ async fn a_pattern_started_on_a_view_holds_the_records_find_returns(
         let got = nodes(
             store.as_ref(),
             own,
-            pattern("partner_totals", key, filter, vec![]),
+            from("partner_totals", key, filter, vec![]),
             "",
         )
         .await?;
@@ -496,7 +502,7 @@ async fn a_pattern_started_on_a_view_holds_the_records_find_returns(
     let none = nodes(
         store.as_ref(),
         own,
-        pattern("partner_totals", Some("p9"), None, vec![]),
+        from("partner_totals", Some("p9"), None, vec![]),
         "",
     )
     .await?;
@@ -534,54 +540,32 @@ async fn a_walk_over_a_derived_relation_reaches_a_views_records_both_ways(
     }
     write_invoice(store.as_ref(), own, "i1", "p1", "10.00").await?;
     write_invoice(store.as_ref(), own, "i2", "p2", "3.00").await?;
-    let step = |walk, filter: Option<&str>| Step {
-        relation: "totals".into(),
-        walk,
-        ty: None,
+    let totals = |walk, filter: Option<&str>| Step {
         filter: filter.map(Into::into),
-        depth: Depth::default(),
+        ..step("totals", walk)
     };
-    let to_totals = "partner_totals";
-    for (start, key, walk, filter, far, want) in [
-        (
-            "partner",
-            "p1",
-            Walk::Out,
-            None,
-            to_totals,
-            vec!["partner_totals:p1"],
-        ),
-        ("partner", "p3", Walk::Out, None, to_totals, vec![]),
+    // Out walks from `partner` to `partner_totals`, In the other way.
+    for (key, walk, filter, want) in [
+        ("p1", Walk::Out, None, vec!["partner_totals:p1"]),
+        ("p3", Walk::Out, None, vec![]),
         // A step's `where` reads the view's records it reached.
         (
-            "partner",
             "p1",
             Walk::Out,
             Some("total > 5"),
-            to_totals,
             vec!["partner_totals:p1"],
         ),
-        (
-            "partner",
-            "p2",
-            Walk::Out,
-            Some("total > 5"),
-            to_totals,
-            vec![],
-        ),
-        (
-            "partner_totals",
-            "p2",
-            Walk::In,
-            None,
-            "partner",
-            vec!["partner:p2"],
-        ),
+        ("p2", Walk::Out, Some("total > 5"), vec![]),
+        ("p2", Walk::In, None, vec!["partner:p2"]),
     ] {
+        let (start, far) = match walk {
+            Walk::In => ("partner_totals", "partner"),
+            _ => ("partner", "partner_totals"),
+        };
         let got = nodes(
             store.as_ref(),
             own,
-            pattern(start, Some(key), None, vec![step(walk, filter)]),
+            from(start, Some(key), None, vec![totals(walk, filter)]),
             far,
         )
         .await?;
@@ -624,12 +608,211 @@ async fn a_view_field_that_asks_to_be_searched_or_embedded_is_refused(
             .declare(own, lakelands_api::write::Declaration::Type(ty))
             .await;
         ensure!(
-            matches!(&r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
-                if message.contains(view.as_str()) && message.contains(name)),
+            matches!(reason(&r), Some(Refusal::Invalid { message }) if message.contains(view.as_str()) && message.contains(name)),
             "a view whose field `{name}` {what} must be refused as invalid, naming `{view}` \
              and `{name}`; declare answered {r:?}"
         );
     }
+    Ok(())
+}
+
+async fn a_trigger_or_object_set_on_a_view_is_refused(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use lakelands_api::expr::Condition;
+    use lakelands_api::ontology::TriggerDecl;
+    use lakelands_api::write::{Declaration, ObjectSetDecl};
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(invoices(Authority::Authored)).await?;
+    l.declare(partner_totals("pt", StorageKind::Decimal))
+        .await?;
+    let trigger = |on: &str| {
+        Declaration::Trigger(TriggerDecl {
+            max_depth: None,
+            name: "grew".into(),
+            on: on.into(),
+            when: Some(Condition::from("total > 0")),
+            description: None,
+        })
+    };
+    let set = Declaration::ObjectSet(ObjectSetDecl {
+        name: "busy".into(),
+        of: "pt".into(),
+        filter: Condition::from("total > 0"),
+        description: None,
+    });
+    let names_both =
+        |r: &lakelands_api::Result<lakelands_api::write::Outcome>, what: &str, on: &str| {
+            matches!(r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
+            if message.contains(what) && message.contains(on))
+        };
+    let before = store.head().await.must("reading the head")?;
+    let r = cat.declare(own, trigger("pt")).await;
+    ensure!(
+        names_both(&r, "grew", "pt"),
+        "a trigger on the view `pt` can never fire and must be refused as invalid, naming \
+         `grew` and `pt`; declare answered {r:?}"
+    );
+    let r = cat.declare(own, set.clone()).await;
+    ensure!(
+        names_both(&r, "busy", "pt"),
+        "an object set over the view `pt` must be refused as invalid, naming `busy` and \
+         `pt`; declare answered {r:?}"
+    );
+    // The view and its trigger in one set: refused as a whole.
+    let r = cat
+        .apply(
+            own,
+            vec![
+                Declaration::Type(partner_totals("pt2", StorageKind::Decimal)),
+                trigger("pt2"),
+            ],
+        )
+        .await;
+    ensure!(
+        names_both(&r, "grew", "pt2"),
+        "a trigger on a view declared in the same set must be refused, naming `grew` and \
+         `pt2`; apply answered {r:?}"
+    );
+    let r = cat.apply(own, vec![set]).await;
+    ensure!(
+        names_both(&r, "busy", "pt"),
+        "an object set over the view `pt` must be refused by apply too; it answered {r:?}"
+    );
+    head_unmoved(store.as_ref(), before, "every declaration on a view").await
+}
+
+async fn a_relation_on_a_view_is_derived_or_refused(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use lakelands_api::write::Declaration;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(invoices(Authority::Authored)).await?;
+    let with = |relation: RelationDecl| {
+        let mut view = partner_totals("pt", StorageKind::Decimal);
+        view.relations = vec![relation];
+        view
+    };
+    let linked = RelationDecl {
+        cardinality: Cardinality::ManyToMany,
+        ..RelationDecl::to("seen", "invoice")
+    };
+    let carried = RelationDecl {
+        via: Some("partner".into()),
+        ..RelationDecl::to("by", "invoice")
+    };
+    let names_both = |r: &lakelands_api::Result<lakelands_api::write::Outcome>, relation: &str| {
+        matches!(reason(r), Some(Refusal::Invalid { message })
+            if message.contains("pt") && message.contains(relation))
+    };
+    let before = store.head().await.must("reading the head")?;
+    for (relation, name) in [(linked.clone(), "seen"), (carried, "by")] {
+        let r = cat.declare(own, Declaration::Type(with(relation))).await;
+        ensure!(
+            names_both(&r, name),
+            "a relation `{name}` on the view `pt` that is not derived could never hold an edge \
+             and must be refused as invalid, naming `pt` and `{name}`; declare answered {r:?}"
+        );
+    }
+    let r = cat.apply(own, vec![Declaration::Type(with(linked))]).await;
+    ensure!(
+        names_both(&r, "seen"),
+        "apply must refuse the link relation `seen` on the view `pt` too; it answered {r:?}"
+    );
+    head_unmoved(
+        store.as_ref(),
+        before,
+        "every relation on a view not derived",
+    )
+    .await?;
+    // A relation derived from matching values is taken.
+    let derived = RelationDecl {
+        derived: Some(Derived {
+            pairs: vec![MatchPair {
+                from: "partner".into(),
+                to: "partner".into(),
+            }],
+        }),
+        ..RelationDecl::to("billed", "invoice")
+    };
+    l.declare(with(derived)).await?;
+    Ok(())
+}
+
+async fn a_view_reading_a_field_its_source_lacks_is_refused(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use lakelands_api::write::Declaration;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(invoices(Authority::Authored)).await?;
+    l.declare(type_decl(
+        "credit",
+        vec![
+            field("partner", StorageKind::Text),
+            field("amount", StorageKind::Decimal),
+        ],
+    ))
+    .await?;
+    let where_nope = {
+        let mut t = partner_totals("pt_where", StorageKind::Decimal);
+        t.view.as_mut().expect("a view").r#where = Some("nope > 0".into());
+        t
+    };
+    let measure_nope = {
+        let mut t = partner_totals("pt_measure", StorageKind::Decimal);
+        t.view.as_mut().expect("a view").measures[0] = measure("total", "sum(nope)");
+        t
+    };
+    let merged_nope = {
+        let mut t = partner_totals("pt_merged", StorageKind::Decimal);
+        t.fields.push(field("credited", StorageKind::Decimal));
+        t.view.as_mut().expect("a view").merge = vec![ViewSource {
+            source: "credit".into(),
+            r#where: None,
+            group_by: vec![FieldName::from("partner")],
+            measures: vec![measure("credited", "sum(nope)")],
+        }];
+        t
+    };
+    let before = store.head().await.must("reading the head")?;
+    for (view, source) in [
+        (where_nope, "invoice"),
+        (measure_nope, "invoice"),
+        (merged_nope, "credit"),
+    ] {
+        let name = view.name.clone();
+        for r in [
+            cat.declare(own, Declaration::Type(view.clone())).await,
+            cat.apply(own, vec![Declaration::Type(view)]).await,
+        ] {
+            ensure!(
+                matches!(reason(&r), Some(Refusal::Invalid { message })
+                    if message.contains(name.as_str()) && message.contains("nope")
+                        && message.contains(source)),
+                "the view `{name}` reads `nope`, which `{source}` does not have, and must be \
+                 refused as invalid, naming `{name}`, `{source}` and `nope`; it answered {r:?}"
+            );
+        }
+    }
+    head_unmoved(
+        store.as_ref(),
+        before,
+        "every view reading a field its source lacks",
+    )
+    .await?;
+    // A measure that reads an earlier one by name reads no source field.
+    let mut by_name = partner_totals("pt_by_name", StorageKind::Decimal);
+    by_name.fields.push(field("average", StorageKind::Decimal));
+    by_name
+        .view
+        .as_mut()
+        .expect("a view")
+        .measures
+        .push(measure("average", "total / invoices"));
+    l.declare(by_name).await?;
     Ok(())
 }
 
@@ -643,14 +826,8 @@ async fn a_search_on_a_view_is_refused_naming_it(store: Arc<dyn LakeStore>) -> R
     write_invoice(store.as_ref(), own, "i1", "p1", "10.00").await?;
     let near = || (FieldName::from("total"), vec![1.0, 0.0, 0.0]);
     for mode in [
-        SearchMode::Lexical {
-            text: "p1".into(),
-            fields: None,
-        },
-        SearchMode::Vector {
-            field: near().0,
-            vector: near().1,
-        },
+        SearchMode::lexical("p1"),
+        SearchMode::vector(near().0, near().1),
         SearchMode::Hybrid {
             text: "p1".into(),
             fields: None,
@@ -674,8 +851,7 @@ async fn a_search_on_a_view_is_refused_naming_it(store: Arc<dyn LakeStore>) -> R
             )
             .await;
         ensure!(
-            matches!(&r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
-                if message.contains("partner_totals") && message.contains("view")),
+            matches!(reason(&r), Some(Refusal::Invalid { message }) if message.contains("partner_totals") && message.contains("view")),
             "a search on the view `partner_totals` ({what}) must be refused as invalid, \
              naming it as a view; it answered {r:?}. An empty answer looks exactly like no \
              match"
@@ -686,25 +862,7 @@ async fn a_search_on_a_view_is_refused_naming_it(store: Arc<dyn LakeStore>) -> R
 
 /// A view over `source`, counting its records by partner.
 fn counted(name: &str, source: &str) -> TypeDecl {
-    let mut t = type_decl(
-        name,
-        vec![
-            field("partner", StorageKind::Text),
-            field("n", StorageKind::Number),
-        ],
-    );
-    t.key = vec![FieldName::from("partner")];
-    t.view = Some(Box::new(ViewDecl {
-        source: TypeName::from(source),
-        params: Vec::new(),
-        r#where: None,
-        group_by: vec![FieldName::from("partner")],
-        measures: vec![Measure {
-            name: FieldName::from("n"),
-            expr: "count()".into(),
-        }],
-    }));
-    t
+    count_view(name, source, "partner")
 }
 
 async fn a_view_closing_a_cycle_over_source_is_refused_naming_the_chain(
@@ -727,8 +885,7 @@ async fn a_view_closing_a_cycle_over_source_is_refused_naming_the_chain(
             .declare(own, Declaration::Type(counted("view_a", reads)))
             .await;
         ensure!(
-            matches!(&r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
-                if chain.iter().all(|v| message.contains(&format!("`{v}`")))),
+            matches!(reason(&r), Some(Refusal::Invalid { message }) if chain.iter().all(|v| message.contains(&format!("`{v}`")))),
             "`view_a` declared to read `{reads}` closes a cycle of {} view(s); it must be \
              refused as invalid, naming {chain:?}; declare answered {r:?}",
             chain.len()
@@ -740,8 +897,7 @@ async fn a_view_closing_a_cycle_over_source_is_refused_naming_the_chain(
     ];
     let r = cat.apply(own, set).await;
     ensure!(
-        matches!(&r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
-            if message.contains("`view_x`") && message.contains("`view_y`")),
+        matches!(reason(&r), Some(Refusal::Invalid { message }) if message.contains("`view_x`") && message.contains("`view_y`")),
         "a set whose new views `view_x` and `view_y` read each other must be refused as \
          invalid, naming both; apply answered {r:?}"
     );
@@ -783,8 +939,7 @@ async fn a_view_declares_exactly_the_fields_it_computes(
     ] {
         let r = cat.declare(own, Declaration::Type(t)).await;
         ensure!(
-            matches!(&r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
-                if message.contains(&format!("`{name}`")) && message.contains("`totals`")),
+            matches!(reason(&r), Some(Refusal::Invalid { message }) if message.contains(&format!("`{name}`")) && message.contains("`totals`")),
             "a view with {what} must be refused as invalid, naming `{name}` and the view; \
              declare answered {r:?}"
         );
@@ -797,60 +952,33 @@ async fn a_view_declares_exactly_the_fields_it_computes(
 async fn a_view_whose_measure_reads_another_is_described_to_its_readers(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    use lakelands_api::principal::TypeGrants;
-    use lakelands_api::{Access, Grants, PrincipalKind};
+    use lakelands_api::Access;
     let l = Lake::of(store.as_ref());
     let Lake { cat, .. } = &l;
     l.declare(invoices(Authority::Authored)).await?;
     let mut averaged = partner_totals("averaged", StorageKind::Decimal);
     averaged.fields.push(field("mean", StorageKind::Decimal));
     if let Some(v) = averaged.view.as_mut() {
-        v.measures.push(Measure {
-            name: FieldName::from("mean"),
-            expr: "total / invoices".into(),
-        });
+        v.measures.push(measure("mean", "total / invoices"));
     }
     l.declare(averaged).await?;
     // A measure with the name of the source field it sums: the name inside
     // the aggregate is the source's field, and reading it is still asked.
-    let mut summed = type_decl(
+    let fields = vec![
+        field("partner", StorageKind::Text),
+        field("amount", StorageKind::Decimal),
+    ];
+    let measures = [("amount", "sum(amount)")];
+    l.declare(view_of(
         "summed",
-        vec![
-            field("partner", StorageKind::Text),
-            field("amount", StorageKind::Decimal),
-        ],
-    );
-    summed.key = vec![FieldName::from("partner")];
-    summed.view = Some(Box::new(ViewDecl {
-        source: TypeName::from("invoice"),
-        params: Vec::new(),
-        r#where: None,
-        group_by: vec![FieldName::from("partner")],
-        measures: vec![Measure {
-            name: FieldName::from("amount"),
-            expr: "sum(amount)".into(),
-        }],
-    }));
-    l.declare(summed).await?;
+        "invoice",
+        &["partner"],
+        fields,
+        &measures,
+    ))
+    .await?;
     let reader = |id: &str, amount: Access| {
-        let mut types = BTreeMap::new();
-        types.insert(
-            TypeName::from("invoice"),
-            TypeGrants {
-                default: None,
-                fields: [(FieldName::from("amount"), amount)].into(),
-            },
-        );
-        crate::conformance::fixture::principal(
-            store.as_ref(),
-            PrincipalKind::Agent,
-            id,
-            Grants {
-                default: Access::Read,
-                types,
-                ..Grants::default()
-            },
-        )
+        field_access(store.as_ref(), id, "invoice", &[("amount", amount)])
     };
     for (who, sees) in [
         (reader("reader", Access::Read), true),
@@ -887,39 +1015,40 @@ async fn a_view_whose_measure_reads_another_is_described_to_its_readers(
 }
 
 /// A view over `invoice` without `group_by`, keeping what `filter` holds
-/// for; `limit` a parameter when asked for.
-fn ungrouped(name: &str, filter: Option<&str>, limit: bool) -> TypeDecl {
-    let fields = vec![
+/// for; `limit` a parameter, and the `credit`s merged in, when asked for.
+fn ungrouped(name: &str, filter: Option<&str>, limit: bool, credits: bool) -> TypeDecl {
+    let mut fields = vec![
         field("invoices", StorageKind::Number),
         field("total", StorageKind::Decimal),
         field("least", StorageKind::Decimal),
     ];
-    let measure = |name: &str, expr: &str| Measure {
-        name: name.into(),
-        expr: expr.into(),
-    };
-    TypeDecl {
-        key: Vec::new(),
-        view: Some(Box::new(ViewDecl {
-            source: "invoice".into(),
-            params: if limit {
-                vec![ViewParam {
-                    name: "limit".into(),
-                    kind: StorageKind::Decimal,
-                }]
-            } else {
-                Vec::new()
-            },
-            r#where: filter.map(Into::into),
-            group_by: Vec::new(),
-            measures: vec![
-                measure("invoices", "count()"),
-                measure("total", "sum(amount)"),
-                measure("least", "min(amount)"),
-            ],
-        })),
-        ..type_decl(name, fields)
+    let measures = [
+        ("invoices", "count()"),
+        ("total", "sum(amount)"),
+        ("least", "min(amount)"),
+    ];
+    if credits {
+        fields.push(field("credited", StorageKind::Decimal));
     }
+    let mut t = view_of(name, "invoice", &[], fields, &measures);
+    if let Some(v) = t.view.as_mut() {
+        v.r#where = filter.map(Into::into);
+        if limit {
+            v.params = vec![ViewParam {
+                name: "limit".into(),
+                kind: StorageKind::Decimal,
+            }];
+        }
+        if credits {
+            v.merge = vec![ViewSource {
+                source: "credit".into(),
+                r#where: None,
+                group_by: Vec::new(),
+                measures: vec![measure("credited", "sum(amount)")],
+            }];
+        }
+    }
+    t
 }
 
 async fn an_ungrouped_view_holds_one_record_keyed_all_even_over_none(
@@ -928,6 +1057,11 @@ async fn an_ungrouped_view_holds_one_record_keyed_all_even_over_none(
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     l.declare(invoices(Authority::Authored)).await?;
+    l.declare(type_decl(
+        "credit",
+        vec![field("amount", StorageKind::Decimal)],
+    ))
+    .await?;
     for (nr, partner, amount) in [
         ("i1", "p1", "10.00"),
         ("i2", "p1", "2.50"),
@@ -935,26 +1069,35 @@ async fn an_ungrouped_view_holds_one_record_keyed_all_even_over_none(
     ] {
         write_invoice(store.as_ref(), own, nr, partner, amount).await?;
     }
-    l.declare(ungrouped("everything", None, false)).await?;
-    l.declare(ungrouped("nothing", Some("amount > 1000"), false))
+    l.upsert("credit", "c1", json!({"amount": "1.00"})).await?;
+    l.declare(ungrouped("everything", None, false, true))
         .await?;
-    l.declare(ungrouped("up_to", Some("amount <= param('limit')"), true))
+    l.declare(ungrouped("nothing", Some("amount > 1000"), false, false))
         .await?;
-    // A record as (key, invoices, total, least).
+    l.declare(ungrouped(
+        "up_to",
+        Some("amount <= param('limit')"),
+        true,
+        false,
+    ))
+    .await?;
+    // A record as (key, invoices, total, least, credited).
     let show = |r: &Record| {
         (
             r.key.to_string(),
             value(r, "invoices").and_then(Value::as_f64),
             decimal(value(r, "total")),
             decimal(value(r, "least")),
+            decimal(value(r, "credited")),
         )
     };
-    let one = |n: f64, total: &str, least: Option<&str>| {
+    let one = |n: f64, total: &str, least: Option<&str>, credited: Option<&str>| {
         vec![(
             UNGROUPED.to_owned(),
             Some(n),
             Some(dec(total)),
             least.map(dec),
+            credited.map(dec),
         )]
     };
     let limit = Find {
@@ -965,19 +1108,19 @@ async fn an_ungrouped_view_holds_one_record_keyed_all_even_over_none(
         (
             "everything",
             Find::default(),
-            one(3.0, "19.75", Some("2.50")),
-            "over three invoices",
+            one(3.0, "19.75", Some("2.50"), Some("1.00")),
+            "over three invoices, the credit merged in,",
         ),
         (
             "nothing",
             Find::default(),
-            one(0.0, "0", None),
+            one(0.0, "0", None, None),
             "whose `where` keeps no invoice (a count and a sum of none are 0, a minimum null)",
         ),
         (
             "up_to",
             limit,
-            one(2.0, "9.75", Some("2.50")),
+            one(2.0, "9.75", Some("2.50"), None),
             "read with `limit` 8.00 (i2 and i3)",
         ),
     ] {
@@ -989,7 +1132,7 @@ async fn an_ungrouped_view_holds_one_record_keyed_all_even_over_none(
     }
     let got = show(&l.read("everything", UNGROUPED).await?);
     ensure!(
-        vec![got.clone()] == one(3.0, "19.75", Some("2.50")),
+        vec![got.clone()] == one(3.0, "19.75", Some("2.50"), Some("1.00")),
         "`get` of `{UNGROUPED}` answers the record `find` holds; it answered {got:?}"
     );
     let other = cat.get(own, &"everything".into(), get_at("p1", None)).await;
@@ -998,5 +1141,118 @@ async fn an_ungrouped_view_holds_one_record_keyed_all_even_over_none(
         "a view without `group_by` holds no record but `{UNGROUPED}`, so `get` of `p1` is \
          not_found; it answered {other:?}"
     );
+    Ok(())
+}
+
+async fn every_door_that_writes_or_holds_a_record_refuses_a_view_alike(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(invoices(Authority::Authored)).await?;
+    l.declare(partner_totals("pt", StorageKind::Decimal))
+        .await?;
+    write_invoice(store.as_ref(), own, "i1", "p1", "10.00").await?;
+    let (pt, p1) = (TypeName::from("pt"), lakelands_api::RecordKey::from("p1"));
+    let opts = lakelands_api::write::WriteOpts::default;
+    let fields = || crate::conformance::fixture::patch(json!({"total": "1"}));
+    let proposed = |write| cat.propose(own, write, "why".into());
+    let head = store.head().await.must("reading the head")?;
+    let mut red = Vec::new();
+    let mut must = |what: &str, view: &str, got: lakelands_api::Result<()>| match &got {
+        Err(
+            e @ Error::Refused {
+                reason: Refusal::Invalid { .. },
+                ..
+            },
+        ) if e.to_string().contains(&format!("`{view}`")) => {}
+        _ => red.push(format!("{what} answered {got:?}")),
+    };
+    let upsert = cat.upsert(own, &pt, &p1, fields(), opts()).await;
+    must("upsert", "pt", upsert.map(drop));
+    must(
+        "retire",
+        "pt",
+        cat.retire(own, &pt, &p1, opts()).await.map(drop),
+    );
+    // Before the grants: a principal with none is told it is a view.
+    let nobody = lakelands_api::Principal {
+        grants: Default::default(),
+        ..own.clone()
+    };
+    let bare = cat.retire(&nobody, &pt, &p1, opts()).await;
+    must("retire with no grant", "pt", bare.map(drop));
+    let r = "r".into();
+    let link = cat.link(own, &pt, &p1, &r, &p1, fields(), opts()).await;
+    must("link", "pt", link.map(drop));
+    must(
+        "unlink",
+        "pt",
+        cat.unlink(own, &pt, &p1, &r, &p1, opts()).await.map(drop),
+    );
+    let ingested = crate::conformance::fixture::ingest(
+        cat.as_ref(),
+        own,
+        "feed",
+        vec![source_record("pt", "p1", json!({"total": "1"}))],
+    )
+    .await;
+    must("ingest", "pt", ingested.map(drop));
+    use lakelands_api::write::ProposedWrite::{Retire, Upsert};
+    let up = proposed(Upsert {
+        ty: pt.clone(),
+        key: p1.clone(),
+        patch: fields(),
+        opts: opts(),
+    });
+    must("propose upsert", "pt", up.await.map(drop));
+    let down = proposed(Retire {
+        ty: pt.clone(),
+        key: p1.clone(),
+        opts: opts(),
+    });
+    must("propose retire", "pt", down.await.map(drop));
+    must(
+        "restrict",
+        "pt",
+        store.restrict(&pt, &p1, "hold".into()).await.map(drop),
+    );
+    must(
+        "unrestrict",
+        "pt",
+        store.unrestrict(&pt, &p1).await.map(drop),
+    );
+    let on_record = l
+        .cat
+        .declare(
+            own,
+            serde_json::from_value(json!({"declare": "verb", "name": "nudge", "on": "pt",
+                                          "risk": "low", "effect": "external",
+                                          "executor": "x"}))
+            .expect("a verb declaration"),
+        )
+        .await;
+    match &on_record {
+        Err(
+            e @ Error::Refused {
+                reason: Refusal::Invalid { .. },
+                ..
+            },
+        ) if e.to_string().contains("`nudge`") && e.to_string().contains("`pt`") => {}
+        _ => red.push(format!(
+            "declaring `nudge` on a record of `pt` answered {on_record:?}"
+        )),
+    }
+    ensure!(
+        red.is_empty(),
+        "every door that writes or holds a record refuses a view as invalid naming it: {}",
+        red.join("; ")
+    );
+    head_unmoved(store.as_ref(), head, "every refusal of a view").await?;
+    l.declare_json(
+        json!({"declare": "verb", "name": "announce", "on": "pt", "scope": "type",
+                          "risk": "low", "effect": "external", "executor": "x"}),
+    )
+    .await?;
     Ok(())
 }

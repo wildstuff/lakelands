@@ -5,19 +5,18 @@
 use std::sync::Arc;
 
 use lakelands_api::event::{Event, EventBody};
-use lakelands_api::ontology::StorageKind;
+use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::seam::FeedFilter;
-use lakelands_api::write::Declaration;
-use lakelands_api::{LakeStore, Position, TypeName};
+use lakelands_api::{LakeStore, Position, RecordKey, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, doors, field, log_events, owner, type_decl, upsert};
+use crate::conformance::fixture::{Lake, Must, log_events, type_of};
 
 check!(
     /// A key filter answers one record's events.
     BY_KEY = a_feed_filtered_by_key_answers_that_records_events_only,
-    "004 and lakelands#146: a feed filtered by types and keys answers exactly the events about those records, in log order, each once: its upserts, a verb called on it, a trigger it fired, its object-set changes, a restrict, an unrestrict and its retire; with types empty a key matches in any type and verb_called passes too; kinds narrow it further; no event that names no record passes"
+    "004 and lakelands#146: a feed filtered by types and keys answers exactly the events about those records, in log order, each once: its upserts, a trigger it fired, its object-set changes, a restrict, an unrestrict and its retire; with types empty a key matches in any type and verb_called passes too; kinds narrow it further; no event that names no record passes"
 );
 
 check!(
@@ -52,16 +51,9 @@ check!(
 
 async fn invoices(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
-    l.declare(type_decl(
-        "invoice",
-        vec![
-            field("status", StorageKind::Text),
-            field("note", StorageKind::Text),
-        ],
-    ))
-    .await?;
-    l.declare(type_decl("memo", vec![field("text", StorageKind::Text)]))
+    l.declare(type_of("invoice", &[("status", Text), ("note", Text)]))
         .await?;
+    l.declare(type_of("memo", &[("text", Text)])).await?;
     Ok(l)
 }
 
@@ -146,11 +138,7 @@ async fn the_feed_answers_the_log_from_a_position_by_kind_and_type(
         everything.head
     );
 
-    let invoices_only = FeedFilter {
-        kinds: vec!["record_upserted".into()],
-        types: vec![TypeName::from("invoice")],
-        keys: Vec::new(),
-    };
+    let invoices_only = filter(&["record_upserted"], &["invoice"], &[]);
     let first = feed
         .poll(from, &invoices_only, 1)
         .await
@@ -217,14 +205,10 @@ async fn a_trigger_fires_on_every_write_whose_guard_holds(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = invoices(store.as_ref()).await?;
-    let Lake { cat, own } = &l;
-    let trigger: Declaration = serde_json::from_value(json!({
+    l.declare_json(json!({
         "declare": "trigger", "name": "paid", "on": "invoice", "when": "status = 'paid'"
     }))
-    .map_err(|e| Failure::new(format!("the check's trigger does not read: {e}")))?;
-    cat.declare(own, trigger)
-        .await
-        .must("declaring the trigger `paid`")?;
+    .await?;
 
     for (status, note, fires) in [
         ("open", "one", false),
@@ -254,14 +238,10 @@ async fn an_object_set_change_is_written_only_when_membership_changes(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = invoices(store.as_ref()).await?;
-    let Lake { cat, own } = &l;
-    let set: Declaration = serde_json::from_value(json!({
+    l.declare_json(json!({
         "declare": "object_set", "name": "open_ones", "of": "invoice", "where": "status = 'open'"
     }))
-    .map_err(|e| Failure::new(format!("the check's object set does not read: {e}")))?;
-    cat.declare(own, set)
-        .await
-        .must("declaring the object set `open_ones`")?;
+    .await?;
 
     for (fields, want) in [
         (json!({"status": "open"}), Some(true)),
@@ -299,11 +279,7 @@ async fn polling_from_next_in_small_pages_sees_every_matching_event_once_in_orde
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = invoices(store.as_ref()).await?;
-    let invoices_only = FeedFilter {
-        kinds: vec!["record_upserted".into()],
-        types: vec!["invoice".into()],
-        keys: Vec::new(),
-    };
+    let invoices_only = filter(&["record_upserted"], &["invoice"], &[]);
     let mut next = store.head().await.must("reading the head")?.next();
     let mut seen: Vec<Position> = Vec::new();
     let mut written: Vec<Position> = Vec::new();
@@ -370,6 +346,15 @@ const ABOUT_A_RECORD: [&str; 8] = [
     "verb_called",
 ];
 
+/// A feed filter of these kinds, types and keys, each empty for all.
+fn filter(kinds: &[&str], types: &[&str], keys: &[&str]) -> FeedFilter {
+    FeedFilter {
+        kinds: kinds.iter().map(|k| (*k).to_owned()).collect(),
+        types: types.iter().map(|t| TypeName::from(*t)).collect(),
+        keys: keys.iter().map(|k| RecordKey::from(*k)).collect(),
+    }
+}
+
 async fn polled(store: &dyn LakeStore, filter: FeedFilter) -> Result<Vec<Event>, Failure> {
     Ok(store
         .feed()
@@ -399,14 +384,8 @@ async fn a_feed_filtered_by_key_answers_that_records_events_only(
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     for ty in ["invoice", "credit"] {
-        l.declare(type_decl(
-            ty,
-            vec![
-                field("status", StorageKind::Text),
-                field("amount", StorageKind::Number),
-            ],
-        ))
-        .await?;
+        l.declare(type_of(ty, &[("status", Text), ("amount", Number)]))
+            .await?;
     }
     for d in [
         json!({"declare": "trigger", "name": "paid", "on": "invoice", "when": "status = 'paid'"}),
@@ -414,11 +393,7 @@ async fn a_feed_filtered_by_key_answers_that_records_events_only(
         json!({"declare": "verb", "name": "approve", "on": "invoice", "risk": "low",
                "effect": "write", "set": [{"field": "status", "value": "'approved'"}]}),
     ] {
-        let d: Declaration = serde_json::from_value(d)
-            .map_err(|e| Failure::new(format!("the check's declaration does not read: {e}")))?;
-        cat.declare(own, d)
-            .await
-            .must("declaring the check's reactions")?;
+        l.declare_json(d).await?;
     }
     for (ty, key) in [
         ("invoice", "INV-1"),
@@ -452,29 +427,13 @@ async fn a_feed_filtered_by_key_answers_that_records_events_only(
         .await
         .must("lifting the hold")?;
     for key in ["INV-2", "INV-1"] {
-        cat.retire(
-            own,
-            &invoice,
-            &key.into(),
-            lakelands_api::WriteOpts::default(),
-        )
-        .await
-        .must(&format!("retiring {key}"))?;
+        l.retire(invoice.as_str(), key).await?;
     }
 
     let log = log_events(store.as_ref()).await?;
-    let keys = || vec![inv1.clone()];
 
     // Types and keys: one record's history.
-    let got = polled(
-        store.as_ref(),
-        FeedFilter {
-            types: vec![invoice.clone()],
-            keys: keys(),
-            ..FeedFilter::default()
-        },
-    )
-    .await?;
+    let got = polled(store.as_ref(), filter(&[], &["invoice"], &["INV-1"])).await?;
     let want: Vec<Event> = log
         .iter()
         .filter(|e| about(e, &["invoice"], "INV-1"))
@@ -503,14 +462,7 @@ async fn a_feed_filtered_by_key_answers_that_records_events_only(
     }
 
     // Keys alone: the key in any type, and the verb called on it.
-    let got = polled(
-        store.as_ref(),
-        FeedFilter {
-            keys: keys(),
-            ..FeedFilter::default()
-        },
-    )
-    .await?;
+    let got = polled(store.as_ref(), filter(&[], &[], &["INV-1"])).await?;
     let want: Vec<Event> = log
         .iter()
         .filter(|e| about(e, &[], "INV-1"))
@@ -536,11 +488,7 @@ async fn a_feed_filtered_by_key_answers_that_records_events_only(
     // Kinds narrow a key filter further.
     let got = polled(
         store.as_ref(),
-        FeedFilter {
-            kinds: vec!["record_upserted".into()],
-            types: vec![invoice.clone()],
-            keys: keys(),
-        },
+        filter(&["record_upserted"], &["invoice"], &["INV-1"]),
     )
     .await?;
     let want: Vec<Event> = log
@@ -558,41 +506,18 @@ async fn a_feed_filtered_by_key_answers_that_records_events_only(
 }
 
 async fn a_key_filter_does_not_follow_a_rekey(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
-    super::rekey::lake(store.as_ref(), super::rekey::IBANS).await?;
+    let l = super::rekey::lake(store.as_ref(), super::rekey::IBANS).await?;
     let at = super::rekey::apply(store.as_ref()).await?;
-    upsert(
-        doors(store.as_ref()).as_ref(),
-        &owner(store.as_ref()),
-        "account",
-        "DE1",
-        json!({"holder": "after the re-key"}),
-    )
-    .await?;
-    let account = TypeName::from("account");
-    let old = polled(
-        store.as_ref(),
-        FeedFilter {
-            types: vec![account.clone()],
-            keys: vec!["1".into()],
-            ..FeedFilter::default()
-        },
-    )
-    .await?;
+    l.upsert("account", "DE1", json!({"holder": "after the re-key"}))
+        .await?;
+    let old = polled(store.as_ref(), filter(&[], &["account"], &["1"])).await?;
     ensure!(
         !old.is_empty() && old.iter().all(|e| e.position < at),
         "account 1's old key answers its events before the re-key at {at} and none after; \
          the feed answered positions {:?}",
         positions(&old)
     );
-    let new = polled(
-        store.as_ref(),
-        FeedFilter {
-            types: vec![account],
-            keys: vec!["DE1".into()],
-            ..FeedFilter::default()
-        },
-    )
-    .await?;
+    let new = polled(store.as_ref(), filter(&[], &["account"], &["DE1"])).await?;
     ensure!(
         !new.is_empty() && new.iter().all(|e| e.position > at),
         "account 1's new key DE1 answers what came after the re-key at {at}; the feed \

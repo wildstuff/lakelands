@@ -28,24 +28,22 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use lakelands_api::ontology::{
-    Authority, EmbedDecl, FieldDecl, FieldType, StorageKind, ValueTypeDecl,
-};
-use lakelands_api::query::{Depth, Pattern, Projection, Search, SearchMode, Step, Walk};
-use lakelands_api::write::{CompactReport, Declaration, ProposalFilter, ProposedWrite};
+use lakelands_api::ontology::{FieldDecl, StorageKind, ValueTypeDecl};
+use lakelands_api::query::{Projection, Search, SearchMode, Walk};
+use lakelands_api::write::{CompactReport, ProposalFilter, ProposedWrite};
 use lakelands_api::{
-    Catalog, Find, Found, IdempotencyKey, LakeStore, Outcome, Position, Principal, ReadAt,
-    RecordKey, TypeName, WriteOpts,
+    Catalog, Find, Found, IdempotencyKey, LakeStore, Outcome, Position, Principal, RecordKey,
+    TypeName, WriteOpts,
 };
 use serde::Serialize;
 use serde_json::json;
 
 use super::rekey;
 use crate::conformance::Failure;
-use crate::conformance::backing::{EMBED_MODEL, KIND, made, plug, unplug};
+use crate::conformance::backing::{EMBED_MODEL, made, plug, unplug};
 use crate::conformance::fixture::{
-    Caller, Lake, Must, declare, doors, field, join_all, log_events, owner, partner_totals, patch,
-    read, type_decl, upsert,
+    Caller, Lake, Must, embedding, field, get_at, join_all, log_events, partner_totals, patch,
+    pattern, read_at, step, type_decl, upsert,
 };
 use crate::export;
 
@@ -115,62 +113,28 @@ async fn keyed(cat: &dyn Catalog, who: &Principal) -> Result<Outcome, Failure> {
 
 /// `lookup`, a function of the suite's backing echoing its input `code`
 /// under the check's own `token`, and `place`, whose `name` it computes.
-async fn places(l: &Lake, token: &str) -> Result<(), Failure> {
-    let (cat, own) = (l.cat.as_ref(), &l.own);
-    let function: Declaration = serde_json::from_value(json!({
-        "declare": "function", "name": "lookup", "backing": KIND,
-        "inputs": [{"name": "code", "type": {"kind": "text"}}],
-        "config": {"token": token, "echo": "code"}
-    }))
-    .map_err(|e| Failure::new(format!("the check's function does not read: {e}")))?;
-    cat.declare(own, function)
-        .await
-        .must("declaring `lookup`, backed by the suite's backing")?;
-    let name = FieldDecl {
-        authority: Authority::Derived,
-        function: Some("lookup".into()),
-        depends_on: vec!["code".into()],
-        ..field("name", StorageKind::Text)
-    };
-    declare(
-        cat,
-        own,
-        type_decl("place", vec![field("code", StorageKind::Text), name]),
-    )
-    .await?;
+async fn places(store: &dyn LakeStore, token: &str) -> Result<(), Failure> {
+    let l = super::backings::places(store, json!({"token": token, "echo": "code"})).await?;
     for (key, code) in [("q1", "harbour"), ("q2", "quay"), ("q1", "lock")] {
-        upsert(cat, own, "place", key, json!({"code": code})).await?;
+        l.upsert("place", key, json!({"code": code})).await?;
     }
     Ok(())
 }
 
 /// `note`, whose `vec` the suite's embedding backend makes from `title`.
 async fn notes(l: &Lake) -> Result<(), Failure> {
-    let (cat, own) = (l.cat.as_ref(), &l.own);
-    let vec = FieldDecl {
-        ty: FieldType {
-            dimensions: Some(2),
-            ..FieldType::kind(StorageKind::Vector)
-        },
-        authority: Authority::Derived,
-        embed: Some(EmbedDecl {
-            from: vec!["title".into()],
-            model: EMBED_MODEL.into(),
-        }),
-        ..field("vec", StorageKind::Text)
-    };
-    declare(
-        cat,
-        own,
-        type_decl("note", vec![field("title", StorageKind::Text), vec]),
-    )
+    let vec = embedding("vec", 2, &["title"], EMBED_MODEL);
+    l.declare(type_decl(
+        "note",
+        vec![field("title", StorageKind::Text), vec],
+    ))
     .await?;
     for (key, title) in [
         ("n1", "compact notes"),
         ("n2", "a lake"),
         ("n1", "compacted"),
     ] {
-        upsert(cat, own, "note", key, json!({"title": title})).await?;
+        l.upsert("note", key, json!({"title": title})).await?;
     }
     Ok(())
 }
@@ -185,7 +149,7 @@ async fn churned(store: &dyn LakeStore, embedded: bool, token: &str) -> Result<L
     l.declare(invoice_type()).await?;
     l.declare(partner_totals("totals", StorageKind::Number))
         .await?;
-    places(&l, token).await?;
+    places(store, token).await?;
     if embedded {
         notes(&l).await?;
     }
@@ -201,9 +165,7 @@ async fn churned(store: &dyn LakeStore, embedded: bool, token: &str) -> Result<L
         }
     }
     keyed(cat.as_ref(), own).await?;
-    cat.retire(own, &"invoice".into(), &"i1".into(), WriteOpts::default())
-        .await
-        .must("retiring invoice i1")?;
+    l.retire("invoice", "i1").await?;
     store
         .restrict(&"invoice".into(), &"i2".into(), "a retention hold".into())
         .await
@@ -261,10 +223,7 @@ async fn answers(
     let Lake { cat, own } = &l;
     let mut out = Vec::new();
     for p in 0..=through.0 {
-        let at = ReadAt {
-            as_of: Some(Position(p)),
-            valid_at: None,
-        };
+        let at = read_at(Some(Position(p)));
         for ty in TYPES {
             let mut find = Find {
                 with_meta: true,
@@ -290,10 +249,7 @@ async fn answers(
         }
         let search = Search {
             ty: TypeName::from("invoice"),
-            mode: SearchMode::Lexical {
-                text: "lake note".into(),
-                fields: None,
-            },
+            mode: SearchMode::lexical("lake note"),
             k: 20,
             cursor: None,
             filter: None,
@@ -306,10 +262,7 @@ async fn answers(
         ));
         let vector = Search {
             ty: TypeName::from("note"),
-            mode: SearchMode::Vector {
-                field: "vec".into(),
-                vector: vec![1.0, 0.0],
-            },
+            mode: SearchMode::vector("vec", vec![1.0, 0.0]),
             k: 20,
             cursor: None,
             filter: None,
@@ -321,18 +274,12 @@ async fn answers(
             said(cat.search(own, vector).await),
         ));
         for key in ["1", "DE1"] {
-            let mut walk = Pattern::traverse(
-                TypeName::from("account"),
-                RecordKey::from(key),
-                vec![Step {
-                    relation: "owner".into(),
-                    walk: Walk::Out,
-                    ty: None,
-                    filter: None,
-                    depth: Depth { min: 1, max: 1 },
-                }],
+            let mut walk = pattern(
+                "account",
+                Some(key),
+                vec![step("owner", Walk::Out)],
+                Projection::Graph,
             );
-            walk.project = Projection::Graph;
             walk.at = at;
             out.push((
                 format!("a walk from account `{key}` at {p}"),
@@ -391,7 +338,7 @@ fn unmoved(report: &CompactReport, head: Position) -> Result<(), Failure> {
 async fn a_compacted_lake_answers_every_read_as_before(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    churned(store.as_ref(), true, "compact_answers").await?;
+    let l = churned(store.as_ref(), true, "compact_answers").await?;
     let head = store.head().await.must("reading the head")?;
     let before = answers(store.as_ref(), head).await?;
     // What is compared holds what the churn made: a backed value and
@@ -421,8 +368,7 @@ async fn a_compacted_lake_answers_every_read_as_before(
     same(&before, &after, "after a compact")?;
     // The retry is recognised from what the projection keeps of applied
     // ids: it answers what the write answered, and appends nothing.
-    let cat = doors(store.as_ref());
-    let retried = keyed(cat.as_ref(), &owner(store.as_ref())).await?;
+    let retried = keyed(l.cat.as_ref(), &l.own).await?;
     let now = store.head().await.must("reading the head")?;
     ensure!(
         now == head,
@@ -436,19 +382,11 @@ async fn a_compacted_lake_answers_every_read_as_before(
     // before, folding the outputs again from the log: neither calls the
     // backing.
     let token = "compact_answers";
-    let own = owner(store.as_ref());
     let calls = made(token);
     unplug(token);
     let probed = async {
-        upsert(
-            cat.as_ref(),
-            &own,
-            "place",
-            "q3",
-            json!({"code": "harbour"}),
-        )
-        .await?;
-        let q3 = read(cat.as_ref(), &own, "place", "q3").await?;
+        l.upsert("place", "q3", json!({"code": "harbour"})).await?;
+        let q3 = l.read("place", "q3").await?;
         store.rebuild().await.must("rebuilding the projection")?;
         same(
             &before,
@@ -501,26 +439,16 @@ fn tree(dir: &Path) -> Result<Vec<(String, Vec<u8>)>, Failure> {
     Ok(out)
 }
 
-/// The check's scratch directory, cleared first and removed at the end.
-struct Scratch(PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
 async fn compact_appends_nothing_and_exports_the_same_bytes(
     store: Arc<dyn LakeStore>,
     scratch: PathBuf,
 ) -> Result<(), Failure> {
-    let _ = fs::remove_dir_all(&scratch);
-    let scratch = Scratch(scratch);
+    let scratch = super::export::Scratch::new(scratch);
     churned(store.as_ref(), false, "compact_appends").await?;
     let head = store.head().await.must("reading the head")?;
     let log = log_of(store.as_ref()).await?;
     let verified = store.verify(None, None).await.must("verifying the lake")?;
-    let (first, second) = (scratch.0.join("before"), scratch.0.join("after"));
+    let (first, second) = (scratch.dir("before"), scratch.dir("after"));
     let manifest = export::write(store.as_ref(), &first)
         .await
         .must("exporting before the compact")?;
@@ -576,17 +504,7 @@ async fn a_lake_compacts_again_and_writes_on(store: Arc<dyn LakeStore>) -> Resul
         )?;
     }
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
-    let was = cat
-        .get(
-            own,
-            &"invoice".into(),
-            crate::conformance::fixture::get_at("i0", None),
-        )
-        .await
-        .must("reading invoice i0")?
-        .data
-        .version;
+    let was = l.read("invoice", "i0").await?.version;
     let o = l.upsert("invoice", "i0", json!({"amount": 1000})).await?;
     let Outcome::Applied {
         version: Some(v), ..
@@ -701,11 +619,7 @@ async fn writes_made_while_a_compact_runs_each_land_once_before_or_after_it(
     }
     for (key, n, at) in &written {
         let r = cat
-            .get(
-                own,
-                &"item".into(),
-                crate::conformance::fixture::get_at(key, Some(*at)),
-            )
+            .get(own, &"item".into(), get_at(key, Some(*at)))
             .await
             .must(&format!("reading item `{key}` at {at}"))?;
         ensure!(

@@ -5,15 +5,16 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::{Authority, FieldDecl, StorageKind};
-use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Order, OrderBy};
-use lakelands_api::{Error, Find, LakeStore, Refusal, Timestamp};
+use lakelands_api::ontology::StorageKind;
+use lakelands_api::query::Projection;
+use lakelands_api::read::{AggFunc, Aggregate, OrderBy};
+use lakelands_api::{Find, LakeStore, Refusal, Timestamp};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all_found, declare, doors, field, field_writer, owner, source_record, type_decl,
-    windows_reach_head,
+    Lake, Must, agg, field, field_writer, find_where, no_such_field, order, pattern, refused_on,
+    source_record, sourced, type_decl, windows_reach_head,
 };
 
 check!(
@@ -37,7 +38,7 @@ check!(
 check!(
     /// A read may not probe a field its principal may not read.
     PROBING_REFUSED = probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggregate,
-    "024: filtering, ordering or aggregating over a field the principal may not read is refused, naming the field"
+    "024 and 006: filtering, ordering or aggregating over a field the principal sees masked, through `find` or through a pattern's rows and its aggregate, is refused as not granted, naming the field; over one it may not see at all, it is answered as for a field the type does not declare"
 );
 
 check!(
@@ -47,7 +48,7 @@ check!(
 );
 
 async fn lines(store: &dyn LakeStore) -> Result<Lake, Failure> {
-    let cat = doors(store);
+    let l = Lake::of(store);
     let ty = type_decl(
         "line",
         vec![
@@ -58,17 +59,14 @@ async fn lines(store: &dyn LakeStore) -> Result<Lake, Failure> {
             field("flag", StorageKind::Boolean),
         ],
     );
-    declare(cat.as_ref(), &owner(store), ty).await?;
-    Ok(Lake::of(store))
+    l.declare(ty).await?;
+    Ok(l)
 }
 
 async fn keys_where(store: &dyn LakeStore, filter: &str) -> Result<Vec<String>, Failure> {
-    let cat = doors(store);
-    let find = Find {
-        filter: Some(filter.into()),
-        ..Find::default()
-    };
-    let rows = all_found(cat.as_ref(), &owner(store), "line", find).await?;
+    let rows = Lake::of(store)
+        .all_found("line", find_where(filter))
+        .await?;
     let mut keys: Vec<String> = rows.into_iter().map(|r| r.key.0).collect();
     keys.sort();
     Ok(keys)
@@ -166,75 +164,92 @@ async fn probing_an_unreadable_field_is_refused_whether_by_filter_order_or_aggre
     l.upsert("line", "a", json!({"qty": 1, "note": "secret"}))
         .await?;
 
-    // Reads everything but `note`, which it may not see at all.
-    let mut reader = field_writer(store.as_ref(), "reader", "line", &[]);
-    reader
-        .grants
-        .types
-        .get_mut(&lakelands_api::TypeName::from("line"))
-        .expect("field_writer grants the type")
-        .fields
-        .insert("note".into(), lakelands_api::Access::None);
     let line = "line".into();
+    for access in [lakelands_api::Access::None, lakelands_api::Access::Masked] {
+        // Reads everything but `note`, which it sees masked or not at all.
+        let mut reader = field_writer(store.as_ref(), "reader", "line", &[]);
+        reader
+            .grants
+            .types
+            .get_mut(&lakelands_api::TypeName::from("line"))
+            .expect("field_writer grants the type")
+            .fields
+            .insert("note".into(), access);
 
-    let probes: [(&str, Find); 3] = [
-        (
-            "a filter",
-            Find {
-                filter: Some("note = 'secret'".into()),
-                ..Find::default()
-            },
-        ),
-        (
-            "an order",
-            Find {
-                order_by: vec![Order {
-                    field: "note".into(),
-                    by: OrderBy::Value,
-                    dir: Default::default(),
-                }],
-                ..Find::default()
-            },
-        ),
-        (
-            "an aggregate",
-            Find {
-                aggregate: Some(Aggregate {
-                    measures: vec![AggMeasure {
-                        name: "n".into(),
-                        func: AggFunc::Count,
-                        field: None,
-                    }],
-                    group_by: vec!["note".into()],
-                }),
-                ..Find::default()
-            },
-        ),
-    ];
-    for (how, find) in probes {
-        let err = cat
-            .find(&reader, &line, find)
-            .await
-            .must_fail(&format!("probing the unreadable `note` with {how}"))?;
-        ensure!(
-            matches!(
-                &err,
-                Error::Refused { field: Some(f), reason: Refusal::NotGranted } if f.as_str() == "note"
+        let probes: [(&str, Find); 3] = [
+            ("a filter", find_where("note = 'secret'")),
+            (
+                "an order",
+                Find {
+                    order_by: vec![order("note", OrderBy::Value, Default::default())],
+                    ..Find::default()
+                },
             ),
-            "probing `note` with {how} must be refused as not granted, naming `note`; \
-             it failed with {err:?}"
+            (
+                "an aggregate",
+                Find {
+                    aggregate: Some(Aggregate {
+                        measures: vec![agg("n", AggFunc::Count, None)],
+                        group_by: vec!["note".into()],
+                    }),
+                    ..Find::default()
+                },
+            ),
+        ];
+        // A pattern's rows ordered by `line.note`, and summed over it.
+        let mut ordered = pattern(
+            "line",
+            None,
+            Vec::new(),
+            Projection::Rows { fields: vec![] },
         );
+        ordered.order_by = vec![order("line.note", OrderBy::Value, Default::default())];
+        let summed = Aggregate {
+            measures: vec![agg("s", AggFunc::Sum, Some("line.note"))],
+            group_by: Vec::new(),
+        };
+        let summed = pattern("line", None, Vec::new(), Projection::Aggregate(summed));
+        let answers = [
+            (
+                "a pattern's rows ordered by it",
+                cat.query(&reader, ordered).await.map(drop),
+            ),
+            (
+                "a pattern's sum of it",
+                cat.query(&reader, summed).await.map(drop),
+            ),
+        ];
+        for (how, r) in answers {
+            let answered = match access {
+                lakelands_api::Access::None => no_such_field(&r, "note"),
+                _ => matches!(refused_on(&r), Some(("note", Refusal::NotGranted))),
+            };
+            ensure!(
+                answered,
+                "probing `note` ({access:?}) with {how} is refused as `find` refuses it, never \
+                 answered as if complete; it answered {r:?}"
+            );
+        }
+        for (how, find) in probes {
+            let err = cat
+                .find(&reader, &line, find)
+                .await
+                .must_fail(&format!("probing the unreadable `note` with {how}"))?;
+            let answered = match access {
+                lakelands_api::Access::None => no_such_field(&err, "note"),
+                _ => matches!(refused_on(&err), Some(("note", Refusal::NotGranted))),
+            };
+            ensure!(
+                answered,
+                "probing `note` ({access:?}) with {how} must be refused naming `note`: as not \
+             granted where it is masked, as for an undeclared field where it is hidden; it \
+             failed with {err:?}"
+            );
+        }
+        cat.find(&reader, &line, find_where("qty = 1"))
+            .await
+            .must("filtering on the readable `qty`")?;
     }
-    cat.find(
-        &reader,
-        &line,
-        Find {
-            filter: Some("qty = 1".into()),
-            ..Find::default()
-        },
-    )
-    .await
-    .must("filtering on the readable `qty`")?;
     Ok(())
 }
 
@@ -242,13 +257,7 @@ async fn a_filter_and_an_order_can_read_when_a_source_saw_a_value(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let ty = type_decl(
-        "reading",
-        vec![FieldDecl {
-            authority: Authority::Source,
-            ..field("level", StorageKind::Number)
-        }],
-    );
+    let ty = type_decl("reading", vec![sourced("level", StorageKind::Number)]);
     l.declare(ty).await?;
     let seen = |day: u32| Timestamp::from_date(2026, 3, day);
     let mut records = Vec::new();
@@ -265,11 +274,11 @@ async fn a_filter_and_an_order_can_read_when_a_source_saw_a_value(
 
     let find = Find {
         filter: Some("seen_at(level) < '2026-03-16'".into()),
-        order_by: vec![Order {
-            field: "level".into(),
-            by: OrderBy::SeenAt,
-            dir: lakelands_api::read::Direction::Desc,
-        }],
+        order_by: vec![order(
+            "level",
+            OrderBy::SeenAt,
+            lakelands_api::read::Direction::Desc,
+        )],
         ..Find::default()
     };
     let rows = l.all_found("reading", find).await?;

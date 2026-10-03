@@ -10,13 +10,14 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::{Authority, Measure, StorageKind, ViewDecl};
-use lakelands_api::{FieldName, Find, LakeStore, Position, Principal, ReadAt, Record, TypeName};
+use lakelands_api::ontology::StorageKind;
+use lakelands_api::{LakeStore, Position, Principal, ReadAt, Record, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all_found, declare, doors, field, get_at, owner, type_decl, upsert,
+    Lake, Must, all_found, derived, doors, field, find_at, find_where, get_at, owner, pattern,
+    reference, step, type_decl, type_of, vector, view_of,
 };
 
 check!(
@@ -41,22 +42,14 @@ async fn snapshot(
     let cat = doors(store);
     let mut out = Vec::new();
     for ty in ["invoice", "partner_totals"] {
-        let find = Find {
-            with_meta: true,
-            ..Find::default()
-        };
-        out.push((ty.to_owned(), all_found(cat.as_ref(), who, ty, find).await?));
+        out.push((
+            ty.to_owned(),
+            all_found(cat.as_ref(), who, ty, find_at(None)).await?,
+        ));
     }
     for at in positions {
-        let find = Find {
-            with_meta: true,
-            at: ReadAt {
-                as_of: Some(*at),
-                valid_at: None,
-            },
-            ..Find::default()
-        };
         let label = format!("invoice as of {at}");
+        let find = find_at(Some(*at));
         out.push((label, all_found(cat.as_ref(), who, "invoice", find).await?));
         let got = cat
             .get(who, &TypeName::from("invoice"), get_at("i1", Some(*at)))
@@ -71,12 +64,9 @@ async fn a_rebuilt_projection_answers_every_read_as_the_live_one_did(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
+    let Lake { own, .. } = &l;
 
-    let mut gross = field("gross", StorageKind::Decimal);
-    gross.authority = Authority::Derived;
-    gross.derived = Some("amount * 1.19".into());
-    gross.depends_on = vec![FieldName::from("amount")];
+    let gross = derived("gross", StorageKind::Decimal, "amount * 1.19", &["amount"]);
     let invoice = type_decl(
         "invoice",
         vec![
@@ -86,24 +76,12 @@ async fn a_rebuilt_projection_answers_every_read_as_the_live_one_did(
         ],
     );
     l.declare(invoice).await?;
-    let mut view = type_decl(
-        "partner_totals",
-        vec![
-            field("partner", StorageKind::Text),
-            field("total", StorageKind::Decimal),
-        ],
-    );
-    view.key = vec![FieldName::from("partner")];
-    view.view = Some(Box::new(ViewDecl {
-        source: TypeName::from("invoice"),
-        r#where: None,
-        group_by: vec![FieldName::from("partner")],
-        measures: vec![Measure {
-            name: FieldName::from("total"),
-            expr: "sum(amount)".into(),
-        }],
-        params: Default::default(),
-    }));
+    let fields = vec![
+        field("partner", StorageKind::Text),
+        field("total", StorageKind::Decimal),
+    ];
+    let measures = [("total", "sum(amount)")];
+    let view = view_of("partner_totals", "invoice", &["partner"], fields, &measures);
 
     let mut positions = Vec::new();
     for (nr, partner, amount) in [("i1", "p1", "10.00"), ("i2", "p1", "5.50")] {
@@ -122,15 +100,7 @@ async fn a_rebuilt_projection_answers_every_read_as_the_live_one_did(
     ] {
         positions.push(l.upsert("invoice", nr, fields).await?.position());
     }
-    let retired = cat
-        .retire(
-            own,
-            &TypeName::from("invoice"),
-            &"i2".into(),
-            Default::default(),
-        )
-        .await
-        .must("retiring `i2`")?;
+    let retired = l.retire("invoice", "i2").await?;
     positions.push(retired.position());
 
     // A type migration that converts every record, and a re-key that moves
@@ -168,12 +138,9 @@ async fn migrations(store: &dyn LakeStore) -> Result<Vec<Position>, Failure> {
     use lakelands_api::write::Migration;
     let l = Lake::of(store);
     let Lake { cat, own } = &l;
-    let memo = type_decl(
+    let memo = type_of(
         "memo",
-        vec![
-            field("title", StorageKind::Text),
-            field("pages", StorageKind::Number),
-        ],
+        &[("title", StorageKind::Text), ("pages", StorageKind::Number)],
     );
     l.declare(memo.clone()).await?;
     for (k, pages) in [("a", 3), ("b", 12)] {
@@ -222,16 +189,11 @@ async fn migrated_snapshot(
             &["memo", "account", "payment"]
         };
         for ty in types {
-            let find = Find {
-                with_meta: true,
-                at: ReadAt {
-                    as_of: Some(*at),
-                    valid_at: None,
-                },
-                ..Find::default()
-            };
             let label = format!("{ty} as of {at}");
-            out.push((label, all_found(cat.as_ref(), who, ty, find).await?));
+            out.push((
+                label,
+                all_found(cat.as_ref(), who, ty, find_at(Some(*at))).await?,
+            ));
         }
     }
     Ok(out)
@@ -267,26 +229,13 @@ check!(
 async fn after_a_rebuild_every_index_answers_as_before(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    use lakelands_api::ontology::{FieldType, RelationDecl};
-    use lakelands_api::query::{Projection, Search, SearchMode, Step, Walk};
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    use lakelands_api::ontology::RelationDecl;
+    use lakelands_api::query::{Projection, Search, SearchMode, Walk};
+    let l = Lake::of(store.as_ref());
     let mut text = field("text", StorageKind::Text);
     text.searchable = true;
-    let embedding = lakelands_api::ontology::FieldDecl {
-        ty: FieldType {
-            dimensions: Some(2),
-            ..FieldType::kind(StorageKind::Vector)
-        },
-        ..field("embedding", StorageKind::Text)
-    };
-    let parent = lakelands_api::ontology::FieldDecl {
-        ty: FieldType {
-            target: Some("note".into()),
-            ..FieldType::kind(StorageKind::Reference)
-        },
-        ..field("parent", StorageKind::Text)
-    };
+    let embedding = vector("embedding", 2);
+    let parent = reference("parent", "note");
     let mut ty = type_decl("note", vec![text, embedding, parent]);
     ty.language = Some("en".into());
     ty.relations = vec![RelationDecl {
@@ -295,18 +244,14 @@ async fn after_a_rebuild_every_index_answers_as_before(
         via: Some("parent".into()),
         ..Default::default()
     }];
-    declare(cat.as_ref(), &own, ty).await?;
-    upsert(
-        cat.as_ref(),
-        &own,
+    l.declare(ty).await?;
+    l.upsert(
         "note",
         "root",
         json!({"text": "harbour plans", "embedding": [1.0, 0.0]}),
     )
     .await?;
-    upsert(
-        cat.as_ref(),
-        &own,
+    l.upsert(
         "note",
         "leaf",
         json!({"text": "crane rental", "embedding": [0.0, 1.0], "parent": "root"}),
@@ -320,10 +265,7 @@ async fn after_a_rebuild_every_index_answers_as_before(
             cat.as_ref(),
             &own,
             "note",
-            Find {
-                filter: Some("text = 'crane rental'".into()),
-                ..Find::default()
-            },
+            find_where("text = 'crane rental'"),
         )
         .await?;
         let search = |mode: SearchMode| Search {
@@ -336,39 +278,24 @@ async fn after_a_rebuild_every_index_answers_as_before(
             at: ReadAt::default(),
         };
         let lexical = cat
-            .search(
-                &own,
-                search(SearchMode::Lexical {
-                    text: "harbour".into(),
-                    fields: None,
-                }),
-            )
+            .search(&own, search(SearchMode::lexical("harbour")))
             .await
             .must("searching \"harbour\"")?
             .data;
         let vector = cat
             .search(
                 &own,
-                search(SearchMode::Vector {
-                    field: "embedding".into(),
-                    vector: vec![0.0, 1.0],
-                }),
+                search(SearchMode::vector("embedding", vec![0.0, 1.0])),
             )
             .await
             .must("searching near (0, 1)")?
             .data;
-        let mut walk = lakelands_api::query::Pattern::traverse(
-            TypeName::from("note"),
-            "leaf".into(),
-            vec![Step {
-                relation: "under".into(),
-                walk: Walk::Out,
-                ty: None,
-                filter: None,
-                depth: Default::default(),
-            }],
+        let walk = pattern(
+            "note",
+            Some("leaf"),
+            vec![step("under", Walk::Out)],
+            Projection::Graph,
         );
-        walk.project = Projection::Graph;
         let graph = cat
             .query(&own, walk)
             .await
@@ -424,15 +351,8 @@ check!(
 async fn a_number_and_a_vector_read_back_in_their_one_json_form_before_and_after_a_rebuild(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    use lakelands_api::ontology::{FieldDecl, FieldType};
     let l = Lake::of(store.as_ref());
-    let v = FieldDecl {
-        ty: FieldType {
-            dimensions: Some(3),
-            ..FieldType::kind(StorageKind::Vector)
-        },
-        ..field("v", StorageKind::Text)
-    };
+    let v = vector("v", 3);
     l.declare(type_decl(
         "sample",
         vec![
@@ -449,15 +369,7 @@ async fn a_number_and_a_vector_read_back_in_their_one_json_form_before_and_after
     )
     .await?;
     let text = |store: Arc<dyn LakeStore>| async move {
-        let r = doors(store.as_ref())
-            .get(
-                &owner(store.as_ref()),
-                &TypeName::from("sample"),
-                get_at("s", None),
-            )
-            .await
-            .must("reading `s`")?
-            .data;
+        let r = Lake::of(store.as_ref()).read("sample", "s").await?;
         Ok::<_, Failure>(serde_json::to_string(&r.fields).unwrap_or_default())
     };
     let canonical = r#"{"m":1.5,"n":2,"v":[0,1,0.25]}"#;

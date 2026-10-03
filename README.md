@@ -75,19 +75,33 @@ of changes without polling, `propose`, `proposals`, `accept` and
 `add_field` and `migrate` for the schema. Served over MCP (stdio and
 HTTP) and REST from one catalog. Agents never write a query language.
 
-> **Status: `0.7.1`.** Lakelands `0.7.1` is the `lakelands` CLI, its MCP
+> **Status: `0.8.0`.** Lakelands `0.8.0` is the `lakelands` CLI, its MCP
 > server (stdio and streamable HTTP) and its REST door over the SQLite,
 > in-memory and PostgreSQL engines, all three passing the whole
-> conformance suite (297 checks through the doors and 54 through the
-> engine seam), with 44 decision records and the event log at format
-> version 8, installable from the release. Its budgets: the store facade
-> and engine traits hold 53 of 110 methods, the core crates' product
-> code 35 211 of 36 000 lines and their specification 38 618 of 40 000,
-> and 2 of 20 `cfg(feature)` sites. Beside what `0.7.0` held, a view
-> without `group_by` holds its one record, keyed `all`: the totals over
-> every source record its `where` keeps, even when it keeps none, where
-> before it answered no record at all. Views over more than one source
-> come after.
+> conformance suite (325 checks through the doors and 56 through the
+> engine seam), with 45 decision records and the event log at format
+> version 9, installable from the release. Its budgets: the store facade
+> and engine traits hold 54 of 110 methods, the core crates' product
+> code 35 219 of 36 000 lines and their specification 39 840 of 40 000,
+> and 2 of 20 `cfg(feature)` sites. Beside what `0.7.1` held, a view
+> merges several sources grouped on a shared dimension (log format 9).
+> A principal may write a field it may not read (`write_only`), a field
+> it may not know of is answered as one never declared, and a field
+> built from a hidden one is hidden as it is. Every write door refuses
+> in a stated order, pinned by the suite: the context first, the grants
+> before anything that reads the data they protect, a trigger's ceiling
+> read with the cause under the writer, a view refused alike at every
+> door, a call that could not run now never proposed, and an accept
+> refused when the verb was declared differently since. `find` answers
+> a total and reaches a page by its offset, a count holds no type in
+> memory, and a sorted walk reads its page. Declaring and migrating
+> views keeps what they read; a view becomes a stored type by declare.
+> The fifth walk had an agent work a lake through MCP alone, and what it
+> found is fixed in the tools' descriptions. A sweep over feature
+> combinations found the rest, fixed here. A mirror copy keeps its
+> chain's depth, so a reaction cycle across two lakes meets the ceiling.
+> A release names every changed item of the core and the store a host
+> must follow.
 
 ## Try it
 
@@ -140,6 +154,9 @@ walk's page lists every call and the answer it must give.
   derived relation, a transition guard, a host's reaction calling a verb
   on its type with its cause named, the lineage read back, a retirement
   that fires nothing, and a view bound to a reader's date.
+- [`docs/walks/walk-5.md`](docs/walks/walk-5.md): the fifth walk, by a
+  blind LLM agent that sees only the MCP door: a clerk's tasks, and the
+  common refusals, each with what the agent changed after it.
 
 ## What it is not
 

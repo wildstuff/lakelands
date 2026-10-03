@@ -28,21 +28,6 @@ use crate::unavailable;
 /// its name, computed by the server.
 const KEY: &str = "hashtextextended('lakelands lease ' || $1, 0)";
 
-/// Who the row says holds the lease, and with which token.
-pub(crate) fn current(db: &mut Db, names: &Names) -> Result<(u64, String)> {
-    Ok(db
-        .query_opt(
-            &format!(
-                "SELECT fence, holder FROM {} WHERE one = 1",
-                names.t("lease")
-            ),
-            &[],
-        )?
-        .map_or((0, String::new()), |r| {
-            (r.get::<_, i64>(0) as u64, r.get::<_, String>(1))
-        }))
-}
-
 /// Take the lease for `holder` on the lease connection, or say who holds
 /// it.
 pub(crate) fn take(db: &mut Db, names: &Names, schema: &str, holder: &str) -> Result<Lease> {
@@ -50,7 +35,18 @@ pub(crate) fn take(db: &mut Db, names: &Names, schema: &str, holder: &str) -> Re
         .query_one(&format!("SELECT pg_try_advisory_lock({KEY})"), &[&schema])?
         .get(0);
     if !locked {
-        let (fence, held_by) = current(db, names)?;
+        // Who the row says holds the lease, and with which token.
+        let (fence, held_by) = db
+            .query_opt(
+                &format!(
+                    "SELECT fence, holder FROM {} WHERE one = 1",
+                    names.t("lease")
+                ),
+                &[],
+            )?
+            .map_or((0, String::new()), |r| {
+                (r.get::<_, i64>(0) as u64, r.get(1))
+            });
         let row = if held_by.is_empty() {
             format!("the lease row (fence {fence}) names no holder")
         } else {
@@ -95,15 +91,13 @@ fn release_lock(db: &mut Db, schema: &str) -> Result<()> {
 /// the lock is released. The lock is released whatever happens; a failure
 /// to clear the holder is reported after it.
 pub(crate) fn release(db: &mut Db, names: &Names, schema: &str, lease: &Lease) -> Result<()> {
-    let cleared = db
-        .execute(
-            &format!(
-                "UPDATE {} SET holder = '' WHERE one = 1 AND fence = $1",
-                names.t("lease")
-            ),
-            &[&(lease.fence as i64)],
-        )
-        .map(|_| ());
+    let cleared = db.execute(
+        &format!(
+            "UPDATE {} SET holder = '' WHERE one = 1 AND fence = $1",
+            names.t("lease")
+        ),
+        &[&(lease.fence as i64)],
+    );
     let unlocked = release_lock(db, schema);
     cleared.and(unlocked)
 }

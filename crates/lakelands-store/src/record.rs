@@ -42,6 +42,7 @@ use lakelands_api::record::{FieldMeta, Origin, StoredRecord};
 use lakelands_api::{Error, FieldName, Result, Value};
 use lakelands_core::derive;
 use lakelands_core::rights::Door;
+use lakelands_core::unavailable;
 
 use crate::backed::{self, Outputs};
 use crate::ontology::Ontology;
@@ -90,12 +91,10 @@ pub fn apply(
         }
         | EventBody::RecordUnrestricted { ty, key, version } => {
             let Some(mut r) = before.cloned() else {
-                return Err(Error::Unavailable {
-                    message: format!(
-                        "the log changes `{ty}` `{key}` at position {} before any event wrote it",
-                        event.position
-                    ),
-                });
+                return Err(unavailable(format!(
+                    "the log changes `{ty}` `{key}` at position {} before any event wrote it",
+                    event.position
+                )));
             };
             match &event.body {
                 EventBody::RecordRetired { .. } => r.retired = true,
@@ -108,14 +107,14 @@ pub fn apply(
         }
         _ => return Ok(None),
     };
-    let decl = &resolve_functions(ontology.ty(ty)?, ontology);
+    let raw = ontology.ty(ty)?;
     let live_before = before.filter(|b| !b.retired);
     let mut fields = live_before.map(|b| b.fields.clone()).unwrap_or_default();
     let mut meta = live_before.map(|b| b.meta.clone()).unwrap_or_default();
 
     let mut written = BTreeSet::new();
     for (name, value) in patch {
-        let Some(field) = decl.fields.iter().find(|f| &f.name == name) else {
+        let Some(field) = raw.fields.iter().find(|f| &f.name == name) else {
             continue;
         };
         if !door.admits(field.authority) {
@@ -130,7 +129,6 @@ pub fn apply(
         meta.insert(name.clone(), meta_of(event, event.origin));
     }
 
-    let raw = ontology.ty(ty)?;
     compute(
         ontology,
         raw,
@@ -144,10 +142,6 @@ pub fn apply(
         false,
         outputs,
     )?;
-    fields.retain(|_, v| !v.is_null());
-    if !decl.field_meta {
-        meta.clear();
-    }
     Ok(Some(StoredRecord {
         ty: ty.clone(),
         key: key.clone(),
@@ -198,7 +192,6 @@ pub fn rederive(
         return Ok(None);
     }
     let raw = ontology.ty(&before.ty)?;
-    let decl = resolve_functions(raw, ontology);
     let mut fields = before.fields.clone();
     let mut meta = before.meta.clone();
     let changed = compute(
@@ -216,10 +209,6 @@ pub fn rederive(
     )?;
     if changed.is_empty() {
         return Ok(None);
-    }
-    fields.retain(|_, v| !v.is_null());
-    if !decl.field_meta {
-        meta.clear();
     }
     Ok(Some(StoredRecord {
         fields,
@@ -269,7 +258,6 @@ pub fn fill(
     ) {
         return Ok(None);
     }
-    let decl = resolve_functions(raw, ontology);
     compute(
         ontology,
         raw,
@@ -283,10 +271,6 @@ pub fn fill(
         false,
         outputs,
     )?;
-    fields.retain(|_, v| !v.is_null());
-    if !decl.field_meta {
-        meta.clear();
-    }
     Ok(Some(StoredRecord {
         fields,
         meta,
@@ -301,27 +285,26 @@ pub fn fill(
 /// order of the one reads-graph, and again, with what settling changed as
 /// the new `written`, until nothing changes. It ends, since the graph has
 /// no cycle. Every field it changes takes the event's provenance with
-/// `origin: derived`. Answers the fields it changed.
+/// `origin: derived`. Null fields are dropped, and so is the provenance of
+/// a type that keeps none. Answers the fields it changed.
 #[allow(clippy::too_many_arguments)]
 fn compute(
     ontology: &Ontology,
     raw: &TypeDecl,
     key: &lakelands_api::RecordKey,
     before: Option<&BTreeMap<FieldName, Value>>,
-    written: BTreeSet<FieldName>,
+    mut written: BTreeSet<FieldName>,
     fields: &mut BTreeMap<FieldName, Value>,
     meta: &mut BTreeMap<FieldName, FieldMeta>,
     event: &Event,
     settings: &BTreeMap<String, Value>,
-    force: bool,
+    mut force: bool,
     outputs: &mut Outputs<'_>,
 ) -> Result<BTreeSet<FieldName>> {
     let decl = resolve_functions(raw, ontology);
     let value_types = ontology.value_type_list();
     let mut changed = BTreeSet::new();
     let mut before: Option<BTreeMap<FieldName, Value>> = before.cloned();
-    let mut written = written;
-    let mut force = force;
     // One round per computed field at most: the graph has no cycle.
     for _ in 0..=raw.fields.len() {
         let touched = derive::apply(
@@ -335,11 +318,11 @@ fn compute(
                 now: event.known_at,
             },
         )
-        .map_err(|e| Error::Unavailable {
-            message: format!(
+        .map_err(|e| {
+            unavailable(format!(
                 "the fold cannot compute the derived fields of `{}`: {e}",
                 raw.name
-            ),
+            ))
         })?;
         for name in touched {
             meta.insert(name.clone(), derived_meta(event, raw, ontology, &name));
@@ -365,6 +348,10 @@ fn compute(
         changed.extend(settled.iter().cloned());
         written = settled.into_iter().collect();
         before = Some(snapshot);
+    }
+    fields.retain(|_, v| !v.is_null());
+    if !decl.field_meta {
+        meta.clear();
     }
     Ok(changed)
 }

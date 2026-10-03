@@ -17,15 +17,12 @@ use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::{
     Declaration, Migration, ProposalFilter, ProposalKind, ProposalState, ProposedWrite,
 };
-use lakelands_api::{
-    Error, Grants, LakeStore, Outcome, Position, PrincipalKind, ProposalId, ReadAt, Refusal,
-    TypeName,
-};
+use lakelands_api::{LakeStore, Outcome, Position, ProposalId, ReadAt, Refusal, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, doors, field_writer, head_unmoved, owner, principal, upsert,
+    Lake, Must, doors, field_writer, head_unmoved, owner, reason, reviewer, upsert,
 };
 
 check!(
@@ -52,20 +49,6 @@ check!(
     "013, extended: a rejected declaration leaves the ontology as it was, and proposals can be listed by kind"
 );
 
-/// A reviewer holding `review`, and `schema` when asked.
-fn reviewer(store: &dyn LakeStore, schema: bool) -> lakelands_api::Principal {
-    principal(
-        store,
-        PrincipalKind::Human,
-        if schema { "architect" } else { "reviewer" },
-        Grants {
-            review: true,
-            schema,
-            ..Grants::default()
-        },
-    )
-}
-
 /// A principal without the `schema` grant that writes `memo`'s title.
 fn agent(store: &dyn LakeStore) -> lakelands_api::Principal {
     field_writer(store, "agent", "memo", &["title"])
@@ -88,6 +71,16 @@ fn proposed(o: &Outcome) -> Result<ProposalId, Failure> {
     }
 }
 
+/// The agent's proposal of the type `ticket`.
+async fn propose_ticket(store: &dyn LakeStore) -> Result<ProposalId, Failure> {
+    let write = ProposedWrite::Declare {
+        declarations: vec![ticket()],
+    };
+    let why = "a place for tickets".into();
+    let o = doors(store).propose(&agent(store), write, why).await;
+    proposed(&o.must("the agent proposing the type `ticket`")?)
+}
+
 async fn declared(store: &dyn LakeStore, ty: &str) -> Result<bool, Failure> {
     let lake = doors(store)
         .describe(&owner(store), ReadAt::default())
@@ -102,17 +95,7 @@ async fn a_proposed_declaration_takes_effect_only_when_accepted(
 ) -> Result<(), Failure> {
     let cat = doors(store.as_ref());
     let who = agent(store.as_ref());
-    let id = proposed(
-        &cat.propose(
-            &who,
-            ProposedWrite::Declare {
-                declarations: vec![ticket()],
-            },
-            "a place for tickets".into(),
-        )
-        .await
-        .must("proposing a type without the schema grant")?,
-    )?;
+    let id = propose_ticket(store.as_ref()).await?;
     ensure!(
         !declared(store.as_ref(), "ticket").await?,
         "a proposed type must not be declared before it is accepted"
@@ -166,30 +149,14 @@ async fn accepting_a_schema_proposal_needs_the_schema_grant(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let cat = doors(store.as_ref());
-    let id = proposed(
-        &cat.propose(
-            &agent(store.as_ref()),
-            ProposedWrite::Declare {
-                declarations: vec![ticket()],
-            },
-            "a place for tickets".into(),
-        )
-        .await
-        .must("proposing a type")?,
-    )?;
+    let id = propose_ticket(store.as_ref()).await?;
     let before = store.head().await.must("reading the head")?;
     let refused = cat
         .accept(&reviewer(store.as_ref(), false), &id)
         .await
         .must_fail("a reviewer without the schema grant accepting a declaration")?;
     ensure!(
-        matches!(
-            refused,
-            Error::Refused {
-                reason: Refusal::NotGranted,
-                ..
-            }
-        ),
+        matches!(reason(&refused), Some(Refusal::NotGranted)),
         "accepting a declaration without the schema grant must be refused as not granted; it \
          was refused as {refused:?}"
     );
@@ -286,7 +253,7 @@ async fn a_migration_proposal_carries_its_report_and_is_preflighted_again_at_acc
         .await
         .must_fail("accepting a migration that would now lose `pages` of `b`")?;
     ensure!(
-        matches!(&refused, Error::Refused { reason: Refusal::Migration { report }, .. } if !report.lossless),
+        matches!(reason(&refused), Some(Refusal::Migration { report }) if !report.lossless),
         "the accept must be refused with the fresh preflight's report, not lossless; it was \
          refused as {refused:?}"
     );
@@ -324,17 +291,7 @@ async fn a_rejected_schema_proposal_leaves_the_ontology_untouched(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let cat = doors(store.as_ref());
-    let id = proposed(
-        &cat.propose(
-            &agent(store.as_ref()),
-            ProposedWrite::Declare {
-                declarations: vec![ticket()],
-            },
-            "a place for tickets".into(),
-        )
-        .await
-        .must("proposing a type")?,
-    )?;
+    let id = propose_ticket(store.as_ref()).await?;
     let by_kind = cat
         .proposals(
             &reviewer(store.as_ref(), true),

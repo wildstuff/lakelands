@@ -8,15 +8,19 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::{Measure, StorageKind, TypeDecl, ViewDecl, ViewParam};
-use lakelands_api::query::{Pattern, Projection, QueryResult, Start};
+use lakelands_api::ontology::{
+    Derived, MatchPair, RelationDecl, StorageKind, TypeDecl, ViewDecl, ViewParam,
+};
+use lakelands_api::query::{Pattern, Projection, QueryResult, Walk};
 use lakelands_api::read::{Find, Found, Get};
 use lakelands_api::write::Declaration;
-use lakelands_api::{Error, FieldName, LakeStore, Params, Refusal, Value};
+use lakelands_api::{Error, LakeStore, Params, Refusal, Value};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, field, log_events, type_decl};
+use crate::conformance::fixture::{
+    Lake, Must, field, find_where, log_events, pattern, reason, step, type_decl, view_of,
+};
 
 check!(
     /// Two anchors, two windows.
@@ -45,7 +49,7 @@ check!(
 check!(
     /// A pattern binds the view it starts on.
     PATTERN_START_BINDS = a_pattern_started_on_a_view_binds_its_parameters,
-    "018 and 026: a pattern that starts on a view binds its parameters with the start, by key and by `where`, and its nodes are the window `find` answers; a start that leaves one out is refused, naming it"
+    "018 and 026: a pattern that starts on a view binds its parameters with the start, by key and by `where`, and its nodes are the window `find` answers; a `degree` started on it by key answers that key's row of the whole view's; a start that leaves one out is refused, naming it"
 );
 
 check!(
@@ -60,6 +64,12 @@ check!(
     "018 and 029: a page of a view continues only with the parameters its first page was read with; with others it is refused, since it would continue a different answer"
 );
 
+check!(
+    /// A step reaching a view binds nothing.
+    STEP_TO_UNBOUND_VIEW = a_step_arriving_at_a_view_with_parameters_is_refused_before_reading,
+    "018 and 029: a view's parameters are bound only by a read that names it, so a pattern (rows or a measure) whose step arrives at a view with parameters other than its start is refused as invalid before any record is read, naming the view and the relation, the same with no records and with some; a pattern started on that view with its parameters, stepping out, is answered"
+);
+
 fn payment() -> TypeDecl {
     type_decl(
         "payment",
@@ -72,34 +82,19 @@ fn payment() -> TypeDecl {
 }
 
 fn account_window() -> TypeDecl {
-    let measure = |name: &str, expr: &str| Measure {
-        name: FieldName::from(name),
-        expr: expr.into(),
-    };
-    TypeDecl {
-        key: vec![FieldName::from("account")],
-        view: Some(Box::new(ViewDecl {
-            source: "payment".into(),
-            params: vec![param("anchor", StorageKind::DateTime)],
-            r#where: Some("date > param('anchor') - 7d and date <= param('anchor')".into()),
-            group_by: vec![FieldName::from("account")],
-            measures: vec![
-                measure("total", "sum(amount)"),
-                measure(
-                    "last_day",
-                    "count(if(date > param('anchor') - 1d, amount, null))",
-                ),
-            ],
-        })),
-        ..type_decl(
-            "account_window",
-            vec![
-                field("account", StorageKind::Text),
-                field("total", StorageKind::Decimal),
-                field("last_day", StorageKind::Number),
-            ],
-        )
+    let fields = vec![
+        field("account", StorageKind::Text),
+        field("total", StorageKind::Decimal),
+        field("last_day", StorageKind::Number),
+    ];
+    let last_day = "count(if(date > param('anchor') - 1d, amount, null))";
+    let measures = [("total", "sum(amount)"), ("last_day", last_day)];
+    let mut t = view_of("account_window", "payment", &["account"], fields, &measures);
+    if let Some(v) = t.view.as_mut() {
+        v.params = vec![param("anchor", StorageKind::DateTime)];
+        v.r#where = Some("date > param('anchor') - 7d and date <= param('anchor')".into());
     }
+    t
 }
 
 /// The source, the view, and five payments in June 2026.
@@ -139,7 +134,7 @@ fn anchor(date: &str) -> Params {
 }
 
 fn invalid_naming(r: &Result<impl std::fmt::Debug, Error>, name: &str) -> bool {
-    matches!(r, Err(Error::Refused { reason: Refusal::Invalid { message }, .. }) if message.contains(name))
+    matches!(reason(&r), Some(Refusal::Invalid { message }) if message.contains(name))
 }
 
 async fn the_same_view_read_at_two_anchors_answers_two_windows(
@@ -267,10 +262,7 @@ async fn param_outside_a_views_where_and_measures_is_refused(
         .find(
             &l.own,
             &"payment".into(),
-            Find {
-                filter: Some("date <= param('anchor')".into()),
-                ..Find::default()
-            },
+            find_where("date <= param('anchor')"),
         )
         .await;
     ensure!(
@@ -278,22 +270,12 @@ async fn param_outside_a_views_where_and_measures_is_refused(
         "a `find` whose `where` calls param() must be refused as invalid, naming it; it \
          answered {r:?}"
     );
-    let pattern = Pattern {
-        start: Start {
-            ty: "payment".into(),
-            key: None,
-            filter: Some("date <= param('anchor')".into()),
-            search: None,
-            params: Params::new(),
-        },
-        steps: Vec::new(),
-        to: None,
-        project: Projection::Graph,
-        order_by: Vec::new(),
-        limit: None,
-        cursor: None,
-        at: Default::default(),
-    };
+    let pattern = start_on(
+        "payment",
+        None,
+        Some("date <= param('anchor')"),
+        Params::new(),
+    );
     let r = l.cat.query(&l.own, pattern).await;
     ensure!(
         invalid_naming(&r, "param()"),
@@ -422,23 +404,13 @@ async fn a_cursor_continues_only_with_the_parameters_it_was_handed_out_for(
     Ok(())
 }
 
+/// A graph from the records of `view` (or of any type), or the one at
+/// `key`, that `filter` holds for, binding `params`.
 fn start_on(view: &str, key: Option<&str>, filter: Option<&str>, params: Params) -> Pattern {
-    Pattern {
-        start: Start {
-            ty: view.into(),
-            key: key.map(Into::into),
-            filter: filter.map(Into::into),
-            search: None,
-            params,
-        },
-        steps: Vec::new(),
-        to: None,
-        project: Projection::Graph,
-        order_by: Vec::new(),
-        limit: None,
-        cursor: None,
-        at: Default::default(),
-    }
+    let mut p = pattern(view, key, Vec::new(), Projection::Graph);
+    p.start.filter = filter.map(Into::into);
+    p.start.params = params;
+    p
 }
 
 async fn a_pattern_started_on_a_view_binds_its_parameters(
@@ -481,6 +453,49 @@ async fn a_pattern_started_on_a_view_binds_its_parameters(
             "{what} must hold the window's record {want}; it holds {got}"
         );
     }
+    let mut paid = payment();
+    paid.relations = vec![RelationDecl {
+        derived: Some(Derived {
+            pairs: vec![MatchPair {
+                from: "account".into(),
+                to: "account".into(),
+            }],
+        }),
+        ..RelationDecl::to("window", "account_window")
+    }];
+    l.declare(paid).await?;
+    let degree = |key: Option<&str>| {
+        let mut p = pattern(
+            "account_window",
+            key,
+            vec![step("window", Walk::In)],
+            Projection::Degree,
+        );
+        p.start.params = anchor("2026-06-30");
+        p
+    };
+    let mut rows = Vec::new();
+    for key in [None, Some("a")] {
+        let what = format!("`degree` over `window` started on `account_window` at key {key:?}");
+        let reply = l.cat.query(&l.own, degree(key)).await.must(&what)?;
+        let QueryResult::Rows { rows: got, .. } = reply.data else {
+            return Err(Failure::new(format!(
+                "{what} answered something other than rows"
+            )));
+        };
+        rows.push(got);
+    }
+    let of_a: Vec<_> = rows[0]
+        .iter()
+        .filter(|r| r.get("key") == Some(&json!("a")))
+        .cloned()
+        .collect();
+    ensure!(
+        !of_a.is_empty() && rows[1] == of_a,
+        "a `degree` started on `account_window` at `a` with its `anchor` answers the whole \
+         view's row for `a`, {of_a:?}; it answered {:?}",
+        rows[1]
+    );
     let r = l
         .cat
         .query(
@@ -493,6 +508,74 @@ async fn a_pattern_started_on_a_view_binds_its_parameters(
         "a pattern started on `account_window` without its `anchor` must be refused as \
          invalid, naming it; it answered {r:?}"
     );
+    Ok(())
+}
+
+async fn a_step_arriving_at_a_view_with_parameters_is_refused_before_reading(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let mut paid = payment();
+    paid.relations = vec![RelationDecl {
+        derived: Some(Derived {
+            pairs: vec![MatchPair {
+                from: "account".into(),
+                to: "account".into(),
+            }],
+        }),
+        ..RelationDecl::to("window", "account_window")
+    }];
+    l.declare(payment()).await?;
+    l.declare(account_window()).await?;
+    l.declare(paid).await?;
+    let rows = || {
+        pattern(
+            "payment",
+            None,
+            vec![step("window", Walk::Out)],
+            Projection::Rows { fields: Vec::new() },
+        )
+    };
+    let degree = || {
+        pattern(
+            "payment",
+            None,
+            vec![step("window", Walk::Out)],
+            Projection::Degree,
+        )
+    };
+    // The answer does not depend on the data: with no payment and with one.
+    for (when, write) in [("with no payment", false), ("with one payment", true)] {
+        if write {
+            l.upsert(
+                "payment",
+                "p1",
+                json!({"account": "a", "date": "2026-06-10", "amount": "10.00"}),
+            )
+            .await?;
+        }
+        for (what, p) in [("rows", rows()), ("a degree", degree())] {
+            let r = l.cat.query(&l.own, p).await;
+            ensure!(
+                invalid_naming(&r, "account_window") && invalid_naming(&r, "window"),
+                "a pattern of {what} from `payment` stepping over `window` arrives at the view \
+                 `account_window` with no parameters bound, and must be refused as invalid \
+                 {when}, naming the view and the relation; it answered {r:?}"
+            );
+        }
+    }
+    // Started on the view with its parameters, a step out is answered.
+    let mut out = pattern(
+        "account_window",
+        Some("a"),
+        vec![step("window", Walk::In)],
+        Projection::Rows { fields: Vec::new() },
+    );
+    out.start.params = anchor("2026-06-12");
+    l.cat
+        .query(&l.own, out)
+        .await
+        .must("a pattern started on `account_window` with its anchor, stepping over `window`")?;
     Ok(())
 }
 

@@ -25,15 +25,11 @@ use lakelands_api::ontology::{
 pub(super) struct ValueTypeDoc {
     pub name: String,
     pub kind: StorageKind,
-    #[serde(default)]
     pub constraint: Option<Cond>,
     #[serde(default)]
     pub one_of: Vec<String>,
-    #[serde(default)]
     pub format: Option<String>,
-    #[serde(default)]
     pub scale: Option<u32>,
-    #[serde(default)]
     pub description: Option<String>,
 }
 
@@ -48,19 +44,13 @@ pub(super) struct TypeDoc {
     pub fields: Named<FieldDoc>,
     #[serde(default)]
     pub relations: Named<RelationDoc>,
-    #[serde(default)]
     pub view: Option<ViewDoc>,
-    #[serde(default)]
     pub valid_from: Option<String>,
-    #[serde(default)]
     pub valid_to: Option<String>,
     #[serde(default = "yes")]
     pub field_meta: bool,
-    #[serde(default)]
     pub language: Option<String>,
-    #[serde(default)]
     pub description: Option<String>,
-    #[serde(default)]
     pub label: Option<String>,
     #[serde(default)]
     pub annotations: Annotations,
@@ -83,9 +73,7 @@ pub(super) struct FieldBody {
     pub required: bool,
     #[serde(default)]
     pub authority: Authority,
-    #[serde(default)]
     pub derived: Option<Cond>,
-    #[serde(default)]
     pub function: Option<String>,
     #[serde(default)]
     pub depends_on: OneOrMany,
@@ -95,11 +83,8 @@ pub(super) struct FieldBody {
     pub sensitive: bool,
     #[serde(default)]
     pub searchable: bool,
-    #[serde(default)]
     pub description: Option<String>,
-    #[serde(default)]
     pub label: Option<String>,
-    #[serde(default)]
     pub embed: Option<EmbedDoc>,
     #[serde(default)]
     pub annotations: Annotations,
@@ -122,11 +107,8 @@ pub(super) type TypeSpec = StrOr<FieldTypeDoc>;
 #[serde(deny_unknown_fields)]
 pub(super) struct FieldTypeDoc {
     pub kind: StorageKind,
-    #[serde(default)]
     pub value_type: Option<String>,
-    #[serde(default)]
     pub target: Option<String>,
-    #[serde(default)]
     pub dimensions: Option<u32>,
 }
 
@@ -137,21 +119,17 @@ pub(super) struct RelationDoc {
     pub target: String,
     #[serde(default)]
     pub cardinality: Cardinality,
-    #[serde(default)]
     pub inverse: Option<String>,
-    #[serde(default)]
     pub via: Option<String>,
     #[serde(default)]
     pub fields: Named<FieldDoc>,
     /// Who writes the relation's links, when it has no `via`.
     #[serde(default)]
     pub authority: Authority,
-    #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
     pub annotations: Annotations,
     /// Instead of a carrier: the fields whose values connect (044).
-    #[serde(default)]
     pub derived: Option<lakelands_api::ontology::Derived>,
 }
 
@@ -163,6 +141,22 @@ pub(super) struct ViewDoc {
     /// The parameters a read binds: name to storage kind, in order.
     #[serde(default)]
     pub params: Named<String>,
+    #[serde(default, rename = "where")]
+    pub filter: Option<Cond>,
+    #[serde(default)]
+    pub group_by: OneOrMany,
+    pub measures: Named<Cond>,
+    /// Further sources merged on the view's key.
+    #[serde(default)]
+    pub merge: Vec<MergeDoc>,
+}
+
+/// A further source of a view: grouped by fields of its own, in the
+/// view's key order, with measures of its own.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct MergeDoc {
+    pub source: String,
     #[serde(default, rename = "where")]
     pub filter: Option<Cond>,
     #[serde(default)]
@@ -182,13 +176,9 @@ pub(super) struct VerbDoc {
     pub risk: Risk,
     #[serde(default)]
     pub payload: Named<FieldDoc>,
-    #[serde(default)]
     pub requires: Option<Cond>,
-    #[serde(default)]
     pub set: Option<Named<Cond>>,
-    #[serde(default)]
     pub executor: Option<String>,
-    #[serde(default)]
     pub description: Option<String>,
 }
 
@@ -198,11 +188,8 @@ pub(super) struct VerbDoc {
 pub(super) struct TriggerDoc {
     pub name: String,
     pub on: String,
-    #[serde(default)]
     pub when: Option<Cond>,
-    #[serde(default)]
     pub description: Option<String>,
-    #[serde(default)]
     pub max_depth: Option<u32>,
 }
 
@@ -214,7 +201,6 @@ pub(super) struct ObjectSetDoc {
     pub of: String,
     #[serde(rename = "where")]
     pub filter: Cond,
-    #[serde(default)]
     pub description: Option<String>,
 }
 
@@ -228,7 +214,6 @@ pub(super) struct AgingRuleDoc {
     pub from: serde_json::Value,
     pub to: serde_json::Value,
     pub when: String,
-    #[serde(default)]
     pub description: Option<String>,
 }
 
@@ -237,15 +222,11 @@ pub(super) struct AgingRuleDoc {
 #[serde(deny_unknown_fields)]
 pub(super) struct FunctionDoc {
     pub name: String,
-    #[serde(default)]
     pub backing: Option<String>,
     #[serde(default)]
     pub inputs: Named<FieldDoc>,
-    #[serde(default)]
     pub expr: Option<Cond>,
-    #[serde(default)]
     pub config: Option<serde_json::Value>,
-    #[serde(default)]
     pub description: Option<String>,
 }
 

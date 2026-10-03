@@ -266,39 +266,29 @@ fn all_names(
     links: &[(TypeName, RelationName)],
 ) -> BTreeMap<String, Vec<String>> {
     let mut names: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut add = |name: String, from: String| names.entry(name).or_default().push(from);
     for g in GENERIC_TOOLS {
-        names
-            .entry(g.to_owned())
-            .or_default()
-            .push(format!("the generic tool `{g}`"));
+        add(g.to_owned(), format!("the generic tool `{g}`"));
     }
     for ty in types {
-        if tool_base(ty.as_str()).is_empty() {
-            names
-                .entry(String::new())
-                .or_default()
-                .push(format!("type `{ty}`"));
+        let base = tool_base(ty.as_str());
+        if base.is_empty() {
+            add(base, format!("type `{ty}`"));
             continue;
         }
         for s in DOOR_SUFFIXES {
-            names
-                .entry(format!("{}_{s}", tool_base(ty.as_str())))
-                .or_default()
-                .push(format!("type `{ty}`"));
+            add(format!("{base}_{s}"), format!("type `{ty}`"));
         }
     }
     for v in verbs {
-        names
-            .entry(tool_base(v.as_str()))
-            .or_default()
-            .push(format!("verb `{v}`"));
+        add(tool_base(v.as_str()), format!("verb `{v}`"));
     }
     for (ty, relation) in links {
         for s in LINK_SUFFIXES {
-            names
-                .entry(link_tool(ty, relation, s))
-                .or_default()
-                .push(format!("relation `{relation}` of type `{ty}`"));
+            add(
+                link_tool(ty, relation, s),
+                format!("relation `{relation}` of type `{ty}`"),
+            );
         }
     }
     names
@@ -559,6 +549,31 @@ fn label(ty: &TypeDescription) -> String {
     }
 }
 
+/// The `key` argument of a type's tools, described so that a caller
+/// knows what to pass: the key fields' values for a keyed type, `all` for
+/// a view without key fields, and for a type that declares no key, the
+/// caller's own choice when it writes, and the key it wrote under after.
+fn key_schema(ty: &TypeDescription, writes: bool) -> Value {
+    let name = &ty.name;
+    let fields: Vec<String> = ty.access.key.iter().map(|f| format!("`{f}`")).collect();
+    let description = match fields.as_slice() {
+        [] if ty.lineage.view_of.is_some() => format!(
+            "`{}`: `{name}` is a view without key fields, so it holds one record, under this key.",
+            crate::key::UNGROUPED
+        ),
+        [] if writes => format!(
+            "`{name}` declares no key, so the key is yours to choose. It names this record from now on, and a later write with the same key changes it."
+        ),
+        [] => format!("The key the `{name}` record was written under."),
+        [one] => format!("The key of the `{name}` record: the value of its {one}."),
+        many => format!(
+            "The key of the `{name}` record: the values of its {} joined by `:`, with `%` written `%25` and `:` written `%3A`.",
+            many.join(", ")
+        ),
+    };
+    json!({"type": "string", "description": description})
+}
+
 fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
     let base = tool_base(ty.name.as_str());
     let record = record_schema(ty, lake);
@@ -579,6 +594,16 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
             ("order_by", order_by_schema(one_of(filterable()))),
             ("limit", json!({"type": "integer", "minimum": 1})),
             ("cursor", json!({"type": "string"})),
+            (
+                "offset",
+                json!({"type": "integer", "minimum": 0,
+                       "description": "Skip this many rows of the order before the page, to jump to a page of a table. The rows skipped are read, so a large offset costs more; continue from there with the cursor. Not with cursor, after or aggregate."}),
+            ),
+            (
+                "total",
+                json!({"type": "boolean",
+                       "description": "Also answer how many records match, at the answer's position. Counted only when asked."}),
+            ),
             (
                 "after",
                 json!({"type": "object",
@@ -611,7 +636,7 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
         out.push(ToolSpec {
             name: format!("{base}_find"),
             description: format!(
-                "Find {} records: filter with `where`, sort, page with `cursor` or resume after a row with `after`, or aggregate. Every answer carries the position it was read at.",
+                "Find {} records: filter with `where`, sort, page with `cursor`, resume after a row with `after` or jump with `offset`, ask for the `total`, or aggregate. Every answer carries the position it was read at.",
                 label(ty)
             ),
             input_schema: obj(p, if params { &["params"] } else { &[] }),
@@ -619,14 +644,15 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
                 "type": "object",
                 "properties": {"shape": {"enum": ["records", "groups"]},
                                "rows": {"type": "array"},
-                               "next_cursor": {"type": "string"}},
+                               "next_cursor": {"type": "string"},
+                               "total": {"type": "integer"}},
                 "required": ["shape", "rows"]})),
             door: Door::Find { ty: ty.name.clone() },
         });
     }
     if ty.may.get {
         let mut p = props([
-            ("key", json!({"type": "string"})),
+            ("key", key_schema(ty, false)),
             ("with_meta", json!({"type": "boolean"})),
         ]);
         time_axes(&mut p);
@@ -652,7 +678,7 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
             })
             .collect();
         let mut p = props([
-            ("key", json!({"type": "string"})),
+            ("key", key_schema(ty, true)),
             (
                 "fields",
                 json!({"type": "object", "properties": writable, "additionalProperties": false,
@@ -663,7 +689,7 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
         out.push(ToolSpec {
             name: format!("{base}_upsert"),
             description: format!(
-                "Create or change a {} record. Answers `applied` with the new position, or `proposed` if the write waits for review.",
+                "Create or change a record of {}. Answers `applied` with the new position, or `proposed` if the write waits for review.",
                 label(ty)
             ),
             input_schema: obj(p, &["key", "fields"]),
@@ -672,12 +698,12 @@ fn type_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
         });
     }
     if ty.may.retire {
-        let mut p = props([("key", json!({"type": "string"}))]);
+        let mut p = props([("key", key_schema(ty, false))]);
         write_opts(&mut p);
         out.push(ToolSpec {
             name: format!("{base}_retire"),
             description: format!(
-                "Retire a {} record. Its history stays in the lake.",
+                "Retire a record of {}. Its history stays in the lake.",
                 label(ty)
             ),
             input_schema: obj(p, &["key"]),
@@ -716,13 +742,12 @@ fn link_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
                     .collect()
             })
             .unwrap_or_default();
+        let key = json!({"type": "string",
+                         "description": format!("The key of the `{}` record the link is from.", ty.name)});
         let target = json!({"type": "string",
                             "description": format!("The key of the `{}` record to link to.", r.target)});
         let mut p = props([
-            (
-                "key",
-                json!({"type": "string", "description": format!("The key of the `{}` record the link is from.", ty.name)}),
-            ),
+            ("key", key.clone()),
             ("to", target.clone()),
             (
                 "fields",
@@ -745,13 +770,7 @@ fn link_tools(ty: &TypeDescription, lake: &LakeDescription, out: &mut Vec<ToolSp
                 relation: relation.clone(),
             },
         });
-        let mut p = props([
-            (
-                "key",
-                json!({"type": "string", "description": format!("The key of the `{}` record the link is from.", ty.name)}),
-            ),
-            ("to", target),
-        ]);
+        let mut p = props([("key", key), ("to", target)]);
         write_opts(&mut p);
         out.push(ToolSpec {
             name: link_tool(&ty.name, relation, "unlink"),
@@ -800,19 +819,26 @@ fn verb_tool(verb: &VerbDescription, lake: &LakeDescription) -> ToolSpec {
     }
     let what = verb.description.clone().unwrap_or_else(|| {
         if on_record {
-            format!("Call `{}` on a `{}` record.", verb.name, verb.on)
+            format!("Call `{}` on a record of `{}`.", verb.name, verb.on)
         } else {
             format!("Call `{}` on the type `{}`.", verb.name, verb.on)
         }
     });
-    // By the risk alone: a `low` verb runs at once, an external one too.
+    // By the risk: a `low` verb runs at once, an external one too. A verb
+    // that reaches outside the lake runs through an executor its host
+    // binds, which the tool cannot see; it says what a call does without.
     let how = match verb.risk {
-        crate::ontology::Risk::Low => "It runs at once.",
-        _ => "It is recorded as a proposal and runs when accepted.",
+        crate::ontology::Risk::Low => "It runs at once",
+        _ => "It is recorded as a proposal and runs when accepted",
+    };
+    let through = if verb.external {
+        ", through an executor the lake's host binds; where none is bound, a call is refused and writes nothing."
+    } else {
+        "."
     };
     ToolSpec {
         name: tool_base(verb.name.as_str()),
-        description: format!("{what} {how}"),
+        description: format!("{what} {how}{through}"),
         input_schema: obj(
             p,
             if on_record {
@@ -1014,26 +1040,44 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
     if lake.types.iter().any(|t| t.may.upsert || t.may.retire) || !lake.verbs.is_empty() {
         // Beside the record writes it may make, a writer may propose
         // declarations and migrations, which a reviewer holding the
-        // `schema` grant accepts.
-        let kinds = ["upsert", "retire", "call", "declare", "migrate"];
+        // `schema` grant accepts. Each kind of write has its own members,
+        // so a caller sees the shape the store reads.
+        let opts = json!({"type": "object", "properties": {
+            "expected_version": {"type": "integer", "minimum": 0},
+            "idempotency_key": {"type": "string"}}});
+        let kind = |write: &str, members: Value, required: &[&str]| {
+            let mut members = members;
+            members["write"] = json!({"const": write});
+            let mut required = required.to_vec();
+            required.insert(0, "write");
+            json!({"type": "object", "properties": members, "required": required})
+        };
+        let verbs = one_of(lake.verbs.iter().map(|v| v.name.to_string()));
+        let write = json!({"oneOf": [
+            kind("upsert", json!({"type": names(|t| t.may.upsert), "key": {"type": "string"},
+                                  "patch": {"type": "object",
+                                            "description": "The fields to write, as `<type>_upsert` takes them under `fields`."},
+                                  "opts": opts}), &["type", "key", "patch"]),
+            kind("retire", json!({"type": names(|t| t.may.retire), "key": {"type": "string"},
+                                  "opts": opts}), &["type", "key"]),
+            kind("call", json!({"verb": verbs, "key": {"type": "string",
+                                "description": "The record's key; left out for a verb called on its type."},
+                                "payload": {"type": "object"}, "opts": opts}), &["verb", "payload"]),
+            kind("declare", json!({"declarations": {"type": "array", "items": {"type": "object"}}}),
+                 &["declarations"]),
+            kind("migrate", json!({"migration": {"type": "object"}}), &["migration"]),
+        ]});
         out.push(ToolSpec {
             name: PROPOSE.into(),
             description: "Record a write as a proposal for review instead of applying it: a \
                 record write, a verb call, declarations (as apply takes them) or a migration \
-                (as migrate takes it); a declaration or migration is accepted by a reviewer \
-                holding the schema grant."
+                (as migrate takes it). A record write or a verb call needs the grants it would \
+                need applied: a proposal waits for review, it does not lift a grant. \
+                Declarations and a migration need no `schema` grant to propose; a reviewer \
+                holding it accepts them."
                 .into(),
             input_schema: obj(
-                props([
-                    (
-                        "write",
-                        json!({"type": "object", "properties": {
-                        "write": {"enum": kinds},
-                        "declarations": {"type": "array", "items": {"type": "object"}},
-                        "migration": {"type": "object"}}, "required": ["write"]}),
-                    ),
-                    ("why", json!({"type": "string"})),
-                ]),
+                props([("write", write), ("why", json!({"type": "string"}))]),
                 &["write", "why"],
             ),
             output_schema: outcome_schema(),

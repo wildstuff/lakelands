@@ -21,6 +21,8 @@ fn a_cursor_round_trips_and_a_foreign_one_is_refused() {
         after: Some((vec![Value::from(1)], "k".into())),
         offset: 0,
         params: Default::default(),
+        door: "find".into(),
+        ty: Some("note".into()),
     });
     let back = decode(&c).unwrap();
     assert_eq!(back.at, Position(7));

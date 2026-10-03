@@ -88,7 +88,7 @@ impl std::error::Error for EvalError {}
 /// The result of an evaluation.
 pub type Result<T> = std::result::Result<T, EvalError>;
 
-fn err<T>(msg: impl Into<String>) -> Result<T> {
+pub(crate) fn err<T>(msg: impl Into<String>) -> Result<T> {
     Err(EvalError(msg.into()))
 }
 
@@ -483,31 +483,19 @@ pub fn bind_params(e: &Expr, values: &BTreeMap<String, Literal>) -> Expr {
 
 /// The names every `param('name')` in `e` reads, added to `out`.
 pub fn params_read(e: &Expr, out: &mut std::collections::BTreeSet<String>) {
-    match e {
-        Expr::Call {
-            func: Func::Param,
-            args,
-        } => {
-            if let Some(Expr::Lit {
-                value: Literal::Text(name),
-            }) = args.first()
-            {
-                out.insert(name.clone());
-            }
+    if let Expr::Call {
+        func: Func::Param,
+        args,
+    } = e
+    {
+        if let Some(Expr::Lit {
+            value: Literal::Text(name),
+        }) = args.first()
+        {
+            out.insert(name.clone());
         }
-        Expr::Call { args, .. } | Expr::And { args } | Expr::Or { args } => {
-            args.iter().for_each(|a| params_read(a, out));
-        }
-        Expr::Cmp { lhs, rhs, .. } | Expr::Arith { lhs, rhs, .. } => {
-            params_read(lhs, out);
-            params_read(rhs, out);
-        }
-        Expr::Neg { arg } | Expr::Not { arg } | Expr::IsNull { arg } => params_read(arg, out),
-        Expr::In { arg, list } => {
-            params_read(arg, out);
-            list.iter().for_each(|a| params_read(a, out));
-        }
-        Expr::Lit { .. } | Expr::Path { .. } => {}
+    } else {
+        super::children(e).for_each(|c| params_read(c, out));
     }
 }
 
@@ -719,12 +707,9 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
     // A typed expression reaches here without the parser's checks; the
     // argument count is checked again so no malformed call can panic.
     let (min, max) = super::arity(func);
+    let name = super::func_name(func);
     if args.len() < min || max.is_some_and(|m| args.len() > m) {
-        return err(format!(
-            "{}() does not take {} argument(s)",
-            super::func_name(func),
-            args.len()
-        ));
+        return err(format!("{name}() does not take {} argument(s)", args.len()));
     }
     // The functions that decide which arguments to evaluate, or read a
     // field's name rather than its value.
@@ -755,10 +740,7 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
         }
         Func::Previous | Func::Changed => {
             if !scope.in_write() {
-                return err(format!(
-                    "{}() has meaning only in a guard over a write",
-                    super::func_name(func)
-                ));
+                return err(format!("{name}() has meaning only in a guard over a write"));
             }
             let field = field_arg(args)?;
             let before = scope.previous(field).map_or(Val::Null, |v| from_json(&v));
@@ -786,8 +768,7 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
                 return v;
             }
             return err(format!(
-                "{}() folds a set of records and has no meaning over one record",
-                super::func_name(func)
+                "{name}() folds a set of records and has no meaning over one record"
             ));
         }
         _ => {}

@@ -5,6 +5,34 @@ fn declaration(v: serde_json::Value) -> Declaration {
     serde_json::from_value(v).unwrap()
 }
 
+fn declared(declaration: Declaration) -> EventBody {
+    EventBody::Declared {
+        declaration,
+        schema_hash: None,
+        version: 1,
+    }
+}
+
+/// An event of log format `v` at position 1 whose body is `body`.
+fn event_json(v: u32, body: serde_json::Value) -> Event {
+    serde_json::from_value(json!({
+        "v": v, "lake": "l", "position": 1, "id": "0".repeat(32),
+        "prev": "0".repeat(64), "known_at": "2026-01-01T00:00:00.000000Z",
+        "writer": "system:lakelands", "origin": "system",
+        "context": {"origin": "direct", "depth": 0}, "fence": 1,
+        "body": body, "hash": "0".repeat(64)
+    }))
+    .unwrap()
+}
+
+/// An event of log format `v` declaring `declaration`, at version 1.
+fn declared_event(v: u32, declaration: impl serde::Serialize) -> Event {
+    event_json(
+        v,
+        json!({"kind": "declared", "declaration": declaration, "version": 1}),
+    )
+}
+
 #[test]
 fn upstream_belongs_to_record_ingested_alone() {
     let line = |body: serde_json::Value| -> Event {
@@ -64,11 +92,7 @@ fn annotations_anywhere_in_a_declaration_need_format_5() {
     let Declaration::Type(to) = annotated.clone() else {
         unreachable!()
     };
-    let declared = EventBody::Declared {
-        declaration: annotated.clone(),
-        schema_hash: None,
-        version: 1,
-    };
+    let declared = declared(annotated.clone());
     assert_eq!(needed(&declared, false), 5);
     let migration = lakelands_api::write::Migration {
         to: to.clone(),
@@ -116,15 +140,11 @@ fn a_derived_relation_needs_format_6_and_a_carried_one_does_not() {
         if derived {
             r["derived"] = json!({"match": [{"from": "customer_no", "to": "no"}]});
         }
-        EventBody::Declared {
-            declaration: declaration(json!({
-                "declare": "type", "name": "invoice",
-                "fields": [{"name": "customer_no", "type": {"kind": "text"}}],
-                "relations": [r]
-            })),
-            schema_hash: None,
-            version: 1,
-        }
+        declared(declaration(json!({
+            "declare": "type", "name": "invoice",
+            "fields": [{"name": "customer_no", "type": {"kind": "text"}}],
+            "relations": [r]
+        })))
     };
     assert_eq!(needed(&with(true), false), 6);
     assert_eq!(needed(&with(false), false), 1);
@@ -132,12 +152,10 @@ fn a_derived_relation_needs_format_6_and_a_carried_one_does_not() {
 
 #[test]
 fn a_triggers_max_depth_needs_format_6() {
-    let trigger = |max_depth: serde_json::Value| EventBody::Declared {
-        declaration: declaration(json!({
+    let trigger = |max_depth: serde_json::Value| {
+        declared(declaration(json!({
             "declare": "trigger", "name": "t", "on": "job", "max_depth": max_depth
-        })),
-        schema_hash: None,
-        version: 1,
+        })))
     };
     assert_eq!(needed(&trigger(json!(1)), false), 6);
     assert_eq!(needed(&trigger(serde_json::Value::Null), false), 1);
@@ -150,11 +168,6 @@ fn a_declaration_calling_retired_needs_format_7_and_says_so_below_it() {
             "declare": "trigger", "name": "t", "on": "job", "when": when
         }))
     };
-    let declared = |d: Declaration| EventBody::Declared {
-        declaration: d,
-        schema_hash: None,
-        version: 1,
-    };
     assert_eq!(needed(&declared(guard("not retired()")), false), 7);
     assert_eq!(needed(&declared(guard("status = 'retired'")), false), 1);
     let proposed = EventBody::WriteProposed {
@@ -165,15 +178,7 @@ fn a_declaration_calling_retired_needs_format_7_and_says_so_below_it() {
         why: String::new(),
     };
     assert_eq!(needed(&proposed, false), 7, "a proposal keeps it too");
-    let event: Event = serde_json::from_value(json!({
-        "v": 6, "lake": "l", "position": 1, "id": "0".repeat(32),
-        "prev": "0".repeat(64), "known_at": "2026-01-01T00:00:00.000000Z",
-        "writer": "system:lakelands", "origin": "system",
-        "context": {"origin": "direct", "depth": 0}, "fence": 1,
-        "body": {"kind": "declared", "declaration": guard("retired()"), "version": 1},
-        "hash": "0".repeat(64)
-    }))
-    .unwrap();
+    let event = declared_event(6, guard("retired()"));
     assert_eq!(
         below(&event).as_deref(),
         Some("a format 6 event declares a call of `retired`, which format 7 added")
@@ -192,11 +197,6 @@ fn a_view_with_parameters_needs_format_8_and_says_so_below_it() {
                      "measures": [{"name": "n", "expr": "count()"}]}
         }))
     };
-    let declared = |d: Declaration| EventBody::Declared {
-        declaration: d,
-        schema_hash: None,
-        version: 1,
-    };
     let anchored = view(
         json!([{"name": "anchor", "kind": "date_time"}]),
         "date <= param('anchor')",
@@ -206,15 +206,7 @@ fn a_view_with_parameters_needs_format_8_and_says_so_below_it() {
         needed(&declared(view(json!([]), "date <= '2026-06-30'")), false),
         1
     );
-    let event: Event = serde_json::from_value(json!({
-        "v": 7, "lake": "l", "position": 1, "id": "0".repeat(32),
-        "prev": "0".repeat(64), "known_at": "2026-01-01T00:00:00.000000Z",
-        "writer": "system:lakelands", "origin": "system",
-        "context": {"origin": "direct", "depth": 0}, "fence": 1,
-        "body": {"kind": "declared", "declaration": anchored, "version": 1},
-        "hash": "0".repeat(64)
-    }))
-    .unwrap();
+    let event = declared_event(7, anchored);
     assert_eq!(
         below(&event).as_deref(),
         Some("a format 7 event declares a view's parameters, which format 8 added")
@@ -230,11 +222,6 @@ fn a_verb_on_its_type_needs_format_8_declared_called_or_proposed() {
             v["scope"] = json!(s);
         }
         declaration(v)
-    };
-    let declared = |d: Declaration| EventBody::Declared {
-        declaration: d,
-        schema_hash: None,
-        version: 1,
     };
     assert_eq!(needed(&declared(verb(Some("type"))), false), 8);
     assert_eq!(needed(&declared(verb(None)), false), 1);
@@ -258,15 +245,10 @@ fn a_verb_on_its_type_needs_format_8_declared_called_or_proposed() {
     assert_eq!(needed(&proposed(None), false), 8);
     assert_eq!(needed(&proposed(Some("k")), false), 1);
     let event = |body: EventBody| -> Event {
-        let mut e: Event = serde_json::from_value(json!({
-            "v": 7, "lake": "l", "position": 1, "id": "0".repeat(32),
-            "prev": "0".repeat(64), "known_at": "2026-01-01T00:00:00.000000Z",
-            "writer": "system:lakelands", "origin": "system",
-            "context": {"origin": "direct", "depth": 0}, "fence": 1,
-            "body": {"kind": "checkpoint", "through": 0, "hash": "0".repeat(64), "segments": []},
-            "hash": "0".repeat(64)
-        }))
-        .unwrap();
+        let mut e: Event = event_json(
+            7,
+            json!({"kind": "checkpoint", "through": 0, "hash": "0".repeat(64), "segments": []}),
+        );
         e.body = body;
         e
     };
@@ -277,5 +259,29 @@ fn a_verb_on_its_type_needs_format_8_declared_called_or_proposed() {
     assert_eq!(
         below(&event(called(None))).as_deref(),
         Some("a format 7 event calls a verb with no key, which format 8 added")
+    );
+}
+
+#[test]
+fn a_view_that_merges_sources_needs_format_9_and_says_so_below_it() {
+    let view = |merge: serde_json::Value| {
+        declaration(json!({
+            "declare": "type", "name": "balance", "key": ["day"],
+            "fields": [{"name": "day", "type": {"kind": "date_time"}},
+                       {"name": "kin", "type": {"kind": "number"}},
+                       {"name": "kout", "type": {"kind": "number"}}],
+            "view": {"source": "food", "group_by": ["day"],
+                     "measures": [{"name": "kin", "expr": "count()"}],
+                     "merge": merge}
+        }))
+    };
+    let merged = view(json!([{"source": "workout", "group_by": ["date"],
+                             "measures": [{"name": "kout", "expr": "count()"}]}]));
+    assert_eq!(needed(&declared(merged.clone()), false), 9);
+    assert_eq!(needed(&declared(view(json!([]))), false), 1);
+    let event = declared_event(8, merged);
+    assert_eq!(
+        below(&event).as_deref(),
+        Some("a format 8 event declares a view that merges sources, which format 9 added")
     );
 }

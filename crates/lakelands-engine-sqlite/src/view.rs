@@ -20,10 +20,10 @@ use lakelands_api::read::{Direction, Order};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter};
 use lakelands_core::engines;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, ToSql, params};
 
 use crate::handle::SqliteLake;
-use crate::projection::{self, decode_record, holds_at};
+use crate::projection::{self, column, decode_record, holds_at, one};
 use crate::{sql, unavailable};
 
 /// A read view of one lake's projection at one position.
@@ -32,11 +32,12 @@ pub(crate) struct SqliteView<'a> {
     pub(crate) at: Option<Position>,
 }
 
-/// One read: a connection in a read transaction, and whether the view's
-/// position is the head in the state it sees.
+/// One read: a connection in a read transaction, the head in the state it
+/// sees, and whether the view's position is that head.
 struct Read<'c> {
     conn: &'c Connection,
     at: Position,
+    folded: Option<Position>,
     head: bool,
 }
 
@@ -58,6 +59,7 @@ impl SqliteView<'_> {
             f(&Read {
                 conn: &conn,
                 at,
+                folded,
                 head: folded == Some(at),
             })
         });
@@ -76,33 +78,28 @@ impl Read<'_> {
     }
 
     fn record(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
-        let state: Option<String> = self
-            .conn
-            .prepare_cached(&format!(
+        let state: Option<String> = one(
+            self.conn,
+            &format!(
                 "SELECT state FROM records WHERE ty = ?1 AND key = ?2 AND {}",
                 holds_at(3)
-            ))
-            .and_then(|mut s| {
-                s.query_row(params![ty.as_str(), key.as_str(), self.at()], |r| r.get(0))
-                    .optional()
-            })
-            .map_err(sql)?;
+            ),
+            params![ty.as_str(), key.as_str(), self.at()],
+        )?;
         state.as_deref().map(decode_record).transpose()
     }
 
     /// Every record of a type at the view's position, in key order.
     fn records(&self, ty: &TypeName) -> Result<Vec<StoredRecord>> {
-        let mut stmt = self
-            .conn
-            .prepare_cached(&format!(
+        column(
+            self.conn,
+            &format!(
                 "SELECT state FROM records WHERE ty = ?1 AND {} ORDER BY key",
                 holds_at(2)
-            ))
-            .map_err(sql)?;
-        let rows = stmt
-            .query_map(params![ty.as_str(), self.at()], |r| r.get::<_, String>(0))
-            .map_err(sql)?;
-        rows.map(|r| decode_record(&r.map_err(sql)?)).collect()
+            ),
+            params![ty.as_str(), self.at()],
+            |s: String| decode_record(&s),
+        )
     }
 
     /// At most `n` records of a type at the view's position after the key
@@ -116,34 +113,73 @@ impl Read<'_> {
         after: Option<&str>,
         n: u32,
     ) -> Result<Vec<StoredRecord>> {
-        let from = if after.is_some() { "AND key > ?4" } else { "" };
-        let mut stmt = self
-            .conn
-            .prepare_cached(&format!(
+        let from = after.map_or("", |_| "AND key > ?4");
+        self.page(
+            &format!(
                 "SELECT state FROM records WHERE ty = ?1 AND {} {from} ORDER BY key LIMIT ?3",
                 holds_at(2)
-            ))
-            .map_err(sql)?;
-        let state = |r: &rusqlite::Row<'_>| r.get::<_, String>(0);
-        let rows: Vec<String> = match after {
-            Some(after) => stmt
-                .query_map(params![ty.as_str(), self.at(), n, after], state)
-                .and_then(Iterator::collect),
-            None => stmt
-                .query_map(params![ty.as_str(), self.at(), n], state)
-                .and_then(Iterator::collect),
-        }
-        .map_err(sql)?;
-        rows.iter().map(|r| decode_record(r)).collect()
+            ),
+            &[&ty.as_str(), &self.at(), &n],
+            after,
+        )
     }
 
-    /// The fields of `ty` whose order index answers this read: none but at
-    /// the head, and only while the index is kept through it.
+    /// How many records of a type are in force at the view's position, the
+    /// retired and the restricted ones only when asked, their flags read
+    /// from the stored state.
+    fn count_in_force(&self, ty: &TypeName, retired: bool, restricted: bool) -> Result<u64> {
+        let counted: Vec<i64> = column(
+            self.conn,
+            &format!(
+                "SELECT COUNT(*) FROM records WHERE ty = ?1 AND {} \
+                 AND (?3 OR json_extract(state, '$.retired') = 0) \
+                 AND (?4 OR json_extract(state, '$.restricted') = 0)",
+                holds_at(2)
+            ),
+            params![ty.as_str(), self.at(), retired, restricted],
+            Ok,
+        )?;
+        Ok(counted.first().map_or(0, |n| n.unsigned_abs()))
+    }
+
+    /// The fields of `ty` whose order index answers this read: none unless
+    /// the index is kept through the head. At an earlier position it is
+    /// read with the keys changed since ([`Read::changed`]).
     fn sorted_fields(&self, ty: &TypeName, decl: Option<&TypeDecl>) -> Result<Vec<FieldName>> {
-        if !self.head || projection::sorted(self.conn, ty)? != Some(self.at) {
+        if self.folded.is_none() || projection::sorted(self.conn, ty)? != self.folded {
             return Ok(Vec::new());
         }
         projection::sorted_fields(self.conn, ty, decl)
+    }
+
+    /// The keys of `ty` with a state put or ended after the view's
+    /// position, and their states there; `None` past `ceiling` states put
+    /// or keys ended. Two range reads, one into `records_since` for the
+    /// states put, one into `records_at` for the states that held at the
+    /// position and ended: a `UNION` of the two is planned as a merge in
+    /// key order, which reads the type.
+    fn changed(&self, ty: &TypeName, ceiling: usize) -> Result<Option<engines::Changed>> {
+        let args = params![ty.as_str(), self.at(), ceiling as i64 + 1];
+        let put: Vec<String> = column(
+            self.conn,
+            "SELECT key FROM records WHERE ty = ?1 AND since > ?2 ORDER BY since LIMIT ?3",
+            args,
+            Ok,
+        )?;
+        let ended: Vec<String> = column(
+            self.conn,
+            "SELECT key FROM records WHERE ty = ?1 AND until > ?2 AND since <= ?2 ORDER BY until LIMIT ?3",
+            args,
+            Ok,
+        )?;
+        let keys: BTreeSet<String> = put.iter().chain(&ended).cloned().collect();
+        if put.len().max(ended.len()).max(keys.len()) > ceiling {
+            return Ok(None);
+        }
+        Ok(Some(engines::Changed {
+            states: self.records_by_key(ty, keys.clone())?,
+            keys: keys.into_iter().map(RecordKey::from).collect(),
+        }))
     }
 
     /// At most `n` head records of a type with a row in the order index for
@@ -199,30 +235,30 @@ impl Read<'_> {
         after: Option<&str>,
         n: u32,
     ) -> Result<Vec<StoredRecord>> {
-        let from = if after.is_some() {
-            "AND r.key > ?4"
-        } else {
-            ""
-        };
-        let mut stmt = self
-            .conn
-            .prepare_cached(&format!(
+        let from = after.map_or("", |_| "AND r.key > ?4");
+        self.page(
+            &format!(
                 "SELECT r.state FROM records r WHERE r.ty = ?1 AND r.until IS NULL {from} \
                  AND NOT EXISTS (SELECT 1 FROM sort_index s \
                  WHERE s.ty = r.ty AND s.field = ?2 AND s.key = r.key) \
                  ORDER BY r.key LIMIT ?3"
-            ))
-            .map_err(sql)?;
-        let state = |r: &rusqlite::Row<'_>| r.get::<_, String>(0);
-        let rows: Vec<String> = match after {
-            Some(after) => stmt
-                .query_map(params![ty.as_str(), field.as_str(), n, after], state)
-                .and_then(Iterator::collect),
-            None => stmt
-                .query_map(params![ty.as_str(), field.as_str(), n], state)
-                .and_then(Iterator::collect),
-        }
-        .map_err(sql)?;
+            ),
+            &[&ty.as_str(), &field.as_str(), &n],
+            after,
+        )
+    }
+
+    /// The records a page's statement answers, `after` bound as its fourth
+    /// parameter when there is one; decoded once all are read.
+    fn page(
+        &self,
+        statement: &str,
+        args: &[&dyn ToSql],
+        after: Option<&str>,
+    ) -> Result<Vec<StoredRecord>> {
+        let mut args = args.to_vec();
+        args.extend(after.as_ref().map(|a| a as &dyn ToSql));
+        let rows: Vec<String> = column(self.conn, statement, args.as_slice(), Ok)?;
         rows.iter().map(|r| decode_record(r)).collect()
     }
 
@@ -237,37 +273,37 @@ impl Read<'_> {
         Ok(out)
     }
 
-    fn keys(&self, query: &str, args: &[&dyn rusqlite::ToSql]) -> Result<BTreeSet<String>> {
-        let mut stmt = self.conn.prepare_cached(query).map_err(sql)?;
-        let rows = stmt
-            .query_map(args, |r| r.get::<_, String>(0))
-            .map_err(sql)?;
-        rows.map(|r| r.map_err(sql)).collect()
+    fn keys(&self, query: &str, args: &[&dyn ToSql]) -> Result<BTreeSet<String>> {
+        column(self.conn, query, args, Ok)
     }
 
     fn verb_on(&self, verb: &VerbName) -> Option<TypeName> {
-        let state: String = self
-            .conn
-            .prepare_cached(&format!(
+        let state: String = one(
+            self.conn,
+            &format!(
                 "SELECT state FROM declarations WHERE ident = ?1 AND {}",
                 holds_at(2)
-            ))
-            .and_then(|mut s| {
-                s.query_row(params![format!("verb {verb}"), self.at()], |r| r.get(0))
-                    .optional()
-            })
-            .ok()
-            .flatten()?;
+            ),
+            params![format!("verb {verb}"), self.at()],
+        )
+        .ok()??;
         match decode::<Declared>(&state).ok()?.declaration {
             Declaration::Verb(v) => Some(v.on),
             _ => None,
         }
     }
 
-    fn edge_rows(&self, query: &str, a: &str, b: &str) -> Result<Vec<Edge>> {
-        let mut stmt = self.conn.prepare_cached(query).map_err(sql)?;
+    /// The head's edges whose `end` (`src` or `dst`) is the record.
+    fn edge_rows(&self, end: &str, ty: &TypeName, key: &RecordKey) -> Result<Vec<Edge>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached(&format!(
+                "SELECT src_ty, src_key, relation, dst_ty, dst_key FROM edges \
+                 WHERE {end}_ty = ?1 AND {end}_key = ?2"
+            ))
+            .map_err(sql)?;
         let rows = stmt
-            .query_map(params![a, b], |r| {
+            .query_map(params![ty.as_str(), key.as_str()], |r| {
                 Ok(Edge {
                     from: (r.get::<_, String>(0)?.into(), r.get::<_, String>(1)?.into()),
                     relation: r.get::<_, String>(2)?.into(),
@@ -281,23 +317,19 @@ impl Read<'_> {
 
     /// Every type declared at the view's position.
     fn types(&self) -> Result<Vec<TypeDecl>> {
-        let mut stmt = self
-            .conn
-            .prepare_cached(&format!(
+        let types: Vec<Option<TypeDecl>> = column(
+            self.conn,
+            &format!(
                 "SELECT state FROM declarations WHERE ident LIKE 'type %' AND {} ORDER BY ident",
                 holds_at(1)
-            ))
-            .map_err(sql)?;
-        let rows = stmt
-            .query_map(params![self.at()], |r| r.get::<_, String>(0))
-            .map_err(sql)?;
-        let mut out = Vec::new();
-        for r in rows {
-            if let Declaration::Type(t) = decode::<Declared>(&r.map_err(sql)?)?.declaration {
-                out.push(t);
-            }
-        }
-        Ok(out)
+            ),
+            params![self.at()],
+            |s: String| match decode::<Declared>(&s)?.declaration {
+                Declaration::Type(t) => Ok(Some(t)),
+                _ => Ok(None),
+            },
+        )?;
+        Ok(types.into_iter().flatten().collect())
     }
 }
 
@@ -308,17 +340,15 @@ impl ProjectionView for SqliteView<'_> {
 
     fn declarations(&self) -> Result<Vec<Declared>> {
         self.read(Vec::new(), |r| {
-            let mut stmt = r
-                .conn
-                .prepare_cached(&format!(
+            column(
+                r.conn,
+                &format!(
                     "SELECT state FROM declarations WHERE {} ORDER BY ident",
                     holds_at(1)
-                ))
-                .map_err(sql)?;
-            let rows = stmt
-                .query_map(params![r.at()], |row| row.get::<_, String>(0))
-                .map_err(sql)?;
-            rows.map(|s| decode(&s.map_err(sql)?)).collect()
+                ),
+                params![r.at()],
+                |s: String| decode(&s),
+            )
         })
     }
 
@@ -329,6 +359,20 @@ impl ProjectionView for SqliteView<'_> {
     fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
         self.read(Vec::new(), |r| {
             r.records_by_key(ty, keys.iter().map(|k| k.to_string()).collect())
+        })
+    }
+
+    fn count(&self, ty: &TypeName, scan: &Scan) -> Result<u64> {
+        self.read(0, |r| {
+            // At the head, a count that selects by the flags alone is the
+            // projection's `COUNT(*)`; any other is counted batch by batch.
+            if r.head && scan.filter.is_none() && scan.equal.is_empty() && scan.valid_at.is_none() {
+                return r.count_in_force(ty, scan.retired, scan.restricted);
+            }
+            let decl = r.type_decl(ty)?;
+            engines::count_in_key_order(decl.as_ref(), scan, |after, n| {
+                r.records_after(ty, after, n)
+            })
         })
     }
 
@@ -357,7 +401,7 @@ impl ProjectionView for SqliteView<'_> {
                 None => {
                     let sorted = r.sorted_fields(ty, decl.as_ref())?;
                     match engines::by_order_index(decl.as_ref(), &sorted, scan) {
-                        Some(first) => {
+                        Some(first) if r.head => {
                             return engines::scan_in_field_order(
                                 decl.as_ref(),
                                 scan,
@@ -365,6 +409,20 @@ impl ProjectionView for SqliteView<'_> {
                                 |after, n| r.unsorted_after(ty, &first.field, after, n),
                             );
                         }
+                        // At an earlier position, the head's index with the
+                        // keys changed since; past the ceiling, the sort.
+                        Some(first) => match r.changed(ty, engines::changed_ceiling(scan.limit))? {
+                            Some(changed) => {
+                                return engines::scan_in_field_order_at(
+                                    decl.as_ref(),
+                                    scan,
+                                    &changed,
+                                    |from, n| r.sorted_after(ty, first, from, n),
+                                    |after, n| r.unsorted_after(ty, &first.field, after, n),
+                                );
+                            }
+                            None => r.records(ty)?,
+                        },
                         None => r.records(ty)?,
                     }
                 }
@@ -391,20 +449,10 @@ impl ProjectionView for SqliteView<'_> {
                 let mut edges = Vec::new();
                 if r.head {
                     if out {
-                        edges.extend(r.edge_rows(
-                            "SELECT src_ty, src_key, relation, dst_ty, dst_key FROM edges \
-                             WHERE src_ty = ?1 AND src_key = ?2",
-                            ty.as_str(),
-                            key.as_str(),
-                        )?);
+                        edges.extend(r.edge_rows("src", ty, key)?);
                     }
                     if inn {
-                        edges.extend(r.edge_rows(
-                            "SELECT src_ty, src_key, relation, dst_ty, dst_key FROM edges \
-                             WHERE dst_ty = ?1 AND dst_key = ?2",
-                            ty.as_str(),
-                            key.as_str(),
-                        )?);
+                        edges.extend(r.edge_rows("dst", ty, key)?);
                     }
                     edges.retain(|e| relation.is_none_or(|want| *want == e.relation));
                 } else {
@@ -517,67 +565,51 @@ impl ProjectionView for SqliteView<'_> {
 
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
         self.read(Vec::new(), |r| {
-            let mut stmt = r
-                .conn
-                .prepare_cached(&format!(
-                    "SELECT state FROM proposals WHERE {}",
-                    holds_at(1)
-                ))
-                .map_err(sql)?;
-            let rows = stmt
-                .query_map(params![r.at()], |row| row.get::<_, String>(0))
-                .map_err(sql)?;
-            let all: Vec<Proposal> = rows
-                .map(|s| decode(&s.map_err(sql)?))
-                .collect::<Result<_>>()?;
+            let all: Vec<Proposal> = column(
+                r.conn,
+                &format!("SELECT state FROM proposals WHERE {}", holds_at(1)),
+                params![r.at()],
+                |s: String| decode(&s),
+            )?;
             Ok(engines::proposals(&all, filter, |v| r.verb_on(v)))
         })
     }
 
     fn is_member(&self, set: &str, ty: &TypeName, key: &RecordKey) -> Result<bool> {
         self.read(false, |r| {
-            r.conn
-                .prepare_cached(&format!(
+            one(
+                r.conn,
+                &format!(
                     "SELECT state FROM members WHERE object_set = ?1 AND ty = ?2 AND key = ?3 AND {}",
                     holds_at(4)
-                ))
-                .and_then(|mut s| {
-                    s.query_row(params![set, ty.as_str(), key.as_str(), r.at()], |row| {
-                        row.get::<_, bool>(0)
-                    })
-                    .optional()
-                })
-                .map(|m| m.unwrap_or(false))
-                .map_err(sql)
+                ),
+                params![set, ty.as_str(), key.as_str(), r.at()],
+            )
+            .map(|m| m.unwrap_or(false))
         })
     }
 
     fn applied(&self, id: &EventId) -> Result<Option<Position>> {
         self.read(None, |r| {
-            r.conn
-                .prepare_cached("SELECT at FROM applied WHERE id = ?1 AND at <= ?2")
-                .and_then(|mut s| {
-                    s.query_row(params![id.0, r.at()], |row| row.get::<_, i64>(0))
-                        .optional()
-                })
-                .map(|p| p.map(|p| Position(p as u64)))
-                .map_err(sql)
+            one(
+                r.conn,
+                "SELECT at FROM applied WHERE id = ?1 AND at <= ?2",
+                params![id.0, r.at()],
+            )
+            .map(|p: Option<i64>| p.map(|p| Position(p as u64)))
         })
     }
 
     fn output(&self, seam: &str, input: &Digest) -> Result<Option<Value>> {
         self.read(None, |r| {
-            let state: Option<String> = r
-                .conn
-                .prepare_cached(&format!(
+            let state: Option<String> = one(
+                r.conn,
+                &format!(
                     "SELECT state FROM outputs WHERE seam = ?1 AND input = ?2 AND {}",
                     holds_at(3)
-                ))
-                .and_then(|mut s| {
-                    s.query_row(params![seam, input.0, r.at()], |row| row.get(0))
-                        .optional()
-                })
-                .map_err(sql)?;
+                ),
+                params![seam, input.0, r.at()],
+            )?;
             state.as_deref().map(decode).transpose()
         })
     }

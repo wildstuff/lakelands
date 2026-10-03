@@ -33,7 +33,8 @@ use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::{SETTING_TYPE, SORT_INDEX_SETTING};
 use lakelands_api::write::Declaration;
 use lakelands_core::engines;
-use rusqlite::{Connection, OptionalExtension, ToSql, params};
+use rusqlite::types::FromSql;
+use rusqlite::{Connection, OptionalExtension, Params, ToSql, params};
 
 use crate::sql;
 
@@ -54,6 +55,7 @@ CREATE TABLE IF NOT EXISTS records (
     PRIMARY KEY (ty, key, since)
 );
 CREATE INDEX IF NOT EXISTS records_at ON records (ty, until, key);
+CREATE INDEX IF NOT EXISTS records_since ON records (ty, since);
 CREATE TABLE IF NOT EXISTS proposals (
     id TEXT NOT NULL, since INTEGER NOT NULL, until INTEGER,
     state TEXT NOT NULL,
@@ -129,28 +131,17 @@ pub(crate) struct History {
     pub(crate) ident: &'static [&'static str],
 }
 
-pub(crate) const DECLARATIONS: History = History {
-    table: "declarations",
-    ident: &["ident"],
-};
-pub(crate) const RECORDS: History = History {
-    table: "records",
-    ident: &["ty", "key"],
-};
-pub(crate) const PROPOSALS: History = History {
-    table: "proposals",
-    ident: &["id"],
-};
-pub(crate) const MEMBERS: History = History {
-    table: "members",
-    ident: &["object_set", "ty", "key"],
-};
-pub(crate) const OUTPUTS: History = History {
-    table: "outputs",
-    ident: &["seam", "input"],
-};
+pub(crate) const DECLARATIONS: History = History::new("declarations", &["ident"]);
+pub(crate) const RECORDS: History = History::new("records", &["ty", "key"]);
+pub(crate) const PROPOSALS: History = History::new("proposals", &["id"]);
+pub(crate) const MEMBERS: History = History::new("members", &["object_set", "ty", "key"]);
+pub(crate) const OUTPUTS: History = History::new("outputs", &["seam", "input"]);
 
 impl History {
+    const fn new(table: &'static str, ident: &'static [&'static str]) -> History {
+        History { table, ident }
+    }
+
     fn ident_where(&self, from: usize) -> String {
         self.ident
             .iter()
@@ -232,12 +223,42 @@ pub(crate) fn holds_at(n: usize) -> String {
     format!("since <= ?{n} AND (until IS NULL OR until > ?{n})")
 }
 
+/// Run one cached statement.
+pub(crate) fn run(conn: &Connection, statement: &str, args: impl Params) -> Result<()> {
+    conn.prepare_cached(statement)
+        .and_then(|mut s| s.execute(args))
+        .map(|_| ())
+        .map_err(sql)
+}
+
+/// The first column of the row a cached statement answers, if any.
+pub(crate) fn one<T: FromSql>(
+    conn: &Connection,
+    statement: &str,
+    args: impl Params,
+) -> Result<Option<T>> {
+    conn.prepare_cached(statement)
+        .and_then(|mut s| s.query_row(args, |r| r.get(0)).optional())
+        .map_err(sql)
+}
+
+/// The first column of every row a cached statement answers, each passed
+/// through `f` as it is read.
+pub(crate) fn column<T: FromSql, R, C: FromIterator<R>>(
+    conn: &Connection,
+    statement: &str,
+    args: impl Params,
+    mut f: impl FnMut(T) -> Result<R>,
+) -> Result<C> {
+    let mut stmt = conn.prepare_cached(statement).map_err(sql)?;
+    let rows = stmt.query_map(args, |r| r.get::<_, T>(0)).map_err(sql)?;
+    rows.map(|r| f(r.map_err(sql)?)).collect()
+}
+
 /// The position the projection reflects, if any.
 pub(crate) fn folded(conn: &Connection) -> Result<Option<Position>> {
-    conn.prepare_cached("SELECT v FROM meta WHERE k = 'folded'")
-        .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)).optional())
-        .map(|v| v.map(|v| Position(v as u64)))
-        .map_err(sql)
+    one(conn, "SELECT v FROM meta WHERE k = 'folded'", [])
+        .map(|v: Option<i64>| v.map(|v| Position(v as u64)))
 }
 
 /// The meta row marking the position `ty`'s order index was last kept
@@ -250,13 +271,8 @@ fn sorted_mark(ty: &TypeName) -> String {
 /// keeps one. It describes the head only when it is the position folded
 /// through: a writer that does not keep the index leaves it behind.
 pub(crate) fn sorted(conn: &Connection, ty: &TypeName) -> Result<Option<Position>> {
-    conn.prepare_cached("SELECT v FROM meta WHERE k = ?1")
-        .and_then(|mut s| {
-            s.query_row([sorted_mark(ty)], |r| r.get::<_, i64>(0))
-                .optional()
-        })
-        .map(|v| v.map(|v| Position(v as u64)))
-        .map_err(sql)
+    one(conn, "SELECT v FROM meta WHERE k = ?1", [sorted_mark(ty)])
+        .map(|v: Option<i64>| v.map(|v| Position(v as u64)))
 }
 
 /// The fields of `ty` whose order index the lake keeps: those its
@@ -287,45 +303,31 @@ pub(crate) fn sorted_fields(
 /// puts the setting's head state, and a writer's open when the mark is
 /// behind.
 pub(crate) fn rebuild_sorted(conn: &Connection, ty: &TypeName, through: Position) -> Result<()> {
-    conn.prepare_cached("DELETE FROM sort_index WHERE ty = ?1")
-        .and_then(|mut s| s.execute([ty.as_str()]))
-        .map_err(sql)?;
+    run(conn, "DELETE FROM sort_index WHERE ty = ?1", [ty.as_str()])?;
     let decl = type_at(conn, ty, None)?;
     let fields = sorted_fields(conn, ty, decl.as_ref())?;
     if fields.is_empty() {
-        conn.prepare_cached("DELETE FROM meta WHERE k = ?1")
-            .and_then(|mut s| s.execute([sorted_mark(ty)]))
-            .map_err(sql)?;
+        run(conn, "DELETE FROM meta WHERE k = ?1", [sorted_mark(ty)])?;
         return Ok(());
     }
     // A page of the type at a time, so the pass holds a page, not the type.
     let mut after = String::new();
     loop {
-        let page: Vec<String> = conn
-            .prepare_cached(
-                "SELECT state FROM records WHERE ty = ?1 AND until IS NULL AND key > ?2 \
-                 ORDER BY key LIMIT 1024",
-            )
-            .and_then(|mut s| {
-                s.query_map(params![ty.as_str(), after], |r| r.get(0))?
-                    .collect()
-            })
-            .map_err(sql)?;
+        let page: Vec<String> = column(
+            conn,
+            "SELECT state FROM records WHERE ty = ?1 AND until IS NULL AND key > ?2 \
+             ORDER BY key LIMIT 1024",
+            params![ty.as_str(), after],
+            Ok,
+        )?;
         for state in &page {
             let r = decode_record(state)?;
             for (field, sort_key) in engines::order_rows(&fields, &r) {
-                conn.prepare_cached(
+                run(
+                    conn,
                     "INSERT INTO sort_index (ty, field, key, sort_key) VALUES (?1, ?2, ?3, ?4)",
-                )
-                .and_then(|mut s| {
-                    s.execute(params![
-                        ty.as_str(),
-                        field.as_str(),
-                        r.key.as_str(),
-                        sort_key
-                    ])
-                })
-                .map_err(sql)?;
+                    params![ty.as_str(), field.as_str(), r.key.as_str(), sort_key],
+                )?;
             }
             after = r.key.to_string();
         }
@@ -333,12 +335,11 @@ pub(crate) fn rebuild_sorted(conn: &Connection, ty: &TypeName, through: Position
             break;
         }
     }
-    conn.prepare_cached(
+    run(
+        conn,
         "INSERT INTO meta (k, v) VALUES (?1, ?2) ON CONFLICT (k) DO UPDATE SET v = ?2",
+        params![sorted_mark(ty), through.0 as i64],
     )
-    .and_then(|mut s| s.execute(params![sorted_mark(ty), through.0 as i64]))
-    .map(|_| ())
-    .map_err(sql)
 }
 
 /// At a writer's open: rebuild, in one transaction, every order index
@@ -353,23 +354,17 @@ pub(crate) fn catch_up_sorted(conn: &Connection) -> Result<()> {
         .prepare("SELECT substr(k, 8), v FROM meta WHERE k LIKE 'sorted.%'")
         .and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
         .map_err(sql)?;
-    let asked: Vec<String> = conn
-        .prepare(
-            "SELECT substr(key, ?1) FROM records \
-             WHERE ty = ?2 AND substr(key, 1, ?1 - 1) = ?3 AND until IS NULL",
-        )
-        .and_then(|mut s| {
-            s.query_map(
-                params![
-                    SORT_INDEX_SETTING.len() as i64 + 1,
-                    SETTING_TYPE,
-                    SORT_INDEX_SETTING
-                ],
-                |r| r.get(0),
-            )?
-            .collect()
-        })
-        .map_err(sql)?;
+    let asked: Vec<String> = column(
+        conn,
+        "SELECT substr(key, ?1) FROM records \
+         WHERE ty = ?2 AND substr(key, 1, ?1 - 1) = ?3 AND until IS NULL",
+        params![
+            SORT_INDEX_SETTING.len() as i64 + 1,
+            SETTING_TYPE,
+            SORT_INDEX_SETTING
+        ],
+        Ok,
+    )?;
     let behind: BTreeSet<String> = asked
         .into_iter()
         .filter(|ty| !marks.iter().any(|(t, v)| t == ty && *v as u64 == folded.0))
@@ -446,13 +441,12 @@ pub(crate) fn type_at(
 
 /// The latest states of one type's records.
 pub(crate) fn head_records(conn: &Connection, ty: &TypeName) -> Result<Vec<StoredRecord>> {
-    let mut stmt = conn
-        .prepare_cached("SELECT state FROM records WHERE ty = ?1 AND until IS NULL ORDER BY key")
-        .map_err(sql)?;
-    let rows = stmt
-        .query_map(params![ty.as_str()], |r| r.get::<_, String>(0))
-        .map_err(sql)?;
-    rows.map(|r| decode_record(&r.map_err(sql)?)).collect()
+    column(
+        conn,
+        "SELECT state FROM records WHERE ty = ?1 AND until IS NULL ORDER BY key",
+        params![ty.as_str()],
+        |s: String| decode_record(&s),
+    )
 }
 
 /// The latest state of one record.
@@ -461,13 +455,11 @@ pub(crate) fn head_record(
     ty: &TypeName,
     key: &RecordKey,
 ) -> Result<Option<StoredRecord>> {
-    let state: Option<String> = conn
-        .prepare_cached("SELECT state FROM records WHERE ty = ?1 AND key = ?2 AND until IS NULL")
-        .and_then(|mut s| {
-            s.query_row(params![ty.as_str(), key.as_str()], |r| r.get(0))
-                .optional()
-        })
-        .map_err(sql)?;
+    let state: Option<String> = one(
+        conn,
+        "SELECT state FROM records WHERE ty = ?1 AND key = ?2 AND until IS NULL",
+        params![ty.as_str(), key.as_str()],
+    )?;
     state.as_deref().map(decode_record).transpose()
 }
 
@@ -543,20 +535,18 @@ pub(crate) fn index_record(
         .map_err(sql)?;
     }
     for e in engines::links_of(decl, r, None) {
-        conn.prepare_cached(
+        run(
+            conn,
             "INSERT INTO edges (src_ty, src_key, relation, dst_ty, dst_key) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
-        )
-        .and_then(|mut s| {
-            s.execute(params![
+            params![
                 ty,
                 key,
                 e.relation.as_str(),
                 e.to.0.as_str(),
                 e.to.1.as_str()
-            ])
-        })
-        .map_err(sql)?;
+            ],
+        )?;
     }
     // Every head state is indexed, whatever its flags: a view at an
     // earlier position may keep a record the head has retired.

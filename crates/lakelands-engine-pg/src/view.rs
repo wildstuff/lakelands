@@ -23,6 +23,7 @@ use lakelands_api::read::{Direction, Order};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter};
 use lakelands_core::engines;
+use postgres::types::ToSql;
 
 use crate::connect::Db;
 use crate::handle::PgLake;
@@ -34,12 +35,13 @@ pub(crate) struct PgView<'a> {
     pub(crate) at: Option<Position>,
 }
 
-/// One read: a connection in a read transaction, and whether the view's
-/// position is the head in the state it sees.
+/// One read: a connection in a read transaction, the head in the state it
+/// sees, and whether the view's position is that head.
 struct Read<'c> {
     db: &'c mut Db,
     names: &'c Names,
-    at: Position,
+    at: i64,
+    folded: Option<i64>,
     head: bool,
 }
 
@@ -64,24 +66,14 @@ impl PgView<'_> {
             f(&mut Read {
                 db: &mut db,
                 names,
-                at,
+                at: at.0 as i64,
+                folded: folded.as_deref().and_then(|f| f.parse().ok()),
                 head: folded == Some(at.0.to_string()),
             })
         });
-        match answer {
-            Ok(r) => {
-                db.batch("COMMIT")?;
-                Ok(r)
-            }
-            Err(e) => {
-                let _ = db.batch("ROLLBACK");
-                Err(e)
-            }
-        }
+        db.end(answer)
     }
-}
 
-impl PgView<'_> {
     /// Run `f`, which runs exactly one statement and never asks whether
     /// the view is at the head, outside a transaction: one statement reads
     /// one committed state, so it needs none, and costs one round trip.
@@ -92,23 +84,19 @@ impl PgView<'_> {
         f(&mut Read {
             db: &mut self.lake.reader(),
             names: self.lake.names(),
-            at,
+            at: at.0 as i64,
+            folded: None,
             head: false,
         })
     }
 }
 
 impl Read<'_> {
-    fn at(&self) -> i64 {
-        self.at.0 as i64
-    }
-
     fn type_decl(&mut self, ty: &TypeName) -> Result<Option<TypeDecl>> {
-        projection::type_at(self.db, self.names, ty, Some(self.at))
+        projection::type_at(self.db, self.names, ty, Some(Position(self.at as u64)))
     }
 
     fn record(&mut self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
-        let at = self.at();
         self.db
             .query_opt(
                 &format!(
@@ -116,7 +104,7 @@ impl Read<'_> {
                     self.names.t("records"),
                     holds_at(3)
                 ),
-                &[&ty.as_str(), &key.as_str(), &at],
+                &[&ty.as_str(), &key.as_str(), &self.at],
             )?
             .map(|r| decode_record(&r.get::<_, String>(0)))
             .transpose()
@@ -124,19 +112,31 @@ impl Read<'_> {
 
     /// Every record of a type at the view's position, in key order.
     fn records(&mut self, ty: &TypeName) -> Result<Vec<StoredRecord>> {
-        let at = self.at();
-        self.db
-            .query(
-                &format!(
-                    "SELECT state FROM {} WHERE ty = $1 AND {} ORDER BY key COLLATE \"C\"",
-                    self.names.t("records"),
-                    holds_at(2)
-                ),
-                &[&ty.as_str(), &at],
-            )?
-            .iter()
-            .map(|r| decode_record(&r.get::<_, String>(0)))
-            .collect()
+        self.db.records(
+            &format!(
+                "SELECT state FROM {} WHERE ty = $1 AND {} ORDER BY key COLLATE \"C\"",
+                self.names.t("records"),
+                holds_at(2)
+            ),
+            &[&ty.as_str(), &self.at],
+        )
+    }
+
+    /// How many records of a type are in force at the view's position, the
+    /// retired and the restricted ones only when asked, their flags read
+    /// from the stored state.
+    fn count_in_force(&mut self, ty: &TypeName, retired: bool, restricted: bool) -> Result<u64> {
+        let query = format!(
+            "SELECT COUNT(*) FROM {} WHERE ty = $1 AND {} \
+             AND ($3 OR NOT (state::jsonb ->> 'retired')::boolean) \
+             AND ($4 OR NOT (state::jsonb ->> 'restricted')::boolean)",
+            self.names.t("records"),
+            holds_at(2)
+        );
+        let counted: Vec<i64> = self
+            .db
+            .column(&query, &[&ty.as_str(), &self.at, &retired, &restricted])?;
+        Ok(counted.first().map_or(0, |n| n.unsigned_abs()))
     }
 
     /// At most `n` records of a type at the view's position after the key
@@ -150,7 +150,6 @@ impl Read<'_> {
         after: Option<&str>,
         n: u32,
     ) -> Result<Vec<StoredRecord>> {
-        let at = self.at();
         let limit = i64::from(n);
         let from = if after.is_some() {
             "AND key COLLATE \"C\" > $4"
@@ -162,22 +161,17 @@ impl Read<'_> {
             self.names.t("records"),
             holds_at(2)
         );
-        let rows = match after {
-            Some(after) => self
-                .db
-                .query(&query, &[&ty.as_str(), &at, &limit, &after])?,
-            None => self.db.query(&query, &[&ty.as_str(), &at, &limit])?,
-        };
-        rows.iter()
-            .map(|r| decode_record(&r.get::<_, String>(0)))
-            .collect()
+        // `$4` is bound only when the statement names it.
+        let args: [&(dyn ToSql + Sync); 4] = [&ty.as_str(), &self.at, &limit, &after];
+        self.db
+            .records(&query, &args[..3 + usize::from(after.is_some())])
     }
 
     /// The fields of `ty` whose order index answers this read, in one round
-    /// trip: none but at the head, and only while the index is kept
-    /// through it.
+    /// trip: none unless the index is kept through the head. At an earlier
+    /// position it is read with the keys changed since ([`Read::changed`]).
     fn sorted_fields(&mut self, ty: &TypeName, decl: Option<&TypeDecl>) -> Result<Vec<FieldName>> {
-        let Some(decl) = decl.filter(|_| self.head) else {
+        let Some(decl) = decl.filter(|_| self.folded.is_some()) else {
             return Ok(Vec::new());
         };
         let row = self.db.query_one(
@@ -193,7 +187,7 @@ impl Read<'_> {
                 &engines::sort_index_key(ty),
             ],
         )?;
-        if row.get::<_, Option<i64>>(0) != Some(self.at.0 as i64) {
+        if row.get::<_, Option<i64>>(0) != self.folded {
             return Ok(Vec::new());
         }
         let setting = row
@@ -242,15 +236,12 @@ impl Read<'_> {
             sorted = self.names.t("sort_index"),
             records = self.names.t("records"),
         );
-        let rows = match from {
-            Some((k, key)) => self.db.query(
-                &query,
-                &[&ty.as_str(), &order.field.as_str(), &limit, &k, &key],
-            )?,
-            None => self
-                .db
-                .query(&query, &[&ty.as_str(), &order.field.as_str(), &limit])?,
-        };
+        let (k, key) = from.unzip();
+        let args: [&(dyn ToSql + Sync); 5] =
+            [&ty.as_str(), &order.field.as_str(), &limit, &k, &key];
+        let rows = self
+            .db
+            .query(&query, &args[..if from.is_some() { 5 } else { 3 }])?;
         rows.iter()
             .map(|r| Ok((r.get(0), decode_record(&r.get::<_, String>(1))?)))
             .collect()
@@ -279,17 +270,40 @@ impl Read<'_> {
             sorted = self.names.t("sort_index"),
             records = self.names.t("records"),
         );
-        let rows = match after {
-            Some(after) => self
-                .db
-                .query(&query, &[&ty.as_str(), &field.as_str(), &limit, &after])?,
-            None => self
-                .db
-                .query(&query, &[&ty.as_str(), &field.as_str(), &limit])?,
-        };
-        rows.iter()
-            .map(|r| decode_record(&r.get::<_, String>(0)))
-            .collect()
+        let args: [&(dyn ToSql + Sync); 4] = [&ty.as_str(), &field.as_str(), &limit, &after];
+        self.db
+            .records(&query, &args[..3 + usize::from(after.is_some())])
+    }
+
+    /// The keys of `ty` with a state put or ended after the view's
+    /// position, and their states there; `None` past `ceiling` states put
+    /// or keys ended. Two range reads, one into `records_since` for the
+    /// states put, one into `records_at` for the states that held at the
+    /// position and ended.
+    fn changed(&mut self, ty: &TypeName, ceiling: usize) -> Result<Option<engines::Changed>> {
+        let records = self.names.t("records");
+        let args: [&(dyn ToSql + Sync); 3] = [&ty.as_str(), &self.at, &(ceiling as i64 + 1)];
+        let put: Vec<String> = self.db.column(
+            &format!(
+                "SELECT key FROM {records} WHERE ty = $1 AND since > $2 ORDER BY since LIMIT $3"
+            ),
+            &args,
+        )?;
+        let ended: Vec<String> = self.db.column(
+            &format!(
+                "SELECT key FROM {records} WHERE ty = $1 AND until > $2 AND since <= $2 \
+                 ORDER BY until LIMIT $3"
+            ),
+            &args,
+        )?;
+        let keys: BTreeSet<String> = put.iter().chain(&ended).cloned().collect();
+        if put.len().max(ended.len()).max(keys.len()) > ceiling {
+            return Ok(None);
+        }
+        Ok(Some(engines::Changed {
+            states: self.records_by_key(ty, keys.clone())?,
+            keys: keys.into_iter().map(RecordKey::from).collect(),
+        }))
     }
 
     /// Records of a type by their keys, at the view's position, in key
@@ -302,46 +316,27 @@ impl Read<'_> {
         if keys.is_empty() {
             return Ok(Vec::new());
         }
-        let at = self.at();
         let keys: Vec<String> = keys.into_iter().collect();
-        self.db
-            .query(
-                &format!(
-                    "SELECT state FROM {} WHERE ty = $1 AND key = ANY($2::text[]) AND {} \
-                     ORDER BY key COLLATE \"C\"",
-                    self.names.t("records"),
-                    holds_at(3)
-                ),
-                &[&ty.as_str(), &keys, &at],
-            )?
-            .iter()
-            .map(|r| decode_record(&r.get::<_, String>(0)))
-            .collect()
-    }
-
-    fn keys(
-        &mut self,
-        query: &str,
-        args: &[&(dyn postgres::types::ToSql + Sync)],
-    ) -> Result<BTreeSet<String>> {
-        Ok(self
-            .db
-            .query(query, args)?
-            .iter()
-            .map(|r| r.get::<_, String>(0))
-            .collect())
+        self.db.records(
+            &format!(
+                "SELECT state FROM {} WHERE ty = $1 AND key = ANY($2::text[]) AND {} \
+                 ORDER BY key COLLATE \"C\"",
+                self.names.t("records"),
+                holds_at(3)
+            ),
+            &[&ty.as_str(), &keys, &self.at],
+        )
     }
 
     /// The type each verb declared at the view's position is on.
     fn verbs(&mut self) -> Result<std::collections::BTreeMap<VerbName, TypeName>> {
-        let at = self.at();
         let rows = self.db.query(
             &format!(
                 "SELECT state FROM {} WHERE ident LIKE 'verb %' AND {}",
                 self.names.t("declarations"),
                 holds_at(1)
             ),
-            &[&at],
+            &[&self.at],
         )?;
         let mut out = std::collections::BTreeMap::new();
         for r in rows {
@@ -377,7 +372,6 @@ impl Read<'_> {
 
     /// Every type declared at the view's position.
     fn types(&mut self) -> Result<Vec<TypeDecl>> {
-        let at = self.at();
         let rows = self.db.query(
             &format!(
                 "SELECT state FROM {} WHERE ident LIKE 'type %' AND {} \
@@ -385,7 +379,7 @@ impl Read<'_> {
                 self.names.t("declarations"),
                 holds_at(1)
             ),
-            &[&at],
+            &[&self.at],
         )?;
         let mut out = Vec::new();
         for r in rows {
@@ -406,14 +400,13 @@ impl ProjectionView for PgView<'_> {
 
     fn declarations(&self) -> Result<Vec<Declared>> {
         self.read(Vec::new(), |r| {
-            let at = r.at();
             r.db.query(
                 &format!(
                     "SELECT state FROM {} WHERE {} ORDER BY ident COLLATE \"C\"",
                     r.names.t("declarations"),
                     holds_at(1)
                 ),
-                &[&at],
+                &[&r.at],
             )?
             .iter()
             .map(|row| decode(&row.get::<_, String>(0), "a declaration"))
@@ -431,6 +424,20 @@ impl ProjectionView for PgView<'_> {
         })
     }
 
+    fn count(&self, ty: &TypeName, scan: &Scan) -> Result<u64> {
+        self.read(0, |r| {
+            // At the head, a count that selects by the flags alone is the
+            // projection's `COUNT(*)`; any other is counted batch by batch.
+            if r.head && scan.filter.is_none() && scan.equal.is_empty() && scan.valid_at.is_none() {
+                return r.count_in_force(ty, scan.retired, scan.restricted);
+            }
+            let decl = r.type_decl(ty)?;
+            engines::count_in_key_order(decl.as_ref(), scan, |after, n| {
+                r.records_after(ty, after, n)
+            })
+        })
+    }
+
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
         self.read(Vec::new(), |r| {
             let decl = r.type_decl(ty)?;
@@ -440,7 +447,7 @@ impl ProjectionView for PgView<'_> {
                         "SELECT key FROM {} WHERE ty = $1 AND field = $2 AND value = $3",
                         r.names.t("text_index")
                     );
-                    Some(r.keys(&query, &[&ty.as_str(), &field.as_str(), &text])?)
+                    Some(r.db.column(&query, &[&ty.as_str(), &field.as_str(), &text])?)
                 }
                 _ => None,
             };
@@ -460,15 +467,41 @@ impl ProjectionView for PgView<'_> {
                     let sorted = r.sorted_fields(ty, decl.as_ref())?;
                     match engines::by_order_index(decl.as_ref(), &sorted, scan) {
                         Some(first) => {
+                            // At an earlier position, the head's index with
+                            // the keys changed since; past the ceiling, the
+                            // sort.
+                            let changed = if r.head {
+                                None
+                            } else {
+                                let ceiling = engines::changed_ceiling(scan.limit);
+                                let Some(changed) = r.changed(ty, ceiling)? else {
+                                    let records = r.records(ty)?;
+                                    return Ok(engines::scan(decl.as_ref(), &records, scan));
+                                };
+                                Some(changed)
+                            };
                             let r = std::cell::RefCell::new(r);
-                            return engines::scan_in_field_order(
-                                decl.as_ref(),
-                                scan,
-                                |from, n| r.borrow_mut().sorted_after(ty, first, from, n),
-                                |after, n| {
-                                    r.borrow_mut().unsorted_after(ty, &first.field, after, n)
-                                },
-                            );
+                            let sorted = |from: Option<(&[u8], &str)>, n| {
+                                r.borrow_mut().sorted_after(ty, first, from, n)
+                            };
+                            let missing = |after: Option<&str>, n| {
+                                r.borrow_mut().unsorted_after(ty, &first.field, after, n)
+                            };
+                            return match &changed {
+                                None => engines::scan_in_field_order(
+                                    decl.as_ref(),
+                                    scan,
+                                    sorted,
+                                    missing,
+                                ),
+                                Some(c) => engines::scan_in_field_order_at(
+                                    decl.as_ref(),
+                                    scan,
+                                    c,
+                                    sorted,
+                                    missing,
+                                ),
+                            };
                         }
                         None => r.records(ty)?,
                     }
@@ -560,7 +593,7 @@ impl ProjectionView for PgView<'_> {
                             "SELECT key FROM {text_index} WHERE ty = $1 AND field = $2 \
                              AND value = ANY($3::text[])"
                         );
-                        let found = r.keys(&query, &[&lt.as_str(), &field, &values])?;
+                        let found = r.db.column(&query, &[&lt.as_str(), &field, &values])?;
                         r.records_by_key(lt, found)
                     } else {
                         // The link type at the position, whole: the rulebook
@@ -605,7 +638,7 @@ impl ProjectionView for PgView<'_> {
                 "SELECT DISTINCT key FROM {} WHERE ty = $1 AND token = ANY($2::text[])",
                 r.names.t("full_text")
             );
-            let keys = r.keys(&sql, &[&ty.as_str(), &query])?;
+            let keys: BTreeSet<String> = r.db.column(&sql, &[&ty.as_str(), &query])?;
             let mut head = Vec::with_capacity(keys.len());
             let mut visible = BTreeSet::new();
             for key in keys {
@@ -635,7 +668,6 @@ impl ProjectionView for PgView<'_> {
 
     fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
         self.read(Vec::new(), |r| {
-            let at = r.at();
             let all: Vec<Proposal> =
                 r.db.query(
                     &format!(
@@ -643,7 +675,7 @@ impl ProjectionView for PgView<'_> {
                         r.names.t(PROPOSALS.table),
                         holds_at(1)
                     ),
-                    &[&at],
+                    &[&r.at],
                 )?
                 .iter()
                 .map(|row| decode(&row.get::<_, String>(0), "a proposal"))
@@ -655,7 +687,6 @@ impl ProjectionView for PgView<'_> {
 
     fn is_member(&self, set: &str, ty: &TypeName, key: &RecordKey) -> Result<bool> {
         self.single(false, |r| {
-            let at = r.at();
             Ok(r.db
                 .query_opt(
                     &format!(
@@ -664,7 +695,7 @@ impl ProjectionView for PgView<'_> {
                         r.names.t("members"),
                         holds_at(4)
                     ),
-                    &[&set, &ty.as_str(), &key.as_str(), &at],
+                    &[&set, &ty.as_str(), &key.as_str(), &r.at],
                 )?
                 .is_some_and(|row| row.get::<_, bool>(0)))
         })
@@ -672,14 +703,13 @@ impl ProjectionView for PgView<'_> {
 
     fn applied(&self, id: &EventId) -> Result<Option<Position>> {
         self.single(None, |r| {
-            let at = r.at();
             Ok(r.db
                 .query_opt(
                     &format!(
                         "SELECT at FROM {} WHERE id = $1 AND at <= $2",
                         r.names.t("applied")
                     ),
-                    &[&id.0, &at],
+                    &[&id.0, &r.at],
                 )?
                 .map(|row| Position(row.get::<_, i64>(0) as u64)))
         })
@@ -687,14 +717,13 @@ impl ProjectionView for PgView<'_> {
 
     fn output(&self, seam: &str, input: &Digest) -> Result<Option<Value>> {
         self.single(None, |r| {
-            let at = r.at();
             r.db.query_opt(
                 &format!(
                     "SELECT state FROM {} WHERE seam = $1 AND input = $2 AND {}",
                     r.names.t("outputs"),
                     holds_at(3)
                 ),
-                &[&seam, &input.0, &at],
+                &[&seam, &input.0, &r.at],
             )?
             .map(|row| decode(&row.get::<_, String>(0), "an output"))
             .transpose()

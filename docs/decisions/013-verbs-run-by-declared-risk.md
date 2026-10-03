@@ -45,7 +45,8 @@ only thing that decides between running and proposing, whatever the
 effect.
 
 A verb that reaches outside the lake, of any risk, is refused as
-`unbound` at call time when no executor is bound for it: never faked,
+`unbound` when no executor is bound for it, whether it is called or a
+call of it is proposed through `propose` (lakelands#345): never faked,
 and never recorded as a proposal, because a proposal that could not run
 when accepted would be a promise the store cannot keep.
 
@@ -53,7 +54,13 @@ when accepted would be a promise the store cannot keep.
 
 Accepting a proposal applies it under the proposer's grants as they were
 when it was proposed: the write was checked whole then, and the reviewer
-applies exactly what was checked. At acceptance the store checks again
+applies exactly what was checked. A call is proposed only if it could
+run when it is proposed. A call that becomes a proposal, through `call`
+at its declared risk or through `propose`, is checked as if it ran now:
+its record's version against the expected one, then its `requires` on
+that record. A stale version is a conflict and a `requires` that does
+not hold is a precondition, and neither is recorded as a proposal
+(lakelands#338). At acceptance the store checks again
 only what can have moved since — the type's shape and the record's
 version — and records the write with the proposer as its writer, caused
 by the acceptance. A verb's write, run at once or on acceptance, fires
@@ -148,7 +155,61 @@ called with no key.
   proposal can outlive a change of the verb's declaration. Accepting
   checks the scope at the head again, and a mismatch refuses the accept
   with the same text; the proposal stays pending.
+  Beyond the scope, the reviewer applies exactly what was checked: if
+  the verb is declared differently at the head than it was when the
+  call was proposed (another effect, another payload), the accept is
+  refused as invalid, naming the verb, and the proposal stays pending;
+  the caller proposes again (lakelands#371). The store compares the
+  declaration's content, as the lake held it at the proposal's position
+  and at the head, so a verb declared again unchanged, or changed and
+  changed back, as a host that applies its bundle at every start does,
+  leaves its pending calls acceptable. No event carries more for it.
 
 The default scope, `record`, is never written, so every declaration made
 before keeps its bytes.
+
+## Extended: the order of refusals (lakelands#338)
+
+The verb and proposal doors refuse in this order, in the frame every
+write door shares (016, extended): the lake, the context, the door's own
+checks, the append. Where a step runs "the record checks", they are
+016's, on the record the write makes.
+
+**`call`**: the retry; the verb is declared (`not_found`); the key fits
+its scope (`invalid`, naming the verb); a verb called on a record of a
+view (`invalid`, 018, extended); the principal may call it
+(`not_granted`); an external verb's executor is bound (`unbound`); the
+payload, field by field in name order (a field the verb does not take
+is `invalid`, a value that does not fit is `constraint`, each naming the
+field), then its required fields (`constraint`); on a record: the record
+is live (`not_found`), the expected version (`conflict`), `requires`
+(`precondition`). A `low` verb then computes its assignments (`invalid`,
+naming the verb) and makes its write through the record checks. At any
+other risk the call is proposed after `requires`: what could not run now
+is not proposed.
+
+**`propose`**: the retry; a link type at an ordinary door
+(`wrong_door`); then the write as its own door checks it: an upsert
+through the record checks; a retirement as `retire` from the type on; a
+call as `call` from the verb on, its executor included, and for a write
+effect through its assignments and the record checks; a declaration as
+`apply` checks a set; a migration by its preflight, then `migration` if
+it is not lossless. No `schema` grant is needed to propose a change of
+the ontology.
+
+**`accept`**: the `review` grant (`not_granted`); the proposal exists
+(`not_found`); it is pending (`decided`); a change of the ontology also
+needs `schema` (`not_granted`); then the write, checked again at the
+head: an upsert through the record checks; a retirement for its record
+and version; a call for its verb, its scope, a view, the verb declared
+differently since (`invalid`), its executor, then as `call` from the
+record on; a declaration as `apply` checks a set; a migration by its
+preflight, then `migration`, then its embedding model (`unbound`). Any
+refusal leaves the proposal pending.
+
+**`reject`**: the `review` grant, the proposal exists, it is pending.
+
+Two steps that answer the same kind for the same verb or field, such as
+the scope and a verb declared differently since, are stated here and not
+checked between themselves.
 

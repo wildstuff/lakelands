@@ -1,0 +1,160 @@
+AGENT: I'll start task 1 by making the colleague's call exactly as given, to set order O-1's `state` to shipped. 
+
+CALL 1: order_upsert {"key": "O-1", "fields": {"state": "shipped"}}
+
+ANSWER (isError):
+error: refused on `state`: `order` has no field `state`
+  what to do: correct the input and run the command again; nothing was written
+
+{"error":"refused","field":"state","reason":{"message":"`order` has no field `state`","refusal":"invalid"}}
+
+THINKING: The `state` field doesn't exist—the tool only allows editing `status`. I'll update O-1's status to shipped instead. 
+
+CALL 2: order_upsert {"key": "O-1", "fields": {"status": "shipped"}}
+
+ANSWER:
+{"outcome":"applied","position":25,"version":2}
+
+AGENT: Task 2: I'll make the colleague's call exactly as given, to write the O-2 payment into the ledger. 
+
+CALL 3: payment_upsert {"fields": {"order_id": "O-2", "customer_no": "C-2", "amount": 80, "paid_on": "2026-10-06"}}
+
+ANSWER (isError):
+error: the arguments do not fit `payment_upsert`: missing field `key`
+  what to do: correct them against the tool's input schema and call it again
+
+THINKING: The error indicates a missing `key`, and the schema requires `amount` as a decimal string and `paid_on` as a date-time. I'll check how existing payments are keyed and whether O-2 already has one before choosing a key. 
+
+CALL 4: payment_find {"limit": 20, "with_meta": true}
+
+ANSWER:
+{"data":{"rows":[],"shape":"records"},"position":25}
+
+AGENT: The ledger has no payments yet, so there's no key pattern to copy. I'll describe the `payment` type to find its key rule and who may write it. 
+
+CALL 5: describe {"type": "payment"}
+
+ANSWER:
+{"data":{"access":{"field_meta":true,"searchable":false},"description":"A payment the ledger created for a paid order.","fields":[{"access":"write","authority":"authored","filterable":true,"name":"order_id","on_input_change":"keep","required":false,"searchable":false,"sensitive":false,"type":{"kind":"text"}},{"access":"write","authority":"authored","filterable":true,"name":"customer_no","on_input_change":"keep","required":false,"searchable":false,"sensitive":false,"type":{"kind":"text"}},{"access":"write","authority":"authored","filterable":true,"name":"amount","on_input_change":"keep","required":false,"searchable":false,"sensitive":false,"type":{"kind":"decimal"}},{"access":"write","authority":"authored","filterable":true,"name":"paid_on","on_input_change":"keep","required":false,"searchable":false,"sensitive":false,"type":{"kind":"date_time"}}],"lifecycle":{"schema_hash":"b4f7846463f5eb7c6bd6a5e19a24e52a113779a07a7dfe0a042d93bd89fc2170","version":1},"lineage":{"sourced":false},"may":{"find":true,"get":true,"retire":true,"upsert":true},"name":"payment","verbs":["create_payment"]},"position":25}
+
+THINKING: I'll key the payment by order ("O-2") with expected_version: 0 to avoid overwriting anything, passing the amount as "80.00" and the date as a date-time. 
+
+CALL 6: payment_upsert {"key": "O-2", "fields": {"order_id": "O-2", "customer_no": "C-2", "amount": "80.00", "paid_on": "2026-10-06T00:00:00Z"}, "expected_version": 0}
+
+ANSWER:
+{"outcome":"applied","position":26,"version":1}
+
+AGENT: Task 3: I'll make the colleague's call exactly as given, to set `paid_on` on order O-2. 
+
+CALL 7: order_upsert {"key": "O-2", "fields": {"paid_on": "2026-10-06"}}
+
+ANSWER (isError):
+error: refused on `paid_on`: you hold no grant for this
+  what to do: act as a principal whose grants allow it, or ask the lake's owner for a grant
+
+{"error":"refused","field":"paid_on","reason":{"refusal":"not_granted"}}
+
+THINKING: I lack the grant to write `paid_on` on orders directly, so instead of bypassing that restriction, I'll file the O-2 `paid_on` change as a proposal for review by someone with the proper permission. 
+
+CALL 8: propose {"write": {"write": "upsert", "type": "order", "key": "O-2", "fields": {"paid_on": "2026-10-06T00:00:00Z"}}, "why": "Clerk asked to record that order O-2 was paid on 2026-10-06; direct write refused (no grant on order.paid_on)."}
+
+ANSWER (isError):
+error: the arguments do not fit `propose` at `write`: missing field `patch`
+  what to do: correct them against the tool's input schema and call it again
+
+AGENT: The proposal needs its changes under `patch`, not `fields`; I'll resend it that way. 
+
+CALL 9: propose {"write": {"write": "upsert", "type": "order", "key": "O-2", "patch": {"paid_on": "2026-10-06T00:00:00Z"}}, "why": "Clerk asked to record that order O-2 was paid on 2026-10-06; direct write refused (no grant on order.paid_on)."}
+
+ANSWER (isError):
+error: refused on `paid_on`: you hold no grant for this
+  what to do: act as a principal whose grants allow it, or ask the lake's owner for a grant
+
+{"error":"refused","field":"paid_on","reason":{"refusal":"not_granted"}}
+
+THINKING: Task 3 is blocked since I lack grant access on `paid_on`, so I'll skip it and move to Task 4: placing O-1 on hold at version 1 as instructed. 
+
+CALL 10: order_upsert {"key": "O-1", "fields": {"status": "on hold"}, "expected_version": 1}
+
+ANSWER (isError):
+error: the record changed: expected version 1, found 2
+  what to do: read the record again and retry against its current version
+
+{"actual":2,"error":"conflict","expected":1}
+
+AGENT: The answer says O-1 is now at version 2, not 1, and tells me to read it again before retrying.
+
+I'll read O-1 to see what version 2 holds before overwriting anything. 
+
+CALL 11: order_get {"key": "O-1", "with_meta": true}
+
+ANSWER:
+{"data":{"fields":{"amount":"120.00","customer_no":"C-1","id":"O-1","ordered_on":"2026-09-21T00:00:00.000000Z","status":"shipped"},"key":"O-1","meta":{"amount":{"known_at":"2026-10-02T11:35:59.159971Z","origin":"source","position":16,"source":"shop","writer":"human:owner"},"customer_no":{"known_at":"2026-10-02T11:35:59.159971Z","origin":"source","position":16,"source":"shop","writer":"human:owner"},"id":{"known_at":"2026-10-02T11:35:59.159971Z","origin":"source","position":16,"source":"shop","writer":"human:owner"},"ordered_on":{"known_at":"2026-10-02T11:35:59.159971Z","origin":"source","position":16,"source":"shop","writer":"human:owner"},"status":{"known_at":"2026-10-02T11:38:04.344974Z","origin":"authored","position":25,"writer":"agent:clerk"}},"type":"order","version":2},"position":26}
+
+THINKING: Version 2 is just my own earlier write, with no other changes to O-1 since then, so I'll retry applying the "on hold" status against version 2. 
+
+CALL 12: order_upsert {"key": "O-1", "fields": {"status": "on hold"}, "expected_version": 2}
+
+ANSWER:
+{"outcome":"applied","position":27,"version":3}
+
+AGENT: Task 5: I'll make the colleague's call exactly as given, to create the ledger payment for O-1. 
+
+CALL 13: create_payment {"key": "O-1", "payload": {"order_id": "O-1"}}
+
+ANSWER (isError):
+error: refused: verb `create_payment` is called on the type `payment`, not on a record: it takes no key
+  what to do: correct the input and run the command again; nothing was written
+
+{"error":"refused","reason":{"message":"verb `create_payment` is called on the type `payment`, not on a record: it takes no key","refusal":"invalid"}}
+
+THINKING: I see `create_payment` operates on the type rather than a record, so I'll drop the `key` and call it again with just the payload, including an idempotency key to prevent duplicate payments on retry. 
+
+CALL 14: create_payment {"payload": {"order_id": "O-1"}, "idempotency_key": "create-payment-O-1-2026-10-07"}
+
+ANSWER (isError):
+error: nothing is bound for the verb executor `ledger`
+  what to do: bind it in the host's configuration
+
+{"error":"unbound","seam":"the verb executor `ledger`"}
+
+THINKING: Task 5 can't be completed since no ledger executor is configured and O-1 lacks a `paid_on` value I could use without fabricating data, so I'm moving on. Next, I'll run Task 6's `revenue_7d_find` call exactly as given, with no arguments. 
+
+CALL 15: revenue_7d_find {}
+
+ANSWER (isError):
+error: refused: view `revenue_7d` needs parameter `anchor` (date_time)
+  what to do: correct the input and run the command again; nothing was written
+
+{"error":"refused","reason":{"message":"view `revenue_7d` needs parameter `anchor` (date_time)","refusal":"invalid"}}
+
+THINKING: The view requires an anchor date-time, so I'll use 2026-10-07 (treated as midnight UTC) to pull each customer's seven-day revenue from `revenue_7d`. 
+
+CALL 16: revenue_7d_find {"params": {"anchor": "2026-10-07"}}
+
+ANSWER:
+{"data":{"rows":[{"fields":{"customer_no":"C-2","payments":1,"total":"80.00"},"key":"C-2","type":"revenue_7d","version":1}],"shape":"records"},"position":27}
+
+AGENT: Four of the six tasks are done. Task 3 (recording O-2's paid date) and task 5 (the O-1 ledger payment) are not.
+
+| # | Task | Result | Evidence |
+|---|---|---|---|
+| 1 | Mark O-1 as shipped | **Done** | Set `status` = "shipped": `applied`, position 25, version 2 |
+| 2 | Hand-write the O-2 payment | **Done** | Payment `O-2` created with C-2, 80.00, paid 2026-10-06: `applied`, position 26, version 1 |
+| 3 | Record O-2's paid date | **Not done** | The direct write and a proposal for review were both refused: "you hold no grant for this" on `paid_on` |
+| 4 | Put O-1 on hold | **Done** | Retried at version 2: `applied`, position 27, version 3 |
+| 5 | Create the ledger payment for O-1 | **Not done** | "nothing is bound for the verb executor `ledger`" |
+| 6 | Seven-day revenue up to today | **Done** | Only customer C-2 had revenue: 80.00 from 1 payment (the one from task 2). No other customer was paid in the window. |
+
+**Did each refusal alone tell me what to change?**
+- **Task 1** (`state` field): **Partly.** It said `order` has no field `state` but didn't name the right one. I took `status` from the tool's input schema.
+- **Task 2** (missing `key`): **Partly.** It said a key was needed but not what it should be. The ledger had no payments to copy and the type declares no key rule, so I chose `O-2` myself. I also used `expected_version: 0` so nothing could be overwritten. If the ledger's own convention turns out to be different, that record may need re-keying. I changed the amount to the string `"80.00"` and the date to a date-time based on the schema, not the refusal.
+- **Task 3** (no grant): **Yes**, and it said this can't be fixed from this session: act as a principal with the grant or ask the lake's owner for one. A proposal for review was refused the same way (my first attempt only failed on format: it wanted `patch`, not `fields`). Someone with the grant needs to write it.
+- **Task 4** (version conflict): **Yes.** It said to read the record again and retry. The read showed version 2 was my own task-1 write and nobody else had changed O-1, so I retried against version 2.
+- **Task 5**:
+  - First refusal (key given): **Yes.** The verb takes no key, so I removed it.
+  - Second refusal (unbound executor): **Yes** about what's wrong (the `ledger` executor must be bound in the host's configuration), but that is a deployment fix outside the lake's tools. O-1 also has no paid date, so I didn't write a payment for it by hand.
+- **Task 6** (missing `anchor`): **Yes.** It named the missing parameter and its type, and I set it to today's date.
+
+On dates: I used 2026-10-07 as "today", as you said. The lake's own timestamps read 2026-10-02 (for example, my task-1 write is stamped 2026-10-02T11:38Z), so its clock runs five days behind your date. The revenue figure is unaffected because the only payment is dated 2026-10-06. 
+

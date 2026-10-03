@@ -30,15 +30,15 @@
 //!   key.
 //! - **Proposals** come newest first, ties by id.
 //! - **Vectors.** Similarity is the cosine of the angle between two
-//!   vectors, computed in `f64`; 0 when either is all zeros. Best first,
-//!   ties by key.
+//!   vectors ([`lakelands_api::query::cosine`]). Best first, ties by key.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use lakelands_api::engine::{After, Scan};
+use lakelands_api::error::{Error, Refusal, Result};
 use lakelands_api::expr::Expr;
-use lakelands_api::id::{FieldName, RecordKey, RelationName, TypeName, VerbName};
+use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName, VerbName};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::query::Edge;
 use lakelands_api::read::{Direction, Order, OrderBy};
@@ -48,6 +48,7 @@ use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposedWrite}
 
 pub use crate::expr::order::{cmp_values, sort_key};
 use crate::expr::{RecordScope, holds};
+use crate::invalid;
 
 /// The clock an engine evaluates a filter with. The store hands an engine
 /// only filters that do not read the clock, so any fixed instant will do.
@@ -63,28 +64,6 @@ pub fn declaration_key(d: &Declaration) -> String {
         Declaration::Trigger(t) => format!("trigger {}", t.name),
         Declaration::ObjectSet(o) => format!("object_set {}", o.name),
         Declaration::Function(f) => format!("function {}", f.name),
-    }
-}
-
-/// Whether `filter` selects `record`; a filter that cannot be evaluated
-/// does not.
-pub fn selects(filter: Option<&Expr>, record: &StoredRecord) -> bool {
-    filter.is_none_or(|f| {
-        let scope = RecordScope {
-            fields: &record.fields,
-            settings: None,
-            now: NO_CLOCK,
-        };
-        holds(f, &scope).unwrap_or(false)
-    })
-}
-
-/// Whether `record` holds at `valid_at` under its type's declaration. A
-/// type not in force is not valid-timed.
-pub fn valid(decl: Option<&TypeDecl>, record: &StoredRecord, valid_at: Option<Timestamp>) -> bool {
-    match (decl, valid_at) {
-        (Some(decl), Some(t)) => crate::valid_time::record_holds(decl, &record.fields, t),
-        _ => true,
     }
 }
 
@@ -210,14 +189,23 @@ pub fn cmp_places(a: &Place<'_>, b: &Place<'_>, order_by: &[Order]) -> Ordering 
         .unwrap_or_else(|| a.key.cmp(b.key))
 }
 
-/// Whether a scan selects `record`: its flags, `valid_at`, the fields it
-/// must hold exactly, and the filter.
+/// Whether a scan selects `record`: its flags, `valid_at` under the
+/// record's type (a type not in force is not valid-timed), the fields it
+/// must hold exactly, and the filter (one that cannot be evaluated does
+/// not select).
 pub fn admits(decl: Option<&TypeDecl>, record: &StoredRecord, scan: &Scan) -> bool {
+    let fields = &record.fields;
+    let scope = RecordScope {
+        fields,
+        settings: None,
+        now: NO_CLOCK,
+    };
     (scan.retired || !record.retired)
         && (scan.restricted || !record.restricted)
-        && valid(decl, record, scan.valid_at)
+        && (decl.zip(scan.valid_at))
+            .is_none_or(|(d, t)| crate::valid_time::record_holds(d, fields, t))
         && holds_exactly(record, &scan.equal)
-        && selects(scan.filter.as_ref(), record)
+        && (scan.filter.as_ref()).is_none_or(|f| holds(f, &scope).unwrap_or(false))
 }
 
 /// Whether `record` holds each value exactly: the same JSON value, never
@@ -281,6 +269,28 @@ pub fn scan_in_key_order<E>(
     }
 }
 
+/// How many states [`scan`] would select over every state, its order,
+/// keyset position and limit ignored, read as [`scan_in_key_order`] reads
+/// them: in key-ordered batches, each admitted or not and dropped, so a
+/// count holds one batch whatever the type holds.
+pub fn count_in_key_order<E>(
+    decl: Option<&TypeDecl>,
+    scan: &Scan,
+    mut read: impl FnMut(Option<&str>, u32) -> Result<Vec<StoredRecord>, E>,
+) -> Result<u64, E> {
+    const BATCH: u32 = 1024;
+    let (mut n, mut after) = (0, None::<String>);
+    loop {
+        let rows = read(after.as_deref(), BATCH)?;
+        count_read(rows.len());
+        n += rows.iter().filter(|r| admits(decl, r, scan)).count() as u64;
+        match rows.last() {
+            Some(last) if rows.len() == BATCH as usize => after = Some(last.key.to_string()),
+            _ => return Ok(n),
+        }
+    }
+}
+
 /// A scan over the states of one type's records at one position, `decl`
 /// the type's declaration in force there: the flags, `valid_at` and the
 /// filter select; the sort keys order; the keyset position continues;
@@ -298,12 +308,7 @@ pub fn scan<'a>(
         .into_iter()
         .inspect(|_| handed += 1)
         .filter(|r| admits(decl, r, scan))
-        .map(|r| {
-            (
-                PlaceKey::of(&Place::of(r, &scan.order_by), &scan.order_by),
-                r,
-            )
-        })
+        .map(|r| (PlaceKey::record(r, &scan.order_by), r))
         .collect();
     count_read(handed);
     rows.sort_unstable_by(|a, b| a.0.cmp(&b.0));
@@ -445,19 +450,17 @@ pub fn by_order_index<'a>(
 
 thread_local! {
     static ROWS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static LINKS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// The rows the scans on this thread were handed to order: the whole
-/// type in the fallback, [`scan`], and the index rows and missing records
-/// in [`scan_in_field_order`]. It exists for the engine checks, which
+/// type in the fallback, [`scan`], the index rows and missing records
+/// in [`scan_in_field_order`], and those and the changed states in
+/// [`scan_in_field_order_at`]. It exists for the engine checks, which
 /// count by it that a page ordered by an indexed field reads its page,
 /// not the type; it costs one add per call or batch.
 pub fn rows_read() -> u64 {
     ROWS_READ.with(|n| n.get())
-}
-
-thread_local! {
-    static LINKS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// The records the edge walks on this thread were handed to find a
@@ -474,8 +477,18 @@ pub(crate) fn count_links(n: usize) {
     LINKS_READ.with(|c| c.set(c.get() + n as u64));
 }
 
+/// [`rows_read`] over every thread of the process: for the streaming
+/// check, whose reads go through a store that runs them on its blocking
+/// pool. It counts what other checks running at the same time read too.
+pub fn rows_read_in_process() -> u64 {
+    ROWS_READ_IN_PROCESS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static ROWS_READ_IN_PROCESS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn count_read(n: usize) {
     ROWS_READ.with(|c| c.set(c.get() + n as u64));
+    ROWS_READ_IN_PROCESS.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// A scan answered from an order index, in the order [`scan`] gives, by
@@ -501,9 +514,202 @@ fn count_read(n: usize) {
 pub fn scan_in_field_order<E>(
     decl: Option<&TypeDecl>,
     scan: &Scan,
+    sorted: impl FnMut(Option<(&[u8], &str)>, u32) -> Result<Vec<(Vec<u8>, StoredRecord)>, E>,
+    missing: impl FnMut(Option<&str>, u32) -> Result<Vec<StoredRecord>, E>,
+) -> Result<Vec<StoredRecord>, E> {
+    in_field_order(decl, scan, true, sorted, missing)
+}
+
+/// The keys of a type changed after an earlier position, and the states
+/// they had there: what a page at that position reads in place of the head
+/// order index's rows for those keys
+/// (`docs/decisions/041-a-sorted-page-reads-its-page.md`, extended). A key
+/// written only after the position has no state among them.
+#[derive(Debug, Default)]
+pub struct Changed {
+    /// Every key of the type with a state put or ended after the position.
+    pub keys: BTreeSet<RecordKey>,
+    /// The states of those keys at the position.
+    pub states: Vec<StoredRecord>,
+}
+
+/// The most states put to a type since an earlier position, and the most
+/// keys changed, that a page there takes into the head order index's order
+/// before it sorts the type instead: ten pages' worth, and never more than
+/// 4 096, so that what a page holds stays near a page. Far below where the
+/// merge stops paying: at 100 000 records it reads 4 096 changed keys in a
+/// tenth of the sort's time
+/// (`docs/decisions/041-a-sorted-page-reads-its-page.md`).
+pub fn changed_ceiling(limit: u32) -> usize {
+    (limit as usize).saturating_mul(10).min(4096)
+}
+
+/// [`scan_in_field_order`] at an earlier position, over the head's order
+/// index: `sorted` and `missing` answer the head, and `changed` the keys
+/// changed since the position with their states there. The head's rows
+/// for those keys are passed over, and their states at the position are
+/// merged in, in the index's order (sort key, then key; the sort key
+/// descending for a descending first field) and, for the records without
+/// the first field, in key order. Every other key's state is the same at
+/// the head and at the position, so the page is the one a sort of the type
+/// at the position gives. Every row read counts, the passed-over ones and
+/// the changed states included.
+pub fn scan_in_field_order_at<E>(
+    decl: Option<&TypeDecl>,
+    scan: &Scan,
+    changed: &Changed,
     mut sorted: impl FnMut(Option<(&[u8], &str)>, u32) -> Result<Vec<(Vec<u8>, StoredRecord)>, E>,
     mut missing: impl FnMut(Option<&str>, u32) -> Result<Vec<StoredRecord>, E>,
 ) -> Result<Vec<StoredRecord>, E> {
+    let Some(first) = scan.order_by.first() else {
+        return Ok(Vec::new());
+    };
+    count_read(changed.states.len());
+    let desc = first.dir == Direction::Desc;
+    let cmp = |a: (&[u8], &str), b: (&[u8], &str)| {
+        let by_value = if desc { b.0.cmp(a.0) } else { a.0.cmp(b.0) };
+        by_value.then_with(|| a.1.cmp(b.1))
+    };
+    fn row(r: &(Vec<u8>, StoredRecord)) -> (&[u8], &str) {
+        (r.0.as_slice(), r.1.key.as_str())
+    }
+    let (mut indexed, mut unindexed) = (Vec::new(), Vec::new());
+    for r in &changed.states {
+        match r.fields.get(&first.field).filter(|v| !v.is_null()) {
+            Some(v) => indexed.push((order_key(v), r.clone())),
+            None => unindexed.push(r.clone()),
+        }
+    }
+    indexed.sort_by(|a, b| cmp(row(a), row(b)));
+    unindexed.sort_by(|a, b| a.key.cmp(&b.key));
+    let ours = |key: &RecordKey| changed.keys.contains(key);
+    let mut rows = Ahead::default();
+    let mut rest = Ahead::default();
+    in_field_order(
+        decl,
+        scan,
+        false,
+        |from, n| {
+            let past = |r: &&(Vec<u8>, StoredRecord)| from.is_none_or(|f| cmp(row(r), f).is_gt());
+            let mine = indexed.iter().filter(past).take(n as usize).cloned();
+            rows.next(
+                from.map(|(k, key)| (k.to_vec(), key.to_owned())),
+                n,
+                |at: Option<&(Vec<u8>, String)>, n| {
+                    sorted(at.map(|(k, key)| (k.as_slice(), key.as_str())), n)
+                },
+                |r| (r.0.clone(), r.1.key.to_string()),
+                |r| ours(&r.1.key),
+                mine,
+                |a, b| cmp(row(a), row(b)),
+            )
+        },
+        |after, n| {
+            let past = |r: &&StoredRecord| after.is_none_or(|a| r.key.as_str() > a);
+            let mine = unindexed.iter().filter(past).take(n as usize).cloned();
+            rest.next(
+                after.map(str::to_owned),
+                n,
+                |at: Option<&String>, n| missing(at.map(String::as_str), n),
+                |r| r.key.to_string(),
+                |r| ours(&r.key),
+                mine,
+                |a, b| a.key.cmp(&b.key),
+            )
+        },
+    )
+}
+
+/// One of the head's two streams of rows at an earlier position, the
+/// changed keys passed over. The rows read ahead of what was answered are
+/// kept, so a call that goes on where the last one ended reads no row
+/// twice; a call from anywhere else reads from there.
+struct Ahead<T, P> {
+    pending: std::collections::VecDeque<T>,
+    at: Option<P>,
+    done: bool,
+    served: Option<P>,
+}
+
+impl<T, P> Default for Ahead<T, P> {
+    fn default() -> Self {
+        Ahead {
+            pending: Default::default(),
+            at: None,
+            done: false,
+            served: None,
+        }
+    }
+}
+
+impl<T, P: PartialEq> Ahead<T, P> {
+    /// At most `n` rows after `from`: the head's, read by `read` and less
+    /// those `ours` passes over, merged with `mine` in `cmp`'s order.
+    #[allow(clippy::too_many_arguments)]
+    fn next<E>(
+        &mut self,
+        from: Option<P>,
+        n: u32,
+        mut read: impl FnMut(Option<&P>, u32) -> Result<Vec<T>, E>,
+        place: impl Fn(&T) -> P,
+        ours: impl Fn(&T) -> bool,
+        mine: impl Iterator<Item = T>,
+        cmp: impl Fn(&T, &T) -> Ordering,
+    ) -> Result<Vec<T>, E> {
+        if from != self.served {
+            self.pending.clear();
+            self.at = from;
+            self.done = false;
+        }
+        while self.pending.len() < n as usize && !self.done {
+            let want = n - self.pending.len() as u32;
+            let rows = read(self.at.as_ref(), want)?;
+            count_read(rows.len());
+            self.done = rows.len() < want as usize;
+            for r in rows {
+                self.at = Some(place(&r));
+                if !ours(&r) {
+                    self.pending.push_back(r);
+                }
+            }
+        }
+        // Merged in `cmp`'s order, each row moved, not copied: a page
+        // holds its rows once.
+        let mut mine = mine.peekable();
+        let mut out = Vec::with_capacity(n as usize);
+        while out.len() < n as usize {
+            let theirs = match (self.pending.front(), mine.peek()) {
+                (Some(head), Some(own)) => cmp(own, head).is_gt(),
+                (head, _) => head.is_some(),
+            };
+            match if theirs {
+                self.pending.pop_front()
+            } else {
+                mine.next()
+            } {
+                Some(r) => out.push(r),
+                None => break,
+            }
+        }
+        self.served = out.last().map(place);
+        Ok(out)
+    }
+}
+
+/// [`scan_in_field_order`]'s body; `counted` says whether the rows the two
+/// closures answer count as read here, or were counted where they were.
+fn in_field_order<E>(
+    decl: Option<&TypeDecl>,
+    scan: &Scan,
+    counted: bool,
+    mut sorted: impl FnMut(Option<(&[u8], &str)>, u32) -> Result<Vec<(Vec<u8>, StoredRecord)>, E>,
+    mut missing: impl FnMut(Option<&str>, u32) -> Result<Vec<StoredRecord>, E>,
+) -> Result<Vec<StoredRecord>, E> {
+    let count = |n: usize| {
+        if counted {
+            count_read(n);
+        }
+    };
     let mut out = Vec::new();
     if scan.limit == 0 || scan.order_by.is_empty() {
         return Ok(out);
@@ -528,12 +734,7 @@ pub fn scan_in_field_order<E>(
         let mut keyed: Vec<(PlaceKey, StoredRecord)> = run
             .drain(..)
             .filter(|r| admits(decl, r, scan))
-            .map(|r| {
-                (
-                    PlaceKey::of(&Place::of(&r, &scan.order_by), &scan.order_by),
-                    r,
-                )
-            })
+            .map(|r| (PlaceKey::record(&r, &scan.order_by), r))
             .filter(|(k, _)| after.as_ref().is_none_or(|a| k > a))
             .collect();
         keyed.sort_unstable_by(|a, b| a.0.cmp(&b.0));
@@ -556,7 +757,7 @@ pub fn scan_in_field_order<E>(
         let mut n = batch;
         loop {
             let rows = sorted(from.as_ref().map(|(k, r)| (k.as_slice(), r.as_str())), n)?;
-            count_read(rows.len());
+            count(rows.len());
             let read_all = rows.len() < n as usize;
             for (k, r) in rows {
                 from = Some((k.clone(), r.key.to_string()));
@@ -602,7 +803,7 @@ pub fn scan_in_field_order<E>(
     let mut n = batch;
     loop {
         let rows = missing(from.as_deref(), n)?;
-        count_read(rows.len());
+        count(rows.len());
         let read_all = rows.len() < n as usize;
         for r in rows {
             from = Some(r.key.to_string());
@@ -647,6 +848,10 @@ enum SortPart {
 }
 
 impl PlaceKey {
+    fn record(r: &StoredRecord, order_by: &[Order]) -> PlaceKey {
+        PlaceKey::of(&Place::of(r, order_by), order_by)
+    }
+
     fn of(place: &Place<'_>, order_by: &[Order]) -> PlaceKey {
         PlaceKey {
             values: order_by
@@ -971,21 +1176,57 @@ pub fn proposals<'a>(
         .collect()
 }
 
-/// The cosine similarity of two vectors of one length, in `f64`; 0 when
-/// either is all zeros.
-pub fn cosine(a: &[f32], b: &[f32]) -> f64 {
-    let (mut dot, mut na, mut nb) = (0.0f64, 0.0f64, 0.0f64);
-    for (x, y) in a.iter().zip(b) {
-        let (x, y) = (f64::from(*x), f64::from(*y));
-        dot += x * y;
-        na += x * x;
-        nb += y * y;
+/// A vector as an index stores it: its components as little-endian
+/// `f32`s.
+pub fn vector_bytes(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|x| x.to_le_bytes()).collect()
+}
+
+/// The vector [`vector_bytes`] stored.
+pub fn vector_of(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
+        .collect()
+}
+
+/// The position a view reads at: `as_of`, or the position the projection
+/// reflects (`folded`) when none is asked; a position past it is out of
+/// range.
+pub fn view_at(as_of: Option<Position>, folded: Option<Position>) -> Result<Option<Position>> {
+    match (as_of, folded) {
+        (None, folded) => Ok(folded),
+        (Some(p), Some(head)) if p <= head => Ok(Some(p)),
+        (Some(_), head) => Err(Error::Refused {
+            field: None,
+            reason: Refusal::OutOfRange {
+                head: head.unwrap_or_default(),
+            },
+        }),
     }
-    if na == 0.0 || nb == 0.0 {
-        0.0
-    } else {
-        dot / (na.sqrt() * nb.sqrt())
+}
+
+/// Why a transaction cannot commit through `through`, if it cannot: the
+/// projection already reflects a later position (`folded`), or it puts a
+/// state valid only from a later one (`late`).
+pub fn commit_refusal(
+    folded: Option<Position>,
+    late: Option<Position>,
+    through: Position,
+) -> Option<Error> {
+    if let Some(folded) = folded.filter(|f| *f > through) {
+        return Some(invalid(format!(
+            "the projection reflects the log through position {folded}; a transaction \
+             cannot commit through the earlier position {through}"
+        )));
     }
+    let late = late.filter(|p| *p > through)?;
+    Some(invalid(format!(
+        "a state valid from position {late} cannot be committed through the earlier \
+         position {through}"
+    )))
 }
 
 #[cfg(test)]

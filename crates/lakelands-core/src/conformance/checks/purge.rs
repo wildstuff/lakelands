@@ -7,21 +7,21 @@
 
 use std::sync::Arc;
 
-use lakelands_api::event::{Event, EventBody};
+use lakelands_api::event::EventBody;
 use lakelands_api::expr::Condition;
-use lakelands_api::ontology::{Authority, Cardinality, RelationDecl, StorageKind, TriggerDecl};
-use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Step, Walk};
-use lakelands_api::seam::{AGING_RULE_TYPE, FeedFilter};
+use lakelands_api::ontology::{Authority, Cardinality, RelationDecl, StorageKind};
+use lakelands_api::query::{Projection, QueryResult, Walk};
+use lakelands_api::seam::AGING_RULE_TYPE;
 use lakelands_api::write::{Declaration, ObjectSetDecl, PurgeReport};
 use lakelands_api::{
-    Error, LakeStore, Origin, Position, ReadAt, RecordKey, Refusal, SourceId, Timestamp, TypeName,
-    WriteOrigin,
+    Error, LakeStore, Origin, Position, Refusal, SourceId, Timestamp, TypeName, WriteOrigin,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, field, get_at, head_unmoved, ingest, source_record, type_decl,
+    Lake, Must, computed_by, derived, events_after, field, get_at, head_unmoved, ingest, pattern,
+    reason, source_record, sourced, step, trigger_on, type_decl,
 };
 use crate::links::{link_key, link_type_name};
 
@@ -91,11 +91,6 @@ check!(
 /// and the invoice c1, `erp` the invoice i1.
 async fn lake(store: &dyn LakeStore) -> Result<(), Failure> {
     let l = Lake::of(store);
-    let sourced = |name: &str, kind| {
-        let mut f = field(name, kind);
-        f.authority = Authority::Source;
-        f
-    };
     l.declare(type_decl(
         "partner",
         vec![
@@ -106,10 +101,7 @@ async fn lake(store: &dyn LakeStore) -> Result<(), Failure> {
     .await?;
     let mut status = field("status", StorageKind::Text);
     status.authority = Authority::Shared;
-    let mut gross = field("gross", StorageKind::Number);
-    gross.authority = Authority::Derived;
-    gross.derived = Some(Condition::from("amount * 2"));
-    gross.depends_on = vec!["amount".into()];
+    let gross = derived("gross", StorageKind::Number, "amount * 2", &["amount"]);
     let mut invoice = type_decl(
         "invoice",
         vec![sourced("amount", StorageKind::Number), status, gross],
@@ -132,14 +124,12 @@ async fn lake(store: &dyn LakeStore) -> Result<(), Failure> {
         ],
     )
     .await?;
-    feed(
+    feed_one(
         &l,
         "erp",
-        vec![source_record(
-            "invoice",
-            "i1",
-            json!({"amount": 5, "status": "open"}),
-        )],
+        "invoice",
+        "i1",
+        json!({"amount": 5, "status": "open"}),
     )
     .await
 }
@@ -154,6 +144,17 @@ async fn feed(
         .await
         .must(&format!("ingesting from `{source}`"))?;
     Ok(())
+}
+
+/// One record of `ty` at `key` brought in from `source`.
+async fn feed_one(
+    l: &Lake,
+    source: &str,
+    ty: &str,
+    key: &str,
+    fields: Value,
+) -> Result<(), Failure> {
+    feed(l, source, vec![source_record(ty, key, fields)]).await
 }
 
 async fn purge(store: &dyn LakeStore, source: &str) -> Result<PurgeReport, Failure> {
@@ -171,15 +172,6 @@ async fn live(l: &Lake, ty: &str, key: &str) -> Result<bool, Failure> {
         Err(Error::NotFound { .. }) => Ok(false),
         Err(e) => Err(Failure::new(format!("reading `{ty}` `{key}`: {e}"))),
     }
-}
-
-async fn events_after(store: &dyn LakeStore, before: Position) -> Result<Vec<Event>, Failure> {
-    Ok(store
-        .feed()
-        .poll(before.next(), &FeedFilter::default(), 1000)
-        .await
-        .must("reading the feed")?
-        .events)
 }
 
 async fn a_purge_retires_every_record_the_source_brought_in_and_no_other(
@@ -295,12 +287,7 @@ async fn a_record_another_hand_also_wrote_refuses_the_whole_purge(
     let l = Lake::of(store.as_ref());
     l.upsert("partner", "p1", json!({"note": "called"})).await?;
     // Another source's shared value on `crm`'s invoice.
-    feed(
-        &l,
-        "erp",
-        vec![source_record("invoice", "c1", json!({"status": "paid"}))],
-    )
-    .await?;
+    feed_one(&l, "erp", "invoice", "c1", json!({"status": "paid"})).await?;
     let before = store.head().await.must("reading the head")?;
     let e = store
         .purge_source(&SourceId::from("crm"))
@@ -376,17 +363,11 @@ async fn a_type_that_keeps_no_provenance_is_named_and_not_searched(
 ) -> Result<(), Failure> {
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
-    let mut line = field("text", StorageKind::Text);
-    line.authority = Authority::Source;
+    let line = sourced("text", StorageKind::Text);
     let mut lines = type_decl("log_line", vec![line]);
     lines.field_meta = false;
     l.declare(lines).await?;
-    feed(
-        &l,
-        "crm",
-        vec![source_record("log_line", "l1", json!({"text": "hello"}))],
-    )
-    .await?;
+    feed_one(&l, "crm", "log_line", "l1", json!({"text": "hello"})).await?;
     let report = purge(store.as_ref(), "crm").await?;
     ensure!(
         report.unsearched.iter().any(|t| t.as_str() == "log_line")
@@ -411,12 +392,7 @@ async fn a_second_purge_appends_nothing_and_the_feed_can_come_back(
          expected"
     );
     head_unmoved(store.as_ref(), before, "a second purge").await?;
-    feed(
-        &l,
-        "crm",
-        vec![source_record("partner", "p1", json!({"name": "Harbor"}))],
-    )
-    .await?;
+    feed_one(&l, "crm", "partner", "p1", json!({"name": "Harbor"})).await?;
     ensure!(
         live(&l, "partner", "p1").await?,
         "the same content ingested after the purge did not bring `p1` back"
@@ -430,18 +406,9 @@ async fn each_purged_record_reacts_as_a_retire_does_in_the_same_append(
     lake(store.as_ref()).await?;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
-    cat.declare(
-        own,
-        Declaration::Trigger(TriggerDecl {
-            max_depth: None,
-            name: "partner_changed".into(),
-            on: "partner".into(),
-            when: None,
-            description: None,
-        }),
-    )
-    .await
-    .must("declaring the trigger")?;
+    cat.declare(own, trigger_on("partner_changed", "partner", None))
+        .await
+        .must("declaring the trigger")?;
     cat.declare(
         own,
         Declaration::ObjectSet(ObjectSetDecl {
@@ -454,16 +421,7 @@ async fn each_purged_record_reacts_as_a_retire_does_in_the_same_append(
     .await
     .must("declaring the object set")?;
     // Written again after the set exists, so `p1` is in it.
-    feed(
-        &l,
-        "crm",
-        vec![source_record(
-            "partner",
-            "p1",
-            json!({"name": "Harbor Ltd"}),
-        )],
-    )
-    .await?;
+    feed_one(&l, "crm", "partner", "p1", json!({"name": "Harbor Ltd"})).await?;
     let before = store.head().await.must("reading the head")?;
     purge(store.as_ref(), "crm").await?;
     let events = events_after(store.as_ref(), before).await?;
@@ -507,26 +465,22 @@ async fn another_sources_links_to_a_purged_record_stay_and_the_walk_skips_it(
     let Lake { cat, own } = &l;
     let lt = link_type_name(&"invoice".into(), &"approved_by".into());
     let key = link_key(&"i1".into(), &"p1".into());
-    feed(
+    feed_one(
         &l,
         "registry",
-        vec![source_record(
-            lt.as_str(),
-            key.as_str(),
-            json!({"from": "i1", "to": "p1"}),
-        )],
+        lt.as_str(),
+        key.as_str(),
+        json!({"from": "i1", "to": "p1"}),
     )
     .await?;
     // A link `crm` brought in itself goes with its records.
     let own_link = link_key(&"c1".into(), &"p2".into());
-    feed(
+    feed_one(
         &l,
         "crm",
-        vec![source_record(
-            lt.as_str(),
-            own_link.as_str(),
-            json!({"from": "c1", "to": "p2"}),
-        )],
+        lt.as_str(),
+        own_link.as_str(),
+        json!({"from": "c1", "to": "p2"}),
     )
     .await?;
     let report = purge(store.as_ref(), "crm").await?;
@@ -541,19 +495,12 @@ async fn another_sources_links_to_a_purged_record_stay_and_the_walk_skips_it(
         "the link `crm` brought in from `c1` to `p2` stayed: a purge takes the source's link \
          records with it; {report:?}"
     );
-    let mut p = Pattern::traverse(
-        TypeName::from("invoice"),
-        RecordKey::from("i1"),
-        vec![Step {
-            relation: "approved_by".into(),
-            walk: Walk::Out,
-            ty: None,
-            filter: None,
-            depth: Depth { min: 1, max: 1 },
-        }],
+    let p = pattern(
+        "invoice",
+        Some("i1"),
+        vec![step("approved_by", Walk::Out)],
+        Projection::Graph,
     );
-    p.project = Projection::Graph;
-    p.at = ReadAt::default();
     let reply = cat.query(own, p).await.must("walking from `i1`")?;
     let QueryResult::Graph { nodes, .. } = reply.data else {
         return Err(Failure::new("a graph projection answered something else"));
@@ -574,19 +521,9 @@ async fn a_record_whose_values_from_the_source_were_all_cleared_stays(
     // `crm` clears the one value it gave `p1`; `p2` keeps its name. On
     // `erp`'s `i1`, `crm` sets `status` and clears it again: `i1` holds
     // nothing of `crm`'s, only `erp`'s `amount`.
-    feed(
-        &l,
-        "crm",
-        vec![source_record("partner", "p1", json!({"name": null}))],
-    )
-    .await?;
+    feed_one(&l, "crm", "partner", "p1", json!({"name": null})).await?;
     for status in [json!("disputed"), json!(null)] {
-        feed(
-            &l,
-            "crm",
-            vec![source_record("invoice", "i1", json!({"status": status}))],
-        )
-        .await?;
+        feed_one(&l, "crm", "invoice", "i1", json!({"status": status})).await?;
     }
     let report = purge(store.as_ref(), "crm").await?;
     ensure!(
@@ -634,11 +571,7 @@ async fn a_co_owned_purge_names_the_count_and_the_first_ten(
         .purge_source(&SourceId::from("bulk"))
         .await
         .must_fail("purging `bulk`, all twelve of whose records a person also wrote")?;
-    let Error::Refused {
-        reason: Refusal::Invalid { message },
-        ..
-    } = &e
-    else {
+    let Some(Refusal::Invalid { message }) = reason(&e) else {
         return Err(Failure::new(format!(
             "the purge was refused as {e:?}; invalid was expected"
         )));
@@ -676,19 +609,10 @@ async fn a_value_a_backing_filled_makes_no_owner(store: Arc<dyn LakeStore>) -> R
     cat.declare(own, function)
         .await
         .must("declaring `lookup`")?;
-    let mut code = field("code", StorageKind::Text);
-    code.authority = Authority::Source;
-    let mut name = field("name", StorageKind::Text);
-    name.authority = Authority::Derived;
-    name.function = Some("lookup".into());
-    name.depends_on = vec!["code".into()];
+    let code = sourced("code", StorageKind::Text);
+    let name = computed_by("name", StorageKind::Text, "lookup", &["code"]);
     l.declare(type_decl("place", vec![code, name])).await?;
-    feed(
-        &l,
-        "geo",
-        vec![source_record("place", "at", json!({"code": "AT"}))],
-    )
-    .await?;
+    feed_one(&l, "geo", "place", "at", json!({"code": "AT"})).await?;
     let filled = crate::conformance::fixture::read(cat.as_ref(), own, "place", "at").await?;
     ensure!(
         filled.fields.get("name") == Some(&json!("AT")),

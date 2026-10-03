@@ -22,6 +22,8 @@
 //!   on its type: declared with `scope: type` (a `declared` event, a
 //!   proposed `declare`), called (`verb_called` without `key`) or proposed
 //!   (a `call` without `key`).
+//! - **9**: an event whose declaration is a view that `merge`s sources, in
+//!   the places 5 names.
 //!
 //! The store writes every event of one append at the greatest of the
 //! lake's version and what [`needed`] answers for each event of the
@@ -36,6 +38,9 @@ use lakelands_api::write::{Declaration, ProposedWrite};
 /// The lowest format version that can carry `body`, with `upstream` or
 /// without it.
 pub fn needed(body: &EventBody, upstream: bool) -> u32 {
+    if merges_sources(body) {
+        return 9;
+    }
     if declares_view_params(body) || declares_a_verb_on_its_type(body) || calls_with_no_key(body) {
         return 8;
     }
@@ -53,14 +58,8 @@ pub fn needed(body: &EventBody, upstream: bool) -> u32 {
     {
         return 4;
     }
-    let declares_bucket = match body {
-        EventBody::Declared { declaration, .. } => calls_date_bucket(declaration),
-        EventBody::Migrated { migration, .. } => {
-            calls_date_bucket(&Declaration::Type(migration.to.clone()))
-        }
-        _ => false,
-    };
-    if upstream || declares_bucket {
+    // A proposed declare or migrate returned 4 above.
+    if upstream || any_declaration(body, calls_date_bucket) {
         return 3;
     }
     match body {
@@ -108,6 +107,14 @@ pub fn calls_retired(body: &EventBody) -> bool {
     any_declaration(body, |d| declares_call(d, Func::Retired))
 }
 
+/// Whether a declaration the event carries is a view that merges sources.
+pub fn merges_sources(body: &EventBody) -> bool {
+    any_declaration(
+        body,
+        |d| matches!(d, Declaration::Type(t) if t.view.as_ref().is_some_and(|v| !v.merge.is_empty())),
+    )
+}
+
 /// Whether a declaration the event carries is a view with parameters, or
 /// calls `param`.
 pub fn declares_view_params(body: &EventBody) -> bool {
@@ -153,7 +160,9 @@ pub fn below(event: &Event) -> Option<String> {
     if event.v >= need {
         return None;
     }
-    let what = if need == 8 && declares_a_verb_on_its_type(&event.body) {
+    let what = if need == 9 {
+        "declares a view that merges sources".to_owned()
+    } else if need == 8 && declares_a_verb_on_its_type(&event.body) {
         "declares a verb on its type".to_owned()
     } else if need == 8 && calls_with_no_key(&event.body) {
         "calls a verb with no key".to_owned()
@@ -245,21 +254,15 @@ pub fn declares_call(declaration: &Declaration, f: Func) -> bool {
         Declaration::Function(f) => conditions.extend(f.expr.as_ref()),
     }
     conditions.into_iter().any(|c| match c {
-        Condition::Expr(e) => calls(e, f),
-        Condition::Text(t) => lakelands_api::expr::parse(t).is_ok_and(|e| calls(&e, f)),
+        Condition::Expr(e) => calls(e, &|g| g == f),
+        Condition::Text(t) => lakelands_api::expr::parse(t).is_ok_and(|e| calls(&e, &|g| g == f)),
     })
 }
 
-/// Whether an expression calls `f` anywhere.
-pub fn calls(e: &Expr, f: Func) -> bool {
-    match e {
-        Expr::Lit { .. } | Expr::Path { .. } => false,
-        Expr::Cmp { lhs, rhs, .. } | Expr::Arith { lhs, rhs, .. } => calls(lhs, f) || calls(rhs, f),
-        Expr::Neg { arg } | Expr::Not { arg } | Expr::IsNull { arg } => calls(arg, f),
-        Expr::And { args } | Expr::Or { args } => args.iter().any(|a| calls(a, f)),
-        Expr::In { arg, list } => calls(arg, f) || list.iter().any(|a| calls(a, f)),
-        Expr::Call { func, args } => *func == f || args.iter().any(|a| calls(a, f)),
-    }
+/// Whether an expression calls, anywhere, a function `f` accepts.
+pub fn calls(e: &Expr, f: &dyn Fn(Func) -> bool) -> bool {
+    matches!(e, Expr::Call { func, .. } if f(*func))
+        || crate::expr::children(e).any(|c| calls(c, f))
 }
 
 #[cfg(test)]

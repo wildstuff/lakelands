@@ -85,6 +85,16 @@ impl ProjectionView for MemView {
         }))
     }
 
+    fn count(&self, ty: &TypeName, scan: &Scan) -> Result<u64> {
+        Ok(self.read(|p, at| {
+            let count: std::result::Result<_, std::convert::Infallible> =
+                engines::count_in_key_order(p.type_at(ty, at), scan, |after, n| {
+                    Ok(p.records_after(ty, at, after, n))
+                });
+            count.unwrap_or_else(|never| match never {})
+        }))
+    }
+
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
         Ok(self.read(|p, at| {
             let decl = p.type_at(ty, at);
@@ -96,53 +106,62 @@ impl ProjectionView for MemView {
                     });
                 return page.unwrap_or_else(|never| match never {});
             }
-            // Ordered by a field the lake indexes, at the head: read in the
-            // order index's order, stop when full.
-            let sorted = if at.is_some() && at == p.folded {
+            // Ordered by a field the lake indexes: read in the order index's
+            // order, stop when full; at an earlier position, with the keys
+            // changed since, and past the ceiling, sort the type.
+            let sorted = if at.is_some() {
                 p.sorted_fields(ty)
             } else {
                 Vec::new()
             };
             if let Some(first) = engines::by_order_index(decl, &sorted, scan) {
+                let changed = match at {
+                    Some(at) if Some(at) != p.folded => {
+                        match p.changed(ty, at, engines::changed_ceiling(scan.limit)) {
+                            Some(changed) => Some(changed),
+                            None => return engines::scan(decl, p.records_at(ty, Some(at)), scan),
+                        }
+                    }
+                    _ => None,
+                };
                 let head = |key: &RecordKey| {
                     p.records
                         .get(&(ty.clone(), key.clone()))
                         .and_then(|h| h.at(at))
                         .cloned()
                 };
-                let page: std::result::Result<_, std::convert::Infallible> =
-                    engines::scan_in_field_order(
-                        decl,
-                        scan,
-                        |from, n| {
-                            Ok(p.sorted_after(ty, &first.field, first.dir, from, n)
-                                .into_iter()
-                                .filter_map(|(k, key)| Some((k, head(&key)?)))
-                                .collect())
-                        },
-                        |after, n| {
-                            let mut out = Vec::new();
-                            let mut from = after.map(str::to_owned);
-                            // Key-ordered batches of the head, less the
-                            // records the index holds for the field.
-                            loop {
-                                let batch = p.records_after(ty, at, from.as_deref(), n);
-                                let done = batch.len() < n as usize;
-                                for r in batch {
-                                    from = Some(r.key.to_string());
-                                    if !p.has_sorted(ty, &r.key, &first.field) {
-                                        out.push(r);
-                                        if out.len() >= n as usize {
-                                            return Ok(out);
-                                        }
-                                    }
-                                }
-                                if done {
+                let sorted = |from: Option<(&[u8], &str)>, n| {
+                    Ok(p.sorted_after(ty, &first.field, first.dir, from, n)
+                        .into_iter()
+                        .filter_map(|(k, key)| Some((k, head(&key)?)))
+                        .collect())
+                };
+                let missing = |after: Option<&str>, n| {
+                    let mut out = Vec::new();
+                    let mut from = after.map(str::to_owned);
+                    // Key-ordered batches, less the records the index holds
+                    // for the field.
+                    loop {
+                        let batch = p.records_after(ty, at, from.as_deref(), n);
+                        let done = batch.len() < n as usize;
+                        for r in batch {
+                            from = Some(r.key.to_string());
+                            if !p.has_sorted(ty, &r.key, &first.field) {
+                                out.push(r);
+                                if out.len() >= n as usize {
                                     return Ok(out);
                                 }
                             }
-                        },
-                    );
+                        }
+                        if done {
+                            return Ok(out);
+                        }
+                    }
+                };
+                let page: std::result::Result<_, std::convert::Infallible> = match &changed {
+                    None => engines::scan_in_field_order(decl, scan, sorted, missing),
+                    Some(c) => engines::scan_in_field_order_at(decl, scan, c, sorted, missing),
+                };
                 return page.unwrap_or_else(|never| match never {});
             }
             engines::scan(decl, p.records_at(ty, at), scan)

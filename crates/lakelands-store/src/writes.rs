@@ -36,12 +36,12 @@
 
 use std::collections::BTreeMap;
 
-use lakelands_api::engine::{ProjectionView, Scan};
+use lakelands_api::engine::ProjectionView;
 use lakelands_api::event::{Digest, Event, EventBody, Procedure};
 use lakelands_api::ontology::{
     Authority, RelationDecl, Risk, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
 };
-use lakelands_api::principal::{Grants, WriteContext};
+use lakelands_api::principal::WriteContext;
 use lakelands_api::record::{Origin, StoredRecord};
 use lakelands_api::write::{
     Declaration, Migration, MigrationReport, Misfit, Outcome, ProposalState, ProposedWrite,
@@ -53,26 +53,17 @@ use lakelands_api::{
 };
 use lakelands_core::expr::{self, Place, RecordScope, Scope, WriteScope};
 use lakelands_core::rights::{self, Door};
-use lakelands_core::{links, shape, value};
+use lakelands_core::{describe, invalid, links, shape, value};
 
 use crate::backed::Outputs;
-use crate::declare;
-use crate::lake::{AGING_RULE_TYPE, Lake, SETTING_TYPE, Writer, find_proposal};
+use crate::declare::{self, invalid_field};
+use crate::lake::{AGING_RULE_TYPE, Lake, SETTING_TYPE, Writer, every, find_proposal};
 use crate::log::{self, Draft};
 use crate::record;
 
 /// How many events after an external verb's call a retry reads for the
 /// output recorded for it.
 const RETRY_REACH: u32 = 4_096;
-
-fn invalid(message: impl Into<String>) -> Error {
-    Error::Refused {
-        field: None,
-        reason: Refusal::Invalid {
-            message: message.into(),
-        },
-    }
-}
 
 /// The record a call names, checked against the verb's scope before
 /// anything is read (013, extended): a verb on a record needs its key, a
@@ -101,18 +92,44 @@ fn scoped<'k>(
     }
 }
 
-fn not_granted() -> Error {
+/// Whether a cardinality allows one link per `from`, and one per `to`.
+fn one_per(c: lakelands_api::ontology::Cardinality) -> (bool, bool) {
+    use lakelands_api::ontology::Cardinality::*;
+    (
+        matches!(c, ManyToOne | OneToOne),
+        matches!(c, OneToMany | OneToOne),
+    )
+}
+
+/// A refusal of what a constraint does not allow, at `field` if one is named.
+fn constraint(field: Option<FieldName>, message: impl Into<String>) -> Error {
     Error::Refused {
-        field: None,
-        reason: Refusal::NotGranted,
+        field,
+        reason: Refusal::Constraint {
+            message: message.into(),
+        },
     }
 }
 
-/// Refuse a write whose context the lake does not take: deeper than its
-/// reactive ceiling, whatever the origin names
+/// Refuse as not granted unless `ok`.
+pub(crate) fn granted(ok: bool) -> Result<()> {
+    if ok {
+        return Ok(());
+    }
+    Err(Error::Refused {
+        field: None,
+        reason: Refusal::NotGranted,
+    })
+}
+
+/// Refuse a write whose context is deeper than the lake's reactive
+/// ceiling, whatever the origin names
 /// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`). Every
-/// write path calls it before it takes the writer; a host's `cause` is
-/// checked against the head where the write appends
+/// write door calls it first, before any other check and before it takes
+/// the writer, so a refused context waits on no other write and every
+/// door refuses it alike. It reads nothing. A host's `cause` is checked
+/// where the write appends, under the writer: that it is at or below the
+/// head, then the ceiling of the trigger whose firing it names
 /// ([`crate::lake::Lake::append_after`]).
 pub fn check_context(lake: &Lake, context: &WriteContext) -> Result<()> {
     let max = lake.limits.max_reactive_depth;
@@ -120,29 +137,6 @@ pub fn check_context(lake: &Lake, context: &WriteContext) -> Result<()> {
         return Err(Error::Refused {
             field: None,
             reason: Refusal::TooDeep { max },
-        });
-    }
-    // A reaction that names a trigger's firing as its cause is bound by
-    // that trigger's own ceiling too, as the head declares it (021). Any
-    // other cause binds nothing more.
-    let Some(cause) = context.cause else {
-        return Ok(());
-    };
-    let Some(stored) = lake.engine.read(cause, 1)?.into_iter().next() else {
-        return Ok(());
-    };
-    if let EventBody::TriggerFired { trigger, .. } = crate::log::open(&stored)?.body
-        && let Some(m) = lake
-            .writer()
-            .ontology
-            .triggers
-            .get(trigger.as_str())
-            .and_then(|e| e.decl.max_depth)
-        && context.depth > m
-    {
-        return Err(Error::Refused {
-            field: Some(trigger.as_str().into()),
-            reason: Refusal::TooDeep { max: m },
         });
     }
     Ok(())
@@ -212,15 +206,27 @@ pub struct RecordPlan {
 }
 
 impl Call<'_> {
-    fn writer(&self) -> String {
-        self.who.writer()
+    /// Refuse a verb whose executor the host has not bound.
+    fn check_executor(&self, executor: &str) -> Result<()> {
+        if self
+            .lake
+            .seams
+            .executors
+            .iter()
+            .any(|e| e.name() == executor)
+        {
+            return Ok(());
+        }
+        Err(Error::Unbound {
+            seam: format!("the verb executor `{executor}`"),
+        })
     }
 
     fn draft(&self, now: Timestamp, origin: Origin, body: EventBody) -> Draft {
         Draft {
             upstream: None,
             known_at: now,
-            writer: self.writer(),
+            writer: self.who.writer(),
             origin,
             source: None,
             seen_at: None,
@@ -233,12 +239,6 @@ impl Call<'_> {
         }
     }
 
-    /// [`check_context`] for this call's context: call before taking the
-    /// writer, so a refused context waits on no other write.
-    fn check_context(&self) -> Result<()> {
-        check_context(self.lake, &self.context)
-    }
-
     /// The first write's outcome, if this key was used before.
     fn replay(
         &self,
@@ -246,7 +246,7 @@ impl Call<'_> {
         view: &dyn ProjectionView,
     ) -> Result<Option<Outcome>> {
         let Some(k) = key else { return Ok(None) };
-        let id = log::authored_id(&self.writer(), k);
+        let id = log::authored_id(&self.who.writer(), k);
         let Some(pos) = view.applied(&id)? else {
             return Ok(None);
         };
@@ -357,23 +357,14 @@ pub fn check_values(
         let f = fields
             .iter()
             .find(|f| &f.name == name)
-            .ok_or_else(|| Error::Refused {
-                field: Some(name.clone()),
-                reason: Refusal::Invalid {
-                    message: format!("`{}` has no field `{name}`", decl.name),
-                },
-            })?;
+            .ok_or_else(|| invalid_field(name, format!("`{}` has no field `{name}`", decl.name)))?;
         let vt =
             f.ty.value_type
                 .as_ref()
                 .and_then(|n| lake_types.value_types.get(n.as_str()))
                 .map(|e| &e.decl);
-        let checked = value::check(v, &f.ty, vt).map_err(|e| Error::Refused {
-            field: Some(name.clone()),
-            reason: Refusal::Constraint {
-                message: e.to_string(),
-            },
-        })?;
+        let checked = value::check(v, &f.ty, vt)
+            .map_err(|e| constraint(Some(name.clone()), e.to_string()))?;
         if let (Some(vt), false) = (vt, checked.is_null())
             && let Some(c) = &vt.constraint
         {
@@ -390,15 +381,10 @@ pub fn check_values(
             )
             .unwrap_or(false);
             if !ok {
-                return Err(Error::Refused {
-                    field: Some(name.clone()),
-                    reason: Refusal::Constraint {
-                        message: format!(
-                            "the value does not satisfy the constraint of `{}`",
-                            vt.name
-                        ),
-                    },
-                });
+                return Err(constraint(
+                    Some(name.clone()),
+                    format!("the value does not satisfy the constraint of `{}`", vt.name),
+                ));
             }
         }
         out.insert(name.clone(), checked);
@@ -491,14 +477,10 @@ fn check_references(
             .record(view, target, &to)?
             .is_some_and(|r| !r.retired);
         if !exists {
-            return Err(Error::Refused {
-                field: Some(name.clone()),
-                reason: Refusal::Constraint {
-                    message: format!(
-                        "`{name}` names `{target}` `{to}`, which is not a live record"
-                    ),
-                },
-            });
+            return Err(constraint(
+                Some(name.clone()),
+                format!("`{name}` names `{target}` `{to}`, which is not a live record"),
+            ));
         }
     }
     Ok(())
@@ -524,7 +506,8 @@ fn check_key_agrees(
     }
 }
 
-fn check_key(key: &RecordKey) -> Result<()> {
+/// Refuse a key that is empty or holds a NUL character.
+pub(crate) fn check_key(key: &RecordKey) -> Result<()> {
     if key.as_str().is_empty() || key.as_str().contains('\0') {
         return Err(invalid(
             "a record key is not empty and holds no NUL character",
@@ -549,10 +532,72 @@ pub(crate) fn provisional(lake: &Lake, position: Position, d: &Draft) -> Event {
     log::seal(&lake.id, position, &Digest::zero(), 0, d.clone()).0
 }
 
+/// The live record of `ty` at `key`; a retired one is not found.
+fn live_record(view: &dyn ProjectionView, ty: &TypeName, key: &RecordKey) -> Result<StoredRecord> {
+    view.get(ty, key)?
+        .filter(|r| !r.retired)
+        .ok_or_else(|| Error::NotFound {
+            missing: Missing::Record {
+                ty: ty.clone(),
+                key: key.clone(),
+            },
+        })
+}
+
 /// The next position in an append that already holds `n` drafts.
 pub(crate) fn position_after(w: &Writer, n: usize) -> Position {
     let first = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0.next());
     Position(first.0 + n as u64)
+}
+
+/// The record a retire of `before` makes, computed from its provisional
+/// event.
+pub(crate) fn retired(
+    w: &Writer,
+    view: &dyn ProjectionView,
+    before: &StoredRecord,
+    event: &Event,
+) -> Result<StoredRecord> {
+    let outputs = &mut Outputs {
+        view,
+        staged: None,
+        due: None,
+    };
+    Ok(
+        record::apply(&w.ontology, Some(before), event, &w.settings, outputs)?
+            .expect("a retire makes a record"),
+    )
+}
+
+/// Refuse a verb whose `requires` does not hold on `record`.
+fn requires(
+    w: &Writer,
+    verb: &VerbDecl,
+    key: &RecordKey,
+    record: &StoredRecord,
+    now: Timestamp,
+) -> Result<()> {
+    let Some(r) = &verb.requires else {
+        return Ok(());
+    };
+    let e = declare::condition(r, Place::Record, "requires")?;
+    let scope = RecordScope {
+        fields: &record.fields,
+        settings: Some(&w.settings),
+        now,
+    };
+    if expr::holds(&e, &scope).unwrap_or(false) {
+        return Ok(());
+    }
+    Err(Error::Refused {
+        field: None,
+        reason: Refusal::Precondition {
+            message: format!(
+                "verb `{}` requires what `{}` `{key}` does not hold",
+                verb.name, verb.on
+            ),
+        },
+    })
 }
 
 /// The scope a verb's assignments see: the record's fields, and
@@ -694,23 +739,15 @@ impl Call<'_> {
         .expect("a record event makes a record");
         record::check_required(decl, &after.fields)?;
         if ty.as_str() == AGING_RULE_TYPE {
-            let rule =
-                crate::aging::check(&w.ontology, &after.fields).map_err(|(field, message)| {
-                    Error::Refused {
-                        field: Some(field),
-                        reason: Refusal::Invalid { message },
-                    }
-                })?;
+            let rule = crate::aging::check(&w.ontology, &after.fields)
+                .map_err(|(field, message)| invalid_field(&field, message))?;
             crate::aging::check_authority(who, &w.ontology, &rule)?;
         }
         if ty.as_str() == SETTING_TYPE {
             let decl = lakelands_api::seam::index_setting_type(key.as_str())
                 .and_then(|t| w.ontology.ty(&TypeName::from(t)).ok());
             lakelands_api::seam::check_index_setting(key.as_str(), after.fields.get("value"), decl)
-                .map_err(|(field, message)| Error::Refused {
-                    field: Some(field),
-                    reason: Refusal::Invalid { message },
-                })?;
+                .map_err(|(field, message)| invalid_field(&field, message))?;
         }
         Ok(RecordPlan {
             draft,
@@ -816,13 +853,15 @@ impl Call<'_> {
         patch: Patch,
         opts: WriteOpts,
     ) -> Result<Outcome> {
+        check_context(self.lake, &self.context)?;
         ordinary_door(ty)?;
         self.write_record(ty, key, patch, opts, |_, _| Ok(()))
     }
 
-    /// An authored write of one record, as `upsert` and `link` make it;
-    /// `check` refuses it, under the writer's lock, before anything is
-    /// planned.
+    /// An authored write of one record, as `upsert` and `link` make it,
+    /// their context already checked; `check` refuses it, under the
+    /// writer's lock, after the record's own checks: it reads other
+    /// records, so the grants come first (024).
     fn write_record(
         &self,
         ty: &TypeName,
@@ -831,13 +870,11 @@ impl Call<'_> {
         opts: WriteOpts,
         check: impl FnOnce(&Writer, &dyn ProjectionView) -> Result<()>,
     ) -> Result<Outcome> {
-        self.check_context()?;
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
         if let Some(o) = self.replay(&opts.idempotency_key, view.as_ref())? {
             return Ok(o);
         }
-        check(&w, view.as_ref())?;
         let now = self.lake.clock(&mut w);
         let mut pending = Pending::default();
         let mut plan = self.plan_record(
@@ -853,8 +890,9 @@ impl Call<'_> {
             0,
             self.who,
         )?;
+        check(&w, view.as_ref())?;
         if let Some(k) = &opts.idempotency_key {
-            plan.draft.id = Some(log::authored_id(&self.writer(), k));
+            plan.draft.id = Some(log::authored_id(&self.who.writer(), k));
             plan.draft.idempotency_key = Some(k.clone());
         }
         let cause = position_after(&w, 0);
@@ -875,6 +913,7 @@ impl Call<'_> {
 
     /// `retire`.
     pub fn retire(&self, ty: &TypeName, key: &RecordKey, opts: WriteOpts) -> Result<Outcome> {
+        check_context(self.lake, &self.context)?;
         ordinary_door(ty)?;
         self.retire_record(ty, key, opts)
     }
@@ -890,10 +929,8 @@ impl Call<'_> {
         fields: Patch,
         opts: WriteOpts,
     ) -> Result<Outcome> {
-        let (lt, r) = {
-            let w = self.lake.writer();
-            link_relation(&w, ty, relation)?
-        };
+        check_context(self.lake, &self.context)?;
+        let (lt, r) = link_relation(&self.lake.writer(), ty, relation)?;
         if r.authority != Authority::Authored {
             return Err(Error::Refused {
                 field: None,
@@ -902,14 +939,10 @@ impl Call<'_> {
         }
         for name in [links::FROM, links::TO] {
             if fields.contains_key(name) {
-                return Err(Error::Refused {
-                    field: Some(name.into()),
-                    reason: Refusal::Invalid {
-                        message: format!(
-                            "a link's `{name}` is given as `key` and `to`, not among its fields"
-                        ),
-                    },
-                });
+                return Err(invalid_field(
+                    &name.into(),
+                    format!("a link's `{name}` is given as `key` and `to`, not among its fields"),
+                ));
             }
         }
         let mut patch = fields;
@@ -931,34 +964,23 @@ impl Call<'_> {
         to: &RecordKey,
         opts: WriteOpts,
     ) -> Result<Outcome> {
-        let (lt, _) = {
-            let w = self.lake.writer();
-            link_relation(&w, ty, relation)?
-        };
+        check_context(self.lake, &self.context)?;
+        let (lt, _) = link_relation(&self.lake.writer(), ty, relation)?;
         self.retire_record(&lt, &links::link_key(key, to), opts)
     }
 
-    /// A retirement of one record, as `retire` and `unlink` make it.
+    /// A retirement of one record, as `retire` and `unlink` make it, their
+    /// context already checked.
     fn retire_record(&self, ty: &TypeName, key: &RecordKey, opts: WriteOpts) -> Result<Outcome> {
-        self.check_context()?;
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
         if let Some(o) = self.replay(&opts.idempotency_key, view.as_ref())? {
             return Ok(o);
         }
         let decl = w.ontology.ty(ty)?;
-        if !rights::may_retire(self.who, decl) {
-            return Err(not_granted());
-        }
-        let before = view
-            .get(ty, key)?
-            .filter(|r| !r.retired)
-            .ok_or_else(|| Error::NotFound {
-                missing: Missing::Record {
-                    ty: ty.clone(),
-                    key: key.clone(),
-                },
-            })?;
+        rights::not_a_view(decl)?;
+        granted(rights::may_retire(self.who, decl))?;
+        let before = live_record(view.as_ref(), ty, key)?;
         cas(opts.expected_version, Some(&before))?;
         let now = self.lake.clock(&mut w);
         let mut d = self.draft(
@@ -971,22 +993,11 @@ impl Call<'_> {
             },
         );
         if let Some(k) = &opts.idempotency_key {
-            d.id = Some(log::authored_id(&self.writer(), k));
+            d.id = Some(log::authored_id(&self.who.writer(), k));
             d.idempotency_key = Some(k.clone());
         }
         let event = provisional(self.lake, position_after(&w, 0), &d);
-        let after = record::apply(
-            &w.ontology,
-            Some(&before),
-            &event,
-            &w.settings,
-            &mut Outputs {
-                view: view.as_ref(),
-                staged: None,
-                due: None,
-            },
-        )?
-        .expect("a retire makes a record");
+        let after = retired(&w, view.as_ref(), &before, &event)?;
         let mut pending = Pending::default();
         let cause = event.position;
         let mut drafts = vec![d];
@@ -1019,15 +1030,10 @@ impl Call<'_> {
         let checked = check_values(&w.ontology, decl, payload, &verb.payload)?;
         for f in verb.payload.iter().filter(|f| f.required) {
             if checked.get(&f.name).is_none_or(Value::is_null) {
-                return Err(Error::Refused {
-                    field: Some(f.name.clone()),
-                    reason: Refusal::Constraint {
-                        message: format!(
-                            "verb `{}` requires `{}` in its payload",
-                            verb.name, f.name
-                        ),
-                    },
-                });
+                return Err(constraint(
+                    Some(f.name.clone()),
+                    format!("verb `{}` requires `{}` in its payload", verb.name, f.name),
+                ));
             }
         }
         Ok(checked)
@@ -1066,38 +1072,10 @@ impl Call<'_> {
         let Some(key) = key else {
             return Ok((vec![called], Vec::new()));
         };
-        let record = view
-            .get(&verb.on, key)?
-            .filter(|r| !r.retired)
-            .ok_or_else(|| Error::NotFound {
-                missing: Missing::Record {
-                    ty: verb.on.clone(),
-                    key: key.clone(),
-                },
-            })?;
-        if let Some(r) = &verb.requires {
-            let e = declare::condition(r, Place::Record, "requires")?;
-            if !expr::holds(
-                &e,
-                &RecordScope {
-                    fields: &record.fields,
-                    settings: Some(&w.settings),
-                    now,
-                },
-            )
-            .unwrap_or(false)
-            {
-                return Err(Error::Refused {
-                    field: None,
-                    reason: Refusal::Precondition {
-                        message: format!(
-                            "verb `{}` requires what `{}` `{key}` does not hold",
-                            verb.name, verb.on
-                        ),
-                    },
-                });
-            }
-        }
+        let record = live_record(view, &verb.on, key)?;
+        // The version before anything is judged on the record (024).
+        cas(expected, Some(&record))?;
+        requires(w, verb, key, &record, now)?;
         let called_at = position_after(w, n);
         let mut drafts = vec![called];
         let mut reactions = Vec::new();
@@ -1179,35 +1157,20 @@ impl Call<'_> {
         payload: Patch,
         opts: WriteOpts,
     ) -> Result<(Outcome, Option<External>)> {
-        self.check_context()?;
+        check_context(self.lake, &self.context)?;
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
         if let Some(o) = self.replay(&opts.idempotency_key, view.as_ref())? {
             return Ok((o, None));
         }
-        let decl = w
-            .ontology
-            .verbs
-            .get(verb)
-            .map(|e| e.decl.clone())
-            .ok_or_else(|| Error::NotFound {
-                missing: Missing::Verb { name: verb.clone() },
-            })?;
+        let decl = w.ontology.verb(verb)?.clone();
         let key = scoped(&decl, key, opts.expected_version)?;
-        if !self.verb_callable(&decl) {
-            return Err(not_granted());
+        if key.is_some() {
+            rights::not_a_view(w.ontology.ty(&decl.on)?)?;
         }
-        if let VerbEffect::External { executor } = &decl.effect
-            && !self
-                .lake
-                .seams
-                .executors
-                .iter()
-                .any(|e| e.name() == executor)
-        {
-            return Err(Error::Unbound {
-                seam: format!("the verb executor `{executor}`"),
-            });
+        granted(self.verb_callable(&decl))?;
+        if let VerbEffect::External { executor } = &decl.effect {
+            self.check_executor(executor)?;
         }
         let payload = self.verb_payload(&w, &decl, &payload)?;
         let now = self.lake.clock(&mut w);
@@ -1227,20 +1190,18 @@ impl Call<'_> {
             drafts.extend(reactions);
             drafts
         } else {
+            // A call that could not run now is not proposed: the version,
+            // then `requires`, as when it runs; accepting it judges the
+            // record again (013).
             if let Some(key) = key {
-                view.get(&decl.on, key)?
-                    .filter(|r| !r.retired)
-                    .ok_or_else(|| Error::NotFound {
-                        missing: Missing::Record {
-                            ty: decl.on.clone(),
-                            key: key.clone(),
-                        },
-                    })?;
+                let record = live_record(view.as_ref(), &decl.on, key)?;
+                cas(opts.expected_version, Some(&record))?;
+                requires(&w, &decl, key, &record, now)?;
             }
             let position = position_after(&w, 0);
             let id = opts.idempotency_key.as_ref().map_or_else(
                 || log::positional_id(&self.lake.id, position),
-                |k| log::authored_id(&self.writer(), k),
+                |k| log::authored_id(&self.who.writer(), k),
             );
             let why = format!(
                 "`{verb}` is declared {} risk; it runs when accepted",
@@ -1262,7 +1223,7 @@ impl Call<'_> {
             )]
         };
         if let Some(k) = &opts.idempotency_key {
-            drafts[0].id = Some(log::authored_id(&self.writer(), k));
+            drafts[0].id = Some(log::authored_id(&self.who.writer(), k));
             drafts[0].idempotency_key = Some(k.clone());
         }
         drop(view);
@@ -1292,7 +1253,7 @@ impl Call<'_> {
     /// every value (`docs/log-format.md` §1.3), exactly as an applied write
     /// would.
     pub fn propose(&self, write: ProposedWrite, why: String) -> Result<Outcome> {
-        self.check_context()?;
+        check_context(self.lake, &self.context)?;
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
         let now = self.lake.clock(&mut w);
@@ -1339,18 +1300,10 @@ impl Call<'_> {
                 }
             }
             ProposedWrite::Retire { ty, key, opts } => {
-                if !rights::may_retire(self.who, w.ontology.ty(&ty)?) {
-                    return Err(not_granted());
-                }
-                let before =
-                    view.get(&ty, &key)?
-                        .filter(|r| !r.retired)
-                        .ok_or_else(|| Error::NotFound {
-                            missing: Missing::Record {
-                                ty: ty.clone(),
-                                key: key.clone(),
-                            },
-                        })?;
+                let decl = w.ontology.ty(&ty)?;
+                rights::not_a_view(decl)?;
+                granted(rights::may_retire(self.who, decl))?;
+                let before = live_record(view.as_ref(), &ty, &key)?;
                 cas(opts.expected_version, Some(&before))?;
                 ProposedWrite::Retire { ty, key, opts }
             }
@@ -1360,17 +1313,14 @@ impl Call<'_> {
                 payload,
                 opts,
             } => {
-                let decl = w
-                    .ontology
-                    .verbs
-                    .get(&verb)
-                    .map(|e| e.decl.clone())
-                    .ok_or_else(|| Error::NotFound {
-                        missing: Missing::Verb { name: verb.clone() },
-                    })?;
-                scoped(&decl, key.as_ref(), opts.expected_version)?;
-                if !self.verb_callable(&decl) {
-                    return Err(not_granted());
+                let decl = w.ontology.verb(&verb)?.clone();
+                if scoped(&decl, key.as_ref(), opts.expected_version)?.is_some() {
+                    rights::not_a_view(w.ontology.ty(&decl.on)?)?;
+                }
+                granted(self.verb_callable(&decl))?;
+                // A call that could not run when accepted is not proposed (013).
+                if let VerbEffect::External { executor } = &decl.effect {
+                    self.check_executor(executor)?;
                 }
                 let payload = self.verb_payload(&w, &decl, &payload)?;
                 if matches!(decl.effect, VerbEffect::Write { .. }) {
@@ -1386,6 +1336,10 @@ impl Call<'_> {
                         1,
                         self.who,
                     )?;
+                } else if let Some(key) = &key {
+                    let record = live_record(view.as_ref(), &decl.on, key)?;
+                    cas(opts.expected_version, Some(&record))?;
+                    requires(&w, &decl, key, &record, now)?;
                 }
                 ProposedWrite::Call {
                     verb,
@@ -1420,7 +1374,7 @@ impl Call<'_> {
         let position = position_after(&w, 0);
         let id = key_opt.as_ref().map_or_else(
             || log::positional_id(&self.lake.id, position),
-            |k| log::authored_id(&self.writer(), k),
+            |k| log::authored_id(&self.who.writer(), k),
         );
         let mut d = self.draft(
             now,
@@ -1442,10 +1396,8 @@ impl Call<'_> {
 
     /// `accept`: apply a pending proposal's write, written as the proposer.
     pub fn accept(&self, proposal: &ProposalId) -> Result<(Outcome, Option<External>)> {
-        self.check_context()?;
-        if !self.who.grants.review {
-            return Err(not_granted());
-        }
+        check_context(self.lake, &self.context)?;
+        granted(self.who.grants.review)?;
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
         let p = find_proposal(view.as_ref(), proposal)?;
@@ -1457,18 +1409,11 @@ impl Call<'_> {
         }
         // A change of the ontology is the lake's `schema` grant's to make:
         // the accepter holds it as well as `review` (013, extended).
-        if p.write.is_schema() && !self.who.grants.schema {
-            return Err(not_granted());
-        }
+        granted(!p.write.is_schema() || self.who.grants.schema)?;
         let now = self.lake.clock(&mut w);
         // The write was checked under the proposer's grants when it was
         // proposed; it is applied as the proposer, with what was checked.
-        let proposer = Principal {
-            kind: lakelands_api::PrincipalKind::System,
-            id: p.proposer.clone(),
-            lake: self.lake.id.clone(),
-            grants: Grants::owner(),
-        };
+        let proposer = self.lake.system(p.proposer.clone());
         let accepted = self.draft(
             now,
             Origin::Authored,
@@ -1482,6 +1427,13 @@ impl Call<'_> {
             d.writer = p.proposer.clone();
             d.cause = d.cause.or(Some(accepted_at));
             d
+        };
+        let as_accepted = |d: Draft| match d.origin {
+            Origin::Authored => as_proposer(d),
+            _ => Draft {
+                cause: d.cause.or(Some(accepted_at)),
+                ..d
+            },
         };
         let mut external = None;
         let mut pending = Pending::default();
@@ -1517,15 +1469,7 @@ impl Call<'_> {
                 )?);
             }
             ProposedWrite::Retire { ty, key, opts } => {
-                let before =
-                    view.get(ty, key)?
-                        .filter(|r| !r.retired)
-                        .ok_or_else(|| Error::NotFound {
-                            missing: Missing::Record {
-                                ty: ty.clone(),
-                                key: key.clone(),
-                            },
-                        })?;
+                let before = live_record(view.as_ref(), ty, key)?;
                 cas(opts.expected_version, Some(&before))?;
                 let d = as_proposer(self.draft(
                     now,
@@ -1537,18 +1481,7 @@ impl Call<'_> {
                     },
                 ));
                 let event = provisional(self.lake, Position(accepted_at.0 + 1), &d);
-                let after = record::apply(
-                    &w.ontology,
-                    Some(&before),
-                    &event,
-                    &w.settings,
-                    &mut Outputs {
-                        view: view.as_ref(),
-                        staged: None,
-                        due: None,
-                    },
-                )?
-                .expect("a retire makes a record");
+                let after = retired(&w, view.as_ref(), &before, &event)?;
                 drafts.push(d);
                 drafts.extend(self.reactions(
                     &w,
@@ -1566,30 +1499,29 @@ impl Call<'_> {
                 payload,
                 opts,
             } => {
-                let decl = w
-                    .ontology
-                    .verbs
-                    .get(verb)
-                    .map(|e| e.decl.clone())
-                    .ok_or_else(|| Error::NotFound {
-                        missing: Missing::Verb { name: verb.clone() },
-                    })?;
+                let decl = w.ontology.verb(verb)?.clone();
                 // The verb may have been declared again since: its scope at
                 // the head must still fit the proposal, or the accept is
                 // refused and the proposal stays pending.
                 let key = scoped(&decl, key.as_ref(), opts.expected_version)?;
+                if key.is_some() {
+                    rights::not_a_view(w.ontology.ty(&decl.on)?)?;
+                }
+                // The reviewer applies what was checked: a verb declared
+                // differently since the call was proposed refuses the
+                // accept, and the proposal stays pending (013).
+                let then = self.lake.engine.view(Some(p.position))?.declarations()?;
+                if !then
+                    .iter()
+                    .any(|d| matches!(&d.declaration, Declaration::Verb(v) if *v == decl))
+                {
+                    return Err(invalid(format!(
+                        "verb `{verb}` was declared again, differently, after this call was \
+                         proposed; propose the call again"
+                    )));
+                }
                 if let VerbEffect::External { executor } = &decl.effect {
-                    if !self
-                        .lake
-                        .seams
-                        .executors
-                        .iter()
-                        .any(|e| e.name() == executor)
-                    {
-                        return Err(Error::Unbound {
-                            seam: format!("the verb executor `{executor}`"),
-                        });
-                    }
+                    self.check_executor(executor)?;
                     external = Some(External {
                         executor: executor.clone(),
                         verb: verb.clone(),
@@ -1621,30 +1553,12 @@ impl Call<'_> {
             ProposedWrite::Declare { declarations } => {
                 self.check_bundle(&w.ontology, declarations)?;
                 let own = self.bundle_drafts(&w, declarations.clone(), now)?;
-                drafts.extend(own.into_iter().map(|d| {
-                    if d.origin == Origin::Authored {
-                        as_proposer(d)
-                    } else {
-                        Draft {
-                            cause: d.cause.or(Some(accepted_at)),
-                            ..d
-                        }
-                    }
-                }));
+                drafts.extend(own.into_iter().map(&as_accepted));
             }
             ProposedWrite::Migrate { migration, .. } => {
                 let (report, rekeyed) = self.preflight_plan(&w, view.as_ref(), migration)?;
                 let own = self.migration_drafts(&w, (**migration).clone(), report, rekeyed, now)?;
-                drafts.extend(own.into_iter().map(|d| {
-                    if d.origin == Origin::Authored {
-                        as_proposer(d)
-                    } else {
-                        Draft {
-                            cause: d.cause.or(Some(accepted_at)),
-                            ..d
-                        }
-                    }
-                }));
+                drafts.extend(own.into_iter().map(&as_accepted));
             }
         }
         drop(view);
@@ -1654,10 +1568,8 @@ impl Call<'_> {
 
     /// `reject`.
     pub fn reject(&self, proposal: &ProposalId, reason: String) -> Result<Outcome> {
-        self.check_context()?;
-        if !self.who.grants.review {
-            return Err(not_granted());
-        }
+        check_context(self.lake, &self.context)?;
+        granted(self.who.grants.review)?;
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
         let p = find_proposal(view.as_ref(), proposal)?;
@@ -1678,11 +1590,7 @@ impl Call<'_> {
         );
         drop(view);
         let events = self.lake.append(&mut w, vec![d])?;
-        Ok(Outcome::Applied {
-            position: events[0].position,
-            version: None,
-            output: None,
-        })
+        Ok(outcome_of(&events))
     }
 
     /// A function computed outside the store is declared only where a
@@ -1698,14 +1606,10 @@ impl Call<'_> {
                 t.name, self.lake.limits.max_reactive_depth
             )));
         }
+        let backings = &self.lake.seams.backings;
         if let Declaration::Function(f) = d
             && crate::backed::is_backed(f)
-            && !self
-                .lake
-                .seams
-                .backings
-                .iter()
-                .any(|b| b.kind() == f.backing)
+            && !backings.iter().any(|b| b.kind() == f.backing)
         {
             return Err(Error::Unbound {
                 seam: format!(
@@ -1756,10 +1660,13 @@ impl Call<'_> {
 
     /// `declare`.
     pub fn declare(&self, declaration: Declaration) -> Result<Outcome> {
-        self.check_context()?;
-        if !self.who.grants.schema {
-            return Err(not_granted());
-        }
+        check_context(self.lake, &self.context)?;
+        granted(self.who.grants.schema)?;
+        self.declare_granted(declaration)
+    }
+
+    /// `declare`, its context and the `schema` grant already checked.
+    fn declare_granted(&self, declaration: Declaration) -> Result<Outcome> {
         let mut w = self.lake.writer();
         declare::check_declaration(&w.ontology, &declaration, false)?;
         self.check_bound(&declaration)?;
@@ -1787,11 +1694,7 @@ impl Call<'_> {
         let mut drafts = vec![d];
         drafts.extend(links);
         let events = self.lake.append(&mut w, drafts)?;
-        Ok(Outcome::Applied {
-            position: events[0].position,
-            version: None,
-            output: None,
-        })
+        Ok(outcome_of(&events))
     }
 
     /// `apply`: a set of declarations validated together and appended in
@@ -1801,10 +1704,8 @@ impl Call<'_> {
     /// names are checked over all of it; every problem is collected, and
     /// one refusal names them all.
     pub fn apply(&self, declarations: Vec<Declaration>) -> Result<Outcome> {
-        self.check_context()?;
-        if !self.who.grants.schema {
-            return Err(not_granted());
-        }
+        check_context(self.lake, &self.context)?;
+        granted(self.who.grants.schema)?;
         let mut w = self.lake.writer();
         self.check_bundle(&w.ontology, &declarations)?;
         let now = self.lake.clock(&mut w);
@@ -1913,17 +1814,17 @@ impl Call<'_> {
         ty: &TypeName,
         field: lakelands_api::ontology::FieldDecl,
     ) -> Result<Outcome> {
+        check_context(self.lake, &self.context)?;
+        granted(self.who.grants.schema)?;
         let mut t = self.lake.writer().ontology.ty(ty)?.clone();
         if t.fields.iter().any(|f| f.name == field.name) {
-            return Err(Error::Refused {
-                field: Some(field.name.clone()),
-                reason: Refusal::Invalid {
-                    message: format!("`{ty}` already has a field `{}`", field.name),
-                },
-            });
+            return Err(invalid_field(
+                &field.name,
+                format!("`{ty}` already has a field `{}`", field.name),
+            ));
         }
         t.fields.push(field);
-        self.declare(Declaration::Type(t))
+        self.declare_granted(Declaration::Type(t))
     }
 
     /// The preflight of a migration over every stored record of the type,
@@ -1942,9 +1843,7 @@ impl Call<'_> {
         view: &dyn ProjectionView,
         m: &Migration,
     ) -> Result<MigrationReport> {
-        if !self.who.grants.schema {
-            return Err(not_granted());
-        }
+        granted(self.who.grants.schema)?;
         Ok(self.preflight_plan(w, view, m)?.0)
     }
 
@@ -1956,6 +1855,29 @@ impl Call<'_> {
         m: &Migration,
     ) -> Result<(MigrationReport, Vec<lakelands_api::write::Rekey>)> {
         let before = w.ontology.ty(&m.to.name)?.clone();
+        // A migration reshapes stored records, and a view stores none. A
+        // view changes, or becomes a stored type, by being declared again;
+        // a stored type never becomes a view, since its records would
+        // linger beside the computed ones: the view takes another name.
+        if before.view.is_some() || m.to.view.is_some() {
+            let ty = &m.to.name;
+            return Err(invalid(
+                match (before.view.is_some(), m.to.view.is_some()) {
+                    (true, true) => format!(
+                        "`{ty}` is a view, and a view changes by being declared again, never by a \
+                     migration"
+                    ),
+                    (true, false) => format!(
+                        "`{ty}` is a view, and it becomes a stored type by being declared as one, \
+                     never by a migration"
+                    ),
+                    _ => format!(
+                        "the migration would turn the stored type `{ty}` into a view; declare the view \
+                     under another name (`{ty}` keeps its name and its records)"
+                    ),
+                },
+            ));
+        }
         if !before.key.is_empty() && m.to.key.is_empty() {
             return Err(invalid(format!(
                 "the migration takes every key field of `{}` away, and leaves no rule to make \
@@ -1966,15 +1888,13 @@ impl Call<'_> {
         if m.to.key != before.key {
             for k in &m.to.key {
                 if !m.to.fields.iter().any(|f| &f.name == k && f.required) {
-                    return Err(Error::Refused {
-                        field: Some(k.clone()),
-                        reason: Refusal::Invalid {
-                            message: format!(
-                                "`{}`: the key field `{k}` is a required field of the type",
-                                m.to.name
-                            ),
-                        },
-                    });
+                    return Err(invalid_field(
+                        k,
+                        format!(
+                            "`{}`: the key field `{k}` is a required field of the type",
+                            m.to.name
+                        ),
+                    ));
                 }
             }
         }
@@ -1990,16 +1910,58 @@ impl Call<'_> {
                 _ => Err(e),
             },
         )?;
-        let records: Vec<StoredRecord> = view
-            .scan(
-                &before.name,
-                &Scan {
-                    limit: u32::MAX,
-                    retired: true,
-                    restricted: true,
-                    ..Default::default()
+        // A view over the type, as its source or a merged one, reads the
+        // shape the migration leaves: `declare` must still take each such
+        // view against it, or the view would refuse every read after.
+        let mut after = probe.clone();
+        after.types.remove(&m.to.name);
+        after.put(Declaration::Type(m.to.clone()), 0, None);
+        for reader in w.ontology.types.values().map(|e| &e.decl) {
+            let Some(v) = reader.view.as_deref() else {
+                continue;
+            };
+            if v.source != m.to.name && !v.merge.iter().any(|s| s.source == m.to.name) {
+                continue;
+            }
+            declare::check_declaration(&after, &Declaration::Type(reader.clone()), false).map_err(
+                |e| match e {
+                    Error::Refused {
+                        field,
+                        reason: Refusal::Invalid { message },
+                    } => Error::Refused {
+                        field,
+                        reason: Refusal::Invalid {
+                            message: format!("after the migration of `{}`, {message}", m.to.name),
+                        },
+                    },
+                    other => other,
                 },
-            )?
+            )?;
+            // `declare` checks a view's grouping against its sources; the
+            // fields its `where` and measures read are checked here, by the
+            // rule `describe` uses to show a view.
+            for (source, names) in describe::view_reads(v).unwrap_or_default() {
+                if source != m.to.name {
+                    continue;
+                }
+                if let Some(gone) = names
+                    .iter()
+                    .find(|n| !m.to.fields.iter().any(|f| &f.name == *n))
+                {
+                    let how = match m.renames.iter().find(|(from, _)| from == gone) {
+                        Some((_, to)) => format!("renames to `{to}`"),
+                        None => "drops".to_owned(),
+                    };
+                    return Err(invalid(format!(
+                        "after the migration of `{}`, view `{}` reads `{gone}` of `{source}`, \
+                         which the migration {how}",
+                        m.to.name, reader.name
+                    )));
+                }
+            }
+        }
+        let records: Vec<StoredRecord> = view
+            .scan(&before.name, &every(true))?
             .into_iter()
             .filter(|r| !r.is_ended())
             .collect();
@@ -2035,27 +1997,13 @@ impl Call<'_> {
             else {
                 continue;
             };
-            let sides = |c: lakelands_api::ontology::Cardinality| {
-                use lakelands_api::ontology::Cardinality::*;
-                (
-                    matches!(c, ManyToOne | OneToOne),
-                    matches!(c, OneToMany | OneToOne),
-                )
-            };
             let ((was_from, was_to), (per_from, per_to)) =
-                (sides(old.cardinality), sides(r.cardinality));
+                (one_per(old.cardinality), one_per(r.cardinality));
             if !(per_from && !was_from) && !(per_to && !was_to) {
                 continue;
             }
             let lt = links::link_type_name(&m.to.name, &r.name);
-            let live = view.scan(
-                &lt,
-                &Scan {
-                    limit: u32::MAX,
-                    restricted: true,
-                    ..Default::default()
-                },
-            )?;
+            let live = view.scan(&lt, &every(false))?;
             let mut from_seen: BTreeMap<String, u32> = BTreeMap::new();
             let mut to_seen: BTreeMap<String, u32> = BTreeMap::new();
             for l in &live {
@@ -2073,16 +2021,14 @@ impl Call<'_> {
             let broken = if per_from { over(&from_seen) } else { 0 }
                 + if per_to { over(&to_seen) } else { 0 };
             if broken > 0 {
-                return Err(Error::Refused {
-                    field: None,
-                    reason: Refusal::Constraint {
-                        message: format!(
-                            "narrowing `{}` to {:?} would break the links of {broken} record(s) \
+                return Err(constraint(
+                    None,
+                    format!(
+                        "narrowing `{}` to {:?} would break the links of {broken} record(s) \
                              that hold more than one; unlink them first",
-                            r.name, r.cardinality
-                        ),
-                    },
-                });
+                        r.name, r.cardinality
+                    ),
+                ));
             }
         }
         // The relations carried by link records whose fields change migrate
@@ -2094,15 +2040,7 @@ impl Call<'_> {
                 renames: vec![],
             };
             let links: Vec<StoredRecord> = view
-                .scan(
-                    &old.name,
-                    &Scan {
-                        limit: u32::MAX,
-                        retired: true,
-                        restricted: true,
-                        ..Default::default()
-                    },
-                )?
+                .scan(&old.name, &every(true))?
                 .into_iter()
                 .filter(|r| !r.is_ended())
                 .collect();
@@ -2112,13 +2050,7 @@ impl Call<'_> {
                 links.iter().map(|r| (r.key.clone(), r.fields.clone())),
             )
             .map_err(|e| invalid(e.to_string()))?;
-            let relation = old
-                .name
-                .as_str()
-                .rsplit('.')
-                .next()
-                .unwrap_or_default()
-                .to_owned();
+            let relation = old.name.as_str().rsplit('.').next().unwrap_or_default();
             let named = |f: &FieldName| FieldName::from(format!("{relation}.{f}"));
             report.records_scanned += lr.records_scanned;
             report.lossless &= lr.lossless;
@@ -2129,10 +2061,6 @@ impl Call<'_> {
             report
                 .dropped
                 .extend(lr.dropped.into_iter().map(|(f, n)| (named(&f), n)));
-            report.report_id = String::new();
-            report.report_id = lakelands_core::canonical::sha256_hex(
-                &serde_json::to_value(&report).expect("a report serialises"),
-            );
         }
         report.rekeyed = plan.rekeyed.clone();
         report.references = plan.references.clone();
@@ -2152,10 +2080,8 @@ impl Call<'_> {
 
     /// `migrate_apply`.
     pub fn migrate_apply(&self, m: Migration, report_id: &str) -> Result<Outcome> {
-        self.check_context()?;
-        if !self.who.grants.schema {
-            return Err(not_granted());
-        }
+        check_context(self.lake, &self.context)?;
+        granted(self.who.grants.schema)?;
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
         let (report, rekeyed) = self.preflight_plan(&w, view.as_ref(), &m)?;
@@ -2168,11 +2094,7 @@ impl Call<'_> {
         let drafts = self.migration_drafts(&w, m, report, rekeyed, now)?;
         drop(view);
         let events = self.lake.append(&mut w, drafts)?;
-        Ok(Outcome::Applied {
-            position: events[0].position,
-            version: None,
-            output: None,
-        })
+        Ok(outcome_of(&events))
     }
 
     /// The drafts that apply a migration its preflight answered `report`
@@ -2250,9 +2172,7 @@ impl Call<'_> {
         view: &dyn ProjectionView,
         to: &ValueTypeDecl,
     ) -> Result<ValueTypeReport> {
-        if !self.who.grants.schema {
-            return Err(not_granted());
-        }
+        granted(self.who.grants.schema)?;
         let current = w
             .ontology
             .value_types
@@ -2285,12 +2205,7 @@ impl Call<'_> {
             current.version + 1,
             None,
         );
-        let all = Scan {
-            limit: u32::MAX,
-            retired: true,
-            restricted: true,
-            ..Default::default()
-        };
+        let all = every(true);
         let mut report = ValueTypeReport {
             value_type: to.name.clone(),
             from_version: current.version,
@@ -2360,7 +2275,7 @@ impl Call<'_> {
     /// Put a tightened value type in force against the report the caller
     /// was shown: one `declared` at the next version, no record changed.
     pub fn migrate_value_type_apply(&self, to: ValueTypeDecl, report_id: &str) -> Result<Outcome> {
-        self.check_context()?;
+        check_context(self.lake, &self.context)?;
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
         let report = self.preflight_value_type(&w, view.as_ref(), &to)?;
@@ -2397,11 +2312,7 @@ impl Call<'_> {
         );
         drop(view);
         let events = self.lake.append(&mut w, vec![d])?;
-        Ok(Outcome::Applied {
-            position: events[0].position,
-            version: None,
-            output: None,
-        })
+        Ok(outcome_of(&events))
     }
 }
 
@@ -2472,6 +2383,7 @@ fn link_relation(
     relation: &RelationName,
 ) -> Result<(TypeName, RelationDecl)> {
     let decl = w.ontology.ty(ty)?;
+    rights::not_a_view(decl)?;
     let r = decl
         .relations
         .iter()
@@ -2497,22 +2409,16 @@ pub fn cardinality(
     from: &RecordKey,
     to: &RecordKey,
 ) -> Result<()> {
-    use lakelands_api::ontology::Cardinality;
     use lakelands_api::query::Walk;
-    let (per_from, per_to) = match r.cardinality {
-        Cardinality::ManyToOne => (true, false),
-        Cardinality::OneToMany => (false, true),
-        Cardinality::OneToOne => (true, true),
-        Cardinality::ManyToMany => (false, false),
-    };
-    let broken = |why: String| Error::Refused {
-        field: Some(links::TO.into()),
-        reason: Refusal::Constraint {
-            message: format!(
+    let (per_from, per_to) = one_per(r.cardinality);
+    let broken = |why: String| {
+        constraint(
+            Some(links::TO.into()),
+            format!(
                 "{why}, and `{}` allows one ({:?}); unlink it first",
                 r.name, r.cardinality
             ),
-        },
+        )
     };
     if per_from
         && let Some(e) = view
@@ -2550,29 +2456,20 @@ pub fn cardinality_among(
     from: &RecordKey,
     to: &RecordKey,
 ) -> Result<()> {
-    use lakelands_api::ontology::Cardinality;
-    let (per_from, per_to) = match r.cardinality {
-        Cardinality::ManyToOne => (true, false),
-        Cardinality::OneToMany => (false, true),
-        Cardinality::OneToOne => (true, true),
-        Cardinality::ManyToMany => (false, false),
-    };
-    for (t, f, o) in earlier.iter().filter(|(t, _, _)| t == lt) {
-        let _ = t;
+    let (per_from, per_to) = one_per(r.cardinality);
+    for (_, f, o) in earlier.iter().filter(|(t, _, _)| t == lt) {
         if f == from && o == to {
             continue;
         }
         if (per_from && f == from) || (per_to && o == to) {
-            return Err(Error::Refused {
-                field: Some(links::TO.into()),
-                reason: Refusal::Constraint {
-                    message: format!(
-                        "the window links `{f}` to `{o}` over `{}` already, and `{}` allows one \
+            return Err(constraint(
+                Some(links::TO.into()),
+                format!(
+                    "the window links `{f}` to `{o}` over `{}` already, and `{}` allows one \
                          ({:?})",
-                        r.name, r.name, r.cardinality
-                    ),
-                },
-            });
+                    r.name, r.name, r.cardinality
+                ),
+            ));
         }
     }
     Ok(())
@@ -2629,17 +2526,9 @@ pub fn restrict(
     reason: Option<String>,
 ) -> Result<Position> {
     let mut w = lake.writer();
-    w.ontology.ty(ty)?;
+    rights::not_a_view(w.ontology.ty(ty)?)?;
     let view = lake.engine.view(None)?;
-    let before = view
-        .get(ty, key)?
-        .filter(|r| !r.retired)
-        .ok_or_else(|| Error::NotFound {
-            missing: Missing::Record {
-                ty: ty.clone(),
-                key: key.clone(),
-            },
-        })?;
+    let before = live_record(view.as_ref(), ty, key)?;
     let version = Version(before.version.0 + 1);
     let body = match (&reason, before.restricted) {
         (Some(_), true) => return Err(invalid(format!("`{ty}` `{key}` is already restricted"))),

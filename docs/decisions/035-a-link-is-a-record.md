@@ -143,3 +143,30 @@ records by matching values when the store reads, and stores no link
 (`docs/decisions/044-a-relation-may-be-derived-from-matching-values.md`).
 The carrier rule holds across all three kinds: a relation carried by
 `via`, by link records or by matching values keeps that carrier.
+
+## Extended: the order of refusals (lakelands#338)
+
+The link doors refuse in this order, in the frame every write door
+shares (016, extended): the lake, the context, the door's own checks,
+the append.
+
+**`link`**: the type is declared (`not_found`); it is not a view
+(`invalid`, 018, extended); it declares the relation, carried by link
+records (`invalid`); the relation's links are authored (`wrong_door`);
+`from` and `to` are not among the fields (`invalid`, naming the field);
+the retry; the record checks of 016 on the link record; the relation's
+cardinality over the live links (`constraint`, naming `to`), after the
+record's grants so that a principal who may not write the link learns
+nothing of the links there are (024, extended).
+
+**`unlink`**: the type is declared, it is not a view, it declares the
+relation carried by link records, as for `link`; then the retry and
+`retire`'s checks on the link record: its grants (`not_granted`), the
+link is live (`not_found`), the expected version (`conflict`). An
+unlink is not refused for the relation's authority (above).
+
+A view declares no relation carried by link records, and an undeclared
+type is no view, so the steps from the type to the relation answer
+`not_found`, then `invalid` naming the type, and are stated, not
+checked, between themselves.
+

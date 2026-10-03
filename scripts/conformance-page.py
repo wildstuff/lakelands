@@ -12,7 +12,10 @@ the sentence that says where its rule is stated. Checks are grouped by
 the file they live in, which is their subject, in registry order.
 
 --check (the default, what CI runs) exits 1 when the page's generated
-section differs from what the registries say; --write replaces it.
+section differs from what the registries say; --write replaces it. Both
+print how many checks each suite holds. The page itself carries no
+count, so two branches that each add a check merge into the page the
+generator would write; the release commit takes the counts from here.
 """
 
 import re
@@ -53,7 +56,9 @@ def checks_in(rs, macro):
 
 
 def section(title, entries, directory, macro):
-    lines = [f"### {title} ({len(entries)} checks)", ""]
+    # No count in the heading: two branches that each add a check would
+    # merge into a page one short. The counts go to stdout instead.
+    lines = [f"### {title}", ""]
     groups = {}
     for file, const in entries:
         groups.setdefault(file, []).append(const)
@@ -71,13 +76,15 @@ def section(title, entries, directory, macro):
 
 
 def generated():
+    """The generated section, and the count of checks through the doors
+    and through the engine seam."""
     doors = registry(CORE / "checks/mod.rs", "ALL")
     engine = registry(CORE / "engine/mod.rs", "ENGINE_CHECKS")
     lines = [BEGIN, ""]
     lines += section("Through the doors", doors, CORE / "checks", "check")
     lines += section("Through the engine seam", engine, CORE / "engine", "engine_check")
     lines.append(END)
-    return "\n".join(lines)
+    return "\n".join(lines), (len(doors), len(engine))
 
 
 def main():
@@ -87,17 +94,19 @@ def main():
         sys.exit(f"conformance-page: {PAGE.relative_to(ROOT)} has no generated section")
     before, rest = page.split(BEGIN, 1)
     _, after = rest.split(END, 1)
-    fresh = before + generated() + after
+    section_text, (doors, engine) = generated()
+    fresh = before + section_text + after
+    counts = f"{doors} checks through the doors, {engine} through the engine seam"
     if mode == "--write":
         PAGE.write_text(fresh, "utf-8")
-        print(f"conformance-page: wrote {PAGE.relative_to(ROOT)}")
+        print(f"conformance-page: wrote {PAGE.relative_to(ROOT)} ({counts})")
     elif mode == "--check":
         if fresh != page:
             sys.exit(
                 f"conformance-page: {PAGE.relative_to(ROOT)} is stale; "
                 "run scripts/conformance-page.py --write and commit the result"
             )
-        print("conformance-page: the page lists every registered check")
+        print(f"conformance-page: the page lists every registered check ({counts})")
     else:
         sys.exit("usage: scripts/conformance-page.py [--check | --write]")
 

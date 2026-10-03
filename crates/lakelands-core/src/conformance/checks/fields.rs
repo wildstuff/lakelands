@@ -10,14 +10,20 @@
 use std::sync::Arc;
 
 use lakelands_api::ontology::{OnInputChange, StorageKind};
-use lakelands_api::{Error, FieldName, LakeStore, Refusal, TypeName};
-use serde_json::json;
+use lakelands_api::{Catalog, Error, FieldName, LakeStore, Outcome, Principal, Refusal, TypeName};
+use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, declare, doors, field, field_writer, get_at, head_unmoved, owner, read, type_decl,
-    upsert, value,
+    Lake, Must, declare, doors, field, field_writer, get_at, head_unmoved, owner, read, refused_on,
+    try_upsert, type_decl, upsert, value,
 };
+
+check!(
+    /// The record checks refuse in their order.
+    RECORD_CHECKS_IN_ORDER = a_write_breaking_two_record_checks_is_refused_by_the_earlier,
+    "016, extended (lakelands#338): a record write that breaks two adjacent record checks is refused by the earlier: the type before an empty patch, the key before the fields, field by field in name order with the door before the grant, the grant before the value, the value before the key fill, the key's agreement before a reference, a reference before the version, the version before a required field; a retry answers its first outcome before any of them"
+);
 
 check!(
     /// Writer A's rewrite leaves writer B's field standing.
@@ -55,13 +61,17 @@ check!(
     "015: a field the lake's map does not declare is refused as invalid, and nothing of the patch is written"
 );
 
+/// Upserts `fields` into `invoice` `i1` as `who`.
+async fn i1(cat: &dyn Catalog, who: &Principal, fields: Value) -> Result<Outcome, Failure> {
+    upsert(cat, who, "invoice", "i1", fields).await
+}
+
 /// Declares `invoice` with the importer's `amount` and the reviewer's
 /// `verdict`, the latter depending on `amount` as `on_change` says.
 async fn two_writer_invoice(
     store: &dyn LakeStore,
     on_change: OnInputChange,
 ) -> Result<(), Failure> {
-    let cat = doors(store);
     let mut verdict = field("verdict", StorageKind::Text);
     verdict.depends_on = vec![FieldName::from("amount")];
     verdict.on_input_change = on_change;
@@ -69,7 +79,7 @@ async fn two_writer_invoice(
         "invoice",
         vec![field("amount", StorageKind::Decimal), verdict],
     );
-    declare(cat.as_ref(), &owner(store), ty).await?;
+    Lake::of(store).declare(ty).await?;
     Ok(())
 }
 
@@ -89,30 +99,14 @@ async fn a_rewrite_by_one_writer_leaves_another_writers_fields_alone(
     let a = field_writer(store.as_ref(), "importer", "invoice", &["amount", "note"]);
     let b = field_writer(store.as_ref(), "reviewer", "invoice", &["verdict"]);
 
-    upsert(
+    i1(
         cat.as_ref(),
         &a,
-        "invoice",
-        "i1",
         json!({"amount": "100.00", "note": "first"}),
     )
     .await?;
-    upsert(
-        cat.as_ref(),
-        &b,
-        "invoice",
-        "i1",
-        json!({"verdict": "approved"}),
-    )
-    .await?;
-    upsert(
-        cat.as_ref(),
-        &a,
-        "invoice",
-        "i1",
-        json!({"amount": "120.00"}),
-    )
-    .await?;
+    i1(cat.as_ref(), &b, json!({"verdict": "approved"})).await?;
+    i1(cat.as_ref(), &a, json!({"amount": "120.00"})).await?;
 
     let rec = read(cat.as_ref(), &owner(store.as_ref()), "invoice", "i1").await?;
     ensure!(
@@ -144,22 +138,8 @@ async fn changing_an_input_clears_a_dependent_field_declared_clear(
     let b = field_writer(store.as_ref(), "reviewer", "invoice", &["verdict"]);
     let own = owner(store.as_ref());
 
-    upsert(
-        cat.as_ref(),
-        &a,
-        "invoice",
-        "i1",
-        json!({"amount": "100.00"}),
-    )
-    .await?;
-    upsert(
-        cat.as_ref(),
-        &b,
-        "invoice",
-        "i1",
-        json!({"verdict": "approved"}),
-    )
-    .await?;
+    i1(cat.as_ref(), &a, json!({"amount": "100.00"})).await?;
+    i1(cat.as_ref(), &b, json!({"verdict": "approved"})).await?;
     let rec = read(cat.as_ref(), &own, "invoice", "i1").await?;
     ensure!(
         value(&rec, "verdict") == Some(&json!("approved")),
@@ -167,14 +147,7 @@ async fn changing_an_input_clears_a_dependent_field_declared_clear(
         value(&rec, "verdict")
     );
 
-    let changed = upsert(
-        cat.as_ref(),
-        &a,
-        "invoice",
-        "i1",
-        json!({"amount": "120.00"}),
-    )
-    .await?;
+    let changed = i1(cat.as_ref(), &a, json!({"amount": "120.00"})).await?;
     let rec = read(cat.as_ref(), &own, "invoice", "i1").await?;
     ensure!(
         value(&rec, "verdict").is_none(),
@@ -206,30 +179,9 @@ async fn changing_an_input_keeps_a_dependent_field_declared_keep_and_shows_it_ol
     let a = field_writer(store.as_ref(), "importer", "invoice", &["amount"]);
     let b = field_writer(store.as_ref(), "reviewer", "invoice", &["verdict"]);
 
-    upsert(
-        cat.as_ref(),
-        &a,
-        "invoice",
-        "i1",
-        json!({"amount": "100.00"}),
-    )
-    .await?;
-    upsert(
-        cat.as_ref(),
-        &b,
-        "invoice",
-        "i1",
-        json!({"verdict": "approved"}),
-    )
-    .await?;
-    upsert(
-        cat.as_ref(),
-        &a,
-        "invoice",
-        "i1",
-        json!({"amount": "120.00"}),
-    )
-    .await?;
+    i1(cat.as_ref(), &a, json!({"amount": "100.00"})).await?;
+    i1(cat.as_ref(), &b, json!({"verdict": "approved"})).await?;
+    i1(cat.as_ref(), &a, json!({"amount": "120.00"})).await?;
 
     let rec = read(cat.as_ref(), &owner(store.as_ref()), "invoice", "i1").await?;
     ensure!(
@@ -271,31 +223,20 @@ async fn a_patch_with_a_field_the_principal_may_not_write_is_refused_whole(
     let a = field_writer(store.as_ref(), "importer", "invoice", &["amount"]);
     let own = owner(store.as_ref());
 
-    upsert(
+    i1(cat.as_ref(), &a, json!({"amount": "100.00"})).await?;
+    let head = store.head().await.must("reading the head")?;
+
+    let err = try_upsert(
         cat.as_ref(),
         &a,
         "invoice",
         "i1",
-        json!({"amount": "100.00"}),
+        json!({"amount": "999.00", "verdict": "approved"}),
     )
-    .await?;
-    let head = store.head().await.must("reading the head")?;
-
-    let err = cat
-        .upsert(
-            &a,
-            &TypeName::from("invoice"),
-            &"i1".into(),
-            crate::conformance::fixture::patch(json!({"amount": "999.00", "verdict": "approved"})),
-            Default::default(),
-        )
-        .await
-        .must_fail("the importer writing `amount` and the reviewer's `verdict` together")?;
+    .await
+    .must_fail("the importer writing `amount` and the reviewer's `verdict` together")?;
     ensure!(
-        matches!(
-            &err,
-            Error::Refused { field: Some(f), reason: Refusal::NotGranted } if f.as_str() == "verdict"
-        ),
+        matches!(refused_on(&err), Some(("verdict", Refusal::NotGranted))),
         "a patch carrying `verdict`, which the importer holds no write grant for, must be \
          refused as not granted on `verdict`; it failed with {err:?}"
     );
@@ -373,16 +314,8 @@ async fn a_patch_with_an_undeclared_field_is_refused_whole(
 
     for key in ["m1", "m2"] {
         let before = store.head().await.must("reading the head")?;
-        let err = cat
-            .upsert(
-                own,
-                &TypeName::from("memo"),
-                &key.into(),
-                crate::conformance::fixture::patch(
-                    json!({"text": "changed", "remark": "call before dunning"}),
-                ),
-                Default::default(),
-            )
+        let remark = json!({"text": "changed", "remark": "call before dunning"});
+        let err = try_upsert(cat.as_ref(), own, "memo", key, remark)
             .await
             .must_fail(&format!(
                 "writing the undeclared field `remark` to `memo` `{key}`"
@@ -416,6 +349,152 @@ async fn a_patch_with_an_undeclared_field_is_refused_whole(
     ensure!(
         matches!(missing, Err(Error::NotFound { .. })),
         "the refused patch to the new key `m2` created the record anyway: {missing:?}"
+    );
+    Ok(())
+}
+
+async fn a_write_breaking_two_record_checks_is_refused_by_the_earlier(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use lakelands_api::write::WriteOpts;
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    let required = |name: &str| lakelands_api::ontology::FieldDecl {
+        required: true,
+        ..field(name, StorageKind::Text)
+    };
+    let mut part = field("part", StorageKind::Reference);
+    part.ty.target = Some("o".into());
+    let src = crate::conformance::fixture::sourced("src", StorageKind::Number);
+    let mut o = type_decl(
+        "o",
+        vec![
+            required("code"),
+            required("need"),
+            field("qty", StorageKind::Number),
+            src,
+            part,
+        ],
+    );
+    o.key = vec!["code".into()];
+    l.declare(o).await?;
+    for k in ["k2", "k3"] {
+        l.upsert("o", k, json!({"code": k, "need": "n"})).await?;
+    }
+    // Writes `code`, `need` and `part`; neither `qty` nor `src`.
+    let narrow = field_writer(store.as_ref(), "narrow", "o", &["code", "need", "part"]);
+    // type, key, patch, an expected version (0: none), as `narrow`, what
+    // is due: the earlier of the two checks each row breaks.
+    let rows = [
+        ("none", "k", "{}", 0, false, "not_found"),
+        ("o", "", r#"{"bogus": 1}"#, 0, false, "invalid"),
+        ("o", "k1", r#"{"src": 1}"#, 0, true, "wrong_door src"),
+        (
+            "o",
+            "k1",
+            r#"{"qty": 1, "zzz": 1}"#,
+            0,
+            true,
+            "not_granted qty",
+        ),
+        ("o", "k1", r#"{"qty": "x"}"#, 0, true, "not_granted qty"),
+        (
+            "o",
+            "a:b",
+            r#"{"qty": "x", "need": "n"}"#,
+            0,
+            false,
+            "constraint qty",
+        ),
+        (
+            "o",
+            "k1",
+            r#"{"code": "x", "need": "n", "part": "none"}"#,
+            0,
+            false,
+            "invalid",
+        ),
+        (
+            "o",
+            "k2",
+            r#"{"part": "none"}"#,
+            9,
+            false,
+            "constraint part",
+        ),
+        ("o", "k3", r#"{"need": null}"#, 9, false, "conflict"),
+    ];
+    let head = store.head().await.must("reading the head")?;
+    let mut red = Vec::new();
+    for (ty, key, fields, v, as_narrow, due) in rows {
+        let who = if as_narrow { &narrow } else { own };
+        let expected_version = (v > 0).then_some(lakelands_api::Version(v));
+        let opts = WriteOpts {
+            expected_version,
+            ..WriteOpts::default()
+        };
+        let patch = serde_json::from_str(fields).expect("a patch");
+        let got = cat.upsert(who, &ty.into(), &key.into(), patch, opts).await;
+        let e = got
+            .as_ref()
+            .err()
+            .map(|e| serde_json::to_value(e).unwrap_or_default());
+        let kind = e
+            .as_ref()
+            .map(|e| e["reason"]["refusal"].as_str().or(e["error"].as_str()));
+        let field = e
+            .as_ref()
+            .and_then(|e| e["field"].as_str())
+            .map(|f| format!(" {f}"));
+        let answered = format!(
+            "{}{}",
+            kind.flatten().unwrap_or("?"),
+            field.unwrap_or_default()
+        );
+        if answered != due {
+            red.push(format!(
+                "{ty} `{key}` {fields}: `{due}` was due; it answered {got:?}"
+            ));
+        }
+    }
+    head_unmoved(
+        store.as_ref(),
+        head,
+        "the writes breaking two record checks",
+    )
+    .await?;
+    // A retry answers before any record check: the same writer, now with
+    // no grant, sends an empty patch under the first write's key.
+    let once = WriteOpts {
+        idempotency_key: Some("once".into()),
+        ..WriteOpts::default()
+    };
+    let first = json!({"code": "k4", "need": "n"});
+    let applied = cat
+        .upsert(
+            own,
+            &"o".into(),
+            &"k4".into(),
+            crate::conformance::fixture::patch(first),
+            once.clone(),
+        )
+        .await;
+    let bare = lakelands_api::Principal {
+        grants: Default::default(),
+        ..own.clone()
+    };
+    let retried = cat
+        .upsert(&bare, &"o".into(), &"k4".into(), Default::default(), once)
+        .await;
+    if applied.is_err() || retried != applied {
+        red.push(format!(
+            "a retry under `once` answered {retried:?}; the first write {applied:?}"
+        ));
+    }
+    ensure!(
+        red.is_empty(),
+        "a write breaking two record checks is refused by the earlier: {}",
+        red.join("; ")
     );
     Ok(())
 }

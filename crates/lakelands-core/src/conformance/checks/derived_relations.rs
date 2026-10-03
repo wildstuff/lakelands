@@ -5,25 +5,20 @@
 //! matched fields hold the same non-null value, as the read's position
 //! holds them, both ways and in every walk the store runs.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use lakelands_api::ontology::{
     Cardinality, Derived, MatchPair, RelationDecl, StorageKind, TypeDecl,
 };
-use lakelands_api::principal::TypeGrants;
-use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Start, Step, Walk};
-use lakelands_api::read::ReadAt;
-use lakelands_api::write::{Declaration, WriteOpts};
-use lakelands_api::{
-    Access, Catalog, Error, Grants, LakeStore, Position, Principal, PrincipalKind, Refusal,
-    TypeName, Value,
-};
+use lakelands_api::query::{Pattern, Projection, QueryResult, Walk};
+use lakelands_api::write::WriteOpts;
+use lakelands_api::{Access, Catalog, LakeStore, Position, Principal, Value};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Must, declare, doors, field, owner, patch, principal, type_decl, upsert,
+    Lake, Must, doors, field, field_access, head_unmoved, invalid_naming, no_such_field, owner,
+    patch, pattern, step, type_decl, type_of,
 };
 
 check!(
@@ -47,7 +42,7 @@ check!(
 check!(
     /// A walk probes the matched fields on both sides.
     PROBES_BOTH_SIDES = a_principal_without_read_on_a_matched_field_is_refused_naming_it,
-    "024 and 044: a walk over a derived relation, a step and a measure alike, is refused not_granted, naming the field, when the principal may not read a matched field on either side"
+    "024, 044 and 006: a walk over a derived relation, a step and a measure alike, is answered as for a field the type does not declare, naming the field, when the principal may not know of a matched field on either side"
 );
 
 check!(
@@ -84,12 +79,9 @@ fn derived(name: &str, target: &str, pairs: Vec<MatchPair>) -> RelationDecl {
 }
 
 fn customer() -> TypeDecl {
-    let mut t = type_decl(
+    let mut t = type_of(
         "customer",
-        vec![
-            field("no", StorageKind::Text),
-            field("region", StorageKind::Text),
-        ],
+        &[("no", StorageKind::Text), ("region", StorageKind::Text)],
     );
     t.key = vec!["no".into()];
     t
@@ -120,23 +112,14 @@ fn invoice() -> TypeDecl {
 /// i3 (010), i4 (no customer, no region) and i5 (20, north). Answers the
 /// position before i2 was written.
 async fn lake(store: &dyn LakeStore) -> Result<Position, Failure> {
-    let cat = doors(store);
-    let own = owner(store);
-    declare(cat.as_ref(), &own, customer()).await?;
-    declare(cat.as_ref(), &own, invoice()).await?;
+    let l = Lake::of(store);
+    l.declare(customer()).await?;
+    l.declare(invoice()).await?;
     for (no, region) in [("10", "north"), ("010", "north"), ("20", "south")] {
-        upsert(
-            cat.as_ref(),
-            &own,
-            "customer",
-            no,
-            json!({"no": no, "region": region}),
-        )
-        .await?;
+        l.upsert("customer", no, json!({"no": no, "region": region}))
+            .await?;
     }
-    upsert(
-        cat.as_ref(),
-        &own,
+    l.upsert(
         "invoice",
         "i1",
         json!({"customer_no": "10", "region": "north"}),
@@ -149,41 +132,16 @@ async fn lake(store: &dyn LakeStore) -> Result<Position, Failure> {
         ("i4", json!({"amount": 1})),
         ("i5", json!({"customer_no": "20", "region": "north"})),
     ] {
-        upsert(cat.as_ref(), &own, "invoice", key, fields).await?;
+        l.upsert("invoice", key, fields).await?;
     }
     Ok(before)
 }
 
-fn step(relation: &str, walk: Walk) -> Step {
-    Step {
-        relation: relation.into(),
-        walk,
-        ty: None,
-        filter: None,
-        depth: Depth::default(),
-    }
-}
-
 fn walk(ty: &str, key: &str, relation: &str, dir: Walk, as_of: Option<Position>) -> Pattern {
-    Pattern {
-        start: Start {
-            ty: ty.into(),
-            key: Some(key.into()),
-            filter: None,
-            search: None,
-            params: Default::default(),
-        },
-        steps: vec![step(relation, dir)],
-        to: None,
-        project: Projection::Rows { fields: vec![] },
-        order_by: Vec::new(),
-        limit: None,
-        cursor: None,
-        at: ReadAt {
-            as_of,
-            valid_at: None,
-        },
-    }
+    let rows = Projection::Rows { fields: vec![] };
+    let mut p = pattern(ty, Some(key), vec![step(relation, dir)], rows);
+    p.at.as_of = as_of;
+    p
 }
 
 /// The keys of `far` a walk reaches, sorted.
@@ -210,17 +168,22 @@ async fn reached(
     Ok(keys)
 }
 
-/// A walk to check: its start type and key, relation, direction, `as_of`,
-/// the far type, and the far keys it must reach.
-type Case<'a> = (
-    &'a str,
-    &'a str,
-    &'a str,
-    Walk,
-    Option<Position>,
-    &'a str,
-    Vec<&'a str>,
-);
+/// The keys a walk over `relation` from `key` reaches: out from an invoice
+/// to customers, in from a customer to invoices.
+async fn reach(
+    cat: &dyn Catalog,
+    who: &Principal,
+    key: &str,
+    relation: &str,
+    dir: Walk,
+    as_of: Option<Position>,
+) -> Result<Vec<String>, Failure> {
+    let (ty, far) = match dir {
+        Walk::In => ("customer", "invoice"),
+        _ => ("invoice", "customer"),
+    };
+    reached(cat, who, walk(ty, key, relation, dir, as_of), far).await
+}
 
 async fn a_walk_over_a_derived_relation_finds_exactly_the_matching_records_both_ways(
     store: Arc<dyn LakeStore>,
@@ -228,81 +191,23 @@ async fn a_walk_over_a_derived_relation_finds_exactly_the_matching_records_both_
     let before = lake(store.as_ref()).await?;
     let cat = doors(store.as_ref());
     let own = owner(store.as_ref());
-    let cases: Vec<Case> = vec![
-        (
-            "invoice",
-            "i1",
-            "customer",
-            Walk::Out,
-            None,
-            "customer",
-            vec!["10"],
-        ),
-        (
-            "invoice",
-            "i3",
-            "customer",
-            Walk::Out,
-            None,
-            "customer",
-            vec!["010"],
-        ),
-        (
-            "customer",
-            "10",
-            "customer",
-            Walk::In,
-            None,
-            "invoice",
-            vec!["i1", "i2"],
-        ),
-        (
-            "customer",
-            "010",
-            "customer",
-            Walk::In,
-            None,
-            "invoice",
-            vec!["i3"],
-        ),
-        (
-            "customer",
-            "10",
-            "customer",
-            Walk::In,
-            Some(before),
-            "invoice",
-            vec!["i1"],
-        ),
-        (
-            "invoice",
-            "i1",
-            "local_customer",
-            Walk::Out,
-            None,
-            "customer",
-            vec!["10"],
-        ),
-        (
-            "invoice",
-            "i2",
-            "local_customer",
-            Walk::Out,
-            None,
-            "customer",
-            vec![],
-        ),
-        (
-            "customer",
-            "10",
-            "local_customer",
-            Walk::In,
-            None,
-            "invoice",
-            vec!["i1"],
-        ),
-    ];
-    for (ty, key, relation, dir, as_of, far, want) in cases {
+    // A walk to check: its start key, relation, direction, `as_of`, and the
+    // far keys it must reach. Out walks from an invoice to a customer, In
+    // the other way.
+    for (key, relation, dir, as_of, want) in [
+        ("i1", "customer", Walk::Out, None, vec!["10"]),
+        ("i3", "customer", Walk::Out, None, vec!["010"]),
+        ("10", "customer", Walk::In, None, vec!["i1", "i2"]),
+        ("010", "customer", Walk::In, None, vec!["i3"]),
+        ("10", "customer", Walk::In, Some(before), vec!["i1"]),
+        ("i1", "local_customer", Walk::Out, None, vec!["10"]),
+        ("i2", "local_customer", Walk::Out, None, vec![]),
+        ("10", "local_customer", Walk::In, None, vec!["i1"]),
+    ] {
+        let (ty, far) = match dir {
+            Walk::In => ("customer", "invoice"),
+            _ => ("invoice", "customer"),
+        };
         let got = reached(cat.as_ref(), &own, walk(ty, key, relation, dir, as_of), far).await?;
         ensure!(
             got == want,
@@ -317,38 +222,19 @@ async fn changing_a_matched_field_moves_the_edge_at_that_position(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     lake(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     let before = store.head().await.must("reading the head")?;
-    cat.upsert(
-        &own,
-        &"invoice".into(),
-        &"i1".into(),
-        patch(json!({"customer_no": "20"})),
-        WriteOpts::default(),
-    )
-    .await
-    .must("moving i1 to customer 20")?;
-    for (as_of, want) in [(Some(before), vec!["10"]), (None, vec!["20"])] {
-        let got = reached(
-            cat.as_ref(),
-            &own,
-            walk("invoice", "i1", "customer", Walk::Out, as_of),
-            "customer",
-        )
+    l.upsert("invoice", "i1", json!({"customer_no": "20"}))
         .await?;
+    for (as_of, want) in [(Some(before), vec!["10"]), (None, vec!["20"])] {
+        let got = reach(cat.as_ref(), own, "i1", "customer", Walk::Out, as_of).await?;
         ensure!(
             got == want,
             "i1's customer as_of {as_of:?} must be {want:?}; the walk reached {got:?}"
         );
     }
-    let got = reached(
-        cat.as_ref(),
-        &own,
-        walk("customer", "20", "customer", Walk::In, None),
-        "invoice",
-    )
-    .await?;
+    let got = reach(cat.as_ref(), own, "20", "customer", Walk::In, None).await?;
     ensure!(
         got == ["i1", "i5"],
         "customer 20 must be reached from i1 and i5 after the move; it was from {got:?}"
@@ -358,30 +244,18 @@ async fn changing_a_matched_field_moves_the_edge_at_that_position(
 
 async fn a_null_never_matches(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
     lake(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     // A customer without a region, and i4 without either field.
-    upsert(cat.as_ref(), &own, "customer", "30", json!({"no": "30"})).await?;
-    for (relation, want) in [("customer", "customer"), ("same_region", "customer")] {
-        let got = reached(
-            cat.as_ref(),
-            &own,
-            walk("invoice", "i4", relation, Walk::Out, None),
-            want,
-        )
-        .await?;
+    l.upsert("customer", "30", json!({"no": "30"})).await?;
+    for relation in ["customer", "same_region"] {
+        let got = reach(cat.as_ref(), own, "i4", relation, Walk::Out, None).await?;
         ensure!(
             got.is_empty(),
             "i4 holds no matched value, so `{relation}` must reach nothing; it reached {got:?}"
         );
     }
-    let got = reached(
-        cat.as_ref(),
-        &own,
-        walk("customer", "30", "same_region", Walk::In, None),
-        "invoice",
-    )
-    .await?;
+    let got = reach(cat.as_ref(), own, "30", "same_region", Walk::In, None).await?;
     ensure!(
         got.is_empty(),
         "a null region never matches a null region; customer 30 was reached from {got:?}"
@@ -394,42 +268,9 @@ async fn a_principal_without_read_on_a_matched_field_is_refused_naming_it(
 ) -> Result<(), Failure> {
     lake(store.as_ref()).await?;
     let cat = doors(store.as_ref());
-    let blind = |ty: &str, f: &str| {
-        let mut types = BTreeMap::new();
-        types.insert(
-            TypeName::from(ty),
-            TypeGrants {
-                default: None,
-                fields: [(f.into(), Access::None)].into(),
-            },
-        );
-        principal(
-            store.as_ref(),
-            PrincipalKind::Agent,
-            "blind",
-            Grants {
-                default: Access::Read,
-                types,
-                ..Grants::default()
-            },
-        )
-    };
-    let degree = Pattern {
-        start: Start {
-            ty: "customer".into(),
-            key: None,
-            filter: None,
-            search: None,
-            params: Default::default(),
-        },
-        steps: vec![step("local_customer", Walk::In)],
-        to: None,
-        project: Projection::Degree,
-        order_by: Vec::new(),
-        limit: None,
-        cursor: None,
-        at: ReadAt::default(),
-    };
+    let blind = |ty: &str, f: &str| field_access(store.as_ref(), "blind", ty, &[(f, Access::None)]);
+    let in_local = vec![step("local_customer", Walk::In)];
+    let degree = pattern("customer", None, in_local, Projection::Degree);
     let cases = [
         (
             blind("invoice", "customer_no"),
@@ -445,26 +286,12 @@ async fn a_principal_without_read_on_a_matched_field_is_refused_naming_it(
     ];
     for (who, p, field) in cases {
         let what = format!("{:?} over `{}`", p.project, p.steps[0].relation);
-        match cat.query(&who, p).await {
-            Err(
-                e @ Error::Refused {
-                    reason: Refusal::NotGranted,
-                    ..
-                },
-            ) => {
-                let why = e.to_string();
-                ensure!(
-                    why.contains(field),
-                    "{what} must be refused naming `{field}`; it said: {why}"
-                );
-            }
-            other => {
-                return Err(Failure::new(format!(
-                    "{what} without read on `{field}` must be refused not_granted; it answered \
-                     {other:?}"
-                )));
-            }
-        }
+        let r = cat.query(&who, p).await;
+        ensure!(
+            no_such_field(&r, field),
+            "{what} by a principal who may not know of `{field}` is answered as for a field \
+             the type does not declare, naming it; it answered {r:?}"
+        );
     }
     Ok(())
 }
@@ -473,28 +300,24 @@ async fn degree_and_components_over_a_derived_relation_equal_those_over_the_same
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     lake(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
     // The same connections, written as link records between twin types.
-    declare(
-        cat.as_ref(),
-        &own,
-        type_decl("client", vec![field("no", StorageKind::Text)]),
-    )
-    .await?;
+    l.declare(type_decl("client", vec![field("no", StorageKind::Text)]))
+        .await?;
     let mut bill = type_decl("bill", vec![field("note", StorageKind::Text)]);
     bill.relations = vec![RelationDecl {
         cardinality: Cardinality::ManyToOne,
         ..RelationDecl::to("customer", "client")
     }];
-    declare(cat.as_ref(), &own, bill).await?;
+    l.declare(bill).await?;
     for c in ["10", "010", "20"] {
-        upsert(cat.as_ref(), &own, "client", c, json!({"no": c})).await?;
+        l.upsert("client", c, json!({"no": c})).await?;
     }
     for (b, c) in [("i1", "10"), ("i2", "10"), ("i3", "010"), ("i5", "20")] {
-        upsert(cat.as_ref(), &own, "bill", b, json!({"note": b})).await?;
+        l.upsert("bill", b, json!({"note": b})).await?;
         cat.link(
-            &own,
+            own,
             &"bill".into(),
             &b.into(),
             &"customer".into(),
@@ -505,22 +328,9 @@ async fn degree_and_components_over_a_derived_relation_equal_those_over_the_same
         .await
         .must(&format!("linking {b} to {c}"))?;
     }
-    upsert(cat.as_ref(), &own, "bill", "i4", json!({"note": "i4"})).await?;
-    let measure = |ty: &str, project: Projection, walk: Walk| Pattern {
-        start: Start {
-            ty: ty.into(),
-            key: None,
-            filter: None,
-            search: None,
-            params: Default::default(),
-        },
-        steps: vec![step("customer", walk)],
-        to: None,
-        project,
-        order_by: Vec::new(),
-        limit: None,
-        cursor: None,
-        at: ReadAt::default(),
+    l.upsert("bill", "i4", json!({"note": "i4"})).await?;
+    let measure = |ty: &str, project: Projection, walk: Walk| {
+        pattern(ty, None, vec![step("customer", walk)], project)
     };
     let rows = |r: QueryResult| -> Vec<String> {
         match r {
@@ -543,12 +353,12 @@ async fn degree_and_components_over_a_derived_relation_equal_those_over_the_same
         (Projection::Components, Walk::Both),
     ] {
         let derived = cat
-            .query(&own, measure("customer", project.clone(), walk_dir))
+            .query(own, measure("customer", project.clone(), walk_dir))
             .await
             .must(&format!("{project:?} over the derived relation"))?
             .data;
         let linked = cat
-            .query(&own, measure("client", project.clone(), walk_dir))
+            .query(own, measure("client", project.clone(), walk_dir))
             .await
             .must(&format!("{project:?} over the links"))?
             .data;
@@ -570,30 +380,16 @@ async fn a_derived_relation_is_declared_not_migrated_and_never_moves_carrier(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     lake(store.as_ref()).await?;
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    let hash = |d: lakelands_api::describe::TypeDescription| d.lifecycle.schema_hash;
-    let before = hash(
-        cat.describe_type(&own, &"invoice".into(), ReadAt::default())
-            .await
-            .must("describing invoice")?
-            .data,
-    );
+    let l = Lake::of(store.as_ref());
+    let before = l.describe_type("invoice").await?.lifecycle.schema_hash;
     let mut changed = invoice();
     changed.relations[2] = derived(
         "same_region",
         "customer",
         vec![pair("region", "region"), pair("customer_no", "no")],
     );
-    cat.declare(&own, Declaration::Type(changed.clone()))
-        .await
-        .must("declaring invoice with a changed match")?;
-    let after = hash(
-        cat.describe_type(&own, &"invoice".into(), ReadAt::default())
-            .await
-            .must("describing invoice again")?
-            .data,
-    );
+    l.declare(changed.clone()).await?;
+    let after = l.describe_type("invoice").await?.lifecycle.schema_hash;
     ensure!(
         before == after,
         "changing a derived relation's match must leave the schema hash byte-identical; it \
@@ -603,9 +399,7 @@ async fn a_derived_relation_is_declared_not_migrated_and_never_moves_carrier(
     let mut linked = invoice();
     linked.name = "order".into();
     linked.relations = vec![RelationDecl::to("customer", "customer")];
-    cat.declare(&own, Declaration::Type(linked.clone()))
-        .await
-        .must("declaring order with a linked relation")?;
+    l.declare(linked.clone()).await?;
     let mut to_derived = linked.clone();
     to_derived.relations = vec![derived(
         "customer",
@@ -622,26 +416,8 @@ async fn a_derived_relation_is_declared_not_migrated_and_never_moves_carrier(
         ),
     ] {
         let head = store.head().await.must("reading the head")?;
-        match cat.declare(&own, Declaration::Type(t)).await {
-            Err(
-                e @ Error::Refused {
-                    reason: Refusal::Invalid { .. },
-                    ..
-                },
-            ) => {
-                let why = e.to_string();
-                ensure!(
-                    why.contains("customer") && why.contains("carrier"),
-                    "{what} must be refused naming the relation; it said: {why}"
-                );
-            }
-            other => {
-                return Err(Failure::new(format!(
-                    "{what} must be refused as invalid; it answered {other:?}"
-                )));
-            }
-        }
-        crate::conformance::fixture::head_unmoved(store.as_ref(), head, what).await?;
+        invalid_naming(what, l.try_declare(t).await, &["customer", "carrier"])?;
+        head_unmoved(store.as_ref(), head, what).await?;
     }
     Ok(())
 }
@@ -649,13 +425,12 @@ async fn a_derived_relation_is_declared_not_migrated_and_never_moves_carrier(
 async fn a_match_pair_of_two_kinds_is_refused_naming_both(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
-    let own = owner(store.as_ref());
-    declare(cat.as_ref(), &own, customer()).await?;
+    let l = Lake::of(store.as_ref());
+    l.declare(customer()).await?;
     let mut numbered = customer();
     numbered.name = "account".into();
     numbered.fields.push(field("number", StorageKind::Number));
-    declare(cat.as_ref(), &own, numbered).await?;
+    l.declare(numbered).await?;
     let base = || {
         type_decl(
             "invoice",
@@ -689,26 +464,8 @@ async fn a_match_pair_of_two_kinds_is_refused_naming_both(
         ),
     ] {
         let head = store.head().await.must("reading the head")?;
-        match cat.declare(&own, Declaration::Type(t)).await {
-            Err(
-                e @ Error::Refused {
-                    reason: Refusal::Invalid { .. },
-                    ..
-                },
-            ) => {
-                let why = e.to_string();
-                ensure!(
-                    named.iter().all(|n| why.contains(n)),
-                    "{what} must be refused naming {named:?}; it said: {why}"
-                );
-            }
-            other => {
-                return Err(Failure::new(format!(
-                    "{what} must be refused as invalid; it answered {other:?}"
-                )));
-            }
-        }
-        crate::conformance::fixture::head_unmoved(store.as_ref(), head, what).await?;
+        invalid_naming(what, l.try_declare(t).await, &named)?;
+        head_unmoved(store.as_ref(), head, what).await?;
     }
     Ok(())
 }

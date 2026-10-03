@@ -5,7 +5,12 @@
 A read that filters on a field, orders by it, aggregates over it or
 searches it is refused when the principal may not read that field —
 also when the field would have been masked in the answer. The refusal
-names the field.
+names the field. Where the principal may not know of the field at all (its
+access is `none`), the refusal is the one for a field the type does not
+declare (006, extended in lakelands#394). A read at `valid_at` filters on its
+type's `valid_from` and `valid_to`, so it probes them as a filter on
+them would: `find`, `get`, `search`, a pattern's start and every type a
+walk reaches (lakelands#372).
 
 A search probes every searchable field of its type, in every mode, and
 the vector field it names. A vector embedded from text encodes that
@@ -44,8 +49,9 @@ answer that leaks nothing.
 
 - It does not refuse reads of records that merely have such a field. A
   record is still returned with the field masked or absent.
-- It is not a rule for writers. A write is governed by the principal's
-  write grants (006, 012).
+- It does not decide what a writer may write. A write is governed by
+  the principal's write grants (006, 012); what a write's refusal may
+  tell is extended below.
 
 ## Extended: annotations, and a relation's link fields
 
@@ -65,3 +71,40 @@ to, as their descriptions are.
 An annotation grants nothing and restricts nothing. What a principal
 may read is decided by its grants alone. A host that marks a field with
 a policy of its own enforces that policy itself.
+
+## Extended: a write's refusal tells only what its grants cover (lakelands#343)
+
+A refusal is an answer too. A write that would break a rule about the
+lake's data, refused before the writer's grants are checked, tells a
+principal without those grants what the data holds: that a record
+already links somewhere, and to which key; that a type exists and has a
+field. So the line this record draws for reads holds for writes:
+
+- **Grants come before anything that reads the data they protect.**
+  `link` checks the link record's grants, with the rest of the record's
+  own checks, before it reads the relation's live links for its
+  cardinality. `add_field` checks the `schema` grant before it looks the
+  type up or asks whether it has the field.
+- **The version comes right after the record is found,** before
+  anything is judged on that record. A verb's call compares the expected
+  version with the record before `requires` is evaluated on it, so a
+  caller with a stale version is told its version is stale, never that
+  the record fails a condition on a state it has not seen. This is how
+  `retire` already ordered it.
+
+What a write checks is unchanged; only which refusal comes first.
+
+## Extended: a field built from another is read as that field (lakelands#387)
+
+A derived field hands out what it is computed from: `g = salary * 2`
+is the salary, doubled. An embedded vector encodes the text it is
+embedded from. So a field is read no further than every field it is
+built from, its `depends_on` and its `embed.from`, and theirs in turn.
+A source the principal may not read hides the field. A masked source
+masks it, unless the field is already hidden. The rule lives in one
+place, the field's access (`lakelands_core::rights::field_access`), so
+it holds on every door: such a field is absent or masked in `get`,
+`find` and a pattern's rows, and in `describe` and the tools.
+Filtering, ordering or aggregating over it is refused as not granted,
+naming it, as for its source. A search over a vector embedded from a
+field the principal may not read still names that source, as above.

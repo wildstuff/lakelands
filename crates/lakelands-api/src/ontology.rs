@@ -454,7 +454,32 @@ pub struct ViewDecl {
     /// no source record too.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub group_by: Vec<FieldName>,
-    /// The view's fields, each an expression over its group.
+    /// The view's fields, each an expression over its group. They are
+    /// computed after the merged sources' measures, which they may read by
+    /// name.
+    pub measures: Vec<Measure>,
+    /// Further sources the view merges on its key, each grouped by fields
+    /// of its own that line up with `group_by` (018).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub merge: Vec<ViewSource>,
+}
+
+/// A further source of a view: its records, filtered by its `where`,
+/// grouped by its `group_by`, whose fields line up with the view's
+/// `group_by` by position, and measured by its own aggregates. Its groups
+/// meet the view's other sources' where their keys are identical.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewSource {
+    /// The type it reads.
+    pub source: TypeName,
+    /// Which of its records it covers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<Condition>,
+    /// Its fields whose values form the view's key, in the view's order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub group_by: Vec<FieldName>,
+    /// Its measures, aggregates over its group, named uniquely in the view.
     pub measures: Vec<Measure>,
 }
 

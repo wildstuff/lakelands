@@ -10,20 +10,20 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::{Authority, StorageKind, TypeDecl};
+use lakelands_api::ontology::{StorageKind, TypeDecl};
 use lakelands_api::{Error, LakeStore, Refusal, TypeName, Version};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, committed, field, get_at, head_unmoved, patch, source_record, type_decl, value,
-    windows_reach_head,
+    Lake, Must, committed, delivered, field, get_at, head_unmoved, log_events, refused_on,
+    refused_unmoved, source_record, sourced, try_upsert, type_decl, value, windows_reach_head,
 };
 
 check!(
     /// The same content ingested twice is written once.
     SAME_CONTENT_TWICE = the_same_content_ingested_twice_appends_nothing_the_second_time,
-    "016 and the log format: ingest is content-addressed, so a redelivery of the same values appends nothing, within one delivery or across two"
+    "016 and the log format: ingest is content-addressed, so a redelivery of the same values appends nothing, within one delivery or across two; a record with no field counts as a duplicate for a live key, and is invalid for a new one (016, extended)"
 );
 
 check!(
@@ -35,7 +35,7 @@ check!(
 check!(
     /// A source record carrying an authored field is refused.
     FOREIGN_FIELD_REFUSED = an_ingested_record_carrying_a_field_the_source_does_not_write_is_refused_whole,
-    "016 and the log format: ingest writes only source and shared fields; a record carrying any other is refused whole, never trimmed"
+    "016 and the log format: ingest writes only source and shared fields; a record carrying any other is refused whole, never trimmed, and a record whose key is empty is refused as invalid before its fields are judged, as `upsert` orders it, after the ingest grant and the type; a field another authority writes is refused before any value is judged (016, extended)"
 );
 
 check!(
@@ -58,8 +58,7 @@ check!(
 
 /// `feed`: a source's `body` and an author's `verdict`.
 fn feed() -> TypeDecl {
-    let mut body = field("body", StorageKind::Text);
-    body.authority = Authority::Source;
+    let body = sourced("body", StorageKind::Text);
     type_decl("feed", vec![body, field("verdict", StorageKind::Text)])
 }
 
@@ -70,24 +69,15 @@ async fn the_same_content_ingested_twice_appends_nothing_the_second_time(
     l.declare(feed()).await?;
 
     let once = || vec![source_record("feed", "k1", json!({"body": "unchanged"}))];
-    let first = l.ingest("bank", once()).await.must("ingesting `k1`")?;
-    windows_reach_head(store.as_ref(), &first, "ingesting `k1`").await?;
+    let first = delivered(store.as_ref(), &l, "bank", once(), "ingesting `k1`").await?;
     ensure!(
         committed(&first) == (1, 0),
         "the first delivery of `k1` must commit 1 record and 0 duplicates; the windows \
          answered {first:?}"
     );
     let head = store.head().await.must("reading the head")?;
-    let second = l
-        .ingest("bank", once())
-        .await
-        .must("ingesting `k1` again with the same values")?;
-    windows_reach_head(
-        store.as_ref(),
-        &second,
-        "ingesting `k1` again with the same values",
-    )
-    .await?;
+    let what = "ingesting `k1` again with the same values";
+    let second = delivered(store.as_ref(), &l, "bank", once(), what).await?;
     ensure!(
         committed(&second) == (0, 1),
         "delivering `k1` again with the same values must commit 0 records and 1 \
@@ -99,21 +89,30 @@ async fn the_same_content_ingested_twice_appends_nothing_the_second_time(
         "the redelivery moved the head from {head} to {after}; the same content appends \
          nothing"
     );
+    // The duplicate test before an empty record (016, extended): for a live
+    // key it changes nothing and counts; for a new key it is invalid.
+    let empty = |k: &str| vec![source_record("feed", k, json!({}))];
+    let live = delivered(store.as_ref(), &l, "bank", empty("k1"), "an empty `k1`").await?;
+    let new = l.ingest("bank", empty("k9")).await;
+    ensure!(
+        committed(&live) == (0, 1)
+            && matches!(
+                new,
+                Err(Error::Refused {
+                    reason: Refusal::Invalid { .. },
+                    ..
+                })
+            ),
+        "a record with no field counts as a duplicate for the live `k1`, answered {live:?}, \
+         and is refused as invalid for the new `k9`, answered {new:?}"
+    );
 
     let twice = vec![
         source_record("feed", "k2", json!({"body": "same"})),
         source_record("feed", "k2", json!({"body": "same"})),
     ];
-    let windows = l
-        .ingest("bank", twice)
-        .await
-        .must("ingesting `k2` twice in one delivery")?;
-    windows_reach_head(
-        store.as_ref(),
-        &windows,
-        "ingesting `k2` twice in one delivery",
-    )
-    .await?;
+    let what = "ingesting `k2` twice in one delivery";
+    let windows = delivered(store.as_ref(), &l, "bank", twice, what).await?;
     ensure!(
         committed(&windows) == (1, 1),
         "one delivery carrying `k2` twice with the same values must commit 1 record and \
@@ -141,16 +140,8 @@ async fn the_same_key_twice_in_one_ingest_with_new_values_advances_the_version(
         source_record("feed", "k1", json!({"body": "first draft"})),
         source_record("feed", "k1", json!({"body": "second draft"})),
     ];
-    let windows = l
-        .ingest("bank", delivery)
-        .await
-        .must("ingesting `k1` twice with different values")?;
-    windows_reach_head(
-        store.as_ref(),
-        &windows,
-        "ingesting `k1` twice with different values",
-    )
-    .await?;
+    let what = "ingesting `k1` twice with different values";
+    let windows = delivered(store.as_ref(), &l, "bank", delivery, what).await?;
     ensure!(
         committed(&windows) == (2, 0),
         "two different values for `k1` are two changes, not a duplicate: the windows must \
@@ -180,16 +171,9 @@ async fn an_ingested_record_carrying_a_field_the_source_does_not_write_is_refuse
         json!({"body": "text", "verdict": "approved"}),
     )];
     let before = store.head().await.must("reading the head")?;
-    let err = l
-        .ingest("bank", delivery)
-        .await
-        .must_fail("ingesting a record that carries the authored field `verdict`")?;
-    head_unmoved(
-        store.as_ref(),
-        before,
-        "ingesting a record that carries the authored field `verdict`",
-    )
-    .await?;
+    let what = "ingesting a record that carries the authored field `verdict`";
+    let answer = l.ingest("bank", delivery).await;
+    let err = refused_unmoved(store.as_ref(), before, what, answer).await?;
     ensure!(
         matches!(
             &err,
@@ -207,7 +191,59 @@ async fn an_ingested_record_carrying_a_field_the_source_does_not_write_is_refuse
         "the refused record was written in part: `k1` reads {missing:?}. A record \
          carrying a field the source does not write is refused whole, never trimmed"
     );
-    Ok(())
+    let keyless = vec![source_record(
+        "feed",
+        "",
+        json!({"body": "text", "verdict": "approved"}),
+    )];
+    let err = l.ingest("bank", keyless).await;
+    ensure!(
+        matches!(
+            &err,
+            Err(Error::Refused {
+                reason: Refusal::Invalid { .. },
+                field: None
+            })
+        ),
+        "a source record with an empty key that carries `verdict` is refused for its key \
+         first, as invalid naming no field; it answered {err:?}"
+    );
+    // The grant, then the type, then (after the key) the door before the
+    // values, whatever the fields' order (016, extended).
+    let no_ingest = lakelands_api::Principal {
+        grants: lakelands_api::Grants {
+            ingest: false,
+            ..lakelands_api::Grants::owner()
+        },
+        ..own.clone()
+    };
+    let nowhere = || vec![source_record("nothing", "", json!({"body": "x"}))];
+    let ungranted =
+        crate::conformance::fixture::ingest(cat.as_ref(), &no_ingest, "bank", nowhere()).await;
+    let untyped = l.ingest("bank", nowhere()).await;
+    let door = l
+        .ingest(
+            "bank",
+            vec![source_record(
+                "feed",
+                "k2",
+                json!({"body": 5, "verdict": "x"}),
+            )],
+        )
+        .await;
+    ensure!(
+        matches!(&ungranted, Err(e) if matches!(e, Error::Refused { reason: Refusal::NotGranted, .. }))
+            && matches!(untyped, Err(Error::NotFound { .. }))
+            && matches!(refused_on(&door), Some(("verdict", Refusal::WrongDoor))),
+        "ingest refuses for its grant, then the type, then the door before the values; it \
+         answered {ungranted:?}, {untyped:?} and {door:?}"
+    );
+    head_unmoved(
+        store.as_ref(),
+        before,
+        "ingesting a record with an empty key",
+    )
+    .await
 }
 
 async fn an_upsert_carrying_a_field_only_a_source_writes_is_refused_as_the_wrong_door(
@@ -218,27 +254,12 @@ async fn an_upsert_carrying_a_field_only_a_source_writes_is_refused_as_the_wrong
     l.declare(feed()).await?;
 
     let before = store.head().await.must("reading the head")?;
-    let err = cat
-        .upsert(
-            own,
-            &TypeName::from("feed"),
-            &"k1".into(),
-            patch(json!({"body": "typed in", "verdict": "approved"})),
-            Default::default(),
-        )
-        .await
-        .must_fail("the owner upserting the source field `body`")?;
-    head_unmoved(
-        store.as_ref(),
-        before,
-        "the owner upserting the source field `body`",
-    )
-    .await?;
+    let fields = json!({"body": "typed in", "verdict": "approved"});
+    let answer = try_upsert(cat.as_ref(), own, "feed", "k1", fields).await;
+    let what = "the owner upserting the source field `body`";
+    let err = refused_unmoved(store.as_ref(), before, what, answer).await?;
     ensure!(
-        matches!(
-            &err,
-            Error::Refused { field: Some(f), reason: Refusal::WrongDoor } if f.as_str() == "body"
-        ),
+        matches!(refused_on(&err), Some(("body", Refusal::WrongDoor))),
         "an upsert carrying `body`, which only a source writes, must be refused as the \
          wrong door on `body`, even for the owner; it failed with {err:?}"
     );
@@ -355,10 +376,8 @@ async fn an_ingested_record_carries_its_upstream_per_field(
 ) -> Result<(), Failure> {
     use lakelands_api::{Position, Upstream};
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
     let mut reading = feed();
-    let mut unit = field("unit", StorageKind::Text);
-    unit.authority = Authority::Source;
+    let unit = sourced("unit", StorageKind::Text);
     reading.fields.push(unit);
     l.declare(reading).await?;
     let from = Upstream {
@@ -380,16 +399,7 @@ async fn an_ingested_record_carries_its_upstream_per_field(
              {got:?}"
         );
     }
-    let events = store
-        .feed()
-        .poll(
-            Position::GENESIS,
-            &lakelands_api::seam::FeedFilter::default(),
-            10_000,
-        )
-        .await
-        .must("reading the log")?
-        .events;
+    let events = log_events(store.as_ref()).await?;
     let ingested = events
         .iter()
         .rev()
@@ -440,8 +450,7 @@ async fn an_ingested_record_carries_its_upstream_per_field(
     l.ingest("mirror", vec![stamped])
         .await
         .must("ingesting `r2` with an upstream")?;
-    crate::conformance::fixture::upsert(cat.as_ref(), own, "feed", "r2", json!({"verdict": "ok"}))
-        .await?;
+    l.upsert("feed", "r2", json!({"verdict": "ok"})).await?;
     let rec = l.read("feed", "r2").await?;
     let (body, verdict) = (
         rec.meta.get("body").and_then(|m| m.upstream.clone()),
