@@ -118,3 +118,21 @@ field is carried over as declared
 (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
 extended). The preflight's report names no such field to it, and a
 proposer reads its own proposal without it.
+
+## Extended: a view's own probe names nothing (lakelands#505)
+
+A read of a view probes what the view's definition reads: its `where`,
+its grouping and what its measures aggregate, in its source and in each
+merged one. A reader who may not read one of those fields is refused, as
+for any probe. But the field is one the view named, not the reader, and
+the answer for a field the reader names itself ("`invoice` has no field
+`salary`", or not granted on a masked field) would tell it what the
+definition reads. `describe` already withholds that definition from such
+a reader. So the read is refused as **not granted, on no field**, and its
+text names neither the field nor the source: the view is one this reader
+may not read. `find`, `get`, and a pattern that starts on the view or
+steps onto it answer alike.
+
+A principal with the `schema` grant is shown every definition, so the
+field's name tells it nothing new, and it is the one who can act on it:
+it keeps the answer that names the field.

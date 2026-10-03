@@ -251,7 +251,7 @@ belongs in the suite, not beside one engine:
 - `keys_from_two_sources_meet_only_when_their_values_are_identical` — 018 and 044: merged keys meet by the identity of their values, as a derived relation's do, so the text '010' and the text '10' are two keys, where 017's `=` would call them equal
 - `a_views_parameters_bind_every_source_it_merges` — 018: a view's parameters are bound by the read and read by every source's `where` and measures, the merged ones too
 - `a_merge_declared_badly_is_refused_naming_it` — 028 and 018: `declare` refuses a merged source that is not declared, read twice, grouped by another number of fields or a field of another kind than the one it lines up with, a measure named twice, a merged measure with no declared field or one that calls no aggregate, a view with parameters as any source, and a merge that closes a cycle of views, naming it
-- `a_merged_sources_fields_are_probed_as_a_read_of_it` — 024 and 018: a view reads each of its sources as a read of that source, so a principal who may not read a field a merged source's measures aggregate is not answered the view's definition by describe, and a read of the view is answered as for a field that source does not declare, naming it (006)
+- `a_merged_sources_fields_are_probed_as_a_read_of_it` — 024 and 018: a view reads each of its sources as a read of that source, so a principal who may not read a field a merged source's measures aggregate is not answered the view's definition by describe, and a read of the view is refused as not granted, naming neither that field nor its source (024, extended)
 - `a_view_that_merges_is_written_in_log_format_9` — log format §6 and 018: the event that declares a view merging sources is written in format 9, as is every event after it; a view without a merge leaves the lake's format where it was
 
 **ingest**
@@ -436,6 +436,10 @@ belongs in the suite, not beside one engine:
 - `a_principal_who_may_write_only_some_fields_cannot_retire` — 006 and TypeRights::retire: retiring removes every field of a record, so it needs a write grant on every field of the type, checked before the record is looked up, and the record before the expected version (016, extended)
 - `a_record_retired_at_a_position_is_readable_just_before_it` — 009 and 001: a read at the position before a retirement sees the record as it was, to a principal who could read it then; a session told of the retirement reads it there
 - `a_type_whose_fields_all_come_from_a_source_has_no_upsert` — 016 and TypeRights::upsert: upsert writes authored fields; a type with none has no upsert for anyone, the owner included: describe says so, and the door refuses it as the wrong door, naming the field
+
+**view rights**
+
+- `a_view_over_a_field_its_reader_may_not_read_names_nothing` — 024, extended: `find`, `get` and a pattern started on a view whose `where` or a measure reads a field its reader may not know of, or may not read, are refused as not granted, on no field and with neither the field nor its source in the text; a reader who may read every field the definition reads is answered, and one with the `schema` grant, whom `describe` shows the definition, is told the field as before
 
 **keys**
 

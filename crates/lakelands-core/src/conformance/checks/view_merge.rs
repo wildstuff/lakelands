@@ -14,8 +14,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, bound, field, field_access, log_events, measure, no_such_field, param, reason, type_decl,
-    view_of,
+    Lake, bound, field, field_access, log_events, measure, param, reason, type_decl, view_of,
 };
 
 check!(
@@ -51,7 +50,7 @@ check!(
 check!(
     /// Each source is read as a read of it.
     MERGE_PROBES_EACH_SOURCE = a_merged_sources_fields_are_probed_as_a_read_of_it,
-    "024 and 018: a view reads each of its sources as a read of that source, so a principal who may not read a field a merged source's measures aggregate is not answered the view's definition by describe, and a read of the view is answered as for a field that source does not declare, naming it (006)"
+    "024 and 018: a view reads each of its sources as a read of that source, so a principal who may not read a field a merged source's measures aggregate is not answered the view's definition by describe, and a read of the view is refused as not granted, naming neither that field nor its source (024, extended)"
 );
 
 fn log(name: &str, day: &str) -> TypeDecl {
@@ -344,11 +343,12 @@ async fn a_merged_sources_fields_are_probed_as_a_read_of_it(
         .cat
         .find(&blind, &"energy_balance".into(), Find::default())
         .await;
+    let unnamed = matches!(&r, Err(e @ Error::Refused { field: None, reason: Refusal::NotGranted })
+        if !e.to_string().contains("kcal") && !e.to_string().contains("workout_log"));
     ensure!(
-        no_such_field(&r, "kcal"),
+        unnamed,
         "a read of the balance by a principal who may not know of `workout_log.kcal` is \
-         answered as for a field `workout_log` does not declare, naming `kcal`; it answered \
-         {r:?}"
+         refused as not granted, naming neither the field nor its source; it answered {r:?}"
     );
     Ok(())
 }
