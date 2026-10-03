@@ -371,7 +371,9 @@ pub struct RelationDecl {
     /// How many on each side.
     #[serde(default)]
     pub cardinality: Cardinality,
-    /// The name the relation has when walked backwards.
+    /// The name the relation has when walked backwards: a step naming it
+    /// walks the relation the other way, unless the type it stands on
+    /// declares a relation of that name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inverse: Option<RelationName>,
     /// The field of this type that holds the target's key, if the

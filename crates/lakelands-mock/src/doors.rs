@@ -16,7 +16,7 @@ use lakelands_api::id::{
     VerbName, Version,
 };
 use lakelands_api::ontology::{
-    Authority, FieldDecl, Risk, TypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl,
+    Authority, FieldDecl, RelationDecl, Risk, TypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl,
 };
 use lakelands_api::principal::{Access, Principal, PrincipalKind, WriteContext};
 use lakelands_api::query::{Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Walk};
@@ -2680,57 +2680,52 @@ impl Catalog for MockCatalog {
         let mut scope_ty = t;
         for step in &pattern.steps {
             // A step over a relation the type does not declare is
-            // refused, not answered empty.
-            let (target, via, forward, link_type) = match step.walk {
-                Walk::Out => {
-                    let rel = scope_ty
+            // refused, not answered empty. A step naming a relation's
+            // `inverse` walks that relation the other way; a relation
+            // declared under the name wins.
+            let forward = |named: &dyn Fn(&RelationDecl) -> bool| {
+                let r = scope_ty.decl.relations.iter().find(|r| named(r))?;
+                let link = links::name(&scope_ty.decl.name, &r.name);
+                Some((
+                    r.target.clone(),
+                    (r.via.clone(), r.derived.clone()),
+                    true,
+                    link,
+                ))
+            };
+            let backward = |named: &dyn Fn(&RelationDecl) -> bool| {
+                st.types.values().find_map(|o| {
+                    let r = o
                         .decl
                         .relations
                         .iter()
-                        .find(|r| r.name == step.relation);
-                    match rel {
-                        Some(r) => (
-                            r.target.clone(),
-                            (r.via.clone(), r.derived.clone()),
-                            true,
-                            links::name(&scope_ty.decl.name, &r.name),
-                        ),
-                        None => {
-                            return Err(invalid(format!(
-                                "`{}` declares no relation `{}`",
-                                scope_ty.decl.name, step.relation
-                            )));
-                        }
-                    }
-                }
-                _ => {
-                    let back = st.types.values().find_map(|o| {
-                        o.decl
-                            .relations
-                            .iter()
-                            .find(|r| {
-                                r.target == scope_ty.decl.name
-                                    && (r.inverse.as_ref() == Some(&step.relation)
-                                        || r.name == step.relation)
-                            })
-                            .map(|r| {
-                                (
-                                    o.decl.name.clone(),
-                                    (r.via.clone(), r.derived.clone()),
-                                    links::name(&o.decl.name, &r.name),
-                                )
-                            })
-                    });
-                    match back {
-                        Some((ty, via, lt)) => (ty, via, false, lt),
-                        None => {
-                            return Err(invalid(format!(
-                                "no relation `{}` reaches `{}`",
-                                step.relation, scope_ty.decl.name
-                            )));
-                        }
-                    }
-                }
+                        .find(|r| r.target == scope_ty.decl.name && named(r))?;
+                    let link = links::name(&o.decl.name, &r.name);
+                    Some((
+                        o.decl.name.clone(),
+                        (r.via.clone(), r.derived.clone()),
+                        false,
+                        link,
+                    ))
+                })
+            };
+            let name = |r: &RelationDecl| r.name == step.relation;
+            let inverse = |r: &RelationDecl| r.inverse.as_ref() == Some(&step.relation);
+            let walked = match step.walk {
+                Walk::Out => forward(&name).or_else(|| backward(&inverse)),
+                _ => backward(&name).or_else(|| forward(&inverse)),
+            };
+            let Some((target, via, forward, link_type)) = walked else {
+                return Err(invalid(match step.walk {
+                    Walk::Out => format!(
+                        "`{}` declares no relation `{}`",
+                        scope_ty.decl.name, step.relation
+                    ),
+                    _ => format!(
+                        "no relation `{}` reaches `{}`",
+                        step.relation, scope_ty.decl.name
+                    ),
+                }));
             };
             if step.depth.min != 1 || step.depth.max != 1 || step.walk == Walk::Both {
                 return Err(invalid(

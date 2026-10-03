@@ -349,6 +349,7 @@ belongs in the suite, not beside one engine:
 - `a_step_over_a_relation_the_type_does_not_declare_is_refused` — 018: the planner knows the ontology; a step over an undeclared relation is refused, not answered empty
 - `a_step_deeper_than_the_lakes_limit_is_refused` — 018 and the location's limits: on a lake opened with the default limits, a step whose depth exceeds `max_depth` is refused rather than walked
 - `a_walk_answers_what_it_reaches_in_one_order` — 026 and 029: a graph includes its start, and a walk orders what it reaches by depth, type and key, so no engine's link order shows through
+- `a_step_naming_an_inverse_walks_the_relation_the_other_way` — 018 and 044, extended: a step naming a relation's `inverse` walks that relation the other way, its `walk` counting from the name it gives, and the edges keep the declared relation with its declaring side as `from`
 - `a_walk_over_a_cycle_ends_and_answers_each_record_once` — 026: the store walks the graph, so a walk over a cycle of links ends within its depth and reaches every record once
 
 **search**

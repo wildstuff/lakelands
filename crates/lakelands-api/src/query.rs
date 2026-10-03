@@ -72,7 +72,8 @@ pub struct Start {
 /// One step of a pattern.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Step {
-    /// The relation walked; it must be declared on the type in scope.
+    /// The relation walked; it must be declared on the type in scope, or
+    /// be the `inverse` of one, which walks that relation the other way.
     pub relation: RelationName,
     /// Which way.
     #[serde(default)]

@@ -53,7 +53,7 @@ use lakelands_api::engine::{After, ProjectionView, Scan};
 use lakelands_api::expr::{Expr, Func, Literal};
 use lakelands_api::ontology::{FieldType, MatchPair, RelationDecl, StorageKind, TypeDecl};
 use lakelands_api::query::{
-    Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Walk,
+    Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Step, Walk,
 };
 use lakelands_api::read::{
     After as ReadAfter, AggFunc, Aggregate, Direction, Find, Found, Get, Group, Order, OrderBy,
@@ -1438,6 +1438,9 @@ impl<'a> Reader<'a> {
 
     /// `query`: the one pattern query.
     pub fn query(&self, p: &Pattern) -> Result<QueryResult> {
+        // Its steps as declared: a step naming an inverse is rewritten below.
+        let mut p = p.clone();
+        let p = &mut p;
         let start_decl = self.visible_type(&p.start.ty)?.clone();
         let params = self.bind_params(&start_decl, &p.start.params)?;
         let limit = self.limit(p.limit)?;
@@ -1449,7 +1452,8 @@ impl<'a> Reader<'a> {
         let mut types = vec![start_decl.name.clone()];
         let mut filters = Vec::new();
         let measure = measures::is_measure(&p.project);
-        for (i, step) in p.steps.iter().enumerate() {
+        let lenient = matches!(p.project, Projection::Graph | Projection::Components);
+        for (i, step) in p.steps.iter_mut().enumerate() {
             // A measure's steps are the relations around its records, each
             // read from the start, not a chain.
             let here = if measure {
@@ -1457,12 +1461,8 @@ impl<'a> Reader<'a> {
             } else {
                 types.last().expect("the start is in").clone()
             };
-            let reached = self.step_target(
-                &here,
-                &step.relation,
-                step.walk,
-                matches!(p.project, Projection::Graph | Projection::Components),
-            )?;
+            self.as_declared(&here, step);
+            let reached = self.step_target(&here, &step.relation, step.walk, lenient)?;
             self.probe_derived(&here, &step.relation)?;
             if let (Some(t), Some(r)) = (&step.ty, &reached)
                 && t != r
@@ -1729,6 +1729,42 @@ impl<'a> Reader<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Rewrite a step naming a relation's `inverse` to that relation,
+    /// walked the other way: the inverse is the relation's name from its
+    /// target, and the step's `walk` counts from the name it gives. A
+    /// relation declared under the name wins, so a step is read as an
+    /// inverse only when it walks no relation of that name from `here`.
+    fn as_declared(&self, here: &TypeName, step: &mut Step) {
+        let types = || self.ontology.types.values().map(|e| &e.decl);
+        let (name, walk) = (&step.relation, step.walk);
+        // Whether a relation leaves `here` (out) or reaches it (in) by the
+        // way the step walks.
+        let leaves = |t: &TypeDecl, w: Walk| &t.name == here && w != Walk::In;
+        let reaches = |r: &RelationDecl, w: Walk| &r.target == here && w != Walk::Out;
+        let flipped = match walk {
+            Walk::Out => Walk::In,
+            Walk::In => Walk::Out,
+            Walk::Both => Walk::Both,
+        };
+        let walked = |t: &TypeDecl, r: &RelationDecl, w: Walk| leaves(t, w) || reaches(r, w);
+        if types().any(|t| {
+            t.relations
+                .iter()
+                .any(|r| &r.name == name && walked(t, r, walk))
+        }) {
+            return;
+        }
+        let inverse = types().find_map(|t| {
+            t.relations
+                .iter()
+                .find(|r| r.inverse.as_ref() == Some(name) && walked(t, r, flipped))
+        });
+        if let Some(r) = inverse {
+            step.relation = r.name.clone();
+            step.walk = flipped;
+        }
     }
 
     /// The type a step over `relation` reaches from `here`, walking `walk`.

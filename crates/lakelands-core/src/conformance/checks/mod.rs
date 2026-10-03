@@ -184,6 +184,7 @@ pub const ALL: &[Check] = &[
     walks::UNDECLARED_RELATION,
     walks::TOO_DEEP,
     walks::WALK_ORDER,
+    walks::INVERSE_STEP,
     search::MATCH_SET,
     search::SEARCH_ORDER,
     search::SEARCH_PROBE_REFUSED,
