@@ -420,6 +420,29 @@ impl<'a> Reader<'a> {
         Ok(decl)
     }
 
+    /// Whether the principal may see a stored record at this read, before
+    /// masking: live, restricted only with the grant, valid at `valid_at`
+    /// when asked.
+    fn live(&self, decl: &TypeDecl, r: &StoredRecord) -> bool {
+        !r.retired
+            && (self.who.grants.restricted || !r.restricted)
+            && (self.valid_at).is_none_or(|t| valid_time::record_holds(decl, &r.fields, t))
+    }
+
+    /// A read's `where` over one record of `decl`, named `at`, after the
+    /// principal is found to read every field it reads (024).
+    fn record_filter(
+        &self,
+        decl: &TypeDecl,
+        c: Option<&lakelands_api::expr::Condition>,
+        at: &str,
+    ) -> Result<Option<Expr>> {
+        let Some(c) = c else { return Ok(None) };
+        let e = condition(c, Place::Record, at)?;
+        rights::check_probe(self.who, decl, core_derive::reads(&e).iter())?;
+        Ok(Some(e))
+    }
+
     /// `describe`.
     pub fn describe(&self) -> LakeDescription {
         let mut lake = describe::lake(&self.lake.id, &self.declared(), self.who);
@@ -508,23 +531,7 @@ impl<'a> Reader<'a> {
         if let Some(v) = &decl.view {
             return self.view_records(decl, v, filter);
         }
-        let push = filter.filter(|e| !needs_store(e)).cloned();
-        let scan = Scan {
-            filter: push.clone(),
-            limit: u32::MAX,
-            valid_at: self.valid_at,
-            restricted: self.who.grants.restricted,
-            ..Default::default()
-        };
-        let mut out = self.view.scan(&decl.name, &scan)?;
-        out.retain(|r| !r.retired && (self.who.grants.restricted || !r.restricted));
-        if let Some(t) = self.valid_at {
-            out.retain(|r| valid_time::record_holds(decl, &r.fields, t));
-        }
-        if let (Some(e), None) = (filter, push) {
-            out.retain(|r| self.holds(e, &r.fields, Some(&r.meta)));
-        }
-        Ok(out)
+        self.page(decl, filter, &[], None, usize::MAX)
     }
 
     /// How many records of a type [`Self::records`] would answer, holding
@@ -610,13 +617,9 @@ impl<'a> Reader<'a> {
                 });
             }
             for r in rows {
-                let keep = !r.retired
-                    && (self.who.grants.restricted || !r.restricted)
-                    && self
-                        .valid_at
-                        .is_none_or(|t| valid_time::record_holds(decl, &r.fields, t))
-                    && here.is_none_or(|e| self.holds(e, &r.fields, Some(&r.meta)));
-                if keep {
+                if self.live(decl, &r)
+                    && here.is_none_or(|e| self.holds(e, &r.fields, Some(&r.meta)))
+                {
                     out.push(r);
                     if out.len() >= want {
                         return Ok(out);
@@ -1209,12 +1212,7 @@ impl<'a> Reader<'a> {
         // declares a scale answers at that scale, so a sum over nothing is
         // `0.00` and not `0`.
         for m in &a.measures {
-            if !matches!(
-                m.func,
-                lakelands_api::read::AggFunc::Sum
-                    | lakelands_api::read::AggFunc::Min
-                    | lakelands_api::read::AggFunc::Max
-            ) {
+            if !matches!(m.func, AggFunc::Sum | AggFunc::Min | AggFunc::Max) {
                 continue;
             }
             let Some(scale) = m
@@ -1255,13 +1253,7 @@ impl<'a> Reader<'a> {
                 .into_iter()
                 .find(|r| r.key == get.key)
         } else {
-            self.view.get(ty, &get.key)?.filter(|r| {
-                !r.retired
-                    && (self.who.grants.restricted || !r.restricted)
-                    && self
-                        .valid_at
-                        .is_none_or(|t| valid_time::record_holds(&decl, &r.fields, t))
-            })
+            self.view.get(ty, &get.key)?.filter(|r| self.live(&decl, r))
         };
         stored
             .and_then(|r| rights::visible(self.who, &decl, &r, get.with_meta))
@@ -1329,14 +1321,7 @@ impl<'a> Reader<'a> {
             }
             named => named,
         };
-        let filter = s
-            .filter
-            .as_ref()
-            .map(|c| condition(c, Place::Record, "where"))
-            .transpose()?;
-        if let Some(e) = &filter {
-            rights::check_probe(self.who, &decl, core_derive::reads(e).iter())?;
-        }
+        let filter = self.record_filter(&decl, s.filter.as_ref(), "where")?;
         let search_read = read_of((&s.mode, &s.filter, s.at.valid_at));
         let offset = match &s.cursor {
             Some(c) => {
@@ -1575,13 +1560,7 @@ impl<'a> Reader<'a> {
             let Some(r) = stored.remove(&key) else {
                 continue;
             };
-            if r.retired || (r.restricted && !self.who.grants.restricted) {
-                continue;
-            }
-            if self
-                .valid_at
-                .is_some_and(|t| !valid_time::record_holds(decl, &r.fields, t))
-            {
+            if !self.live(decl, &r) {
                 continue;
             }
             if filter.is_some_and(|e| !self.holds(e, &r.fields, Some(&r.meta))) {
@@ -1671,15 +1650,7 @@ impl<'a> Reader<'a> {
                     lakelands_core::value::kind_name(param.kind)
                 )));
             }
-            let f = step
-                .filter
-                .as_ref()
-                .map(|c| condition(c, Place::Record, "step where"))
-                .transpose()?;
-            if let Some(e) = &f {
-                rights::check_probe(self.who, &decl, core_derive::reads(e).iter())?;
-            }
-            filters.push(f);
+            filters.push(self.record_filter(&decl, step.filter.as_ref(), "step where")?);
             types.push(reached);
         }
         if measure {
@@ -1688,53 +1659,23 @@ impl<'a> Reader<'a> {
         let hidden = Visible { reader: self };
         // The start.
         let starts: Vec<StoredRecord> = if let Some(key) = &p.start.key {
-            match self.get(
-                &p.start.ty,
-                &lakelands_api::read::Get {
-                    key: key.clone(),
-                    with_meta: false,
-                    at: ReadAt::default(),
-                    params: p.start.params.clone(),
-                },
-            ) {
-                Ok(_) => self.get_one(&p.start.ty, key)?.into_iter().collect(),
-                Err(Error::NotFound { .. }) => Vec::new(),
-                Err(e) => return Err(e),
+            if self.start_found(p, key)? {
+                self.get_one(&p.start.ty, key)?.into_iter().collect()
+            } else {
+                Vec::new()
             }
         } else if let Some(mode) = &p.start.search {
-            let s = Search {
-                ty: p.start.ty.clone(),
-                mode: mode.clone(),
-                k: self.lake.limits.max_limit,
-                cursor: None,
-                filter: p.start.filter.clone(),
-                with_meta: false,
-                at: ReadAt::default(),
-            };
-            let keys: Vec<RecordKey> = self
-                .search(&s)?
-                .hits
-                .into_iter()
-                .map(|h| h.record.key)
-                .collect();
+            let keys = self.start_hits(p, mode)?;
             keys.iter()
                 .filter_map(|k| self.view.get(&p.start.ty, k).ok().flatten())
                 .collect()
         } else {
-            let f = p
-                .start
-                .filter
-                .as_ref()
-                .map(|c| condition(c, Place::Record, "start where"))
-                .transpose()?;
-            if let Some(e) = &f {
-                rights::check_probe(self.who, &start_decl, core_derive::reads(e).iter())?;
-            }
+            let f = self.record_filter(&start_decl, p.start.filter.as_ref(), "start where")?;
             self.records(&start_decl, f.as_ref())?
         };
+        let relations: Vec<RelationName> = p.steps.iter().map(|s| s.relation.clone()).collect();
         // A path.
         if let Some((to_ty, to_key)) = &p.to {
-            let relations: Vec<RelationName> = p.steps.iter().map(|s| s.relation.clone()).collect();
             let depth = p.steps.iter().map(|s| s.depth.max).max().unwrap_or(1);
             let mut nodes = Vec::new();
             let mut edges = Vec::new();
@@ -1757,7 +1698,6 @@ impl<'a> Reader<'a> {
         }
         // A subgraph.
         if p.project == Projection::Graph {
-            let relations: Vec<RelationName> = p.steps.iter().map(|s| s.relation.clone()).collect();
             let depth = p.steps.iter().map(|s| s.depth.max).max().unwrap_or(0);
             let walk = p.steps.first().map_or(Walk::Both, |s| s.walk);
             // Several starts merge into one walk: each record at the fewest
@@ -1810,7 +1750,6 @@ impl<'a> Reader<'a> {
         self.probe_rows(&paths)?;
         // Rows: one per match.
         let mut rows: Vec<BTreeMap<String, Value>> = Vec::new();
-        let mut truncated_any = false;
         for start in &starts {
             let from = (start.ty.clone(), start.key.clone());
             let keep = |i: usize, node: &lakelands_core::graph::Node| -> Result<bool> {
@@ -1822,7 +1761,6 @@ impl<'a> Reader<'a> {
                     .is_some_and(|r| self.holds(f, &r.fields, Some(&r.meta))))
             };
             let t = graph::traverse(&hidden, &from, &p.steps, max_depth, usize::MAX, keep)?;
-            truncated_any |= t.truncated;
             for binding in t.bindings {
                 let mut row = BTreeMap::new();
                 let mut chain = vec![from.clone()];
@@ -1833,7 +1771,6 @@ impl<'a> Reader<'a> {
                 rows.push(row);
             }
         }
-        let _ = truncated_any;
         if let Projection::Rows { fields } = &p.project
             && !fields.is_empty()
         {
@@ -1875,13 +1812,8 @@ impl<'a> Reader<'a> {
             .collect();
         keyed.sort_by(|a, b| Self::compare(&order, &a.0, &b.0));
         let offset = offset(p.cursor.as_ref(), p, &params)?;
-        let more = keyed.len() > offset + limit;
-        let rows = keyed
-            .into_iter()
-            .skip(offset)
-            .take(limit)
-            .map(|(_, r)| r)
-            .collect();
+        let (rows, more) =
+            measures::page(keyed.into_iter().map(|(_, r)| r).collect(), offset, limit);
         let next_cursor = more.then(|| {
             encode(&CursorState {
                 at: self.position,
@@ -1894,6 +1826,41 @@ impl<'a> Reader<'a> {
             })
         });
         Ok(QueryResult::Rows { rows, next_cursor })
+    }
+
+    /// Whether `get` answers the record a pattern's start names by key,
+    /// with the start's view parameters.
+    fn start_found(&self, p: &Pattern, key: &RecordKey) -> Result<bool> {
+        let get = Get {
+            key: key.clone(),
+            with_meta: false,
+            at: ReadAt::default(),
+            params: p.start.params.clone(),
+        };
+        match self.get(&p.start.ty, &get) {
+            Ok(_) => Ok(true),
+            Err(Error::NotFound { .. }) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The keys a pattern's start search finds, best first.
+    fn start_hits(&self, p: &Pattern, mode: &SearchMode) -> Result<Vec<RecordKey>> {
+        let s = Search {
+            ty: p.start.ty.clone(),
+            mode: mode.clone(),
+            k: self.lake.limits.max_limit,
+            cursor: None,
+            filter: p.start.filter.clone(),
+            with_meta: false,
+            at: ReadAt::default(),
+        };
+        Ok(self
+            .search(&s)?
+            .hits
+            .into_iter()
+            .map(|h| h.record.key)
+            .collect())
     }
 
     /// Refuse an order or a measure over a path of a pattern's rows whose
@@ -1993,15 +1960,14 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn bind(
-        &self,
-        row: &mut BTreeMap<String, Value>,
-        node: &lakelands_core::graph::Node,
-    ) -> Result<()> {
-        let decl = self.ontology.ty(&node.0)?;
-        if let Some(r) = self.get_one(&node.0, &node.1)?
-            && let Some(rec) = rights::visible(self.who, decl, &r, false)
-        {
+    /// The record a node names, as the principal may see it, if at all.
+    fn shown(&self, (ty, key): &graph::Node) -> Result<Option<Record>> {
+        let decl = self.ontology.ty(ty)?;
+        Ok((self.get_one(ty, key)?).and_then(|r| rights::visible(self.who, decl, &r, false)))
+    }
+
+    fn bind(&self, row: &mut BTreeMap<String, Value>, node: &graph::Node) -> Result<()> {
+        if let Some(rec) = self.shown(node)? {
             row.insert(format!("{}.key", node.0), Value::String(node.1.to_string()));
             for (f, v) in rec.fields {
                 row.insert(format!("{}.{f}", node.0), v);
@@ -2017,13 +1983,8 @@ impl<'a> Reader<'a> {
         truncated: bool,
     ) -> Result<QueryResult> {
         let mut records = Vec::new();
-        for (ty, key) in &nodes {
-            let decl = self.ontology.ty(ty)?;
-            if let Some(r) = self.get_one(ty, key)?
-                && let Some(rec) = rights::visible(self.who, decl, &r, false)
-            {
-                records.push(rec);
-            }
+        for node in &nodes {
+            records.extend(self.shown(node)?);
         }
         Ok(QueryResult::Graph {
             nodes: records,
@@ -2279,11 +2240,7 @@ impl EdgeSource for Visible<'_, '_> {
                 continue;
             }
             for rec in r.get_many(ty, &keys)? {
-                if !rec.retired
-                    && (r.who.grants.restricted || !rec.restricted)
-                    && r.valid_at
-                        .is_none_or(|t| valid_time::record_holds(decl, &rec.fields, t))
-                {
+                if r.live(decl, &rec) {
                     shown.insert((rec.ty, rec.key));
                 }
             }
