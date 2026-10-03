@@ -76,10 +76,7 @@ pub struct Imported {
 /// A refusal of the import as asked: the export or the target is not
 /// one it can make a lake from, and asking again changes nothing.
 fn precondition(message: String) -> Error {
-    Error::Refused {
-        field: None,
-        reason: lakelands_api::Refusal::Precondition { message },
-    }
+    crate::writes::refused(lakelands_api::Refusal::Precondition { message })
 }
 
 fn io(what: &str, path: &Path, e: std::io::Error) -> Error {
@@ -222,7 +219,6 @@ fn carry(
     digests: &[Digest],
     location: &Location,
 ) -> Result<()> {
-    let window = BATCH;
     let mut reached = Position::GENESIS;
     let stopped = |path: &Path, reached: Position, e: Error| {
         unavailable(format!(
@@ -252,10 +248,10 @@ fn carry(
                 ));
             }
         }
-        let mut batch = Vec::with_capacity(window);
+        let mut batch = Vec::with_capacity(BATCH);
         for event in events(path)? {
             batch.push(event?.0);
-            if batch.len() == window {
+            if batch.len() == BATCH {
                 engine
                     .import(lease, &batch)
                     .map_err(|e| stopped(path, reached, e))?;

@@ -35,14 +35,16 @@
 //! stays allowed.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use lakelands_api::engine::{After, ProjectionView, Scan};
 use lakelands_api::event::{Digest, Event, EventBody, Procedure};
 use lakelands_api::ontology::{
-    Authority, RelationDecl, Risk, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
+    Authority, FieldDecl, RelationDecl, Risk, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
 };
 use lakelands_api::principal::WriteContext;
 use lakelands_api::record::{Origin, StoredRecord};
+use lakelands_api::seam::VerbExecutor;
 use lakelands_api::write::{
     Declaration, Migration, MigrationReport, Misfit, ObjectSetDecl, Outcome, ProposalState,
     ProposedWrite, ValueTypeReport, ValueTypeUse, WriteOpts,
@@ -59,6 +61,7 @@ use crate::backed::Outputs;
 use crate::declare::{self, invalid_field};
 use crate::lake::{AGING_RULE_TYPE, Lake, SETTING_TYPE, Writer, every, find_proposal};
 use crate::log::{self, Draft};
+use crate::ontology::Ontology;
 use crate::record;
 
 /// How many events after an external verb's call a retry reads for the
@@ -115,7 +118,7 @@ fn one_per(c: lakelands_api::ontology::Cardinality) -> (bool, bool) {
 }
 
 /// A refusal of what a constraint does not allow, at `field` if one is named.
-fn constraint(field: Option<FieldName>, message: impl Into<String>) -> Error {
+pub(crate) fn constraint(field: Option<FieldName>, message: impl Into<String>) -> Error {
     Error::Refused {
         field,
         reason: Refusal::Constraint {
@@ -124,15 +127,18 @@ fn constraint(field: Option<FieldName>, message: impl Into<String>) -> Error {
     }
 }
 
+/// A refusal that names no field.
+pub(crate) fn refused(reason: Refusal) -> Error {
+    let field = None;
+    Error::Refused { field, reason }
+}
+
 /// Refuse as not granted unless `ok`.
 pub(crate) fn granted(ok: bool) -> Result<()> {
     if ok {
         return Ok(());
     }
-    Err(Error::Refused {
-        field: None,
-        reason: Refusal::NotGranted,
-    })
+    Err(refused(Refusal::NotGranted))
 }
 
 /// Refuse a write whose context is deeper than the lake's reactive
@@ -147,12 +153,18 @@ pub(crate) fn granted(ok: bool) -> Result<()> {
 pub fn check_context(lake: &Lake, context: &WriteContext) -> Result<()> {
     let max = lake.limits.max_reactive_depth;
     if context.depth > max {
-        return Err(Error::Refused {
-            field: None,
-            reason: Refusal::TooDeep { max },
-        });
+        return Err(refused(Refusal::TooDeep { max }));
     }
     Ok(())
+}
+
+/// The verb executor the host bound as `name`; a verb whose executor is
+/// not bound is refused.
+pub(crate) fn bound_executor<'a>(lake: &'a Lake, name: &str) -> Result<&'a Arc<dyn VerbExecutor>> {
+    let bound = lake.seams.executors.iter().find(|e| e.name() == name);
+    bound.ok_or_else(|| Error::Unbound {
+        seam: format!("the verb executor `{name}`"),
+    })
 }
 
 /// The write-side context of one call.
@@ -219,36 +231,20 @@ pub struct RecordPlan {
 }
 
 impl Call<'_> {
-    /// Refuse a verb whose executor the host has not bound.
-    fn check_executor(&self, executor: &str) -> Result<()> {
-        if self
-            .lake
-            .seams
-            .executors
-            .iter()
-            .any(|e| e.name() == executor)
-        {
-            return Ok(());
-        }
-        Err(Error::Unbound {
-            seam: format!("the verb executor `{executor}`"),
-        })
-    }
-
     fn draft(&self, now: Timestamp, origin: Origin, body: EventBody) -> Draft {
         Draft {
-            upstream: None,
-            known_at: now,
             writer: self.who.writer(),
             origin,
-            source: None,
-            seen_at: None,
-            procedure: None,
             context: self.context,
-            cause: None,
-            idempotency_key: None,
-            id: None,
-            body,
+            ..Draft::system(now, body)
+        }
+    }
+
+    /// Give a draft the id its idempotency key derives, and the key.
+    fn keyed(&self, d: &mut Draft, key: &Option<IdempotencyKey>) {
+        if let Some(k) = key {
+            d.id = Some(log::authored_id(&self.who.writer(), k));
+            d.idempotency_key = Some(k.clone());
         }
     }
 
@@ -402,12 +398,7 @@ fn own_outcome(events: &[Event]) -> Outcome {
     match &e.body {
         EventBody::RecordUpserted { version, .. }
         | EventBody::RecordIngested { version, .. }
-        | EventBody::RecordRetired { version, .. } => Outcome::Applied {
-            position: e.position,
-            version: Some(*version),
-            output: None,
-            set_off: Default::default(),
-        },
+        | EventBody::RecordRetired { version, .. } => applied(e.position, Some(*version)),
         EventBody::WriteProposed { proposal, why, .. } => Outcome::Proposed {
             position: e.position,
             proposal: proposal.clone(),
@@ -416,21 +407,26 @@ fn own_outcome(events: &[Event]) -> Outcome {
         EventBody::VerbCalled { .. } | EventBody::WriteAccepted { .. } if wrote => {
             own_outcome(&events[1..])
         }
-        _ => Outcome::Applied {
-            position: e.position,
-            version: None,
-            output: None,
-            set_off: Default::default(),
-        },
+        _ => applied(e.position, None),
+    }
+}
+
+/// A write applied at `position`, before what it set off is told.
+fn applied(position: Position, version: Option<Version>) -> Outcome {
+    Outcome::Applied {
+        position,
+        version,
+        output: None,
+        set_off: Default::default(),
     }
 }
 
 /// Check and normalise the values a patch carries against their fields.
 pub fn check_values(
-    lake_types: &crate::ontology::Ontology,
+    lake_types: &Ontology,
     decl: &TypeDecl,
     patch: &Patch,
-    fields: &[lakelands_api::ontology::FieldDecl],
+    fields: &[FieldDecl],
 ) -> Result<Patch> {
     let mut out = Patch::new();
     for (name, v) in patch {
@@ -630,25 +626,6 @@ pub(crate) fn position_after(w: &Writer, n: usize) -> Position {
     Position(first.0 + n as u64)
 }
 
-/// The record a retire of `before` makes, computed from its provisional
-/// event.
-pub(crate) fn retired(
-    w: &Writer,
-    view: &dyn ProjectionView,
-    before: &StoredRecord,
-    event: &Event,
-) -> Result<StoredRecord> {
-    let outputs = &mut Outputs {
-        view,
-        staged: None,
-        due: None,
-    };
-    Ok(
-        record::apply(&w.ontology, Some(before), event, &w.settings, outputs)?
-            .expect("a retire makes a record"),
-    )
-}
-
 /// Refuse a verb whose `requires` does not hold on `record`.
 fn requires(
     w: &Writer,
@@ -669,15 +646,12 @@ fn requires(
     if expr::holds(&e, &scope).unwrap_or(false) {
         return Ok(());
     }
-    Err(Error::Refused {
-        field: None,
-        reason: Refusal::Precondition {
-            message: format!(
-                "verb `{}` requires what `{}` `{key}` does not hold",
-                verb.name, verb.on
-            ),
-        },
-    })
+    Err(refused(Refusal::Precondition {
+        message: format!(
+            "verb `{}` requires what `{}` `{key}` does not hold",
+            verb.name, verb.on
+        ),
+    }))
 }
 
 /// The scope a verb's assignments see: the record's fields, and
@@ -714,44 +688,12 @@ impl Scope for VerbScope<'_> {
 }
 
 impl Call<'_> {
-    /// Decide one record write: authored (`upsert`, a verb) or from a source
-    /// (`ingest`). `n` drafts precede it in the append.
+    /// Decide one record write: authored (`upsert`, a verb, aging) or from
+    /// a source (`ingest`). `n` drafts precede it in the append. `stamp`
+    /// sets the envelope of the record event before the record it makes is
+    /// computed: aging writes as the system, with its rule as the procedure.
     #[allow(clippy::too_many_arguments)]
     pub fn plan_record(
-        &self,
-        w: &Writer,
-        view: &dyn ProjectionView,
-        pending: &Pending,
-        ty: &TypeName,
-        key: &RecordKey,
-        patch: &Patch,
-        door: Door,
-        expected: Option<Version>,
-        now: Timestamp,
-        n: usize,
-        who: &Principal,
-    ) -> Result<RecordPlan> {
-        self.plan_record_as(
-            w,
-            view,
-            pending,
-            ty,
-            key,
-            patch,
-            door,
-            expected,
-            now,
-            n,
-            who,
-            &|_| {},
-        )
-    }
-
-    /// [`Self::plan_record`], with `stamp` setting the envelope of the
-    /// record event before the record it makes is computed: aging writes
-    /// as the system, with its rule as the procedure.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn plan_record_as(
         &self,
         w: &Writer,
         view: &dyn ProjectionView,
@@ -914,6 +856,50 @@ impl Call<'_> {
         Ok(out)
     }
 
+    /// The drafts of a retirement: `d`, which retires `before` and lands
+    /// at `at`, then the triggers and object-set changes it causes, judged
+    /// on the record its provisional event makes.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn retiring(
+        &self,
+        w: &Writer,
+        view: &dyn ProjectionView,
+        pending: &mut Pending,
+        before: &StoredRecord,
+        d: Draft,
+        at: Position,
+        now: Timestamp,
+    ) -> Result<Vec<Draft>> {
+        let event = provisional(self.lake, at, &d);
+        let outputs = &mut Outputs {
+            view,
+            staged: None,
+            due: None,
+        };
+        let after = record::apply(&w.ontology, Some(before), &event, &w.settings, outputs)?
+            .expect("a retire makes a record");
+        let mut drafts = vec![d];
+        drafts.extend(self.reactions(w, view, pending, Some(before), &after, at, now)?);
+        Ok(drafts)
+    }
+
+    /// The drafts of a planned record write that lands at `at`: its own,
+    /// then the triggers and object-set changes it causes.
+    pub(crate) fn planned(
+        &self,
+        w: &Writer,
+        view: &dyn ProjectionView,
+        pending: &mut Pending,
+        plan: RecordPlan,
+        at: Position,
+        now: Timestamp,
+    ) -> Result<Vec<Draft>> {
+        let (before, after) = (plan.before.as_ref(), &plan.after);
+        let mut drafts = self.reactions(w, view, pending, before, after, at, now)?;
+        drafts.insert(0, plan.draft);
+        Ok(drafts)
+    }
+
     /// `upsert`.
     pub fn upsert(
         &self,
@@ -958,23 +944,12 @@ impl Call<'_> {
             now,
             0,
             self.who,
+            &|_| {},
         )?;
         check(&w, view.as_ref())?;
-        if let Some(k) = &opts.idempotency_key {
-            plan.draft.id = Some(log::authored_id(&self.who.writer(), k));
-            plan.draft.idempotency_key = Some(k.clone());
-        }
-        let cause = position_after(&w, 0);
-        let mut drafts = vec![plan.draft];
-        drafts.extend(self.reactions(
-            &w,
-            view.as_ref(),
-            &mut pending,
-            plan.before.as_ref(),
-            &plan.after,
-            cause,
-            now,
-        )?);
+        self.keyed(&mut plan.draft, &opts.idempotency_key);
+        let at = position_after(&w, 0);
+        let drafts = self.planned(&w, view.as_ref(), &mut pending, plan, at, now)?;
         drop(view);
         let events = self.lake.append(&mut w, drafts)?;
         Ok(outcome_of(&events))
@@ -1001,10 +976,7 @@ impl Call<'_> {
         check_context(self.lake, &self.context)?;
         let (lt, r) = link_relation(&self.lake.writer(), ty, relation)?;
         if r.authority != Authority::Authored {
-            return Err(Error::Refused {
-                field: None,
-                reason: Refusal::WrongDoor,
-            });
+            return Err(refused(Refusal::WrongDoor));
         }
         for name in [links::FROM, links::TO] {
             if fields.contains_key(name) {
@@ -1061,24 +1033,10 @@ impl Call<'_> {
                 version: Version(before.version.0 + 1),
             },
         );
-        if let Some(k) = &opts.idempotency_key {
-            d.id = Some(log::authored_id(&self.who.writer(), k));
-            d.idempotency_key = Some(k.clone());
-        }
-        let event = provisional(self.lake, position_after(&w, 0), &d);
-        let after = retired(&w, view.as_ref(), &before, &event)?;
+        self.keyed(&mut d, &opts.idempotency_key);
         let mut pending = Pending::default();
-        let cause = event.position;
-        let mut drafts = vec![d];
-        drafts.extend(self.reactions(
-            &w,
-            view.as_ref(),
-            &mut pending,
-            Some(&before),
-            &after,
-            cause,
-            now,
-        )?);
+        let at = position_after(&w, 0);
+        let drafts = self.retiring(&w, view.as_ref(), &mut pending, &before, d, at, now)?;
         drop(view);
         let events = self.lake.append(&mut w, drafts)?;
         Ok(outcome_of(&events))
@@ -1196,6 +1154,7 @@ impl Call<'_> {
                 now,
                 n + 1,
                 as_whom,
+                &|_| {},
             )?;
             plan.draft.cause = Some(called_at);
             let version = w.ontology.verbs.get(&verb.name).map_or(1, |e| e.version);
@@ -1239,7 +1198,7 @@ impl Call<'_> {
         }
         granted(self.verb_callable(&decl))?;
         if let VerbEffect::External { executor } = &decl.effect {
-            self.check_executor(executor)?;
+            bound_executor(self.lake, executor)?;
         }
         let payload = self.verb_payload(&w, &decl, &payload)?;
         let now = self.lake.clock(&mut w);
@@ -1291,10 +1250,7 @@ impl Call<'_> {
                 },
             )]
         };
-        if let Some(k) = &opts.idempotency_key {
-            drafts[0].id = Some(log::authored_id(&self.who.writer(), k));
-            drafts[0].idempotency_key = Some(k.clone());
-        }
+        self.keyed(&mut drafts[0], &opts.idempotency_key);
         drop(view);
         let events = self.lake.append(&mut w, drafts)?;
         let outcome = outcome_of(&events);
@@ -1321,7 +1277,7 @@ impl Call<'_> {
     /// key fields filled — so the proposal holds the one written form of
     /// every value (`docs/log-format.md` §1.3), exactly as an applied write
     /// would.
-    pub fn propose(&self, write: ProposedWrite, why: String) -> Result<Outcome> {
+    pub fn propose(&self, mut write: ProposedWrite, why: String) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
@@ -1338,7 +1294,7 @@ impl Call<'_> {
         if let ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } = &write {
             ordinary_door(ty)?;
         }
-        let write = match write {
+        match &mut write {
             ProposedWrite::Upsert {
                 ty,
                 key,
@@ -1349,32 +1305,27 @@ impl Call<'_> {
                     &w,
                     view.as_ref(),
                     &Pending::default(),
-                    &ty,
-                    &key,
-                    &patch,
+                    ty,
+                    key,
+                    patch,
                     Door::Authored,
                     opts.expected_version,
                     now,
                     1,
                     self.who,
+                    &|_| {},
                 )?;
-                let EventBody::RecordUpserted { patch, .. } = plan.draft.body else {
+                let EventBody::RecordUpserted { patch: checked, .. } = plan.draft.body else {
                     unreachable!("an authored record write is an upsert")
                 };
-                ProposedWrite::Upsert {
-                    ty,
-                    key,
-                    patch,
-                    opts,
-                }
+                *patch = checked;
             }
             ProposedWrite::Retire { ty, key, opts } => {
-                let decl = w.ontology.ty(&ty)?;
+                let decl = w.ontology.ty(ty)?;
                 rights::not_a_view(decl)?;
                 granted(rights::may_retire(self.who, decl))?;
-                let before = live_record(view.as_ref(), &ty, &key)?;
+                let before = live_record(view.as_ref(), ty, key)?;
                 cas(opts.expected_version, Some(&before))?;
-                ProposedWrite::Retire { ty, key, opts }
             }
             ProposedWrite::Call {
                 verb,
@@ -1382,16 +1333,16 @@ impl Call<'_> {
                 payload,
                 opts,
             } => {
-                let decl = w.ontology.verb(&verb)?.clone();
+                let decl = w.ontology.verb(verb)?.clone();
                 if scoped(&decl, key.as_ref(), opts.expected_version)?.is_some() {
                     rights::not_a_view(w.ontology.ty(&decl.on)?)?;
                 }
                 granted(self.verb_callable(&decl))?;
                 // A call that could not run when accepted is not proposed (013).
                 if let VerbEffect::External { executor } = &decl.effect {
-                    self.check_executor(executor)?;
+                    bound_executor(self.lake, executor)?;
                 }
-                let payload = self.verb_payload(&w, &decl, &payload)?;
+                *payload = self.verb_payload(&w, &decl, payload)?;
                 if matches!(decl.effect, VerbEffect::Write { .. }) {
                     self.run_verb(
                         &w,
@@ -1405,43 +1356,30 @@ impl Call<'_> {
                         1,
                         self.who,
                     )?;
-                } else if let Some(key) = &key {
+                } else if let Some(key) = key {
                     let record = live_record(view.as_ref(), &decl.on, key)?;
                     cas(opts.expected_version, Some(&record))?;
                     requires(&w, &decl, key, &record, now)?;
-                }
-                ProposedWrite::Call {
-                    verb,
-                    key,
-                    payload,
-                    opts,
                 }
             }
             // A change of the ontology is checked now as its door would
             // check it, and nothing changes until it is accepted; the
             // proposer needs no `schema` grant (013, extended).
             ProposedWrite::Declare { declarations } => {
-                self.check_bundle(&w.ontology, &declarations)?;
-                ProposedWrite::Declare { declarations }
+                self.check_bundle(&w.ontology, declarations)?;
             }
-            ProposedWrite::Migrate { migration, .. } => {
-                let report = self
-                    .preflight_plan(&w, view.as_ref(), &migration, None)?
+            ProposedWrite::Migrate { migration, report } => {
+                let found = self
+                    .preflight_plan(&w, view.as_ref(), migration, None)?
                     .report;
-                if !report.lossless {
-                    return Err(Error::Refused {
-                        field: None,
-                        reason: Refusal::Migration {
-                            report: Box::new(report),
-                        },
-                    });
+                if !found.lossless {
+                    return Err(refused(Refusal::Migration {
+                        report: Box::new(found),
+                    }));
                 }
-                ProposedWrite::Migrate {
-                    migration,
-                    report: Box::new(report),
-                }
+                **report = found;
             }
-        };
+        }
         let position = position_after(&w, 0);
         let id = key_opt.as_ref().map_or_else(
             || log::positional_id(&self.lake.id, position),
@@ -1456,10 +1394,7 @@ impl Call<'_> {
                 why,
             },
         );
-        if let Some(k) = key_opt {
-            d.id = Some(id);
-            d.idempotency_key = Some(k);
-        }
+        self.keyed(&mut d, &key_opt);
         drop(view);
         let events = self.lake.append(&mut w, vec![d])?;
         Ok(outcome_of(&events))
@@ -1473,10 +1408,7 @@ impl Call<'_> {
         let view = self.lake.engine.view(None)?;
         let p = find_proposal(view.as_ref(), proposal)?;
         if p.state != ProposalState::Pending {
-            return Err(Error::Refused {
-                field: None,
-                reason: Refusal::Decided,
-            });
+            return Err(refused(Refusal::Decided));
         }
         // A change of the ontology is the lake's `schema` grant's to make:
         // the accepter holds it as well as `review` (013, extended).
@@ -1527,6 +1459,7 @@ impl Call<'_> {
                     now,
                     1,
                     &proposer,
+                    &|_| {},
                 )?;
                 drafts.push(as_proposer(plan.draft));
                 drafts.extend(self.reactions(
@@ -1551,18 +1484,9 @@ impl Call<'_> {
                         version: Version(before.version.0 + 1),
                     },
                 ));
-                let event = provisional(self.lake, Position(accepted_at.0 + 1), &d);
-                let after = retired(&w, view.as_ref(), &before, &event)?;
-                drafts.push(d);
-                drafts.extend(self.reactions(
-                    &w,
-                    view.as_ref(),
-                    &mut pending,
-                    Some(&before),
-                    &after,
-                    event.position,
-                    now,
-                )?);
+                let at = Position(accepted_at.0 + 1);
+                let own = self.retiring(&w, view.as_ref(), &mut pending, &before, d, at, now)?;
+                drafts.extend(own);
             }
             ProposedWrite::Call {
                 verb,
@@ -1592,7 +1516,7 @@ impl Call<'_> {
                     )));
                 }
                 if let VerbEffect::External { executor } = &decl.effect {
-                    self.check_executor(executor)?;
+                    bound_executor(self.lake, executor)?;
                     external = Some(External {
                         executor: executor.clone(),
                         verb: verb.clone(),
@@ -1646,10 +1570,7 @@ impl Call<'_> {
         let view = self.lake.engine.view(None)?;
         let p = find_proposal(view.as_ref(), proposal)?;
         if p.state != ProposalState::Pending {
-            return Err(Error::Refused {
-                field: None,
-                reason: Refusal::Decided,
-            });
+            return Err(refused(Refusal::Decided));
         }
         let now = self.lake.clock(&mut w);
         let d = self.draft(
@@ -1762,23 +1683,15 @@ impl Call<'_> {
         let now = self.lake.clock(&mut w);
         let drafts = self.bundle_drafts(&w, declarations, now, 0)?;
         let events = self.lake.append(&mut w, drafts)?;
-        Ok(Outcome::Applied {
-            position: events.last().expect("the set is not empty").position,
-            version: None,
-            output: None,
-            set_off: Default::default(),
-        })
+        let last = events.last().expect("the set is not empty");
+        Ok(applied(last.position, None))
     }
 
     /// Check a set of declarations as `apply` checks it, against
     /// `ontology`, whoever applies it: each against the ontology with
     /// every other declaration of the set already in it, every problem
     /// collected into one refusal.
-    fn check_bundle(
-        &self,
-        ontology: &crate::ontology::Ontology,
-        declarations: &[Declaration],
-    ) -> Result<()> {
+    fn check_bundle(&self, ontology: &Ontology, declarations: &[Declaration]) -> Result<()> {
         if declarations.is_empty() {
             return Err(invalid("nothing to apply: the set holds no declaration"));
         }
@@ -1940,11 +1853,7 @@ impl Call<'_> {
     }
 
     /// `add_field`.
-    pub fn add_field(
-        &self,
-        ty: &TypeName,
-        field: lakelands_api::ontology::FieldDecl,
-    ) -> Result<Outcome> {
+    pub fn add_field(&self, ty: &TypeName, field: FieldDecl) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         granted(self.who.grants.schema)?;
         let mut t = self.lake.writer().ontology.ty(ty)?.clone();
@@ -2036,7 +1945,6 @@ impl Call<'_> {
             }
         }
         let mut probe = w.ontology.clone();
-        probe.types.remove(&m.to.name);
         probe.put(Declaration::Type(before.clone()), 0, None);
         declare::check_declaration(&probe, &Declaration::Type(m.to.clone()), false).or_else(
             |e| match &e {
@@ -2051,7 +1959,6 @@ impl Call<'_> {
         // shape the migration leaves: `declare` must still take each such
         // view against it, or the view would refuse every read after.
         let mut after = probe.clone();
-        after.types.remove(&m.to.name);
         after.put(Declaration::Type(m.to.clone()), 0, None);
         // The refusal of a migration that takes away a field `reader` reads:
         // one the type, or a link type of it, has before it and not after.
@@ -2115,11 +2022,7 @@ impl Call<'_> {
         // And the type it migrates to reads only fields it has: `declare`'s
         // check above ends at the reshaping, before it comes to the reads.
         declare::reads_its_type(&after, &Declaration::Type(m.to.clone()))?;
-        let records: Vec<StoredRecord> = view
-            .scan(&before.name, &every(true))?
-            .into_iter()
-            .filter(|r| !r.is_ended())
-            .collect();
+        let records = crate::rekey::stored(view, &before.name)?;
         let mut report = shape::preflight(
             &before,
             m,
@@ -2161,8 +2064,6 @@ impl Call<'_> {
                 }
             }
         }
-        let mut after = w.ontology.clone();
-        after.put(Declaration::Type(m.to.clone()), 0, None);
         let plan = crate::rekey::plan(&after, view, &m.to.name, converted)?;
         // A relation carried by link records whose cardinality narrows
         // keeps its links only if none would break the narrower rule.
@@ -2216,11 +2117,7 @@ impl Call<'_> {
                 to: new,
                 renames: vec![],
             };
-            let links: Vec<StoredRecord> = view
-                .scan(&old.name, &every(true))?
-                .into_iter()
-                .filter(|r| !r.is_ended())
-                .collect();
+            let links = crate::rekey::stored(view, &old.name)?;
             let lr = shape::preflight(
                 &old,
                 &lm,
@@ -2309,12 +2206,9 @@ impl Call<'_> {
             members,
         } = plan;
         if !report.lossless {
-            return Err(Error::Refused {
-                field: None,
-                reason: Refusal::Migration {
-                    report: Box::new(report),
-                },
-            });
+            return Err(refused(Refusal::Migration {
+                report: Box::new(report),
+            }));
         }
         // Past the lake's ceiling, naming the set whose change passed it.
         let max = self.lake.limits.max_set_changes;
@@ -2427,7 +2321,6 @@ impl Call<'_> {
             current.version + 1,
             None,
         );
-        let all = every(true);
         let mut report = ValueTypeReport {
             value_type: to.name.clone(),
             from_version: current.version,
@@ -2440,7 +2333,7 @@ impl Call<'_> {
         };
         for (name, entry) in &probe.types {
             let decl = &entry.decl;
-            let uses: Vec<&lakelands_api::ontology::FieldDecl> = decl
+            let uses: Vec<&FieldDecl> = decl
                 .fields
                 .iter()
                 .filter(|f| f.ty.value_type.as_ref() == Some(&to.name))
@@ -2448,11 +2341,7 @@ impl Call<'_> {
             if uses.is_empty() || decl.view.is_some() {
                 continue;
             }
-            let records: Vec<StoredRecord> = view
-                .scan(name, &all)?
-                .into_iter()
-                .filter(|r| !r.is_ended())
-                .collect();
+            let records = crate::rekey::stored(view, name)?;
             report.records_scanned += records.len() as u64;
             for f in uses {
                 let mut used = ValueTypeUse {
@@ -2550,11 +2439,7 @@ fn risk_word(r: Risk) -> &'static str {
 /// that differ from those in force: a new relation's, or one whose fields
 /// changed. Appended with `t`'s declaration, in the same append
 /// (`docs/log-format.md` §2.3).
-fn link_type_drafts(
-    o: &crate::ontology::Ontology,
-    t: &TypeDecl,
-    now: Timestamp,
-) -> Result<Vec<Draft>> {
+fn link_type_drafts(o: &Ontology, t: &TypeDecl, now: Timestamp) -> Result<Vec<Draft>> {
     let mut out = Vec::new();
     for lt in links::link_types_of(t) {
         if o.types.get(&lt.name).map(|e| &e.decl) == Some(&lt) {
@@ -2576,7 +2461,7 @@ fn link_type_drafts(
 
 /// The link types in force whose derivation from `to` differs: each with
 /// the declaration in force and the one `to` calls for.
-fn changed_link_types(o: &crate::ontology::Ontology, to: &TypeDecl) -> Vec<(TypeDecl, TypeDecl)> {
+fn changed_link_types(o: &Ontology, to: &TypeDecl) -> Vec<(TypeDecl, TypeDecl)> {
     links::link_types_of(to)
         .into_iter()
         .filter_map(|new| {
@@ -2589,10 +2474,7 @@ fn changed_link_types(o: &crate::ontology::Ontology, to: &TypeDecl) -> Vec<(Type
 /// Refuse a link type's records at a door other than the link doors.
 fn ordinary_door(ty: &TypeName) -> Result<()> {
     if links::is_link_type(ty) {
-        return Err(Error::Refused {
-            field: None,
-            reason: Refusal::WrongDoor,
-        });
+        return Err(refused(Refusal::WrongDoor));
     }
     Ok(())
 }

@@ -121,22 +121,14 @@ pub fn window(
             now,
             drafts.len(),
             who,
+            &|_| {},
         )?;
         plan.draft.id = Some(id.clone());
         plan.draft.source = Some(source.clone());
         plan.draft.seen_at = r.seen_at;
         plan.draft.upstream = r.upstream.clone();
-        let cause = crate::writes::position_after(&w, drafts.len());
-        drafts.push(plan.draft);
-        drafts.extend(call.reactions(
-            &w,
-            view.as_ref(),
-            &mut pending,
-            plan.before.as_ref(),
-            &plan.after,
-            cause,
-            now,
-        )?);
+        let at = crate::writes::position_after(&w, drafts.len());
+        drafts.extend(call.planned(&w, view.as_ref(), &mut pending, plan, at, now)?);
         seen.insert(id);
         committed += 1;
     }

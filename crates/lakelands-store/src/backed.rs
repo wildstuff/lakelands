@@ -323,34 +323,24 @@ fn put(
 ) -> bool {
     let answer = read_output(ontology, decl, field, computer.name(), output);
     let old = metas.get(&field.name);
-    let same = match &answer {
-        Ok(v) => {
-            fields.get(&field.name) == Some(v)
-                && old.is_some_and(|m| m.error.is_none() && computer.same_version(m))
-        }
-        Err(why) => {
-            !fields.contains_key(&field.name)
-                && old.is_some_and(|m| {
-                    m.error.as_deref() == Some(why.as_str()) && computer.same_version(m)
-                })
-        }
-    };
+    // The field holds the value and no error, or no value and this error.
+    let (value, error) = (answer.as_ref().ok(), answer.as_ref().err());
+    let same = fields.get(&field.name) == value
+        && old.is_some_and(|m| m.error.as_ref() == error && computer.same_version(m));
     if same {
         return false;
     }
-    match answer {
+    let error = match answer {
         Ok(v) => {
             fields.insert(field.name.clone(), v);
-            metas.insert(field.name.clone(), meta(event, computer.version(), None));
+            None
         }
         Err(why) => {
             fields.remove(&field.name);
-            metas.insert(
-                field.name.clone(),
-                meta(event, computer.version(), Some(why)),
-            );
+            Some(why)
         }
-    }
+    };
+    metas.insert(field.name.clone(), meta(event, computer.version(), error));
     true
 }
 
