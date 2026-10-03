@@ -13,16 +13,16 @@
 use std::sync::Arc;
 
 use lakelands_api::event::EventBody;
-use lakelands_api::seam::FeedFilter;
+use lakelands_api::ontology::{FieldType, StorageKind};
 use lakelands_api::write::{
-    Declaration, Migration, ProposalFilter, ProposalKind, ProposalState, ProposedWrite,
+    Declaration, ProposalFilter, ProposalKind, ProposalState, ProposedWrite,
 };
-use lakelands_api::{LakeStore, Outcome, Position, ProposalId, ReadAt, Refusal, TypeName};
+use lakelands_api::{LakeStore, Outcome, ProposalId, Refusal, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, doors, field_writer, head_unmoved, owner, reason, reviewer, upsert,
+    Lake, Must, doors, events_after, field_writer, head_unmoved, migration, reason, reviewer,
 };
 
 check!(
@@ -82,18 +82,27 @@ async fn propose_ticket(store: &dyn LakeStore) -> Result<ProposalId, Failure> {
 }
 
 async fn declared(store: &dyn LakeStore, ty: &str) -> Result<bool, Failure> {
-    let lake = doors(store)
-        .describe(&owner(store), ReadAt::default())
-        .await
-        .must("describing the lake")?
-        .data;
+    let lake = Lake::of(store).describe().await?;
     Ok(lake.types.iter().any(|t| t.name.as_str() == ty))
+}
+
+/// Whether the reviewer (holding `schema` when asked) lists the proposal
+/// `id` among the pending ones, asked by state.
+async fn pending(store: &dyn LakeStore, schema: bool, id: &ProposalId) -> Result<bool, Failure> {
+    let state = ProposalFilter {
+        state: Some(ProposalState::Pending),
+        ..ProposalFilter::default()
+    };
+    let who = reviewer(store, schema);
+    let listed = doors(store).proposals(&who, state).await;
+    let listed = listed.must("listing the pending proposals")?.data;
+    Ok(listed.iter().any(|p| p.id == *id))
 }
 
 async fn a_proposed_declaration_takes_effect_only_when_accepted(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let cat = doors(store.as_ref());
+    let l = Lake::of(store.as_ref());
     let who = agent(store.as_ref());
     let id = propose_ticket(store.as_ref()).await?;
     ensure!(
@@ -101,7 +110,8 @@ async fn a_proposed_declaration_takes_effect_only_when_accepted(
         "a proposed type must not be declared before it is accepted"
     );
     let before = store.head().await.must("reading the head")?;
-    let accepted = cat
+    let accepted = l
+        .cat
         .accept(&reviewer(store.as_ref(), true), &id)
         .await
         .must("a reviewer with review and schema accepting the declaration")?;
@@ -110,12 +120,7 @@ async fn a_proposed_declaration_takes_effect_only_when_accepted(
         declared(store.as_ref(), "ticket").await?,
         "an accepted type must be declared"
     );
-    let events = store
-        .feed()
-        .poll(Position(before.0 + 1), &FeedFilter::default(), 100)
-        .await
-        .must("reading the log")?
-        .events;
+    let events = events_after(store.as_ref(), before).await?;
     let acceptance = events
         .iter()
         .find(|e| matches!(e.body, EventBody::WriteAccepted { .. }))
@@ -134,14 +139,7 @@ async fn a_proposed_declaration_takes_effect_only_when_accepted(
             .map(|e| (e.position, e.writer.clone(), e.cause))
             .collect::<Vec<_>>()
     );
-    upsert(
-        cat.as_ref(),
-        &owner(store.as_ref()),
-        "ticket",
-        "t1",
-        json!({"title": "first"}),
-    )
-    .await?;
+    l.upsert("ticket", "t1", json!({"title": "first"})).await?;
     Ok(())
 }
 
@@ -161,19 +159,8 @@ async fn accepting_a_schema_proposal_needs_the_schema_grant(
          was refused as {refused:?}"
     );
     head_unmoved(store.as_ref(), before, "a refused accept").await?;
-    let pending = cat
-        .proposals(
-            &reviewer(store.as_ref(), false),
-            ProposalFilter {
-                state: Some(ProposalState::Pending),
-                ..ProposalFilter::default()
-            },
-        )
-        .await
-        .must("listing the pending proposals")?
-        .data;
     ensure!(
-        pending.iter().any(|p| p.id == id) && !declared(store.as_ref(), "ticket").await?,
+        pending(store.as_ref(), false, &id).await? && !declared(store.as_ref(), "ticket").await?,
         "after the refused accept the proposal must stay pending and nothing be declared"
     );
     Ok(())
@@ -183,31 +170,24 @@ async fn a_migration_proposal_carries_its_report_and_is_preflighted_again_at_acc
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    let Lake { cat, own } = &l;
+    let cat = &l.cat;
     let memo: Declaration = serde_json::from_value(json!({
         "declare": "type", "name": "memo",
         "fields": [{"name": "title", "type": {"kind": "text"}},
                    {"name": "pages", "type": {"kind": "text"}}]
     }))
     .expect("a declaration");
-    cat.declare(own, memo.clone())
-        .await
-        .must("declaring `memo`")?;
+    l.declare_as(memo.clone(), "declaring `memo`").await?;
     l.upsert("memo", "a", json!({"pages": "3"})).await?;
     let Declaration::Type(mut to) = memo else {
         unreachable!("a type")
     };
     for f in &mut to.fields {
         if f.name.as_str() == "pages" {
-            f.ty = lakelands_api::ontology::FieldType::kind(
-                lakelands_api::ontology::StorageKind::Number,
-            );
+            f.ty = FieldType::kind(StorageKind::Number);
         }
     }
-    let retype = Migration {
-        to,
-        renames: vec![],
-    };
+    let retype = migration(to);
     let id = proposed(
         &cat.propose(
             &agent(store.as_ref()),
@@ -258,29 +238,15 @@ async fn a_migration_proposal_carries_its_report_and_is_preflighted_again_at_acc
          refused as {refused:?}"
     );
     head_unmoved(store.as_ref(), before, "a refused migration accept").await?;
-    let still = cat
-        .proposals(
-            &reviewer(store.as_ref(), true),
-            ProposalFilter {
-                state: Some(ProposalState::Pending),
-                ..ProposalFilter::default()
-            },
-        )
-        .await
-        .must("listing the pending proposals")?
-        .data;
-    let pages = cat
-        .describe_type(own, &TypeName::from("memo"), ReadAt::default())
-        .await
-        .must("describing `memo`")?
-        .data
+    let pages = l
+        .describe_type("memo")
+        .await?
         .fields
         .into_iter()
         .find(|f| f.name.as_str() == "pages")
         .map(|f| f.ty.kind);
     ensure!(
-        still.iter().any(|p| p.id == id)
-            && pages == Some(lakelands_api::ontology::StorageKind::Text),
+        pending(store.as_ref(), true, &id).await? && pages == Some(StorageKind::Text),
         "after the refused accept the proposal must stay pending and `pages` stay text; it is \
          {pages:?}"
     );
