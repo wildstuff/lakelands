@@ -30,8 +30,10 @@ importing the shape of the platform the organs come from.
 - **Budgets.** `cfg(feature)` sites ≤ 20 (features are one per engine);
   store facade + engine traits ≤ 110 methods; the core crates' product
   code ≤ 36k lines and their specification (the conformance suite and
-  unit tests, which live in `tests.rs` files, never inline) ≤ 40k, each
-  ratcheting down only.
+  unit tests, which live in `tests.rs` files, never inline) ≤ 42k. Each
+  goes down by itself and is raised only by the rule in
+  `docs/budgets.md`: a decisive reason, cutting first, a measured size,
+  and a recorded row. The gates refuse a raise without its row.
 - **The conformance suite is the specification.** A behaviour claim goes
   into the suite, not beside one engine; it runs on every engine in CI.
 - **Licence.** `cargo deny` on every PR; no copyleft-in-a-library.
