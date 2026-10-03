@@ -17,8 +17,8 @@ use lakelands_api::{Catalog, Cursor, LakeStore, Position, Principal, Refusal, Va
 use serde_json::json;
 
 use crate::conformance::fixture::{
-    Lake, Must, doors, field, order, owner, patch, pattern, reads_all, reason, reference, restrict,
-    searchable, step, type_decl,
+    Lake, Must, doors, field, invalid_naming, order, owner, patch, pattern, reads_all, reason,
+    reference, restrict, searchable, step, type_decl,
 };
 use crate::conformance::{Failure, Given};
 
@@ -44,6 +44,13 @@ check!(
     /// Past the cap, components are refused, not cut.
     GRAPH_TOO_LARGE = components_past_the_lakes_max_graph_nodes_are_refused_too_large,
     "018 and the location's limits: `components` whose records, over all components, would number more than `max_graph_nodes` are refused as too_large naming the ceiling, and nothing partial is answered",
+    given
+);
+
+check!(
+    /// A measure's page may be as large as its answer.
+    MEASURE_IN_ONE_PAGE = a_measure_is_read_whole_in_one_page_up_to_max_graph_nodes,
+    "026, extended, and the location's limits: a measure's `limit` may go up to the lake's `max_graph_nodes` where that is above `max_limit`, so one page answers the rows its small pages answer in turn, with no cursor; above that bound, and above `max_limit` for a `rows` projection, a `limit` is refused as invalid naming the bound",
     given
 );
 
@@ -473,6 +480,67 @@ async fn a_measure_refuses_depth_where_to_order_by_and_one_way_components(
             matches!(reason(&err), Some(Refusal::Invalid { .. })),
             "a measure with {what} must be refused as invalid; it failed with {err:?}"
         );
+    }
+    Ok(())
+}
+
+async fn a_measure_is_read_whole_in_one_page_up_to_max_graph_nodes(
+    store: Arc<dyn LakeStore>,
+    given: Given,
+) -> Result<(), Failure> {
+    lake(store.as_ref()).await?;
+    // Pages of two, and room for the eight records the components reach.
+    let limits = Limits {
+        default_limit: 2,
+        max_limit: 2,
+        max_graph_nodes: 8,
+        ..crate::conformance::fixture::limits()
+    };
+    let store = (given.relimit)(store, Seams::default(), limits)
+        .await
+        .map_err(|e| {
+            Failure::new(format!(
+                "opening the lake again with max_limit 2 failed: {e}"
+            ))
+        })?;
+    let (cat, own) = (doors(store.as_ref()), owner(store.as_ref()));
+    let paged = |project: &Projection, limit, cursor| Pattern {
+        limit: Some(limit),
+        cursor,
+        ..measure("invoice", both(), project.clone())
+    };
+    for project in [Projection::Components, Projection::Degree] {
+        let one = paged(&project, 8, None);
+        let (whole, next) = rows(cat.as_ref(), &own, one, "a measure in one page of 8").await?;
+        let (mut turns, mut cursor) = (Vec::new(), None);
+        loop {
+            let two = paged(&project, 2, cursor);
+            let (page, next) = rows(cat.as_ref(), &own, two, "a measure in pages of 2").await?;
+            turns.extend(page);
+            match next {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        ensure!(
+            next.is_none() && whole.len() > 2 && whole == turns,
+            "under `max_limit` 2 and `max_graph_nodes` 8, {project:?} with `limit` 8 must answer \
+             in one page, without a cursor, the rows its pages of 2 answer in turn; it answered \
+             {whole:?} (cursor: {}), where the pages answered {turns:?}",
+            next.is_some()
+        );
+    }
+    let rows_of_three = Pattern {
+        limit: Some(3),
+        ..one("invoice", "billed_to", Walk::Out, Projection::default())
+    };
+    for (p, max) in [
+        (paged(&Projection::Components, 9, None), 8),
+        (rows_of_three, 2),
+    ] {
+        let what = format!("{:?} with `limit` {:?}", p.project, p.limit);
+        let names = format!("between 1 and {max}");
+        invalid_naming(&what, cat.query(&own, p).await, &[&names])?;
     }
     Ok(())
 }

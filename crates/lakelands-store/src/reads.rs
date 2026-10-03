@@ -914,13 +914,18 @@ impl<'a> Reader<'a> {
         a.1.cmp(&b.1)
     }
 
-    fn limit(&self, asked: Option<u32>) -> Result<usize> {
-        let l = asked.unwrap_or(self.lake.limits.default_limit);
-        if l == 0 || l > self.lake.limits.max_limit {
-            return Err(invalid(format!(
-                "a limit is between 1 and {}",
-                self.lake.limits.max_limit
-            )));
+    /// The page a read asks for, at most `max` rows: the lake's
+    /// `max_limit`, or for a whole-graph measure, which is computed whole
+    /// for every page, its `max_graph_nodes` where that is larger (026).
+    fn limit(&self, asked: Option<u32>, measure: bool) -> Result<usize> {
+        let limits = &self.lake.limits;
+        let max = match measure {
+            true => limits.max_limit.max(limits.max_graph_nodes),
+            false => limits.max_limit,
+        };
+        let l = asked.unwrap_or(limits.default_limit);
+        if l == 0 || l > max {
+            return Err(invalid(format!("a limit is between 1 and {max}")));
         }
         Ok(l as usize)
     }
@@ -997,7 +1002,7 @@ impl<'a> Reader<'a> {
             }
             return self.aggregated(&decl, filter.as_ref(), a);
         }
-        let limit = self.limit(find.limit)?;
+        let limit = self.limit(find.limit, false)?;
         let find_read = read_of((&find.filter, &find.order_by, find.at.valid_at));
         let after = match &find.cursor {
             Some(c) => {
@@ -1265,7 +1270,7 @@ impl<'a> Reader<'a> {
 
     /// `proposals`: every proposal for a reviewer, one's own otherwise.
     pub fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
-        let limit = self.limit(filter.limit)?;
+        let limit = self.limit(filter.limit, false)?;
         let offset = match &filter.cursor {
             Some(c) => resume(c, "proposals", None, &Params::new())?.offset as usize,
             None => 0,
@@ -1618,7 +1623,7 @@ impl<'a> Reader<'a> {
         let p = &mut p;
         let start_decl = self.visible_type(&p.start.ty)?.clone();
         let params = self.bind_params(&start_decl, &p.start.params)?;
-        let limit = self.limit(p.limit)?;
+        let limit = self.limit(p.limit, measures::is_measure(&p.project))?;
         let max_depth = self.lake.limits.max_depth;
         if measures::is_measure(&p.project) {
             measures::check(p)?;

@@ -493,6 +493,7 @@ belongs in the suite, not beside one engine:
 - `a_measure_reads_the_graph_at_the_position_it_is_asked_at` — 009 and 026: a measure `as_of` an earlier position counts the links live there, not a link written later
 - `components_past_the_lakes_max_graph_nodes_are_refused_too_large` — 018 and the location's limits: `components` whose records, over all components, would number more than `max_graph_nodes` are refused as too_large naming the ceiling, and nothing partial is answered
 - `a_measure_refuses_depth_where_to_order_by_and_one_way_components` — 018: a measure refuses a step `depth` or `where`, `to`, `order_by`, and a `components` step that does not walk `both`, each as invalid, rather than answer less than it seems to
+- `a_measure_is_read_whole_in_one_page_up_to_max_graph_nodes` — 026, extended, and the location's limits: a measure's `limit` may go up to the lake's `max_graph_nodes` where that is above `max_limit`, so one page answers the rows its small pages answer in turn, with no cursor; above that bound, and above `max_limit` for a `rows` projection, a `limit` is refused as invalid naming the bound
 
 **vector index**
 

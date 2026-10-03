@@ -299,6 +299,13 @@ A host that already has a store of its own moves in four steps.
   it the declaration is refused `too_large`. The host raises the limit
   for a quiet moment, or widens the filter in steps; `docs/seams.md`,
   "Declaring a set over a large type", has the costs.
+- **A whole-graph measure is read in one page.** `degree` and
+  `components` are computed whole for every page read, so a walk through
+  small pages computes the measure once per page. A host that wants the
+  whole answer, or its own first *n* rows, asks for it in one page: a
+  measure's `limit` may go up to the lake's `max_graph_nodes` (100 000
+  unless the location sets it), where every other read stops at
+  `max_limit`. See `docs/decisions/026-the-store-walks-the-graph.md`.
 - **Every answer carries its position.** A host that records what an
   agent saw records the position, and reads `as_of` it later. See
   `docs/decisions/009-every-response-carries-its-position.md`.

@@ -407,9 +407,16 @@ impl MockCatalog {
         Ok((at, State::fold(&log.events[..=at.0 as usize])))
     }
 
-    fn limit(&self, asked: Option<u32>) -> usize {
+    /// The page a read asks for; a measure's may be as large as the
+    /// lake's `max_graph_nodes`, as the store's (026).
+    fn limit(&self, asked: Option<u32>, measure: bool) -> usize {
         let l = &self.shared.limits;
-        asked.unwrap_or(l.default_limit).clamp(1, l.max_limit) as usize
+        let max = if measure {
+            l.max_limit.max(l.max_graph_nodes)
+        } else {
+            l.max_limit
+        };
+        asked.unwrap_or(l.default_limit).clamp(1, max) as usize
     }
 
     fn commit(&self, log: &mut Log, batch: Batch) {
@@ -2351,7 +2358,7 @@ impl Catalog for MockCatalog {
             rows,
             (position, "find", Some(ty), &of),
             offset + skip,
-            self.limit(find.limit),
+            self.limit(find.limit, false),
         );
         Ok(Reply {
             position,
@@ -2690,7 +2697,7 @@ impl Catalog for MockCatalog {
                 rows,
                 (position, "query", Some(&pattern.start.ty), &of),
                 offset,
-                self.limit(pattern.limit),
+                self.limit(pattern.limit, true),
             );
             return Ok(Reply {
                 position,
@@ -2848,7 +2855,7 @@ impl Catalog for MockCatalog {
             rows,
             (position, "query", Some(&pattern.start.ty), &of),
             offset,
-            self.limit(pattern.limit),
+            self.limit(pattern.limit, false),
         );
         Ok(Reply {
             position,
@@ -3271,7 +3278,7 @@ impl Catalog for MockCatalog {
             rows,
             (position, "proposals", None, ""),
             offset,
-            self.limit(filter.limit),
+            self.limit(filter.limit, false),
         );
         Ok(Reply {
             position,
