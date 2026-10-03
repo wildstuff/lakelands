@@ -157,7 +157,8 @@ macro_rules! door_checks {
             a_trigger_watches_a_link_type_and_not_a_reference_relations,
             degree_and_components_answer_the_graph_in_one_order,
             a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_mode,
-            a_search_limited_to_named_fields_matches_and_probes_only_those);
+            a_search_limited_to_named_fields_matches_and_probes_only_those,
+            a_hybrid_search_fuses_its_text_and_vector_ranks);
     };
     (@each $at:ident, $new:expr, $block_on:path;
         $($(#[$mark:ident])? $name:ident),* $(,)?) => {
@@ -5618,4 +5619,93 @@ pub async fn a_search_limited_to_named_fields_matches_and_probes_only_those(
             ),
         }
     }
+}
+
+/// A hybrid search with a vector fuses its lexical and its vector ranking
+/// by reciprocal rank, the lexical first, ties by key, and says `hybrid`:
+/// `b` alone holds the word and is the vector's third, so it ranks first
+/// at 1/60 + 1/62, above `a` (the vector's first, 1/60) and `c` (1/61).
+pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let doc = TypeDecl {
+        annotations: Default::default(),
+        name: "doc".into(),
+        key: Vec::new(),
+        fields: vec![
+            FieldDecl {
+                searchable: true,
+                ..text("title")
+            },
+            FieldDecl {
+                ty: FieldType {
+                    dimensions: Some(2),
+                    ..FieldType::kind(StorageKind::Vector)
+                },
+                ..text("v")
+            },
+        ],
+        relations: Vec::new(),
+        view: None,
+        valid_from: None,
+        valid_to: None,
+        field_meta: true,
+        language: None,
+        description: None,
+        label: None,
+    };
+    f.catalog
+        .declare(owner, Declaration::Type(doc))
+        .await
+        .expect("the owner declares `doc`");
+    for (k, title, v) in [
+        ("a", "quay", [1.0, 0.0]),
+        ("b", "harbour", [0.5, 0.5]),
+        ("c", "quay", [0.8, 0.2]),
+    ] {
+        let fields = [("title", json!(title)), ("v", json!(v))];
+        f.catalog
+            .upsert(
+                owner,
+                &ty("doc"),
+                &key(k),
+                patch(&fields),
+                WriteOpts::default(),
+            )
+            .await
+            .expect("a doc is written");
+    }
+    let search = Search {
+        ty: ty("doc"),
+        mode: SearchMode::Hybrid {
+            text: "harbour".into(),
+            field: "v".into(),
+            vector: Some(vec![1.0, 0.0]),
+            fields: None,
+        },
+        k: 5,
+        cursor: None,
+        filter: None,
+        with_meta: false,
+        at: ReadAt::default(),
+    };
+    let got = f
+        .catalog
+        .search(owner, search)
+        .await
+        .expect("the owner's hybrid search")
+        .data;
+    let scored: Vec<(&str, f64)> = (got.hits.iter())
+        .map(|h| (h.record.key.as_str(), h.score))
+        .collect();
+    let want = [
+        ("b", 1.0 / 60.0 + 1.0 / 62.0),
+        ("a", 1.0 / 60.0),
+        ("c", 1.0 / 61.0),
+    ];
+    assert_eq!(
+        (scored.as_slice(), got.ranked_by.as_str()),
+        (want.as_slice(), "hybrid"),
+        "a hybrid search fuses both rankings by reciprocal rank"
+    );
 }
