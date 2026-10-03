@@ -7,6 +7,7 @@
 //! rows its views hand the store: the whole type crossing the seam for one
 //! page is what the tests refuse.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -91,6 +92,9 @@ impl ProjectionView for CountingView<'_> {
     }
     fn is_member(&self, set: &str, ty: &TypeName, key: &RecordKey) -> Result<bool> {
         self.inner.is_member(set, ty, key)
+    }
+    fn members(&self, set: &str, ty: &TypeName) -> Result<BTreeSet<RecordKey>> {
+        self.inner.members(set, ty)
     }
     fn applied(&self, id: &EventId) -> Result<Option<Position>> {
         self.inner.applied(id)

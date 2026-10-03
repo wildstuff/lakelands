@@ -689,6 +689,23 @@ impl ProjectionView for PgView<'_> {
         })
     }
 
+    fn members(&self, set: &str, ty: &TypeName) -> Result<BTreeSet<RecordKey>> {
+        self.single(BTreeSet::new(), |r| {
+            let rows = r.db.query(
+                &format!(
+                    "SELECT key FROM {} WHERE object_set = $1 AND ty = $2 AND state AND {}",
+                    r.names.t("members"),
+                    holds_at(3)
+                ),
+                &[&set, &ty.as_str(), &r.at],
+            )?;
+            Ok(rows
+                .iter()
+                .map(|row| RecordKey::from(row.get::<_, String>(0)))
+                .collect())
+        })
+    }
+
     fn applied(&self, id: &EventId) -> Result<Option<Position>> {
         self.single(None, |r| {
             Ok(r.db

@@ -733,7 +733,7 @@ belongs in the suite, not beside one engine:
 - `nearest_ranks_by_cosine_with_ties_by_key` — seams §VectorIndex: nearest answers the exact top k by the cosine of the angle, best first, equal scores by key
 - `a_zero_vector_scores_zero_and_a_wrong_length_is_invalid` — seams §VectorIndex: a vector of zeros scores 0 against everything, and a query whose length differs from a stored vector's is refused as invalid
 - `put_replaces_a_vector_and_remove_forgets_it` — seams §VectorIndex: put replaces a record's vector for the field, remove forgets it, forgetting one that is absent does nothing, and count counts
-- `declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position` — seams §ProjectionView: declarations, membership, recorded outputs and applied ids are kept states too, read at a view's own position
+- `declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position` — seams §ProjectionView: declarations, membership (a record's, and a set's members of a type), recorded outputs and applied ids are kept states too, read at a view's own position
 - `a_later_output_for_the_same_call_replaces_the_earlier_from_its_position` — 022, extended, and seams §ProjectionView: the log may hold two outputs for one seam and input (a failure, then the answer a redeclaration asked for); the later one holds from its position, the earlier one before it
 - `the_first_applied_position_is_kept` — seams §ProjectionStore: marking an id applied twice keeps the first position, so a redelivery is recognised where the event first took effect
 - `proposals_filter_by_state_and_type_newest_first` — seams §ProjectionView: proposals match the filter's state and type, a call's type being its verb's `on`, newest first by their latest state, then by id

@@ -25,6 +25,8 @@
 //!   supersedes. A view at an earlier position is a filter over kept
 //!   states, not a replay, so "what did the agent see" is a cheap read.
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
@@ -331,6 +333,10 @@ pub trait ProjectionView {
 
     /// Whether a record is a member of an object set.
     fn is_member(&self, set: &str, ty: &TypeName, key: &RecordKey) -> Result<bool>;
+
+    /// The keys of the records of `ty` that are members of an object set:
+    /// one read where a walk over the type would ask for each record.
+    fn members(&self, set: &str, ty: &TypeName) -> Result<BTreeSet<RecordKey>>;
 
     /// The position an event id was applied at, if it was.
     fn applied(&self, id: &EventId) -> Result<Option<Position>>;

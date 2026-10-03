@@ -589,6 +589,20 @@ impl ProjectionView for SqliteView<'_> {
         })
     }
 
+    fn members(&self, set: &str, ty: &TypeName) -> Result<BTreeSet<RecordKey>> {
+        self.read(BTreeSet::new(), |r| {
+            column(
+                r.conn,
+                &format!(
+                    "SELECT key FROM members WHERE object_set = ?1 AND ty = ?2 AND state AND {}",
+                    holds_at(3)
+                ),
+                params![set, ty.as_str(), r.at()],
+                |key: String| Ok(RecordKey::from(key)),
+            )
+        })
+    }
+
     fn applied(&self, id: &EventId) -> Result<Option<Position>> {
         self.read(None, |r| {
             one(

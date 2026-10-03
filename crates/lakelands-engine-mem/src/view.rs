@@ -14,6 +14,7 @@
 //! retired or missing record is returned as it is; hiding that end is the
 //! store's.
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use lakelands_api::engine::{Declared, ProjectionView, Scan};
@@ -297,6 +298,18 @@ impl ProjectionView for MemView {
                 .and_then(|h| h.at(at))
                 .copied()
                 .unwrap_or(false)
+        }))
+    }
+
+    fn members(&self, set: &str, ty: &TypeName) -> Result<BTreeSet<RecordKey>> {
+        Ok(self.read(|p, at| {
+            let of = p
+                .members
+                .iter()
+                .filter(|((s, t, _), _)| s == set && t == ty);
+            of.filter(|(_, h)| h.at(at) == Some(&true))
+                .map(|((_, _, key), _)| key.clone())
+                .collect()
         }))
     }
 
