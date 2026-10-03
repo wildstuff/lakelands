@@ -114,11 +114,36 @@ impl Doors {
 
     /// Make the calls of backed functions the write made due, and answer
     /// its outcome at the position of the last output recorded, from which
-    /// the filled fields are visible.
-    async fn settled(&self, mut outcome: Outcome, seen: u64) -> Result<Outcome> {
+    /// the filled fields are visible. Of what the write set off, it names
+    /// only the triggers and object sets `describe` lists to `who`: naming
+    /// one whose condition reads a field `who` may not read would tell it
+    /// that the condition held (024). `through` still covers them all.
+    async fn settled(&self, who: &Principal, mut outcome: Outcome, seen: u64) -> Result<Outcome> {
         let last = crate::backed::settle(&self.lake, seen).await?;
-        if let (Outcome::Applied { position, .. }, Some(last)) = (&mut outcome, last) {
-            *position = (*position).max(last);
+        let named = matches!(&outcome, Outcome::Applied { set_off, .. } if set_off.names_any());
+        let lake = if named {
+            Some(
+                self.read(who, ReadAt::default(), |r| Ok(r.describe()))
+                    .await?
+                    .data,
+            )
+        } else {
+            None
+        };
+        if let Outcome::Applied {
+            position, set_off, ..
+        } = &mut outcome
+        {
+            *position = (*position).max(last.unwrap_or(*position));
+            set_off.through = set_off.through.filter(|t| t > position);
+            if let Some(lake) = lake {
+                set_off
+                    .fired
+                    .retain(|t| lake.triggers.iter().any(|d| &d.name == t));
+                let listed = |s: &String| lake.object_sets.iter().any(|d| &d.name == s);
+                set_off.joined.retain(listed);
+                set_off.left.retain(listed);
+            }
         }
         Ok(outcome)
     }
@@ -130,12 +155,12 @@ impl Doors {
     {
         let seen = self.seen();
         let outcome = self.write(who, f).await?;
-        self.settled(outcome, seen).await
+        self.settled(who, outcome, seen).await
     }
 
     /// Hand an external verb to its executor and record the answer; the
     /// recorded output is returned, `{"error": …}` when the executor failed.
-    async fn execute(&self, ext: External) -> Result<serde_json::Value> {
+    async fn execute(&self, ext: External) -> Result<(Position, serde_json::Value)> {
         let executor = self
             .lake
             .seams
@@ -185,15 +210,20 @@ impl Doors {
         };
         let lake = self.lake.clone();
         let recorded = output.clone();
-        exec::run(move || writes::record_output(&lake, &ext, &input, output)).await?;
-        Ok(recorded)
+        let at = exec::run(move || writes::record_output(&lake, &ext, &input, output)).await?;
+        Ok((at, recorded))
     }
 }
 
-/// An outcome with an external verb's recorded output in it.
-fn with_output(mut outcome: Outcome, recorded: serde_json::Value) -> Outcome {
-    if let Outcome::Applied { output, .. } = &mut outcome {
+/// An outcome with an external verb's recorded output in it, and the
+/// position it was recorded at as the last of what the call set off.
+fn with_output(mut outcome: Outcome, (at, recorded): (Position, serde_json::Value)) -> Outcome {
+    if let Outcome::Applied {
+        output, set_off, ..
+    } = &mut outcome
+    {
         *output = Some(recorded);
+        set_off.through = Some(at);
     }
     outcome
 }
@@ -298,7 +328,7 @@ impl Catalog for Doors {
         let (outcome, external) = self
             .write(who, move |c| c.call(&verb, key.as_ref(), payload, opts))
             .await?;
-        let outcome = self.settled(outcome, seen).await?;
+        let outcome = self.settled(who, outcome, seen).await?;
         match external {
             Some(ext) => Ok(with_output(outcome, self.execute(ext).await?)),
             None => Ok(outcome),
@@ -381,7 +411,7 @@ impl Catalog for Doors {
         let p = proposal.clone();
         let seen = self.seen();
         let (outcome, external) = self.write(who, move |c| c.accept(&p)).await?;
-        let outcome = self.settled(outcome, seen).await?;
+        let outcome = self.settled(who, outcome, seen).await?;
         match external {
             Some(ext) => Ok(with_output(outcome, self.execute(ext).await?)),
             None => Ok(outcome),

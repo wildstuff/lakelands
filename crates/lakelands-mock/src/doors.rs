@@ -2385,6 +2385,7 @@ impl Catalog for MockCatalog {
             position: Position(position),
             version: Some(version),
             output: None,
+            set_off: Default::default(),
         })
     }
 
@@ -2417,6 +2418,7 @@ impl Catalog for MockCatalog {
             position,
             version: Some(version),
             output: None,
+            set_off: Default::default(),
         })
     }
 
@@ -2477,6 +2479,7 @@ impl Catalog for MockCatalog {
             position: Position(position),
             version: Some(version),
             output: None,
+            set_off: Default::default(),
         })
     }
 
@@ -2516,6 +2519,7 @@ impl Catalog for MockCatalog {
             position,
             version: Some(version),
             output: None,
+            set_off: Default::default(),
         })
     }
 
@@ -2558,6 +2562,7 @@ impl Catalog for MockCatalog {
                 position: Position(batch.peek().0 - 1),
                 version: Some(version),
                 output: None,
+                set_off: Default::default(),
             }
         } else {
             let why = format!(
@@ -3135,6 +3140,7 @@ impl Catalog for MockCatalog {
             position,
             version,
             output: None,
+            set_off: Default::default(),
         })
     }
 
@@ -3162,6 +3168,7 @@ impl Catalog for MockCatalog {
             position,
             version: None,
             output: None,
+            set_off: Default::default(),
         })
     }
 
@@ -3236,6 +3243,7 @@ impl Catalog for MockCatalog {
             position,
             version: None,
             output: None,
+            set_off: Default::default(),
         })
     }
 
@@ -3264,6 +3272,7 @@ impl Catalog for MockCatalog {
             position,
             version: None,
             output: None,
+            set_off: Default::default(),
         })
     }
 
@@ -3317,6 +3326,7 @@ impl Catalog for MockCatalog {
             position,
             version: None,
             output: None,
+            set_off: Default::default(),
         })
     }
 
@@ -3397,6 +3407,7 @@ impl Catalog for MockCatalog {
             position,
             version: None,
             output: None,
+            set_off: Default::default(),
         })
     }
 
@@ -3481,6 +3492,7 @@ impl Catalog for MockCatalog {
             position,
             version: None,
             output: None,
+            set_off: Default::default(),
         })
     }
 

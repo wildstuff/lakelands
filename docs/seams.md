@@ -888,13 +888,16 @@ due is in the log, and its position is real. The failure is the recorded
 output — `{"error": "<the executor's error text>"}`. The caller's outcome
 is `applied` at the position that made the verb due, and carries the
 recorded output in its `output` member, the error form included, so an
-agent that called an external verb has the answer in the reply. The verb
+agent that called an external verb has the answer in the reply. Its
+`through` member is the position the output was recorded at
+(`docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`,
+extended). The verb
 is not run again for that position. A host that wants a retry calls the verb again, which is a new
 position.
 
 A call retried with the same idempotency key runs nothing and answers
-the first outcome: the position that made the verb due and the recorded
-output. The output's `input` digest holds the record as the executor was
+the first outcome: the position that made the verb due, the recorded
+output and its position. The output's `input` digest holds the record as the executor was
 given it, which a retry cannot rebuild, so the retry finds the output as
 the `output_recorded` caused by that position, among the 4,096 events
 after it. An output not among them (not recorded yet, or recorded after

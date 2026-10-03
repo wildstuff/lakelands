@@ -375,6 +375,7 @@ async fn a_low_verb_runs_a_high_one_waits_for_acceptance_and_an_unbound_one_is_r
             position: r.data.meta["status"].position,
             version: Some(r.data.version),
             output: None,
+            set_off: Default::default(),
         },
         "accepting a verb answers the write it made, not the verb's call"
     );

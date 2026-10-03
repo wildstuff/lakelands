@@ -536,6 +536,13 @@ interface types {
         version: option<version>,
         /// An external verb's recorded output, the error form included.
         output: option<json>,
+        /// What the write set off: the last position of it, when after
+        /// `position`, and the triggers fired and object sets joined and
+        /// left that `describe` lists to the caller.
+        through: option<position>,
+        fired: list<trigger-name>,
+        joined: list<string>,
+        left: list<string>,
     }
 
     record proposed {
