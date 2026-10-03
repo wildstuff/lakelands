@@ -62,6 +62,7 @@ impl State {
             position: e.position,
             version,
             output: None,
+            set_off: Default::default(),
         };
         match &e.body {
             EventBody::Declared {

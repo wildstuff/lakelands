@@ -733,6 +733,22 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             ),
         ),
         ("write_opts", members(&write_opts())),
+        // The `applied` record is the variant's members beside its tag.
+        ("applied", {
+            let mut m = members(&Outcome::Applied {
+                position: Position(1),
+                version: Some(Version(1)),
+                output: Some(serde_json::json!({})),
+                set_off: lakelands_api::SetOff {
+                    through: Some(Position(2)),
+                    fired: vec!["t".into()],
+                    joined: vec!["s".into()],
+                    left: vec!["s".into()],
+                },
+            });
+            m.remove("outcome");
+            m
+        }),
         (
             "proposal",
             members(&Proposal {
@@ -1162,6 +1178,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     position: Position(1),
                     version: None,
                     output: None,
+                    set_off: Default::default(),
                 },
                 Outcome::Proposed {
                     position: Position(1),

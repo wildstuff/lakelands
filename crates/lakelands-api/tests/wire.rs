@@ -53,6 +53,7 @@ fn a_write_answers_applied_or_proposed_and_both_carry_a_position() {
         position: Position(7),
         version: Some(Version(3)),
         output: None,
+        set_off: Default::default(),
     };
     assert_eq!(
         serde_json::to_value(&applied).unwrap(),

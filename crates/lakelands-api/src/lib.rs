@@ -49,4 +49,4 @@ pub use principal::{Access, Grants, Principal, PrincipalKind, WriteContext, Writ
 pub use read::{After, Find, Found, Get, Params, ReadAt, Reply};
 pub use record::{FieldMeta, Origin, Patch, Record, SourceRecord, Upstream, Value};
 pub use time::Timestamp;
-pub use write::{Committed, Outcome, WriteOpts};
+pub use write::{Committed, Outcome, SetOff, WriteOpts};

@@ -538,14 +538,18 @@ fn field<'a>(r: &'a Record, f: &str) -> Option<&'a Value> {
 // ---- the checks ----
 
 /// Every read carries a position; every write answers one past the
-/// head it saw, and the head moves to it.
+/// head it saw, and the head moves to it. A write that sets nothing off
+/// answers its outcome as it always has, with no member more.
 pub async fn every_write_advances_the_position(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let before = f.head().await;
-    let (p1, v1) = applied(
-        &f.write(&f.cast.clerk, "INV-1", &[("status", json!("open"))])
-            .await,
-    );
+    let first = f
+        .write(&f.cast.clerk, "INV-1", &[("status", json!("open"))])
+        .await;
+    let keys = serde_json::to_value(&first).unwrap();
+    let keys: Vec<&String> = keys.as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["outcome", "position", "version"], "{first:?}");
+    let (p1, v1) = applied(&first);
     assert!(p1 > before, "a write lands after the head it saw");
     assert_eq!(f.head().await, p1);
     assert_eq!(v1, Some(Version(1)));

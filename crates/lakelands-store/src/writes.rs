@@ -239,9 +239,12 @@ impl Call<'_> {
         }
     }
 
-    /// The first write's outcome, if this key was used before.
+    /// The first write's outcome, if this key was used before, with what
+    /// it set off: its append is read back as far as its reactions can
+    /// reach, one per trigger and object set the lake declares.
     fn replay(
         &self,
+        w: &Writer,
         key: &Option<IdempotencyKey>,
         view: &dyn ProjectionView,
     ) -> Result<Option<Outcome>> {
@@ -250,49 +253,84 @@ impl Call<'_> {
         let Some(pos) = view.applied(&id)? else {
             return Ok(None);
         };
-        let events = self.lake.read_events(pos, 3)?;
+        let reach = 3 + w.ontology.triggers.len() + w.ontology.object_sets.len();
+        let events = self.lake.read_events(pos, reach as u32)?;
         if events.is_empty() {
             return Ok(None);
         }
-        let outcome = outcome_of(&events);
+        let mut outcome = outcome_of(&events);
         // An external verb answered with its executor's output, recorded in
         // a later append that other writes may precede: a retry answers
         // that output too, at the verb's own position.
         let external = events.iter().any(|e| {
             e.position == outcome.position() && matches!(e.body, EventBody::VerbCalled { .. })
         });
-        match (outcome, external) {
-            (
-                Outcome::Applied {
-                    position, version, ..
-                },
-                true,
-            ) => Ok(Some(Outcome::Applied {
+        if let (
+            Outcome::Applied {
                 position,
-                version,
-                output: self.recorded_output(position)?,
-            })),
-            (outcome, _) => Ok(Some(outcome)),
+                output,
+                set_off,
+                ..
+            },
+            true,
+        ) = (&mut outcome, external)
+            && let Some((at, recorded)) = self.recorded_output(*position)?
+        {
+            *output = Some(recorded);
+            set_off.through = Some(at);
         }
+        Ok(Some(outcome))
     }
 
-    /// The output recorded for the external verb called at `called`: the
-    /// `output_recorded` that event caused, among the [`RETRY_REACH`]
-    /// events after it. Its `input` digest holds the record as the executor
-    /// was given it, which a retry cannot rebuild to look it up by digest;
-    /// the read is bounded so that a retry never reads to the head of a
-    /// large lake (`docs/seams.md` §`VerbExecutor`).
-    fn recorded_output(&self, called: Position) -> Result<Option<Value>> {
+    /// The output recorded for the external verb called at `called`, and
+    /// its position: the `output_recorded` that event caused, among the
+    /// [`RETRY_REACH`] events after it. Its `input` digest holds the record
+    /// as the executor was given it, which a retry cannot rebuild to look
+    /// it up by digest; the read is bounded so that a retry never reads to
+    /// the head of a large lake (`docs/seams.md` §`VerbExecutor`).
+    fn recorded_output(&self, called: Position) -> Result<Option<(Position, Value)>> {
         let events = self.lake.read_events(called.next(), RETRY_REACH)?;
         Ok(events.into_iter().find_map(|e| match e.body {
             EventBody::OutputRecorded { seam, output, .. }
                 if e.cause == Some(called) && seam.starts_with("verb:") =>
             {
-                Some(output)
+                Some((e.position, output))
             }
             _ => None,
         }))
     }
+}
+
+/// An append's outcome, as [`own_outcome`] tells it, with what the write
+/// set off: the reactions that follow its own event in the append, each
+/// caused by it, and the position of the last of them. The names are all
+/// of them; [`crate::doors`] keeps those the caller may know of.
+fn outcome_of(events: &[Event]) -> Outcome {
+    let mut outcome = own_outcome(events);
+    if let Outcome::Applied {
+        position, set_off, ..
+    } = &mut outcome
+    {
+        let caused = |e: &&Event| e.cause == Some(*position);
+        for e in events
+            .iter()
+            .skip_while(|e| e.position <= *position)
+            .take_while(caused)
+        {
+            match &e.body {
+                EventBody::TriggerFired { trigger, .. } => set_off.fired.push(trigger.clone()),
+                EventBody::ObjectSetChanged { set, joined, .. } => if *joined {
+                    &mut set_off.joined
+                } else {
+                    &mut set_off.left
+                }
+                .push(set.clone()),
+                _ => break,
+            }
+            set_off.through = Some(e.position);
+        }
+    }
+    outcome
 }
 
 /// The outcome the first of an append's events stands for. A verb call or
@@ -307,7 +345,7 @@ impl Call<'_> {
 /// never by `cause` alone: it is the very next event, caused by the call,
 /// with the verb as its `procedure` (which no door sets) and the call's
 /// writer. A verb with no write of its own answers at its own position.
-fn outcome_of(events: &[Event]) -> Outcome {
+fn own_outcome(events: &[Event]) -> Outcome {
     let e = &events[0];
     let wrote = match (&e.body, events.get(1)) {
         // An acceptance always appends something after `write_accepted`.
@@ -328,6 +366,7 @@ fn outcome_of(events: &[Event]) -> Outcome {
             position: e.position,
             version: Some(*version),
             output: None,
+            set_off: Default::default(),
         },
         EventBody::WriteProposed { proposal, why, .. } => Outcome::Proposed {
             position: e.position,
@@ -335,12 +374,13 @@ fn outcome_of(events: &[Event]) -> Outcome {
             why: why.clone(),
         },
         EventBody::VerbCalled { .. } | EventBody::WriteAccepted { .. } if wrote => {
-            outcome_of(&events[1..])
+            own_outcome(&events[1..])
         }
         _ => Outcome::Applied {
             position: e.position,
             version: None,
             output: None,
+            set_off: Default::default(),
         },
     }
 }
@@ -872,7 +912,7 @@ impl Call<'_> {
     ) -> Result<Outcome> {
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
-        if let Some(o) = self.replay(&opts.idempotency_key, view.as_ref())? {
+        if let Some(o) = self.replay(&w, &opts.idempotency_key, view.as_ref())? {
             return Ok(o);
         }
         let now = self.lake.clock(&mut w);
@@ -974,7 +1014,7 @@ impl Call<'_> {
     fn retire_record(&self, ty: &TypeName, key: &RecordKey, opts: WriteOpts) -> Result<Outcome> {
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
-        if let Some(o) = self.replay(&opts.idempotency_key, view.as_ref())? {
+        if let Some(o) = self.replay(&w, &opts.idempotency_key, view.as_ref())? {
             return Ok(o);
         }
         let decl = w.ontology.ty(ty)?;
@@ -1160,7 +1200,7 @@ impl Call<'_> {
         check_context(self.lake, &self.context)?;
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
-        if let Some(o) = self.replay(&opts.idempotency_key, view.as_ref())? {
+        if let Some(o) = self.replay(&w, &opts.idempotency_key, view.as_ref())? {
             return Ok((o, None));
         }
         let decl = w.ontology.verb(verb)?.clone();
@@ -1263,7 +1303,7 @@ impl Call<'_> {
             | ProposedWrite::Call { opts, .. } => opts.idempotency_key.clone(),
             ProposedWrite::Declare { .. } | ProposedWrite::Migrate { .. } => None,
         };
-        if let Some(o) = self.replay(&key_opt, view.as_ref())? {
+        if let Some(o) = self.replay(&w, &key_opt, view.as_ref())? {
             return Ok(o);
         }
         if let ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } = &write {
@@ -1715,6 +1755,7 @@ impl Call<'_> {
             position: events.last().expect("the set is not empty").position,
             version: None,
             output: None,
+            set_off: Default::default(),
         })
     }
 

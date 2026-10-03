@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::expr::Condition;
 use crate::id::{
-    Cursor, FieldName, IdempotencyKey, Position, ProposalId, RecordKey, SourceId, TypeName,
-    ValueTypeName, VerbName, Version,
+    Cursor, FieldName, IdempotencyKey, Position, ProposalId, RecordKey, SourceId, TriggerName,
+    TypeName, ValueTypeName, VerbName, Version,
 };
 use crate::ontology::{
     ANNOTATION_KEY_MAX_BYTES, ANNOTATIONS_MAX_BYTES, Annotations, FieldDecl, FieldType,
@@ -49,6 +49,9 @@ pub enum Outcome {
         /// it. `None` for every other write.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output: Option<serde_json::Value>,
+        /// What the write set off beyond the event it is visible from.
+        #[serde(flatten)]
+        set_off: SetOff,
     },
     /// The write was recorded as a proposal and waits for review.
     Proposed {
@@ -60,6 +63,39 @@ pub enum Outcome {
         /// policy of the lake).
         why: String,
     },
+}
+
+/// What a write set off: the reactions in its own append, and an external
+/// verb's recorded output. Empty, and left out of the answer, when it set
+/// off nothing, so such an answer reads as it always did
+/// (`docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`,
+/// extended).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetOff {
+    /// The last position of what the write set off, when that lies after
+    /// `position`: a read at or after it sees all of it. An external
+    /// verb's output is recorded in a later append, so other writers'
+    /// events may lie before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub through: Option<Position>,
+    /// The triggers it fired, in the order fired: only those `describe`
+    /// lists to the caller.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fired: Vec<TriggerName>,
+    /// The object sets its record joined, as `describe` lists them to the
+    /// caller.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub joined: Vec<String>,
+    /// The object sets its record left, likewise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub left: Vec<String>,
+}
+
+impl SetOff {
+    /// Whether it names a trigger or an object set.
+    pub fn names_any(&self) -> bool {
+        !(self.fired.is_empty() && self.joined.is_empty() && self.left.is_empty())
+    }
 }
 
 impl Outcome {
@@ -803,3 +839,6 @@ pub struct CompactReport {
     /// The lake's head, which a compact never moves.
     pub head: Position,
 }
+
+#[cfg(test)]
+mod tests;

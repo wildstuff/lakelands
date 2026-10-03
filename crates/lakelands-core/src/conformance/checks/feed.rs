@@ -7,11 +7,26 @@ use std::sync::Arc;
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::seam::FeedFilter;
-use lakelands_api::{LakeStore, Position, RecordKey, TypeName};
+use lakelands_api::write::ProposedWrite;
+use lakelands_api::{Access, LakeStore, Outcome, Position, RecordKey, SetOff, TypeName, WriteOpts};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, log_events, type_of};
+use crate::conformance::fixture::{Lake, Must, field_access, log_events, patch, type_of, upsert};
+
+/// What a write's answer says it set off.
+fn set_off(o: &Outcome) -> SetOff {
+    match o {
+        Outcome::Applied { set_off, .. } => set_off.clone(),
+        Outcome::Proposed { .. } => SetOff::default(),
+    }
+}
+
+/// The positions of the triggers fired in `events`.
+fn fired_at(events: &[Event]) -> Vec<Position> {
+    let fired = |e: &&Event| matches!(e.body, EventBody::TriggerFired { .. });
+    events.iter().filter(fired).map(|e| e.position).collect()
+}
 
 check!(
     /// A key filter answers one record's events.
@@ -40,13 +55,19 @@ check!(
 check!(
     /// A trigger fires in the same append as the write that makes it hold.
     TRIGGER_FIRES = a_trigger_fires_on_every_write_whose_guard_holds,
-    "004: when a write makes a trigger's guard hold, `trigger_fired` is appended with it; a write under which the guard does not hold fires nothing"
+    "004 and 015, extended: when a write makes a trigger's guard hold, `trigger_fired` is appended with it, and the write's answer names the trigger, `through` its position; a write under which the guard does not hold fires nothing and answers nothing more; a retry answers the same, and an acceptance what the write it applied set off"
 );
 
 check!(
     /// An object set changes only when membership does.
     OBJECT_SET_CHANGES = an_object_set_change_is_written_only_when_membership_changes,
-    "004: a write that moves a record into or out of an object set appends `object_set_changed`; one that leaves membership as it was appends none"
+    "004 and 015, extended: a write that moves a record into or out of an object set appends `object_set_changed`, and its answer names the set as joined or left; one that leaves membership as it was appends none and names none"
+);
+
+check!(
+    /// A write names only the triggers and object sets its writer may know of.
+    HIDDEN_TRIGGER = a_trigger_whose_guard_the_writer_may_not_read_is_not_named,
+    "015, extended, and 024: a write's answer names a trigger it fired, or an object set its record joined or left, only if `describe` lists it to the writer; one whose condition reads a field the writer may not read is left out, and `through` still covers it"
 );
 
 async fn invoices(store: &dyn LakeStore) -> Result<Lake, Failure> {
@@ -217,20 +238,109 @@ async fn a_trigger_fires_on_every_write_whose_guard_holds(
         ("held", "four", false),
     ] {
         let from = store.head().await.must("reading the head")?.next();
-        l.upsert("invoice", "i", json!({"status": status, "note": note}))
+        let answer = l
+            .upsert("invoice", "i", json!({"status": status, "note": note}))
             .await?;
         let appended = all_events(store.as_ref(), from).await?;
-        let did = appended
-            .iter()
-            .any(|e| matches!(&e.body, EventBody::TriggerFired { trigger, .. } if trigger.as_str() == "paid"));
+        let at = fired_at(&appended);
         ensure!(
-            did == fires,
+            at.len() == usize::from(fires),
             "writing status {status:?} must {}fire `paid` (guard `status = 'paid'`) in \
              its own append; the append held {:?}",
             if fires { "" } else { "not " },
             appended.iter().map(|e| e.body.kind()).collect::<Vec<_>>()
         );
+        let want = SetOff {
+            through: at.first().copied(),
+            fired: at.iter().map(|_| "paid".into()).collect(),
+            ..SetOff::default()
+        };
+        ensure!(
+            set_off(&answer) == want,
+            "the answer to writing status {status:?} must say it set off {want:?}; it \
+             answered {answer:?}"
+        );
     }
+    // A retry answers what the first write set off; an acceptance, what the
+    // write it applied set off.
+    let Lake { cat, own } = &l;
+    let (ty, j, paid) = (
+        "invoice".into(),
+        "j".into(),
+        patch(json!({"status": "paid"})),
+    );
+    let once = WriteOpts {
+        idempotency_key: Some("pay-j".into()),
+        ..WriteOpts::default()
+    };
+    let first = cat.upsert(own, &ty, &j, paid.clone(), once.clone());
+    let first = first.await.must("paying `j`")?;
+    let again = cat.upsert(own, &ty, &j, paid.clone(), once).await;
+    let again = again.must("paying `j` again under the same key")?;
+    ensure!(
+        again == first && set_off(&first).fired.len() == 1,
+        "a retry answers the first write's outcome and what it set off, {first:?}; it \
+         answered {again:?}"
+    );
+    let write = ProposedWrite::Upsert {
+        ty,
+        key: "k".into(),
+        patch: paid,
+        opts: WriteOpts::default(),
+    };
+    let proposed = cat.propose(own, write, "later".into()).await;
+    let Outcome::Proposed { proposal, .. } = proposed.must("proposing to pay `k`")? else {
+        return Err(Failure::new("`propose` answers a proposal"));
+    };
+    let accepted = cat.accept(own, &proposal).await.must("accepting it")?;
+    ensure!(
+        set_off(&accepted).fired == ["paid"],
+        "accepting the payment of `k` answers that it fired `paid`; it answered {accepted:?}"
+    );
+    Ok(())
+}
+
+async fn a_trigger_whose_guard_the_writer_may_not_read_is_not_named(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = invoices(store.as_ref()).await?;
+    for (name, when) in [("noted", None), ("paid", Some("status = 'paid'"))] {
+        let mut t = json!({"declare": "trigger", "name": name, "on": "invoice"});
+        if let Some(w) = when {
+            t["when"] = json!(w);
+        }
+        l.declare_json(t).await?;
+    }
+    for (name, filter) in [
+        ("seen", "note = 'seen'"),
+        ("seen_paid", "note = 'seen' and status = 'paid'"),
+    ] {
+        let set = json!({"declare": "object_set", "name": name, "of": "invoice", "where": filter});
+        l.declare_json(set).await?;
+    }
+    l.upsert("invoice", "i", json!({"status": "paid"})).await?;
+    // The clerk writes `note` and may not read `status`, which `paid`'s
+    // guard and `seen_paid`'s filter read: both triggers fire and the
+    // record joins both sets, and the answer names `noted` and `seen` only.
+    let fields = [("note", Access::Write), ("status", Access::None)];
+    let clerk = field_access(store.as_ref(), "clerk", "invoice", &fields);
+    let from = store.head().await.must("reading the head")?.next();
+    let note = json!({"note": "seen"});
+    let answer = upsert(l.cat.as_ref(), &clerk, "invoice", "i", note).await?;
+    let appended = all_events(store.as_ref(), from).await?;
+    let at = fired_at(&appended);
+    let want = SetOff {
+        through: appended.last().map(|e| e.position),
+        fired: vec!["noted".into()],
+        joined: vec!["seen".into()],
+        ..SetOff::default()
+    };
+    ensure!(
+        at.len() == 2 && set_off(&answer) == want,
+        "the clerk's write fired `noted` and `paid` at {at:?} and joined `seen` and \
+         `seen_paid`; its answer names `noted` and `seen` only, `through` covering all \
+         four: {want:?}; it answered {answer:?}"
+    );
     Ok(())
 }
 
@@ -250,7 +360,7 @@ async fn an_object_set_change_is_written_only_when_membership_changes(
         (json!({"note": "still paid"}), None),
     ] {
         let from = store.head().await.must("reading the head")?.next();
-        l.upsert("invoice", "i", fields.clone()).await?;
+        let answer = l.upsert("invoice", "i", fields.clone()).await?;
         let appended = all_events(store.as_ref(), from).await?;
         let changes: Vec<bool> = appended
             .iter()
@@ -270,6 +380,13 @@ async fn an_object_set_change_is_written_only_when_membership_changes(
                 None => "no change, since membership stays as it was".to_owned(),
             },
             appended.iter().map(|e| e.body.kind()).collect::<Vec<_>>()
+        );
+        let named = set_off(&answer);
+        let (joined, left) = (named.joined == ["open_ones"], named.left == ["open_ones"]);
+        ensure!(
+            (joined, left) == (want == Some(true), want == Some(false)),
+            "the answer to writing {fields} names `open_ones` as {want:?} (joined, else \
+             left); it answered {answer:?}"
         );
     }
     Ok(())
