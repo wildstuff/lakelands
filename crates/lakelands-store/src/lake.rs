@@ -615,7 +615,7 @@ impl Lake {
             {
                 continue;
             }
-            for r in staged_scan(view, staged, name)?
+            for r in staged_scan(view, staged, name, true)?
                 .into_iter()
                 .filter(|r| !r.is_ended())
             {
@@ -766,13 +766,7 @@ impl Lake {
                 // compute every live record's derived fields again, in this
                 // event.
                 for ty in rederive {
-                    let records = view.scan(&ty, &every(false))?;
-                    // The records written earlier in this append are staged,
-                    // not yet in the view.
-                    let mut all: BTreeMap<RecordKey, StoredRecord> =
-                        records.into_iter().map(|r| (r.key.clone(), r)).collect();
-                    all.extend(staged.of_type(&ty).map(|r| (r.key.clone(), r.clone())));
-                    for r in all.into_values() {
+                    for r in staged_scan(view, staged, &ty, false)? {
                         let mut outputs = Outputs {
                             view,
                             staged: Some(&staged.outputs),
@@ -795,7 +789,7 @@ impl Lake {
                 ..
             } => {
                 let before = w.ontology.ty(&migration.to.name)?.clone();
-                let records = staged_scan(view, staged, &migration.to.name)?;
+                let records = staged_scan(view, staged, &migration.to.name, true)?;
                 let decl = Declaration::Type(migration.to.clone());
                 w.ontology
                     .put(decl.clone(), *version, Some(schema_hash.clone()));
@@ -1373,16 +1367,17 @@ impl Reads {
     }
 }
 
-/// Every record of `ty` as the fold leaves it so far, retired and
-/// restricted ones included: the view's, with what this append wrote
-/// earlier over it. A fold of many events in one page (a rebuild, an
-/// import) writes records the view it opened does not show yet.
+/// Every record of `ty` as the fold leaves it so far, restricted ones
+/// included and retired ones when `retired`: the view's, with what this
+/// append wrote earlier over it. A fold of many events in one page (a
+/// rebuild, an import) writes records the view it opened does not show yet.
 fn staged_scan(
     view: &dyn ProjectionView,
     staged: &Staged,
     ty: &TypeName,
+    retired: bool,
 ) -> Result<Vec<StoredRecord>> {
-    let records = view.scan(ty, &every(true))?;
+    let records = view.scan(ty, &every(retired))?;
     let mut all: BTreeMap<RecordKey, StoredRecord> =
         records.into_iter().map(|r| (r.key.clone(), r)).collect();
     all.extend(staged.of_type(ty).map(|r| (r.key.clone(), r.clone())));
