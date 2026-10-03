@@ -6,21 +6,22 @@
 
 use std::sync::Arc;
 
-use lakelands_api::LakeStore;
 use lakelands_api::ontology::StorageKind::Text;
 use lakelands_api::ontology::{RelationDecl, TypeDecl};
-use lakelands_api::write::{Declaration, Migration};
+use lakelands_api::write::{Declaration, Migration, ProposedWrite};
+use lakelands_api::{Access, LakeStore};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, derived, field, head_unmoved, invalid_naming, migration, type_decl,
+    Lake, Must, derived, field, field_access, head_unmoved, invalid_naming, migration, reads_all,
+    type_decl,
 };
 
 check!(
     /// A migration keeps the fields a declaration reads.
     MIGRATION_KEEPS_READ_FIELDS = a_migration_keeps_the_fields_a_declaration_reads,
-    "027, extended: a migration that drops a field read by a derived field of its type, by another type's derived relation to it, or by an object set, a trigger or a verb on it (its `requires`, a field it sets, the value it sets one from) is refused as invalid by its preflight, naming the reader and the field, and one that renames such a field names the new name too; so is one that drops a relation's field a trigger on the relation's link type reads, naming the link type; a migration that drops a field no declaration reads goes through"
+    "027, extended: a migration that drops a field read by a derived field of its type, by another type's derived relation to it, or by an object set, a trigger or a verb on it (its `requires`, a field it sets, the value it sets one from) is refused as invalid by its preflight, naming the reader and the field, and one that renames such a field names the new name too; so is one that drops a relation's field a trigger on the relation's link type reads, naming the link type; a migration that drops a field no declaration reads goes through; an author who is not shown the reader, as `describe` shows it, is told that a declaration reads the field and not its name, nor a field hidden from it, which its migration does not take away"
 );
 
 /// `item` with the text fields `names` and `loud`, derived from `a`.
@@ -94,6 +95,43 @@ async fn a_migration_keeps_the_fields_a_declaration_reads(
         ],
     )?;
     l.migrate(item(&all[..7])).await?;
+    // A reader its author is not shown is not named to it: `audit` reads
+    // `bonus`, which `partial` may not know of, so `describe` leaves it out;
+    // and `bonus` was not `partial`'s to leave out, so it stays (027).
+    let invoice = |names: &[&str]| {
+        let fields = names.iter().map(|n| field(n, Text));
+        type_decl("invoice", fields.collect())
+    };
+    l.declare(invoice(&["no", "note", "bonus", "team"])).await?;
+    let audit = json!({"declare": "trigger", "name": "audit", "on": "invoice",
+                       "when": "note = 'x' and bonus = 'y'"});
+    l.declare_json(audit).await?;
+    let hidden = [("bonus", Access::None)];
+    let partial = field_access(store.as_ref(), "partial", "invoice", &hidden);
+    let m = migration(invoice(&["no", "team"]));
+    let proposed = ProposedWrite::Migrate {
+        migration: Box::new(m.clone()),
+        report: Default::default(),
+    };
+    let why = || "no notes".to_owned();
+    let refused = l.cat.propose(&partial, proposed.clone(), why()).await;
+    let named =
+        |e: &lakelands_api::Error| ["audit", "bonus"].iter().any(|n| e.to_string().contains(n));
+    let named = refused.as_ref().is_err_and(named);
+    let what = "a migration dropping `note`, proposed by one not shown its reader";
+    invalid_naming(what, refused, &["a declaration reads `note`"])?;
+    ensure!(
+        !named,
+        "{what}, must name neither `audit` nor the field `bonus`"
+    );
+    // One who reads every field is shown `audit` and told its name, with
+    // the schema grant or without.
+    let shown = &["trigger declaration `audit`", "reads `bonus`"];
+    let all = reads_all(store.as_ref(), "all");
+    let refused = l.cat.propose(&all, proposed, why()).await;
+    invalid_naming("the same proposal by one shown its reader", refused, shown)?;
+    let refused = l.cat.migrate(&l.own, m).await;
+    invalid_naming("the same migration by the owner", refused, shown)?;
     Ok(())
 }
 
