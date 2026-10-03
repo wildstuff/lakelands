@@ -728,11 +728,9 @@ struct VerbScope<'a> {
 
 impl Scope for VerbScope<'_> {
     fn value(&self, path: &[FieldName]) -> Option<Value> {
-        match path {
-            [p, name] if p.as_str() == "payload" => {
-                self.payload.get(name).filter(|v| !v.is_null()).cloned()
-            }
-            _ => RecordScope {
+        match lakelands_core::derive::payload_member(path) {
+            Some(name) => self.payload.get(name).filter(|v| !v.is_null()).cloned(),
+            None => RecordScope {
                 fields: self.record,
                 settings: None,
                 now: self.now,

@@ -37,6 +37,15 @@ pub(crate) fn typed(c: &Condition) -> Result<Expr, Error> {
     }
 }
 
+/// As the store: the member of the call's payload a path in a verb's value
+/// reads, `payload.<name>` and no other path.
+pub(crate) fn payload_member(path: &[FieldName]) -> Option<&FieldName> {
+    match path {
+        [payload, name] if payload.as_str() == "payload" => Some(name),
+        _ => None,
+    }
+}
+
 /// Every path an expression reads.
 pub(crate) fn paths(e: &Expr, out: &mut Vec<Vec<FieldName>>) {
     match e {
@@ -99,10 +108,10 @@ pub(crate) struct Scope<'a> {
 
 impl Scope<'_> {
     fn path(&self, p: &[FieldName]) -> Value {
-        let found = match p {
-            [f] => self.fields.get(f),
-            [head, f] if head.as_str() == "payload" => self.payload.and_then(|m| m.get(f)),
-            [head, f] if head.as_str() == self.ty => self.fields.get(f),
+        let found = match (p, payload_member(p)) {
+            (_, Some(f)) => self.payload.and_then(|m| m.get(f)),
+            ([f], _) => self.fields.get(f),
+            ([head, f], _) if head.as_str() == self.ty => self.fields.get(f),
             _ => None,
         };
         found.cloned().unwrap_or(Value::Null)

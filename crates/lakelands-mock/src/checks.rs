@@ -2080,6 +2080,20 @@ pub async fn a_declaration_reads_only_what_its_type_has(store: Arc<dyn LakeStore
         let e = e.expect_err("a declaration reads only what its type has");
         assert!(invalid_naming(&e, &names), "apply: {e:?}");
     }
+    // In a verb's value only `payload.<name>` is the call's: every other
+    // path is the record's, and a member the payload lacks is never given.
+    let reads = ["verb declaration `p`", "reads `payload`"];
+    for (value, names) in [
+        ("payload", reads),
+        ("payload.reference.deep", reads),
+        ("upper(payload)", reads),
+        ("payload.ghost", ["verb `p`", "`payload.ghost`"]),
+    ] {
+        let d = serde_json::from_value(verb("p", "status = 'x'", value)).expect("a verb");
+        let e = f.catalog.declare(owner, d).await;
+        let e = e.expect_err("only `payload.<name>` is the call's");
+        assert!(invalid_naming(&e, &names), "`{value}`: {e:?}");
+    }
     assert_eq!(f.head().await, head, "nothing is appended");
     let fine = verb("refer", "status = setting('mode')", "payload.reference");
     f.catalog
@@ -2112,7 +2126,7 @@ pub async fn a_migration_keeps_what_a_declaration_reads(store: Arc<dyn LakeStore
                            "fields": link.iter().map(text).collect::<Vec<_>>()}]}))
         .expect("a type")
     };
-    let all = ["a", "b", "c", "d", "free"];
+    let all = ["a", "b", "c", "d", "payload", "free"];
     f.catalog
         .declare(owner, Declaration::Type(memo(&all, &["ok"])))
         .await
@@ -2123,6 +2137,8 @@ pub async fn a_migration_keeps_what_a_declaration_reads(store: Arc<dyn LakeStore
         json!({"declare": "verb", "name": "settle", "on": "memo", "risk": "low",
                "requires": "d = 'x'", "effect": "write",
                "set": [{"field": "d", "value": "'y'"}]}),
+        json!({"declare": "verb", "name": "w", "on": "memo", "risk": "low",
+               "effect": "write", "set": [{"field": "d", "value": "payload"}]}),
         json!({"declare": "trigger", "name": "lt", "on": "sys.link.memo.seen_by",
                "when": "ok = 'x'"}),
     ] {
@@ -2159,8 +2175,12 @@ pub async fn a_migration_keeps_what_a_declaration_reads(store: Arc<dyn LakeStore
             vec!["verb declaration `settle`", "reads `d`", "drops"],
         ),
         (
+            migration(memo(&without("payload"), &["ok"]), &[]),
+            vec!["verb declaration `w`", "reads `payload`", "drops"],
+        ),
+        (
             migration(
-                memo(&["a", "b2", "c", "d", "free"], &["ok"]),
+                memo(&["a", "b2", "c", "d", "payload", "free"], &["ok"]),
                 &[("b", "b2")],
             ),
             vec!["object_set declaration `s`", "reads `b`", "renames to `b2`"],
