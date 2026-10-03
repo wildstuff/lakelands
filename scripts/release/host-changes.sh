@@ -22,10 +22,19 @@
 # An item a line already names is not reported twice. With nothing found
 # it says so. It exits 0 whatever it finds, and 2 when it cannot run.
 #
+# In all three of its own comparisons (a trait method's signature, a
+# function's or method's, a field's type) a type written by another path
+# is the same type: `lakelands_api::ontology::FieldDecl` and `FieldDecl`
+# agree, as two paths do whenever one is the other's ending at a `::`.
+# `a::Decl` and `b::Decl` do not, and are reported.
+#
 # Not compared, so a release reviewer reads them by hand: the items of a
 # public struct, enum, trait or impl block declared anywhere but at
 # column 0; a method whose impl block lies in a private module that does
-# not re-export its type; and `pub(crate)` items, which reach no host.
+# not re-export its type; `pub(crate)` items, which reach no host; and a
+# path written shorter whose shorter form an import now binds to another
+# type of that name (`std::result::Result<T>` and a crate's own
+# `Result<T>` read as one), since the imports are not resolved.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
@@ -126,7 +135,10 @@ done
 # leaves out the parameter names of a signature (a `name: ` or
 # `mut name: ` at the start of a parameter of the outer list), which is
 # what is compared: a renamed parameter asks nothing of a caller or an
-# implementation. `depth` counts the brackets a text leaves open.
+# implementation. `depth` counts the brackets a text leaves open. `same`
+# says whether two signatures or types agree once a path may be written
+# shorter: token by token, where a token is a path or one other character
+# and two paths agree when one is the other or its ending at a `::`.
 LIB='
 function norm(s) {
     gsub(/[ \t]+/, " ", s)
@@ -156,6 +168,25 @@ function unnamed(s,    out, n, i, c, d, a, start, rest) {
     }
     return out
 }
+function tokens(s, out,    n, m) {
+    n = 0
+    while (length(s) > 0) {
+        m = match(s, /^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*/) ? RLENGTH : 1
+        out[++n] = substr(s, 1, m); s = substr(s, m + 1)
+    }
+    return n
+}
+function ending(long, short) {
+    return long == short || (length(long) > length(short) + 2 &&
+        substr(long, length(long) - length(short) - 1) == "::" short)
+}
+function same(a, b,    x, y, n, i) {
+    if (a == b) return 1
+    n = tokens(a, x)
+    if (n != tokens(b, y)) return 0
+    for (i = 1; i <= n; i++) if (!ending(x[i], y[i]) && !ending(y[i], x[i])) return 0
+    return 1
+}
 function depth(s,    i, n, c, d) {
     d = 0; n = length(s)
     for (i = 1; i <= n; i++) {
@@ -167,6 +198,12 @@ function depth(s,    i, n, c, d) {
     return d
 }
 '
+
+# The lines whose tab-separated fields `$1` and `$2` (by number) do not
+# hold the same signature or type: what the three comparisons below keep.
+changed() {
+    awk -F '\t' -v a="$1" -v b="$2" "$LIB"'!same($a, $b)'
+}
 
 # Every public trait (`Trait`, `trait`) and every method of one, one line
 # each, fields apart by a tab: `Trait::method`, `required` or `provided`
@@ -413,19 +450,17 @@ while read -r f; do
     # In both, with another signature once the parameter names are left
     # out. Under `async_trait` an `async` that comes or goes is a change.
     while IFS=$'\t' read -r m was was_unnamed now now_unnamed; do
-        [ "$was_unnamed" != "$now_unnamed" ] || continue
         reach "$f" "${m%%::*}" >/dev/null || continue
         named "$m" qualified && continue
         lines+=("\`$crate\`: trait method $m: an implementation of the trait must follow: was \`$was\`, now \`$now\` (trait_method_signature_changed)")
     done < <(LC_ALL=C join -t $'\t' -o 1.1,1.3,1.4,2.3,2.4 \
         <(printf '%s\n' "$base" | sed '/^$/d' | LC_ALL=C sort -t $'\t' -k1,1) \
-        <(printf '%s\n' "$head" | sed '/^$/d' | LC_ALL=C sort -t $'\t' -k1,1))
+        <(printf '%s\n' "$head" | sed '/^$/d' | LC_ALL=C sort -t $'\t' -k1,1) | changed 3 5)
 
     # A public function or inherent method in both, with another
     # signature once the parameter names are left out: a function is
     # named by its path, as the tool names it, a method by its type.
     while IFS=$'\t' read -r m was was_unnamed now now_unnamed; do
-        [ "$was_unnamed" != "$now_unnamed" ] || continue
         path="$(reach "$f" "${m%%::*}")" || continue
         case "$m" in
         *::*) k="$m" what=method lint=method_signature_changed ;;
@@ -435,12 +470,11 @@ while read -r f; do
         lines+=("\`$crate\`: $what $k: every call must follow: was \`$was\`, now \`$now\` ($lint)")
     done < <(LC_ALL=C join -t $'\t' -o 1.1,1.2,1.3,2.2,2.3 \
         <(printf '%s\n' "$was_src" | functions | LC_ALL=C sort -t $'\t' -k1,1) \
-        <(functions < "$f" | LC_ALL=C sort -t $'\t' -k1,1))
+        <(functions < "$f" | LC_ALL=C sort -t $'\t' -k1,1) | changed 3 5)
 
     # A field in both, with another type: a host that builds, matches or
     # reads it must follow.
     while IFS=$'\t' read -r k was now; do
-        [ "$was" != "$now" ] || continue
         t="${k%%.*}"
         reach "$f" "${t%%::*}" >/dev/null || continue
         named "$k" && continue
@@ -455,7 +489,7 @@ while read -r f; do
         lines+=("\`$crate\`: field $k: a literal, a pattern or a read of the field must follow: was \`$was\`, now \`$now\` ($lint)")
     done < <(LC_ALL=C join -t $'\t' -o 1.1,1.2,2.2 \
         <(printf '%s\n' "$was_src" | fields | LC_ALL=C sort -t $'\t' -k1,1) \
-        <(fields < "$f" | LC_ALL=C sort -t $'\t' -k1,1))
+        <(fields < "$f" | LC_ALL=C sort -t $'\t' -k1,1) | changed 2 3)
 done < <(git ls-tree -r --name-only "$baseline" -- "${CRATES[@]/#/crates/}" | grep '/src/.*\.rs$')
 
 echo "Changes a host must make, since $baseline:"
