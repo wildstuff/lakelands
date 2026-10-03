@@ -1934,7 +1934,7 @@ fn plan_propose(
     let write = match write {
         ProposedWrite::Migrate { migration, .. } => {
             let head = Position(batch.peek().0.saturating_sub(1));
-            let report = preflight(st, head, &migration)?;
+            let report = preflight(st, head, &migration, who)?;
             if !report.lossless {
                 return Err(refused(Refusal::Migration {
                     report: Box::new(report),
@@ -2239,7 +2239,12 @@ fn known_shape(who: &Principal, write: &mut ProposedWrite) {
 }
 
 /// The migration's preflight over the lake as it stands.
-fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationReport> {
+fn preflight(
+    st: &State,
+    head: Position,
+    m: &Migration,
+    who: &Principal,
+) -> Result<MigrationReport> {
     let ty = &m.to.name;
     let t = st.types.get(ty).ok_or_else(|| no_type(ty))?;
     // As the store: a view changes, or becomes a stored type, by being
@@ -2322,19 +2327,38 @@ fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationRepor
         for d in &readers {
             let reads = declaration_reads(d, &was.name);
             let gone = |n: &&FieldName| field(was, n).is_some() && field(is, n).is_none();
-            if let Some(n) = reads.iter().find(gone) {
+            let said = |reader: String, n: &FieldName| {
                 let renamed = |(from, _): &&(FieldName, FieldName)| from == n && &is.name == ty;
                 let how = match m.renames.iter().find(renamed) {
                     Some((_, to)) => format!("renames to `{to}`"),
                     None => "drops".to_owned(),
                 };
-                return Err(invalid(format!(
-                    "after the migration of `{ty}`, {} reads `{n}` of `{}`, which the migration \
-                     {how}",
-                    d.what(),
+                invalid(format!(
+                    "after the migration of `{ty}`, {reader} reads `{n}` of `{}`, which the \
+                     migration {how}",
                     is.name
-                )));
-            }
+                ))
+            };
+            let Some(n) = reads.iter().find(gone) else {
+                continue;
+            };
+            // As the store: the reader is named only to an author `describe`
+            // shows it to; another is told that a declaration reads the
+            // field, which is one it knows of (a hidden one was put back).
+            let seen = describe_lake(&who.lake, st, who);
+            let shown = match d {
+                Declaration::Type(t) => seen.types.iter().any(|s| s.name == t.name),
+                Declaration::Verb(v) => seen.verbs.iter().any(|s| s.name == v.name),
+                Declaration::Trigger(t) => seen.triggers.iter().any(|s| s.name == t.name),
+                Declaration::ObjectSet(o) => seen.object_sets.iter().any(|s| s.name == o.name),
+                _ => true,
+            };
+            let reader = if shown {
+                d.what()
+            } else {
+                "a declaration".to_owned()
+            };
+            return Err(said(reader, n));
         }
     }
     // As the store: and the type it migrates to reads only fields it has.
@@ -3407,7 +3431,7 @@ impl Catalog for MockCatalog {
                     )));
                 }
                 let head = Position(accepted.0.saturating_sub(1));
-                let report = preflight(&st, head, &migration)?;
+                let report = preflight(&st, head, &migration, who)?;
                 if !report.lossless {
                     return Err(refused(Refusal::Migration {
                         report: Box::new(report),
@@ -3647,7 +3671,7 @@ impl Catalog for MockCatalog {
         authored(&st, who, &mut migration)?;
         Ok(Reply {
             position,
-            data: preflight(&st, position, &migration)?,
+            data: preflight(&st, position, &migration, who)?,
         })
     }
 
@@ -3729,7 +3753,7 @@ impl Catalog for MockCatalog {
         let (head, st) = self.state_at(&log, None)?;
         let mut migration = migration;
         authored(&st, who, &mut migration)?;
-        let report = preflight(&st, head, &migration)?;
+        let report = preflight(&st, head, &migration, who)?;
         if report.report_id != report_id {
             return Err(invalid(
                 "the lake moved since this report was made; run the preflight again",

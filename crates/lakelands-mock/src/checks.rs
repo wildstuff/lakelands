@@ -2009,7 +2009,8 @@ pub async fn a_declaration_reads_only_what_its_type_has(store: Arc<dyn LakeStore
 /// that drops a relation's field a trigger on the relation's link type
 /// reads, naming the link type; and one to a type whose own derived field
 /// reads a field it does not have. A field no declaration reads migrates
-/// away. On the mock as on the store.
+/// away. An author who is not shown the reader is told that a declaration
+/// reads the field, not its name. On the mock as on the store.
 pub async fn a_migration_keeps_what_a_declaration_reads(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let owner = &f.cast.owner;
@@ -2091,6 +2092,41 @@ pub async fn a_migration_keeps_what_a_declaration_reads(store: Arc<dyn LakeStore
         let e = e.expect_err("a field a declaration reads stays");
         assert!(invalid_naming(&e, &names), "must name {names:?}: {e:?}");
     }
+    // A reader its author is not shown is not named to it: `audit` reads
+    // `body`, which the clerk sees masked, so `describe` leaves the trigger
+    // out for it. The clerk is told that a declaration reads the field it
+    // took away; the owner is told the trigger's name.
+    let doc = |names: &[&str]| -> TypeDecl {
+        let text = |n: &&str| json!({"name": n, "type": {"kind": "text"}});
+        let fields: Vec<Value> = names.iter().map(text).collect();
+        serde_json::from_value(json!({"name": "doc", "field_meta": true, "fields": fields}))
+            .expect("a type")
+    };
+    let audit = json!({"declare": "trigger", "name": "audit", "on": "doc",
+                       "when": "note = 'x' and body = 'y'"});
+    let audit: Declaration = serde_json::from_value(audit).expect("a declaration");
+    for d in [Declaration::Type(doc(&["keep", "body", "note"])), audit] {
+        f.catalog
+            .declare(owner, d)
+            .await
+            .expect("`doc` and its trigger");
+    }
+    let to = migration(doc(&["keep"]), &[]);
+    let proposed = ProposedWrite::Migrate {
+        migration: Box::new(to.clone()),
+        report: Default::default(),
+    };
+    let e = (f.catalog)
+        .propose(&f.cast.clerk, proposed, "no notes".into())
+        .await;
+    let e = e.expect_err("a field a declaration reads stays");
+    let (said, names) = (e.to_string(), ["a declaration reads `body`"]);
+    assert!(invalid_naming(&e, &names), "must name {names:?}: {e:?}");
+    assert!(!said.contains("audit"), "{said}");
+    let e = f.catalog.migrate(owner, to).await;
+    let e = e.expect_err("a field a declaration reads stays");
+    let names = ["trigger declaration `audit`", "reads `body`"];
+    assert!(invalid_naming(&e, &names), "must name {names:?}: {e:?}");
     // The type it migrates to is held to its own fields too.
     let mut ghost = memo(&without("free"), &["ok"]);
     ghost.fields.last_mut().expect("`loud`").derived = Some("upper(ghost)".into());

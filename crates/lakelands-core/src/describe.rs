@@ -109,6 +109,22 @@ fn named(c: &Condition) -> Option<std::collections::BTreeSet<FieldName>> {
     parsed(c).map(|e| crate::derive::reads(&e))
 }
 
+/// Whether `who` is shown the declaration `d`: whether [`lake`] describes
+/// it to that principal. A refusal names a declaration only to one who is.
+/// `declared` is what is in force: over a type as a migration would leave
+/// it, a field it takes away is gone, and nothing that reads it would be
+/// shown to anyone without the `schema` grant.
+pub fn shown(d: &Declaration, declared: &[Declared], who: &Principal) -> bool {
+    let seen = lake(&who.lake, declared, who);
+    match d {
+        Declaration::Type(t) => seen.types.iter().any(|s| s.name == t.name),
+        Declaration::Verb(v) => seen.verbs.iter().any(|s| s.name == v.name),
+        Declaration::Trigger(t) => seen.triggers.iter().any(|s| s.name == t.name),
+        Declaration::ObjectSet(o) => seen.object_sets.iter().any(|s| s.name == o.name),
+        _ => true,
+    }
+}
+
 /// Whether a condition over type `ty` may be shown to `who`.
 fn condition_visible(
     c: Option<&Condition>,

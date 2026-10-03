@@ -2058,7 +2058,17 @@ impl Call<'_> {
         for (was, is) in std::iter::once((&before, &m.to)).chain(kept) {
             for d in after.declared() {
                 let reads = describe::declaration_reads(&d.declaration, &was.name);
-                gone(d.declaration.what(), &reads, was, is).map_or(Ok(()), Err)?;
+                let Some(named) = gone(d.declaration.what(), &reads, was, is) else {
+                    continue;
+                };
+                // The reader is named only to an author `describe` shows it
+                // to, as it stands in force; another is told that a
+                // declaration reads the field. The field is one the author
+                // knows of: one hidden from it was put back (`as_author`).
+                if describe::shown(&d.declaration, &w.ontology.declared(), self.who) {
+                    return Err(named);
+                }
+                gone("a declaration".to_owned(), &reads, was, is).map_or(Ok(()), Err)?;
             }
         }
         // And the type it migrates to reads only fields it has: `declare`'s

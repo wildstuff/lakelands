@@ -186,6 +186,20 @@ field, in the form it uses for a view:
   link type's, and the type's migration is what changes them, so the
   refusal names the link type as the one the field is read of.
 
+The refusal names the reading declaration only to an author who is
+shown it, by the rule `describe` uses for that kind of declaration in
+force: a proposer without the `schema` grant is not shown a trigger, a
+set or a verb whose expression reads a field it may not know of. Such an
+author is told that a declaration reads the field, without its name
+("after the migration of `invoice`, a declaration reads `note` of
+`invoice`, which the migration drops"). The field it names is one the
+author knows of: a field hidden from it was not its to leave out, and its
+migration does not take it away (lakelands#475). The refusal stays
+`invalid` and can be acted on: the author keeps the field, or asks someone who is
+shown the reader (lakelands#495). At an acceptance the refusal goes to
+the one who accepts, who holds the `schema` grant and is shown every
+declaration.
+
 One function gathers these reads, beside the one for a view. The host
 declares the reader again first, so that it reads the shape the
 migration leaves, then migrates. A field no declaration reads migrates
