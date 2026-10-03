@@ -27,6 +27,8 @@ The core's budgets are four:
 
 **The second raise:** the product code, from 36 000 to 36 500 lines, by the operator's decision, for what a host needs in 0.9.0 to move its data onto a lake (lakelands#481). The diet went on beside it.
 
+**The third raise:** the specification, from 42 000 to 42 500 lines, by slot a's word under the rule, for the checks of two fixes that pin a rule of rights (lakelands#509). It is the first raise the rule makes without the operator's own decision; the operator was told.
+
 ## Why
 
 The budgets keep the core small enough for one reader to hold. They have done that: four diets took out about 5 000 lines without losing a check.
