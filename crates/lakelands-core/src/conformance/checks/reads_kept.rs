@@ -6,8 +6,9 @@
 
 use std::sync::Arc;
 
-use lakelands_api::ontology::StorageKind::Text;
+use lakelands_api::ontology::StorageKind::{self, Json, Text};
 use lakelands_api::ontology::{RelationDecl, TypeDecl};
+use lakelands_api::principal::TypeGrants;
 use lakelands_api::write::{Declaration, Migration, ProposedWrite};
 use lakelands_api::{Access, LakeStore};
 use serde_json::json;
@@ -132,6 +133,84 @@ async fn a_migration_keeps_the_fields_a_declaration_reads(
     invalid_naming("the same proposal by one shown its reader", refused, shown)?;
     let refused = l.cat.migrate(&l.own, m).await;
     invalid_naming("the same migration by the owner", refused, shown)?;
+    Ok(())
+}
+
+check!(
+    /// A migration's refusal names a view only to an author shown it.
+    MIGRATION_NAMES_A_SHOWN_VIEW = a_migration_names_a_view_only_to_an_author_who_is_shown_it,
+    "027, extended: a migration that takes a field a view reads, or changes a kind the view cannot be declared over, is refused naming the view only to an author `describe` shows the view's definition to, in the sentence it had; an author who is not shown the view's type, or is shown it with its definition withheld, is told that a declaration reads the field, or that a declaration over the type could no longer be declared, without the view's name"
+);
+
+async fn a_migration_names_a_view_only_to_an_author_who_is_shown_it(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let bill = |team: StorageKind, names: &[&str]| {
+        let mut fields: Vec<_> = names.iter().map(|n| field(n, Text)).collect();
+        fields.push(field("team", team));
+        type_decl("bill", fields)
+    };
+    l.declare(bill(Text, &["note", "bonus"])).await?;
+    let view = json!({"source": "bill", "group_by": ["team"], "where": "note = 'x' and bonus = 'y'",
+                      "measures": [{"name": "n", "expr": "count()"}]});
+    l.declare_json(
+        json!({"declare": "type", "name": "by_team", "key": ["team"], "view": view,
+        "fields": [{"name": "team", "type": {"kind": "text"}},
+                   {"name": "n", "type": {"kind": "number"}}]}),
+    )
+    .await?;
+    // `blind` has no access to the view's type; `partial` is shown it with
+    // its definition withheld, since that reads `bonus`.
+    let mut blind = reads_all(store.as_ref(), "blind");
+    let none = TypeGrants {
+        default: Some(Access::None),
+        fields: Default::default(),
+    };
+    blind.grants.types.insert("by_team".into(), none);
+    let partial = field_access(
+        store.as_ref(),
+        "partial",
+        "bill",
+        &[("bonus", Access::None)],
+    );
+    let proposed = |to: TypeDecl| ProposedWrite::Migrate {
+        migration: Box::new(migration(to)),
+        report: Default::default(),
+    };
+    let why = || "a change".to_owned();
+    let unnamed = |what: &str, refused: lakelands_api::Result<_>, says: &str| {
+        let named = |e: &lakelands_api::Error| e.to_string().contains("by_team");
+        ensure!(
+            !refused.as_ref().is_err_and(named),
+            "{what} must not name the view `by_team`; it answered {refused:?}"
+        );
+        invalid_naming(what, refused, &[says])
+    };
+    // Each takes away what it knows of: `blind` both fields, `partial` `note`.
+    for (who, gone) in [(&blind, "bonus"), (&partial, "note")] {
+        let what = format!("a migration taking a field a view reads, by `{}`", who.id);
+        let says = format!("a declaration reads `{gone}` of `bill`");
+        let refused = l.cat.propose(who, proposed(bill(Text, &[])), why()).await;
+        unnamed(&what, refused, &says)?;
+    }
+    // A kind no view groups by: no field is gone, and no reason is given.
+    let retyped = proposed(bill(Json, &["note", "bonus"]));
+    unnamed(
+        "a migration that changes the kind a view groups by, by `blind`",
+        l.cat.propose(&blind, retyped, why()).await,
+        "a declaration over `bill` could no longer be declared",
+    )?;
+    // One who is shown the view is told its name, in the sentence as it was.
+    let was = "refused: after the migration of `bill`, type `by_team`: its view reads `bonus` of \
+               `bill`, which `bill` does not have";
+    let all = reads_all(store.as_ref(), "all");
+    let told = l.cat.propose(&all, proposed(bill(Text, &[])), why()).await;
+    let said = told.as_ref().err().map(ToString::to_string);
+    ensure!(
+        said.as_deref() == Some(was),
+        "an author shown the view is told, as before, {was:?}; it answered {told:?}"
+    );
     Ok(())
 }
 

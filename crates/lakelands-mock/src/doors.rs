@@ -2340,10 +2340,17 @@ fn preflight(
                     Some((_, to)) => format!("renames to `{to}`"),
                     None => "drops".to_owned(),
                 };
+                // As the store: the view is named only to an author
+                // `describe` shows its definition to.
+                let seen = describe_lake(&who.lake, st, who);
+                let shown = |s: &TypeDescription| s.name == o.decl.name && s.view.is_some();
+                let reader = match seen.types.iter().any(shown) {
+                    true => format!("view `{}`", o.decl.name),
+                    false => "a declaration".to_owned(),
+                };
                 return Err(invalid(format!(
-                    "after the migration of `{ty}`, view `{}` reads `{gone}` of `{ty}`, which \
-                     the migration {how}",
-                    o.decl.name
+                    "after the migration of `{ty}`, {reader} reads `{gone}` of `{ty}`, which \
+                     the migration {how}"
                 )));
             }
         }
@@ -2396,7 +2403,8 @@ fn preflight(
             // field, which is one it knows of (a hidden one was put back).
             let seen = describe_lake(&who.lake, st, who);
             let shown = match d {
-                Declaration::Type(t) => seen.types.iter().any(|s| s.name == t.name),
+                Declaration::Type(t) => (seen.types.iter())
+                    .any(|s| s.name == t.name && (t.view.is_none() || s.view.is_some())),
                 Declaration::Verb(v) => seen.verbs.iter().any(|s| s.name == v.name),
                 Declaration::Trigger(t) => seen.triggers.iter().any(|s| s.name == t.name),
                 Declaration::ObjectSet(o) => seen.object_sets.iter().any(|s| s.name == o.name),

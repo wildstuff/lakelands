@@ -2089,29 +2089,43 @@ impl Call<'_> {
             if v.source != m.to.name && !v.merge.iter().any(|s| s.source == m.to.name) {
                 continue;
             }
-            declare::check_declaration(&after, &Declaration::Type(reader.clone()), false).map_err(
-                |e| match e {
-                    Error::Refused {
-                        field,
-                        reason: Refusal::Invalid { message },
-                    } => Error::Refused {
-                        field,
-                        reason: Refusal::Invalid {
-                            message: format!("after the migration of `{}`, {message}", m.to.name),
-                        },
-                    },
-                    other => other,
-                },
-            )?;
+            let view = Declaration::Type(reader.clone());
             // `declare` checks a view's grouping against its sources; the
-            // fields its `where` and measures read are checked here, by the
-            // rule `describe` uses to show a view.
-            for (source, names) in describe::view_reads(v).unwrap_or_default() {
-                if source == m.to.name {
-                    gone(format!("view `{}`", reader.name), &names, &before, &m.to)
-                        .map_or(Ok(()), Err)?;
-                }
+            // fields its `where` and measures read are checked by the rule
+            // `describe` uses to show a view.
+            let reads = describe::view_reads(v).unwrap_or_default();
+            let taken = |reader: String| {
+                let mut of = reads.iter().filter(|(source, _)| source == &m.to.name);
+                of.find_map(|(_, names)| gone(reader.clone(), names, &before, &m.to))
+            };
+            let checked = declare::check_declaration(&after, &view, false).map_err(|e| match e {
+                Error::Refused {
+                    field,
+                    reason: Refusal::Invalid { message },
+                } => Error::Refused {
+                    field,
+                    reason: Refusal::Invalid {
+                        message: format!("after the migration of `{}`, {message}", m.to.name),
+                    },
+                },
+                other => other,
+            });
+            let named =
+                checked.and_then(|()| taken(format!("view `{}`", reader.name)).map_or(Ok(()), Err));
+            // The view is named only to an author `describe` shows its
+            // definition to (027, extended); another is told that a
+            // declaration reads the field, or that one could not be declared.
+            let Err(named) = named else { continue };
+            if describe::shown(&view, &w.ontology.declared(), self.who) {
+                return Err(named);
             }
+            return Err(taken("a declaration".to_owned()).unwrap_or_else(|| {
+                invalid(format!(
+                    "after the migration of `{0}`, a declaration over `{0}` could no longer be \
+                     declared",
+                    m.to.name
+                ))
+            }));
         }
         // So does every other declaration in force (027, extended): the
         // type's derived fields, another type's derived relation to it, and
