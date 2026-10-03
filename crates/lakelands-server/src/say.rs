@@ -67,8 +67,9 @@ impl From<Error> for Failure {
                         .to_owned()
                 }
                 Refusal::TooLarge { .. } if field.is_some() => {
-                    "count what the set would take in with `find`, its filter and `total`; then \
-                     widen the filter in steps, or raise the lake's `max_set_changes` in its location"
+                    "declare the set with a narrower filter and widen it in steps, after the \
+                     migration if one was refused (`find` with the filter and `total` counts a \
+                     step); or raise the lake's `max_set_changes` in its location"
                         .to_owned()
                 }
                 Refusal::TooLarge { .. } => {
