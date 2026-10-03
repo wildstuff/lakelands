@@ -117,7 +117,10 @@ fn named(c: &Condition) -> Option<std::collections::BTreeSet<FieldName>> {
 pub fn shown(d: &Declaration, declared: &[Declared], who: &Principal) -> bool {
     let seen = lake(&who.lake, declared, who);
     match d {
-        Declaration::Type(t) => seen.types.iter().any(|s| s.name == t.name),
+        // A view is shown when its definition is, not only its type's name.
+        Declaration::Type(t) => {
+            (seen.types.iter()).any(|s| s.name == t.name && (t.view.is_none() || s.view.is_some()))
+        }
         Declaration::Verb(v) => seen.verbs.iter().any(|s| s.name == v.name),
         Declaration::Trigger(t) => seen.triggers.iter().any(|s| s.name == t.name),
         Declaration::ObjectSet(o) => seen.object_sets.iter().any(|s| s.name == o.name),

@@ -1128,6 +1128,16 @@ fn condition_visible(st: &State, who: &Principal, ty: &TypeName, c: Option<&Cond
     who.grants.schema || c.is_none_or(|c| named(c).is_some_and(|n| reads_all(st, who, ty, &n)))
 }
 
+/// As the store: a read of a view probes what its definition reads, so a
+/// reader `describe` withholds the definition from is not granted it, and
+/// no field of its source is named.
+fn view_readable(st: &State, who: &Principal, t: &DeclaredType) -> Result<()> {
+    match t.decl.view.as_deref() {
+        Some(v) if !view_visible(st, who, v) => Err(refused(Refusal::NotGranted)),
+        _ => Ok(()),
+    }
+}
+
 /// A view is shown whole on the same rule, over its source's fields.
 fn view_visible(st: &State, who: &Principal, v: &ViewDecl) -> bool {
     if who.grants.schema {
@@ -2330,10 +2340,17 @@ fn preflight(
                     Some((_, to)) => format!("renames to `{to}`"),
                     None => "drops".to_owned(),
                 };
+                // As the store: the view is named only to an author
+                // `describe` shows its definition to.
+                let seen = describe_lake(&who.lake, st, who);
+                let shown = |s: &TypeDescription| s.name == o.decl.name && s.view.is_some();
+                let reader = match seen.types.iter().any(shown) {
+                    true => format!("view `{}`", o.decl.name),
+                    false => "a declaration".to_owned(),
+                };
                 return Err(invalid(format!(
-                    "after the migration of `{ty}`, view `{}` reads `{gone}` of `{ty}`, which \
-                     the migration {how}",
-                    o.decl.name
+                    "after the migration of `{ty}`, {reader} reads `{gone}` of `{ty}`, which \
+                     the migration {how}"
                 )));
             }
         }
@@ -2386,7 +2403,8 @@ fn preflight(
             // field, which is one it knows of (a hidden one was put back).
             let seen = describe_lake(&who.lake, st, who);
             let shown = match d {
-                Declaration::Type(t) => seen.types.iter().any(|s| s.name == t.name),
+                Declaration::Type(t) => (seen.types.iter())
+                    .any(|s| s.name == t.name && (t.view.is_none() || s.view.is_some())),
                 Declaration::Verb(v) => seen.verbs.iter().any(|s| s.name == v.name),
                 Declaration::Trigger(t) => seen.triggers.iter().any(|s| s.name == t.name),
                 Declaration::ObjectSet(o) => seen.object_sets.iter().any(|s| s.name == o.name),
@@ -2566,6 +2584,7 @@ impl Catalog for MockCatalog {
         let (position, st) = self.state_at(&self.log(), pinned)?;
         let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
         bound(&t.decl, &find.params)?;
+        view_readable(&st, who, t)?;
         let after = find
             .after
             .as_ref()
@@ -2671,6 +2690,7 @@ impl Catalog for MockCatalog {
         let (position, st) = self.state_at(&self.log(), get.at.as_of)?;
         let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
         bound(&t.decl, &get.params)?;
+        view_readable(&st, who, t)?;
         valid_time_readable(&st, who, t, get.at)?;
         let r = st
             .live(ty, &get.key)
@@ -2941,6 +2961,7 @@ impl Catalog for MockCatalog {
             .visible(who, &start.ty)
             .ok_or_else(|| no_type(&start.ty))?;
         bound(&t.decl, &start.params)?;
+        view_readable(&st, who, t)?;
         let measure = matches!(pattern.project, Projection::Degree | Projection::Components);
         let limit = self.limit(pattern.limit, measure)?;
         if start.search.is_some() || pattern.to.is_some() {
@@ -3082,6 +3103,7 @@ impl Catalog for MockCatalog {
                     .is_some()
             };
             let next = st.visible(who, &target).ok_or_else(|| no_type(&target))?;
+            view_readable(&st, who, next)?;
             unbound_view(&t.decl.name, next, &step.relation)?;
             if let Some(ty) = &step.ty
                 && ty != &target

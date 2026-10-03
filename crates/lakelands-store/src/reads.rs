@@ -851,7 +851,13 @@ impl<'a> Reader<'a> {
                     .filter(|f| source.fields.iter().any(|d| &d.name == f)),
             );
         }
-        rights::check_probe(self.who, &source, probed.iter())?;
+        // The probe is the view's own, so its refusal names nothing of the
+        // source to a reader `describe` withholds the definition from (024).
+        let unnamed = |e| match self.who.grants.schema {
+            true => e,
+            false => crate::writes::refused(Refusal::NotGranted),
+        };
+        rights::check_probe(self.who, &source, probed.iter()).map_err(unnamed)?;
         // A `where` that read a parameter is evaluated here, never handed to
         // an engine: a bound date is text, and its arithmetic is the
         // evaluator's.

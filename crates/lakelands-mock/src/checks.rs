@@ -107,6 +107,7 @@ macro_rules! door_checks {
             a_migration_keeps_what_a_declaration_reads,
             a_view_is_never_migrated,
             nothing_that_never_acts_is_declared_on_a_view,
+            a_view_over_a_hidden_field_names_nothing,
             a_set_may_hold_a_link_types_records,
             a_relation_on_a_view_is_derived,
             a_tools_key_says_what_to_pass,
@@ -1725,6 +1726,54 @@ pub async fn a_set_may_hold_a_link_types_records(store: Arc<dyn LakeStore>) {
     );
 }
 
+/// A read of a view probes what its definition reads: a reader who may not
+/// know of a field its `where` reads is refused as not granted, on no field
+/// and without that field's name, by `find` and by `get`; the owner is
+/// answered. On the mock as on the store (024, extended).
+pub async fn a_view_over_a_hidden_field_names_nothing(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let (owner, c) = (&f.cast.owner, &f.catalog);
+    let view = json!({"declare": "type", "name": "kept_by_status", "key": ["status"],
+        "fields": [{"name": "status", "type": {"kind": "text"}},
+                   {"name": "n", "type": {"kind": "number"}}],
+        "view": {"source": INVOICE, "group_by": ["status"], "where": "secret = 'x'",
+                 "measures": [{"name": "n", "expr": "count()"}]}});
+    let view: Declaration = serde_json::from_value(view).expect("a declaration");
+    c.declare(owner, view)
+        .await
+        .expect("the owner declares the view");
+    let kept = ty("kept_by_status");
+    let unnamed = |what: &str, e: Error| {
+        let nothing = matches!(
+            &e,
+            Error::Refused {
+                field: None,
+                reason: Refusal::NotGranted
+            }
+        );
+        assert!(
+            nothing && !e.to_string().contains("secret"),
+            "{what}: {e:?}"
+        );
+    };
+    let found = c.find(&f.cast.clerk, &kept, Find::default()).await;
+    unnamed(
+        "find",
+        found.expect_err("the clerk may not know of `secret`"),
+    );
+    let get = Get {
+        key: key("open"),
+        with_meta: false,
+        params: Default::default(),
+        at: Default::default(),
+    };
+    let got = c.get(&f.cast.clerk, &kept, get).await;
+    unnamed("get", got.expect_err("the clerk may not know of `secret`"));
+    c.find(owner, &kept, Find::default())
+        .await
+        .expect("the owner reads the view");
+}
+
 /// A view's records are computed, so a relation on a view carried by link
 /// records or by a `via` field could never hold an edge: `declare`
 /// refuses it, naming the view and the relation, on the mock as on the
@@ -1832,8 +1881,10 @@ pub async fn a_view_is_never_migrated(store: Arc<dyn LakeStore>) {
 
 /// A view reads its source's shape after a migration as before: a
 /// migration that drops or renames a field the view groups by or
-/// aggregates is refused at the preflight, naming the view and the field,
-/// on the mock as on the store.
+/// aggregates is refused at the preflight, naming the view and the field;
+/// an author who is not shown the view's definition is told that a
+/// declaration reads the field, without the view. On the mock as on the
+/// store.
 pub async fn a_migration_keeps_what_a_view_reads(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let owner = &f.cast.owner;
@@ -1874,6 +1925,11 @@ pub async fn a_migration_keeps_what_a_view_reads(store: Arc<dyn LakeStore>) {
         .expect("the fixture declares `invoice`");
     let mut dropped = invoice.clone();
     dropped.fields.retain(|x| x.name.as_str() != "amount");
+    // The clerk's view of that shape: it may not know of `secret`.
+    let mut without_amount = dropped.clone();
+    without_amount
+        .fields
+        .retain(|x| x.name.as_str() != "secret");
     let mut renamed = invoice;
     for x in &mut renamed.fields {
         if x.name.as_str() == "status" {
@@ -1895,6 +1951,33 @@ pub async fn a_migration_keeps_what_a_view_reads(store: Arc<dyn LakeStore>) {
             "{e:?}"
         );
     }
+    // A view its author is not shown is not named to it: `kept_totals` reads
+    // `secret`, so `describe` withholds its definition from the clerk, who
+    // is told that a declaration reads the field it took away.
+    let kept = json!({"declare": "type", "name": "kept_totals", "key": ["status"],
+        "fields": [{"name": "status", "type": {"kind": "text"}},
+                   {"name": "total", "type": {"kind": "decimal"}}],
+        "view": {"source": INVOICE, "group_by": ["status"], "where": "secret = 'x'",
+                 "measures": [{"name": "total", "expr": "sum(amount)"}]}});
+    let kept: Declaration = serde_json::from_value(kept).expect("a declaration");
+    f.catalog
+        .declare(owner, kept)
+        .await
+        .expect("the second view");
+    let proposed = ProposedWrite::Migrate {
+        migration: Box::new(lakelands_api::write::Migration {
+            to: without_amount,
+            renames: vec![],
+        }),
+        report: Default::default(),
+    };
+    let e = (f.catalog)
+        .propose(&f.cast.clerk, proposed, "no amounts".into())
+        .await;
+    let e = e.expect_err("a field a view reads stays");
+    let (said, names) = (e.to_string(), ["a declaration reads `amount`"]);
+    assert!(invalid_naming(&e, &names), "must name {names:?}: {e:?}");
+    assert!(!said.contains("kept_totals"), "{said}");
 }
 
 /// A view whose `where` names, or whose measure aggregates, a field its
