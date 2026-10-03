@@ -164,6 +164,7 @@ macro_rules! door_checks {
             an_ingested_upstream_is_answered_per_field,
             a_schema_proposal_is_refused_by_kind_at_propose_and_at_accept,
             a_value_types_tightening_is_proposed_and_accepted_while_it_fits,
+            a_proposal_shows_its_reader_the_values_it_may_read,
             an_order_by_latest_takes_no_field_and_no_view,
             #[views] a_view_reads_the_parameters_each_read_binds,
             a_parameter_its_type_does_not_declare_is_refused,
@@ -3045,6 +3046,70 @@ pub async fn a_value_types_tightening_is_proposed_and_accepted_while_it_fits(
         matches!(refusal(&stale).1, Refusal::Invalid { message } if message.contains("changed since")),
         "{stale:?}"
     );
+}
+
+/// `proposals` shows a proposed value where a read of the record would:
+/// the keeper, who writes `secret` and never reads it, proposes it in a
+/// patch and through a verb's payload, and lists its own proposals with
+/// neither; a reviewer who reads the field lists both whole, and the
+/// accept applies the logged write whole
+/// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+/// extended).
+pub async fn a_proposal_shows_its_reader_the_values_it_may_read(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let (c, own, keeper) = (&f.catalog, &f.cast.owner, &f.cast.keeper);
+    let hide = json!({"declare": "verb", "name": "hide", "on": INVOICE, "risk": "high",
+        "payload": [{"name": "word", "type": {"kind": "text"}}],
+        "effect": "write", "set": [{"field": "secret", "value": "payload.word"}]});
+    let hide = serde_json::from_value(hide).unwrap();
+    c.declare(own, hide).await.expect("`hide` is declared");
+    let (i1, opts) = (key("i1"), WriteOpts::default);
+    let first = patch(&[("status", json!("new"))]);
+    let written = c.upsert(own, &ty(INVOICE), &i1, first, opts()).await;
+    written.expect("`i1` is written");
+    let whole = patch(&[("status", json!("open")), ("secret", json!("s3"))]);
+    let (sent, shown) = (
+        patch(&[("word", json!("w"))]),
+        patch(&[("status", json!("open"))]),
+    );
+    let raise = ProposedWrite::Upsert {
+        ty: ty(INVOICE),
+        key: i1.clone(),
+        patch: whole.clone(),
+        opts: opts(),
+    };
+    let raise = c.propose(keeper, raise, "a secret".into()).await;
+    let Ok(Outcome::Proposed { proposal, .. }) = raise else {
+        panic!("the keeper proposes the upsert: {raise:?}")
+    };
+    let verb = "hide".into();
+    let called = c.call(keeper, &verb, Some(&i1), sent.clone(), opts()).await;
+    assert!(
+        matches!(called, Ok(Outcome::Proposed { .. })),
+        "a high verb's call is proposed: {called:?}"
+    );
+    let rows = [
+        (&f.cast.reviewer, &whole, &sent),
+        (keeper, &shown, &Patch::new()),
+    ];
+    for (who, patch, payload) in rows {
+        let listed = c.proposals(who, ProposalFilter::default()).await;
+        let listed = listed.expect("the proposals are listed").data;
+        // Newest first: the call, then the upsert.
+        let got: Vec<&Patch> = (listed.iter())
+            .filter_map(|p| match &p.write {
+                ProposedWrite::Upsert { patch, .. } => Some(patch),
+                ProposedWrite::Call { payload, .. } => Some(payload),
+                _ => None,
+            })
+            .collect();
+        assert!(got == [payload, patch], "`{}` lists {got:?}", who.id);
+    }
+    let accepted = c.accept(&f.cast.reviewer, &proposal).await;
+    accepted.expect("the reviewer accepts the upsert");
+    let after = c.get(own, &ty(INVOICE), get("i1")).await.unwrap().data;
+    let kept = field(&after, "secret") == Some(&json!("s3"));
+    assert!(kept, "the accept applies the logged write whole: {after:?}");
 }
 
 /// A declaration or a migration can be proposed by a principal without

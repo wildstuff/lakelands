@@ -395,6 +395,10 @@ belongs in the suite, not beside one engine:
 - `a_retried_write_verb_answers_its_own_write_though_a_host_write_names_it` — 013 and 021, extended: a retry of a write verb answers the record write the verb itself made and its version, though a later host write names the verb's `verb_called` as its cause
 - `a_retried_proposed_call_answers_its_proposal_after_it_is_accepted` — 013 and 015: a retry of a call that was proposed answers the proposal, its first outcome, after the proposal was accepted and a host write named the accepted call as its cause
 
+**readers view**
+
+- `a_proposal_shows_its_reader_the_values_it_may_read_and_is_accepted_whole` — 013 and 024, extended (lakelands#499): `proposals` shows a proposed value where a read of the record would: a field its reader may not know of and a masked one are not in a proposed patch, a proposed call's payload is whole only to a reader who may read every field the verb sets, or see the type of a verb that reaches outside, and a write to a type the reader may not see stays listed and shows neither; the proposer reads its own proposal by the same rule; the accept applies the logged write whole, what its reviewer was not shown too
+
 **schema proposals**
 
 - `a_proposed_declaration_takes_effect_only_when_accepted` — 013, extended, and 007: a principal without the schema grant may propose declarations; nothing is declared and no schema hash moves until a reviewer with review and schema accepts, and then the declaration is logged at the acceptance, written as the proposer and caused by the acceptance

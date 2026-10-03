@@ -2256,7 +2256,8 @@ fn redeclared(st: &State, who: &Principal, declarations: &mut [Declaration]) -> 
 }
 
 /// A proposed shape without the fields its reader may not know of, a
-/// relation's link fields too: the proposal holds the completed shape.
+/// relation's link fields too: the proposal holds the completed shape. A
+/// proposed value is shown where a read of the record would show it.
 fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite) {
     let shown = |t: &mut TypeDecl| {
         let whole = t.clone();
@@ -2266,7 +2267,26 @@ fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite) {
             r.fields.retain(|f| access(who, &link, f) != Access::None);
         }
     };
+    let read = |ty: &TypeName, f: &FieldName| {
+        (st.visible(who, ty)).is_some_and(|t| readable(st, who, t, f).is_ok())
+    };
     match write {
+        // A field the reader may not know of and a masked one both leave
+        // the patch: it holds values, and no place for a name.
+        ProposedWrite::Upsert { ty, patch, .. } => patch.retain(|f, _| read(ty, f)),
+        // A payload is what the verb's fields become: whole to a reader who
+        // may read each field the verb sets, or see the type an executor
+        // acts on, and empty otherwise.
+        ProposedWrite::Call { verb, payload, .. } => {
+            let whole = st.verbs.get(verb).is_some_and(|v| match &v.effect {
+                VerbEffect::Write { set } => set.iter().all(|a| read(&v.on, &a.field)),
+                VerbEffect::External { .. } => st.visible(who, &v.on).is_some(),
+            });
+            if !whole {
+                payload.clear();
+            }
+        }
+        ProposedWrite::Retire { .. } => {}
         ProposedWrite::Migrate { migration, .. } => shown(&mut migration.to),
         ProposedWrite::Declare { declarations } => {
             for d in declarations {
@@ -2278,12 +2298,8 @@ fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite) {
         // A use is shown only in a field the reader may read; the report's
         // totals stay whole, and a logged report fits, so it names no misfit.
         ProposedWrite::MigrateValueType { report, .. } => {
-            let read = |ty: &TypeName, f: &FieldName| {
-                (st.types.get(ty)).is_some_and(|t| readable(st, who, t, f).is_ok())
-            };
             report.fields.retain(|u| read(&u.ty, &u.field));
         }
-        _ => {}
     }
 }
 
