@@ -154,3 +154,29 @@ location sets it).** A declaration that would change more is refused
 
 What it costs, and how a host declares a set over a large type, is in
 `docs/seams.md`, "Declaring a set over a large type".
+
+## Extended: a migration decides the membership again (lakelands#457)
+
+A migration changes the records of its type: a field converted to
+another kind or scale, a key moved. Their membership in the type's object
+sets was carried as it stood, so a set whose filter reads a converted
+field kept members its filter no longer holds for. Now the migration
+decides each record again, as migrated, by the rule a write uses. In its
+own append, directly after its `migrated`, it appends an
+`object_set_changed` for each record whose membership changes, caused by
+the `migrated`, written by the system, and naming the record's key after
+the migration. A re-keyed record's membership moves with it, as it did
+before; the decision concerns only what the converted fields hold.
+
+The changes stand before the events of the link types the migration
+changes or adds, as a write's reactions directly follow its event. The
+migration's answer reads what directly follows its `migrated`, so it
+names each set joined or left once and `through` the last change,
+whatever else the append carries.
+
+The decision is made in the walk the preflight makes over the type's
+records anyway, so a migration reads no record twice. Its changes count
+against the same `max_set_changes` as a set's declaration, over all sets
+of the type; past it the migration is refused `too_large`, naming a set
+and the ceiling, and appends nothing. A migration that changes nothing a
+filter reads appends no `object_set_changed`.

@@ -1271,6 +1271,14 @@ A set over a large type is declared in one of two ways:
 The walk is not bounded: a type of a million live records holds the
 writer for several seconds even for a set nothing joins.
 
+A migration decides the membership of the records it migrates again,
+in the walk its preflight makes over the type's records anyway, and
+appends the changes in its own append, directly after its `migrated` and
+caused by it. Its changes count against the same `max_set_changes`, over all sets of the
+type; past it the migration is refused `too_large`, naming a set. Narrow
+the sets first (declare them again with a narrower filter), migrate, then
+widen them in steps.
+
 ## `SystemVocabulary`
 
 `types()` lists a host's own `sys.` types as type declarations;

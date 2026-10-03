@@ -447,6 +447,10 @@ belongs in the suite, not beside one engine:
 
 - `a_sets_declaration_decides_the_membership_of_the_records_there` — 004, extended: a set declared over records already written appends, in its declaration's append and caused by its `declared`, an `object_set_changed` joining each live record its filter holds for and no other; declared again with another filter, it joins and leaves exactly the records the change moves; declared again unchanged, it appends none; and a later write decides against the membership so kept; past the lake's `max_set_changes` a declaration is refused `too_large`, naming the set and the ceiling, and appends nothing
 
+**set migrated**
+
+- `a_migration_decides_the_membership_of_the_records_it_migrates` — 004, extended: a migration appends, directly after its `migrated` and caused by it, an `object_set_changed` for each record whose membership under a set of the type changes as migrated, and none when it changes nothing a filter reads; its answer names each set joined or left once and `through` the changes, also when it adds a relation carried by links; a re-keyed member stays a member under its new key; past the lake's `max_set_changes` a migration is refused `too_large`, naming a set and the ceiling, and appends nothing
+
 **link triggers**
 
 - `a_trigger_on_a_link_type_fires_on_link_rewrite_unlink_and_ingest` — 035 and 004: a trigger naming a relation's link type fires on link, on the link written again, on unlink and on each ingested link, naming the link type and the link's key, caused by that write; its guard reads the link's fields, and `changed(f)` holds on a write that changes f and not on unlink

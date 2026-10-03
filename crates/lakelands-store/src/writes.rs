@@ -69,6 +69,15 @@ const RETRY_REACH: u32 = 4_096;
 /// their membership.
 const SET_PAGE: u32 = 1_024;
 
+/// What a migration's preflight finds: its report, the record keys it
+/// moves and, when it is applied, the set memberships it changes, as
+/// (set, record key after the migration, joined).
+struct MigrationPlan {
+    report: MigrationReport,
+    rekeyed: Vec<lakelands_api::write::Rekey>,
+    members: Vec<(String, RecordKey, bool)>,
+}
+
 /// The record a call names, checked against the verb's scope before
 /// anything is read (013, extended): a verb on a record needs its key, a
 /// verb on its type takes none, and with no record there is no version
@@ -1416,7 +1425,9 @@ impl Call<'_> {
                 ProposedWrite::Declare { declarations }
             }
             ProposedWrite::Migrate { migration, .. } => {
-                let (report, _) = self.preflight_plan(&w, view.as_ref(), &migration)?;
+                let report = self
+                    .preflight_plan(&w, view.as_ref(), &migration, None)?
+                    .report;
                 if !report.lossless {
                     return Err(Error::Refused {
                         field: None,
@@ -1616,8 +1627,9 @@ impl Call<'_> {
                 drafts.extend(own.into_iter().map(&as_accepted));
             }
             ProposedWrite::Migrate { migration, .. } => {
-                let (report, rekeyed) = self.preflight_plan(&w, view.as_ref(), migration)?;
-                let own = self.migration_drafts(&w, (**migration).clone(), report, rekeyed, now)?;
+                let plan = self.preflight_plan(&w, view.as_ref(), migration, Some(now))?;
+                let first = drafts.len();
+                let own = self.migration_drafts(&w, (**migration).clone(), plan, now, first)?;
                 drafts.extend(own.into_iter().map(&as_accepted));
             }
         }
@@ -1963,16 +1975,21 @@ impl Call<'_> {
         m: &Migration,
     ) -> Result<MigrationReport> {
         granted(self.who.grants.schema)?;
-        Ok(self.preflight_plan(w, view, m)?.0)
+        Ok(self.preflight_plan(w, view, m, None)?.report)
     }
 
-    /// The preflight, and the record keys the migration moves.
+    /// The preflight, the record keys the migration moves and, given the
+    /// time it is applied at, the set memberships it changes: each record
+    /// as migrated is decided by the rule a write uses, in the walk the
+    /// preflight makes anyway, past the lake's `max_set_changes` refused
+    /// `too_large` naming the set.
     fn preflight_plan(
         &self,
         w: &Writer,
         view: &dyn ProjectionView,
         m: &Migration,
-    ) -> Result<(MigrationReport, Vec<lakelands_api::write::Rekey>)> {
+        now: Option<Timestamp>,
+    ) -> Result<MigrationPlan> {
         let before = w.ontology.ty(&m.to.name)?.clone();
         // A migration reshapes stored records, and a view stores none. A
         // view changes, or becomes a stored type, by being declared again;
@@ -2091,16 +2108,45 @@ impl Call<'_> {
         )
         .map_err(|e| invalid(e.to_string()))?;
         // A key the new key fields make differently moves the record, and
-        // what names it moves with it (`crate::rekey`).
+        // what names it moves with it (`crate::rekey`). A set of the type
+        // decides each record again as migrated (004, extended).
+        let sets: Vec<&ObjectSetDecl> = (w.ontology.object_sets.values())
+            .map(|e| &e.decl)
+            .filter(|s| s.of == m.to.name)
+            .collect();
+        let decide = now.filter(|_| !sets.is_empty());
+        let max = self.lake.limits.max_set_changes;
         let mut converted = Vec::new();
-        if !m.to.key.is_empty() {
+        let mut members = Vec::new();
+        if !m.to.key.is_empty() || decide.is_some() {
             for r in &records {
                 // A record that does not convert is already not lossless;
                 // its stored fields still tell whether it has a new key.
                 let fields = shape::migrate_record(&before, m, &r.fields)
                     .map_err(|e| invalid(e.to_string()))?
                     .unwrap_or_else(|| r.fields.clone());
-                converted.push((r.key.clone(), fields));
+                let after = StoredRecord {
+                    fields,
+                    ..r.clone()
+                };
+                if let Some(now) = decide {
+                    for s in &sets {
+                        let was = view.is_member(&s.name, &before.name, &r.key)?;
+                        if was == member_of(s, &after, w, now)? {
+                            continue;
+                        }
+                        if members.len() as u64 >= u64::from(max) {
+                            return Err(Error::Refused {
+                                field: Some(s.name.as_str().into()),
+                                reason: Refusal::TooLarge { max },
+                            });
+                        }
+                        members.push((s.name.clone(), r.key.clone(), !was));
+                    }
+                }
+                if !m.to.key.is_empty() {
+                    converted.push((r.key.clone(), after.fields));
+                }
             }
         }
         let mut after = w.ontology.clone();
@@ -2194,7 +2240,22 @@ impl Call<'_> {
             "rekeyed": serde_json::to_value(&listed).expect("moves serialise"),
             "head": view.position().map_or(0, |p| p.0),
         }));
-        Ok((report, listed))
+        // A moved record is a member under its new key: the fold of
+        // `migrated` carries its membership there.
+        let moved: BTreeMap<&RecordKey, &RecordKey> = (listed.iter())
+            .filter(|r| r.ty == m.to.name)
+            .map(|r| (&r.from, &r.to))
+            .collect();
+        for (_, key, _) in &mut members {
+            if let Some(to) = moved.get(key) {
+                *key = (*to).clone();
+            }
+        }
+        Ok(MigrationPlan {
+            report,
+            rekeyed: listed,
+            members,
+        })
     }
 
     /// `migrate_apply`.
@@ -2203,30 +2264,38 @@ impl Call<'_> {
         granted(self.who.grants.schema)?;
         let mut w = self.lake.writer();
         let view = self.lake.engine.view(None)?;
-        let (report, rekeyed) = self.preflight_plan(&w, view.as_ref(), &m)?;
-        if report.report_id != report_id {
+        let now = self.lake.clock(&mut w);
+        let plan = self.preflight_plan(&w, view.as_ref(), &m, Some(now))?;
+        if plan.report.report_id != report_id {
             return Err(invalid(
                 "the lake moved since that preflight report; run the preflight again",
             ));
         }
-        let now = self.lake.clock(&mut w);
-        let drafts = self.migration_drafts(&w, m, report, rekeyed, now)?;
+        let drafts = self.migration_drafts(&w, m, plan, now, 0)?;
         drop(view);
         let events = self.lake.append(&mut w, drafts)?;
         Ok(outcome_of(&events))
     }
 
-    /// The drafts that apply a migration its preflight answered `report`
-    /// for, refused with the report when it is not lossless: the
-    /// `migrated` event first, then the link types it changes or adds.
+    /// The drafts that apply a migration its preflight planned, refused
+    /// with the report when it is not lossless: the `migrated` event first,
+    /// then the set memberships it changes, each caused by the `migrated`,
+    /// which is the `first` draft of its append not yet counted (an answer
+    /// reads what directly follows its event), then the link types it
+    /// changes or adds.
     fn migration_drafts(
         &self,
         w: &Writer,
         m: Migration,
-        report: MigrationReport,
-        rekeyed: Vec<lakelands_api::write::Rekey>,
+        plan: MigrationPlan,
         now: Timestamp,
+        first: usize,
     ) -> Result<Vec<Draft>> {
+        let MigrationPlan {
+            report,
+            rekeyed,
+            members,
+        } = plan;
         if !report.lossless {
             return Err(Error::Refused {
                 field: None,
@@ -2239,7 +2308,21 @@ impl Call<'_> {
         let report_id = report.report_id;
         let schema_hash = shape::schema_hash(&m.to).map_err(|e| invalid(e.to_string()))?;
         let version = w.ontology.next_version(&Declaration::Type(m.to.clone()));
-        let mut drafts = Vec::new();
+        let migrated = position_after(w, first);
+        let changes = members.into_iter().map(|(set, key, joined)| Draft {
+            cause: Some(migrated),
+            context: self.context,
+            ..Draft::system(
+                now,
+                EventBody::ObjectSetChanged {
+                    set,
+                    ty: m.to.name.clone(),
+                    key,
+                    joined,
+                },
+            )
+        });
+        let mut drafts: Vec<Draft> = changes.collect();
         for (_, new) in changed_link_types(&w.ontology, &m.to) {
             let hash = shape::schema_hash(&new).map_err(|e| invalid(e.to_string()))?;
             let version = w.ontology.next_version(&Declaration::Type(new.clone()));

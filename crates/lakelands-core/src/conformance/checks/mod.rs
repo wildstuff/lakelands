@@ -52,6 +52,7 @@ mod schema_proposals;
 mod search;
 mod search_fields;
 mod set_declared;
+mod set_migrated;
 mod settings;
 mod streaming;
 mod triggers;
@@ -233,6 +234,7 @@ pub const ALL: &[Check] = &[
     reactions::VERB_WRITE_REACTS,
     reactions::SET_READ_BY_ITS_FILTER,
     set_declared::SET_DECLARED_OVER_RECORDS,
+    set_migrated::SET_MIGRATED,
     link_triggers::LINK_TRIGGER_FIRES,
     link_triggers::VIA_LINK_TYPE_REFUSED,
     bundles::BUNDLE_WHOLE,
