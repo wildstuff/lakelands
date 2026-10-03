@@ -140,6 +140,9 @@ struct CursorState {
     door: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ty: Option<TypeName>,
+    /// The digest of the read it was handed out for ([`read_of`]).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    of: String,
 }
 
 fn encode(c: &CursorState) -> Cursor {
@@ -147,9 +150,47 @@ fn encode(c: &CursorState) -> Cursor {
 }
 
 /// The offset a `query` page continues at: none without a cursor.
-fn offset(c: Option<&Cursor>, ty: &TypeName, params: &Params) -> Result<usize> {
+fn offset(c: Option<&Cursor>, p: &Pattern, params: &Params) -> Result<usize> {
     let Some(c) = c else { return Ok(0) };
-    Ok(resume(c, "query", Some(ty), params)?.offset as usize)
+    let state = resume(c, "query", Some(&p.start.ty), params)?;
+    same_read(&state, &pattern_read(p))?;
+    Ok(state.offset as usize)
+}
+
+/// The digest of what decides a read's rows and their order: a cursor
+/// carries it, and continues no other read through the same door. The
+/// page size, the position (the cursor's own) and what a row carries
+/// are left out by the callers.
+fn read_of(shape: impl serde::Serialize) -> String {
+    canonical::sha256_hex(&serde_json::to_value(shape).unwrap_or(Value::Null))
+}
+
+/// The digest of a pattern without its cursor, its page size and the
+/// position, which the cursor holds.
+fn pattern_read(p: &Pattern) -> String {
+    let at = ReadAt {
+        as_of: None,
+        ..p.at
+    };
+    read_of(Pattern {
+        cursor: None,
+        limit: None,
+        at,
+        ..p.clone()
+    })
+}
+
+/// Refuse a cursor handed out for another read through the same door:
+/// another filter, order, search or pattern (018).
+fn same_read(state: &CursorState, of: &str) -> Result<()> {
+    if state.of != of {
+        return Err(invalid(format!(
+            "the cursor was handed out for another `{}`; continue it with the read its first \
+             page was read with",
+            state.door
+        )));
+    }
+    Ok(())
 }
 
 /// A cursor's state, when it was handed out for this door, this type and
@@ -945,9 +986,11 @@ impl<'a> Reader<'a> {
             return self.aggregated(&decl, &rows, a);
         }
         let limit = self.limit(find.limit)?;
+        let find_read = read_of((&find.filter, &find.order_by, find.at.valid_at));
         let after = match &find.cursor {
             Some(c) => {
-                let after = resume(c, "find", Some(ty), &params)?.after;
+                let state = resume(c, "find", Some(ty), &params)?;
+                let after = state.after.clone();
                 // A cursor holds one sort value per key of the order its
                 // first page was read in; under another number of keys it
                 // places no page, and is refused before anything compares.
@@ -960,6 +1003,7 @@ impl<'a> Reader<'a> {
                          `order_by` its first page was read with",
                     ));
                 }
+                same_read(&state, &find_read)?;
                 after
             }
             None => asked,
@@ -995,6 +1039,7 @@ impl<'a> Reader<'a> {
                     params: params.clone(),
                     door: "find".into(),
                     ty: Some(ty.clone()),
+                    of: find_read.clone(),
                 })
             })
         } else {
@@ -1272,8 +1317,13 @@ impl<'a> Reader<'a> {
         if let Some(e) = &filter {
             rights::check_probe(self.who, &decl, core_derive::reads(e).iter())?;
         }
+        let search_read = read_of((&s.mode, &s.filter, s.at.valid_at));
         let offset = match &s.cursor {
-            Some(c) => resume(c, "search", Some(&s.ty), &Params::new())?.offset as usize,
+            Some(c) => {
+                let state = resume(c, "search", Some(&s.ty), &Params::new())?;
+                same_read(&state, &search_read)?;
+                state.offset as usize
+            }
             None => 0,
         };
         let k = s.k.max(1) as usize;
@@ -1347,6 +1397,7 @@ impl<'a> Reader<'a> {
                 params: Params::new(),
                 door: "search".into(),
                 ty: Some(s.ty.clone()),
+                of: search_read,
             })
         });
         Ok(Hits {
@@ -1783,7 +1834,7 @@ impl<'a> Reader<'a> {
             })
             .collect();
         keyed.sort_by(|a, b| Self::compare(&order, &a.0, &b.0));
-        let offset = offset(p.cursor.as_ref(), &p.start.ty, &params)?;
+        let offset = offset(p.cursor.as_ref(), p, &params)?;
         let more = keyed.len() > offset + limit;
         let rows = keyed
             .into_iter()
@@ -1799,6 +1850,7 @@ impl<'a> Reader<'a> {
                 params,
                 door: "query".into(),
                 ty: Some(p.start.ty.clone()),
+                of: pattern_read(p),
             })
         });
         Ok(QueryResult::Rows { rows, next_cursor })

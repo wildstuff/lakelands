@@ -191,19 +191,33 @@ fn reserved(name: &str, who: &Principal) -> bool {
 /// A page token: the position the first page was read at, and how many
 /// rows came before this page.
 /// A cursor for the page at `offset` of an answer read at `p` through
-/// `door` on `ty`: it continues that answer and no other (018).
-fn cursor(p: Position, offset: usize, door: &str, ty: Option<&TypeName>) -> Cursor {
+/// `door` on `ty`, by the read whose digest is `of` ([`read_of`]): it
+/// continues that answer and no other (018).
+fn cursor(p: Position, offset: usize, door: &str, ty: Option<&TypeName>, of: &str) -> Cursor {
     let ty = ty.map_or("", TypeName::as_str);
-    Cursor(format!("{}.{offset}.{door}.{ty}", p.0))
+    Cursor(format!("{}.{offset}.{door}.{of}.{ty}", p.0))
+}
+
+/// The digest of what decides a read's rows and their order, as the
+/// store keeps one in its cursors; the mock's lives as long as its lake.
+fn read_of(shape: serde_json::Result<String>) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    shape.unwrap_or_default().hash(&mut h);
+    format!("{:016x}", h.finish())
 }
 
 /// A cursor's position and offset, when it was handed out for `door` on
-/// `ty`; any other use is refused, naming what differs.
-fn uncursor(c: &Cursor, door: &str, ty: Option<&TypeName>) -> Result<(Position, usize)> {
-    let mut parts = c.0.splitn(4, '.');
-    let (Some(p), Some(o), Some(d), Some(t)) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
+/// `ty` by the read `of`; any other use is refused, naming what differs.
+fn uncursor(c: &Cursor, door: &str, ty: Option<&TypeName>, of: &str) -> Result<(Position, usize)> {
+    let mut parts = c.0.splitn(5, '.');
+    let (Some(p), Some(o), Some(d), Some(f), Some(t)) = (
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+    ) else {
         return Err(invalid("the cursor was not issued by this lake"));
     };
     let (Ok(p), Ok(o)) = (p.parse(), o.parse()) else {
@@ -219,6 +233,12 @@ fn uncursor(c: &Cursor, door: &str, ty: Option<&TypeName>) -> Result<(Position, 
             "the cursor was handed out for {}, not {}; continue it there",
             on(d, t),
             on(door, here)
+        )));
+    }
+    if f != of {
+        return Err(invalid(format!(
+            "the cursor was handed out for another `{door}`; continue it with the read its \
+             first page was read with"
         )));
     }
     Ok((Position(p), o))
@@ -320,13 +340,13 @@ fn resume_after(
 /// A page of `rows` from `offset`, and the cursor after it.
 fn page<T>(
     rows: Vec<T>,
-    (at, door, ty): (Position, &str, Option<&TypeName>),
+    (at, door, ty, of): (Position, &str, Option<&TypeName>, &str),
     offset: usize,
     limit: usize,
 ) -> (Vec<T>, Option<Cursor>) {
     let more = rows.len() > offset + limit;
     let rows: Vec<T> = rows.into_iter().skip(offset).take(limit).collect();
-    (rows, more.then(|| cursor(at, offset + limit, door, ty)))
+    (rows, more.then(|| cursor(at, offset + limit, door, ty, of)))
 }
 
 impl MockCatalog {
@@ -2228,9 +2248,14 @@ impl Catalog for MockCatalog {
 
     async fn find(&self, who: &Principal, ty: &TypeName, find: Find) -> Result<Reply<Found>> {
         self.admit(who)?;
+        let of = read_of(serde_json::to_string(&(
+            &find.filter,
+            &find.order_by,
+            find.at.valid_at,
+        )));
         let (pinned, offset) = match &find.cursor {
             Some(c) => {
-                let (p, o) = uncursor(c, "find", Some(ty))?;
+                let (p, o) = uncursor(c, "find", Some(ty), &of)?;
                 (Some(p), o)
             }
             None => (find.at.as_of, 0),
@@ -2324,7 +2349,7 @@ impl Catalog for MockCatalog {
             .collect();
         let (rows, next_cursor) = page(
             rows,
-            (position, "find", Some(ty)),
+            (position, "find", Some(ty), &of),
             offset + skip,
             self.limit(find.limit),
         );
@@ -2591,9 +2616,18 @@ impl Catalog for MockCatalog {
 
     async fn query(&self, who: &Principal, pattern: Pattern) -> Result<Reply<QueryResult>> {
         self.admit(who)?;
+        let of = read_of(serde_json::to_string(&Pattern {
+            cursor: None,
+            limit: None,
+            at: ReadAt {
+                as_of: None,
+                ..pattern.at
+            },
+            ..pattern.clone()
+        }));
         let (pinned, offset) = match &pattern.cursor {
             Some(c) => {
-                let (p, o) = uncursor(c, "query", Some(&pattern.start.ty))?;
+                let (p, o) = uncursor(c, "query", Some(&pattern.start.ty), &of)?;
                 (Some(p), o)
             }
             None => (pattern.at.as_of, 0),
@@ -2654,7 +2688,7 @@ impl Catalog for MockCatalog {
             )?;
             let (rows, next_cursor) = page(
                 rows,
-                (position, "query", Some(&pattern.start.ty)),
+                (position, "query", Some(&pattern.start.ty), &of),
                 offset,
                 self.limit(pattern.limit),
             );
@@ -2812,7 +2846,7 @@ impl Catalog for MockCatalog {
             .collect();
         let (rows, next_cursor) = page(
             rows,
-            (position, "query", Some(&pattern.start.ty)),
+            (position, "query", Some(&pattern.start.ty), &of),
             offset,
             self.limit(pattern.limit),
         );
@@ -2824,9 +2858,14 @@ impl Catalog for MockCatalog {
 
     async fn search(&self, who: &Principal, search: Search) -> Result<Reply<Hits>> {
         self.admit(who)?;
+        let of = read_of(serde_json::to_string(&(
+            &search.mode,
+            &search.filter,
+            search.at.valid_at,
+        )));
         let (pinned, offset) = match &search.cursor {
             Some(c) => {
-                let (p, o) = uncursor(c, "search", Some(&search.ty))?;
+                let (p, o) = uncursor(c, "search", Some(&search.ty), &of)?;
                 (Some(p), o)
             }
             None => (search.at.as_of, 0),
@@ -2992,7 +3031,7 @@ impl Catalog for MockCatalog {
             .collect();
         let (hits, next_cursor) = page(
             hits,
-            (position, "search", Some(&search.ty)),
+            (position, "search", Some(&search.ty), &of),
             offset,
             search.k.max(1) as usize,
         );
@@ -3180,7 +3219,7 @@ impl Catalog for MockCatalog {
         self.admit(who)?;
         let (pinned, offset) = match &filter.cursor {
             Some(c) => {
-                let (p, o) = uncursor(c, "proposals", None)?;
+                let (p, o) = uncursor(c, "proposals", None, "")?;
                 (Some(p), o)
             }
             None => (filter.at.as_of, 0),
@@ -3222,7 +3261,7 @@ impl Catalog for MockCatalog {
         }
         let (rows, _) = page(
             rows,
-            (position, "proposals", None),
+            (position, "proposals", None, ""),
             offset,
             self.limit(filter.limit),
         );

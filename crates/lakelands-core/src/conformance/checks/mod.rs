@@ -215,6 +215,7 @@ pub const ALL: &[Check] = &[
     cursors::CURSOR_STAYS,
     cursors::CURSOR_ONE_ANSWER,
     cursors::CURSOR_ONE_ORDER,
+    cursors::CURSOR_ONE_READ,
     feed::FEED_IS_THE_LOG,
     feed::REBUILD_LEAVES_THE_FEED,
     feed::TRIGGER_FIRES,
