@@ -258,12 +258,8 @@ fn certificates(path: &Path, what: &str) -> Result<Vec<CertificateDer<'static>>>
     Ok(certs)
 }
 
-/// The rustls configuration `require` connects with.
-fn tls_config(tls: &PgTls) -> Result<rustls::ClientConfig> {
-    tls_config_with(tls, SYSTEM_BUNDLES)
-}
-
-/// As [`tls_config`], looking for the system's bundle at `bundles`.
+/// The rustls configuration `require` connects with, the system's
+/// bundle looked for at `bundles` when the location names none.
 fn tls_config_with(tls: &PgTls, bundles: &[&str]) -> Result<rustls::ClientConfig> {
     let bundle: PathBuf = match &tls.ca_file {
         Some(f) => f.clone(),
@@ -346,7 +342,8 @@ pub(crate) fn connect(target: &Target) -> Result<Db> {
         }
         PgTlsMode::Require => {
             config.ssl_mode(postgres::config::SslMode::Require);
-            let tls = tokio_postgres_rustls::MakeRustlsConnect::new(tls_config(&target.tls)?);
+            let tls = tls_config_with(&target.tls, SYSTEM_BUNDLES)?;
+            let tls = tokio_postgres_rustls::MakeRustlsConnect::new(tls);
             driver(|| config.connect(tls))
         }
     }

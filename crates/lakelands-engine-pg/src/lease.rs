@@ -35,7 +35,6 @@ pub(crate) fn take(db: &mut Db, names: &Names, schema: &str, holder: &str) -> Re
         .query_one(&format!("SELECT pg_try_advisory_lock({KEY})"), &[&schema])?
         .get(0);
     if !locked {
-        // Who the row says holds the lease, and with which token.
         let (fence, held_by) = db
             .query_opt(
                 &format!(

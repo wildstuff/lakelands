@@ -28,7 +28,7 @@ use crate::lease::{Held, LeaseFile};
 use crate::log::Log;
 use crate::projection::{self, MEMBERS, OUTPUTS, PROPOSALS};
 use crate::view::SqliteView;
-use crate::{NAME, invalid, lock, sql, unavailable};
+use crate::{NAME, invalid, io_error, lock, sql, unavailable};
 
 /// The open transaction of the fold: the latest position a put in it
 /// names, which the commit must reach.
@@ -106,7 +106,7 @@ impl SqliteLake {
                     dir.display()
                 )));
             }
-            std::fs::create_dir_all(&dir).map_err(|e| crate::io_error("creating", &dir, e))?;
+            std::fs::create_dir_all(&dir).map_err(|e| io_error("creating", &dir, e))?;
         }
         check_name(&dir, &lake, create)?;
         let log = Log::open(&dir, create)?;
@@ -211,18 +211,14 @@ impl SqliteLake {
             .try_fold(0, |sum, p| match std::fs::metadata(p) {
                 Ok(m) => Ok(sum + m.len()),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(sum),
-                Err(e) => Err(crate::io_error("measuring", p, e)),
+                Err(e) => Err(io_error("measuring", p, e)),
             })
     }
 
     /// Hold a put for the open transaction.
     fn stage(&self, position: Position, f: impl FnOnce(&Connection) -> Result<()>) -> Result<()> {
         let mut transaction = lock(&self.transaction);
-        let Some(t) = transaction.as_mut() else {
-            return Err(invalid(
-                "the projection is written inside a transaction: call `begin` first",
-            ));
-        };
+        let t = transaction.as_mut().ok_or_else(engines::unstaged)?;
         t.latest = t.latest.max(Some(position));
         self.write(f)
     }
@@ -240,10 +236,9 @@ fn check_name(dir: &std::path::Path, lake: &LakeId, create: bool) -> Result<()> 
             name.trim_end()
         ))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && create => {
-            std::fs::write(&path, format!("{lake}\n"))
-                .map_err(|e| crate::io_error("writing", &path, e))
+            std::fs::write(&path, format!("{lake}\n")).map_err(|e| io_error("writing", &path, e))
         }
-        Err(e) => Err(crate::io_error("reading", &path, e)),
+        Err(e) => Err(io_error("reading", &path, e)),
     }
 }
 
@@ -589,12 +584,7 @@ impl VectorIndex for SqliteLake {
             let (key, data) = row.map_err(sql)?;
             let v = vector_of(&data);
             if v.len() != query.len() {
-                return Err(invalid(format!(
-                    "the query vector has {} dimensions, but `{ty}.{field}` holds vectors of {} \
-                     (record `{key}`)",
-                    query.len(),
-                    v.len()
-                )));
+                return Err(engines::dimensions(query.len(), v.len(), ty, field, &key));
             }
             top.push(
                 &RecordKey::from(key),
