@@ -227,6 +227,7 @@ pub const ALL: &[Check] = &[
     keys::KEY_FIELDS_FROM_THE_KEY,
     restriction::HOLD_WITHHOLDS_AND_KEEPS,
     reactions::VERB_WRITE_REACTS,
+    reactions::SET_READ_BY_ITS_FILTER,
     link_triggers::LINK_TRIGGER_FIRES,
     link_triggers::VIA_LINK_TYPE_REFUSED,
     bundles::BUNDLE_WHOLE,

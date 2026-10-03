@@ -439,6 +439,7 @@ belongs in the suite, not beside one engine:
 **reactions**
 
 - `a_trigger_fires_on_a_verbs_write` — 004 and 013: a verb's write fires the triggers whose guard holds and changes object sets in the same append, caused by that write, as any other write does
+- `a_sets_filter_from_describe_finds_the_members_its_events_record` — 004, and seams `Reading an object set`: for records written after a set is declared, `find` under the filter `describe` answers for the set returns exactly the records the latest `object_set_changed` of each says are in it, and `(f1) and not (f2)` returns the members of one set that are not in the other
 
 **link triggers**
 

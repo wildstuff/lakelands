@@ -477,6 +477,43 @@ from log format version 3 on, so a derived field can hold the bucket
 (`docs/decisions/017-one-expression-grammar.md`, extended). **The
 ceiling:** buckets are UTC only, and there is no number bucket.
 
+### Reading an object set
+
+No read takes a set by its name, and none needs to. A set is its filter
+(`ObjectSetDecl.where`), and a host reads it through that filter
+(lakelands#430):
+- **Which records, how many, a sum, a group:** `describe` lists the set
+  with its filter. `find` under that filter answers the members, with
+  `total` their count and `aggregate` their sums and groups. A pattern's
+  start and a search take the same filter as their `where`.
+- **At an earlier position:** `describe` at the same `as_of` gives the
+  filter in force there.
+- **At a valid time:** `find` with `valid_at` evaluates the filter over
+  the records valid then.
+- **Combined, sets of one type:** `(<f1>) and not (<f2>)`, or with `or`,
+  in the text form. The typed form has `and`, `or` and `not` nodes.
+
+`describe` lists a set only to a principal who reads every field its
+filter names, or who holds `schema`. That is the same rule by which
+`find` probes those fields (024), so a principal who may not see a set
+cannot read it through its filter either. A host that reads the filter
+from `describe` for each read never holds a copy that drifts when the
+set is declared again.
+
+The `object_set_changed` events describe the same members only where the
+filter is evaluated in the same way they were:
+- for records written after the set was declared (lakelands#453 covers
+  the records written before, and a filter declared again);
+- for a filter that does not read the clock: `now()` and `today()` are
+  the write's time in an event and the read's time in `find`, so a set
+  whose members move by date is moved by an aging rule, whose moves are
+  writes;
+- at system time: an event knows no valid time.
+
+The suite holds this (`SET_READ_BY_ITS_FILTER`): for records written
+after the set's declaration, `find` under the filter from `describe`
+answers what the events record, and `(f1) and not (f2)` the difference.
+
 ### `VectorIndex`
 
 `LakeStore::vector_coverage(type)` answers, for each embedding field of

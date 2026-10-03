@@ -6,8 +6,9 @@
 # methods of the traits in TRAITS, summed, exceed BUDGET, when one of
 # them is defined more than once, or when one of them is not defined at
 # all; and when BUDGET is higher than on the pull request's base commit
-# without the row in docs/budgets.md that raises it (lib.sh, `raised`). A method is an `fn` item directly in the trait body; default
-# bodies count once.
+# without the row in docs/budgets.md that raises it (lib.sh, `raised`).
+# A method is an `fn` item directly in the trait body; default bodies
+# count once.
 #
 # TRAITS: the store facade (`LakeStore`) and the engine traits. `Catalog`
 # is not counted: it is the caller's surface, not a seam an engine ports,
