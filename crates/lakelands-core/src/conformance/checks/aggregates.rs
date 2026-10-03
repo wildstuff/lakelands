@@ -4,16 +4,15 @@
 use std::sync::Arc;
 
 use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, ValueTypeDecl};
-use lakelands_api::read::{AggFunc, Aggregate, ReadAt};
+use lakelands_api::read::{AggFunc, ReadAt};
 use lakelands_api::write::Declaration;
-use lakelands_api::{
-    Access, Find, Found, Grants, LakeStore, PrincipalKind, Timestamp, TypeName, Value,
-};
+use lakelands_api::{Find, Found, LakeStore, Timestamp, TypeName, Value};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, agg, all_found, count_view, dec, decimal, field, principal, type_decl,
+    Lake, Must, agg, aggregate, all_found, count_view, dec, decimal, field, reads_all, restrict,
+    type_decl, value_type,
 };
 
 check!(
@@ -34,13 +33,8 @@ async fn an_aggregate_over_no_records_answers_zero(
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
     let money = ValueTypeDecl {
-        name: "money".into(),
-        kind: StorageKind::Decimal,
-        constraint: None,
-        one_of: Vec::new(),
-        format: None,
         scale: Some(2),
-        description: None,
+        ..value_type("money", StorageKind::Decimal)
     };
     cat.declare(own, Declaration::ValueType(money))
         .await
@@ -54,16 +48,10 @@ async fn an_aggregate_over_no_records_answers_zero(
     };
     l.declare(type_decl("payment", vec![amount])).await?;
 
-    let find = Find {
-        aggregate: Some(Aggregate {
-            measures: vec![
-                agg("n", AggFunc::Count, None),
-                agg("total", AggFunc::Sum, Some("amount")),
-            ],
-            group_by: Vec::new(),
-        }),
-        ..Find::default()
-    };
+    let find = aggregate(vec![
+        agg("n", AggFunc::Count, None),
+        agg("total", AggFunc::Sum, Some("amount")),
+    ]);
     let reply = cat
         .find(own, &TypeName::from("payment"), find)
         .await
@@ -105,31 +93,22 @@ async fn a_count_answers_as_many_records_as_a_full_find_walk(
     for i in 0..30u32 {
         let tag = if i % 2 == 0 { "a" } else { "b" };
         let from = format!("2026-01-{:02}T00:00:00Z", i + 1);
-        l.upsert(
-            "item",
-            &format!("i{i:02}"),
-            json!({"from": from, "tag": tag, "n": i}),
-        )
-        .await?;
+        let key = format!("i{i:02}");
+        l.upsert("item", &key, json!({"from": from, "tag": tag, "n": i}))
+            .await?;
     }
     l.upsert("item", "i01", json!({"n": 101})).await?;
     for key in ["i03", "i04"] {
         l.retire("item", key).await?;
     }
-    store
-        .restrict(&"item".into(), &"i05".into(), "hold".into())
-        .await
-        .must("restricting i05")?;
+    restrict(store.as_ref(), "item", "i05", "hold").await?;
     let before = store.head().await.must("reading the head")?;
     let later = json!({"from": "2026-02-01T00:00:00Z", "tag": "a", "n": 30});
     l.upsert("item", "i30", later).await?;
-    let reader = Grants {
-        default: Access::Read,
-        ..Grants::default()
-    };
-    let reader = principal(store.as_ref(), PrincipalKind::Agent, "reader", reader);
+    let reader = reads_all(store.as_ref(), "reader");
     let mid = Timestamp::parse("2026-01-15T00:00:00Z").expect("an instant");
     let at = |as_of, valid_at| ReadAt { as_of, valid_at };
+    let earlier = at(Some(before), None);
     let cases = [
         ("everything", "item", None, at(None, None)),
         ("n > 10", "item", Some("n > 10"), at(None, None)),
@@ -140,12 +119,7 @@ async fn a_count_answers_as_many_records_as_a_full_find_walk(
             at(None, None),
         ),
         ("valid at 2026-01-15", "item", None, at(None, Some(mid))),
-        (
-            "before i30 was written",
-            "item",
-            None,
-            at(Some(before), None),
-        ),
+        ("before i30 was written", "item", None, earlier),
         ("the view", "by_tag", None, at(None, None)),
     ];
     let mut everything = Vec::new();
@@ -161,10 +135,7 @@ async fn a_count_answers_as_many_records_as_a_full_find_walk(
             };
             let walked = all_found(cat.as_ref(), who, ty, find()).await?.len() as u64;
             let counting = Find {
-                aggregate: Some(Aggregate {
-                    measures: vec![agg("n", AggFunc::Count, None)],
-                    group_by: Vec::new(),
-                }),
+                aggregate: aggregate(vec![agg("n", AggFunc::Count, None)]).aggregate,
                 ..find()
             };
             let reply = cat

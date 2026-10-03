@@ -223,12 +223,7 @@ impl Lake {
         &self,
         ty: &str,
     ) -> Result<lakelands_api::describe::TypeDescription, Failure> {
-        let (t, what) = (
-            TypeName::from(ty),
-            format!("describing `{ty}` as the owner"),
-        );
-        let d = self.cat.describe_type(&self.own, &t, ReadAt::default());
-        Ok(d.await.must(&what)?.data)
+        describe_type(self.cat.as_ref(), &self.own, ty).await
     }
 
     /// Declares `d` as the owner; `what` names it if that fails.
@@ -342,6 +337,20 @@ pub fn field_access(
 pub fn field_writer(store: &dyn LakeStore, id: &str, ty: &str, fields: &[&str]) -> Principal {
     let fields: Vec<_> = fields.iter().map(|f| (*f, Access::Write)).collect();
     field_access(store, id, ty, &fields)
+}
+
+/// The type `ty` as `describe` answers it to `who` at the head.
+pub async fn describe_type(
+    cat: &dyn Catalog,
+    who: &Principal,
+    ty: &str,
+) -> Result<lakelands_api::describe::TypeDescription, Failure> {
+    let (t, what) = (
+        TypeName::from(ty),
+        format!("describing `{ty}` as `{}`", who.writer()),
+    );
+    let d = cat.describe_type(who, &t, ReadAt::default());
+    Ok(d.await.must(&what)?.data)
 }
 
 /// A field of a bare storage kind, authored, optional, with every other
@@ -514,6 +523,17 @@ pub fn agg(name: &str, func: AggFunc, field: Option<&str>) -> AggMeasure {
         name: FieldName::from(name),
         func,
         field: field.map(FieldName::from),
+    }
+}
+
+/// A find of `measures` over every record, with no `group_by`.
+pub fn aggregate(measures: Vec<AggMeasure>) -> Find {
+    Find {
+        aggregate: Some(lakelands_api::read::Aggregate {
+            measures,
+            group_by: Vec::new(),
+        }),
+        ..Find::default()
     }
 }
 
