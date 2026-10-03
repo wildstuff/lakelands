@@ -183,12 +183,18 @@ jobs:
       - run: scripts/release/host-changes.sh | tee -a "$GITHUB_STEP_SUMMARY"
 
   # docs/conformance.md lists every registered check; this fails while the
-  # page differs from the registries.
+  # page differs from the registries. The same job rehearses the release
+  # notes' list of pull requests on a patch release that is in the
+  # history: the plain range since its previous tag lists an older patch
+  # line's pull requests with its own two (lakelands#462).
   conformance-page:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - run: scripts/conformance-page.py --check
+      - run: test "$(scripts/release/notes.sh --pulls v0.8.1 | xargs)" = "441 459"
 
   # One job per gate, so a red gate never hides another.
   gate:

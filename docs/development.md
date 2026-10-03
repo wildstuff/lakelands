@@ -232,7 +232,11 @@ git push origin v0.1.0
 (`scripts/release/check-tag.sh`), runs the checks of `ci.yml`, builds the
 `lakelands` binary and publishes a GitHub release with the binary,
 `LICENSE`, `NOTICE`, the third-party licence list and notes made from
-the titles of the pull requests merged since the previous tag, followed
+the titles of the pull requests merged since the previous tag
+(`scripts/release/notes.sh`: the merges on the first-parent path from
+that tag to the new one, or, for a patch release, whose `main` took the
+tag by a merge, the merges no earlier release tag reaches;
+`notes.sh --pulls <tag>` rehearses the list), followed
 by "Changes a host must make" since that tag
 (`scripts/release/host-changes.sh`: `cargo-semver-checks` over
 `lakelands-api`, `lakelands-client`, `lakelands-core` and
@@ -278,8 +282,16 @@ next minor, does not ship with it.
    holds.
 6. **The tag goes on `main`**, on the merge commit, signed off as above.
    `check-tag.sh` accepts a release on `main`.
+   - The tag's message says what the patch fixes, under a line of its
+     own that begins with `What` and ends with a colon (`What 0.8.1
+     fixes in 0.8.0:`), before a paragraph `At the tag:` with the
+     counts. The notes begin with that part, the line as their heading:
+     a patch's pull requests are the steps of its release and say
+     nothing of what it fixes.
    - The notes list the pull requests merged into `main` since
      `vX.Y.0`: the one of step 1, if it was needed, and the patch's.
+     An earlier patch line's pull requests are in `main`'s history too
+     and are not listed.
    - "Changes a host must make" compares the same two tags.
 7. **`develop` gets the fix through its own pull request**, written
    against `develop`'s tree, with the issue the fix closes. The patch
