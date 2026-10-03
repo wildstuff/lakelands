@@ -206,6 +206,7 @@ jobs:
           - conformance-required
           - dco
           - no-external-decisions
+          - doc-heads-its-item
     name: gate (${{ matrix.gate }})
     steps:
       - uses: actions/checkout@v4
