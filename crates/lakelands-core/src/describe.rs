@@ -29,57 +29,39 @@ use crate::rights::{field_access, type_access};
 
 /// The lake as `who` may see it.
 pub fn lake(lake: &LakeId, declared: &[Declared], who: &Principal) -> LakeDescription {
-    let types: Vec<TypeDescription> = declared
-        .iter()
-        .filter_map(|d| match &d.declaration {
-            Declaration::Type(t) => type_description(t, d, declared, who),
-            _ => None,
-        })
-        .collect();
-    let verbs = declared
-        .iter()
-        .filter_map(|d| match &d.declaration {
-            Declaration::Verb(v) => verb_description(v, declared, who),
-            _ => None,
-        })
-        .collect();
-    let value_types = declared
-        .iter()
-        .filter_map(|d| match &d.declaration {
-            Declaration::ValueType(v) => Some(v.clone()),
-            _ => None,
-        })
-        .collect();
+    let types: Vec<TypeDescription> = each(declared, |d| match &d.declaration {
+        Declaration::Type(t) => type_description(t, d, declared, who),
+        _ => None,
+    });
+    let verbs = each(declared, |d| match &d.declaration {
+        Declaration::Verb(v) => verb_description(v, declared, who),
+        _ => None,
+    });
+    let value_types = each(declared, |d| match &d.declaration {
+        Declaration::ValueType(v) => Some(v.clone()),
+        _ => None,
+    });
     let described = |ty: &TypeName| types.iter().any(|t| &t.name == ty);
-    let functions = declared
-        .iter()
-        .filter_map(|d| match &d.declaration {
-            Declaration::Function(f) if function_visible(f, declared, who) => Some(f.clone()),
-            _ => None,
-        })
-        .collect();
-    let triggers = declared
-        .iter()
-        .filter_map(|d| match &d.declaration {
-            Declaration::Trigger(t)
-                if described(&t.on) && condition_visible(t.when.as_ref(), &t.on, declared, who) =>
-            {
-                Some(t.clone())
-            }
-            _ => None,
-        })
-        .collect();
-    let object_sets = declared
-        .iter()
-        .filter_map(|d| match &d.declaration {
-            Declaration::ObjectSet(s)
-                if described(&s.of) && condition_visible(Some(&s.filter), &s.of, declared, who) =>
-            {
-                Some(s.clone())
-            }
-            _ => None,
-        })
-        .collect();
+    let functions = each(declared, |d| match &d.declaration {
+        Declaration::Function(f) if function_visible(f, declared, who) => Some(f.clone()),
+        _ => None,
+    });
+    let triggers = each(declared, |d| match &d.declaration {
+        Declaration::Trigger(t)
+            if described(&t.on) && condition_visible(t.when.as_ref(), &t.on, declared, who) =>
+        {
+            Some(t.clone())
+        }
+        _ => None,
+    });
+    let object_sets = each(declared, |d| match &d.declaration {
+        Declaration::ObjectSet(s)
+            if described(&s.of) && condition_visible(Some(&s.filter), &s.of, declared, who) =>
+        {
+            Some(s.clone())
+        }
+        _ => None,
+    });
     LakeDescription {
         lake: lake.clone(),
         types,
@@ -188,7 +170,7 @@ fn aggregated(e: &Expr, inside: bool, out: &mut std::collections::BTreeSet<Field
 }
 
 /// A condition in its typed form; `None` when it does not parse.
-fn parsed(c: &Condition) -> Option<Expr> {
+pub(crate) fn parsed(c: &Condition) -> Option<Expr> {
     match c {
         Condition::Expr(e) => Some(e.clone()),
         Condition::Text(t) => crate::expr::parse(t).ok(),
@@ -225,6 +207,11 @@ fn function_visible(f: &FunctionDecl, declared: &[Declared], who: &Principal) ->
                 who,
             )
         })
+}
+
+/// What `pick` takes from each declaration, in declaration order.
+fn each<'a, T>(declared: &'a [Declared], pick: impl FnMut(&'a Declared) -> Option<T>) -> Vec<T> {
+    declared.iter().filter_map(pick).collect()
 }
 
 fn find_type<'a>(declared: &'a [Declared], ty: &TypeName) -> Option<&'a TypeDecl> {
@@ -281,15 +268,10 @@ fn type_description(
             .map(|r| r.name.clone())
             .collect(),
     };
-    let verbs = declared
-        .iter()
-        .filter_map(|d| match &d.declaration {
-            Declaration::Verb(v) if v.on == t.name && verb_callable(v, t, who) => {
-                Some(v.name.clone())
-            }
-            _ => None,
-        })
-        .collect();
+    let verbs = each(declared, |d| match &d.declaration {
+        Declaration::Verb(v) if v.on == t.name && verb_callable(v, t, who) => Some(v.name.clone()),
+        _ => None,
+    });
     Some(TypeDescription {
         name: t.name.clone(),
         description: t.description.clone(),

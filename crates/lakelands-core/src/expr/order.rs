@@ -83,10 +83,10 @@ pub fn sort_key(value: &Value) -> Vec<u8> {
     let mut key = Vec::new();
     match &v {
         Val::Num(d) => number_key(*d, &mut key),
-        Val::Time(t) => instant_key(*t, &mut key),
+        Val::Time(t) => signed_key(1, t.0, &mut key),
         Val::Text(s) => match (as_number(&v), as_time(&v)) {
             (Some(d), _) => number_key(d, &mut key),
-            (None, Some(t)) => instant_key(t, &mut key),
+            (None, Some(t)) => signed_key(1, t.0, &mut key),
             (None, None) => {
                 key.push(2);
                 key.extend_from_slice(s.as_bytes());
@@ -97,19 +97,16 @@ pub fn sort_key(value: &Value) -> Vec<u8> {
             key.push(4);
             key.extend(crate::canonical::to_vec(value));
         }
-        Val::Duration(d) => {
-            key.push(5);
-            key.extend_from_slice(&((*d as u64) ^ (1 << 63)).to_be_bytes());
-        }
+        Val::Duration(d) => signed_key(5, *d, &mut key),
     }
     key
 }
 
-/// An instant's sort key: its rank, then its microseconds, big-endian
-/// with the sign bit flipped.
-fn instant_key(t: Timestamp, key: &mut Vec<u8>) {
-    key.push(1);
-    key.extend_from_slice(&((t.0 as u64) ^ (1 << 63)).to_be_bytes());
+/// An instant's or a duration's sort key: its rank, then its
+/// microseconds, big-endian with the sign bit flipped.
+fn signed_key(rank: u8, micros: i64, key: &mut Vec<u8>) {
+    key.push(rank);
+    key.extend_from_slice(&((micros as u64) ^ (1 << 63)).to_be_bytes());
 }
 
 /// A number's part of its sort key.

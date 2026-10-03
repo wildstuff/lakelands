@@ -270,21 +270,15 @@ pub fn eval(e: &Expr, scope: &dyn Scope) -> Result<Val> {
             Val::Duration(d) => Ok(Val::Duration(d.checked_neg().ok_or_else(overflow)?)),
             v => Ok(Val::Num(-number(&v)?)),
         },
-        Expr::And { args } => {
+        // The first operand that decides stops the evaluation.
+        Expr::And { args } | Expr::Or { args } => {
+            let or = matches!(e, Expr::Or { .. });
             for a in args {
-                if !truthy(&eval(a, scope)?) {
-                    return Ok(Val::Bool(false));
+                if truthy(&eval(a, scope)?) == or {
+                    return Ok(Val::Bool(or));
                 }
             }
-            Ok(Val::Bool(true))
-        }
-        Expr::Or { args } => {
-            for a in args {
-                if truthy(&eval(a, scope)?) {
-                    return Ok(Val::Bool(true));
-                }
-            }
-            Ok(Val::Bool(false))
+            Ok(Val::Bool(!or))
         }
         Expr::Not { arg } => Ok(Val::Bool(!truthy(&eval(arg, scope)?))),
         Expr::In { arg, list } => {
@@ -378,28 +372,16 @@ pub fn check(e: &Expr, place: Place) -> Result<()> {
                 {
                     return err(format!("{name}() takes one field name"));
                 }
-                Func::Setting | Func::Param
-                    if !matches!(
-                        args.first(),
-                        Some(Expr::Lit {
-                            value: Literal::Text(_)
-                        })
-                    ) =>
-                {
+                Func::Setting | Func::Param if quoted(args.first()).is_none() => {
                     return err(format!("{name}() takes a quoted name"));
                 }
                 Func::DateBucket => {
-                    let unit = match args.get(1) {
-                        Some(Expr::Lit {
-                            value: Literal::Text(u),
-                        }) => u.as_str(),
-                        _ => {
-                            return err(
-                                "date_bucket() takes its unit quoted: 'day', 'week', 'month', 'quarter' or 'year'",
-                            );
-                        }
+                    let Some(unit) = quoted(args.get(1)) else {
+                        return err(
+                            "date_bucket() takes its unit quoted: 'day', 'week', 'month', 'quarter' or 'year'",
+                        );
                     };
-                    if !BUCKET_UNITS.contains(&unit) {
+                    if !BUCKET_UNITS.contains(&unit.as_str()) {
                         return err(format!(
                             "date_bucket() knows no unit '{unit}'; the units are 'day', 'week', \
                              'month', 'quarter' and 'year'"
@@ -446,10 +428,8 @@ pub fn bind_params(e: &Expr, values: &BTreeMap<String, Literal>) -> Expr {
         Expr::Call {
             func: Func::Param,
             args,
-        } => match args.first() {
-            Some(Expr::Lit {
-                value: Literal::Text(name),
-            }) if values.contains_key(name) => Expr::Lit {
+        } => match quoted(args.first()) {
+            Some(name) if values.contains_key(name) => Expr::Lit {
                 value: values[name].clone(),
             },
             _ => e.clone(),
@@ -488,14 +468,21 @@ pub fn params_read(e: &Expr, out: &mut std::collections::BTreeSet<String>) {
         args,
     } = e
     {
-        if let Some(Expr::Lit {
-            value: Literal::Text(name),
-        }) = args.first()
-        {
+        if let Some(name) = quoted(args.first()) {
             out.insert(name.clone());
         }
     } else {
         super::children(e).for_each(|c| params_read(c, out));
+    }
+}
+
+/// The text of a quoted literal.
+fn quoted(e: Option<&Expr>) -> Option<&String> {
+    match e {
+        Some(Expr::Lit {
+            value: Literal::Text(t),
+        }) => Some(t),
+        _ => None,
     }
 }
 
@@ -648,14 +635,10 @@ fn time_arith(op: ArithOp, l: &Val, r: &Val) -> Result<Val> {
         (ArithOp::Sub, Val::Duration(a), Val::Duration(b)) => {
             a.checked_sub(*b).map(Val::Duration).ok_or_else(overflow)
         }
-        (ArithOp::Add, t, Val::Duration(d)) | (ArithOp::Add, Val::Duration(d), t) => {
-            match as_time(t) {
-                Some(t) => shift(t, *d, 1),
-                None => err(format!("{} cannot be shifted by a duration", describe(t))),
-            }
-        }
-        (ArithOp::Sub, t, Val::Duration(d)) => match as_time(t) {
-            Some(t) => shift(t, *d, -1),
+        (ArithOp::Add, t, Val::Duration(d))
+        | (ArithOp::Add, Val::Duration(d), t)
+        | (ArithOp::Sub, t, Val::Duration(d)) => match as_time(t) {
+            Some(t) => shift(t, *d, if op == ArithOp::Sub { -1 } else { 1 }),
             None => err(format!("{} cannot be shifted by a duration", describe(t))),
         },
         (ArithOp::Sub, a, b) => match (as_time(a), as_time(b)) {
@@ -877,14 +860,7 @@ pub fn to_json(
     // A value at a declared scale is rounded half away from zero and then
     // written with exactly that many fractional digits, as a written value
     // of the type is.
-    let rounded = |d: Decimal| match scale {
-        Some(s) => {
-            let mut r = d.round_dp_with_strategy(s, RoundingStrategy::MidpointAwayFromZero);
-            r.rescale(s);
-            r
-        }
-        None => d,
-    };
+    let rounded = |d: Decimal| scale.map_or(d, |s| crate::value::at_scale(d, s));
     match (v, kind) {
         (Val::Null, _) => Some(Value::Null),
         (v, K::Decimal) => as_number(v).map(|d| Value::String(rounded(d).to_string())),
