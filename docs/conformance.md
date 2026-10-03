@@ -174,7 +174,7 @@ belongs in the suite, not beside one engine:
 - `versions_start_at_one_and_grow_by_one_with_every_change` — the glossary and the log format: a version starts at 1 and grows by one per event that changes the record, retirement included
 - `a_write_expecting_a_superseded_version_is_refused_as_a_conflict` — 015: a write naming a version the record has moved past fails as a conflict, and nothing of it lands
 - `a_verb_called_at_a_stale_version_is_a_conflict_before_its_requires_is_judged` — 015 and 024, extended: a verb's call compares the expected version right after its record is found, so a call at a stale version is a conflict, never a precondition judged on a state the caller has not seen
-- `a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_appends_nothing` — 016 and the log format: one idempotency key from one principal is one write in the whole lake
+- `a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_appends_nothing` — 016 and the log format: one idempotency key from one principal is one write in the whole lake; a proposal made with a key carries it, and its retry answers the proposal and appends nothing
 - `a_write_expecting_the_version_before_a_retirement_is_a_conflict` — the glossary, the log format §2.3 and 015: a retired key keeps its count, so `expected_version` is compared with the retired record's version, a match re-creates it, and an older one is a conflict reporting that version
 
 **paging**
@@ -647,7 +647,7 @@ belongs in the suite, not beside one engine:
 **triggers**
 
 - `a_transition_guard_fires_on_open_to_closed_only` — 004, extended: a guard `previous(status) = 'open' and status = 'closed'` fires on open → closed and not on draft → closed, open → open or a record created closed (`previous` is null for it); `previous` outside a guard is refused as invalid naming it
-- `a_guard_tells_a_retirement_from_an_update` — 004, extended: a guard `status = 'closed' and not retired()` fires on closing a record and on updating a closed one but not on retiring it, and a guard `retired()` fires on the retirement only; the declaration calling `retired` is written in log format 7
+- `a_guard_tells_a_retirement_from_an_update` — 004, extended: a guard `status = 'closed' and not retired()` fires on closing a record and on updating a closed one but not on retiring it, and a guard `retired()` fires on the retirement only, caused by it, as it does on a proposed retirement when it is accepted; the declaration calling `retired` is written in log format 7
 - `a_revival_is_a_creation_to_a_guard` — 004, extended: an upsert of a retired record is a creation to a guard: `previous(f)` is null, `changed(f)` is true and `retired()` is false
 - `retired_outside_a_triggers_guard_is_refused_naming_it` — 004, extended: `retired()` in an object set's filter, a verb's `requires`, a derived field or a find's filter, and `retired` called with an argument in a guard, are refused as invalid naming `retired`, appending nothing
 - `a_reaction_past_its_triggers_max_depth_is_refused_naming_it` — 021, extended: a reactive write whose `cause` names a firing of a trigger with `max_depth` is refused too_deep naming the trigger when it is deeper than that ceiling, appending nothing, while the lake's own ceiling is higher; a reaction to another trigger, or naming no cause, at the same depth is taken
