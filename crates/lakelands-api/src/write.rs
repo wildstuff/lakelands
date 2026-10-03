@@ -83,10 +83,12 @@ pub struct SetOff {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fired: Vec<TriggerName>,
     /// The object sets its record joined, as `describe` lists them to the
-    /// caller.
+    /// caller. For a set's declaration, the set, once, when it took
+    /// records in.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub joined: Vec<String>,
-    /// The object sets its record left, likewise.
+    /// The object sets its record left, likewise; for a set's
+    /// declaration, the set, once, when it let records go.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub left: Vec<String>,
 }

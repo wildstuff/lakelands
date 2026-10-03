@@ -247,6 +247,11 @@ pub struct Limits {
     /// The most rows a `find` may skip with `offset`; past it the read is
     /// refused `too_large`, never cut.
     pub max_offset: u32,
+    /// The most memberships one declaration of an object set may change
+    /// over the records already there; past it the declaration is refused
+    /// `too_large`, naming the set, and nothing is appended
+    /// (`docs/seams.md`, "Declaring a set over a large type").
+    pub max_set_changes: u32,
 }
 
 impl Default for Limits {
@@ -259,6 +264,7 @@ impl Default for Limits {
             commit_window_events: 32,
             max_graph_nodes: 100_000,
             max_offset: 100_000,
+            max_set_changes: 20_000,
         }
     }
 }

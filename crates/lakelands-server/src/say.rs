@@ -66,6 +66,11 @@ impl From<Error> for Failure {
                      in its location"
                         .to_owned()
                 }
+                Refusal::TooLarge { .. } if field.is_some() => {
+                    "count what the set would take in with `find`, its filter and `total`; then \
+                     widen the filter in steps, or raise the lake's `max_set_changes` in its location"
+                        .to_owned()
+                }
                 Refusal::TooLarge { .. } => {
                     "start from fewer records, or raise the lake's `max_graph_nodes` in its location"
                         .to_owned()

@@ -1070,6 +1070,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 commit_window_events: 5,
                 max_graph_nodes: 6,
                 max_offset: 7,
+                max_set_changes: 8,
             }),
         ),
         (

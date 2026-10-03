@@ -51,6 +51,7 @@ mod schema;
 mod schema_proposals;
 mod search;
 mod search_fields;
+mod set_declared;
 mod settings;
 mod streaming;
 mod triggers;
@@ -230,6 +231,7 @@ pub const ALL: &[Check] = &[
     restriction::HOLD_WITHHOLDS_AND_KEEPS,
     reactions::VERB_WRITE_REACTS,
     reactions::SET_READ_BY_ITS_FILTER,
+    set_declared::SET_DECLARED_OVER_RECORDS,
     link_triggers::LINK_TRIGGER_FIRES,
     link_triggers::VIA_LINK_TYPE_REFUSED,
     bundles::BUNDLE_WHOLE,

@@ -502,8 +502,9 @@ set is declared again.
 
 The `object_set_changed` events describe the same members only where the
 filter is evaluated in the same way they were:
-- for records written after the set was declared (lakelands#453 covers
-  the records written before, and a filter declared again);
+- for records written after the set was declared, and for those already
+  there when it was declared or declared again, which its declaration
+  decides ("Declaring a set over a large type", below);
 - for a filter that does not read the clock: `now()` and `today()` are
   the write's time in an event and the read's time in `find`, so a set
   whose members move by date is moved by an aging rule, whose moves are
@@ -1220,6 +1221,51 @@ refuses to start when it holds that lake but not as its writer.
   principal, and every reference and link leads to a type the connection
   mirrors; and, for a type with no position yet, the target admits the
   source's declaration.
+
+### Declaring a set over a large type
+
+A set's declaration decides the membership of the records already there,
+in its own append (`docs/decisions/004-the-change-feed-is-the-log.md`,
+extended): one `object_set_changed` per record whose membership it
+changes, caused by its `declared`. The writer is held while the store
+walks the type's live records, 1 024 at a time, and drafts the changes.
+
+Measured with `--release` at 100 000 live records, under some load from
+other processes (`crates/lakelands-engine-sqlite/tests/set_declared.rs`
+and `crates/lakelands-engine-pg/tests/set_declared.rs`, by hand):
+
+| | the walk alone | 25 000 changes | 50 000 changes |
+|---|---|---|---|
+| SQLite: writer held, peak memory, on disk | 0.34 s, 3 MB, 0 | 0.88 s, 72 MB, 16 MB | 1.38 s, 145 MB, 33 MB |
+| PostgreSQL: writer held, peak memory, in the schema | 0.57 s, 3 MB, 0 | 1.62 s, 104 MB, 26 MB | 2.62 s, 164 MB, 55 MB |
+
+The changes cost, the walk barely does:
+- **per change:** about 21 µs and 3 KB on SQLite, about 41 µs and 4 KB
+  on PostgreSQL;
+- **the walk:** about 0.35 s (SQLite) and 0.6 s (PostgreSQL) per
+  100 000 records.
+
+`Limits::max_set_changes` (20 000 unless the location sets it) bounds the
+changes of one declaration. Past it the declaration is refused
+`too_large`, naming the set and the ceiling, and nothing is appended. The
+walk stops at the first change past the ceiling. A host that needs the
+number counts what a new set would take in with `find`, the set's filter
+and `total`.
+
+A set over a large type is declared in one of two ways:
+- **Raise `max_set_changes` in the lake's location,** at the cost above.
+  On PostgreSQL, 100 000 changes hold the writer for about 4.7 s and need
+  about 400 MB. Other writes wait meanwhile, so this is a step for a
+  quiet moment.
+- **Widen the filter in steps under the ceiling,** with no limit raised.
+  Declare the set with a narrower filter (`status = 'open' and n <
+  20000`), then again with a wider one, and last with the filter meant.
+  Each step is a whole declaration whose events agree with the filter in
+  force after it. A crash between steps leaves a narrower set, never a
+  wrong one.
+
+The walk is not bounded: a type of a million live records holds the
+writer for several seconds even for a set nothing joins.
 
 ## `SystemVocabulary`
 

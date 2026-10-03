@@ -293,6 +293,12 @@ A host that already has a store of its own moves in four steps.
   that needs data from two lakes reads each of them, or mirrors the types
   one lake needs from the other. A mirror carries its provenance, and a
   lake whose types many lakes share is mirrored into each of them.
+- **A set over a large type is declared within a bound.** A set's
+  declaration decides the records already there in one append, at most
+  `max_set_changes` of them (20 000 unless the location sets it). Past
+  it the declaration is refused `too_large`. The host raises the limit
+  for a quiet moment, or widens the filter in steps; `docs/seams.md`,
+  "Declaring a set over a large type", has the costs.
 - **Every answer carries its position.** A host that records what an
   agent saw records the position, and reads `as_of` it later. See
   `docs/decisions/009-every-response-carries-its-position.md`.

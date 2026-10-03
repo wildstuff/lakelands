@@ -538,7 +538,9 @@ interface types {
         output: option<json>,
         /// What the write set off: the last position of it, when after
         /// `position`, and the triggers fired and object sets joined and
-        /// left that `describe` lists to the caller.
+        /// left that `describe` lists to the caller. For a set's
+        /// declaration, `joined` and `left` name the set, once, when it
+        /// took records in or let them go.
         through: option<position>,
         fired: list<trigger-name>,
         joined: list<string>,
@@ -1025,6 +1027,7 @@ interface types {
         commit-window-events: u32,
         max-graph-nodes: u32,
         max-offset: u32,
+        max-set-changes: u32,
     }
 
     record feed-filter {
