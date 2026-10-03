@@ -105,6 +105,7 @@ macro_rules! door_checks {
             a_migration_keeps_what_a_view_reads,
             a_view_is_never_migrated,
             nothing_that_never_acts_is_declared_on_a_view,
+            a_set_may_hold_a_link_types_records,
             a_relation_on_a_view_is_derived,
             a_tools_key_says_what_to_pass,
             propose_shows_each_writes_shape,
@@ -1688,6 +1689,34 @@ pub async fn nothing_that_never_acts_is_declared_on_a_view(store: Arc<dyn LakeSt
         );
     }
     assert_eq!(f.head().await, head, "nothing is appended");
+}
+
+/// An object set may hold the records of a relation's link type, as a
+/// trigger may watch them: `declare` takes a set over
+/// `sys.link.<type>.<relation>` and `describe` shows it, on the mock as on
+/// the store.
+pub async fn a_set_may_hold_a_link_types_records(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    for d in [
+        json!({"declare": "type", "name": "memo", "field_meta": true,
+               "fields": [{"name": "n", "type": {"kind": "text"}}],
+               "relations": [{"name": "seen_by", "target": PARTNER,
+                              "fields": [{"name": "ok", "type": {"kind": "text"}}]}]}),
+        json!({"declare": "object_set", "name": "seen_ok", "of": "sys.link.memo.seen_by",
+               "where": "ok = 'x'"}),
+    ] {
+        let d: Declaration = serde_json::from_value(d).expect("a declaration");
+        let what = d.what();
+        let taken = f.catalog.declare(owner, d).await;
+        assert!(taken.is_ok(), "{what} is taken: {taken:?}");
+    }
+    let d = f.catalog.describe(owner, ReadAt::default()).await;
+    let sets = d.expect("the owner describes the lake").data.object_sets;
+    assert!(
+        sets.iter().any(|s| s.name.as_str() == "seen_ok"),
+        "{sets:?}"
+    );
 }
 
 /// A view's records are computed, so a relation on a view carried by link
