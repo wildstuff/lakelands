@@ -1477,7 +1477,13 @@ impl Call<'_> {
         }
         // A change of the ontology is the lake's `schema` grant's to make:
         // the accepter holds it as well as `review` (013, extended).
-        granted(!p.write.is_schema() || self.who.grants.schema)?;
+        // A stored proposal holds its write; a row without one is a
+        // projection the store cannot use.
+        let Some(write) = p.write.as_ref() else {
+            let what = format!("the projection holds proposal `{proposal}` without its write");
+            return Err(lakelands_core::unavailable(what));
+        };
+        granted(!write.is_schema() || self.who.grants.schema)?;
         let now = self.lake.clock(&mut w);
         // The write was checked under the proposer's grants when it was
         // proposed; it is applied as the proposer, with what was checked.
@@ -1505,7 +1511,7 @@ impl Call<'_> {
         };
         let mut external = None;
         let mut pending = Pending::default();
-        match &p.write {
+        match write {
             ProposedWrite::Upsert {
                 ty,
                 key,
@@ -2062,6 +2068,22 @@ impl Call<'_> {
         let has = |t: &TypeDecl, n: &FieldName| t.fields.iter().any(|f| &f.name == n);
         let gone = |reader: String, names: &BTreeSet<FieldName>, was: &TypeDecl, is: &TypeDecl| {
             let n = names.iter().find(|n| has(was, n) && !has(is, n))?;
+            // At an accept the field may be one the accepter may not know of,
+            // taken away knowingly by the proposer: it is told neither the
+            // field nor its reader (013, extended).
+            let unknown = |f: &&FieldDecl| rights::field_access(self.who, was, f) == Access::None;
+            if was
+                .fields
+                .iter()
+                .filter(|f| &f.name == n)
+                .any(|f| unknown(&f))
+            {
+                return Some(invalid(format!(
+                    "after the migration of `{}`, a declaration reads a field the migration \
+                     takes away",
+                    m.to.name
+                )));
+            }
             let renamed = |(from, _): &&(FieldName, FieldName)| from == n && is.name == m.to.name;
             let how = match m.renames.iter().find(renamed) {
                 Some((_, to)) => format!("renames to `{to}`"),

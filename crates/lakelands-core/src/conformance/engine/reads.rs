@@ -1070,11 +1070,12 @@ fn proposal(id: &str, position: u64, write: ProposedWrite, state: ProposalState)
         position: Position(position),
         proposer: "human:a".into(),
         proposed_at: Timestamp(0),
-        write,
+        write: Some(write),
         why: "review".into(),
         state,
         decided_by: None,
         reason: None,
+        more: false,
     }
 }
 

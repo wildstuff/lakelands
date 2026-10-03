@@ -269,6 +269,31 @@ field a hidden one is built from is refused on the field it removes,
 saying only that another field reads it. A masked or a write-only field
 is shown to the principal, and stays its to remove.
 
+## Extended: a proposed migration is listed as its reader may know it (lakelands#499)
+
+A proposed migration holds the type's whole shape and the preflight's
+report. `proposals` already showed `to` without the fields its reader
+may not know of. The rest named them still: a rename's old name, a
+dropped field or link field in the report, a re-keyed type the reader
+may not see, a reference field of such a type. Each is now shown where
+its reader may see the type and may know of the field:
+
+- **`renames`**: a pair whose old name the reader may know of in the
+  type as it stands, and whose new name is in `to` as shown.
+- **`dropped` and `fields`**: an entry for a field, or a link field
+  named `relation.field`, the reader may know of in the type as it
+  stands.
+- **`rekeyed`**: the types the reader may see.
+- **`references`**: the fields the reader may know of, of types it may
+  see.
+
+The totals, `lossless`, the two schema hashes and the report's id stay
+whole, and the entry says `more` when anything was left out
+(`docs/decisions/013-verbs-run-by-declared-risk.md`, extended). A
+logged report is lossless, so it names no record that would not convert
+or would collide. A migration of a type its reader may not see is
+listed without its write.
+
 ## Extended: the order of refusals (lakelands#338)
 
 The migration doors refuse in this order, in the frame every write

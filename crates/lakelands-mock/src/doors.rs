@@ -2282,51 +2282,135 @@ fn redeclared(st: &State, who: &Principal, declarations: &mut [Declaration]) -> 
     Ok(())
 }
 
-/// A proposed shape without the fields its reader may not know of, a
-/// relation's link fields too: the proposal holds the completed shape. A
-/// proposed value is shown where a read of the record would show it.
-fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite) {
+/// As the store: a proposed write as its reader may know it, a value where
+/// a read of the record would show it and a name where `describe` would.
+/// False when the reader may see nothing of it. The proposal holds the
+/// completed shape, so a relation's link fields are trimmed too.
+fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite) -> bool {
+    let known = |t: &TypeDecl, f: &FieldDecl| access(who, t, f) != Access::None;
     let shown = |t: &mut TypeDecl| {
         let whole = t.clone();
-        t.fields.retain(|f| access(who, &whole, f) != Access::None);
+        t.fields.retain(|f| known(&whole, f));
         for r in &mut t.relations {
             let link = links::link_type(&whole.name, r);
-            r.fields.retain(|f| access(who, &link, f) != Access::None);
+            r.fields.retain(|f| known(&link, f));
         }
     };
+    let has = |t: &TypeDecl, name: &FieldName| match name.as_str().split_once('.') {
+        Some((r, f)) => (t.relations.iter().filter(|x| x.name.as_str() == r))
+            .any(|x| x.fields.iter().any(|x| x.name.as_str() == f)),
+        None => t.fields.iter().any(|f| &f.name == name),
+    };
+    let seen = |ty: &TypeName| st.visible(who, ty).is_some();
     let read = |ty: &TypeName, f: &FieldName| {
         (st.visible(who, ty)).is_some_and(|t| readable(st, who, t, f).is_ok())
     };
     match write {
         // A field the reader may not know of and a masked one both leave
         // the patch: it holds values, and no place for a name.
-        ProposedWrite::Upsert { ty, patch, .. } => patch.retain(|f, _| read(ty, f)),
+        ProposedWrite::Upsert { ty, patch, .. } => {
+            patch.retain(|f, _| read(ty, f));
+            seen(ty)
+        }
+        ProposedWrite::Retire { ty, .. } => seen(ty),
         // A payload is what the verb's fields become: whole to a reader who
-        // may read each field the verb sets, or see the type an executor
-        // acts on, and empty otherwise.
+        // may read each field the verb sets, and empty otherwise.
         ProposedWrite::Call { verb, payload, .. } => {
-            let whole = st.verbs.get(verb).is_some_and(|v| match &v.effect {
-                VerbEffect::Write { set } => set.iter().all(|a| read(&v.on, &a.field)),
-                VerbEffect::External { .. } => st.visible(who, &v.on).is_some(),
-            });
-            if !whole {
+            let Some(v) = st.verbs.get(verb) else {
+                return false;
+            };
+            if let VerbEffect::Write { set } = &v.effect
+                && !set.iter().all(|a| read(&v.on, &a.field))
+            {
                 payload.clear();
             }
+            seen(&v.on)
         }
-        ProposedWrite::Retire { .. } => {}
-        ProposedWrite::Migrate { migration, .. } => shown(&mut migration.to),
+        // The report names what the migration does to the type as it
+        // stands; its totals, hashes and id stay whole.
+        ProposedWrite::Migrate { migration, report } => {
+            let Some(was) = st.visible(who, &migration.to.name) else {
+                return false;
+            };
+            let (mut was, Migration { to, renames }) = (was.decl.clone(), &mut **migration);
+            shown(&mut was);
+            shown(to);
+            // A conversion names its field as the migration leaves it, and
+            // the one it took its values from where it was renamed.
+            let sourced = |new: &FieldName| {
+                let mut from = renames.iter().filter(|(_, n)| n == new);
+                from.all(|(old, _)| has(&was, old))
+            };
+            report
+                .fields
+                .retain(|c| has(to, &c.field) && sourced(&c.field));
+            renames.retain(|(old, new)| has(&was, old) && has(to, new));
+            report.dropped.retain(|(f, _)| has(&was, f));
+            report.rekeyed.retain(|r| seen(&r.ty));
+            let names = |ty: &TypeName, f: &FieldName| {
+                let t = st.visible(who, ty).map(|t| &t.decl);
+                t.is_some_and(|t| field(t, f).is_some_and(|f| known(t, f)))
+            };
+            report.references.retain(|r| names(&r.ty, &r.field));
+            true
+        }
+        // Each declaration as `describe` would show it once the bundle is
+        // in force; one it would not show leaves the list.
         ProposedWrite::Declare { declarations } => {
-            for d in declarations {
+            let mut after = st.clone();
+            for d in declarations.iter() {
+                let (hash, version) = identity_version(&after, d);
+                after.declare(d, hash, version);
+            }
+            declarations.retain(|d| listed(&after, who, d));
+            for d in declarations.iter_mut() {
                 if let Declaration::Type(t) = d {
                     shown(t);
                 }
             }
+            !declarations.is_empty()
         }
         // A use is shown only in a field the reader may read; the report's
         // totals stay whole, and a logged report fits, so it names no misfit.
         ProposedWrite::MigrateValueType { report, .. } => {
             report.fields.retain(|u| read(&u.ty, &u.field));
+            true
         }
+    }
+}
+
+/// As the store: whether a proposed declaration is listed to `who`, over
+/// the state the proposal would leave: as `describe` would show it once in
+/// force, but a verb by the fields it names, not by who may call it.
+fn listed(st: &State, who: &Principal, d: &Declaration) -> bool {
+    let described = |ty: &TypeName| st.visible(who, ty).is_some();
+    let holds = |c: Option<&Condition>, ty: &TypeName| condition_visible(st, who, ty, c);
+    match d {
+        Declaration::Type(t) => {
+            described(&t.name) && (t.view.as_deref()).is_none_or(|v| view_visible(st, who, v))
+        }
+        Declaration::Trigger(t) => described(&t.on) && holds(t.when.as_ref(), &t.on),
+        Declaration::ObjectSet(s) => described(&s.of) && holds(Some(&s.filter), &s.of),
+        Declaration::Verb(v) => {
+            let VerbEffect::Write { set } = &v.effect else {
+                return described(&v.on) && holds(v.requires.as_ref(), &v.on);
+            };
+            let t = st.types.get(&v.on).map(|t| &t.decl);
+            let known = |n: &FieldName| {
+                t.is_some_and(|t| field(t, n).is_some_and(|f| access(who, t, f) != Access::None))
+            };
+            let value = |c: &Condition| {
+                let record = value_paths(c).into_iter();
+                let record = record.filter(|p| expr::payload_member(p).is_none());
+                let fields: Vec<FieldName> = record.filter_map(|p| p.first().cloned()).collect();
+                reads_all(st, who, &v.on, &fields)
+            };
+            described(&v.on)
+                && holds(v.requires.as_ref(), &v.on)
+                && (who.grants.schema || set.iter().all(|a| known(&a.field) && value(&a.value)))
+        }
+        Declaration::Function(f) => function_visible(st, who, f),
+        Declaration::ValueType(_) => true,
     }
 }
 
@@ -2441,6 +2525,14 @@ fn preflight(
             let Some(n) = reads.iter().find(gone) else {
                 continue;
             };
+            // As the store: an accepter who may not know of the field is told
+            // neither it nor its reader.
+            if field(was, n).is_some_and(|f| access(who, was, f) == Access::None) {
+                return Err(invalid(format!(
+                    "after the migration of `{ty}`, a declaration reads a field the migration \
+                     takes away"
+                )));
+            }
             // As the store: the reader is named only to an author `describe`
             // shows it to; another is told that a declaration reads the
             // field, which is one it knows of (a hidden one was put back).
@@ -3453,7 +3545,8 @@ impl Catalog for MockCatalog {
         let mut log = self.log();
         let (_, st) = self.state_at(&log, None)?;
         let p = decidable(&st, who, proposal)?;
-        if p.write.is_schema() && !who.grants.schema {
+        let write = p.write.clone().expect("a held proposal holds its write");
+        if write.is_schema() && !who.grants.schema {
             return Err(refused(Refusal::NotGranted));
         }
         let proposer = log
@@ -3476,7 +3569,7 @@ impl Catalog for MockCatalog {
             who: &proposer,
             cause: Some(accepted),
         };
-        let version = match p.write.clone() {
+        let version = match write {
             ProposedWrite::Upsert {
                 ty,
                 key,
@@ -3660,8 +3753,6 @@ impl Catalog for MockCatalog {
             .values()
             .filter(|p| who.grants.review || p.proposer == writer)
             .filter(|p| filter.state.is_none_or(|s| p.state == s))
-            .filter(|p| filter.kind.is_none_or(|k| p.write.kind() == k))
-            .filter(|p| filter.ty.as_ref().is_none_or(|ty| touches(&p.write, ty)))
             .cloned()
             .collect();
         // Proposals are made in log order, so `proposed_at` and
@@ -3674,8 +3765,19 @@ impl Catalog for MockCatalog {
         if !asc {
             rows.reverse();
         }
-        rows.iter_mut()
-            .for_each(|p| known_shape(&st, who, &mut p.write));
+        // As the store: the entry as its reader is shown it, and the kind
+        // and the type asked of that.
+        for p in &mut rows {
+            let logged = p.write.take();
+            let shown = logged.clone();
+            p.write = shown.and_then(|mut w| known_shape(&st, who, &mut w).then_some(w));
+            p.more = p.write != logged;
+        }
+        rows.retain(|p| {
+            let (kind, ty) = (filter.kind, filter.ty.as_ref());
+            kind.is_none_or(|k| p.write.as_ref().is_some_and(|w| w.kind() == k))
+                && ty.is_none_or(|ty| p.write.as_ref().is_some_and(|w| touches(w, ty)))
+        });
         let (rows, _) = page(rows, (position, "proposals", None, ""), offset, limit);
         Ok(Reply {
             position,

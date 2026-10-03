@@ -165,6 +165,7 @@ macro_rules! door_checks {
             a_schema_proposal_is_refused_by_kind_at_propose_and_at_accept,
             a_value_types_tightening_is_proposed_and_accepted_while_it_fits,
             a_proposal_shows_its_reader_the_values_it_may_read,
+            a_proposal_names_what_its_reader_may_know_and_says_there_is_more,
             an_order_by_latest_takes_no_field_and_no_view,
             #[views] a_view_reads_the_parameters_each_read_binds,
             a_parameter_its_type_does_not_declare_is_refused,
@@ -3014,7 +3015,7 @@ pub async fn a_value_types_tightening_is_proposed_and_accepted_while_it_fits(
     let listed = c.proposals(own, by_kind).await.unwrap().data;
     assert!(
         matches!(listed.as_slice(), [p] if matches!(&p.write,
-            ProposedWrite::MigrateValueType { report, .. } if report.fits && report.fields.len() == 1)),
+            Some(ProposedWrite::MigrateValueType { report, .. }) if report.fits && report.fields.len() == 1)),
         "the proposal holds a report that fits, with its one use: {listed:?}"
     );
     // One `void` stored: the accept and a new proposal say the count alone.
@@ -3117,7 +3118,7 @@ pub async fn a_proposal_shows_its_reader_the_values_it_may_read(store: Arc<dyn L
         let listed = listed.expect("the proposals are listed").data;
         // Newest first: the call, then the upsert.
         let got: Vec<&Patch> = (listed.iter())
-            .filter_map(|p| match &p.write {
+            .filter_map(|p| match p.write.as_ref()? {
                 ProposedWrite::Upsert { patch, .. } => Some(patch),
                 ProposedWrite::Call { payload, .. } => Some(payload),
                 _ => None,
@@ -3130,6 +3131,70 @@ pub async fn a_proposal_shows_its_reader_the_values_it_may_read(store: Arc<dyn L
     let after = c.get(own, &ty(INVOICE), get("i1")).await.unwrap().data;
     let kept = field(&after, "secret") == Some(&json!("s3"));
     assert!(kept, "the accept applies the logged write whole: {after:?}");
+}
+
+/// `proposals` names what its reader may know of and says where there is
+/// more: of the clerk's own bundle the trigger on `note`, which it sees
+/// masked, is left out and the entry says `more`; the keeper's proposed
+/// type, which it could not see once declared, is listed without its write
+/// and matches no `kind`; a reviewer who reads both lists each whole
+/// (`docs/decisions/013-verbs-run-by-declared-risk.md`, extended).
+pub async fn a_proposal_names_what_its_reader_may_know_and_says_there_is_more(
+    store: Arc<dyn LakeStore>,
+) {
+    use lakelands_api::write::ProposalKind;
+    let f = setup(store).await;
+    let (c, clerk, keeper) = (&f.catalog, &f.cast.clerk, &f.cast.keeper);
+    let trigger = |name: &str, when: &str| -> Declaration {
+        let t = json!({"declare": "trigger", "name": name, "on": INVOICE, "when": when});
+        serde_json::from_value(t).expect("a trigger")
+    };
+    let vault = json!({"declare": "type", "name": "vault",
+                       "fields": [{"name": "x", "type": {"kind": "text"}}]});
+    let vault = vec![serde_json::from_value(vault).expect("a type")];
+    let both = vec![
+        trigger("noted", "note = 'x'"),
+        trigger("stated", "status = 'x'"),
+    ];
+    for (who, declarations) in [(clerk, both), (keeper, vault)] {
+        let bundle = ProposedWrite::Declare { declarations };
+        let proposed = c.propose(who, bundle, "a bundle".into()).await;
+        proposed.expect("a principal without `schema` proposes a bundle");
+    }
+    // Per reader: the names its listing shows by kind, and each `more`.
+    let declared = || ProposalFilter {
+        kind: Some(ProposalKind::Declare),
+        ..ProposalFilter::default()
+    };
+    let rows: [(&Principal, _, &[&str], &[bool]); 5] = [
+        (clerk, ProposalFilter::default(), &["stated"], &[true]),
+        (keeper, ProposalFilter::default(), &[], &[true]),
+        (keeper, declared(), &[], &[]),
+        (clerk, declared(), &["stated"], &[true]),
+        (
+            &f.cast.reviewer,
+            declared(),
+            &["vault", "noted", "stated"],
+            &[false, false],
+        ),
+    ];
+    for (who, filter, names, more) in rows {
+        let listed = c.proposals(who, filter).await;
+        let listed = listed.expect("the proposals are listed").data;
+        let said: Vec<bool> = listed.iter().map(|p| p.more).collect();
+        let shown: Vec<String> = (listed.iter().filter_map(|p| p.write.as_ref()))
+            .flat_map(|w| match w {
+                ProposedWrite::Declare { declarations } => declarations.clone(),
+                _ => Vec::new(),
+            })
+            .map(|d| json!(d)["name"].as_str().unwrap_or_default().to_owned())
+            .collect();
+        assert!(
+            shown == names && said == more,
+            "`{}` lists {shown:?}, {said:?}",
+            who.id
+        );
+    }
 }
 
 /// A declaration or a migration can be proposed by a principal without
@@ -4857,7 +4922,7 @@ pub async fn a_migration_keeps_a_field_its_author_may_not_know_of(store: Arc<dyn
     for who in [clerk, own] {
         let listed = c.proposals(who, ProposalFilter::default()).await.unwrap();
         let mine = listed.data.into_iter().find(|p| p.id == proposal).unwrap();
-        let ProposedWrite::Migrate { migration, report } = mine.write else {
+        let Some(ProposedWrite::Migrate { migration, report }) = mine.write else {
             panic!("the proposal is a migration")
         };
         let names: Vec<String> = (migration.to.fields.iter())

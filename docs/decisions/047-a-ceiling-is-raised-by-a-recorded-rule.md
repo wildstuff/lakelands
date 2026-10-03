@@ -29,6 +29,8 @@ The core's budgets are four:
 
 **The third raise:** the specification, from 42 000 to 42 500 lines, by slot a's word under the rule, for the checks of two fixes that pin a rule of rights (lakelands#509). It is the first raise the rule makes without the operator's own decision; the operator was told.
 
+**The fourth raise:** the specification, from 42 500 to 43 000 lines, by slot a's word under the rule, for the checks of what a listing of proposals shows its reader (lakelands#499). It rides in the pull request of the code it is for.
+
 ## Why
 
 The budgets keep the core small enough for one reader to hold. They have done that: four diets took out about 5 000 lines without losing a check.

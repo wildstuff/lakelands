@@ -303,6 +303,7 @@ pub fn reviewer(store: &dyn LakeStore, schema: bool) -> Principal {
         PrincipalKind::Human,
         if schema { "architect" } else { "reviewer" },
         Grants {
+            default: Access::Read,
             review: true,
             schema,
             ..Grants::default()

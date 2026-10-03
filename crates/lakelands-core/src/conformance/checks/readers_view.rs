@@ -18,7 +18,7 @@ use crate::conformance::fixture::{Lake, Must, field_access, patch, type_of, valu
 check!(
     /// A proposal shows its reader the values it may read, and is accepted whole.
     VALUES_AS_THE_READERS_VIEW = a_proposal_shows_its_reader_the_values_it_may_read_and_is_accepted_whole,
-    "013 and 024, extended (lakelands#499): `proposals` shows a proposed value where a read of the record would: a field its reader may not know of and a masked one are not in a proposed patch, a proposed call's payload is whole only to a reader who may read every field the verb sets, or see the type of a verb that reaches outside, and a write to a type the reader may not see stays listed and shows neither; the proposer reads its own proposal by the same rule; the accept applies the logged write whole, what its reviewer was not shown too"
+    "013 and 024, extended (lakelands#499): `proposals` shows a proposed value where a read of the record would: a field its reader may not know of and a masked one are not in a proposed patch, a proposed call's payload is whole only to a reader who may read every field the verb sets, or see the type of a verb that reaches outside, and a write to a type the reader may not see is listed without its write; every entry that holds more than its reader is shown says `more`, and no other does; the proposer reads its own proposal by the same rule; the accept applies the logged write whole, what its reviewer was not shown too"
 );
 
 /// The agent `id` holding `review`, reading `invoice` but for its `salary`,
@@ -38,15 +38,16 @@ fn proposed(o: Outcome) -> Result<ProposalId, Failure> {
     }
 }
 
-/// Each proposed patch and payload as `who` lists them, newest first.
+/// Each proposal as `who` lists it, newest first: its patch or payload,
+/// null where it shows no write, and whether it says there is more.
 async fn listed(l: &Lake, who: &Principal) -> Result<Vec<Value>, Failure> {
     let all = l.cat.proposals(who, ProposalFilter::default()).await;
-    let values = all.must("listing proposals")?.data.into_iter();
-    Ok(values
-        .filter_map(|p| match p.write {
-            ProposedWrite::Upsert { patch, .. } => Some(json!(patch)),
-            ProposedWrite::Call { payload, .. } => Some(json!(payload)),
-            _ => None,
+    let entries = all.must("listing proposals")?.data.into_iter();
+    Ok(entries
+        .map(|p| match p.write {
+            Some(ProposedWrite::Upsert { patch, .. }) => json!([patch, p.more]),
+            Some(ProposedWrite::Call { payload, .. }) => json!([payload, p.more]),
+            _ => json!([null, p.more]),
         })
         .collect())
 }
@@ -105,7 +106,13 @@ async fn a_proposal_shows_its_reader_the_values_it_may_read_and_is_accepted_whol
     let mut unseeing = reviewer(s, "unseeing", Access::Read);
     let none = Some(Access::None);
     (unseeing.grants.types.values_mut()).for_each(|t| (t.default, t.fields) = (none, [].into()));
-    let (note, empty) = (json!({"note": "raise"}), json!({}));
+    // What an entry lists: the whole, a part with `more`, or no write.
+    let (all, part) = (|v: &Value| json!([v, false]), |v: Value| json!([v, true]));
+    let (note, empty, none) = (
+        || part(json!({"note": "raise"})),
+        || part(json!({})),
+        || part(Value::Null),
+    );
     let who = [
         "a reader of `salary`",
         "one who may not know of `salary`",
@@ -117,29 +124,30 @@ async fn a_proposal_shows_its_reader_the_values_it_may_read_and_is_accepted_whol
     let rows = [
         (
             reviewer(s, "reads", Access::Read),
-            vec![&told, &sent, &whole],
+            vec![all(&told), all(&sent), all(&whole)],
         ),
-        (blind.clone(), vec![&told, &empty, &note]),
+        (blind.clone(), vec![all(&told), empty(), note()]),
         (
             reviewer(s, "masked", Access::Masked),
-            vec![&told, &empty, &note],
+            vec![all(&told), empty(), note()],
         ),
-        (unseeing.clone(), vec![&empty, &empty, &empty]),
-        (clerk, vec![&sent, &whole]),
-        (demoted, vec![&empty, &note]),
+        (unseeing.clone(), vec![none(), none(), none()]),
+        (clerk, vec![all(&sent), all(&whole)]),
+        (demoted, vec![empty(), note()]),
     ];
     let mut red = Vec::new();
     for (who, (reader, want)) in who.into_iter().zip(rows) {
         let got = listed(&l, &reader).await?;
-        if got.iter().ne(want.iter().copied()) {
+        if got != want {
             let (want, got) = (json!(want), json!(got));
             red.push(format!("{who} must list {want}; it lists {got}"));
         }
     }
     ensure!(
         red.is_empty(),
-        "`proposals` shows a proposed value where a read of the record would, newest first \
-         an external verb's payload, a call's and an upsert's patch: {}",
+        "`proposals` shows a proposed value where a read of the record would, and says where \
+         there is more; newest first an external verb's payload, a call's and an upsert's \
+         patch: {}",
         red.join("; ")
     );
 

@@ -1209,6 +1209,21 @@ fn touched(
     }
 }
 
+/// Whether a proposal is of `filter`'s kind and touches its type, by the
+/// write it holds: one that holds none is of no kind and touches no type.
+pub fn matches(
+    p: &Proposal,
+    filter: &ProposalFilter,
+    verb_on: impl Fn(&VerbName) -> Option<TypeName>,
+) -> bool {
+    let write = p.write.as_ref();
+    filter
+        .kind
+        .is_none_or(|k| write.is_some_and(|w| w.kind() == k))
+        && (filter.ty.as_ref())
+            .is_none_or(|ty| write.is_some_and(|w| touched(w, &verb_on).contains(ty)))
+}
+
 /// Proposals as a view answers them: those in `filter`'s state, of its
 /// kind and touching its type (`verb_on` says which type a verb acts on,
 /// as declared at the view's position), newest first, ties by id, at most
@@ -1221,13 +1236,7 @@ pub fn proposals<'a>(
     let mut found: Vec<&Proposal> = all
         .into_iter()
         .filter(|p| filter.state.is_none_or(|s| p.state == s))
-        .filter(|p| filter.kind.is_none_or(|k| p.write.kind() == k))
-        .filter(|p| {
-            filter
-                .ty
-                .as_ref()
-                .is_none_or(|ty| touched(&p.write, &verb_on).contains(ty))
-        })
+        .filter(|p| matches(p, filter, &verb_on))
         .collect();
     found.sort_by(|a, b| b.position.cmp(&a.position).then_with(|| a.id.cmp(&b.id)));
     found

@@ -768,15 +768,16 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 position: Position(1),
                 proposer: "human:a".into(),
                 proposed_at: t(),
-                write: ProposedWrite::Retire {
+                write: Some(ProposedWrite::Retire {
                     ty: "invoice".into(),
                     key: "k".into(),
                     opts: write_opts(),
-                },
+                }),
                 why: "w".into(),
                 state: ProposalState::Accepted,
                 decided_by: Some("human:b".into()),
                 reason: Some("r".into()),
+                more: true,
             }),
         ),
         (

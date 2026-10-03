@@ -28,7 +28,7 @@
 CRATES=(lakelands-api lakelands-core lakelands-store lakelands-engine-sqlite lakelands-engine-pg)
 PRODUCT_CEILING=36500
 PRODUCT_BASE=scripts/gates/core-size.product.base
-SPEC_CEILING=42500
+SPEC_CEILING=43000
 SPEC_BASE=scripts/gates/core-size.spec.base
 
 all=()

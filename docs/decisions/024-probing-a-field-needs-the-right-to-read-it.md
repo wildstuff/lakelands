@@ -154,13 +154,19 @@ hides from it. The listing now shows them as a read of the record would:
   declaring rule does not hand out (lakelands#470). For a verb that
   reaches outside the lake, the payload goes to the executor and is
   shown to a reader who may see the verb's type.
-- **A write to a type the reader may not see** shows an empty patch or
-  payload. The proposal stays listed, with the type and the key, so that
-  a principal holding `review` and no read grant still finds what it is
-  asked to decide.
+- **A write to a type the reader may not see** is listed without its
+  write: the type's name and the key are names. The entry stays in the
+  listing, so that a principal holding `review` and no read grant still
+  finds what it is asked to decide.
 
 The proposer reads its own proposal by the same rule, whole for as long
-as it may read what it wrote. The reader is not told that something was
-left out, and the names a proposal still carries (the type and key
-above, a migration's report, a proposed declaration's condition) are
-not trimmed here.
+as it may read what it wrote.
+
+The names follow the same reader. A proposal on a record it is not
+answered (one restricted, without the grant) is listed without its
+write too. A migration's report, a rename and a proposed declaration
+are shown by what the reader may know of, and an entry that holds more
+than its reader is shown says `more`
+(`docs/decisions/013-verbs-run-by-declared-risk.md` and
+`docs/decisions/027-shape-changes-are-declared-or-migrated.md`, each
+extended).

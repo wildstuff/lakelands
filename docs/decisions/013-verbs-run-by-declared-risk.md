@@ -110,6 +110,46 @@ applied to what the reviewer read would make the reviewer's grants
 decide what the proposer wrote, and a write checked whole would be
 applied in part.
 
+**Told that there is more.** A listed proposal says `more` when it holds
+more than its reader is shown, and says nothing else of it: no name and
+no count, since a count would say how many names are hidden. Where the
+reader may see nothing of the write, the entry has no write at all: a
+write to a type it may not see, to a record it is not answered (one
+restricted, without the grant), a call of a verb on such a type, a
+bundle none of whose declarations it would be shown. The entry keeps its
+id, its proposer, its times, its state and the proposer's `why`, so a
+reviewer without a read grant still finds what it is asked to decide,
+and accepts it by its id.
+
+The absent write is a form of the answer and of nothing else. A stored
+proposal and a logged `write_proposed` hold the write whole, and
+`propose` takes a write, never a proposal; so `Proposal.write` is
+optional and `ProposedWrite` gained no variant that could be proposed or
+logged.
+
+**The filters follow the entry.** `type` and `kind` are answered on the
+entry as its reader is shown it. A type the reader may not see answers
+what a type that is not declared answers, an empty listing; an entry
+without a write is of no kind. The unfiltered listing and `state` hold
+every entry. Ordering and paging were already over the entry as shown.
+
+**A proposed bundle** shows each declaration `describe` would show its
+reader once the bundle is in force: a type it could see, with the fields
+it may know of; a view with its definition or not at all; a trigger and
+an object set whose condition it may read; a function by `describe`'s
+rule; a value type always. A verb is judged by the fields it names, the
+ones it sets known and the ones it reads readable, not by who may call
+it: a reviewer need not be one who may. One who holds `schema`, as an
+accepter of a bundle must, is shown every definition, so for it `more`
+can only mean a field or a type hidden from it.
+
+**The refusal at the accept** follows the same rule. An accept refused
+because a declaration made since reads a field the migration takes away
+names the declaration and the field to an accepter who may know of the
+field, and to another says only that a declaration reads a field the
+migration takes away: the proposer took the field away knowingly, the
+accepter may not know that it exists.
+
 ## Extended: a value type's tightening is proposed like a migration (lakelands#476)
 
 A value type that is to accept less could be changed only by a principal

@@ -38,6 +38,7 @@ mod masking;
 mod migrate;
 mod paging;
 mod positions;
+mod proposal_names;
 mod proposals;
 mod provenance;
 mod purge;
@@ -213,6 +214,8 @@ pub const ALL: &[Check] = &[
     proposals::REJECT_AND_DECIDED,
     proposals::WHO_DECIDES,
     readers_view::VALUES_AS_THE_READERS_VIEW,
+    proposal_names::NAMES_AS_THE_READERS_VIEW,
+    proposal_names::LISTED_AS_SHOWN,
     schema_proposals::DECLARED_ON_ACCEPT,
     schema_proposals::SCHEMA_TO_ACCEPT,
     schema_proposals::MIGRATION_PREFLIGHTED_AGAIN,
