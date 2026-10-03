@@ -28,8 +28,8 @@
 //! # Tuning
 //!
 //! Cache sizes, memory-mapped reads and the journal's checkpoint interval
-//! come from the location's [`SqliteTuning`]; the engine reads no
-//! environment.
+//! come from the location's [`SqliteTuning`](lakelands_api::SqliteTuning);
+//! the engine reads no environment.
 
 #![forbid(unsafe_code)]
 
@@ -40,11 +40,10 @@ mod projection;
 mod view;
 
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard};
 
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
 use lakelands_api::error::{Error, Result};
-use lakelands_api::location::{EngineConfig, Location, SqliteTuning};
+use lakelands_api::location::{EngineConfig, Location};
 
 pub use handle::SqliteLake;
 
@@ -52,13 +51,7 @@ pub use handle::SqliteLake;
 /// [`LakeEngine::name`].
 pub const NAME: &str = "sqlite";
 
-/// Locks a mutex, carrying on past a panic in another holder: every
-/// change a holder makes is written whole or not at all.
-pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-pub(crate) use lakelands_core::{invalid, unavailable};
+pub(crate) use lakelands_core::{invalid, lock, unavailable};
 
 /// A failed file operation, for the host.
 pub(crate) fn io_error(doing: &str, path: &Path, e: std::io::Error) -> Error {
@@ -96,13 +89,5 @@ impl EngineOpener for SqliteOpener {
             *tuning,
             mode,
         )?))
-    }
-}
-
-/// The tuning a location names, for a host that builds one.
-pub fn tuning(location: &Location) -> Option<SqliteTuning> {
-    match &location.engine {
-        EngineConfig::Sqlite { tuning, .. } => Some(*tuning),
-        _ => None,
     }
 }

@@ -48,3 +48,9 @@ pub fn unavailable(message: impl Into<String>) -> Error {
         message: message.into(),
     }
 }
+
+/// Locks a mutex, carrying on past a panic in another holder: a caller
+/// locks only state every holder changes whole or not at all.
+pub fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}

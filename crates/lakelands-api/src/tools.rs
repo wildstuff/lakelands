@@ -371,14 +371,10 @@ fn props(pairs: impl IntoIterator<Item = (&'static str, Value)>) -> Map<String, 
 /// parameter required and of its kind's schema. Answers whether the view
 /// declares any.
 fn view_params(ty: &TypeDescription, lake: &LakeDescription, p: &mut Map<String, Value>) -> bool {
-    let Some(params) = ty
-        .view
-        .as_ref()
-        .map(|v| &v.params)
-        .filter(|ps| !ps.is_empty())
-    else {
+    let params = ty.view.as_ref().map_or(&[][..], |v| &v.params);
+    if params.is_empty() {
         return false;
-    };
+    }
     let properties: Map<String, Value> = params
         .iter()
         .map(|q| {

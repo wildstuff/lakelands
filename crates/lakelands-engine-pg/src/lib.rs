@@ -47,8 +47,6 @@ mod projection;
 mod vector_index;
 mod view;
 
-use std::sync::{Mutex, MutexGuard};
-
 use lakelands_api::engine::{EngineOpener, LakeEngine, OpenMode};
 use lakelands_api::error::{Error, Result};
 use lakelands_api::location::{EngineConfig, Location};
@@ -60,13 +58,7 @@ pub use handle::{ANALYZE_AFTER, PgLake, export};
 /// `EngineConfig::Postgres`.
 pub const NAME: &str = "pg";
 
-/// Locks a mutex, carrying on past a panic in another holder: every
-/// change a holder makes is written whole or not at all.
-pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-pub(crate) use lakelands_core::{invalid, unavailable};
+pub(crate) use lakelands_core::{invalid, lock, unavailable};
 
 /// A failed statement, for the host, with every cause the driver gives.
 pub(crate) fn sql(e: postgres::Error) -> Error {

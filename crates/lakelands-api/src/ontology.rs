@@ -136,9 +136,7 @@ impl FieldType {
     pub fn kind(kind: StorageKind) -> FieldType {
         FieldType {
             kind,
-            value_type: None,
-            target: None,
-            dimensions: None,
+            ..FieldType::default()
         }
     }
 }

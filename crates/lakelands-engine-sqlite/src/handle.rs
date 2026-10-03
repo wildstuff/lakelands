@@ -266,11 +266,7 @@ impl LakeEngine for SqliteLake {
         self.writable()?;
         let mut held = lock(&self.held);
         if let Some(h) = held.as_ref() {
-            return Err(unavailable(format!(
-                "the lake's writer lease is held by `{}` (fence {}); it must be released before \
-                 another writer can take it",
-                h.lease.holder, h.lease.fence
-            )));
+            return Err(engines::lease_held(&h.lease.holder, h.lease.fence));
         }
         let taken = self.lease_file.take(holder)?;
         // What a writer that ended mid-append left uncommitted is cut off

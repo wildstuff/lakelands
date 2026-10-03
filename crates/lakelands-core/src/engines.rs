@@ -1038,6 +1038,58 @@ pub fn fence_fault(
     }
 }
 
+/// Refuses `events` unless they continue a log kept as lines whose next
+/// position is `first` and whose last hash is `prev`, checked event by
+/// event, each in this order: its fence ([`fence_fault`], `floor` the
+/// fence of the event before the first), its position, its `prev`, and a
+/// line feed in its bytes, which canonical bytes never hold.
+pub fn append_fault(
+    events: &[lakelands_api::engine::CanonicalEvent],
+    first: u64,
+    mut prev: lakelands_api::event::Digest,
+    lease: Option<u64>,
+    mut floor: u64,
+) -> Result<()> {
+    for (expected, event) in (first..).zip(events) {
+        if let Some(why) = fence_fault(event, lease, floor) {
+            return Err(invalid(why));
+        }
+        floor = event.fence;
+        if event.position.0 != expected {
+            return Err(invalid(format!(
+                "the event at position {} does not continue the log, whose next position \
+                 is {expected}; nothing was appended",
+                event.position
+            )));
+        }
+        if event.prev != prev {
+            return Err(invalid(format!(
+                "the event at position {} names `{}` as the hash before it, but that hash \
+                 is `{}`; nothing was appended",
+                event.position, event.prev.0, prev.0
+            )));
+        }
+        if event.bytes.contains(&b'\n') {
+            return Err(invalid(format!(
+                "the event at position {} holds a line feed in its bytes, which canonical \
+                 bytes never do; nothing was appended",
+                event.position
+            )));
+        }
+        prev = event.hash.clone();
+    }
+    Ok(())
+}
+
+/// The refusal of the writer lease to a taker while `holder` holds it
+/// under `fence`.
+pub fn lease_held(holder: &str, fence: u64) -> Error {
+    crate::unavailable(format!(
+        "the lake's writer lease is held by `{holder}` (fence {fence}); it must be released \
+         before another writer can take it"
+    ))
+}
+
 /// Best first by score, ties by key, at most `k`.
 pub fn rank(hits: &mut Vec<(RecordKey, f64)>, k: u32) {
     hits.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
