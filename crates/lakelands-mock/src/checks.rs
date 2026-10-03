@@ -134,6 +134,7 @@ macro_rules! door_checks {
             a_cursor_continues_only_the_read_it_began,
             after_walks_the_pages_the_cursor_walks,
             after_is_refused_naming_the_member,
+            a_limit_outside_the_lakes_bounds_is_refused_at_every_door,
             a_principal_of_another_lake_is_refused,
             the_feed_is_the_log_by_position,
             the_feed_filtered_by_key_answers_those_records_events,
@@ -3273,6 +3274,54 @@ pub async fn after_walks_the_pages_the_cursor_walks(store: Arc<dyn LakeStore>) {
             expected,
             "the one order under {order:?}"
         );
+    }
+}
+
+/// A `limit` of 0, or above what the lake allows, is refused as invalid,
+/// naming the bounds, at every door that takes one: `find`, `query` and
+/// `proposals` up to `max_limit`, a whole-graph measure up to
+/// `max_graph_nodes`. It is never cut to fit.
+pub async fn a_limit_outside_the_lakes_bounds_is_refused_at_every_door(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let (c, own) = (&f.catalog, &f.cast.owner);
+    let limits = Limits::default();
+    let rows = |limit| {
+        let mut p = Pattern::traverse(ty(INVOICE), key("unused"), Vec::new());
+        (p.start.key, p.limit) = (None, Some(limit));
+        p
+    };
+    let measure = |limit| {
+        let mut p = rows(limit);
+        p.project = lakelands_api::query::Projection::Components;
+        p
+    };
+    for (max, measured) in [(limits.max_limit, false), (limits.max_graph_nodes, true)] {
+        for limit in [0, max + 1] {
+            let find = Find {
+                limit: Some(limit),
+                ..Find::default()
+            };
+            let filter = ProposalFilter {
+                limit: Some(limit),
+                ..ProposalFilter::default()
+            };
+            let answers = match measured {
+                true => vec![("a measure", c.query(own, measure(limit)).await.map(|_| ()))],
+                false => vec![
+                    ("find", c.find(own, &ty(INVOICE), find).await.map(|_| ())),
+                    ("query", c.query(own, rows(limit)).await.map(|_| ())),
+                    ("proposals", c.proposals(own, filter).await.map(|_| ())),
+                ],
+            };
+            for (door, answer) in answers {
+                let want = format!("a limit is between 1 and {max}");
+                assert!(
+                    matches!(&answer, Err(Error::Refused { field: None, reason: Refusal::Invalid { message } })
+                        if *message == want),
+                    "{door} with `limit` {limit} must be refused as invalid: {want}; it answered {answer:?}"
+                );
+            }
+        }
     }
 }
 
