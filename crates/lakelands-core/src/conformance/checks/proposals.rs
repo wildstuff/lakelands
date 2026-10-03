@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind;
-use lakelands_api::seam::FeedFilter;
 use lakelands_api::write::{ProposalFilter, ProposalState, ProposedWrite};
 use lakelands_api::{Error, LakeStore, Outcome, Position, ProposalId, Refusal, Version, WriteOpts};
 use serde_json::json;
@@ -15,8 +14,8 @@ use serde_json::json;
 use crate::conformance::Failure;
 use crate::conformance::backing::EXECUTOR;
 use crate::conformance::fixture::{
-    Lake, Must, doors, field, field_writer, head_unmoved, outputs_from, owner, patch, read, reason,
-    refused_on, reviewer, type_decl, value,
+    Lake, Must, doors, events_from, field, field_writer, head_unmoved, log_events, outputs_from,
+    owner, patch, reactive, read, reason, refused_on, reviewer, try_upsert, type_decl, value,
 };
 
 check!(
@@ -122,12 +121,8 @@ fn proposal(o: &Outcome) -> Result<(Position, ProposalId), Failure> {
 }
 
 async fn kinds_from(store: &dyn LakeStore, from: Position) -> Result<Vec<EventBody>, Failure> {
-    let batch = store
-        .feed()
-        .poll(from, &FeedFilter::default(), 100)
-        .await
-        .must("reading the feed")?;
-    Ok(batch.events.into_iter().map(|e| e.body).collect())
+    let events = events_from(store, from).await?;
+    Ok(events.into_iter().map(|e| e.body).collect())
 }
 
 async fn a_low_verb_runs_and_a_higher_one_is_proposed(
@@ -255,6 +250,7 @@ async fn an_external_verb_without_an_executor_is_unbound(
         payload: patch(payload),
         opts: WriteOpts::default(),
     };
+    let propose = |verb: &str, payload| cat.propose(own, proposed(verb, payload), "later".into());
     let nobody = lakelands_api::Principal {
         grants: Default::default(),
         ..own.clone()
@@ -280,18 +276,15 @@ async fn an_external_verb_without_an_executor_is_unbound(
         ),
         (
             "proposing a call of `remind`",
-            cat.propose(own, proposed("remind", json!({})), "later".into())
-                .await,
+            propose("remind", json!({})).await,
         ),
         (
             "proposing `remind` with a payload it does not take",
-            cat.propose(own, proposed("remind", json!({"bogus": 1})), "later".into())
-                .await,
+            propose("remind", json!({"bogus": 1})).await,
         ),
         (
             "proposing a call of `chase`",
-            cat.propose(own, proposed("chase", json!({})), "later".into())
-                .await,
+            propose("chase", json!({})).await,
         ),
     ] {
         ensure!(
@@ -500,22 +493,12 @@ async fn accepting_a_proposal_applies_its_write_as_the_proposers(
         "accepting `pay` must apply it: `i` reads {:?}",
         r.fields
     );
-    let events = store
-        .feed()
-        .poll(at, &FeedFilter::default(), 100)
-        .await
-        .must("reading the feed")?
-        .events;
-    let accept_at = events
-        .iter()
-        .find(|e| matches!(e.body, EventBody::WriteAccepted { .. }))
+    let events = events_from(store.as_ref(), at).await?;
+    let find = |is: fn(&EventBody) -> bool| events.iter().find(|e| is(&e.body));
+    let accept_at = find(|b| matches!(b, EventBody::WriteAccepted { .. }))
         .map(|e| (e.position, e.writer.clone()));
-    let called = events
-        .iter()
-        .find(|e| matches!(e.body, EventBody::VerbCalled { .. }));
-    let upserted = events
-        .iter()
-        .find(|e| matches!(e.body, EventBody::RecordUpserted { .. }));
+    let called = find(|b| matches!(b, EventBody::VerbCalled { .. }));
+    let upserted = find(|b| matches!(b, EventBody::RecordUpserted { .. }));
     // The acceptance causes the verb's run, and the run causes its write
     // (the log format: a verb's writes follow, caused by `verb_called`).
     let accepted_at = accept_at.as_ref().map(|(p, _)| *p);
@@ -587,12 +570,8 @@ async fn a_rejected_proposal_writes_nothing_and_a_decided_one_stays_decided(
             cat.reject(own, &id, "again".into()).await
         };
         let err = result.must_fail(&format!("{what} a rejected proposal"))?;
-        head_unmoved(
-            store.as_ref(),
-            before,
-            &format!("{what} a decided proposal"),
-        )
-        .await?;
+        let decided = format!("{what} a decided proposal");
+        head_unmoved(store.as_ref(), before, &decided).await?;
         ensure!(
             matches!(reason(&err), Some(Refusal::Decided)),
             "{what} a decided proposal must be refused as decided; it failed with {err:?}"
@@ -714,7 +693,7 @@ check!(
 async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_position(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    use crate::conformance::backing::{EXECUTOR, executed};
+    use crate::conformance::backing::executed;
     use lakelands_api::IdempotencyKey;
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
@@ -734,8 +713,7 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
     let key = "executor-job";
     l.upsert("job", key, json!({"status": "open"})).await?;
     let dispatch = |payload: serde_json::Value, opts: WriteOpts| {
-        let cat = cat.clone();
-        let own = own.clone();
+        let (cat, own) = (cat.clone(), own.clone());
         async move {
             cat.call(
                 &own,
@@ -846,28 +824,16 @@ check!(
 
 /// A host's write of `job` `key`, naming `cause` as what it follows from.
 async fn host_write(store: &dyn LakeStore, key: &str, cause: Position) -> Result<Outcome, Failure> {
-    use lakelands_api::principal::{WriteContext, WriteOrigin};
-    store
-        .catalog(WriteContext {
-            origin: WriteOrigin::Reactive,
-            depth: 1,
-            cause: Some(cause),
-        })
-        .upsert(
-            &owner(store),
-            &"job".into(),
-            &key.into(),
-            patch(json!({"status": "done"})),
-            WriteOpts::default(),
-        )
+    let host = store.catalog(reactive(1, Some(cause)));
+    let done = json!({"status": "done"});
+    try_upsert(host.as_ref(), &owner(store), "job", key, done)
         .await
         .must("the host writing the effect's result, naming the call as its cause")
 }
 
 /// `job`, and the verbs on it: `ship` and `ship_any` external (the latter
-/// on its type) at `risk`, and `close` a write.
-async fn jobs(store: &dyn LakeStore, risk: &str) -> Result<Lake, Failure> {
-    use crate::conformance::backing::EXECUTOR;
+/// on its type) at `risk`, and `close` a write; then its record `key`, open.
+async fn jobs(store: &dyn LakeStore, risk: &str, key: &str) -> Result<Lake, Failure> {
     let l = Lake::of(store);
     l.declare(type_decl("job", vec![field("status", StorageKind::Text)]))
         .await?;
@@ -881,6 +847,7 @@ async fn jobs(store: &dyn LakeStore, risk: &str) -> Result<Lake, Failure> {
     ] {
         l.declare_json(verb).await?;
     }
+    l.upsert("job", key, json!({"status": "open"})).await?;
     Ok(l)
 }
 
@@ -892,26 +859,19 @@ async fn call_once(
     once: &str,
 ) -> lakelands_api::Result<Outcome> {
     let key = key.map(lakelands_api::RecordKey::from);
+    let opts = WriteOpts {
+        idempotency_key: Some(once.into()),
+        ..WriteOpts::default()
+    };
     l.cat
-        .call(
-            &l.own,
-            &verb.into(),
-            key.as_ref(),
-            patch(json!({})),
-            WriteOpts {
-                idempotency_key: Some(lakelands_api::IdempotencyKey::from(once)),
-                ..WriteOpts::default()
-            },
-        )
+        .call(&l.own, &verb.into(), key.as_ref(), patch(json!({})), opts)
         .await
 }
 
 async fn a_retried_external_verb_answers_its_call_though_a_host_write_names_it(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let l = jobs(store.as_ref(), "low").await?;
-    l.upsert("job", "retry-ext", json!({"status": "open"}))
-        .await?;
+    let l = jobs(store.as_ref(), "low", "retry-ext").await?;
     for (verb, key) in [("ship_low", Some("retry-ext")), ("ship_any_low", None)] {
         let once = format!("{verb}-once");
         let first = call_once(&l, verb, key, &once)
@@ -943,9 +903,7 @@ async fn a_retried_external_verb_answers_its_call_though_a_host_write_names_it(
 async fn a_retried_write_verb_answers_its_own_write_though_a_host_write_names_it(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let l = jobs(store.as_ref(), "low").await?;
-    l.upsert("job", "retry-write", json!({"status": "open"}))
-        .await?;
+    let l = jobs(store.as_ref(), "low", "retry-write").await?;
     let first = call_once(&l, "close", Some("retry-write"), "close-once")
         .await
         .must("calling `close`")?;
@@ -959,12 +917,8 @@ async fn a_retried_write_verb_answers_its_own_write_though_a_host_write_names_it
             "`close` answers its write with the record's version; it answered {first:?}"
         )));
     };
-    let called = store
-        .feed()
-        .poll(Position(0), &FeedFilter::default(), 10_000)
-        .await
-        .must("reading the feed")?
-        .events
+    let called = log_events(store.as_ref())
+        .await?
         .into_iter()
         .rev()
         .find(|e| matches!(e.body, EventBody::VerbCalled { .. }) && e.position < *position)
@@ -985,9 +939,7 @@ async fn a_retried_write_verb_answers_its_own_write_though_a_host_write_names_it
 async fn a_retried_proposed_call_answers_its_proposal_after_it_is_accepted(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let l = jobs(store.as_ref(), "medium").await?;
-    l.upsert("job", "retry-prop", json!({"status": "open"}))
-        .await?;
+    let l = jobs(store.as_ref(), "medium", "retry-prop").await?;
     let first = call_once(&l, "ship_medium", Some("retry-prop"), "ship-medium-once")
         .await
         .must("calling `ship_medium`")?;
