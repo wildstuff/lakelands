@@ -942,7 +942,22 @@ impl<'a> Reader<'a> {
         }
         let limit = self.limit(find.limit)?;
         let after = match &find.cursor {
-            Some(c) => resume(c, "find", Some(ty), &params)?.after,
+            Some(c) => {
+                let after = resume(c, "find", Some(ty), &params)?.after;
+                // A cursor holds one sort value per key of the order its
+                // first page was read in; under another number of keys it
+                // places no page, and is refused before anything compares.
+                if after
+                    .as_ref()
+                    .is_some_and(|(v, _)| v.len() != find.order_by.len())
+                {
+                    return Err(invalid(
+                        "the cursor was handed out for another order; continue it with the \
+                         `order_by` its first page was read with",
+                    ));
+                }
+                after
+            }
             None => asked,
         };
         let mut keyed: Vec<((Vec<Value>, RecordKey), StoredRecord)> = if decl.view.is_some() {

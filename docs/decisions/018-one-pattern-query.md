@@ -121,7 +121,10 @@ would belong to two answers. For the same reason a cursor carries the
 door and the type it was handed out for: a page of `find` continues
 only that `find` on that type, a page of `query` that query, a page of
 `search` that search, and any other use is refused as invalid, naming
-where the cursor belongs (lakelands#367). The cursor's bytes are opaque
+where the cursor belongs (lakelands#367). A cursor of `find` holds one
+sort value per key of the order its first page was read in; handed to a
+`find` with more or fewer keys, it is refused as invalid before anything
+is compared (lakelands#436). The cursor's bytes are opaque
 and change freely; no log format changes. Views are computed on read,
 so nothing is kept per binding.
 

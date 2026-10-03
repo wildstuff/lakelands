@@ -5,16 +5,25 @@ use std::sync::Arc;
 
 use lakelands_api::ontology::{FieldDecl, StorageKind};
 use lakelands_api::query::{Projection, QueryResult, Search, SearchMode};
+use lakelands_api::read::{Direction, OrderBy};
 use lakelands_api::{Cursor, Find, Found, LakeStore, ReadAt, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, field, is_invalid, pattern, type_decl};
+use crate::conformance::fixture::{
+    Lake, Must, count_view, field, invalid_naming, is_invalid, order, pattern, type_decl,
+};
 
 check!(
     /// A cursor continues only the answer it was handed out for.
     CURSOR_ONE_ANSWER = a_cursor_continues_only_the_answer_it_was_handed_out_for,
     "018 and 029: a page continues only the answer its cursor was handed out for, the same door and the same type: a cursor of `find` on one type continues that `find`, and is refused as invalid by `find` on another type, by `query` and by `search`, naming where it belongs; a cursor of `query` or `search` is refused by `find` alike"
+);
+
+check!(
+    /// A cursor continues only the order it was handed out for.
+    CURSOR_ONE_ORDER = a_cursor_handed_to_a_find_of_another_order_length_is_refused,
+    "018 and lakelands#436: a cursor of `find` holds one sort value per key of the `order_by` its first page was read with; handed to a `find` whose `order_by` is longer or shorter, on a stored type or on a view, it is refused as invalid, naming the order, and never answers a page or `unavailable`"
 );
 
 check!(
@@ -204,5 +213,63 @@ async fn a_cursor_continues_only_the_answer_it_was_handed_out_for(
              cursor belongs; it answered {r:?}"
         );
     }
+    Ok(())
+}
+
+async fn a_cursor_handed_to_a_find_of_another_order_length_is_refused(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    l.declare(type_decl("doc", vec![field("t", StorageKind::Text)]))
+        .await?;
+    l.declare(count_view("by_t", "doc", "t")).await?;
+    for (k, t) in [("a", "z"), ("b", "y"), ("c", "x"), ("d", "w")] {
+        l.upsert("doc", k, json!({ "t": t })).await?;
+    }
+    let by_t = || vec![order("t", OrderBy::Value, Direction::Asc)];
+    let page = |order_by, cursor| Find {
+        order_by,
+        limit: Some(2),
+        cursor,
+        ..Find::default()
+    };
+    // Every case is tried and every wrong answer named: on a view, the
+    // longer order once panicked the read and answered `unavailable`.
+    let mut wrong = Vec::new();
+    for ty in ["doc", "by_t"] {
+        let ty = TypeName::from(ty);
+        // By key, then by `t`: a cursor with no sort value handed to a
+        // longer order, and one with a sort value handed to a shorter one.
+        for (first, then) in [(Vec::new(), by_t()), (by_t(), Vec::new())] {
+            let cursor = match cat
+                .find(own, &ty, page(first.clone(), None))
+                .await
+                .must(&format!("the first page of `{ty}`"))?
+                .data
+            {
+                Found::Records {
+                    next_cursor: Some(c),
+                    ..
+                } => c,
+                other => {
+                    return Err(Failure::new(format!(
+                        "four records of `{ty}` in pages of two answered no next page: \
+                         {other:?}"
+                    )));
+                }
+            };
+            let what = format!(
+                "a cursor of `{ty}` read with {} key(s) of `order_by`, handed to a `find` with {}",
+                first.len(),
+                then.len()
+            );
+            let answer = cat.find(own, &ty, page(then, Some(cursor))).await;
+            if let Err(f) = invalid_naming(&what, answer, &["another order", "order_by"]) {
+                wrong.push(f.to_string());
+            }
+        }
+    }
+    ensure!(wrong.is_empty(), "{}", wrong.join("; "));
     Ok(())
 }
