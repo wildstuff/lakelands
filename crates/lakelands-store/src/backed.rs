@@ -297,14 +297,9 @@ fn backed_fields<'o>(
 fn meta(event: &Event, version: String, error: Option<String>) -> FieldMeta {
     FieldMeta {
         upstream: None,
-        origin: Origin::Derived,
-        known_at: event.known_at,
-        seen_at: event.seen_at,
-        position: event.position,
-        writer: event.writer.clone(),
-        source: event.source.clone(),
         procedure_version: Some(version),
         error,
+        ..crate::record::meta_of(event, Origin::Derived)
     }
 }
 
