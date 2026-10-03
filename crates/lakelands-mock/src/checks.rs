@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 use lakelands_api::describe::ExecutorDescription;
 use lakelands_api::error::{Error, Missing, Refusal};
+use lakelands_api::event::EventBody;
 use lakelands_api::expr::Condition;
 use lakelands_api::id::{
     Cursor, FieldName, LakeId, Position, RecordKey, TypeName, VerbName, Version,
@@ -146,6 +147,7 @@ macro_rules! door_checks {
             schema_hashes_and_proposal_ids_have_the_stores_form,
             links_are_written_walked_and_held_to_their_relation,
             a_relation_declared_again_with_another_target_reshapes_its_links,
+            a_migration_migrates_and_declares_its_link_types_in_its_append,
             #[host_ops] an_aging_rule_moves_what_holds_from_once_a_date,
             #[host_ops] a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_record,
             a_value_type_is_loosened_by_declare_and_tightened_by_its_preflight,
@@ -4259,6 +4261,86 @@ pub async fn a_relation_declared_again_with_another_target_reshapes_its_links(
             if message.contains("sys.link.doc.signed_by")),
         "{refused:?}"
     );
+}
+
+/// A migration that changes a relation's fields migrates that relation's
+/// link type, and one that adds a relation carried by link records
+/// declares its link type, after the type's own `migrated` and in the
+/// same append; a link over the new relation is then written.
+pub async fn a_migration_migrates_and_declares_its_link_types_in_its_append(
+    store: Arc<dyn LakeStore>,
+) {
+    let c = store.catalog(WriteContext::default());
+    let own = &Cast::of(store.lake()).owner;
+    let doc = |relations: Value| {
+        serde_json::from_value::<TypeDecl>(json!({"name": "doc",
+            "fields": [{"name": "title", "type": {"kind": "text"}}], "relations": relations}))
+        .unwrap()
+    };
+    let person: Declaration = serde_json::from_value(json!({"declare": "type", "name": "person",
+        "fields": [{"name": "name", "type": {"kind": "text"}}]}))
+    .unwrap();
+    c.declare(own, person).await.unwrap();
+    let signed = json!({"name": "signed_by", "target": "person"});
+    c.declare(own, Declaration::Type(doc(json!([signed]))))
+        .await
+        .unwrap();
+    for (t, k, f) in [("person", "p1", "name"), ("doc", "d1", "title")] {
+        c.upsert(
+            own,
+            &ty(t),
+            &key(k),
+            patch(&[(f, json!(k))]),
+            WriteOpts::default(),
+        )
+        .await
+        .unwrap();
+    }
+    let m = lakelands_api::write::Migration {
+        to: doc(json!([
+            {"name": "signed_by", "target": "person",
+             "fields": [{"name": "at", "type": {"kind": "text"}}]},
+            {"name": "witnessed_by", "target": "person"}])),
+        renames: vec![],
+    };
+    let report = c.migrate(own, m.clone()).await.unwrap();
+    let from = store.head().await.unwrap().next();
+    c.migrate_apply(own, m, &report.data.report_id)
+        .await
+        .unwrap();
+    let feed = store.feed();
+    let b = feed.poll(from, &FeedFilter::default(), 100).await.unwrap();
+    let appended: Vec<(&str, String)> = b
+        .events
+        .iter()
+        .map(|e| match &e.body {
+            EventBody::Migrated { migration, .. } => ("migrated", migration.to.name.to_string()),
+            EventBody::Declared {
+                declaration: Declaration::Type(t),
+                ..
+            } => ("declared", t.name.to_string()),
+            other => (other.kind(), String::new()),
+        })
+        .collect();
+    assert_eq!(
+        appended,
+        [
+            ("migrated", "doc".to_owned()),
+            ("migrated", "sys.link.doc.signed_by".to_owned()),
+            ("declared", "sys.link.doc.witnessed_by".to_owned()),
+        ]
+    );
+    c.link(
+        own,
+        &ty("doc"),
+        &key("d1"),
+        &"witnessed_by".into(),
+        &key("p1"),
+        Patch::new(),
+        WriteOpts::default(),
+    )
+    .await
+    .expect("a link over the relation the migration added");
 }
 
 /// An aging rule is checked when it is written; `age` is handed a date at
