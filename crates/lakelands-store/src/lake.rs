@@ -95,7 +95,13 @@ pub(crate) fn opener(
     location: &Location,
     seams: &Seams,
 ) -> Result<Arc<dyn lakelands_api::engine::EngineOpener>> {
-    let name = engine_name(&location.engine);
+    let name: String = match &location.engine {
+        EngineConfig::Sqlite { .. } => "sqlite".into(),
+        EngineConfig::Memory => "memory".into(),
+        EngineConfig::Postgres { .. } => "pg".into(),
+        EngineConfig::Other { name, .. } => name.clone(),
+        _ => String::new(),
+    };
     seams
         .engines
         .iter()
@@ -104,16 +110,6 @@ pub(crate) fn opener(
         .ok_or_else(|| Error::Unbound {
             seam: format!("the engine `{name}` (no opener for it was passed in)"),
         })
-}
-
-fn engine_name(config: &EngineConfig) -> String {
-    match config {
-        EngineConfig::Sqlite { .. } => "sqlite".into(),
-        EngineConfig::Memory => "memory".into(),
-        EngineConfig::Postgres { .. } => "pg".into(),
-        EngineConfig::Other { name, .. } => name.clone(),
-        _ => String::new(),
-    }
 }
 
 pub(crate) fn wall_clock() -> Timestamp {
@@ -290,9 +286,7 @@ impl Lake {
 
     /// The writer state, locked.
     pub fn writer(&self) -> MutexGuard<'_, Writer> {
-        self.writer
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        lakelands_core::lock(&self.writer)
     }
 
     /// The next `known_at`: the wall clock, never before the last event's.
@@ -1044,10 +1038,8 @@ impl Lake {
                 last = Some(e);
             }
         }
-        let last = last.ok_or_else(|| Error::Refused {
-            field: None,
-            reason: lakelands_api::Refusal::OutOfRange { head: self.head() },
-        })?;
+        let last =
+            last.ok_or_else(|| crate::writes::refused(Refusal::OutOfRange { head: self.head() }))?;
         Ok(lakelands_api::Verification {
             from,
             through: last.position,
@@ -1095,16 +1087,9 @@ impl Lake {
         ty: &TypeName,
     ) -> Result<Vec<lakelands_api::read::VectorCoverage>> {
         let view = self.engine.view(None)?;
-        let decl = view
-            .declarations()?
-            .into_iter()
-            .find_map(|d| match d.declaration {
-                Declaration::Type(t) if &t.name == ty => Some(t),
-                _ => None,
-            })
-            .ok_or_else(|| Error::NotFound {
-                missing: lakelands_api::Missing::Type { name: ty.clone() },
-            })?;
+        let decl = Ontology::from_declared(&view.declarations()?)
+            .ty(ty)?
+            .clone();
         let mut out = Vec::new();
         for f in &decl.fields {
             let Some(embed) = &f.embed else {
@@ -1238,10 +1223,6 @@ impl Drop for Lake {
     }
 }
 
-fn broken(at: Position, what: String) -> Error {
-    unavailable(format!("the checkpoint at position {at} is broken: {what}"))
-}
-
 /// A checkpoint's own claims (`docs/log-format.md` §2.6, §4.3): it follows
 /// the segment it seals, repeats its last hash, and lists sealed ranges
 /// that start at 0, follow each other with no gap or overlap, and end
@@ -1252,36 +1233,29 @@ fn check_checkpoint(
     hash: &Digest,
     listed: &[SegmentDigest],
 ) -> Result<()> {
+    let at = e.position;
+    let broken =
+        |what: &str| unavailable(format!("the checkpoint at position {at} is broken: {what}"));
     if e.position.0 != through.0 + 1 {
-        return Err(broken(
-            e.position,
-            format!("it says it follows position {through}"),
-        ));
+        return Err(broken(&format!("it says it follows position {through}")));
     }
     if *hash != e.prev {
-        return Err(broken(
-            e.position,
-            "its hash is not the hash of the event before it".into(),
-        ));
+        return Err(broken("its hash is not the hash of the event before it"));
     }
     let mut next = 0u64;
     for s in listed {
         if s.first.0 != next || s.last < s.first {
-            return Err(broken(
-                e.position,
-                format!(
-                    "its segment list has the range {}..={} where one starting at {next} belongs",
-                    s.first, s.last
-                ),
-            ));
+            return Err(broken(&format!(
+                "its segment list has the range {}..={} where one starting at {next} belongs",
+                s.first, s.last
+            )));
         }
         next = s.last.0 + 1;
     }
     if next != through.0 + 1 {
-        return Err(broken(
-            e.position,
-            format!("its segment list does not end at position {through}"),
-        ));
+        return Err(broken(&format!(
+            "its segment list does not end at position {through}"
+        )));
     }
     Ok(())
 }
