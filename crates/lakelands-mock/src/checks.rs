@@ -5811,6 +5811,17 @@ pub async fn degree_and_components_answer_the_graph_in_one_order(store: Arc<dyn 
         ],
         "the docs and the people they reach are one component, across types"
     );
+    // A measure's page may be larger than `max_limit`, up to the lake's
+    // `max_graph_nodes`: it answers the same rows.
+    let mut whole = measure(
+        vec![
+            step("written_by", Walk::Both),
+            step("signed_by", Walk::Both),
+        ],
+        Projection::Components,
+    );
+    whole.limit = Some(Limits::default().max_limit + 1);
+    assert_eq!(rows(whole).await, components, "one page past `max_limit`");
     let e = c
         .query(
             own,

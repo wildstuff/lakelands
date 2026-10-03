@@ -274,6 +274,7 @@ pub const ALL: &[Check] = &[
     graph_measures::MEASURES_AT_THEIR_POSITION,
     graph_measures::GRAPH_TOO_LARGE,
     graph_measures::MEASURE_REFUSALS,
+    graph_measures::MEASURE_IN_ONE_PAGE,
     search::SEARCH_FOLLOWS_TEXT,
     search::WITHHELD_NEVER_HITS,
     search::VECTOR_LEAVES_THE_NEIGHBOURS,

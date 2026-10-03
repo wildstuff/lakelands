@@ -238,7 +238,8 @@ pub struct Limits {
     /// The most events one group-commit window holds.
     pub commit_window_events: u32,
     /// The most records a whole-graph measure may reach; past it the
-    /// measure is refused `too_large`, never cut.
+    /// measure is refused `too_large`, never cut. Also the largest
+    /// `limit` a measure may ask for, where it is above `max_limit`.
     pub max_graph_nodes: u32,
     /// The most rows a `find` may skip with `offset`; past it the read is
     /// refused `too_large`, never cut.
