@@ -214,6 +214,15 @@ the source's mainline at `d628b79a19`: the 19 commits after
 Every root holds the files it held at `c8979fff7a`. **The list is
 closed for `0.9.0` as of `d628b79a19`.**
 
+**Checked on 2026-10-03, minutes before the `0.9.0` tag**, against the
+source's mainline at `3918187ec1`: the 2 commits after `d628b79a19`
+(1116 after the freeze in all), checked the same way. Neither touches a
+root. One of them is a merge that shows a change under the roots only
+against its side parent, and by patch id it is exactly `3aa65077c6`'s,
+which is already a row. Every root holds the files it held at
+`d628b79a19`. No row is added. **The list is closed for `0.9.0` as of
+`3918187ec1`**, the commit the tag's message names.
+
 | Source commit | Behaviour, in one line | Ported in, or not applicable and why |
 |---|---|---|
 | `5914084de9` | One German user-interface sentence in the capabilities module changes its form of address from formal to informal. | Not applicable: the capabilities module was not carried (cut in O2: there is no capability negotiation; see `docs/import-ledger.md`), and no storage behaviour changes: no event, no fold rule, no signature, no stored byte. |
