@@ -136,35 +136,8 @@ pub(crate) fn append(
             floor = row.get::<_, Option<i64>>(1).unwrap_or(0) as u64;
         }
         let fence = (!imported).then_some(lease.fence);
-        let mut prev = tip.map_or_else(Digest::zero, |(_, h)| h);
-        for (expected, event) in (first..).zip(events) {
-            if let Some(why) = lakelands_core::engines::fence_fault(event, fence, floor) {
-                return Err(invalid(why));
-            }
-            floor = event.fence;
-            if event.position.0 != expected {
-                return Err(invalid(format!(
-                    "the event at position {} does not continue the log, whose next position \
-                     is {expected}; nothing was appended",
-                    event.position
-                )));
-            }
-            if event.prev != prev {
-                return Err(invalid(format!(
-                    "the event at position {} names `{}` as the hash before it, but that hash \
-                     is `{}`; nothing was appended",
-                    event.position, event.prev.0, prev.0
-                )));
-            }
-            if event.bytes.contains(&b'\n') {
-                return Err(invalid(format!(
-                    "the event at position {} holds a line feed in its bytes, which canonical \
-                     bytes never do; nothing was appended",
-                    event.position
-                )));
-            }
-            prev = event.hash.clone();
-        }
+        let prev = tip.map_or_else(Digest::zero, |(_, h)| h);
+        lakelands_core::engines::append_fault(events, first, prev, fence, floor)?;
         let segment = active(db, names)?;
         // The window's events in one statement, from arrays.
         let (mut positions, mut fences) = (Vec::new(), Vec::new());
@@ -317,9 +290,8 @@ pub(crate) fn seal(db: &mut Db, names: &Names, lease: &Lease) -> Result<Option<S
 pub(crate) fn segments(db: &mut Db, names: &Names) -> Result<Vec<SegmentDigest>> {
     let rows = db.query(
         &format!(
-            "SELECT first, digest FROM {} WHERE first < (SELECT max(first) FROM {}) ORDER BY first",
-            names.t("segments"),
-            names.t("segments")
+            "SELECT first, digest FROM {s} WHERE first < (SELECT max(first) FROM {s}) ORDER BY first",
+            s = names.t("segments")
         ),
         &[],
     )?;

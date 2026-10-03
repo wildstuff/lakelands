@@ -352,39 +352,12 @@ impl Log {
     pub(crate) fn append(&mut self, fence: Option<u64>, events: &[CanonicalEvent]) -> Result<()> {
         self.refresh()?;
         let first = self.tip().map_or(0, |(p, _)| p.0 + 1);
-        let mut prev = self.tip().map_or_else(Digest::zero, |(_, h)| h);
-        let mut floor = match (fence, first) {
+        let prev = self.tip().map_or_else(Digest::zero, |(_, h)| h);
+        let floor = match (fence, first) {
             (None, 1..) => self.fence_at(first - 1)?,
             _ => 0,
         };
-        for (expected, event) in (first..).zip(events) {
-            if let Some(why) = lakelands_core::engines::fence_fault(event, fence, floor) {
-                return Err(invalid(why));
-            }
-            floor = event.fence;
-            if event.position.0 != expected {
-                return Err(invalid(format!(
-                    "the event at position {} does not continue the log, whose next position \
-                     is {expected}; nothing was appended",
-                    event.position
-                )));
-            }
-            if event.prev != prev {
-                return Err(invalid(format!(
-                    "the event at position {} names `{}` as the hash before it, but that hash \
-                     is `{}`; nothing was appended",
-                    event.position, event.prev.0, prev.0
-                )));
-            }
-            if event.bytes.contains(&b'\n') {
-                return Err(invalid(format!(
-                    "the event at position {} holds a line feed in its bytes, which canonical \
-                     bytes never do; nothing was appended",
-                    event.position
-                )));
-            }
-            prev = event.hash.clone();
-        }
+        lakelands_core::engines::append_fault(events, first, prev, fence, floor)?;
         if events.is_empty() {
             return Ok(());
         }

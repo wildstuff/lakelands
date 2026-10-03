@@ -374,13 +374,7 @@ pub(crate) fn head_type(db: &mut Db, names: &Names, ty: &TypeName) -> Result<Hea
             &engines::sort_index_key(ty),
         ],
     )?;
-    let decl = match row.get::<_, Option<String>>(0) {
-        Some(state) => match decode::<Declared>(&state, "a declaration")?.declaration {
-            Declaration::Type(t) => Some(t),
-            _ => None,
-        },
-        None => None,
-    };
+    let decl = declared_type(row.get(0))?;
     let setting = row
         .get::<_, Option<String>>(1)
         .map(|state| decode::<StoredRecord>(&state, "a record"))
@@ -561,8 +555,13 @@ pub(crate) fn type_at(
             &[&ident],
         )?,
     };
-    let Some(row) = row else { return Ok(None) };
-    let declared: Declared = decode(&row.get::<_, String>(0), "a declaration")?;
+    declared_type(row.map(|r| r.get(0)))
+}
+
+/// The type a declaration's stored state declares, if it is a type's.
+pub(crate) fn declared_type(state: Option<String>) -> Result<Option<TypeDecl>> {
+    let Some(state) = state else { return Ok(None) };
+    let declared: Declared = decode(&state, "a declaration")?;
     Ok(match declared.declaration {
         Declaration::Type(t) => Some(t),
         _ => None,

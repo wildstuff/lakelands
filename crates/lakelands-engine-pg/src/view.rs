@@ -151,11 +151,7 @@ impl Read<'_> {
         n: u32,
     ) -> Result<Vec<StoredRecord>> {
         let limit = i64::from(n);
-        let from = if after.is_some() {
-            "AND key COLLATE \"C\" > $4"
-        } else {
-            ""
-        };
+        let from = after.map_or("", |_| "AND key COLLATE \"C\" > $4");
         let query = format!(
             "SELECT state FROM {} WHERE ty = $1 AND {} {from} ORDER BY key COLLATE \"C\" LIMIT $3",
             self.names.t("records"),
@@ -257,11 +253,7 @@ impl Read<'_> {
         n: u32,
     ) -> Result<Vec<StoredRecord>> {
         let limit = i64::from(n);
-        let from = if after.is_some() {
-            "AND r.key COLLATE \"C\" > $4"
-        } else {
-            ""
-        };
+        let from = after.map_or("", |_| "AND r.key COLLATE \"C\" > $4");
         let query = format!(
             "SELECT r.state FROM {records} r WHERE r.ty = $1 AND r.until IS NULL {from} \
              AND NOT EXISTS (SELECT 1 FROM {sorted} s \
@@ -383,11 +375,7 @@ impl Read<'_> {
         )?;
         let mut out = Vec::new();
         for r in rows {
-            if let Declaration::Type(t) =
-                decode::<Declared>(&r.get::<_, String>(0), "a declaration")?.declaration
-            {
-                out.push(t);
-            }
+            out.extend(projection::declared_type(Some(r.get(0)))?);
         }
         Ok(out)
     }
