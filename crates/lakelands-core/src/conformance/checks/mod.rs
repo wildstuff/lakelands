@@ -25,6 +25,7 @@ mod export;
 mod feed;
 mod fields;
 mod filters;
+mod fusion;
 mod graph_measures;
 mod host_cause;
 mod ingest;
@@ -346,6 +347,9 @@ pub const ALL: &[Check] = &[
     feed::BY_OLD_KEY,
     retire::SOURCE_ONLY_HAS_NO_UPSERT,
     search::HIT_IS_THE_RECORD,
+    fusion::HIDDEN_MOVES_NO_SCORE,
+    fusion::PAGES_ONE_RANKING,
+    fusion::SAME_LIST_UNREAD,
     vocabulary::HOST_TYPES_AT_OPEN,
     vocabulary::RESERVED_NAME_REFUSES_OPEN,
     backings::FAILURE_RETRIED,

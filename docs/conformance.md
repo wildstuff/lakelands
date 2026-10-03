@@ -590,6 +590,12 @@ belongs in the suite, not beside one engine:
 
 - `a_setting_is_read_as_it_stood_at_the_position_read` — seams, SystemVocabulary: setting('key') in an expression reads the sys.setting record with that key as of the position being read
 
+**fusion**
+
+- `a_record_the_read_may_not_see_moves_no_hybrid_score` — 046 and 024: a hybrid search ranks each list among the hits the read may see, so a restricted record, or one its `where` leaves out, ranked above a visible hit moves neither that hit's rank nor its score
+- `every_page_of_a_hybrid_search_reads_one_ranking` — 046 and 029: a hybrid search fuses each list to the lake's `max_limit` ranks whatever the page, so its pages through a cursor answer the one ranking a single page answers, keys and the scores' bits
+- `a_search_that_reads_no_record_to_rank_answers_what_reading_them_answers` — 046: at the head, a hybrid search by a principal who sees every live record, without `where` or `valid_at`, ranks without reading a record, and answers the keys and the scores' bits the same search answers under a `where` that holds for every record, with restricted and retired records in the lake
+
 **vocabulary**
 
 - `a_host_type_is_declared_when_a_writer_opens_the_lake` — 003 and seams, SystemVocabulary: each writer open declares the host's sys. types the lake may hold and does not hold yet; a type added later reaches the existing lake, and a withheld one never does

@@ -118,6 +118,10 @@ type Source = (Vec<StoredRecord>, Vec<(FieldName, Expr)>);
 /// A row's sort values and its tiebreak.
 type SortKey = (Vec<Value>, RecordKey);
 
+/// One ranked list of a search, read to the depth it is given: the
+/// candidates best first, with their scores.
+type Ranking<'a> = &'a dyn Fn(u32) -> Result<Vec<(RecordKey, f64)>>;
+
 /// The state a cursor carries.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CursorState {
@@ -1278,36 +1282,6 @@ impl<'a> Reader<'a> {
                 }),
             }
         };
-        // The candidates ranked best first, at most `pull` from each list,
-        // and whether every list gave fewer than that — nothing is left.
-        let rank = |pull: u32| -> Result<(Vec<(RecordKey, f64)>, bool)> {
-            let short = |l: &Vec<(RecordKey, f64)>| l.len() < pull as usize;
-            Ok(match &s.mode {
-                SearchMode::Lexical { text, .. }
-                | SearchMode::Hybrid {
-                    text, vector: None, ..
-                } => {
-                    let l = lexical(text, pull)?;
-                    let done = short(&l);
-                    (l, done)
-                }
-                SearchMode::Vector { field, vector: v } => {
-                    let l = vector(field, v, pull)?;
-                    let done = short(&l);
-                    (l, done)
-                }
-                SearchMode::Hybrid {
-                    text,
-                    field,
-                    vector: Some(v),
-                    ..
-                } => {
-                    let (a, b) = (lexical(text, pull)?, vector(field, v, pull)?);
-                    let done = short(&a) && short(&b);
-                    (fuse(&[a, b]), done)
-                }
-            })
-        };
         let ranked_by = match &s.mode {
             SearchMode::Lexical { .. } => "lexical",
             SearchMode::Vector { field, .. } if self.indexed(&decl, field)? => "index",
@@ -1325,17 +1299,37 @@ impl<'a> Reader<'a> {
             }
         }
         .to_owned();
-        // Candidates are pulled in growing batches until the page and one
-        // more are visible, or the engine has no more: a filter, `valid_at`
-        // or the grants never shorten a page silently.
-        let mut pull = u32::try_from(want.saturating_mul(4).max(64)).unwrap_or(u32::MAX);
-        let hits = loop {
-            let (ranked, exhausted) = rank(pull)?;
-            let hits = self.visible_hits(&decl, filter.as_ref(), ranked, s.with_meta)?;
-            if hits.len() >= want || exhausted || pull == u32::MAX {
-                break hits;
+        let hits = match &s.mode {
+            SearchMode::Hybrid {
+                text,
+                field,
+                vector: Some(v),
+                ..
+            } => {
+                let lists: [Ranking<'_>; 2] =
+                    [&|pull| lexical(text, pull), &|pull| vector(field, v, pull)];
+                self.fused(&decl, filter.as_ref(), &lists, want, s.with_meta)?
             }
-            pull = pull.saturating_mul(4);
+            mode => {
+                // Candidates are pulled in growing batches until the page and
+                // one more are visible, or the engine has no more: a filter,
+                // `valid_at` or the grants never shorten a page silently.
+                let mut pull = u32::try_from(want.saturating_mul(4).max(64)).unwrap_or(u32::MAX);
+                loop {
+                    let ranked = match mode {
+                        SearchMode::Vector { field, vector: v } => vector(field, v, pull)?,
+                        SearchMode::Lexical { text, .. } | SearchMode::Hybrid { text, .. } => {
+                            lexical(text, pull)?
+                        }
+                    };
+                    let exhausted = ranked.len() < pull as usize;
+                    let hits = self.visible_hits(&decl, filter.as_ref(), ranked, s.with_meta)?;
+                    if hits.len() >= want || exhausted || pull == u32::MAX {
+                        break hits;
+                    }
+                    pull = pull.saturating_mul(4);
+                }
+            }
         };
         let more = hits.len() > offset + k;
         let page: Vec<Hit> = hits.into_iter().skip(offset).take(k).collect();
@@ -1354,6 +1348,94 @@ impl<'a> Reader<'a> {
             ranked_by,
             next_cursor,
         })
+    }
+
+    /// A hybrid search's hits: its lists fused by reciprocal rank
+    /// ([`fuse`]), each ranked among the hits this read may see and to the
+    /// lake's `max_limit` of them, so a record the read may not see moves
+    /// no score and every page reads one ranking (046). The lists
+    /// are pulled in growing batches until the first `want` fused hits and
+    /// their scores can no longer change.
+    fn fused(
+        &self,
+        decl: &TypeDecl,
+        filter: Option<&Expr>,
+        lists: &[Ranking<'_>],
+        want: usize,
+        with_meta: bool,
+    ) -> Result<Vec<Hit>> {
+        let window = self.lake.limits.max_limit as usize;
+        // A list read is a scan of its index whatever it is asked for, so
+        // the first asks for the whole window at once.
+        let mut pull = u32::try_from(want.saturating_mul(4).max(window)).unwrap_or(u32::MAX);
+        // At the head, a read that sees every live record and narrows by
+        // nothing sees every candidate an engine ranks, so it reads no
+        // record to rank them. That rests on two seam facts: `lexical`
+        // ranks live records only, restricted ones included (the engine
+        // seam's `LEXICAL_HITS`), and the fold takes a retired record's
+        // vectors out of the index, which is kept at the head (the suite's
+        // `VECTOR_LEAVES_THE_NEIGHBOURS`). `SAME_LIST_UNREAD` holds this
+        // path to the one that reads.
+        let open = self.at_head
+            && self.who.grants.restricted
+            && filter.is_none()
+            && self.valid_at.is_none();
+        loop {
+            // Each list's visible candidates to the window, and what a
+            // record it has not ranked yet could still gain from it:
+            // nothing once the list is whole or its window full.
+            let (mut keyed, mut gain) = (Vec::new(), Vec::new());
+            for list in lists {
+                let candidates = list(pull)?;
+                let whole = candidates.len() < pull as usize;
+                let mut seen: Vec<(RecordKey, f64)> = if open {
+                    candidates
+                } else {
+                    (self.visible_hits(decl, filter, candidates, false)?)
+                        .into_iter()
+                        .map(|h| (h.record.key, h.score))
+                        .collect()
+                };
+                let done = whole || seen.len() >= window || pull == u32::MAX;
+                seen.truncate(window);
+                gain.push(if done {
+                    0.0
+                } else {
+                    1.0 / (60.0 + seen.len() as f64)
+                });
+                keyed.push(seen);
+            }
+            let fused = fuse(&keyed);
+            let ranked: Vec<BTreeSet<&RecordKey>> = (keyed.iter())
+                .map(|l| l.iter().map(|(k, _)| k).collect())
+                .collect();
+            let slack = |key: &RecordKey| -> f64 {
+                (ranked.iter().zip(&gain))
+                    .filter(|(l, _)| !l.contains(key))
+                    .map(|(_, g)| g)
+                    .sum()
+            };
+            // Settled when the first `want` are ranked by every list that
+            // can still rank them, and nothing behind them, seen or not,
+            // could still reach the last of them.
+            let unseen: f64 = gain.iter().sum();
+            let settled = match fused.get(want.saturating_sub(1)) {
+                None => unseen == 0.0,
+                Some((_, last)) => {
+                    fused[..want].iter().all(|(k, _)| slack(k) == 0.0)
+                        && unseen < *last
+                        && fused[want..].iter().all(|(k, s)| {
+                            let g = slack(k);
+                            g == 0.0 || s + g < *last
+                        })
+                }
+            };
+            if settled {
+                let first = fused.into_iter().take(want).collect();
+                return self.visible_hits(decl, filter, first, with_meta);
+            }
+            pull = pull.saturating_mul(4);
+        }
     }
 
     /// Whether the lake asks an index for `field` of `decl`'s type at the
@@ -1384,9 +1466,16 @@ impl<'a> Reader<'a> {
         ranked: Vec<(RecordKey, f64)>,
         with_meta: bool,
     ) -> Result<Vec<Hit>> {
+        // One read for the batch, not one per candidate.
+        let keys: Vec<RecordKey> = ranked.iter().map(|(k, _)| k.clone()).collect();
+        let mut stored: BTreeMap<RecordKey, StoredRecord> =
+            (self.view.get_many(&decl.name, &keys)?)
+                .into_iter()
+                .map(|r| (r.key.clone(), r))
+                .collect();
         let mut hits = Vec::new();
         for (key, score) in ranked {
-            let Some(r) = self.view.get(&decl.name, &key)? else {
+            let Some(r) = stored.remove(&key) else {
                 continue;
             };
             if r.retired || (r.restricted && !self.who.grants.restricted) {
@@ -2070,8 +2159,9 @@ impl EdgeSource for Visible<'_, '_> {
 }
 
 /// Reciprocal rank fusion of ranked lists: each list adds `1 / (60 +
-/// rank)` for every key it ranks (rank from 0, best first). Ties are broken
-/// by key, so the fused order is the same on every engine.
+/// rank)` for every key it ranks (rank from 0, best first), in the lists'
+/// order. Ties are broken by key, so the fused order is the same on every
+/// engine. A hybrid search hands it only what the read may see (046).
 pub fn fuse(lists: &[Vec<(RecordKey, f64)>]) -> Vec<(RecordKey, f64)> {
     const K: f64 = 60.0;
     let mut score: BTreeMap<RecordKey, f64> = BTreeMap::new();
