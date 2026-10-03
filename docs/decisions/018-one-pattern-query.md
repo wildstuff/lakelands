@@ -163,7 +163,9 @@ there is 0 and a minimum is none; a balance has a day with meals and no
 workout without a declared default. The view's own measures come after
 the merged ones and read them by name. The view's parameters bind every
 source, and each source is read as a read of that source, so a field a
-principal may not read refuses the view, naming it (024). A source may
+principal may not read refuses the view (024). That refusal is not
+granted and names neither the field nor its source to a reader who is
+not shown the view's definition (024, extended). A source may
 not be a view with parameters, since only a read that names a view binds
 them, and a view may not read itself through any of its sources. A view
 that merges is written in log format 9.
