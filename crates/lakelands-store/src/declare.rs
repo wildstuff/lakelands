@@ -32,10 +32,12 @@
 //!   value type's `one_of`, `constraint`, `scale` and `format` constrain
 //!   stored values, so changing them is not a declaration either.
 
+use std::collections::BTreeSet;
+
 use lakelands_api::expr::{Condition, Expr, Func};
 use lakelands_api::ontology::{
     Authority, Derived, FieldDecl, RelationDecl, StorageKind, TypeDecl, ValueTypeDecl, VerbEffect,
-    VerbScope,
+    VerbScope, ViewDecl,
 };
 use lakelands_api::tools::name_problems;
 use lakelands_api::write::Declaration;
@@ -66,17 +68,13 @@ fn name(what: &str, n: &str) -> Result<()> {
 /// stands for its declared self: the chain, as "`a` reads `b`, `b` reads
 /// `c` and `c` reads `a`", if it does. A cycle that does not pass through
 /// `t` is an earlier one, the reader's to refuse.
-fn source_cycle(
-    o: &Ontology,
-    t: &TypeDecl,
-    v: &lakelands_api::ontology::ViewDecl,
-) -> std::result::Result<(), String> {
+fn source_cycle(o: &Ontology, t: &TypeDecl, v: &ViewDecl) -> std::result::Result<(), String> {
     fn walk<'a>(
         o: &'a Ontology,
         t: &'a TypeDecl,
-        v: &'a lakelands_api::ontology::ViewDecl,
+        v: &'a ViewDecl,
         path: &mut Vec<&'a TypeName>,
-        seen: &mut std::collections::BTreeSet<&'a TypeName>,
+        seen: &mut BTreeSet<&'a TypeName>,
     ) -> bool {
         let sources = std::iter::once(&v.source).chain(v.merge.iter().map(|m| &m.source));
         for next in sources {
@@ -99,7 +97,7 @@ fn source_cycle(
         false
     }
     let mut chain: Vec<&TypeName> = vec![&t.name];
-    if !walk(o, t, v, &mut chain, &mut std::collections::BTreeSet::new()) {
+    if !walk(o, t, v, &mut chain, &mut BTreeSet::new()) {
         return Ok(());
     }
     let links: Vec<String> = chain
@@ -130,6 +128,13 @@ fn grouped_field<'a>(source: &'a TypeDecl, g: &FieldName, at: &str) -> Result<&'
     Ok(f)
 }
 
+/// The declared type a declaration reads, acts on, watches or holds: refused
+/// in `what`'s words, naming the type, when it is not declared.
+fn declared<'a>(o: &'a Ontology, ty: &TypeName, what: &str) -> Result<&'a TypeDecl> {
+    o.ty(ty)
+        .map_err(|_| invalid(format!("{what} `{ty}`, which is not declared")))
+}
+
 /// A view's source may not be a view with parameters: only a read that
 /// names a view binds them, and a view reading another names it to no one.
 fn unbound_source(owner: &str, source: &TypeDecl) -> Result<()> {
@@ -151,9 +156,9 @@ fn unbound_source(owner: &str, source: &TypeDecl) -> Result<()> {
 fn merged_sources(
     o: &Ontology,
     owner: &str,
-    v: &lakelands_api::ontology::ViewDecl,
+    v: &ViewDecl,
     main: &TypeDecl,
-    read: &mut std::collections::BTreeSet<String>,
+    read: &mut BTreeSet<String>,
 ) -> Result<()> {
     let mut names: Vec<&FieldName> = v.measures.iter().map(|m| &m.name).collect();
     for (i, m) in v.merge.iter().enumerate() {
@@ -232,7 +237,7 @@ fn merged_sources(
 /// `group_by` field and each measure, in which its value lands, and no
 /// field that nothing fills (028). A read answers declared fields only, so
 /// a computed value with no field would be dropped without a word.
-fn view_fields(owner: &str, t: &TypeDecl, v: &lakelands_api::ontology::ViewDecl) -> Result<()> {
+fn view_fields(owner: &str, t: &TypeDecl, v: &ViewDecl) -> Result<()> {
     let computed: Vec<(&FieldName, &str)> = v
         .group_by
         .iter()
@@ -276,11 +281,7 @@ fn view_fields(owner: &str, t: &TypeDecl, v: &lakelands_api::ontology::ViewDecl)
 /// A view's parameters: each named by the rule every name follows, once,
 /// of a scalar kind, and read by its `where` or a measure; and every
 /// `param('name')` they hold, `read`, names one of them.
-fn view_params(
-    owner: &str,
-    v: &lakelands_api::ontology::ViewDecl,
-    read: &std::collections::BTreeSet<String>,
-) -> Result<()> {
+fn view_params(owner: &str, v: &ViewDecl, read: &BTreeSet<String>) -> Result<()> {
     for (i, p) in v.params.iter().enumerate() {
         name("parameter", p.name.as_str())?;
         if v.params[..i].iter().any(|q| q.name == p.name) {
@@ -396,7 +397,7 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
     name("type", t.name.as_str())?;
     let owner = format!("type `{}`", t.name);
     let has = |f: &FieldName| t.fields.iter().any(|d| &d.name == f);
-    let mut seen = std::collections::BTreeSet::new();
+    let mut seen = BTreeSet::new();
     // A view is not searched: its records are computed on read, and the
     // indexes a search reads hold stored records only (018).
     if t.view.is_some()
@@ -440,33 +441,23 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             // A function computes a field from inputs the type holds, each
             // of the kind the function declares for it.
             for input in &func.decl.inputs {
-                match t.fields.iter().find(|d| d.name == input.name) {
-                    Some(d) if d.ty.kind == input.ty.kind => {}
-                    Some(_) => {
-                        return Err(invalid_field(
-                            &f.name,
-                            format!(
-                                "{owner}, field `{}`: the function `{}` takes `{}` as a {}, \
-                                 and `{}` holds it as another kind",
-                                f.name,
-                                func.decl.name,
-                                input.name,
-                                value::kind_name(input.ty.kind),
-                                t.name
-                            ),
-                        ));
-                    }
-                    None => {
-                        return Err(invalid_field(
-                            &f.name,
-                            format!(
-                                "{owner}, field `{}`: the function `{}` takes `{}`, which is \
-                                 not one of its fields",
-                                f.name, func.decl.name, input.name
-                            ),
-                        ));
-                    }
-                }
+                let why = match t.fields.iter().find(|d| d.name == input.name) {
+                    Some(d) if d.ty.kind == input.ty.kind => continue,
+                    Some(_) => format!(
+                        "`{}` as a {}, and `{}` holds it as another kind",
+                        input.name,
+                        value::kind_name(input.ty.kind),
+                        t.name
+                    ),
+                    None => format!("`{}`, which is not one of its fields", input.name),
+                };
+                return Err(invalid_field(
+                    &f.name,
+                    format!(
+                        "{owner}, field `{}`: the function `{}` takes {why}",
+                        f.name, func.decl.name
+                    ),
+                ));
             }
         }
         for d in &f.depends_on {
@@ -511,15 +502,15 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
     }
     for r in &t.relations {
         name("relation", r.name.as_str())?;
+        let at = |why: &str| invalid(format!("{owner}, relation `{}`: {why}", r.name));
         // A view's records are computed, never written: no link names one
         // as its live `from`, and it has no stored field for `via` to
         // read. Only a relation derived from matching values reaches out.
         if t.view.is_some() && r.derived.is_none() {
-            return Err(invalid(format!(
-                "{owner}, relation `{}`: `{}` is a view, whose records are computed and never \
-                 written, so a relation carried by {} could never hold an edge; a relation on a \
-                 view is derived from matching values",
-                r.name,
+            return Err(at(&format!(
+                "`{}` is a view, whose records are computed and never written, so a relation \
+                 carried by {} could never hold an edge; a relation on a view is derived from \
+                 matching values",
                 t.name,
                 carrier(r)
             )));
@@ -527,17 +518,15 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
         // A relation is carried by its `via` field or by link records,
         // never both (`docs/decisions/035-a-link-is-a-record.md`).
         if r.via.is_some() && !r.fields.is_empty() {
-            return Err(invalid(format!(
-                "{owner}, relation `{}`: a relation carried by `via` has no fields of its own; \
-                 fields belong to a relation carried by link records, declared without `via`",
-                r.name
-            )));
+            return Err(at(
+                "a relation carried by `via` has no fields of its own; fields belong to a relation \
+                 carried by link records, declared without `via`",
+            ));
         }
         if !matches!(r.authority, Authority::Authored | Authority::Source) {
-            return Err(invalid(format!(
-                "{owner}, relation `{}`: its links are written by `authored` or `source`, not \
-                 `{:?}`",
-                r.name, r.authority
+            return Err(at(&format!(
+                "its links are written by `authored` or `source`, not `{:?}`",
+                r.authority
             )));
         }
         if r.authority == Authority::Source
@@ -560,10 +549,9 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             .iter()
             .find(|f| f.name.as_str() == links::FROM || f.name.as_str() == links::TO)
         {
-            return Err(invalid(format!(
-                "{owner}, relation `{}`: a link's `{}` is its end; the relation cannot name a field \
-                 of its own so",
-                r.name, f.name
+            return Err(at(&format!(
+                "a link's `{}` is its end; the relation cannot name a field of its own so",
+                f.name
             )));
         }
         if let Some(before) = o
@@ -572,27 +560,20 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
             .and_then(|e| e.decl.relations.iter().find(|b| b.name == r.name))
             && carrier(before) != carrier(r)
         {
-            return Err(invalid(format!(
-                "{owner}, relation `{}`: a relation keeps its carrier; it is carried by {} and \
-                 cannot be carried by {}; declare the other kind under another name",
-                r.name,
+            return Err(at(&format!(
+                "a relation keeps its carrier; it is carried by {} and cannot be carried by {}; \
+                 declare the other kind under another name",
                 carrier(before),
                 carrier(r)
             )));
         }
         if r.target != t.name && !o.types.contains_key(&r.target) {
-            return Err(invalid(format!(
-                "{owner}, relation `{}`: `{}` is not a declared type",
-                r.name, r.target
-            )));
+            return Err(at(&format!("`{}` is not a declared type", r.target)));
         }
         if let Some(via) = &r.via
             && !has(via)
         {
-            return Err(invalid(format!(
-                "{owner}, relation `{}`: `via` names `{via}`, which is not a field",
-                r.name
-            )));
+            return Err(at(&format!("`via` names `{via}`, which is not a field")));
         }
         if let Some(d) = &r.derived {
             derived(o, t, r, d, &owner)?;
@@ -613,14 +594,9 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
                  through other views or directly"
             ))
         })?;
-        let source = o.ty(&v.source).map_err(|_| {
-            invalid(format!(
-                "{owner}: its view reads `{}`, which is not declared",
-                v.source
-            ))
-        })?;
+        let source = declared(o, &v.source, &format!("{owner}: its view reads"))?;
         unbound_source(&owner, source)?;
-        let mut read = std::collections::BTreeSet::new();
+        let mut read = BTreeSet::new();
         if let Some(w) = &v.r#where {
             let e = condition(w, Place::View, &format!("{owner}, view `where`"))?;
             lakelands_core::expr::params_read(&e, &mut read);
@@ -662,16 +638,11 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
     // ordered, and checked for cycles, with the function resolved.
     derive::order(&crate::record::resolve_functions(t, o))
         .map_err(|e| invalid(format!("{owner}: {e}")))?;
-    computed_without_cycle(o, t).map_err(|e| invalid(format!("{owner}: {e}")))?;
+    // Its computed fields, derived or computed by a function, read one another
+    // without a cycle, so a chain of fills within one record ends
+    // (`docs/decisions/022-functions-are-declarations.md`, extended).
+    crate::backed::computed_order(o, t).map_err(|e| invalid(format!("{owner}: {e}")))?;
     Ok(())
-}
-
-/// A type's computed fields, derived expressions and function-computed
-/// fields alike, read one another without a cycle, so a chain of fills
-/// within one record ends (`docs/decisions/022-functions-are-declarations.md`,
-/// extended).
-fn computed_without_cycle(o: &Ontology, t: &TypeDecl) -> std::result::Result<(), String> {
-    crate::backed::computed_order(o, t).map(|_| ())
 }
 
 /// A type's relations carried by link records, as the tool generator
@@ -719,18 +690,15 @@ fn carrier(r: &RelationDecl) -> &'static str {
 /// may be, so that identity of the stored values is what connects them;
 /// and no carrier of its own (`docs/decisions/044-a-relation-may-be-derived-from-matching-values.md`).
 fn derived(o: &Ontology, t: &TypeDecl, r: &RelationDecl, d: &Derived, owner: &str) -> Result<()> {
-    let at = |why: String| invalid(format!("{owner}, relation `{}`: {why}", r.name));
+    let at = |why: &str| invalid(format!("{owner}, relation `{}`: {why}", r.name));
     if r.via.is_some() || !r.fields.is_empty() || r.authority != Authority::Authored {
         return Err(at(
             "a derived relation stores no edge, so it has no `via`, no fields and no link \
-             authority"
-                .into(),
+             authority",
         ));
     }
     if d.pairs.is_empty() {
-        return Err(at(
-            "a derived relation matches at least one pair of fields".into()
-        ));
+        return Err(at("a derived relation matches at least one pair of fields"));
     }
     let target = if r.target == t.name {
         Some(t)
@@ -739,7 +707,7 @@ fn derived(o: &Ontology, t: &TypeDecl, r: &RelationDecl, d: &Derived, owner: &st
     };
     for p in &d.pairs {
         if d.pairs.iter().filter(|q| *q == p).count() > 1 {
-            return Err(at(format!(
+            return Err(at(&format!(
                 "the pair `{}` = `{}` is matched twice",
                 p.from, p.to
             )));
@@ -747,20 +715,20 @@ fn derived(o: &Ontology, t: &TypeDecl, r: &RelationDecl, d: &Derived, owner: &st
         let from = t.fields.iter().find(|f| f.name == p.from);
         let to = target.and_then(|u| u.fields.iter().find(|f| f.name == p.to));
         let (Some(from), Some(to)) = (from, to) else {
-            return Err(at(format!(
+            return Err(at(&format!(
                 "the pair `{}` = `{}` names a field `{}` or `{}.{}` does not have",
                 p.from, p.to, t.name, r.target, p.to
             )));
         };
         if from.ty.kind != to.ty.kind {
-            return Err(at(format!(
+            return Err(at(&format!(
                 "the pair `{}` = `{}` matches a {:?} field with a {:?} field; values of two \
                  kinds are never identical, so the pair would match nothing",
                 p.from, p.to, from.ty.kind, to.ty.kind
             )));
         }
         if !lakelands_core::log::keyable(from.ty.kind) {
-            return Err(at(format!(
+            return Err(at(&format!(
                 "the pair `{}` = `{}` matches {:?} fields; a match is between fields of a kind a \
                  key may be: text, a reference, a decimal, a number, a boolean or a date-time",
                 p.from, p.to, from.ty.kind
@@ -802,10 +770,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
     match d {
         Declaration::Type(t) => {
             if is_system(&t.name) && !who_is_system {
-                return Err(Error::Refused {
-                    field: None,
-                    reason: Refusal::Reserved,
-                });
+                return Err(crate::writes::refused(Refusal::Reserved));
             }
             type_decl(o, t)?;
             if let Some(current) = o.types.get(&t.name)
@@ -883,24 +848,20 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 )?;
             }
             if let Some(current) = o.value_types.get(v.name.as_str()) {
-                match value_type_change(&current.decl, v) {
-                    ValueTypeChange::Same | ValueTypeChange::Loosening => {}
-                    ValueTypeChange::Tightening => {
-                        return Err(invalid(format!(
-                            "value type `{}` would accept less than it does: stored values may \
-                             stop fitting it; tighten it through `migrate`, whose preflight \
-                             counts them, or propose it as a value type's migration",
-                            v.name
-                        )));
-                    }
-                    ValueTypeChange::Reshaping => {
-                        return Err(invalid(format!(
-                            "value type `{}` would change its `kind` or `scale`, which rewrites \
-                             stored values; that is not a value-type migration: migrate the \
-                             fields that use it",
-                            v.name
-                        )));
-                    }
+                let why = match value_type_change(&current.decl, v) {
+                    ValueTypeChange::Same | ValueTypeChange::Loosening => None,
+                    ValueTypeChange::Tightening => Some(
+                        "accept less than it does: stored values may stop fitting it; tighten it \
+                         through `migrate`, whose preflight counts them, or propose it as a value \
+                         type's migration",
+                    ),
+                    ValueTypeChange::Reshaping => Some(
+                        "change its `kind` or `scale`, which rewrites stored values; that is not \
+                         a value-type migration: migrate the fields that use it",
+                    ),
+                };
+                if let Some(why) = why {
+                    return Err(invalid(format!("value type `{}` would {why}", v.name)));
                 }
             }
         }
@@ -924,12 +885,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     )));
                 }
             }
-            let t = o.ty(&v.on).map_err(|_| {
-                invalid(format!(
-                    "verb `{}` acts on `{}`, which is not declared",
-                    v.name, v.on
-                ))
-            })?;
+            let t = declared(o, &v.on, &format!("verb `{}` acts on", v.name))?;
             // A verb on a record of a view could never act: there is no
             // stored record to write or to hand an executor.
             if t.view.is_some() && v.scope == VerbScope::Record {
@@ -1000,12 +956,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     ),
                 ));
             }
-            let on = o.ty(&t.on).map_err(|_| {
-                invalid(format!(
-                    "trigger `{}` watches `{}`, which is not declared",
-                    t.name, t.on
-                ))
-            })?;
+            let on = declared(o, &t.on, &format!("trigger `{}` watches", t.name))?;
             // A view is computed on read and never written, so no write
             // of it can fire a trigger: a trigger on one could never act.
             if on.view.is_some() {
@@ -1024,12 +975,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
         }
         Declaration::ObjectSet(s) => {
             name("object set", &s.name)?;
-            let of = o.ty(&s.of).map_err(|_| {
-                invalid(format!(
-                    "object set `{}` holds `{}`, which is not declared",
-                    s.name, s.of
-                ))
-            })?;
+            let of = declared(o, &s.of, &format!("object set `{}` holds", s.name))?;
             // A set holds stored records; a view's are computed on read,
             // and no set is evaluated over them.
             if of.view.is_some() {
@@ -1061,7 +1007,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     .iter()
                     .any(|x| x.function.as_deref() == Some(f.name.as_str()))
             }) {
-                computed_without_cycle(&probe, &t.decl).map_err(|e| {
+                crate::backed::computed_order(&probe, &t.decl).map_err(|e| {
                     invalid(format!(
                         "function `{}`, type `{}`: {e}",
                         f.name, t.decl.name
