@@ -154,6 +154,7 @@ macro_rules! door_checks {
             a_migration_migrates_and_declares_its_link_types_in_its_append,
             #[host_ops] an_aging_rule_moves_what_holds_from_once_a_date,
             #[host_ops] a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_record,
+            #[host_ops] a_purge_preflight_names_what_the_purge_strands_and_its_id_goes_stale,
             a_value_type_is_loosened_by_declare_and_tightened_by_its_preflight,
             a_sort_index_setting_names_declared_scalar_fields_and_describe_shows_them,
             a_vector_index_setting_names_vector_fields_and_search_says_it_ranked_by_the_index,
@@ -4807,6 +4808,121 @@ pub async fn an_aging_rule_moves_what_holds_from_once_a_date(store: Arc<dyn Lake
     );
 }
 
+/// A preflight appends nothing and says what the purge would retire and
+/// which live records outside it refer into it; a purge that repeats its
+/// id is refused once the lake has moved, and purges under a fresh one,
+/// naming the same records
+/// (`docs/decisions/039-a-source-is-retracted-as-one.md`, extended).
+pub async fn a_purge_preflight_names_what_the_purge_strands_and_its_id_goes_stale(
+    store: Arc<dyn LakeStore>,
+) {
+    let c = store.catalog(WriteContext::default());
+    let cast = Cast::of(store.lake());
+    let own = &cast.owner;
+    for d in [
+        json!({"declare": "type", "name": "partner",
+            "fields": [{"name": "name", "type": {"kind": "text"}, "authority": "source"}]}),
+        json!({"declare": "type", "name": "bill",
+            "fields": [{"name": "partner_id", "type": {"kind": "text"}}],
+            "relations": [{"name": "billed_to", "target": "partner", "via": "partner_id"},
+                          {"name": "seen_by", "target": "partner", "cardinality": "many_to_many"}]}),
+    ] {
+        c.declare(own, serde_json::from_value(d).unwrap())
+            .await
+            .unwrap();
+    }
+    let p1 = SourceRecord {
+        upstream: None,
+        ty: ty("partner"),
+        key: key("p1"),
+        fields: patch(&[("name", json!("Harbor"))]),
+        seen_at: None,
+    };
+    let mut acks = c
+        .ingest(own, &"crm".into(), stream::of(vec![p1]))
+        .await
+        .unwrap();
+    stream::collect(&mut acks).await;
+    let bill = |k: &'static str, partner: &'static str| {
+        let (c, own) = (c.clone(), own.clone());
+        let fields = patch(&[("partner_id", json!(partner))]);
+        async move {
+            c.upsert(&own, &ty("bill"), &key(k), fields, WriteOpts::default())
+                .await
+                .unwrap();
+        }
+    };
+    bill("b1", "p1").await;
+    bill("b2", "p9").await;
+    // An authored link from `b2` to `p1` is stranded as `b1`'s field is.
+    c.link(
+        own,
+        &ty("bill"),
+        &key("b2"),
+        &"seen_by".into(),
+        &key("p1"),
+        patch(&[]),
+        WriteOpts::default(),
+    )
+    .await
+    .unwrap();
+    let head = store.head().await.unwrap();
+    let seen = store.purge_preflight(&"crm".into()).await.unwrap();
+    let named = |r: &lakelands_api::write::PurgeReport| -> Vec<(String, u64, Vec<String>)> {
+        (r.references.iter())
+            .map(|f| {
+                let first = f.first.iter().map(|k| format!("{} {}", k.ty, k.key));
+                (
+                    format!("{}.{}", f.ty, f.relation),
+                    f.records,
+                    first.collect(),
+                )
+            })
+            .collect()
+    };
+    let want = vec![
+        ("bill.billed_to".to_owned(), 1, vec!["bill b1".to_owned()]),
+        (
+            "bill.seen_by".to_owned(),
+            1,
+            vec!["sys.link.bill.seen_by b2:p1".to_owned()],
+        ),
+    ];
+    assert_eq!((seen.retired, named(&seen)), (1, want.clone()), "{seen:?}");
+    assert_eq!(
+        (store.head().await.unwrap(), seen.position),
+        (head, head),
+        "a preflight appends nothing"
+    );
+    assert!(!seen.report_id.is_empty());
+    bill("b3", "p1").await;
+    let head = store.head().await.unwrap();
+    let stale = store
+        .purge_source(&"crm".into(), Some(&seen.report_id))
+        .await;
+    assert!(
+        matches!(&stale, Err(Error::Refused { field: None, reason: Refusal::Invalid { message } })
+            if message.contains("moved")),
+        "{stale:?}"
+    );
+    assert_eq!(
+        store.head().await.unwrap(),
+        head,
+        "a stale purge appends nothing"
+    );
+    let again = store.purge_preflight(&"crm".into()).await.unwrap();
+    let done = store
+        .purge_source(&"crm".into(), Some(&again.report_id))
+        .await
+        .unwrap();
+    assert_eq!((done.retired, named(&done)), (1, named(&again)), "{done:?}");
+    assert_eq!(
+        named(&done)[0].1,
+        2,
+        "`b3` refers into the purge too: {done:?}"
+    );
+}
+
 /// A purge retires every live record one source brought in, in one
 /// append; a second purge appends nothing; a record a principal also
 /// wrote refuses the whole purge, naming it
@@ -4854,7 +4970,7 @@ pub async fn a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_rec
     )
     .await
     .unwrap();
-    let report = store.purge_source(&"crm".into()).await.unwrap();
+    let report = store.purge_source(&"crm".into(), None).await.unwrap();
     assert_eq!(report.retired, 2, "{report:?}");
     assert_eq!(report.position, store.head().await.unwrap());
     let live = |k: &'static str| {
@@ -4864,7 +4980,7 @@ pub async fn a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_rec
     };
     assert!(!live("p1").await && !live("p2").await && live("p3").await);
     let head = store.head().await.unwrap();
-    let again = store.purge_source(&"crm".into()).await.unwrap();
+    let again = store.purge_source(&"crm".into(), None).await.unwrap();
     assert_eq!((again.retired, again.position), (0, head));
     // A record a principal also wrote refuses the whole purge.
     feed(&["p4", "p5"]).await;
@@ -4878,10 +4994,10 @@ pub async fn a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_rec
     .await
     .unwrap();
     let head = store.head().await.unwrap();
-    let refused = store.purge_source(&"crm".into()).await;
+    let refused = store.purge_source(&"crm".into(), None).await;
     assert!(
         matches!(&refused, Err(Error::Refused { field: None, reason: Refusal::Invalid { message } })
-            if message.contains("p4") && !message.contains("p5")),
+            if message.contains("p4") && !message.contains("p5") && message.contains("another hand")),
         "{refused:?}"
     );
     assert_eq!(store.head().await.unwrap(), head);
@@ -4931,7 +5047,7 @@ pub async fn a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_rec
     source("erp", patch(&[("name", json!("p7"))])).await;
     source("crm", patch(&[("city", json!("Oslo"))])).await;
     source("crm", patch(&[("city", Value::Null)])).await;
-    let report = store.purge_source(&"crm".into()).await.unwrap();
+    let report = store.purge_source(&"crm".into(), None).await.unwrap();
     assert_eq!(report.retired, 1, "{report:?}");
     assert!(!live("p4").await && live("p5").await && live("p7").await);
 }

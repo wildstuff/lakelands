@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::expr::Condition;
 use crate::id::{
-    Cursor, FieldName, IdempotencyKey, Position, ProposalId, RecordKey, SourceId, TriggerName,
-    TypeName, ValueTypeName, VerbName, Version,
+    Cursor, FieldName, IdempotencyKey, Position, ProposalId, RecordKey, RelationName, SourceId,
+    TriggerName, TypeName, ValueTypeName, VerbName, Version,
 };
 use crate::ontology::{
     ANNOTATION_KEY_MAX_BYTES, ANNOTATIONS_MAX_BYTES, Annotations, FieldDecl, FieldType,
@@ -697,7 +697,8 @@ pub struct RuleRun {
     pub skipped: Option<String>,
 }
 
-/// What `LakeStore::purge_source` retired
+/// What `LakeStore::purge_source` retired, or what
+/// `LakeStore::purge_preflight` says it would
 /// (`docs/decisions/039-a-source-is-retracted-as-one.md`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PurgeReport {
@@ -714,6 +715,30 @@ pub struct PurgeReport {
     /// The head after the append, or the head as it stood when nothing
     /// was appended.
     pub position: Position,
+    /// Per relation, in type then relation order, the live records outside
+    /// the purge that refer to a record inside it; relations with none
+    /// are left out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<PurgeReference>,
+    /// Names a preflight's report; `purge_source` may repeat it. Empty on
+    /// a purge's own report.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub report_id: String,
+}
+
+/// The records outside a purge that refer into it over one relation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PurgeReference {
+    /// The type that declares the relation.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// The relation.
+    pub relation: RelationName,
+    /// How many live records refer into the purge over it.
+    pub records: u64,
+    /// The first of them in key order, at most ten: the referring records
+    /// of a `via` relation, the link records of one carried by links.
+    pub first: Vec<RecordRef>,
 }
 
 /// The records a purge retired in one type.

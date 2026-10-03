@@ -379,8 +379,15 @@ mod tests {
         async fn purge_source(
             &self,
             source: &lakelands_api::SourceId,
+            id: Option<&str>,
         ) -> lakelands_api::Result<lakelands_api::write::PurgeReport> {
-            self.inner.purge_source(source).await
+            self.inner.purge_source(source, id).await
+        }
+        async fn purge_preflight(
+            &self,
+            source: &lakelands_api::SourceId,
+        ) -> lakelands_api::Result<lakelands_api::write::PurgeReport> {
+            self.inner.purge_preflight(source).await
         }
         async fn compact(&self) -> lakelands_api::Result<lakelands_api::write::CompactReport> {
             self.inner.compact().await

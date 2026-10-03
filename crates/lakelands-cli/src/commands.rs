@@ -498,17 +498,48 @@ pub async fn feed(
 }
 
 /// `purge`: retire every live record one source brought in, as one append
-/// (`LakeStore::purge_source`), and print what went, per type.
-pub async fn purge(out: Out<'_>, store: &Arc<dyn LakeStore>, source: &str) -> Result<(), Failure> {
-    let report = store.purge_source(&SourceId::from(source)).await?;
+/// (`LakeStore::purge_source`), and print what went, per type, and what
+/// outside it still refers to it. `report` is the purge's `--report`;
+/// without one at all (`None`), this is `--preflight`, which prints the
+/// same for a purge not made and the id to make it under.
+pub async fn purge(
+    out: Out<'_>,
+    store: &Arc<dyn LakeStore>,
+    source: &str,
+    report: Option<Option<&str>>,
+) -> Result<(), Failure> {
+    let id = SourceId::from(source);
+    let (report, did) = match report {
+        Some(given) => (store.purge_source(&id, given).await?, "retired"),
+        None => (store.purge_preflight(&id).await?, "would retire"),
+    };
     for t in &report.types {
-        put(out, format!("{}: retired {}", t.ty, t.retired))?;
+        put(out, format!("{}: {did} {}", t.ty, t.retired))?;
+    }
+    for r in &report.references {
+        let first: Vec<String> = r
+            .first
+            .iter()
+            .map(|f| format!("{} {}", f.ty, f.key))
+            .collect();
+        let what = format!(
+            "{}.{}: {} record(s) outside the purge refer",
+            r.ty, r.relation, r.records
+        );
+        put(out, format!("{what} into it, first {}", first.join(", ")))?;
     }
     for t in &report.unsearched {
         put(
             out,
             format!("{t}: not searched, it keeps no per-field provenance"),
         )?;
+    }
+    if !report.report_id.is_empty() {
+        let (head, id) = (report.position, &report.report_id);
+        return put(
+            out,
+            format!("{source}: preflight at position {head}; purge with --report {id}"),
+        );
     }
     if report.retired == 0 {
         return put(out, format!("nothing to retire for {source}"));

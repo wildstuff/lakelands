@@ -265,8 +265,11 @@ impl LakeStore for BreaksMidway {
     async fn age(&self, today: Timestamp) -> Result<AgeReport> {
         self.0.inner.age(today).await
     }
-    async fn purge_source(&self, source: &SourceId) -> Result<PurgeReport> {
-        self.0.inner.purge_source(source).await
+    async fn purge_source(&self, source: &SourceId, id: Option<&str>) -> Result<PurgeReport> {
+        self.0.inner.purge_source(source, id).await
+    }
+    async fn purge_preflight(&self, source: &SourceId) -> Result<PurgeReport> {
+        self.0.inner.purge_preflight(source).await
     }
     async fn compact(&self) -> Result<lakelands_api::write::CompactReport> {
         self.0.inner.compact().await

@@ -729,8 +729,20 @@ fn purge_retires_what_a_source_brought_in_and_prints_its_position() {
             r#"{"type": "invoice", "key": "Invoice", "fields": {"Amount": "amount"}}"#,
         );
         sh.run(&["ingest", &csv, "--source", "bank", "--map", &map]);
+        // A preflight says what the purge would do and under which id; a
+        // purge under another id is refused, and under that one it purges.
+        let seen = sh.run(&["purge", "--source", "bank", "--preflight"]);
+        let said = "invoice: would retire 2\nbank: preflight at position 9; purge with --report ";
+        let id = seen.out.strip_prefix(said).map(str::trim);
+        let id = id.unwrap_or_else(|| panic!("{backend:?}: {} {}", seen.out, seen.err));
+        let stale = sh.run(&["purge", "--source", "bank", "--report", "another"]);
+        assert!(
+            stale.code != 0 && stale.err.contains("moved"),
+            "{}",
+            stale.err
+        );
         ok(
-            &sh.run(&["purge", "--source", "bank"]),
+            &sh.run(&["purge", "--source", "bank", "--report", id]),
             "invoice: retired 2\npurged bank through position 11\n",
         );
         // Nothing left to retire: nothing is appended, and it says so.

@@ -49,8 +49,11 @@ interface store {
         /// and answer what it moved.
         age: func(today: timestamp) -> result<age-report, error>;
         /// Retire, in one append, every live record the source brought in;
-        /// a co-owned record refuses the whole purge.
-        purge-source: func(source: source-id) -> result<purge-report, error>;
+        /// a co-owned record refuses the whole purge. With a preflight's
+        /// id, refused if the lake moved since.
+        purge-source: func(source: source-id, report-id: option<string>) -> result<purge-report, error>;
+        /// What `purge-source` would do, appending nothing.
+        purge-preflight: func(source: source-id) -> result<purge-report, error>;
         /// Give back the storage the projection no longer uses; appends
         /// nothing and changes no answer.
         compact: func() -> result<compact-report, error>;

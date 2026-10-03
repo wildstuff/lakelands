@@ -159,7 +159,7 @@ async fn feed_one(
 
 async fn purge(store: &dyn LakeStore, source: &str) -> Result<PurgeReport, Failure> {
     store
-        .purge_source(&SourceId::from(source))
+        .purge_source(&SourceId::from(source), None)
         .await
         .must(&format!("purging `{source}`"))
 }
@@ -290,7 +290,7 @@ async fn a_record_another_hand_also_wrote_refuses_the_whole_purge(
     feed_one(&l, "erp", "invoice", "c1", json!({"status": "paid"})).await?;
     let before = store.head().await.must("reading the head")?;
     let e = store
-        .purge_source(&SourceId::from("crm"))
+        .purge_source(&SourceId::from("crm"), None)
         .await
         .must_fail("purging `crm` while two of its records are co-owned")?;
     let named = |m: &str| m.contains("p1") && m.contains("c1") && !m.contains("p2");
@@ -568,7 +568,7 @@ async fn a_co_owned_purge_names_the_count_and_the_first_ten(
         l.upsert("partner", k, json!({"note": "kept"})).await?;
     }
     let e = store
-        .purge_source(&SourceId::from("bulk"))
+        .purge_source(&SourceId::from("bulk"), None)
         .await
         .must_fail("purging `bulk`, all twelve of whose records a person also wrote")?;
     let Some(Refusal::Invalid { message }) = reason(&e) else {
@@ -624,5 +624,179 @@ async fn a_value_a_backing_filled_makes_no_owner(store: Arc<dyn LakeStore>) -> R
         "`at`'s `name` was filled by a backing, which makes no owner: the purge of `geo` \
          retires it, and it answered {report:?}"
     );
+    Ok(())
+}
+
+check!(
+    /// A preflight says what the purge would do, and the purge may hold to it.
+    PREFLIGHT = a_preflight_appends_nothing_and_a_purge_that_repeats_its_id_is_stale_once_the_lake_moved,
+    "039, extended: `purge_preflight` appends nothing and answers the report the purge then answers, under an id; it is refused as the purge is for a co-owned record; a purge that repeats the id is refused as invalid, appending nothing, once the lake has moved or when the id is another source's, and otherwise purges"
+);
+
+check!(
+    /// What a purge strands is named, not refused.
+    REFERENCES_NAMED = a_purge_names_the_records_outside_it_that_refer_into_it,
+    "039, extended, 026 and 035: the preflight and the purge name, per relation, the live records the purge does not take that refer to a record it takes, by a `via` field or as a link record with an end inside, restricted ones included, by type and key only: how many, and the first ten in key order; a retired record, one the purge takes itself and a relation derived from matching values are not named, and the purge is not refused"
+);
+
+async fn a_preflight_appends_nothing_and_a_purge_that_repeats_its_id_is_stale_once_the_lake_moved(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    lake(store.as_ref()).await?;
+    let l = Lake::of(store.as_ref());
+    let (crm, erp) = (SourceId::from("crm"), SourceId::from("erp"));
+    let before = store.head().await.must("reading the head")?;
+    let seen = store.purge_preflight(&crm).await.must("the preflight")?;
+    head_unmoved(store.as_ref(), before, "a preflight").await?;
+    let other = store.purge_preflight(&erp).await.must("the preflight")?;
+    ensure!(
+        seen.retired == 3 && seen.position == before && seen.report_id != other.report_id,
+        "the preflight of `crm` must say the three records it would retire, at the head it \
+         read, under an id of its own; it answered {seen:?}, and `erp`'s {other:?}"
+    );
+    // Another source's id, then the lake moving, make the id stale.
+    l.upsert("partner", "p9", json!({"note": "new"})).await?;
+    let moved = store.head().await.must("reading the head")?;
+    for (id, why) in [
+        (&other.report_id, "another source's"),
+        (&seen.report_id, "stale"),
+    ] {
+        let e = store.purge_source(&crm, Some(id.as_str())).await;
+        let e = e.must_fail(&format!("a purge under a {why} id"))?;
+        ensure!(
+            matches!(reason(&e), Some(Refusal::Invalid { message }) if message.contains("moved")),
+            "a purge under a {why} preflight id must be refused as invalid, saying the lake \
+             moved; it was refused as {e:?}"
+        );
+        head_unmoved(store.as_ref(), moved, "a purge under a stale id").await?;
+    }
+    let again = store.purge_preflight(&crm).await.must("the preflight")?;
+    let done = store
+        .purge_source(&crm, Some(again.report_id.as_str()))
+        .await;
+    let done = done.must("a purge under its preflight's id")?;
+    ensure!(
+        (done.retired, &done.types, &done.references) == (3, &again.types, &again.references)
+            && done.report_id.is_empty(),
+        "the purge must answer what its preflight said, without an id; the preflight said \
+         {again:?}, the purge {done:?}"
+    );
+    // A co-owned record refuses the preflight as it refuses the purge.
+    l.upsert("invoice", "i1", json!({"status": "paid"})).await?;
+    let e = store.purge_preflight(&erp).await;
+    let e = e.must_fail("a preflight of `erp`, whose invoice a principal also wrote,")?;
+    ensure!(
+        matches!(reason(&e), Some(Refusal::Invalid { message }) if message.contains("i1")),
+        "the preflight of a co-owned source must be refused as invalid, naming `i1`; it was \
+         refused as {e:?}"
+    );
+    Ok(())
+}
+
+async fn a_purge_names_the_records_outside_it_that_refer_into_it(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    lake(store.as_ref()).await?;
+    let l = Lake::of(store.as_ref());
+    // A `bill` names its partner in the text field `partner_id`, and is
+    // matched to partners by name over a derived relation.
+    let mut bill = type_decl(
+        "bill",
+        vec![
+            field("partner_id", StorageKind::Text),
+            field("name", StorageKind::Text),
+        ],
+    );
+    let by_name = lakelands_api::ontology::Derived {
+        pairs: vec![lakelands_api::ontology::MatchPair {
+            from: "name".into(),
+            to: "name".into(),
+        }],
+    };
+    bill.relations = vec![
+        RelationDecl {
+            via: Some("partner_id".into()),
+            ..RelationDecl::to("billed_to", "partner")
+        },
+        RelationDecl {
+            derived: Some(by_name),
+            ..RelationDecl::to("same_name", "partner")
+        },
+    ];
+    l.declare(bill).await?;
+    // b1 and b3 name `crm`'s `p1`, b3 under a hold; b2 names it and is
+    // retired; b4 names no partner and only shares `p2`'s name.
+    for (key, fields) in [
+        ("b1", json!({"partner_id": "p1"})),
+        ("b2", json!({"partner_id": "p1"})),
+        ("b3", json!({"partner_id": "p1"})),
+        ("b4", json!({"name": "Cedar"})),
+    ] {
+        l.upsert("bill", key, fields).await?;
+    }
+    l.retire("bill", "b2").await?;
+    crate::conformance::fixture::restrict(store.as_ref(), "bill", "b3", "hold").await?;
+    // Another source's link at `p1` stays behind; `crm`'s own goes.
+    let lt = link_type_name(&"invoice".into(), &"approved_by".into());
+    let (theirs, own) = (
+        link_key(&"i1".into(), &"p1".into()),
+        link_key(&"c1".into(), &"p2".into()),
+    );
+    let ends = |from: &str, to: &str| json!({"from": from, "to": to});
+    feed_one(
+        &l,
+        "registry",
+        lt.as_str(),
+        theirs.as_str(),
+        ends("i1", "p1"),
+    )
+    .await?;
+    feed_one(&l, "crm", lt.as_str(), own.as_str(), ends("c1", "p2")).await?;
+    let want = vec![
+        (
+            "bill",
+            "billed_to",
+            2,
+            vec![
+                ("bill".to_owned(), "b1".to_owned()),
+                ("bill".to_owned(), "b3".to_owned()),
+            ],
+        ),
+        (
+            "invoice",
+            "approved_by",
+            1,
+            vec![(lt.to_string(), theirs.to_string())],
+        ),
+    ];
+    let crm = SourceId::from("crm");
+    let seen = store
+        .purge_preflight(&crm)
+        .await
+        .must("the preflight of `crm`")?;
+    let done = purge(store.as_ref(), "crm").await?;
+    for (what, report) in [("preflight", &seen), ("purge", &done)] {
+        let got: Vec<_> = (report.references.iter())
+            .map(|r| {
+                let first = r
+                    .first
+                    .iter()
+                    .map(|f| (f.ty.to_string(), f.key.to_string()));
+                (
+                    r.ty.as_str(),
+                    r.relation.as_str(),
+                    r.records,
+                    first.collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        ensure!(
+            got == want && report.retired == 4,
+            "the {what} of `crm` must take its four records and name, per relation, the \
+             live records outside it that refer into it: {want:?}; it took {} and named \
+             {got:?}",
+            report.retired
+        );
+    }
     Ok(())
 }

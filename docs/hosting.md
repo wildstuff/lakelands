@@ -162,7 +162,14 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   `LakeStore::purge_source(source)` (`lakelands purge --source <id>`):
   every record it brought in is retired in one append, and a record
   another hand also wrote refuses the purge
-  (`docs/decisions/039-a-source-is-retracted-as-one.md`).
+  (`docs/decisions/039-a-source-is-retracted-as-one.md`). The report
+  names, per relation, the live records outside the purge that still
+  refer to a record it took. A host that must know that before it acts
+  asks first: `LakeStore::purge_preflight(source)`
+  (`lakelands purge --source <id> --preflight`) appends nothing and
+  answers the same report under an id, and `purge_source(source,
+  Some(id))` (`--report <id>`) purges only if the lake has not moved
+  since.
   A lake's log is exported with `lakelands_store::export::write(store,
   dir)` (`lakelands export --to <dir>`) as files that verify without
   Lakelands (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`);

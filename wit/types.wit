@@ -998,14 +998,26 @@ interface types {
         skipped: option<string>,
     }
 
-    /// What one purge retired: per type, the types it could not search,
-    /// and the position after its append.
+    /// What one purge retired, or its preflight says it would: per type,
+    /// the types it could not search, the position, what outside it refers
+    /// into it, and a preflight's id.
     record purge-report {
         source: source-id,
         retired: u32,
         types: list<type-retired>,
         unsearched: list<type-name>,
         position: position,
+        references: list<purge-reference>,
+        report-id: string,
+    }
+
+    /// The live records outside a purge that refer into it over one
+    /// relation: how many, and the first ten.
+    record purge-reference {
+        %type: type-name,
+        relation: relation-name,
+        records: u64,
+        first: list<record-ref>,
     }
 
     /// How much of one embedding field is embedded, at the head.

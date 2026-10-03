@@ -531,6 +531,15 @@ fn type_description() -> TypeDescription {
     }
 }
 
+fn purge_reference() -> lakelands_api::write::PurgeReference {
+    lakelands_api::write::PurgeReference {
+        ty: "bill".into(),
+        relation: "billed_to".into(),
+        records: 1,
+        first: vec![],
+    }
+}
+
 fn search_mode() -> SearchMode {
     SearchMode::Hybrid {
         text: "t".into(),
@@ -1046,8 +1055,11 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 types: vec![],
                 unsearched: vec![],
                 position: Position(3),
+                references: vec![purge_reference()],
+                report_id: "r".into(),
             }),
         ),
+        ("purge_reference", members(&purge_reference())),
         (
             "vector_coverage",
             members(&lakelands_api::read::VectorCoverage {
