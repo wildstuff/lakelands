@@ -132,6 +132,7 @@ macro_rules! door_checks {
             the_feed_is_the_log_by_position,
             the_feed_filtered_by_key_answers_those_records_events,
             a_step_over_an_undeclared_relation_is_refused,
+            a_step_naming_an_inverse_walks_the_relation_the_other_way,
             a_dependent_field_declared_clear_is_cleared_with_its_input,
             two_writers_keep_each_others_fields,
             per_field_meta_names_the_writer_and_the_position,
@@ -3233,6 +3234,119 @@ pub async fn a_step_over_an_undeclared_relation_is_refused(store: Arc<dyn LakeSt
         .await
         .unwrap_err();
     assert!(matches!(refusal(&e).1, Refusal::Invalid { .. }));
+}
+
+/// A step naming a relation's `inverse` walks that relation the other way,
+/// its `walk` counting from the name it gives, over a reference field, link
+/// records and matching values alike. A relation declared under the name
+/// wins: `owns` is both `person`'s own relation and the inverse of
+/// `kept_by`, and a step over it walks `person.owns`.
+pub async fn a_step_naming_an_inverse_walks_the_relation_the_other_way(store: Arc<dyn LakeStore>) {
+    let c = store.catalog(WriteContext::default());
+    let own = &Cast::of(store.lake()).owner;
+    let declare = |v: Value| {
+        let c = c.clone();
+        async move {
+            let d = serde_json::from_value::<Declaration>(v).unwrap();
+            c.declare(own, d).await.unwrap();
+        }
+    };
+    declare(json!({"declare": "type", "name": "person",
+        "fields": [{"name": "name", "type": {"kind": "text"}}]}))
+    .await;
+    declare(json!({"declare": "type", "name": "doc", "fields": [
+        {"name": "title", "type": {"kind": "text"}},
+        {"name": "owner", "type": {"kind": "text"}},
+        {"name": "author", "type": {"kind": "reference", "target": "person"}}],
+        "relations": [
+            {"name": "written_by", "target": "person", "via": "author", "inverse": "wrote"},
+            {"name": "signed_by", "target": "person", "inverse": "signed"},
+            {"name": "owned_by", "target": "person", "inverse": "holds",
+             "derived": {"match": [{"from": "owner", "to": "name"}]}},
+            {"name": "kept_by", "target": "person", "inverse": "owns",
+             "derived": {"match": [{"from": "owner", "to": "name"}]}}]}))
+    .await;
+    declare(json!({"declare": "type", "name": "person",
+        "fields": [{"name": "name", "type": {"kind": "text"}}],
+        "relations": [{"name": "owns", "target": "doc",
+            "derived": {"match": [{"from": "name", "to": "title"}]}}]}))
+    .await;
+    let up = |t: &str, k: &str, fields: Value| {
+        let (c, t, k) = (c.clone(), ty(t), key(k));
+        async move {
+            let p = serde_json::from_value(fields).unwrap();
+            c.upsert(own, &t, &k, p, WriteOpts::default())
+                .await
+                .unwrap();
+        }
+    };
+    up("person", "p1", json!({"name": "p1"})).await;
+    up("person", "p2", json!({"name": "p2"})).await;
+    up(
+        "doc",
+        "d1",
+        json!({"title": "p2", "owner": "p1", "author": "p1"}),
+    )
+    .await;
+    let (sb, d1, p1) = ("signed_by".into(), key("d1"), key("p1"));
+    c.link(
+        own,
+        &ty("doc"),
+        &d1,
+        &sb,
+        &p1,
+        Patch::new(),
+        WriteOpts::default(),
+    )
+    .await
+    .unwrap();
+    // The keys a step from one record reaches, of the other type.
+    let walk = |from: &str, k: &str, relation: &str, walk: Walk| {
+        let c = c.clone();
+        let reached = if from == "doc" {
+            "person.key"
+        } else {
+            "doc.key"
+        };
+        let step = Step {
+            relation: relation.into(),
+            walk,
+            ty: None,
+            filter: None,
+            depth: Default::default(),
+        };
+        let p = Pattern::traverse(ty(from), key(k), vec![step]);
+        async move {
+            let rows = serde_json::to_value(c.query(own, p).await.unwrap().data).unwrap();
+            let rows = rows["rows"].as_array().unwrap().iter();
+            rows.map(|r| r[reached].clone()).collect::<Vec<_>>()
+        }
+    };
+    for (by, inverse) in [
+        ("written_by", "wrote"),
+        ("signed_by", "signed"),
+        ("owned_by", "holds"),
+    ] {
+        let (back, named) = (
+            walk("person", "p1", by, Walk::In).await,
+            walk("person", "p1", inverse, Walk::Out).await,
+        );
+        assert_eq!(named, back, "`{inverse}` out from `p1` walks `{by}` in");
+        assert_eq!(named, [json!("d1")], "`{inverse}` reaches `d1`");
+        let (out, named) = (
+            walk("doc", "d1", by, Walk::Out).await,
+            walk("doc", "d1", inverse, Walk::In).await,
+        );
+        assert_eq!(named, out, "`{inverse}` in from `d1` walks `{by}` out");
+    }
+    // `person.owns` (name = title) wins over `kept_by`'s inverse (owner =
+    // name), both ways: the inverse would reach `p1`'s doc and `d1`'s `p1`.
+    assert_eq!(walk("person", "p2", "owns", Walk::Out).await, [json!("d1")]);
+    assert_eq!(
+        walk("person", "p1", "owns", Walk::Out).await,
+        [] as [Value; 0]
+    );
+    assert_eq!(walk("doc", "d1", "owns", Walk::In).await, [json!("p2")]);
 }
 
 /// A field declared `on_input_change: clear` is cleared in the same
