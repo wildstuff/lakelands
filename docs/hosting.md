@@ -318,14 +318,14 @@ A host that already has a store of its own moves in four steps.
   the writer, and holds them in memory meanwhile; other writes wait. At
   100 000 records of four small fields, measured under some load from
   other processes (`tests/set_migrated.rs` in the SQLite and PostgreSQL
-  engines, by hand), the writer is held 7 to 9 s on SQLite and 20 to 26 s
-  on PostgreSQL, with a peak of about 600 MB and 1.1 GB. Both grow with
+  engines, by hand), the writer is held 5.5 to 7 s on SQLite and 13 to
+  19 s on PostgreSQL, with a peak of about 330 MB and 1.1 GB. Both grow with
   the type's records. An object set of the type adds little: its members
   are read once, and 20 000 memberships changed cost one to three seconds
   and 35 MB. Before that single read (lakelands#477) each set added a lookup
   for each record: 41 s with one set and 74 to 79 s with three on
   PostgreSQL, 9 to 15 s on SQLite. Bringing the migration's own cost
-  down is lakelands#480.
+  down further is lakelands#480.
 - **Every answer carries its position.** A host that records what an
   agent saw records the position, and reads `as_of` it later. See
   `docs/decisions/009-every-response-carries-its-position.md`.

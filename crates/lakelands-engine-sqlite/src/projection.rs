@@ -439,16 +439,6 @@ pub(crate) fn type_at(
     ))
 }
 
-/// The latest states of one type's records.
-pub(crate) fn head_records(conn: &Connection, ty: &TypeName) -> Result<Vec<StoredRecord>> {
-    column(
-        conn,
-        "SELECT state FROM records WHERE ty = ?1 AND until IS NULL ORDER BY key",
-        params![ty.as_str()],
-        |s: String| decode_record(&s),
-    )
-}
-
 /// The latest state of one record.
 pub(crate) fn head_record(
     conn: &Connection,
@@ -590,25 +580,41 @@ pub(crate) fn put_record(conn: &Connection, r: &StoredRecord) -> Result<()> {
     Ok(())
 }
 
-/// Put a declaration and, for a type now in force at the head, rewrite
-/// the head indexes of its records under it.
-pub(crate) fn put_declaration(conn: &Connection, d: &Declared) -> Result<()> {
+/// Put a declaration. For a type now in force at the head its records'
+/// head indexes are to be rewritten under it, and it answers the type:
+/// the commit does that with [`index_older`], for the records the
+/// transaction has not put again by then.
+pub(crate) fn put_declaration(conn: &Connection, d: &Declared) -> Result<Option<TypeName>> {
     let ident = engines::declaration_key(&d.declaration);
     let state = serde_json::to_string(d).expect("a declaration serialises");
     DECLARATIONS.put(conn, &[&ident], d.since, &state)?;
-    if let Declaration::Type(t) = &d.declaration {
-        let head = type_at(conn, &t.name, None)?;
-        if head.as_ref() == Some(t) {
-            // The rows go whole: the declaration may have dropped a field
-            // the index kept.
-            conn.prepare_cached("DELETE FROM sort_index WHERE ty = ?1")
-                .and_then(|mut s| s.execute([t.name.as_str()]))
-                .map_err(sql)?;
-            let sorted = sorted_fields(conn, &t.name, head.as_ref())?;
-            for r in head_records(conn, &t.name)? {
-                index_record(conn, head.as_ref(), &sorted, &r)?;
-            }
-        }
+    let Declaration::Type(t) = &d.declaration else {
+        return Ok(None);
+    };
+    if type_at(conn, &t.name, None)?.as_ref() != Some(t) {
+        return Ok(None);
     }
-    Ok(())
+    // The rows go whole: the declaration may have dropped a field the index
+    // kept.
+    conn.prepare_cached("DELETE FROM sort_index WHERE ty = ?1")
+        .and_then(|mut s| s.execute([t.name.as_str()]))
+        .map_err(sql)?;
+    Ok(Some(t.name.clone()))
+}
+
+/// Rewrite the head indexes of the records of `ty` whose latest state is
+/// older than `at`, under the type's declaration at the head. A record put
+/// at `at` or after was indexed under that declaration when it was put: a
+/// migration puts every record again, and nothing is left to do here.
+pub(crate) fn index_older(conn: &Connection, ty: &TypeName, at: Position) -> Result<()> {
+    let head = type_at(conn, ty, None)?;
+    let sorted = sorted_fields(conn, ty, head.as_ref())?;
+    let older = column(
+        conn,
+        "SELECT state FROM records WHERE ty = ?1 AND until IS NULL AND since < ?2 ORDER BY key",
+        params![ty.as_str(), at.0 as i64],
+        |s: String| decode_record(&s),
+    );
+    let older: Vec<StoredRecord> = older?;
+    (older.iter()).try_for_each(|r| index_record(conn, head.as_ref(), &sorted, r))
 }

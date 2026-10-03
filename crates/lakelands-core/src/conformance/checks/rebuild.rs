@@ -223,7 +223,7 @@ async fn a_rebuild_reproduces_the_chain(store: Arc<dyn LakeStore>) -> Result<(),
 check!(
     /// Every index answers as before after a rebuild.
     INDEXES_AFTER_REBUILD = after_a_rebuild_every_index_answers_as_before,
-    "001 and the engine seam: the projection and its indexes are derived from the log, so after a rebuild a find by a field, a lexical and a vector search and a walk over a relation answer as they did"
+    "001 and the engine seam: the projection and its indexes are derived from the log, so a find by a field, a lexical and a vector search and a walk over a relation answer by the type's declaration in force, for records written before it was declared again and for records a migration writes again, and after a rebuild they answer as they did"
 );
 
 async fn after_a_rebuild_every_index_answers_as_before(
@@ -232,31 +232,39 @@ async fn after_a_rebuild_every_index_answers_as_before(
     use lakelands_api::ontology::RelationDecl;
     use lakelands_api::query::{Projection, Search, SearchMode, Walk};
     let l = Lake::of(store.as_ref());
-    let mut text = field("text", StorageKind::Text);
-    text.searchable = true;
-    let embedding = vector("embedding", 2);
-    let parent = reference("parent", "note");
-    let mut ty = type_decl("note", vec![text, embedding, parent]);
-    ty.language = Some("en".into());
-    ty.relations = vec![RelationDecl {
-        name: "under".into(),
-        target: "note".into(),
-        via: Some("parent".into()),
-        ..Default::default()
-    }];
-    l.declare(ty).await?;
+    // Declared first with nothing to search and no relation, and with a
+    // `tag` a migration takes away later.
+    let note = |indexed: bool, tag: bool| {
+        let mut text = field("text", StorageKind::Text);
+        text.searchable = indexed;
+        let mut fields = vec![text, vector("embedding", 2), reference("parent", "note")];
+        fields.extend(tag.then(|| field("tag", StorageKind::Text)));
+        let mut ty = type_decl("note", fields);
+        ty.language = Some("en".into());
+        ty.relations.extend(indexed.then(|| RelationDecl {
+            name: "under".into(),
+            target: "note".into(),
+            via: Some("parent".into()),
+            ..Default::default()
+        }));
+        ty
+    };
+    l.declare(note(false, true)).await?;
     l.upsert(
         "note",
         "root",
-        json!({"text": "harbour plans", "embedding": [1.0, 0.0]}),
+        json!({"text": "harbour plans", "embedding": [1.0, 0.0], "tag": "a"}),
     )
     .await?;
     l.upsert(
         "note",
         "leaf",
-        json!({"text": "crane rental", "embedding": [0.0, 1.0], "parent": "root"}),
+        json!({"text": "crane rental", "embedding": [0.0, 1.0], "parent": "root", "tag": "b"}),
     )
     .await?;
+    // Declared again, the type's text is searched and its relation walked:
+    // the records written before are indexed under it, none written again.
+    l.declare(note(true, true)).await?;
 
     let answers = |store: Arc<dyn LakeStore>| async move {
         let cat = doors(store.as_ref());
@@ -324,14 +332,23 @@ async fn after_a_rebuild_every_index_answers_as_before(
             "edges": edges,
         }))
     };
+    let declared = answers(store.clone()).await?;
+    ensure!(
+        declared["found"] == json!(["leaf"])
+            && declared["lexical"][0]["key"] == json!("root")
+            && declared["vector"][0]["key"] == json!("leaf")
+            && declared["edges"].as_array().is_some_and(|e| e.len() == 1),
+        "once the type is declared again the indexes must answer: find `leaf`, \"harbour\" → \
+         root, near (0, 1) → leaf, one edge leaf → root; they answered {declared}"
+    );
+    // A migration writes every record again; what it indexes is what the
+    // declaration left, and what a rebuild leaves.
+    l.migrate(note(true, false)).await?;
     let before = answers(store.clone()).await?;
     ensure!(
-        before["found"] == json!(["leaf"])
-            && before["lexical"][0]["key"] == json!("root")
-            && before["vector"][0]["key"] == json!("leaf")
-            && before["edges"].as_array().is_some_and(|e| e.len() == 1),
-        "before the rebuild the indexes must answer: find `leaf`, \"harbour\" → root, \
-         near (0, 1) → leaf, one edge leaf → root; they answered {before}"
+        before == declared,
+        "a migration that takes `tag` away leaves the indexes answering as they did: \
+         {declared} became {before}"
     );
     store.rebuild().await.must("rebuilding the projection")?;
     let after = answers(store.clone()).await?;

@@ -7,6 +7,7 @@
 //! lease it took, which it gives up when it is dropped. A handle opened
 //! read-only refuses the lease, every append and every seal.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
@@ -34,6 +35,9 @@ use crate::{NAME, invalid, lock, sql, unavailable};
 #[derive(Default)]
 struct Transaction {
     latest: Option<Position>,
+    /// The types declared in it, each with the position of its latest
+    /// declaration: the commit indexes their older records under it.
+    redeclared: BTreeMap<TypeName, Position>,
 }
 
 /// One handle onto a lake kept by the SQLite engine.
@@ -375,6 +379,9 @@ impl ProjectionStore for SqliteLake {
                 let _ = conn.execute_batch("ROLLBACK");
                 return Err(refused);
             }
+            for (ty, at) in &t.redeclared {
+                projection::index_older(conn, ty, *at)?;
+            }
             projection::set_folded(conn, through)?;
             projection::mark_sorted(conn, through)?;
             conn.execute_batch("COMMIT").map_err(sql)
@@ -403,7 +410,15 @@ impl ProjectionStore for SqliteLake {
             schema_hash: schema_hash.map(str::to_owned),
             since: at,
         };
-        self.stage(at, |conn| projection::put_declaration(conn, &d))
+        let mut redeclared = None;
+        self.stage(at, |conn| {
+            redeclared = projection::put_declaration(conn, &d)?;
+            Ok(())
+        })?;
+        if let (Some(ty), Some(t)) = (redeclared, lock(&self.transaction).as_mut()) {
+            t.redeclared.insert(ty, at);
+        }
+        Ok(())
     }
 
     fn put_record(&self, record: &StoredRecord) -> Result<()> {
