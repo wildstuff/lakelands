@@ -709,7 +709,6 @@ pub fn check_vocabulary_type(t: &TypeDecl) -> Result<()> {
     )))
 }
 
-/// Check one declaration against the ontology it would join. `who_is_system`
 /// What carries a relation's edges: a `via` field, link records, or
 /// nothing stored (derived, 044).
 fn carrier(r: &RelationDecl) -> &'static str {
@@ -776,6 +775,30 @@ fn derived(o: &Ontology, t: &TypeDecl, r: &RelationDecl, d: &Derived, owner: &st
     Ok(())
 }
 
+/// What a declaration reads of its type, the type has (028, extended): the
+/// reads the migration preflight keeps a field by.
+pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
+    let on = match d {
+        Declaration::Type(t) => Some(t),
+        Declaration::Verb(v) => o.ty(&v.on).ok(),
+        Declaration::Trigger(t) => o.ty(&t.on).ok(),
+        Declaration::ObjectSet(s) => o.ty(&s.of).ok(),
+        _ => None,
+    };
+    if let Some(on) = on
+        && let reads = lakelands_core::describe::declaration_reads(d, &on.name)
+        && let Some(n) = (reads.iter()).find(|n| !on.fields.iter().any(|f| &f.name == *n))
+    {
+        return Err(invalid(format!(
+            "{} reads `{n}`, which `{}` does not have",
+            d.what(),
+            on.name
+        )));
+    }
+    Ok(())
+}
+
+/// Check one declaration against the ontology it would join. `who_is_system`
 /// is true only for the store's own declarations.
 pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> Result<()> {
     if let Some(fault) = d.annotation_fault() {
@@ -1077,25 +1100,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
             }
         }
     }
-    // What a declaration reads of its type, the type has (028, extended):
-    // the reads the migration preflight keeps a field by.
-    let on = match d {
-        Declaration::Type(t) => Some(t),
-        Declaration::Verb(v) => o.ty(&v.on).ok(),
-        Declaration::Trigger(t) => o.ty(&t.on).ok(),
-        Declaration::ObjectSet(s) => o.ty(&s.of).ok(),
-        _ => None,
-    };
-    if let Some(on) = on
-        && let reads = lakelands_core::describe::declaration_reads(d, &on.name)
-        && let Some(n) = (reads.iter()).find(|n| !on.fields.iter().any(|f| &f.name == *n))
-    {
-        return Err(invalid(format!(
-            "{} reads `{n}`, which `{}` does not have",
-            d.what(),
-            on.name
-        )));
-    }
+    reads_its_type(o, d)?;
     let mut types: Vec<TypeName> = o.types.keys().cloned().collect();
     let mut verbs: Vec<VerbName> = o.verbs.keys().cloned().collect();
     match d {

@@ -202,12 +202,14 @@ door shares (016, extended).
 the type is declared (`not_found`), not every key field is taken away
 (`invalid`), every new key field is required (`invalid`, naming it),
 the new declaration's own checks, every field a view or another
-declaration in force reads is kept (`invalid`, naming the reader), its
-history converts, a narrowed cardinality breaks no live link
-(`constraint`); then the report id is
-the one the preflight answered (`invalid`); then the migration is
-lossless (`migration`, with the report); then each embedding's model is
-bound (`unbound`).
+declaration in force reads is kept (`invalid`, naming the reader), the
+type it migrates to reads only fields it has (`invalid`), its history
+converts, a narrowed cardinality breaks no live link (`constraint`);
+then the report id is the one the preflight answered (`invalid`); then
+the migration is lossless (`migration`, with the report); then the set
+memberships it changes are within the lake's `max_set_changes`
+(`too_large`, naming the set); then each embedding's model is bound
+(`unbound`).
 
 **`migrate_value_type_apply`**: the `schema` grant; the value type is
 declared, accepts something other than it does, and keeps its `kind`

@@ -180,3 +180,9 @@ against the same `max_set_changes` as a set's declaration, over all sets
 of the type; past it the migration is refused `too_large`, naming a set
 and the ceiling, and appends nothing. A migration that changes nothing a
 filter reads appends no `object_set_changed`.
+
+The ceiling is the last of a migration's refusals. One applied with a
+stale report is refused for that, and one that is not lossless is refused
+with its report, whether or not it is also past the ceiling: the walk
+stops deciding once the changes pass it, and the refusal waits until the
+report has been compared and found lossless.

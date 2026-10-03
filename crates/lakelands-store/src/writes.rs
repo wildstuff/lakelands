@@ -1981,8 +1981,9 @@ impl Call<'_> {
     /// The preflight, the record keys the migration moves and, given the
     /// time it is applied at, the set memberships it changes: each record
     /// as migrated is decided by the rule a write uses, in the walk the
-    /// preflight makes anyway, past the lake's `max_set_changes` refused
-    /// `too_large` naming the set.
+    /// preflight makes anyway. Past the lake's `max_set_changes` it decides
+    /// no further, and the plan holds one change too many: a stale report
+    /// and a migration that is not lossless are refused before that is.
     fn preflight_plan(
         &self,
         w: &Writer,
@@ -2111,6 +2112,9 @@ impl Call<'_> {
                 gone(d.declaration.what(), &reads, was, is).map_or(Ok(()), Err)?;
             }
         }
+        // And the type it migrates to reads only fields it has: `declare`'s
+        // check above ends at the reshaping, before it comes to the reads.
+        declare::reads_its_type(&after, &Declaration::Type(m.to.clone()))?;
         let records: Vec<StoredRecord> = view
             .scan(&before.name, &every(true))?
             .into_iter()
@@ -2130,7 +2134,7 @@ impl Call<'_> {
             .filter(|s| s.of == m.to.name)
             .collect();
         let decide = now.filter(|_| !sets.is_empty());
-        let max = self.lake.limits.max_set_changes;
+        let max = self.lake.limits.max_set_changes as usize;
         let mut converted = Vec::new();
         let mut members = Vec::new();
         if !m.to.key.is_empty() || decide.is_some() {
@@ -2144,19 +2148,12 @@ impl Call<'_> {
                     fields,
                     ..r.clone()
                 };
-                if let Some(now) = decide {
+                if let Some(now) = decide.filter(|_| members.len() <= max) {
                     for s in &sets {
                         let was = view.is_member(&s.name, &before.name, &r.key)?;
-                        if was == member_of(s, &after, w, now)? {
-                            continue;
+                        if was != member_of(s, &after, w, now)? {
+                            members.push((s.name.clone(), r.key.clone(), !was));
                         }
-                        if members.len() as u64 >= u64::from(max) {
-                            return Err(Error::Refused {
-                                field: Some(s.name.as_str().into()),
-                                reason: Refusal::TooLarge { max },
-                            });
-                        }
-                        members.push((s.name.clone(), r.key.clone(), !was));
                     }
                 }
                 if !m.to.key.is_empty() {
@@ -2317,6 +2314,14 @@ impl Call<'_> {
                 reason: Refusal::Migration {
                     report: Box::new(report),
                 },
+            });
+        }
+        // Past the lake's ceiling, naming the set whose change passed it.
+        let max = self.lake.limits.max_set_changes;
+        if let Some((set, ..)) = members.get(max as usize) {
+            return Err(Error::Refused {
+                field: Some(set.as_str().into()),
+                reason: Refusal::TooLarge { max },
             });
         }
         self.check_embeddings(&m.to)?;

@@ -90,8 +90,10 @@ refuse it as invalid, naming the declaration and the field:
 reads are gathered by the function the migration preflight keeps a
 field by (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
 extended), so what `declare` takes, a migration keeps. A migrated type
-is checked as a declared one is: a migration that leaves a derived field
-reading a field the type no longer has is refused the same way. A
+is checked as a declared one is: a migration to a type whose derived
+field reads a field it does not have is refused the same way, by the
+preflight, once the fields the migration itself takes away have been
+named. A
 declaration already in force is not checked again until it is declared
 again.
 

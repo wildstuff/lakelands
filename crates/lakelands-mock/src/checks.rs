@@ -1976,7 +1976,8 @@ pub async fn a_declaration_reads_only_what_its_type_has(store: Arc<dyn LakeStore
 /// field of the type, or by an object set, a trigger or a verb on it, is
 /// refused at the preflight, naming the reader and the field; so is one
 /// that drops a relation's field a trigger on the relation's link type
-/// reads, naming the link type. A field no declaration reads migrates
+/// reads, naming the link type; and one to a type whose own derived field
+/// reads a field it does not have. A field no declaration reads migrates
 /// away. On the mock as on the store.
 pub async fn a_migration_keeps_what_a_declaration_reads(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
@@ -2059,6 +2060,13 @@ pub async fn a_migration_keeps_what_a_declaration_reads(store: Arc<dyn LakeStore
         let e = e.expect_err("a field a declaration reads stays");
         assert!(invalid_naming(&e, &names), "must name {names:?}: {e:?}");
     }
+    // The type it migrates to is held to its own fields too.
+    let mut ghost = memo(&without("free"), &["ok"]);
+    ghost.fields.last_mut().expect("`loud`").derived = Some("upper(ghost)".into());
+    let e = f.catalog.migrate(owner, migration(ghost, &[])).await;
+    let e = e.expect_err("a migrated type reads only fields it has");
+    let names = ["type declaration `memo`", "reads `ghost`", "does not have"];
+    assert!(invalid_naming(&e, &names), "must name {names:?}: {e:?}");
     f.catalog
         .migrate(owner, migration(memo(&without("free"), &["ok"]), &[]))
         .await

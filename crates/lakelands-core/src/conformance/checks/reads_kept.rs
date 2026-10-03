@@ -100,15 +100,15 @@ async fn a_migration_keeps_the_fields_a_declaration_reads(
 check!(
     /// A declaration reads only fields its type has.
     DECLARATION_READS_ITS_TYPE = a_declaration_reads_only_fields_its_type_has,
-    "028, extended: `declare` and `apply` refuse as invalid, naming the declaration and the field and appending nothing, a derived field, an object set's `where`, a trigger's `when` (`changed` and `previous` included) and a verb's `requires` or the value it sets a field from that read a field the type does not have; `payload.<name>` in a verb's value, `setting`, `now`, `today` and a guard's `retired` read no field and are accepted"
+    "028, extended: `declare` and `apply` refuse as invalid, naming the declaration and the field and appending nothing, a derived field, an object set's `where`, a trigger's `when` (`changed` and `previous` included) and a verb's `requires` or the value it sets a field from that read a field the type does not have, and so does a migration's preflight for the type it migrates to; `payload.<name>` in a verb's value, `setting`, `now`, `today` and a guard's `retired` read no field and are accepted"
 );
 
 async fn a_declaration_reads_only_fields_its_type_has(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
-    l.declare(type_decl("invoice", vec![field("status", Text)]))
-        .await?;
+    let invoice = |last| type_decl("invoice", vec![field("status", Text), last]);
+    l.declare(invoice(field("old", Text))).await?;
     let verb = |name: &str, requires: &str, value: &str| {
         json!({"declare": "verb", "name": name, "on": "invoice", "risk": "low",
                "payload": [{"name": "note", "type": {"kind": "text"}}], "requires": requires,
@@ -148,6 +148,13 @@ async fn a_declaration_reads_only_fields_its_type_has(
         "a declaration reading a missing field",
     )
     .await?;
+    // A migration's own declaration is held to it too.
+    let loud = invoice(derived("loud", Text, "upper(ghost)", &[]));
+    invalid_naming(
+        "a migration to a type that reads `ghost`",
+        l.cat.migrate(&l.own, migration(loud)).await,
+        &["type declaration `invoice`", "reads `ghost`"],
+    )?;
     for d in [
         verb("note", "status = setting('mode')", "payload.note"),
         trigger("retired() or changed(status) and previous(status) = 'x'"),

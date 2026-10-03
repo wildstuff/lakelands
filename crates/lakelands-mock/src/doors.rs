@@ -896,7 +896,7 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
             }
         }
     }
-    reads_its_type(st, d, None)?;
+    reads_its_type(st, d)?;
     let mut link_relations: Vec<(TypeName, RelationName)> = st
         .types
         .values()
@@ -2081,10 +2081,8 @@ fn declaration_reads(d: &Declaration, ty: &TypeName) -> BTreeSet<FieldName> {
 }
 
 /// As the store: a declaration reads only fields its type has, the link
-/// type's when it names one. A migrated type is held to the fields it did
-/// not have `before` either: one the migration takes away is the
-/// preflight's to name.
-fn reads_its_type(st: &State, d: &Declaration, before: Option<&TypeDecl>) -> Result<()> {
+/// type's when it names one.
+fn reads_its_type(st: &State, d: &Declaration) -> Result<()> {
     let on = match d {
         Declaration::Type(t) => Some(t),
         Declaration::Verb(v) => st.types.get(&v.on).map(|o| &o.decl),
@@ -2092,10 +2090,9 @@ fn reads_its_type(st: &State, d: &Declaration, before: Option<&TypeDecl>) -> Res
         Declaration::ObjectSet(s) => st.types.get(&s.of).map(|o| &o.decl),
         _ => None,
     };
-    let had = |n: &FieldName| before.is_some_and(|b| field(b, n).is_some());
     if let Some(on) = on
         && let reads = declaration_reads(d, &on.name)
-        && let Some(n) = (reads.iter()).find(|n| field(on, n).is_none() && !had(n))
+        && let Some(n) = (reads.iter()).find(|n| field(on, n).is_none())
     {
         return Err(invalid(format!(
             "{} reads `{n}`, which `{}` does not have",
@@ -2149,9 +2146,6 @@ fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationRepor
             "the in-memory mock does not re-key: `{ty}` keeps its key fields here"
         )));
     }
-    // As the store, which checks the migrated type whole first: what its
-    // own declaration reads, it has, or had and is named for below.
-    reads_its_type(st, &Declaration::Type(m.to.clone()), Some(&t.decl))?;
     // As the store: a view over the type, as its source or a merged one,
     // reads the shape the migration leaves, so every field it reads
     // (grouping, `where`, what its measures aggregate) must remain.
@@ -2222,6 +2216,8 @@ fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationRepor
             }
         }
     }
+    // As the store: and the type it migrates to reads only fields it has.
+    reads_its_type(st, &Declaration::Type(m.to.clone()))?;
     let renamed = |old: &FieldName| -> FieldName {
         m.renames
             .iter()
