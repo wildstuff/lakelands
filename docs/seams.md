@@ -1292,7 +1292,12 @@ appends the changes in its own append, directly after its `migrated` and
 caused by it. Its changes count against the same `max_set_changes`, over all sets of the
 type; past it the migration is refused `too_large`, naming a set. Narrow
 the sets first (declare them again with a narrower filter), migrate, then
-widen them in steps. A migration that drops or renames a field a set's
+widen them in steps. A re-key also decides the records of every other
+type whose reference to a moved key it rewrites, for the sets that read
+that reference, and a migration that converts a relation's fields decides
+the sets over the relation's link type; all count against the one
+ceiling. A type that holds such a reference and has such a set is read
+once more, a page at a time. A migration that drops or renames a field a set's
 filter reads never gets that far: its preflight refuses it, naming the
 set and the field.
 

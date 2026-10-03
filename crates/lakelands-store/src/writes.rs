@@ -72,13 +72,19 @@ const RETRY_REACH: u32 = 4_096;
 /// their membership.
 const SET_PAGE: u32 = 1_024;
 
+/// A set membership a migration changes: the set, the record's type and
+/// its key after the migration, and whether it joined.
+type Change = (String, TypeName, RecordKey, bool);
+
+/// A type's sets, each with its members before a migration.
+type Held<'a> = Vec<(&'a ObjectSetDecl, BTreeSet<RecordKey>)>;
+
 /// What a migration's preflight finds: its report, the record keys it
-/// moves and, when it is applied, the set memberships it changes, as
-/// (set, record key after the migration, joined).
+/// moves and, when it is applied, the set memberships it changes.
 struct MigrationPlan {
     report: MigrationReport,
     rekeyed: Vec<lakelands_api::write::Rekey>,
-    members: Vec<(String, RecordKey, bool)>,
+    members: Vec<Change>,
 }
 
 /// The record a call names, checked against the verb's scope before
@@ -367,6 +373,63 @@ fn member_of(
         now,
     };
     Ok(expr::holds(&e, &scope).unwrap_or(false))
+}
+
+/// Every live record of `ty`, restricted ones included, a page at a time.
+fn live(
+    view: &dyn ProjectionView,
+    ty: &TypeName,
+    mut each: impl FnMut(&StoredRecord) -> Result<()>,
+) -> Result<()> {
+    let mut scan = Scan {
+        limit: SET_PAGE,
+        restricted: true,
+        ..Scan::default()
+    };
+    loop {
+        let rows = view.scan(ty, &scan)?;
+        rows.iter().try_for_each(&mut each)?;
+        let Some(last) = rows.last().filter(|_| rows.len() == SET_PAGE as usize) else {
+            return Ok(());
+        };
+        scan.after = Some(After {
+            values: Vec::new(),
+            key: last.key.clone(),
+        });
+    }
+}
+
+/// The sets of `ty` that `pick` takes, each with its members so far, read
+/// once and not looked up for each record.
+fn sets_of<'a>(
+    w: &'a Writer,
+    view: &dyn ProjectionView,
+    ty: &TypeName,
+    pick: impl Fn(&ObjectSetDecl) -> bool,
+) -> Result<Held<'a>> {
+    let sets = (w.ontology.object_sets.values()).map(|e| &e.decl);
+    let of = sets.filter(|s| &s.of == ty && pick(s));
+    of.map(|s| Ok((s, view.members(&s.name, ty)?))).collect()
+}
+
+/// Decide `is`, a record as a migration leaves it, against each of its
+/// type's sets: a membership that differs from the one it had under its
+/// key before, `was`, is a change under its key now. Past `max` changes
+/// nothing more is decided.
+fn decide(
+    sets: &Held<'_>,
+    was: &RecordKey,
+    is: &StoredRecord,
+    (w, now, max): (&Writer, Timestamp, usize),
+    changes: &mut Vec<Change>,
+) -> Result<()> {
+    for (s, held) in sets {
+        let member = held.contains(was);
+        if changes.len() <= max && member != member_of(s, is, w, now)? {
+            changes.push((s.name.clone(), is.ty.clone(), is.key.clone(), !member));
+        }
+    }
+    Ok(())
 }
 
 /// The outcome the first of an append's events stands for. A verb call or
@@ -1813,46 +1876,30 @@ impl Call<'_> {
                 Some(_) => view.members(&set.name, ty)?,
                 None => BTreeSet::new(),
             };
-            let mut scan = Scan {
-                limit: SET_PAGE,
-                restricted: true,
-                ..Scan::default()
-            };
-            loop {
-                let rows = view.scan(ty, &scan)?;
-                for r in &rows {
-                    let was = held.contains(&r.key);
-                    let is = ty == &set.of && member_of(set, r, w, now)?;
-                    if was != is {
-                        if out.len() as u64 >= u64::from(max) {
-                            return Err(Error::Refused {
-                                field: Some(set.name.as_str().into()),
-                                reason: Refusal::TooLarge { max },
-                            });
-                        }
-                        let body = EventBody::ObjectSetChanged {
-                            set: set.name.clone(),
-                            ty: ty.clone(),
-                            key: r.key.clone(),
-                            joined: is,
-                        };
-                        out.push(Draft {
-                            cause: Some(declared),
-                            context: self.context,
-                            ..Draft::system(now, body)
+            live(view.as_ref(), ty, |r| {
+                let was = held.contains(&r.key);
+                let is = ty == &set.of && member_of(set, r, w, now)?;
+                if was != is {
+                    if out.len() as u64 >= u64::from(max) {
+                        return Err(Error::Refused {
+                            field: Some(set.name.as_str().into()),
+                            reason: Refusal::TooLarge { max },
                         });
                     }
+                    let body = EventBody::ObjectSetChanged {
+                        set: set.name.clone(),
+                        ty: ty.clone(),
+                        key: r.key.clone(),
+                        joined: is,
+                    };
+                    out.push(Draft {
+                        cause: Some(declared),
+                        context: self.context,
+                        ..Draft::system(now, body)
+                    });
                 }
-                match rows.last() {
-                    Some(last) if rows.len() == SET_PAGE as usize => {
-                        scan.after = Some(After {
-                            values: Vec::new(),
-                            key: last.key.clone(),
-                        });
-                    }
-                    _ => break,
-                }
-            }
+                Ok(())
+            })?;
         }
         Ok(out)
     }
@@ -2035,44 +2082,39 @@ impl Call<'_> {
         )
         .map_err(|e| invalid(e.to_string()))?;
         // A key the new key fields make differently moves the record, and
-        // what names it moves with it (`crate::rekey`). A set of the type
-        // decides each record again as migrated (004, extended).
-        // Each set's members are read once, not looked up for each record.
-        let mut sets = Vec::new();
-        for s in (w.ontology.object_sets.values()).map(|e| &e.decl) {
-            if now.is_some() && s.of == m.to.name {
-                sets.push((s, view.members(&s.name, &before.name)?));
-            }
-        }
-        let decide = now.filter(|_| !sets.is_empty());
-        let max = self.lake.limits.max_set_changes as usize;
+        // what names it moves with it (`crate::rekey`). A record that does
+        // not convert is already not lossless; its stored fields still tell
+        // whether it has a new key.
+        let convert = |decl: &TypeDecl, m: &Migration, r: &StoredRecord| {
+            let fields = shape::migrate_record(decl, m, &r.fields);
+            let fields = fields.map_err(|e| invalid(e.to_string()))?;
+            Ok::<_, Error>(fields.unwrap_or_else(|| r.fields.clone()))
+        };
         let mut converted = Vec::new();
-        let mut members = Vec::new();
-        if !m.to.key.is_empty() || decide.is_some() {
-            for r in &records {
-                // A record that does not convert is already not lossless;
-                // its stored fields still tell whether it has a new key.
-                let fields = shape::migrate_record(&before, m, &r.fields)
-                    .map_err(|e| invalid(e.to_string()))?
-                    .unwrap_or_else(|| r.fields.clone());
-                let after = StoredRecord {
-                    fields,
-                    ..r.clone()
-                };
-                if let Some(now) = decide.filter(|_| members.len() <= max) {
-                    for (s, held) in &sets {
-                        let was = held.contains(&r.key);
-                        if was != member_of(s, &after, w, now)? {
-                            members.push((s.name.clone(), r.key.clone(), !was));
-                        }
-                    }
-                }
-                if !m.to.key.is_empty() {
-                    converted.push((r.key.clone(), after.fields));
-                }
-            }
+        for r in records.iter().filter(|_| !m.to.key.is_empty()) {
+            converted.push((r.key.clone(), convert(&before, m, r)?));
         }
         let plan = crate::rekey::plan(&after, view, &m.to.name, converted)?;
+        // Applied, the migration decides again every record whose fields it
+        // changes, as the fold leaves it (004, extended): converted, its
+        // references to moved keys rewritten, under its key after it.
+        let mut members = Vec::new();
+        let limit = self.lake.limits.max_set_changes as usize;
+        let mut left = |sets: &Held<'_>, decl: &TypeDecl, r: &StoredRecord, fields, now| {
+            let moved = plan.moves.get(&r.ty).and_then(|m| m.get(&r.key));
+            let is = StoredRecord {
+                key: moved.unwrap_or(&r.key).clone(),
+                fields: crate::rekey::rewritten(decl, &fields, &plan.moves),
+                ..r.clone()
+            };
+            decide(sets, &r.key, &is, (w, now, limit), &mut members)
+        };
+        if let Some(now) = now {
+            let sets = sets_of(w, view, &m.to.name, |_| true)?;
+            for r in records.iter().filter(|_| !sets.is_empty()) {
+                left(&sets, &m.to, r, convert(&before, m, r)?, now)?;
+            }
+        }
         // A relation carried by link records whose cardinality narrows
         // keeps its links only if none would break the narrower rule.
         for r in m.to.relations.iter().filter(|r| links::carried_by_links(r)) {
@@ -2132,6 +2174,12 @@ impl Call<'_> {
                 links.iter().map(|r| (r.key.clone(), r.fields.clone())),
             )
             .map_err(|e| invalid(e.to_string()))?;
+            if let Some(now) = now {
+                let sets = sets_of(w, view, &old.name, |_| true)?;
+                for r in links.iter().filter(|_| !sets.is_empty()) {
+                    left(&sets, &lm.to, r, convert(&old, &lm, r)?, now)?;
+                }
+            }
             let relation = old.name.as_str().rsplit('.').next().unwrap_or_default();
             let named = |f: &FieldName| FieldName::from(format!("{relation}.{f}"));
             report.records_scanned += lr.records_scanned;
@@ -2173,15 +2221,24 @@ impl Call<'_> {
             "rekeyed": serde_json::to_value(&listed).expect("moves serialise"),
             "head": view.position().map_or(0, |p| p.0),
         }));
-        // A moved record is a member under its new key: the fold of
-        // `migrated` carries its membership there.
-        let moved: BTreeMap<&RecordKey, &RecordKey> = (listed.iter())
-            .filter(|r| r.ty == m.to.name)
-            .map(|r| (&r.from, &r.to))
-            .collect();
-        for (_, key, _) in &mut members {
-            if let Some(to) = moved.get(key) {
-                *key = (*to).clone();
+        // A record of another type whose reference to a moved key the fold
+        // rewrites: decided for the sets whose filter reads that field, a
+        // page of the type at a time.
+        let changed = changed_link_types(&w.ontology, &m.to);
+        for (name, decl) in w.ontology.types.iter().map(|(n, e)| (n, &e.decl)) {
+            let rewritten = crate::rekey::moved_references(decl, &plan.moves);
+            let reads = |s: &ObjectSetDecl| {
+                let filter = declare::condition(&s.filter, Place::Record, "object set");
+                let reads = filter.map(|e| lakelands_core::derive::reads(&e));
+                reads.is_ok_and(|r| rewritten.iter().any(|(f, _)| r.contains(*f)))
+            };
+            let other = name != &m.to.name && !changed.iter().any(|(old, _)| &old.name == name);
+            let Some(now) = now.filter(|_| other && !rewritten.is_empty()) else {
+                continue;
+            };
+            let sets = sets_of(w, view, name, reads)?;
+            if !sets.is_empty() {
+                live(view, name, |r| left(&sets, decl, r, r.fields.clone(), now))?;
             }
         }
         Ok(MigrationPlan {
@@ -2247,14 +2304,14 @@ impl Call<'_> {
         let schema_hash = shape::schema_hash(&m.to).map_err(|e| invalid(e.to_string()))?;
         let version = w.ontology.next_version(&Declaration::Type(m.to.clone()));
         let migrated = position_after(w, first);
-        let changes = members.into_iter().map(|(set, key, joined)| Draft {
+        let changes = members.into_iter().map(|(set, ty, key, joined)| Draft {
             cause: Some(migrated),
             context: self.context,
             ..Draft::system(
                 now,
                 EventBody::ObjectSetChanged {
                     set,
-                    ty: m.to.name.clone(),
+                    ty,
                     key,
                     joined,
                 },

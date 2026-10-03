@@ -75,7 +75,10 @@ pub(crate) fn stored(view: &dyn ProjectionView, ty: &TypeName) -> Result<Vec<Sto
 }
 
 /// The reference fields of `decl` that name a type with moves.
-fn moved_references<'a>(decl: &'a TypeDecl, moves: &Moves) -> Vec<(&'a FieldName, &'a TypeName)> {
+pub(crate) fn moved_references<'a>(
+    decl: &'a TypeDecl,
+    moves: &Moves,
+) -> Vec<(&'a FieldName, &'a TypeName)> {
     decl.fields
         .iter()
         .filter(|f| f.ty.kind == StorageKind::Reference)
