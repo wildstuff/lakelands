@@ -293,6 +293,11 @@ belongs in the suite, not beside one engine:
 - `a_read_at_a_valid_time_probes_the_types_valid_time_fields` — 024 and 006: a read at `valid_at` filters on the type's `valid_from` and `valid_to`, so `find`, `get` and a pattern started on the type probe them as a filter would: refused not_granted naming the field where it is masked, answered as an undeclared field where it is hidden; without `valid_at` the same reads are answered
 - `a_write_only_field_is_written_and_never_shown` — 006, extended (lakelands#393): a field granted write_only is written by upsert and retire like a writable one, while get, find, query, search, describe and the tools' read schemas never show it, a filter or a search that probes it is refused not_granted naming it, and the write answers no value; a writable field built from one the principal may not read, write-only or masked, is write-only in turn: written, and probed as not granted, never as undeclared
 
+**authors view**
+
+- `a_migration_keeps_the_fields_its_author_may_not_know_of` — 027 and 024, extended: a migration's `to` is read as its author's view, so a field hidden from the author stays as declared, with its values, whether the migration is applied by a principal with the schema grant or proposed and accepted; `dropped` lists only what the author saw and removed; the proposer reads its own proposal without the field, a reviewer who may see it reads it there
+- `a_change_of_shape_never_names_a_field_its_author_may_not_know_of` — 027 and 024, extended: a type declared again from its author's view is taken, keeping the fields and the link fields hidden from the author; a shape that names a hidden field is refused as a field declared twice; one that removes a field a hidden one is built from is refused on that field and names no other; a rename from a hidden field is a rename from no field
+
 **values**
 
 - `date_time_values_read_back_in_their_one_canonical_form` — the log format §5: a date-time is kept in UTC as YYYY-MM-DDTHH:MM:SS.ffffffZ, whatever offset it was written with

@@ -151,6 +151,7 @@ macro_rules! door_checks {
             schema_hashes_and_proposal_ids_have_the_stores_form,
             links_are_written_walked_and_held_to_their_relation,
             a_relation_declared_again_with_another_target_reshapes_its_links,
+            a_migration_keeps_a_field_its_author_may_not_know_of,
             a_migration_migrates_and_declares_its_link_types_in_its_append,
             #[host_ops] an_aging_rule_moves_what_holds_from_once_a_date,
             #[host_ops] a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_record,
@@ -4447,6 +4448,81 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
         .unwrap();
     let json = serde_json::to_value(&after.data).unwrap();
     assert_eq!(json["rows"].as_array().map(Vec::len), Some(0), "{json}");
+}
+
+/// A migration's shape is its author's view of the type: a field the
+/// author may not know of stays, with its values, when the migration is
+/// proposed and accepted; `dropped` lists what the author removed; and the
+/// proposer reads its own proposal without the field, which a reviewer who
+/// may see it reads there
+/// (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+/// extended).
+pub async fn a_migration_keeps_a_field_its_author_may_not_know_of(store: Arc<dyn LakeStore>) {
+    let c = store.catalog(WriteContext::default());
+    let cast = Cast::of(store.lake());
+    // The clerk reads invoices but may not know of `secret`.
+    let (own, clerk) = (&cast.owner, &cast.clerk);
+    let invoice = |fields: &[&str]| {
+        let fields: Vec<Value> = (fields.iter())
+            .map(|f| json!({"name": f, "type": {"kind": "text"}}))
+            .collect();
+        let d = json!({"declare": "type", "name": INVOICE, "fields": fields});
+        match serde_json::from_value::<Declaration>(d).unwrap() {
+            Declaration::Type(t) => t,
+            _ => unreachable!(),
+        }
+    };
+    let whole = invoice(&["status", "memo", "secret"]);
+    c.declare(own, Declaration::Type(whole)).await.unwrap();
+    let all = [
+        ("status", json!("open")),
+        ("memo", json!("m")),
+        ("secret", json!("9")),
+    ];
+    c.upsert(
+        own,
+        &ty(INVOICE),
+        &key("i1"),
+        patch(&all),
+        WriteOpts::default(),
+    )
+    .await
+    .unwrap();
+    let write = ProposedWrite::Migrate {
+        migration: Box::new(lakelands_api::write::Migration {
+            to: invoice(&["status"]),
+            renames: vec![],
+        }),
+        report: Default::default(),
+    };
+    let proposed = c.propose(clerk, write, "no memos".into()).await.unwrap();
+    let Outcome::Proposed { proposal, .. } = proposed else {
+        panic!("a proposed migration answers `proposed`: {proposed:?}")
+    };
+    let mut read = Vec::new();
+    for who in [clerk, own] {
+        let listed = c.proposals(who, ProposalFilter::default()).await.unwrap();
+        let mine = listed.data.into_iter().find(|p| p.id == proposal).unwrap();
+        let ProposedWrite::Migrate { migration, report } = mine.write else {
+            panic!("the proposal is a migration")
+        };
+        let names: Vec<String> = (migration.to.fields.iter())
+            .map(|f| f.name.to_string())
+            .collect();
+        read.push((names, report.dropped));
+    }
+    let memo = vec![(FieldName::from("memo"), 1)];
+    assert_eq!(read[0].0, ["status"], "the proposer reads its own view");
+    assert_eq!(read[1], (vec!["status".into(), "secret".into()], memo));
+    c.accept(own, &proposal).await.unwrap();
+    let i1 = c.get(own, &ty(INVOICE), get("i1")).await.unwrap().data;
+    assert_eq!(
+        i1.fields.get("secret"),
+        Some(&json!("9")),
+        "{:?}",
+        i1.fields
+    );
+    assert!(!i1.fields.contains_key("memo"), "{:?}", i1.fields);
 }
 
 /// A relation carried by link records, dropped by a migration and

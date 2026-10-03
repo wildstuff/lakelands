@@ -121,6 +121,14 @@ why, and the proposal stays pending. What the accept declares is logged
 in its append as the proposer's write, caused by the acceptance, and
 takes the next versions and schema hashes there, not at the proposal.
 
+A proposed shape, a migration's or a redeclared type's, is logged as
+the store completed it from its proposer's view
+(`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+extended, lakelands#475). `proposals` shows it to each reader without
+the fields that reader may not know of, a relation's link fields too:
+the proposer reads its own view again, and a reviewer who may see a
+carried field reads it in the shape and not under `dropped`.
+
 ## Extended: a verb called on its type (lakelands#277)
 
 An effect that creates something outside the lake has no record to be

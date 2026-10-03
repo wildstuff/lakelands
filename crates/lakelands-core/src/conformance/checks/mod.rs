@@ -10,6 +10,7 @@ mod after;
 mod aggregates;
 mod aging;
 mod annotations;
+mod authors_view;
 mod backings;
 mod bundles;
 mod compact;
@@ -155,6 +156,8 @@ pub const ALL: &[Check] = &[
     masking::NONE_HIDES,
     masking::VALID_AT_PROBES,
     masking::WRITE_ONLY,
+    authors_view::HIDDEN_FIELD_KEPT,
+    authors_view::HIDDEN_NAME_NOT_LEARNED,
     values::DATE_TIME_CANONICAL,
     values::BYTES_ONE_SPELLING,
     values::VECTOR_LENGTH,

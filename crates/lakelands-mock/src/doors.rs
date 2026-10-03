@@ -432,6 +432,8 @@ impl MockCatalog {
         declaration: Declaration,
     ) -> Result<Position> {
         let (_, st) = self.state_at(log, None)?;
+        let mut declaration = declaration;
+        redeclared(&st, who, std::slice::from_mut(&mut declaration))?;
         check_declaration(&st, who, &declaration)?;
         trigger_ceiling(&declaration, self.shared.limits.max_reactive_depth)?;
         let (schema_hash, version) = identity_version(&st, &declaration);
@@ -1885,6 +1887,13 @@ fn plan_propose(
     why: String,
     key: Option<lakelands_api::IdempotencyKey>,
 ) -> Result<(Position, ProposalId)> {
+    // A change of shape is read as its proposer's view, and logged so.
+    let mut write = write;
+    match &mut write {
+        ProposedWrite::Declare { declarations } => redeclared(st, who, declarations)?,
+        ProposedWrite::Migrate { migration, .. } => authored(st, who, migration)?,
+        _ => {}
+    }
     // A proposal is checked as its write would be, so that an accept
     // cannot smuggle a field its proposer may not write.
     match &write {
@@ -2123,6 +2132,109 @@ fn unbound_view(start: &TypeName, reached: &DeclaredType, relation: &RelationNam
             reached.decl.name, param.name
         ))),
         _ => Ok(()),
+    }
+}
+
+/// Reads `to`, a migration's or a redeclaration's shape of the type
+/// declared as `before`, as its author's view, as the store does: a field
+/// `who` may not know of is put back as declared, at its declared place,
+/// and so are such link fields of each relation `to` keeps. A shape that
+/// names one declares it twice, a rename from one is from no field, and a
+/// field one is built from is refused on that field.
+fn as_author(
+    who: &Principal,
+    before: &TypeDecl,
+    to: &mut TypeDecl,
+    renames: &[(FieldName, FieldName)],
+) -> Result<()> {
+    let hidden = |t: &TypeDecl, f: &FieldDecl| access(who, t, f) == Access::None;
+    let on = |f: &FieldName, message: String| Error::Refused {
+        field: Some(f.clone()),
+        reason: Refusal::Invalid { message },
+    };
+    let put_back = |t: &TypeDecl, declared: &[FieldDecl], fields: &mut Vec<FieldDecl>| {
+        for (i, f) in declared.iter().enumerate().filter(|(_, f)| hidden(t, f)) {
+            fields.insert(i.min(fields.len()), f.clone());
+        }
+    };
+    let unknown: Vec<&FieldDecl> = (before.fields.iter().filter(|f| hidden(before, f))).collect();
+    for f in &unknown {
+        if renames.iter().any(|(from, _)| from == &f.name) {
+            let name = &f.name;
+            return Err(invalid(format!(
+                "rename from `{name}`: no such field before the migration"
+            )));
+        }
+        if field(to, &f.name).is_some() {
+            return Err(on(
+                &f.name,
+                format!("type `{}` declares `{}` twice", to.name, f.name),
+            ));
+        }
+    }
+    put_back(before, &before.fields, &mut to.fields);
+    for r in &mut to.relations {
+        if let Some(old) = before.relations.iter().find(|o| o.name == r.name) {
+            let link = links::link_type(&before.name, old);
+            put_back(&link, &old.fields, &mut r.fields);
+        }
+    }
+    let mut reads = (unknown.iter().copied())
+        .flat_map(|f| (f.depends_on.iter()).chain(f.embed.iter().flat_map(|e| &e.from)));
+    match reads.find(|n| field(to, n).is_none()) {
+        Some(n) => {
+            let ty = &to.name;
+            Err(on(
+                n,
+                format!("`{n}` is read by another field of `{ty}` and cannot be removed"),
+            ))
+        }
+        None => Ok(()),
+    }
+}
+
+/// A migration read as its author's view of its type.
+fn authored(st: &State, who: &Principal, m: &mut Migration) -> Result<()> {
+    match st.types.get(&m.to.name) {
+        Some(before) => as_author(who, &before.decl, &mut m.to, &m.renames),
+        None => Ok(()),
+    }
+}
+
+/// Each type of `declarations` the lake declares already, read as its
+/// author's view of it.
+fn redeclared(st: &State, who: &Principal, declarations: &mut [Declaration]) -> Result<()> {
+    for d in declarations {
+        if let Declaration::Type(t) = d
+            && let Some(before) = st.types.get(&t.name)
+        {
+            as_author(who, &before.decl, t, &[])?;
+        }
+    }
+    Ok(())
+}
+
+/// A proposed shape without the fields its reader may not know of, a
+/// relation's link fields too: the proposal holds the completed shape.
+fn known_shape(who: &Principal, write: &mut ProposedWrite) {
+    let shown = |t: &mut TypeDecl| {
+        let whole = t.clone();
+        t.fields.retain(|f| access(who, &whole, f) != Access::None);
+        for r in &mut t.relations {
+            let link = links::link_type(&whole.name, r);
+            r.fields.retain(|f| access(who, &link, f) != Access::None);
+        }
+    };
+    match write {
+        ProposedWrite::Migrate { migration, .. } => shown(&mut migration.to),
+        ProposedWrite::Declare { declarations } => {
+            for d in declarations {
+                if let Declaration::Type(t) = d {
+                    shown(t);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -3395,6 +3507,7 @@ impl Catalog for MockCatalog {
         if !asc {
             rows.reverse();
         }
+        rows.iter_mut().for_each(|p| known_shape(who, &mut p.write));
         let (rows, _) = page(
             rows,
             (position, "proposals", None, ""),
@@ -3432,6 +3545,8 @@ impl Catalog for MockCatalog {
         }
         let mut log = self.log();
         let (_, st) = self.state_at(&log, None)?;
+        let mut declarations = declarations;
+        redeclared(&st, who, &mut declarations)?;
         check_set(&st, who, &declarations)?;
         for d in &declarations {
             trigger_ceiling(d, self.shared.limits.max_reactive_depth)?;
@@ -3516,6 +3631,8 @@ impl Catalog for MockCatalog {
         }
         let log = self.log();
         let (position, st) = self.state_at(&log, None)?;
+        let mut migration = migration;
+        authored(&st, who, &mut migration)?;
         Ok(Reply {
             position,
             data: preflight(&st, position, &migration)?,
@@ -3598,6 +3715,8 @@ impl Catalog for MockCatalog {
         }
         let mut log = self.log();
         let (head, st) = self.state_at(&log, None)?;
+        let mut migration = migration;
+        authored(&st, who, &mut migration)?;
         let report = preflight(&st, head, &migration)?;
         if report.report_id != report_id {
             return Err(invalid(

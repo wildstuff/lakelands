@@ -60,7 +60,7 @@ use lakelands_api::read::{
     Params, ReadAt,
 };
 use lakelands_api::record::StoredRecord;
-use lakelands_api::write::{Proposal, ProposalFilter};
+use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposedWrite};
 use lakelands_api::{
     Access, Cursor, Error, FieldName, Missing, Position, Principal, Record, RecordKey, Refusal,
     RelationName, Result, Timestamp, TypeName, Value,
@@ -1273,15 +1273,46 @@ impl<'a> Reader<'a> {
             ..filter.clone()
         })?;
         let me = self.who.writer();
-        let mine: Vec<Proposal> = all
+        let mut mine: Vec<Proposal> = all
             .into_iter()
             .filter(|p| self.who.grants.review || p.proposer == me)
             .collect();
+        mine.iter_mut().for_each(|p| self.known_shape(&mut p.write));
         Ok(ordered_proposals(mine, &filter.order_by)?
             .into_iter()
             .skip(offset)
             .take(limit)
             .collect())
+    }
+
+    /// A proposed shape as its reader may know it (027, extended): the
+    /// store logs a migration and a redeclaration completed with the fields
+    /// hidden from their author, who reads its own proposal here, and a
+    /// field the reader may not know of is left out as `describe` leaves it
+    /// out, a relation's link fields too.
+    fn known_shape(&self, write: &mut ProposedWrite) {
+        let known = |t: &TypeDecl, f: &lakelands_api::ontology::FieldDecl| {
+            rights::field_access(self.who, t, f) != Access::None
+        };
+        let shown = |t: &mut TypeDecl| {
+            let whole = t.clone();
+            t.fields.retain(|f| known(&whole, f));
+            for r in &mut t.relations {
+                let link = lakelands_core::links::link_type(&whole.name, r);
+                r.fields.retain(|f| known(&link, f));
+            }
+        };
+        match write {
+            ProposedWrite::Migrate { migration, .. } => shown(&mut migration.to),
+            ProposedWrite::Declare { declarations } => {
+                for d in declarations {
+                    if let Declaration::Type(t) = d {
+                        shown(t);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// `search`.

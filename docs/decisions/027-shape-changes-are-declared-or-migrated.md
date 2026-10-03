@@ -209,6 +209,33 @@ A relation removed and another added is that and nothing more: the old
 name is listed with its links, and the new relation starts with none. A
 rename of a relation is not inferred, as a field's is not.
 
+## Extended: a shape is its author's view (lakelands#475)
+
+A principal writes a type's new shape from what `describe` answers it,
+and `describe` leaves out a field the principal may not know of. Read
+literally, such a shape removes that field: a principal who was never
+told of `salary` would propose it away, and the lake could not tell that
+from a removal it meant. So a migration's `to`, and a type declared
+again, is read as its author's view of the type:
+- a field hidden from the author (`rights::field_access` answering
+  `none`, by its grant or through a field it is built from) is put back
+  as declared, at its declared place, and so is such a link field of
+  each relation the shape keeps;
+- the report is made on the completed shape: `dropped` lists what the
+  author saw and removed, and never a field the author may not know of;
+  the report id names the completed migration;
+- `migrate`, `migrate_apply`, `declare`, `apply` and `propose` complete
+  the shape from their caller's rights. A proposal logs the completed
+  shape, so `accept` asks no one's rights, and a reviewer who may not
+  see the field cannot remove it by accepting either.
+
+No refusal on the way names a field its author may not know of. A shape
+that names one declares it twice, which is how a taken name is refused.
+A rename from one is a rename from no field. A shape that removes a
+field a hidden one is built from is refused on the field it removes,
+saying only that another field reads it. A masked or a write-only field
+is shown to the principal, and stays its to remove.
+
 ## Extended: the order of refusals (lakelands#338)
 
 The migration doors refuse in this order, in the frame every write
