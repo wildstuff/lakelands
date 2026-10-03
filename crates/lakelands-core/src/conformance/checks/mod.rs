@@ -10,6 +10,7 @@ mod after;
 mod aggregates;
 mod aging;
 mod annotations;
+mod authors_view;
 mod backings;
 mod bundles;
 mod compact;
@@ -156,6 +157,8 @@ pub const ALL: &[Check] = &[
     masking::NONE_HIDES,
     masking::VALID_AT_PROBES,
     masking::WRITE_ONLY,
+    authors_view::HIDDEN_FIELD_KEPT,
+    authors_view::HIDDEN_NAME_NOT_LEARNED,
     values::DATE_TIME_CANONICAL,
     values::BYTES_ONE_SPELLING,
     values::VECTOR_LENGTH,
@@ -210,6 +213,7 @@ pub const ALL: &[Check] = &[
     schema_proposals::DECLARED_ON_ACCEPT,
     schema_proposals::SCHEMA_TO_ACCEPT,
     schema_proposals::MIGRATION_PREFLIGHTED_AGAIN,
+    schema_proposals::MIGRATION_ON_ITS_SHAPE,
     schema_proposals::REJECTED_UNTOUCHED,
     annotations::ROUND_TRIP,
     annotations::VERSION_NOT_HASH,

@@ -293,6 +293,11 @@ belongs in the suite, not beside one engine:
 - `a_read_at_a_valid_time_probes_the_types_valid_time_fields` — 024 and 006: a read at `valid_at` filters on the type's `valid_from` and `valid_to`, so `find`, `get` and a pattern started on the type probe them as a filter would: refused not_granted naming the field where it is masked, answered as an undeclared field where it is hidden; without `valid_at` the same reads are answered
 - `a_write_only_field_is_written_and_never_shown` — 006, extended (lakelands#393): a field granted write_only is written by upsert and retire like a writable one, while get, find, query, search, describe and the tools' read schemas never show it, a filter or a search that probes it is refused not_granted naming it, and the write answers no value; a writable field built from one the principal may not read, write-only or masked, is write-only in turn: written, and probed as not granted, never as undeclared
 
+**authors view**
+
+- `a_migration_keeps_the_fields_its_author_may_not_know_of` — 027 and 024, extended: a migration's `to` is read as its author's view, so a field hidden from the author stays as declared, with its values, whether the migration is applied by a principal with the schema grant or proposed and accepted; `dropped` lists only what the author saw and removed; the proposer reads its own proposal without the field, a reviewer who may see it reads it there
+- `a_change_of_shape_never_names_a_field_its_author_may_not_know_of` — 027 and 024, extended: a type declared again from its author's view is taken, keeping the fields and the link fields hidden from the author; a shape that names a hidden field is refused as a field declared twice; one that removes a field a hidden one is built from is refused on that field and names no other; a rename from a hidden field is a rename from no field
+
 **values**
 
 - `date_time_values_read_back_in_their_one_canonical_form` — the log format §5: a date-time is kept in UTC as YYYY-MM-DDTHH:MM:SS.ffffffZ, whatever offset it was written with
@@ -395,6 +400,7 @@ belongs in the suite, not beside one engine:
 - `a_proposed_declaration_takes_effect_only_when_accepted` — 013, extended, and 007: a principal without the schema grant may propose declarations; nothing is declared and no schema hash moves until a reviewer with review and schema accepts, and then the declaration is logged at the acceptance, written as the proposer and caused by the acceptance
 - `accepting_a_schema_proposal_needs_the_schema_grant` — 013, extended: a reviewer with review alone may not accept a declaration or a migration; the refusal is not_granted, nothing is appended, and the proposal stays pending
 - `a_migration_proposal_carries_its_report_and_is_preflighted_again_at_accept` — 013, extended, and 027: a proposed migration carries the report its preflight answered then; at the acceptance it is preflighted again on the head, and one that would now lose information is refused with the fresh report, the proposal pending and the type unchanged
+- `a_proposed_migration_is_accepted_only_on_the_shape_it_was_proposed_on` — 013, extended (lakelands#489): a migration's `to` is the type's whole shape, so a proposed migration is accepted only while the type's schema hash is the one its report was made on; on a type declared or migrated since, the accept is refused as invalid, nothing is appended, the proposal stays pending and a field added since keeps its values; on the shape it was proposed on it applies
 - `a_rejected_schema_proposal_leaves_the_ontology_untouched` — 013, extended: a rejected declaration leaves the ontology as it was, and proposals can be listed by kind
 
 **annotations**

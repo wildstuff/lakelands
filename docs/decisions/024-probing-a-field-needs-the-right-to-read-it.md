@@ -108,3 +108,13 @@ it holds on every door: such a field is absent or masked in `get`,
 Filtering, ordering or aggregating over it is refused as not granted,
 naming it, as for its source. A search over a vector embedded from a
 field the principal may not read still names that source, as above.
+
+## Extended: a hidden field is not removed by one who may not know of it (lakelands#475)
+
+A field that does not exist for a principal on every read door is not
+reached by that principal's change of shape either: its migration and
+its redeclaration are read as its view of the type, and the hidden
+field is carried over as declared
+(`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+extended). The preflight's report names no such field to it, and a
+proposer reads its own proposal without it.

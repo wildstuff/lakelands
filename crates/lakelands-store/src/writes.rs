@@ -50,8 +50,8 @@ use lakelands_api::write::{
     ProposedWrite, ValueTypeReport, ValueTypeUse, WriteOpts,
 };
 use lakelands_api::{
-    Error, FieldName, IdempotencyKey, Missing, Patch, Position, Principal, ProposalId, RecordKey,
-    Refusal, RelationName, Result, Timestamp, TypeName, Value, VerbName, Version,
+    Access, Error, FieldName, IdempotencyKey, Missing, Patch, Position, Principal, ProposalId,
+    RecordKey, Refusal, RelationName, Result, Timestamp, TypeName, Value, VerbName, Version,
 };
 use lakelands_core::expr::{self, Place, RecordScope, Scope, WriteScope};
 use lakelands_core::rights::{self, Door};
@@ -1429,9 +1429,11 @@ impl Call<'_> {
             // check it, and nothing changes until it is accepted; the
             // proposer needs no `schema` grant (013, extended).
             ProposedWrite::Declare { declarations } => {
+                self.redeclared(&w.ontology, declarations)?;
                 self.check_bundle(&w.ontology, declarations)?;
             }
             ProposedWrite::Migrate { migration, report } => {
+                self.authored(&w.ontology, migration)?;
                 let found = self
                     .preflight_plan(&w, view.as_ref(), migration, None)?
                     .report;
@@ -1613,7 +1615,17 @@ impl Call<'_> {
                 let own = self.bundle_drafts(&w, declarations.clone(), now, drafts.len())?;
                 drafts.extend(own.into_iter().map(&as_accepted));
             }
-            ProposedWrite::Migrate { migration, .. } => {
+            ProposedWrite::Migrate { migration, report } => {
+                // The shape is the type's whole: on a type changed since the
+                // proposal it would remove what was added, shown to no one
+                // (013, extended).
+                let ty = &migration.to.name;
+                let head = shape::schema_hash(w.ontology.ty(ty)?).ok();
+                if head.as_ref() != Some(&report.from_schema_hash) {
+                    return Err(invalid(format!(
+                        "`{ty}` changed since this migration was proposed; propose it again"
+                    )));
+                }
                 let plan = self.preflight_plan(&w, view.as_ref(), migration, Some(now))?;
                 let first = drafts.len();
                 let own = self.migration_drafts(&w, (**migration).clone(), plan, now, first)?;
@@ -1722,8 +1734,9 @@ impl Call<'_> {
     }
 
     /// `declare`, its context and the `schema` grant already checked.
-    fn declare_granted(&self, declaration: Declaration) -> Result<Outcome> {
+    fn declare_granted(&self, mut declaration: Declaration) -> Result<Outcome> {
         let mut w = self.lake.writer();
+        self.redeclared(&w.ontology, std::slice::from_mut(&mut declaration))?;
         declare::check_declaration(&w.ontology, &declaration, false)?;
         self.check_bound(&declaration)?;
         let now = self.lake.clock(&mut w);
@@ -1738,16 +1751,38 @@ impl Call<'_> {
     /// in it, so a reference may point forward within the set and tool
     /// names are checked over all of it; every problem is collected, and
     /// one refusal names them all.
-    pub fn apply(&self, declarations: Vec<Declaration>) -> Result<Outcome> {
+    pub fn apply(&self, mut declarations: Vec<Declaration>) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         granted(self.who.grants.schema)?;
         let mut w = self.lake.writer();
+        self.redeclared(&w.ontology, &mut declarations)?;
         self.check_bundle(&w.ontology, &declarations)?;
         let now = self.lake.clock(&mut w);
         let drafts = self.bundle_drafts(&w, declarations, now, 0)?;
         let events = self.lake.append(&mut w, drafts)?;
         let last = events.last().expect("the set is not empty");
         Ok(applied(last.position, None))
+    }
+
+    /// Reads a migration as its author's view of its type ([`as_author`]).
+    fn authored(&self, o: &Ontology, m: &mut Migration) -> Result<()> {
+        match o.types.get(&m.to.name) {
+            Some(before) => as_author(self.who, &before.decl, &mut m.to, &m.renames),
+            None => Ok(()),
+        }
+    }
+
+    /// Reads each type of `declarations` that is declared already as its
+    /// author's view of it ([`as_author`]).
+    fn redeclared(&self, o: &Ontology, declarations: &mut [Declaration]) -> Result<()> {
+        for d in declarations {
+            if let Declaration::Type(t) = d
+                && let Some(before) = o.types.get(&t.name)
+            {
+                as_author(self.who, &before.decl, t, &[])?;
+            }
+        }
+        Ok(())
     }
 
     /// Check a set of declarations as `apply` checks it, against
@@ -1936,7 +1971,9 @@ impl Call<'_> {
         m: &Migration,
     ) -> Result<MigrationReport> {
         granted(self.who.grants.schema)?;
-        Ok(self.preflight_plan(w, view, m, None)?.report)
+        let mut m = m.clone();
+        self.authored(&w.ontology, &mut m)?;
+        Ok(self.preflight_plan(w, view, &m, None)?.report)
     }
 
     /// The preflight, the record keys the migration moves and, given the
@@ -2201,7 +2238,7 @@ impl Call<'_> {
         };
         for r in before.relations.iter().filter(removed) {
             let lt = links::link_type_name(&m.to.name, &r.name);
-            let live = view.scan(&lt, &every(false))?.len() as u64;
+            let live = view.count(&lt, &every(false))?;
             if live > 0 {
                 report
                     .dropped
@@ -2249,10 +2286,11 @@ impl Call<'_> {
     }
 
     /// `migrate_apply`.
-    pub fn migrate_apply(&self, m: Migration, report_id: &str) -> Result<Outcome> {
+    pub fn migrate_apply(&self, mut m: Migration, report_id: &str) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         granted(self.who.grants.schema)?;
         let mut w = self.lake.writer();
+        self.authored(&w.ontology, &mut m)?;
         let view = self.lake.engine.view(None)?;
         let now = self.lake.clock(&mut w);
         let plan = self.preflight_plan(&w, view.as_ref(), &m, Some(now))?;
@@ -2505,6 +2543,51 @@ impl Call<'_> {
         drop(view);
         let events = self.lake.append(&mut w, vec![d])?;
         Ok(outcome_of(&events))
+    }
+}
+
+/// Reads `to`, a migration's or a redeclaration's shape of the type
+/// declared as `before`, as its author's view of the type (027, extended):
+/// a field `who` may not know of was not its to leave out, so it is put
+/// back as declared, at its declared place, and so are such link fields of
+/// each relation `to` keeps. No refusal names one: a rename from it is from
+/// no field, and a field it is built from is refused on that field.
+fn as_author(
+    who: &Principal,
+    before: &TypeDecl,
+    to: &mut TypeDecl,
+    renames: &[(FieldName, FieldName)],
+) -> Result<()> {
+    let hidden = |t: &TypeDecl, f: &FieldDecl| rights::field_access(who, t, f) == Access::None;
+    let put_back = |t: &TypeDecl, declared: &[FieldDecl], fields: &mut Vec<FieldDecl>| {
+        for (i, f) in declared.iter().enumerate().filter(|(_, f)| hidden(t, f)) {
+            fields.insert(i.min(fields.len()), f.clone());
+        }
+    };
+    let unknown: Vec<&FieldDecl> = (before.fields.iter().filter(|f| hidden(before, f))).collect();
+    let renamed = |f: &&&FieldDecl| renames.iter().any(|(from, _)| from == &f.name);
+    if let Some(f) = unknown.iter().find(renamed) {
+        let from = f.name.clone();
+        return Err(invalid(
+            shape::ShapeError::RenameFromUnknown { from }.to_string(),
+        ));
+    }
+    put_back(before, &before.fields, &mut to.fields);
+    for r in &mut to.relations {
+        if let Some(old) = before.relations.iter().find(|o| o.name == r.name) {
+            let link = links::link_type(&before.name, old);
+            put_back(&link, &old.fields, &mut r.fields);
+        }
+    }
+    let mut reads = (unknown.iter().copied())
+        .flat_map(|f| (f.depends_on.iter()).chain(f.embed.iter().flat_map(|e| &e.from)));
+    match reads.find(|n| !to.fields.iter().any(|t| &t.name == *n)) {
+        Some(n) => {
+            let ty = &to.name;
+            let why = format!("`{n}` is read by another field of `{ty}` and cannot be removed");
+            Err(invalid_field(n, why))
+        }
+        None => Ok(()),
     }
 }
 

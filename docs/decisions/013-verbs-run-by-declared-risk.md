@@ -121,6 +121,24 @@ why, and the proposal stays pending. What the accept declares is logged
 in its append as the proposer's write, caused by the acceptance, and
 takes the next versions and schema hashes there, not at the proposal.
 
+A proposed shape, a migration's or a redeclared type's, is logged as
+the store completed it from its proposer's view
+(`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+extended, lakelands#475). `proposals` shows it to each reader without
+the fields that reader may not know of, a relation's link fields too:
+the proposer reads its own view again, and a reviewer who may see a
+carried field reads it in the shape and not under `dropped`.
+
+A proposed migration is accepted only on the shape it was proposed on
+(lakelands#489). Its `to` is the type's whole shape, so on a type
+declared or migrated since it would remove whatever was added, and the
+report the reviewer read says nothing of that. The accept compares the
+type's schema hash at the head with the report's `from_schema_hash` and
+refuses a difference as invalid, saying the type changed and the
+migration is proposed again; nothing is appended and the proposal stays
+pending. Records written since are the second preflight's to judge, as
+before.
+
 ## Extended: a verb called on its type (lakelands#277)
 
 An effect that creates something outside the lake has no record to be
@@ -203,7 +221,8 @@ needs `schema` (`not_granted`); then the write, checked again at the
 head: an upsert through the record checks; a retirement for its record
 and version; a call for its verb, its scope, a view, the verb declared
 differently since (`invalid`), its executor, then as `call` from the
-record on; a declaration as `apply` checks a set; a migration by its
+record on; a declaration as `apply` checks a set; a migration for the
+shape it was proposed on (`invalid`, lakelands#489), then by its
 preflight, then `migration`, then its embedding model (`unbound`). Any
 refusal leaves the proposal pending.
 

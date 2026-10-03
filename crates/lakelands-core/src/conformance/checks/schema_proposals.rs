@@ -23,6 +23,7 @@ use serde_json::json;
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, doors, events_after, field_writer, head_unmoved, migration, reason, reviewer,
+    type_of,
 };
 
 check!(
@@ -35,6 +36,12 @@ check!(
     /// Accepting a schema proposal needs the schema grant.
     SCHEMA_TO_ACCEPT = accepting_a_schema_proposal_needs_the_schema_grant,
     "013, extended: a reviewer with review alone may not accept a declaration or a migration; the refusal is not_granted, nothing is appended, and the proposal stays pending"
+);
+
+check!(
+    /// A proposed migration is accepted on the shape it was made on.
+    MIGRATION_ON_ITS_SHAPE = a_proposed_migration_is_accepted_only_on_the_shape_it_was_proposed_on,
+    "013, extended (lakelands#489): a migration's `to` is the type's whole shape, so a proposed migration is accepted only while the type's schema hash is the one its report was made on; on a type declared or migrated since, the accept is refused as invalid, nothing is appended, the proposal stays pending and a field added since keeps its values; on the shape it was proposed on it applies"
 );
 
 check!(
@@ -282,4 +289,62 @@ async fn a_rejected_schema_proposal_leaves_the_ontology_untouched(
         "a rejected declaration must leave the ontology untouched"
     );
     Ok(())
+}
+
+/// The agent's proposal of a migration to `to`.
+async fn propose_shape(
+    store: &dyn LakeStore,
+    to: lakelands_api::ontology::TypeDecl,
+    why: &str,
+) -> Result<ProposalId, Failure> {
+    let write = ProposedWrite::Migrate {
+        migration: Box::new(migration(to)),
+        report: Default::default(),
+    };
+    let (cat, who) = (doors(store), agent(store));
+    proposed(&cat.propose(&who, write, why.into()).await.must(why)?)
+}
+
+async fn a_proposed_migration_is_accepted_only_on_the_shape_it_was_proposed_on(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let cat = &l.cat;
+    let memo = |fields: &[(&str, StorageKind)]| type_of("memo", fields);
+    let text = StorageKind::Text;
+    l.declare(memo(&[("title", text), ("pages", text)])).await?;
+    l.upsert("memo", "a", json!({"title": "t", "pages": "3"}))
+        .await?;
+    let architect = reviewer(store.as_ref(), true);
+
+    // On the shape it was proposed on, it applies.
+    let retype = memo(&[("title", text), ("pages", StorageKind::Number)]);
+    let retype = propose_shape(store.as_ref(), retype, "numbers").await?;
+    cat.accept(&architect, &retype)
+        .await
+        .must("accepting the retype on the shape it was proposed on")?;
+
+    // The type gains a field after the next proposal, and a record holds it.
+    let drop_title = memo(&[("pages", StorageKind::Number)]);
+    let drop_title = propose_shape(store.as_ref(), drop_title, "no titles").await?;
+    let grown = memo(&[
+        ("title", text),
+        ("pages", StorageKind::Number),
+        ("owner", text),
+    ]);
+    l.declare(grown).await?;
+    l.upsert("memo", "a", json!({"owner": "ada"})).await?;
+    let before = store.head().await.must("reading the head")?;
+    let refused = cat.accept(&architect, &drop_title).await;
+    let a = l.read("memo", "a").await?;
+    ensure!(
+        matches!(reason(&refused), Some(Refusal::Invalid { .. }))
+            && pending(store.as_ref(), true, &drop_title).await?
+            && crate::conformance::fixture::value(&a, "owner") == Some(&json!("ada")),
+        "a migration proposed before `owner` was added must be refused as invalid when accepted \
+         after, stay pending, and leave `owner` with its value; the accept answered {refused:?} \
+         and `a` reads {:?}",
+        a.fields
+    );
+    head_unmoved(store.as_ref(), before, "the refused accept").await
 }
