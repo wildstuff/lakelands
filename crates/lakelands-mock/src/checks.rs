@@ -20,7 +20,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use lakelands_api::describe::ExecutorDescription;
 use lakelands_api::error::{Error, Missing, Refusal};
+use lakelands_api::event::EventBody;
 use lakelands_api::expr::Condition;
 use lakelands_api::id::{
     Cursor, FieldName, LakeId, Position, RecordKey, TypeName, VerbName, Version,
@@ -31,7 +33,7 @@ use lakelands_api::ontology::{
     StorageKind, TriggerDecl, TypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl, ViewParam,
 };
 use lakelands_api::principal::{Access, Grants, Principal, PrincipalKind, TypeGrants};
-use lakelands_api::query::{Pattern, Search, SearchMode, Step, Walk};
+use lakelands_api::query::{Pattern, Search, SearchMode, Step, VectorTerm, Walk};
 use lakelands_api::read::{After, Direction, Find, Found, Get, Order, OrderBy, ReadAt};
 use lakelands_api::record::{Origin, Patch, Record, SourceRecord, Value};
 use lakelands_api::seam::FeedFilter;
@@ -101,8 +103,11 @@ macro_rules! door_checks {
             a_step_to_an_unbound_view_is_refused,
             a_view_reads_only_what_its_source_has,
             a_migration_keeps_what_a_view_reads,
+            a_declaration_reads_only_what_its_type_has,
+            a_migration_keeps_what_a_declaration_reads,
             a_view_is_never_migrated,
             nothing_that_never_acts_is_declared_on_a_view,
+            a_set_may_hold_a_link_types_records,
             a_relation_on_a_view_is_derived,
             a_tools_key_says_what_to_pass,
             propose_shows_each_writes_shape,
@@ -126,12 +131,15 @@ macro_rules! door_checks {
             a_cursor_keeps_its_page_set_while_writes_land,
             a_page_answers_its_total_and_jumps_by_offset,
             a_cursor_continues_only_its_own_answer,
+            a_cursor_continues_only_the_read_it_began,
             after_walks_the_pages_the_cursor_walks,
             after_is_refused_naming_the_member,
+            a_limit_outside_the_lakes_bounds_is_refused_at_every_door,
             a_principal_of_another_lake_is_refused,
             the_feed_is_the_log_by_position,
             the_feed_filtered_by_key_answers_those_records_events,
             a_step_over_an_undeclared_relation_is_refused,
+            a_step_naming_an_inverse_walks_the_relation_the_other_way,
             a_dependent_field_declared_clear_is_cleared_with_its_input,
             two_writers_keep_each_others_fields,
             per_field_meta_names_the_writer_and_the_position,
@@ -144,13 +152,17 @@ macro_rules! door_checks {
             schema_hashes_and_proposal_ids_have_the_stores_form,
             links_are_written_walked_and_held_to_their_relation,
             a_relation_declared_again_with_another_target_reshapes_its_links,
+            a_migration_keeps_a_field_its_author_may_not_know_of,
+            a_migration_migrates_and_declares_its_link_types_in_its_append,
             #[host_ops] an_aging_rule_moves_what_holds_from_once_a_date,
             #[host_ops] a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_record,
+            #[host_ops] a_purge_preflight_names_what_the_purge_strands_and_its_id_goes_stale,
             a_value_type_is_loosened_by_declare_and_tightened_by_its_preflight,
             a_sort_index_setting_names_declared_scalar_fields_and_describe_shows_them,
             a_vector_index_setting_names_vector_fields_and_search_says_it_ranked_by_the_index,
             an_ingested_upstream_is_answered_per_field,
             a_schema_proposal_is_refused_by_kind_at_propose_and_at_accept,
+            a_value_types_tightening_is_proposed_and_accepted_while_it_fits,
             an_order_by_latest_takes_no_field_and_no_view,
             #[views] a_view_reads_the_parameters_each_read_binds,
             a_parameter_its_type_does_not_declare_is_refused,
@@ -535,14 +547,18 @@ fn field<'a>(r: &'a Record, f: &str) -> Option<&'a Value> {
 // ---- the checks ----
 
 /// Every read carries a position; every write answers one past the
-/// head it saw, and the head moves to it.
+/// head it saw, and the head moves to it. A write that sets nothing off
+/// answers its outcome as it always has, with no member more.
 pub async fn every_write_advances_the_position(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let before = f.head().await;
-    let (p1, v1) = applied(
-        &f.write(&f.cast.clerk, "INV-1", &[("status", json!("open"))])
-            .await,
-    );
+    let first = f
+        .write(&f.cast.clerk, "INV-1", &[("status", json!("open"))])
+        .await;
+    let keys = serde_json::to_value(&first).unwrap();
+    let keys: Vec<&String> = keys.as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["outcome", "position", "version"], "{first:?}");
+    let (p1, v1) = applied(&first);
     assert!(p1 > before, "a write lands after the head it saw");
     assert_eq!(f.head().await, p1);
     assert_eq!(v1, Some(Version(1)));
@@ -1248,7 +1264,9 @@ async fn declare_register(f: &Fixture) {
 
 /// The tool of a verb on its type takes no `key` and no
 /// `expected_version`, since it has no record and no record version, and
-/// says it is called on the type; a verb on a record keeps both.
+/// says it is called on the type; a verb on a record keeps both. An
+/// external verb is described with its executor and whether it is bound,
+/// and its tool says so; a verb that sets fields has no executor.
 pub async fn a_verb_on_its_type_has_a_tool_without_a_key(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     declare_register(&f).await;
@@ -1288,6 +1306,31 @@ pub async fn a_verb_on_its_type_has_a_tool_without_a_key(store: Arc<dyn LakeStor
     for present in ["key", "expected_version"] {
         assert!(props.contains_key(present), "`approve` takes `{present}`");
     }
+    // No lake in these checks binds an executor, so every one says `crm`
+    // is not bound, and its tool says what a call does here.
+    let executor = |verb: &str| {
+        let v = d.data.verbs.iter().find(|v| v.name.as_str() == verb);
+        v.and_then(|v| v.executor.clone())
+    };
+    assert_eq!(
+        executor("register"),
+        Some(ExecutorDescription {
+            name: "crm".into(),
+            bound: false
+        })
+    );
+    assert_eq!(
+        executor("approve"),
+        None,
+        "a verb that sets fields has none"
+    );
+    assert!(
+        register
+            .description
+            .contains("`crm`; that executor is not bound in this lake"),
+        "{:?}",
+        register.description
+    );
 }
 
 /// A call's key is held to the verb's scope before anything else is read:
@@ -1368,8 +1411,9 @@ pub async fn a_verb_on_its_type_is_called_without_a_key(store: Arc<dyn LakeStore
 /// A verb's tool says what a call does by the verb's risk: a `low` verb
 /// runs at once, whether its effect writes fields or reaches outside the
 /// lake; a riskier one is recorded as a proposal. A verb that reaches
-/// outside the lake also says that it runs through an executor its host
-/// binds, and that a call is refused, writing nothing, where none is.
+/// outside the lake also names its executor and says whether it is bound
+/// here, and that a call (or a proposal) is refused, writing nothing,
+/// where it is not.
 pub async fn a_verb_tool_says_what_its_risk_does(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let owner = &f.cast.owner;
@@ -1403,13 +1447,15 @@ pub async fn a_verb_tool_says_what_its_risk_does(store: Arc<dyn LakeStore>) {
     };
     let runs = "It runs at once";
     let proposed = "It is recorded as a proposal and runs when accepted";
-    let through = ", through an executor the lake's host binds; where none is bound, a call is \
-                   refused and writes nothing.";
+    // No lake in these checks binds `mailer`.
+    let unbound = ", through its executor `mailer`; that executor is not bound in this lake, so";
+    let call = format!("{unbound} a call is refused and writes nothing.");
+    let either = format!("{unbound} a call or a proposal is refused and writes nothing.");
     for (verb, how, end) in [
         ("approve", runs, "."),
-        ("notify", runs, through),
+        ("notify", runs, call.as_str()),
         ("pay", proposed, "."),
-        ("escalate", proposed, through),
+        ("escalate", proposed, either.as_str()),
     ] {
         let said = says(verb);
         assert!(
@@ -1651,6 +1697,34 @@ pub async fn nothing_that_never_acts_is_declared_on_a_view(store: Arc<dyn LakeSt
     assert_eq!(f.head().await, head, "nothing is appended");
 }
 
+/// An object set may hold the records of a relation's link type, as a
+/// trigger may watch them: `declare` takes a set over
+/// `sys.link.<type>.<relation>` and `describe` shows it, on the mock as on
+/// the store.
+pub async fn a_set_may_hold_a_link_types_records(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    for d in [
+        json!({"declare": "type", "name": "memo", "field_meta": true,
+               "fields": [{"name": "n", "type": {"kind": "text"}}],
+               "relations": [{"name": "seen_by", "target": PARTNER,
+                              "fields": [{"name": "ok", "type": {"kind": "text"}}]}]}),
+        json!({"declare": "object_set", "name": "seen_ok", "of": "sys.link.memo.seen_by",
+               "where": "ok = 'x'"}),
+    ] {
+        let d: Declaration = serde_json::from_value(d).expect("a declaration");
+        let what = d.what();
+        let taken = f.catalog.declare(owner, d).await;
+        assert!(taken.is_ok(), "{what} is taken: {taken:?}");
+    }
+    let d = f.catalog.describe(owner, ReadAt::default()).await;
+    let sets = d.expect("the owner describes the lake").data.object_sets;
+    assert!(
+        sets.iter().any(|s| s.name.as_str() == "seen_ok"),
+        "{sets:?}"
+    );
+}
+
 /// A view's records are computed, so a relation on a view carried by link
 /// records or by a `via` field could never hold an edge: `declare`
 /// refuses it, naming the view and the relation, on the mock as on the
@@ -1866,6 +1940,206 @@ pub async fn a_view_reads_only_what_its_source_has(store: Arc<dyn LakeStore>) {
         );
     }
     assert_eq!(f.head().await, head, "nothing is appended");
+}
+
+/// An invalid refusal whose text names each of `names`.
+fn invalid_naming(e: &Error, names: &[&str]) -> bool {
+    matches!(e, Error::Refused { reason: Refusal::Invalid { message }, .. }
+        if names.iter().all(|n| message.contains(n)))
+}
+
+/// A derived field, an object set's `where`, a trigger's `when` and a
+/// verb's `requires` or the value it sets a field from read only fields
+/// the type has: one that reads another is refused by `declare` and by
+/// `apply`, naming the declaration and the field, and nothing is
+/// appended, on the mock as on the store. `payload.<name>` and `setting`
+/// read no field.
+pub async fn a_declaration_reads_only_what_its_type_has(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let verb = |name: &str, requires: &str, value: &str| {
+        json!({"declare": "verb", "name": name, "on": INVOICE, "risk": "low",
+               "payload": [{"name": "reference", "type": {"kind": "text"}}],
+               "requires": requires, "effect": "write",
+               "set": [{"field": "status", "value": value}]})
+    };
+    let head = f.head().await;
+    for (reader, d) in [
+        (
+            "type declaration `memo`",
+            json!({"declare": "type", "name": "memo", "fields": [{"name": "loud",
+                   "type": {"kind": "text"}, "authority": "derived", "derived": "upper(ghost)"}]}),
+        ),
+        (
+            "verb declaration `close`",
+            verb("close", "ghost = 'x'", "'shut'"),
+        ),
+        (
+            "verb declaration `copy`",
+            verb("copy", "status = 'x'", "ghost"),
+        ),
+        (
+            "trigger declaration `t`",
+            json!({"declare": "trigger", "name": "t", "on": INVOICE, "when": "changed(ghost)"}),
+        ),
+        (
+            "object_set declaration `s`",
+            json!({"declare": "object_set", "name": "s", "of": INVOICE, "where": "ghost = 'x'"}),
+        ),
+    ] {
+        let d: Declaration = serde_json::from_value(d).expect("a declaration");
+        let names = [reader, "reads `ghost`"];
+        let e = f.catalog.declare(owner, d.clone()).await;
+        let e = e.expect_err("a declaration reads only what its type has");
+        assert!(invalid_naming(&e, &names), "declare: {e:?}");
+        let e = f.catalog.apply(owner, vec![d]).await;
+        let e = e.expect_err("a declaration reads only what its type has");
+        assert!(invalid_naming(&e, &names), "apply: {e:?}");
+    }
+    assert_eq!(f.head().await, head, "nothing is appended");
+    let fine = verb("refer", "status = setting('mode')", "payload.reference");
+    f.catalog
+        .declare(owner, serde_json::from_value(fine).expect("a declaration"))
+        .await
+        .expect("the call's payload and a setting are no fields of the type");
+}
+
+/// A declaration in force reads its type's shape after a migration as
+/// before: a migration that drops or renames a field read by a derived
+/// field of the type, or by an object set, a trigger or a verb on it, is
+/// refused at the preflight, naming the reader and the field; so is one
+/// that drops a relation's field a trigger on the relation's link type
+/// reads, naming the link type; and one to a type whose own derived field
+/// reads a field it does not have. A field no declaration reads migrates
+/// away. An author who is not shown the reader is told that a declaration
+/// reads the field, not its name. On the mock as on the store.
+pub async fn a_migration_keeps_what_a_declaration_reads(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let memo = |names: &[&str], link: &[&str]| -> TypeDecl {
+        let text = |n: &&str| json!({"name": n, "type": {"kind": "text"}});
+        let mut fields: Vec<Value> = names.iter().map(text).collect();
+        fields.push(
+            json!({"name": "loud", "type": {"kind": "text"}, "authority": "derived",
+                           "derived": "upper(a)"}),
+        );
+        serde_json::from_value(json!({"name": "memo", "field_meta": true, "fields": fields,
+            "relations": [{"name": "seen_by", "target": PARTNER,
+                           "fields": link.iter().map(text).collect::<Vec<_>>()}]}))
+        .expect("a type")
+    };
+    let all = ["a", "b", "c", "d", "free"];
+    f.catalog
+        .declare(owner, Declaration::Type(memo(&all, &["ok"])))
+        .await
+        .expect("the owner declares `memo`");
+    for d in [
+        json!({"declare": "object_set", "name": "s", "of": "memo", "where": "b = 'x'"}),
+        json!({"declare": "trigger", "name": "t", "on": "memo", "when": "changed(c)"}),
+        json!({"declare": "verb", "name": "settle", "on": "memo", "risk": "low",
+               "requires": "d = 'x'", "effect": "write",
+               "set": [{"field": "d", "value": "'y'"}]}),
+        json!({"declare": "trigger", "name": "lt", "on": "sys.link.memo.seen_by",
+               "when": "ok = 'x'"}),
+    ] {
+        let d: Declaration = serde_json::from_value(d).expect("a declaration");
+        f.catalog
+            .declare(owner, d)
+            .await
+            .expect("a reader of `memo`");
+    }
+    let without =
+        |gone: &str| -> Vec<&str> { all.iter().copied().filter(|n| *n != gone).collect() };
+    let migration = |to: TypeDecl, renames: &[(&str, &str)]| lakelands_api::write::Migration {
+        to,
+        renames: renames
+            .iter()
+            .map(|(a, b)| ((*a).into(), (*b).into()))
+            .collect(),
+    };
+    for (to, names) in [
+        (
+            migration(memo(&without("a"), &["ok"]), &[]),
+            vec!["type declaration `memo`", "reads `a`", "drops"],
+        ),
+        (
+            migration(memo(&without("b"), &["ok"]), &[]),
+            vec!["object_set declaration `s`", "reads `b`", "drops"],
+        ),
+        (
+            migration(memo(&without("c"), &["ok"]), &[]),
+            vec!["trigger declaration `t`", "reads `c`", "drops"],
+        ),
+        (
+            migration(memo(&without("d"), &["ok"]), &[]),
+            vec!["verb declaration `settle`", "reads `d`", "drops"],
+        ),
+        (
+            migration(
+                memo(&["a", "b2", "c", "d", "free"], &["ok"]),
+                &[("b", "b2")],
+            ),
+            vec!["object_set declaration `s`", "reads `b`", "renames to `b2`"],
+        ),
+        (
+            migration(memo(&all, &[]), &[]),
+            vec![
+                "trigger declaration `lt`",
+                "reads `ok` of `sys.link.memo.seen_by`",
+                "drops",
+            ],
+        ),
+    ] {
+        let e = f.catalog.migrate(owner, to).await;
+        let e = e.expect_err("a field a declaration reads stays");
+        assert!(invalid_naming(&e, &names), "must name {names:?}: {e:?}");
+    }
+    // A reader its author is not shown is not named to it: `audit` reads
+    // `body`, which the clerk sees masked, so `describe` leaves the trigger
+    // out for it. The clerk is told that a declaration reads the field it
+    // took away; the owner is told the trigger's name.
+    let doc = |names: &[&str]| -> TypeDecl {
+        let text = |n: &&str| json!({"name": n, "type": {"kind": "text"}});
+        let fields: Vec<Value> = names.iter().map(text).collect();
+        serde_json::from_value(json!({"name": "doc", "field_meta": true, "fields": fields}))
+            .expect("a type")
+    };
+    let audit = json!({"declare": "trigger", "name": "audit", "on": "doc",
+                       "when": "note = 'x' and body = 'y'"});
+    let audit: Declaration = serde_json::from_value(audit).expect("a declaration");
+    for d in [Declaration::Type(doc(&["keep", "body", "note"])), audit] {
+        f.catalog
+            .declare(owner, d)
+            .await
+            .expect("`doc` and its trigger");
+    }
+    let to = migration(doc(&["keep"]), &[]);
+    let proposed = ProposedWrite::Migrate {
+        migration: Box::new(to.clone()),
+        report: Default::default(),
+    };
+    let e = (f.catalog)
+        .propose(&f.cast.clerk, proposed, "no notes".into())
+        .await;
+    let e = e.expect_err("a field a declaration reads stays");
+    let (said, names) = (e.to_string(), ["a declaration reads `body`"]);
+    assert!(invalid_naming(&e, &names), "must name {names:?}: {e:?}");
+    assert!(!said.contains("audit"), "{said}");
+    let e = f.catalog.migrate(owner, to).await;
+    let e = e.expect_err("a field a declaration reads stays");
+    let names = ["trigger declaration `audit`", "reads `body`"];
+    assert!(invalid_naming(&e, &names), "must name {names:?}: {e:?}");
+    // The type it migrates to is held to its own fields too.
+    let mut ghost = memo(&without("free"), &["ok"]);
+    ghost.fields.last_mut().expect("`loud`").derived = Some("upper(ghost)".into());
+    let e = f.catalog.migrate(owner, migration(ghost, &[])).await;
+    let e = e.expect_err("a migrated type reads only fields it has");
+    let names = ["type declaration `memo`", "reads `ghost`", "does not have"];
+    assert!(invalid_naming(&e, &names), "must name {names:?}: {e:?}");
+    f.catalog
+        .migrate(owner, migration(memo(&without("free"), &["ok"]), &[]))
+        .await
+        .expect("a field no declaration reads migrates away");
 }
 
 /// A view with parameters is bound only by a read that names it: a
@@ -2590,6 +2864,106 @@ pub async fn an_ingested_upstream_is_answered_per_field(store: Arc<dyn LakeStore
     );
 }
 
+/// A value type's tightening can be proposed by a principal without the
+/// `schema` grant and holds its preflight's report; while a stored value
+/// would not fit, the proposal and the accept are refused with the count
+/// alone, and an accept after the value type was declared again is
+/// refused; accepted, the value type accepts less
+/// (`docs/decisions/013-verbs-run-by-declared-risk.md`, extended).
+pub async fn a_value_types_tightening_is_proposed_and_accepted_while_it_fits(
+    store: Arc<dyn LakeStore>,
+) {
+    use lakelands_api::write::{ProposalFilter, ProposalKind, ProposedWrite};
+    let f = setup(store).await;
+    let (c, own, clerk) = (&f.catalog, &f.cast.owner, &f.cast.clerk);
+    let states = |one_of: &[&str]| -> lakelands_api::ontology::ValueTypeDecl {
+        serde_json::from_value(json!({"name": "memo_state", "kind": "text", "one_of": one_of}))
+            .unwrap()
+    };
+    let narrower = || ProposedWrite::MigrateValueType {
+        to: Box::new(states(&["open", "filed"])),
+        report: Default::default(),
+    };
+    let wide = Declaration::ValueType(states(&["open", "filed", "void"]));
+    c.declare(own, wide).await.expect("the states are declared");
+    let memo = json!({"declare": "type", "name": "memo", "fields": [
+        {"name": "state", "type": {"kind": "text", "value_type": "memo_state"}}]});
+    let memo = serde_json::from_value(memo).unwrap();
+    c.declare(own, memo).await.expect("`memo` is declared");
+    let write = |k: &'static str, state: &'static str| {
+        let (c, own) = (c.clone(), own.clone());
+        let fields = patch(&[("state", json!(state))]);
+        async move {
+            c.upsert(&own, &ty("memo"), &key(k), fields, WriteOpts::default())
+                .await
+        }
+    };
+    write("m1", "open").await.expect("`m1` is open");
+    let proposed = c.propose(clerk, narrower(), "no memo is void".into()).await;
+    let Ok(Outcome::Proposed { proposal, .. }) = proposed else {
+        panic!("the clerk, without the schema grant, proposes the tightening: {proposed:?}")
+    };
+    let by_kind = ProposalFilter {
+        kind: Some(ProposalKind::MigrateValueType),
+        ..ProposalFilter::default()
+    };
+    let listed = c.proposals(own, by_kind).await.unwrap().data;
+    assert!(
+        matches!(listed.as_slice(), [p] if matches!(&p.write,
+            ProposedWrite::MigrateValueType { report, .. } if report.fits && report.fields.len() == 1)),
+        "the proposal holds a report that fits, with its one use: {listed:?}"
+    );
+    // One `void` stored: the accept and a new proposal say the count alone.
+    write("m2", "void").await.expect("`void` is still a state");
+    let counted = |e: &Error| {
+        matches!(refusal(e).1, Refusal::Invalid { message }
+            if message.contains("1 stored value(s)") && !message.contains("m2"))
+    };
+    let late = c
+        .accept(own, &proposal)
+        .await
+        .expect_err("it no longer fits");
+    let again = c
+        .propose(clerk, narrower(), "again".into())
+        .await
+        .expect_err("it does not fit");
+    assert!(counted(&late) && counted(&again), "{late:?} {again:?}");
+    // Accepted on the declaration it was proposed on, it is in force.
+    write("m2", "open").await.expect("`m2` is open again");
+    c.accept(own, &proposal)
+        .await
+        .expect("the owner accepts the tightening");
+    write("m2", "void")
+        .await
+        .expect_err("`void` is no longer a state");
+    // Proposed on one declaration and accepted on another, it is refused.
+    let proposed = c
+        .propose(
+            clerk,
+            ProposedWrite::MigrateValueType {
+                to: Box::new(states(&["open"])),
+                report: Default::default(),
+            },
+            "open only".into(),
+        )
+        .await;
+    let Ok(Outcome::Proposed { proposal, .. }) = proposed else {
+        panic!("a second tightening is proposed: {proposed:?}")
+    };
+    let wider = Declaration::ValueType(states(&["open", "filed", "held"]));
+    c.declare(own, wider)
+        .await
+        .expect("a state more is declared");
+    let stale = c
+        .accept(own, &proposal)
+        .await
+        .expect_err("the value type changed");
+    assert!(
+        matches!(refusal(&stale).1, Refusal::Invalid { message } if message.contains("changed since")),
+        "{stale:?}"
+    );
+}
+
 /// A declaration or a migration can be proposed by a principal without
 /// the `schema` grant; a lossy migration is refused at the proposal with
 /// its report, a reviewer without `schema` is refused at the accept, and
@@ -2869,6 +3243,61 @@ pub async fn a_cursor_continues_only_its_own_answer(store: Arc<dyn LakeStore>) {
     );
 }
 
+/// A cursor continues only the read it was handed out for: `find` under
+/// another `where` or another order of the same length, and `query`
+/// projecting other fields, refuse it as invalid; another page size
+/// continues it (018).
+pub async fn a_cursor_continues_only_the_read_it_began(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    f.sortable().await;
+    let read = |cursor, filter: &str, by: &str| Find {
+        limit: Some(1),
+        cursor,
+        filter: Some(filter.into()),
+        order_by: vec![serde_json::from_value(json!({"field": by})).expect("an order")],
+        ..Find::default()
+    };
+    let (_, Some(c)) = f.page(read(None, "status = 'open'", "note")).await else {
+        panic!("a first page of one open invoice hands out a cursor");
+    };
+    f.page(Find {
+        limit: Some(2),
+        ..read(Some(c.clone()), "status = 'open'", "note")
+    })
+    .await;
+    for other in [
+        read(Some(c.clone()), "status = 'paid'", "note"),
+        read(Some(c), "status = 'open'", "verdict"),
+    ] {
+        let e = (f.catalog.find(&f.cast.owner, &ty(INVOICE), other).await).unwrap_err();
+        assert!(matches!(refusal(&e).1, Refusal::Invalid { .. }), "{e:?}");
+    }
+    let rows = |fields: Value, cursor: Option<Cursor>| {
+        let mut p: Pattern = serde_json::from_value(json!({
+            "start": {"type": INVOICE},
+            "project": {"as": "rows", "fields": fields},
+            "limit": 1
+        }))
+        .expect("a pattern");
+        p.cursor = cursor;
+        p
+    };
+    let first = (f.catalog.query(&f.cast.owner, rows(json!([]), None)).await).map(|r| r.data);
+    let Ok(lakelands_api::query::QueryResult::Rows {
+        next_cursor: Some(c),
+        ..
+    }) = first
+    else {
+        panic!("a first page of one row hands out a cursor: {first:?}");
+    };
+    let e = (f
+        .catalog
+        .query(&f.cast.owner, rows(json!(["note"]), Some(c)))
+        .await)
+        .unwrap_err();
+    assert!(matches!(refusal(&e).1, Refusal::Invalid { .. }), "{e:?}");
+}
+
 impl Fixture {
     /// Invoices with ties on `status` and rows missing `status` or
     /// `verdict`, for the order's edges; each carries a `note`, so no
@@ -2982,6 +3411,54 @@ pub async fn after_walks_the_pages_the_cursor_walks(store: Arc<dyn LakeStore>) {
             expected,
             "the one order under {order:?}"
         );
+    }
+}
+
+/// A `limit` of 0, or above what the lake allows, is refused as invalid,
+/// naming the bounds, at every door that takes one: `find`, `query` and
+/// `proposals` up to `max_limit`, a whole-graph measure up to
+/// `max_graph_nodes`. It is never cut to fit.
+pub async fn a_limit_outside_the_lakes_bounds_is_refused_at_every_door(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let (c, own) = (&f.catalog, &f.cast.owner);
+    let limits = Limits::default();
+    let rows = |limit| {
+        let mut p = Pattern::traverse(ty(INVOICE), key("unused"), Vec::new());
+        (p.start.key, p.limit) = (None, Some(limit));
+        p
+    };
+    let measure = |limit| {
+        let mut p = rows(limit);
+        p.project = lakelands_api::query::Projection::Components;
+        p
+    };
+    for (max, measured) in [(limits.max_limit, false), (limits.max_graph_nodes, true)] {
+        for limit in [0, max + 1] {
+            let find = Find {
+                limit: Some(limit),
+                ..Find::default()
+            };
+            let filter = ProposalFilter {
+                limit: Some(limit),
+                ..ProposalFilter::default()
+            };
+            let answers = match measured {
+                true => vec![("a measure", c.query(own, measure(limit)).await.map(|_| ()))],
+                false => vec![
+                    ("find", c.find(own, &ty(INVOICE), find).await.map(|_| ())),
+                    ("query", c.query(own, rows(limit)).await.map(|_| ())),
+                    ("proposals", c.proposals(own, filter).await.map(|_| ())),
+                ],
+            };
+            for (door, answer) in answers {
+                let want = format!("a limit is between 1 and {max}");
+                assert!(
+                    matches!(&answer, Err(Error::Refused { field: None, reason: Refusal::Invalid { message } })
+                        if *message == want),
+                    "{door} with `limit` {limit} must be refused as invalid: {want}; it answered {answer:?}"
+                );
+            }
+        }
     }
 }
 
@@ -3234,6 +3711,119 @@ pub async fn a_step_over_an_undeclared_relation_is_refused(store: Arc<dyn LakeSt
         .await
         .unwrap_err();
     assert!(matches!(refusal(&e).1, Refusal::Invalid { .. }));
+}
+
+/// A step naming a relation's `inverse` walks that relation the other way,
+/// its `walk` counting from the name it gives, over a reference field, link
+/// records and matching values alike. A relation declared under the name
+/// wins: `owns` is both `person`'s own relation and the inverse of
+/// `kept_by`, and a step over it walks `person.owns`.
+pub async fn a_step_naming_an_inverse_walks_the_relation_the_other_way(store: Arc<dyn LakeStore>) {
+    let c = store.catalog(WriteContext::default());
+    let own = &Cast::of(store.lake()).owner;
+    let declare = |v: Value| {
+        let c = c.clone();
+        async move {
+            let d = serde_json::from_value::<Declaration>(v).unwrap();
+            c.declare(own, d).await.unwrap();
+        }
+    };
+    declare(json!({"declare": "type", "name": "person",
+        "fields": [{"name": "name", "type": {"kind": "text"}}]}))
+    .await;
+    declare(json!({"declare": "type", "name": "doc", "fields": [
+        {"name": "title", "type": {"kind": "text"}},
+        {"name": "owner", "type": {"kind": "text"}},
+        {"name": "author", "type": {"kind": "reference", "target": "person"}}],
+        "relations": [
+            {"name": "written_by", "target": "person", "via": "author", "inverse": "wrote"},
+            {"name": "signed_by", "target": "person", "inverse": "signed"},
+            {"name": "owned_by", "target": "person", "inverse": "holds",
+             "derived": {"match": [{"from": "owner", "to": "name"}]}},
+            {"name": "kept_by", "target": "person", "inverse": "owns",
+             "derived": {"match": [{"from": "owner", "to": "name"}]}}]}))
+    .await;
+    declare(json!({"declare": "type", "name": "person",
+        "fields": [{"name": "name", "type": {"kind": "text"}}],
+        "relations": [{"name": "owns", "target": "doc",
+            "derived": {"match": [{"from": "name", "to": "title"}]}}]}))
+    .await;
+    let up = |t: &str, k: &str, fields: Value| {
+        let (c, t, k) = (c.clone(), ty(t), key(k));
+        async move {
+            let p = serde_json::from_value(fields).unwrap();
+            c.upsert(own, &t, &k, p, WriteOpts::default())
+                .await
+                .unwrap();
+        }
+    };
+    up("person", "p1", json!({"name": "p1"})).await;
+    up("person", "p2", json!({"name": "p2"})).await;
+    up(
+        "doc",
+        "d1",
+        json!({"title": "p2", "owner": "p1", "author": "p1"}),
+    )
+    .await;
+    let (sb, d1, p1) = ("signed_by".into(), key("d1"), key("p1"));
+    c.link(
+        own,
+        &ty("doc"),
+        &d1,
+        &sb,
+        &p1,
+        Patch::new(),
+        WriteOpts::default(),
+    )
+    .await
+    .unwrap();
+    // The keys a step from one record reaches, of the other type.
+    let walk = |from: &str, k: &str, relation: &str, walk: Walk| {
+        let c = c.clone();
+        let reached = if from == "doc" {
+            "person.key"
+        } else {
+            "doc.key"
+        };
+        let step = Step {
+            relation: relation.into(),
+            walk,
+            ty: None,
+            filter: None,
+            depth: Default::default(),
+        };
+        let p = Pattern::traverse(ty(from), key(k), vec![step]);
+        async move {
+            let rows = serde_json::to_value(c.query(own, p).await.unwrap().data).unwrap();
+            let rows = rows["rows"].as_array().unwrap().iter();
+            rows.map(|r| r[reached].clone()).collect::<Vec<_>>()
+        }
+    };
+    for (by, inverse) in [
+        ("written_by", "wrote"),
+        ("signed_by", "signed"),
+        ("owned_by", "holds"),
+    ] {
+        let (back, named) = (
+            walk("person", "p1", by, Walk::In).await,
+            walk("person", "p1", inverse, Walk::Out).await,
+        );
+        assert_eq!(named, back, "`{inverse}` out from `p1` walks `{by}` in");
+        assert_eq!(named, [json!("d1")], "`{inverse}` reaches `d1`");
+        let (out, named) = (
+            walk("doc", "d1", by, Walk::Out).await,
+            walk("doc", "d1", inverse, Walk::In).await,
+        );
+        assert_eq!(named, out, "`{inverse}` in from `d1` walks `{by}` out");
+    }
+    // `person.owns` (name = title) wins over `kept_by`'s inverse (owner =
+    // name), both ways: the inverse would reach `p1`'s doc and `d1`'s `p1`.
+    assert_eq!(walk("person", "p2", "owns", Walk::Out).await, [json!("d1")]);
+    assert_eq!(
+        walk("person", "p1", "owns", Walk::Out).await,
+        [] as [Value; 0]
+    );
+    assert_eq!(walk("doc", "d1", "owns", Walk::In).await, [json!("p2")]);
 }
 
 /// A field declared `on_input_change: clear` is cleared in the same
@@ -4046,6 +4636,81 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
     assert_eq!(json["rows"].as_array().map(Vec::len), Some(0), "{json}");
 }
 
+/// A migration's shape is its author's view of the type: a field the
+/// author may not know of stays, with its values, when the migration is
+/// proposed and accepted; `dropped` lists what the author removed; and the
+/// proposer reads its own proposal without the field, which a reviewer who
+/// may see it reads there
+/// (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+/// extended).
+pub async fn a_migration_keeps_a_field_its_author_may_not_know_of(store: Arc<dyn LakeStore>) {
+    let c = store.catalog(WriteContext::default());
+    let cast = Cast::of(store.lake());
+    // The clerk reads invoices but may not know of `secret`.
+    let (own, clerk) = (&cast.owner, &cast.clerk);
+    let invoice = |fields: &[&str]| {
+        let fields: Vec<Value> = (fields.iter())
+            .map(|f| json!({"name": f, "type": {"kind": "text"}}))
+            .collect();
+        let d = json!({"declare": "type", "name": INVOICE, "fields": fields});
+        match serde_json::from_value::<Declaration>(d).unwrap() {
+            Declaration::Type(t) => t,
+            _ => unreachable!(),
+        }
+    };
+    let whole = invoice(&["status", "memo", "secret"]);
+    c.declare(own, Declaration::Type(whole)).await.unwrap();
+    let all = [
+        ("status", json!("open")),
+        ("memo", json!("m")),
+        ("secret", json!("9")),
+    ];
+    c.upsert(
+        own,
+        &ty(INVOICE),
+        &key("i1"),
+        patch(&all),
+        WriteOpts::default(),
+    )
+    .await
+    .unwrap();
+    let write = ProposedWrite::Migrate {
+        migration: Box::new(lakelands_api::write::Migration {
+            to: invoice(&["status"]),
+            renames: vec![],
+        }),
+        report: Default::default(),
+    };
+    let proposed = c.propose(clerk, write, "no memos".into()).await.unwrap();
+    let Outcome::Proposed { proposal, .. } = proposed else {
+        panic!("a proposed migration answers `proposed`: {proposed:?}")
+    };
+    let mut read = Vec::new();
+    for who in [clerk, own] {
+        let listed = c.proposals(who, ProposalFilter::default()).await.unwrap();
+        let mine = listed.data.into_iter().find(|p| p.id == proposal).unwrap();
+        let ProposedWrite::Migrate { migration, report } = mine.write else {
+            panic!("the proposal is a migration")
+        };
+        let names: Vec<String> = (migration.to.fields.iter())
+            .map(|f| f.name.to_string())
+            .collect();
+        read.push((names, report.dropped));
+    }
+    let memo = vec![(FieldName::from("memo"), 1)];
+    assert_eq!(read[0].0, ["status"], "the proposer reads its own view");
+    assert_eq!(read[1], (vec!["status".into(), "secret".into()], memo));
+    c.accept(own, &proposal).await.unwrap();
+    let i1 = c.get(own, &ty(INVOICE), get("i1")).await.unwrap().data;
+    assert_eq!(
+        i1.fields.get("secret"),
+        Some(&json!("9")),
+        "{:?}",
+        i1.fields
+    );
+    assert!(!i1.fields.contains_key("memo"), "{:?}", i1.fields);
+}
+
 /// A relation carried by link records, dropped by a migration and
 /// declared again with another target, would reshape the links it kept:
 /// the declaration is refused, naming the link type, as a migration
@@ -4103,6 +4768,11 @@ pub async fn a_relation_declared_again_with_another_target_reshapes_its_links(
         renames: vec![],
     };
     let report = c.migrate(own, m.clone()).await.unwrap();
+    assert_eq!(
+        report.data.dropped,
+        [("signed_by".into(), 1)],
+        "the preflight lists the relation with its one live link"
+    );
     c.migrate_apply(own, m, &report.data.report_id)
         .await
         .unwrap();
@@ -4115,6 +4785,86 @@ pub async fn a_relation_declared_again_with_another_target_reshapes_its_links(
             if message.contains("sys.link.doc.signed_by")),
         "{refused:?}"
     );
+}
+
+/// A migration that changes a relation's fields migrates that relation's
+/// link type, and one that adds a relation carried by link records
+/// declares its link type, after the type's own `migrated` and in the
+/// same append; a link over the new relation is then written.
+pub async fn a_migration_migrates_and_declares_its_link_types_in_its_append(
+    store: Arc<dyn LakeStore>,
+) {
+    let c = store.catalog(WriteContext::default());
+    let own = &Cast::of(store.lake()).owner;
+    let doc = |relations: Value| {
+        serde_json::from_value::<TypeDecl>(json!({"name": "doc",
+            "fields": [{"name": "title", "type": {"kind": "text"}}], "relations": relations}))
+        .unwrap()
+    };
+    let person: Declaration = serde_json::from_value(json!({"declare": "type", "name": "person",
+        "fields": [{"name": "name", "type": {"kind": "text"}}]}))
+    .unwrap();
+    c.declare(own, person).await.unwrap();
+    let signed = json!({"name": "signed_by", "target": "person"});
+    c.declare(own, Declaration::Type(doc(json!([signed]))))
+        .await
+        .unwrap();
+    for (t, k, f) in [("person", "p1", "name"), ("doc", "d1", "title")] {
+        c.upsert(
+            own,
+            &ty(t),
+            &key(k),
+            patch(&[(f, json!(k))]),
+            WriteOpts::default(),
+        )
+        .await
+        .unwrap();
+    }
+    let m = lakelands_api::write::Migration {
+        to: doc(json!([
+            {"name": "signed_by", "target": "person",
+             "fields": [{"name": "at", "type": {"kind": "text"}}]},
+            {"name": "witnessed_by", "target": "person"}])),
+        renames: vec![],
+    };
+    let report = c.migrate(own, m.clone()).await.unwrap();
+    let from = store.head().await.unwrap().next();
+    c.migrate_apply(own, m, &report.data.report_id)
+        .await
+        .unwrap();
+    let feed = store.feed();
+    let b = feed.poll(from, &FeedFilter::default(), 100).await.unwrap();
+    let appended: Vec<(&str, String)> = b
+        .events
+        .iter()
+        .map(|e| match &e.body {
+            EventBody::Migrated { migration, .. } => ("migrated", migration.to.name.to_string()),
+            EventBody::Declared {
+                declaration: Declaration::Type(t),
+                ..
+            } => ("declared", t.name.to_string()),
+            other => (other.kind(), String::new()),
+        })
+        .collect();
+    assert_eq!(
+        appended,
+        [
+            ("migrated", "doc".to_owned()),
+            ("migrated", "sys.link.doc.signed_by".to_owned()),
+            ("declared", "sys.link.doc.witnessed_by".to_owned()),
+        ]
+    );
+    c.link(
+        own,
+        &ty("doc"),
+        &key("d1"),
+        &"witnessed_by".into(),
+        &key("p1"),
+        Patch::new(),
+        WriteOpts::default(),
+    )
+    .await
+    .expect("a link over the relation the migration added");
 }
 
 /// An aging rule is checked when it is written; `age` is handed a date at
@@ -4325,6 +5075,121 @@ pub async fn an_aging_rule_moves_what_holds_from_once_a_date(store: Arc<dyn Lake
     );
 }
 
+/// A preflight appends nothing and says what the purge would retire and
+/// which live records outside it refer into it; a purge that repeats its
+/// id is refused once the lake has moved, and purges under a fresh one,
+/// naming the same records
+/// (`docs/decisions/039-a-source-is-retracted-as-one.md`, extended).
+pub async fn a_purge_preflight_names_what_the_purge_strands_and_its_id_goes_stale(
+    store: Arc<dyn LakeStore>,
+) {
+    let c = store.catalog(WriteContext::default());
+    let cast = Cast::of(store.lake());
+    let own = &cast.owner;
+    for d in [
+        json!({"declare": "type", "name": "partner",
+            "fields": [{"name": "name", "type": {"kind": "text"}, "authority": "source"}]}),
+        json!({"declare": "type", "name": "bill",
+            "fields": [{"name": "partner_id", "type": {"kind": "text"}}],
+            "relations": [{"name": "billed_to", "target": "partner", "via": "partner_id"},
+                          {"name": "seen_by", "target": "partner", "cardinality": "many_to_many"}]}),
+    ] {
+        c.declare(own, serde_json::from_value(d).unwrap())
+            .await
+            .unwrap();
+    }
+    let p1 = SourceRecord {
+        upstream: None,
+        ty: ty("partner"),
+        key: key("p1"),
+        fields: patch(&[("name", json!("Harbor"))]),
+        seen_at: None,
+    };
+    let mut acks = c
+        .ingest(own, &"crm".into(), stream::of(vec![p1]))
+        .await
+        .unwrap();
+    stream::collect(&mut acks).await;
+    let bill = |k: &'static str, partner: &'static str| {
+        let (c, own) = (c.clone(), own.clone());
+        let fields = patch(&[("partner_id", json!(partner))]);
+        async move {
+            c.upsert(&own, &ty("bill"), &key(k), fields, WriteOpts::default())
+                .await
+                .unwrap();
+        }
+    };
+    bill("b1", "p1").await;
+    bill("b2", "p9").await;
+    // An authored link from `b2` to `p1` is stranded as `b1`'s field is.
+    c.link(
+        own,
+        &ty("bill"),
+        &key("b2"),
+        &"seen_by".into(),
+        &key("p1"),
+        patch(&[]),
+        WriteOpts::default(),
+    )
+    .await
+    .unwrap();
+    let head = store.head().await.unwrap();
+    let seen = store.purge_preflight(&"crm".into()).await.unwrap();
+    let named = |r: &lakelands_api::write::PurgeReport| -> Vec<(String, u64, Vec<String>)> {
+        (r.references.iter())
+            .map(|f| {
+                let first = f.first.iter().map(|k| format!("{} {}", k.ty, k.key));
+                (
+                    format!("{}.{}", f.ty, f.relation),
+                    f.records,
+                    first.collect(),
+                )
+            })
+            .collect()
+    };
+    let want = vec![
+        ("bill.billed_to".to_owned(), 1, vec!["bill b1".to_owned()]),
+        (
+            "bill.seen_by".to_owned(),
+            1,
+            vec!["sys.link.bill.seen_by b2:p1".to_owned()],
+        ),
+    ];
+    assert_eq!((seen.retired, named(&seen)), (1, want.clone()), "{seen:?}");
+    assert_eq!(
+        (store.head().await.unwrap(), seen.position),
+        (head, head),
+        "a preflight appends nothing"
+    );
+    assert!(!seen.report_id.is_empty());
+    bill("b3", "p1").await;
+    let head = store.head().await.unwrap();
+    let stale = store
+        .purge_source(&"crm".into(), Some(&seen.report_id))
+        .await;
+    assert!(
+        matches!(&stale, Err(Error::Refused { field: None, reason: Refusal::Invalid { message } })
+            if message.contains("moved")),
+        "{stale:?}"
+    );
+    assert_eq!(
+        store.head().await.unwrap(),
+        head,
+        "a stale purge appends nothing"
+    );
+    let again = store.purge_preflight(&"crm".into()).await.unwrap();
+    let done = store
+        .purge_source(&"crm".into(), Some(&again.report_id))
+        .await
+        .unwrap();
+    assert_eq!((done.retired, named(&done)), (1, named(&again)), "{done:?}");
+    assert_eq!(
+        named(&done)[0].1,
+        2,
+        "`b3` refers into the purge too: {done:?}"
+    );
+}
+
 /// A purge retires every live record one source brought in, in one
 /// append; a second purge appends nothing; a record a principal also
 /// wrote refuses the whole purge, naming it
@@ -4372,7 +5237,7 @@ pub async fn a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_rec
     )
     .await
     .unwrap();
-    let report = store.purge_source(&"crm".into()).await.unwrap();
+    let report = store.purge_source(&"crm".into(), None).await.unwrap();
     assert_eq!(report.retired, 2, "{report:?}");
     assert_eq!(report.position, store.head().await.unwrap());
     let live = |k: &'static str| {
@@ -4382,7 +5247,7 @@ pub async fn a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_rec
     };
     assert!(!live("p1").await && !live("p2").await && live("p3").await);
     let head = store.head().await.unwrap();
-    let again = store.purge_source(&"crm".into()).await.unwrap();
+    let again = store.purge_source(&"crm".into(), None).await.unwrap();
     assert_eq!((again.retired, again.position), (0, head));
     // A record a principal also wrote refuses the whole purge.
     feed(&["p4", "p5"]).await;
@@ -4396,10 +5261,10 @@ pub async fn a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_rec
     .await
     .unwrap();
     let head = store.head().await.unwrap();
-    let refused = store.purge_source(&"crm".into()).await;
+    let refused = store.purge_source(&"crm".into(), None).await;
     assert!(
         matches!(&refused, Err(Error::Refused { field: None, reason: Refusal::Invalid { message } })
-            if message.contains("p4") && !message.contains("p5")),
+            if message.contains("p4") && !message.contains("p5") && message.contains("another hand")),
         "{refused:?}"
     );
     assert_eq!(store.head().await.unwrap(), head);
@@ -4449,7 +5314,7 @@ pub async fn a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_rec
     source("erp", patch(&[("name", json!("p7"))])).await;
     source("crm", patch(&[("city", json!("Oslo"))])).await;
     source("crm", patch(&[("city", Value::Null)])).await;
-    let report = store.purge_source(&"crm".into()).await.unwrap();
+    let report = store.purge_source(&"crm".into(), None).await.unwrap();
     assert_eq!(report.retired, 1, "{report:?}");
     assert!(!live("p4").await && live("p5").await && live("p7").await);
 }
@@ -4847,12 +5712,16 @@ pub async fn a_vector_index_setting_names_vector_fields_and_search_says_it_ranke
     let by_vector = |field: &str| SearchMode::Vector {
         field: field.into(),
         vector: vec![1.0, 0.0],
+        weight: None,
+        also: Vec::new(),
     };
     let hybrid = || SearchMode::Hybrid {
         text: "quay".into(),
         field: "v".into(),
         vector: Some(vec![1.0, 0.0]),
         fields: None,
+        weight: None,
+        text_weight: None,
     };
     assert!(indexed().await.is_empty(), "no setting, nothing indexed");
     assert_eq!(ranked_by(by_vector("v"), None).await, "vector");
@@ -5325,6 +6194,17 @@ pub async fn degree_and_components_answer_the_graph_in_one_order(store: Arc<dyn 
         ],
         "the docs and the people they reach are one component, across types"
     );
+    // A measure's page may be larger than `max_limit`, up to the lake's
+    // `max_graph_nodes`: it answers the same rows.
+    let mut whole = measure(
+        vec![
+            step("written_by", Walk::Both),
+            step("signed_by", Walk::Both),
+        ],
+        Projection::Components,
+    );
+    whole.limit = Some(Limits::default().max_limit + 1);
+    assert_eq!(rows(whole).await, components, "one page past `max_limit`");
     let e = c
         .query(
             own,
@@ -5413,6 +6293,8 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
                     field: "v".into(),
                     vector: None,
                     fields: None,
+                    weight: None,
+                    text_weight: None,
                 },
             ),
             (
@@ -5422,6 +6304,8 @@ pub async fn a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_m
                     field: "v".into(),
                     vector: Some(vec![0.0, 1.0]),
                     fields: None,
+                    weight: None,
+                    text_weight: None,
                 },
             ),
         ]
@@ -5625,6 +6509,9 @@ pub async fn a_search_limited_to_named_fields_matches_and_probes_only_those(
 /// by reciprocal rank, the lexical first, ties by key, and says `hybrid`:
 /// `b` alone holds the word and is the vector's third, so it ranks first
 /// at 1/60 + 1/62, above `a` (the vector's first, 1/60) and `c` (1/61).
+/// Each ranking is weighed as the search asks, a vector search over a
+/// second field fuses the same way, and a weight that cannot weigh, or a
+/// field named twice, is refused as invalid.
 pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
     let owner = &f.cast.owner;
@@ -5637,13 +6524,8 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
                 searchable: true,
                 ..text("title")
             },
-            FieldDecl {
-                ty: FieldType {
-                    dimensions: Some(2),
-                    ..FieldType::kind(StorageKind::Vector)
-                },
-                ..text("v")
-            },
+            vector("v"),
+            vector("w"),
         ],
         relations: Vec::new(),
         view: None,
@@ -5658,12 +6540,14 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
         .declare(owner, Declaration::Type(doc))
         .await
         .expect("the owner declares `doc`");
-    for (k, title, v) in [
-        ("a", "quay", [1.0, 0.0]),
-        ("b", "harbour", [0.5, 0.5]),
-        ("c", "quay", [0.8, 0.2]),
+    // In `w` the order is c, b, and `a` holds no `w`.
+    for (k, title, v, w) in [
+        ("a", "quay", [1.0, 0.0], None),
+        ("b", "harbour", [0.5, 0.5], Some([0.5, 0.5])),
+        ("c", "quay", [0.8, 0.2], Some([1.0, 0.0])),
     ] {
-        let fields = [("title", json!(title)), ("v", json!(v))];
+        let mut fields = vec![("title", json!(title)), ("v", json!(v))];
+        fields.extend(w.map(|w| ("w", json!(w))));
         f.catalog
             .upsert(
                 owner,
@@ -5675,37 +6559,117 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
             .await
             .expect("a doc is written");
     }
-    let search = Search {
+    let search = |mode| Search {
         ty: ty("doc"),
-        mode: SearchMode::Hybrid {
-            text: "harbour".into(),
-            field: "v".into(),
-            vector: Some(vec![1.0, 0.0]),
-            fields: None,
-        },
+        mode,
         k: 5,
         cursor: None,
         filter: None,
         with_meta: false,
         at: ReadAt::default(),
     };
-    let got = f
-        .catalog
-        .search(owner, search)
-        .await
-        .expect("the owner's hybrid search")
-        .data;
-    let scored: Vec<(&str, f64)> = (got.hits.iter())
-        .map(|h| (h.record.key.as_str(), h.score))
-        .collect();
-    let want = [
-        ("b", 1.0 / 60.0 + 1.0 / 62.0),
-        ("a", 1.0 / 60.0),
-        ("c", 1.0 / 61.0),
-    ];
-    assert_eq!(
-        (scored.as_slice(), got.ranked_by.as_str()),
-        (want.as_slice(), "hybrid"),
-        "a hybrid search fuses both rankings by reciprocal rank"
-    );
+    let hybrid = |text_weight, weight| SearchMode::Hybrid {
+        text: "harbour".into(),
+        field: "v".into(),
+        vector: Some(vec![1.0, 0.0]),
+        fields: None,
+        weight,
+        text_weight,
+    };
+    let fields = |weight, also: &str, also_weight| SearchMode::Vector {
+        field: "v".into(),
+        vector: vec![1.0, 0.0],
+        weight,
+        also: vec![VectorTerm {
+            field: also.into(),
+            vector: vec![1.0, 0.0],
+            weight: also_weight,
+        }],
+    };
+    let (t, v) = (1.0 / 60.0, [1.0 / 60.0, 1.0 / 61.0, 1.0 / 62.0]);
+    for (mode, by, want) in [
+        (
+            hybrid(None, None),
+            "hybrid",
+            [("b", t + v[2]), ("a", v[0]), ("c", v[1])],
+        ),
+        (
+            hybrid(Some(1.0), Some(1.0)),
+            "hybrid",
+            [("b", t + v[2]), ("a", v[0]), ("c", v[1])],
+        ),
+        (
+            hybrid(None, Some(100.0)),
+            "hybrid",
+            [
+                ("a", 100.0 / 60.0),
+                ("c", 100.0 / 61.0),
+                ("b", t + 100.0 / 62.0),
+            ],
+        ),
+        (
+            fields(Some(2.0), "w", None),
+            "vector",
+            [
+                ("c", 2.0 / 61.0 + 1.0 / 60.0),
+                ("b", 2.0 / 62.0 + 1.0 / 61.0),
+                ("a", 2.0 / 60.0),
+            ],
+        ),
+    ] {
+        let what = format!("{mode:?}");
+        let got = f
+            .catalog
+            .search(owner, search(mode))
+            .await
+            .expect(&what)
+            .data;
+        let scored: Vec<(&str, f64)> = (got.hits.iter())
+            .map(|h| (h.record.key.as_str(), h.score))
+            .collect();
+        assert_eq!(
+            (scored.as_slice(), got.ranked_by.as_str()),
+            (want.as_slice(), by),
+            "{what} fuses its rankings by weighted reciprocal rank"
+        );
+    }
+    let lone = SearchMode::Vector {
+        field: "v".into(),
+        vector: vec![1.0, 0.0],
+        weight: Some(2.0),
+        also: Vec::new(),
+    };
+    for (mode, on) in [
+        (lone, Some("v")),
+        (fields(Some(0.0), "w", None), Some("v")),
+        (fields(None, "w", Some(1_000_001.0)), Some("w")),
+        (fields(None, "v", None), Some("v")),
+        (hybrid(Some(-1.0), None), None),
+    ] {
+        let what = format!("{mode:?}");
+        match f.catalog.search(owner, search(mode)).await {
+            Err(Error::Refused {
+                field,
+                reason: Refusal::Invalid { .. },
+            }) => {
+                assert_eq!(
+                    field.as_ref().map(|f| f.as_str()),
+                    on,
+                    "{what} names its field"
+                )
+            }
+            other => panic!("{what} must be refused as invalid; it answered {other:?}"),
+        }
+    }
+}
+
+/// A vector field of two dimensions.
+fn vector(name: &str) -> FieldDecl {
+    FieldDecl {
+        ty: FieldType {
+            dimensions: Some(2),
+            ..FieldType::kind(StorageKind::Vector)
+        },
+        ..text(name)
+    }
 }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::describe::{LakeRights, TypeAccess, TypeLifecycle, TypeRights};
+use crate::describe::{ExecutorDescription, LakeRights, TypeAccess, TypeLifecycle, TypeRights};
 use crate::ontology::{Authority, FieldDecl, Risk};
 use crate::principal::Access;
 
@@ -74,6 +74,7 @@ fn verb(name: &str, risk: Risk, external: bool, payload: Vec<FieldDescription>) 
         payload,
         risk,
         external,
+        executor: None,
         description: None,
     }
 }
@@ -168,6 +169,37 @@ fn a_verb_is_one_tool_and_says_whether_it_runs() {
         }
     );
     assert!(v.description.contains("proposal"));
+}
+
+/// The text an agent reads says whether the verb's executor is bound in
+/// this lake, and what a call does without it; an answer that does not
+/// tell (an older server) keeps the general sentence.
+#[test]
+fn a_verb_tool_says_whether_its_executor_is_bound() {
+    use Risk::{High, Low};
+    let ends = [
+        "`ledger`, which this lake's host binds.",
+        "in this lake, so a call is refused and writes nothing.",
+        "so a call or a proposal is refused and writes nothing.",
+        "where none is bound, a call is refused and writes nothing.",
+    ];
+    let cases = [
+        (Low, Some(true)),
+        (Low, Some(false)),
+        (High, Some(false)),
+        (Low, None),
+    ];
+    for ((risk, bound), ends) in cases.into_iter().zip(ends) {
+        let name = "ledger".to_owned();
+        let v = VerbDescription {
+            executor: bound.map(|bound| ExecutorDescription { name, bound }),
+            ..verb("remind", risk, true, vec![])
+        };
+        let t = tools_ok(&lake(vec![], vec![v], LakeRights::default()));
+        let d = &t.iter().find(|t| t.name == "remind").unwrap().description;
+        assert!(d.ends_with(ends), "{d}");
+        assert_eq!(d.contains("its executor `ledger`"), bound.is_some(), "{d}");
+    }
 }
 
 #[test]

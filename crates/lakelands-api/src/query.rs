@@ -72,7 +72,8 @@ pub struct Start {
 /// One step of a pattern.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Step {
-    /// The relation walked; it must be declared on the type in scope.
+    /// The relation walked; it must be declared on the type in scope, or
+    /// be the `inverse` of one, which walks that relation the other way.
     pub relation: RelationName,
     /// Which way.
     #[serde(default)]
@@ -292,6 +293,13 @@ pub enum SearchMode {
         field: FieldName,
         /// The query vector.
         vector: Vec<f32>,
+        /// The weight of `field`'s ranking against `also`'s; absent, 1.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weight: Option<f64>,
+        /// Further vector fields, each ranked by its own query vector
+        /// and fused with `field`'s ranking by weighted rank.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        also: Vec<VectorTerm>,
     },
     /// Both, fused by rank. Without a vector, the store asks the lake's
     /// embedding backend for one, or falls back to lexical and says so.
@@ -307,7 +315,25 @@ pub enum SearchMode {
         /// every one. The vector half is not narrowed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fields: Option<Vec<FieldName>>,
+        /// The weight of the vector half; absent, 1.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weight: Option<f64>,
+        /// The weight of the lexical half; absent, 1.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text_weight: Option<f64>,
     },
+}
+
+/// One further vector field of a vector search.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VectorTerm {
+    /// The vector field searched.
+    pub field: FieldName,
+    /// The query vector for it.
+    pub vector: Vec<f32>,
+    /// The weight of its ranking; absent, 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<f64>,
 }
 
 impl SearchMode {
@@ -326,6 +352,8 @@ impl SearchMode {
         SearchMode::Vector {
             field: field.into(),
             vector,
+            weight: None,
+            also: Vec::new(),
         }
     }
 
@@ -337,7 +365,64 @@ impl SearchMode {
             field: field.into(),
             vector: None,
             fields: None,
+            weight: None,
+            text_weight: None,
         }
+    }
+
+    /// The vector rankings the mode names, in the order they are fused:
+    /// each field, its query vector (none where a hybrid search leaves it
+    /// to the lake) and its weight, if it names one.
+    pub fn vectors(&self) -> Vec<(&FieldName, &[f32], Option<f64>)> {
+        match self {
+            SearchMode::Lexical { .. } => Vec::new(),
+            SearchMode::Hybrid {
+                field,
+                vector,
+                weight,
+                ..
+            } => {
+                vec![(field, vector.as_deref().unwrap_or(&[]), *weight)]
+            }
+            SearchMode::Vector {
+                field,
+                vector,
+                weight,
+                also,
+            } => {
+                let also = also.iter().map(|t| (&t.field, &t.vector[..], t.weight));
+                std::iter::once((field, &vector[..], *weight))
+                    .chain(also)
+                    .collect()
+            }
+        }
+    }
+
+    /// What the mode asks that no fusion can do: the fault, with the
+    /// field it names if any. A weight weighs one ranking against
+    /// another, so it is above 0 and at most 1 000 000, a vector search
+    /// of one field takes none, and no field is named twice.
+    pub fn misfit(&self) -> Option<(Option<FieldName>, String)> {
+        let terms = self.vectors();
+        let lone = matches!(self, SearchMode::Vector { also, .. } if also.is_empty());
+        let fits = |w: Option<f64>| w.is_none_or(|w| w > 0.0 && w <= 1e6);
+        let range = "must be above 0 and at most 1000000";
+        for (i, (field, _, weight)) in terms.iter().enumerate() {
+            let fault = if lone && weight.is_some() {
+                "`weight` weighs one vector field's ranking against another's, and the search \
+                 names no other in `also`"
+                    .into()
+            } else if terms[..i].iter().any(|t| t.0 == *field) {
+                format!("`{field}` is named twice; a search ranks a vector field once")
+            } else if !fits(*weight) {
+                format!("the weight of `{field}` {range}")
+            } else {
+                continue;
+            };
+            return Some((Some((*field).clone()), fault));
+        }
+        let text = matches!(self, SearchMode::Hybrid { text_weight, .. } if !fits(*text_weight));
+        text.then(|| (None, format!("`text_weight` {range}")))
     }
 }
 

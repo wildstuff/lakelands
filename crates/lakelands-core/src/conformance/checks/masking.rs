@@ -6,20 +6,17 @@ use std::sync::Arc;
 
 use lakelands_api::ontology::{FieldDecl, StorageKind};
 use lakelands_api::query::{Projection, QueryResult, Search, SearchMode};
-use lakelands_api::read::{AggFunc, Aggregate, Direction, OrderBy};
+use lakelands_api::read::{AggFunc, Direction, OrderBy};
 use lakelands_api::tools::{Door, tools};
-use lakelands_api::{
-    Access, FieldName, Find, Grants, LakeStore, PrincipalKind, ReadAt, Refusal, Timestamp,
-    TypeName, WriteOpts,
-};
+use lakelands_api::{Access, FieldName, Find, LakeStore, ReadAt, Refusal, Timestamp, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::backing::EMBED_MODEL;
 use crate::conformance::fixture::{
-    Lake, Must, agg, all_found, derived, embedding, field, field_access, field_writer, find_where,
-    get_at, ingest, no_such_field, order, patch, pattern, principal, read, refused_on,
-    source_record, sourced, type_decl,
+    Lake, Must, agg, aggregate, all_found, derived, describe_type, embedding, field, field_access,
+    field_writer, find_where, get_at, ingest, no_such_field, order, pattern, read, reads_all,
+    refused_on, searchable, source_record, sourced, try_upsert, type_decl,
 };
 
 check!(
@@ -93,18 +90,10 @@ async fn a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field
             found == [got.clone()],
             "find answers what get answers for the clerk ({got:?}); it answered {found:?}"
         );
+        let fields = vec!["emp.g".into(), "emp.h".into(), "emp.k".into()];
+        let rows = pattern("emp", Some("e1"), Vec::new(), Projection::Rows { fields });
         let rows = cat
-            .query(
-                &who,
-                pattern(
-                    "emp",
-                    Some("e1"),
-                    Vec::new(),
-                    Projection::Rows {
-                        fields: vec!["emp.g".into(), "emp.h".into(), "emp.k".into()],
-                    },
-                ),
-            )
+            .query(&who, rows)
             .await
             .must("the clerk's pattern rows over `emp`")?
             .data;
@@ -116,11 +105,7 @@ async fn a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field
             row == ["emp.k"],
             "the clerk's pattern rows hold `k` only, not `g` or `h`; they held {row:?}"
         );
-        let d = cat
-            .describe_type(&who, &"emp".into(), ReadAt::default())
-            .await
-            .must("the clerk describing `emp`")?
-            .data;
+        let d = describe_type(cat.as_ref(), &who, "emp").await?;
         let defined: Vec<String> = (d.fields.iter())
             .filter(|f| f.derived.is_some() || !f.depends_on.is_empty())
             .map(|f| f.name.to_string())
@@ -144,13 +129,7 @@ async fn a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field
             (
                 "a sum of `g`",
                 "g",
-                Find {
-                    aggregate: Some(Aggregate {
-                        measures: vec![agg("s", AggFunc::Sum, Some("g"))],
-                        group_by: Vec::new(),
-                    }),
-                    ..Find::default()
-                },
+                aggregate(vec![agg("s", AggFunc::Sum, Some("g"))]),
             ),
         ];
         for (what, name, find) in probes {
@@ -187,10 +166,6 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
-    let searchable = |name: &str| FieldDecl {
-        searchable: true,
-        ..field(name, StorageKind::Text)
-    };
     let mut staff_decl = type_decl(
         "staff",
         vec![
@@ -242,11 +217,7 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
         got.fields,
         got.masked
     );
-    let d = cat
-        .describe_type(&by_name, &staff, ReadAt::default())
-        .await
-        .must("describing `staff`")?
-        .data;
+    let d = describe_type(cat.as_ref(), &by_name, "staff").await?;
     let lake = cat
         .describe(&by_name, ReadAt::default())
         .await
@@ -272,18 +243,7 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
         d.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>()
     );
     for f in ["plain", "secret", "nosuch"] {
-        let in_fields = |text: &str| Search {
-            ty: staff.clone(),
-            mode: SearchMode::Lexical {
-                text: text.into(),
-                fields: Some(vec![f.into()]),
-            },
-            k: 5,
-            cursor: None,
-            filter: None,
-            with_meta: false,
-            at: ReadAt::default(),
-        };
+        let in_fields = lexical("staff", "pp", Some(vec![f.into()]), false);
         let mut start = pattern("staff", None, Vec::new(), Projection::Graph);
         start.start.filter = Some(format!("{f} = 'x'").as_str().into());
         let ordered = Find {
@@ -307,19 +267,13 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
             ),
             (
                 "a search's `fields`",
-                cat.search(&by_name, in_fields("pp")).await.map(drop),
+                cat.search(&by_name, in_fields).await.map(drop),
             ),
             (
                 "an upsert",
-                cat.upsert(
-                    &by_name,
-                    &staff,
-                    &"s1".into(),
-                    patch(json!({f: "x"})),
-                    WriteOpts::default(),
-                )
-                .await
-                .map(drop),
+                try_upsert(cat.as_ref(), &by_name, "staff", "s1", json!({f: "x"}))
+                    .await
+                    .map(drop),
             ),
         ];
         for (what, r) in answers {
@@ -330,30 +284,14 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
             );
         }
     }
-    let fed = ingest(
-        cat.as_ref(),
-        &by_name,
-        "crm",
-        vec![source_record("staff", "s2", json!({"feed": "x"}))],
-    )
-    .await;
+    let feed = vec![source_record("staff", "s2", json!({"feed": "x"}))];
+    let fed = ingest(cat.as_ref(), &by_name, "crm", feed).await;
     ensure!(
         no_such_field(&fed, "feed"),
         "an ingest of `feed` is answered as for a field `staff` does not declare; it answered \
          {fed:?}"
     );
-    let unnamed = |who| {
-        let s = Search {
-            ty: staff.clone(),
-            mode: SearchMode::lexical("ss pp ann"),
-            k: 5,
-            cursor: None,
-            filter: None,
-            with_meta: false,
-            at: ReadAt::default(),
-        };
-        cat.search(who, s)
-    };
+    let unnamed = |who| cat.search(who, lexical("staff", "ss pp ann", None, false));
     let mine = unnamed(own).await.must("the owner's search")?.data;
     let theirs = unnamed(&by_name)
         .await
@@ -367,18 +305,14 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
         score(&mine),
         score(&theirs)
     );
-    let mut inherited = Grants {
-        default: Access::Read,
-        ..Grants::default()
-    };
-    inherited.types.insert(
+    let mut by_default = reads_all(store.as_ref(), "y");
+    by_default.grants.types.insert(
         staff.clone(),
         lakelands_api::principal::TypeGrants {
             default: Some(Access::None),
             fields: [("name".into(), Access::Read)].into(),
         },
     );
-    let by_default = principal(store.as_ref(), PrincipalKind::Agent, "y", inherited);
     let got = read(cat.as_ref(), &by_default, "staff", "s1").await?;
     let secret = cat
         .find(&by_default, &staff, find_where("secret = 'x'"))
@@ -438,24 +372,14 @@ async fn a_read_at_a_valid_time_probes_the_types_valid_time_fields(
         for at in [ReadAt::default(), april] {
             let mut start = pattern("contract", None, Vec::new(), Projection::Graph);
             start.at = at;
-            let get = lakelands_api::Get {
+            let mut get = get_at("c1", None);
+            get.at = at;
+            let find = Find {
                 at,
-                ..get_at("c1", None)
+                ..Find::default()
             };
             let answers = [
-                (
-                    "find",
-                    cat.find(
-                        &who,
-                        &ty,
-                        Find {
-                            at,
-                            ..Find::default()
-                        },
-                    )
-                    .await
-                    .map(drop),
-                ),
+                ("find", cat.find(&who, &ty, find).await.map(drop)),
                 ("get", cat.get(&who, &ty, get).await.map(drop)),
                 ("a pattern's start", cat.query(&who, start).await.map(drop)),
             ];
@@ -506,11 +430,12 @@ async fn a_masked_field_is_listed_masked_and_an_ungranted_one_is_absent(
 
     // Reads `name`, may write it; `diagnosis` masked by grant; no grant
     // at all for `salary`.
+    let ty = TypeName::from("patient");
     let mut clerk = field_writer(store.as_ref(), "clerk", "patient", &["name"]);
     let grants = clerk
         .grants
         .types
-        .get_mut(&TypeName::from("patient"))
+        .get_mut(&ty)
         .expect("field_writer grants the type");
     grants.fields.insert("diagnosis".into(), Access::Masked);
     grants.fields.insert("salary".into(), Access::None);
@@ -535,11 +460,7 @@ async fn a_masked_field_is_listed_masked_and_an_ungranted_one_is_absent(
         "`find` as the clerk must mask exactly as `get` does; it answered {rows:?}"
     );
 
-    let d = cat
-        .describe_type(&clerk, &TypeName::from("patient"), ReadAt::default())
-        .await
-        .must("describing `patient` as the clerk")?
-        .data;
+    let d = describe_type(cat.as_ref(), &clerk, "patient").await?;
     let described: Vec<(&str, Access)> = d
         .fields
         .iter()
@@ -559,14 +480,8 @@ async fn a_masked_field_is_listed_masked_and_an_ungranted_one_is_absent(
         .data;
     let generated = tools(&lake)
         .map_err(|p| Failure::new(format!("the clerk's describe cannot become tools: {p:?}")))?;
-    let get = generated
-        .iter()
-        .find(|t| {
-            t.door
-                == Door::Get {
-                    ty: "patient".into(),
-                }
-        })
+    let tool = |door: Door| generated.iter().find(|t| t.door == door);
+    let get = tool(Door::Get { ty: ty.clone() })
         .ok_or_else(|| Failure::new("the clerk may read `patient` but has no get tool"))?;
     let readable = &get.output_schema["properties"]["data"]["properties"]["fields"]["properties"];
     ensure!(
@@ -576,14 +491,7 @@ async fn a_masked_field_is_listed_masked_and_an_ungranted_one_is_absent(
         "the clerk's get tool must describe only the fields it reads (`name`); its \
          schema lists {readable}"
     );
-    let upsert_tool = generated
-        .iter()
-        .find(|t| {
-            t.door
-                == Door::Upsert {
-                    ty: "patient".into(),
-                }
-        })
+    let upsert_tool = tool(Door::Upsert { ty: ty.clone() })
         .ok_or_else(|| Failure::new("the clerk may write `name` but has no upsert tool"))?;
     let writable = &upsert_tool.input_schema["properties"]["fields"]["properties"];
     ensure!(
@@ -600,10 +508,6 @@ async fn a_write_only_field_is_written_and_never_shown(
 ) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
     let Lake { cat, own } = &l;
-    let text = |name: &str| FieldDecl {
-        searchable: true,
-        ..field(name, StorageKind::Text)
-    };
     // `summary` and `gist` are written from `note` (write-only) and
     // `secret` (masked): writable, so write-only in turn.
     let from = |name: &str, source: &str| FieldDecl {
@@ -611,8 +515,8 @@ async fn a_write_only_field_is_written_and_never_shown(
         ..field(name, StorageKind::Text)
     };
     let fields = vec![
-        text("name"),
-        text("note"),
+        searchable("name"),
+        searchable("note"),
         field("secret", StorageKind::Text),
         from("summary", "note"),
         from("gist", "secret"),
@@ -634,8 +538,7 @@ async fn a_write_only_field_is_written_and_never_shown(
     let opts = lakelands_api::write::WriteOpts::default;
     // `summary` and `gist` fold to write-only: written, not undeclared.
     let fields = json!({"name": "Ada", "note": "kept", "summary": "s", "gist": "g"});
-    let fields = crate::conformance::fixture::patch(fields);
-    let written = cat.upsert(&intake, &ty, &"p".into(), fields, opts()).await;
+    let written = try_upsert(cat.as_ref(), &intake, "patient", "p", fields).await;
     let mut red = Vec::new();
     if !matches!(
         written,
@@ -647,25 +550,10 @@ async fn a_write_only_field_is_written_and_never_shown(
     if stored.and_then(|r| r.fields.get("note").cloned()) != Some(json!("kept")) {
         red.push("the owner does not read the `note` written".into());
     }
-    let search = |fields: Option<Vec<FieldName>>| Search {
-        ty: ty.clone(),
-        mode: SearchMode::Lexical {
-            text: "Ada".into(),
-            fields,
-        },
-        k: 5,
-        cursor: None,
-        filter: None,
-        with_meta: true,
-        at: ReadAt::default(),
-    };
+    let search = |fields| lexical("patient", "Ada", fields, true);
     // What `intake` reads never names `note`.
-    let rows = pattern(
-        "patient",
-        Some("p"),
-        vec![],
-        Projection::Rows { fields: vec![] },
-    );
+    let all = Projection::Rows { fields: vec![] };
+    let rows = pattern("patient", Some("p"), vec![], all);
     let answers = [
         (
             "get",
@@ -705,16 +593,10 @@ async fn a_write_only_field_is_written_and_never_shown(
         }
     }
     // A probe of it is not granted, naming it.
-    let probe = Find {
-        filter: Some("note = 'kept'".into()),
-        ..Find::default()
-    };
+    let probe = find_where("note = 'kept'");
     let filtered = cat.find(&intake, &ty, probe).await.map(drop);
     let searched = cat.search(&intake, search(None)).await.map(drop);
-    let gist = Find {
-        filter: Some("gist = 'g'".into()),
-        ..Find::default()
-    };
+    let gist = find_where("gist = 'g'");
     let folded = cat.find(&intake, &ty, gist).await.map(drop);
     for (what, field, answer) in [
         ("a filter on `note`", "note", filtered),
@@ -728,18 +610,14 @@ async fn a_write_only_field_is_written_and_never_shown(
             red.push(format!("{what} answered {answer:?}"));
         }
     }
-    let d = cat
-        .describe_type(&intake, &ty, ReadAt::default())
-        .await
-        .must("describing `patient`")?;
+    let d = describe_type(cat.as_ref(), &intake, "patient").await?;
     let write_only = |name: &str| {
-        d.data
-            .fields
+        d.fields
             .iter()
             .any(|f| f.name.as_str() == name && f.access == Access::WriteOnly)
     };
     if !["note", "summary", "gist"].iter().all(|f| write_only(f)) {
-        red.push(format!("`describe` lists {:?}", d.data.fields));
+        red.push(format!("`describe` lists {:?}", d.fields));
     }
     let lake = cat
         .describe(&intake, ReadAt::default())
@@ -752,14 +630,8 @@ async fn a_write_only_field_is_written_and_never_shown(
             .find(|t| t.door == door)
             .map(|t| (t.input_schema.to_string(), t.output_schema.to_string()))
     };
-    let get = schema(Door::Get {
-        ty: "patient".into(),
-    })
-    .map(|(_, out)| out);
-    let upsert = schema(Door::Upsert {
-        ty: "patient".into(),
-    })
-    .map(|(input, _)| input);
+    let get = schema(Door::Get { ty: ty.clone() }).map(|(_, out)| out);
+    let upsert = schema(Door::Upsert { ty: ty.clone() }).map(|(input, _)| input);
     let offers = |u: &String| {
         ["note", "summary", "gist"]
             .iter()
@@ -794,4 +666,21 @@ async fn a_write_only_field_is_written_and_never_shown(
         red.join("; ")
     );
     Ok(())
+}
+
+/// A lexical search of `ty` for `text`, five hits a page, in `fields` or
+/// in every searchable field.
+fn lexical(ty: &str, text: &str, fields: Option<Vec<FieldName>>, with_meta: bool) -> Search {
+    Search {
+        ty: TypeName::from(ty),
+        mode: SearchMode::Lexical {
+            text: text.into(),
+            fields,
+        },
+        k: 5,
+        cursor: None,
+        filter: None,
+        with_meta,
+        at: ReadAt::default(),
+    }
 }

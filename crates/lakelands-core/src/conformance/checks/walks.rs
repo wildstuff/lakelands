@@ -31,6 +31,12 @@ check!(
     "026 and 029: a graph includes its start, and a walk orders what it reaches by depth, type and key, so no engine's link order shows through"
 );
 
+check!(
+    /// A step may name a relation by its inverse.
+    INVERSE_STEP = a_step_naming_an_inverse_walks_the_relation_the_other_way,
+    "018 and 044, extended: a step naming a relation's `inverse` walks that relation the other way, its `walk` counting from the name it gives, and the edges keep the declared relation with its declaring side as `from`"
+);
+
 /// People who report to people, through `boss`.
 async fn org(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
@@ -183,5 +189,33 @@ async fn a_walk_over_a_cycle_ends_and_answers_each_record_once(
         "a walk around the cycle ceo → vp → ceo must answer ceo and vp, each once; it \
          answered {all} node(s): {keys:?}"
     );
+    Ok(())
+}
+
+async fn a_step_naming_an_inverse_walks_the_relation_the_other_way(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = org(store.as_ref()).await?;
+    let Lake { cat, own } = &l;
+    for (walk, declared) in [
+        (Walk::Out, Walk::In),
+        (Walk::In, Walk::Out),
+        (Walk::Both, Walk::Both),
+    ] {
+        let mut answers = Vec::new();
+        for (name, w) in [("manages", walk), ("reports_to", declared)] {
+            let mut p = from("vp", vec![step(name, w, 1, 1)]);
+            p.project = lakelands_api::query::Projection::Graph;
+            let what = format!("walking `{name}` {w:?} from `vp`");
+            answers.push(cat.query(own, p).await.must(&what)?.data);
+        }
+        ensure!(
+            answers[0] == answers[1],
+            "`manages` walked {walk:?} from `vp` answers what `reports_to` walked {declared:?} \
+             does, {:?}; it answered {:?}",
+            answers[1],
+            answers[0]
+        );
+    }
     Ok(())
 }

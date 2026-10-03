@@ -232,7 +232,11 @@ git push origin v0.1.0
 (`scripts/release/check-tag.sh`), runs the checks of `ci.yml`, builds the
 `lakelands` binary and publishes a GitHub release with the binary,
 `LICENSE`, `NOTICE`, the third-party licence list and notes made from
-the titles of the pull requests merged since the previous tag, followed
+the titles of the pull requests merged since the previous tag
+(`scripts/release/notes.sh`: the merges on the first-parent path from
+that tag to the new one, or, for a patch release, whose `main` took the
+tag by a merge, the merges no earlier release tag reaches;
+`notes.sh --pulls <tag>` rehearses the list), followed
 by "Changes a host must make" since that tag
 (`scripts/release/host-changes.sh`: `cargo-semver-checks` over
 `lakelands-api`, `lakelands-client`, `lakelands-core` and
@@ -252,9 +256,17 @@ A minor release `vX.Y.0` is tagged on `develop`. A fix to it ships as
 `vX.Y.1` on `main`, so that `develop`, which already holds work for the
 next minor, does not ship with it.
 
-1. **`main` holds `vX.Y.0`.** If it does not yet, a pull request whose
-   head is exactly the tagged commit merges into `main`, and adds nothing
-   else.
+1. **`main` holds `vX.Y.0`.** If it does not yet, a pull request brings
+   it there and adds nothing else:
+   - When `main` is an ancestor of the tag, the pull request's head is
+     exactly the tagged commit.
+   - When `main` already carries an earlier patch (`vX.W.1`), the tag
+     does not descend from it, and a head of exactly the tag would
+     conflict. A branch `release/main-takes-X.Y.0` starts at the tag
+     instead and merges `main` keeping the tag's tree:
+     `git switch -c release/main-takes-X.Y.0 vX.Y.0`, then
+     `git merge -s ours --signoff origin/main`. `git diff vX.Y.0 HEAD`
+     must be empty, and `main` is then an ancestor of the head.
 2. **The patch branch starts at the tag:**
    `git switch -c release/X.Y.1 vX.Y.0`.
 3. **The fix is fitted to the release's tree.** The tree of `vX.Y.0` is
@@ -270,8 +282,16 @@ next minor, does not ship with it.
    holds.
 6. **The tag goes on `main`**, on the merge commit, signed off as above.
    `check-tag.sh` accepts a release on `main`.
+   - The tag's message says what the patch fixes, under a line of its
+     own that begins with `What` and ends with a colon (`What 0.8.1
+     fixes in 0.8.0:`), before a paragraph `At the tag:` with the
+     counts. The notes begin with that part, the line as their heading:
+     a patch's pull requests are the steps of its release and say
+     nothing of what it fixes.
    - The notes list the pull requests merged into `main` since
      `vX.Y.0`: the one of step 1, if it was needed, and the patch's.
+     An earlier patch line's pull requests are in `main`'s history too
+     and are not listed.
    - "Changes a host must make" compares the same two tags.
 7. **`develop` gets the fix through its own pull request**, written
    against `develop`'s tree, with the issue the fix closes. The patch

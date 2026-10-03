@@ -193,7 +193,8 @@ pub trait Catalog: Send + Sync {
     /// The preflight of a migration: what it would do, changing nothing —
     /// every field whose values convert and how many would not, and in
     /// `dropped` every field the migration removes with how many values
-    /// that discards.
+    /// that discards, and every relation carried by link records it
+    /// removes with how many live links.
     async fn migrate(
         &self,
         who: &Principal,
@@ -370,8 +371,19 @@ pub trait LakeStore: Send + Sync {
     /// another hand also wrote refuses the whole purge as invalid, naming
     /// it, and nothing is appended; a type that keeps no per-field
     /// provenance is not searched and is named in the report
-    /// (`docs/decisions/039-a-source-is-retracted-as-one.md`).
-    async fn purge_source(&self, source: &SourceId) -> Result<crate::write::PurgeReport>;
+    /// (`docs/decisions/039-a-source-is-retracted-as-one.md`). With the
+    /// `report_id` of a preflight, it is refused as invalid if the lake
+    /// moved since.
+    async fn purge_source(
+        &self,
+        source: &SourceId,
+        report_id: Option<&str>,
+    ) -> Result<crate::write::PurgeReport>;
+
+    /// What [`Self::purge_source`] would do, appending nothing: the same
+    /// report, refused as the purge would be, under an id the purge may
+    /// repeat.
+    async fn purge_preflight(&self, source: &SourceId) -> Result<crate::write::PurgeReport>;
 
     /// Give back the storage the projection no longer uses. It appends
     /// nothing and changes no answer, no event and no byte of an export;

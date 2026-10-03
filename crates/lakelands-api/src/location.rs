@@ -32,13 +32,11 @@ impl Location {
     /// A lake kept by the SQLite engine in a directory of its own.
     pub fn sqlite(lake: impl Into<LakeId>, dir: impl Into<PathBuf>) -> Location {
         Location {
-            lake: lake.into(),
             engine: EngineConfig::Sqlite {
                 dir: dir.into(),
                 tuning: SqliteTuning::default(),
             },
-            key: None,
-            limits: Limits::default(),
+            ..Location::memory(lake)
         }
     }
 
@@ -46,15 +44,13 @@ impl Location {
     /// in its default schema, over TLS.
     pub fn postgres(lake: impl Into<LakeId>, url: impl Into<String>) -> Location {
         Location {
-            lake: lake.into(),
             engine: EngineConfig::Postgres {
                 url: url.into(),
                 schema: None,
                 tls: PgTls::default(),
                 tuning: PgTuning::default(),
             },
-            key: None,
-            limits: Limits::default(),
+            ..Location::memory(lake)
         }
     }
 
@@ -242,11 +238,17 @@ pub struct Limits {
     /// The most events one group-commit window holds.
     pub commit_window_events: u32,
     /// The most records a whole-graph measure may reach; past it the
-    /// measure is refused `too_large`, never cut.
+    /// measure is refused `too_large`, never cut. Also the largest
+    /// `limit` a measure may ask for, where it is above `max_limit`.
     pub max_graph_nodes: u32,
     /// The most rows a `find` may skip with `offset`; past it the read is
     /// refused `too_large`, never cut.
     pub max_offset: u32,
+    /// The most memberships one declaration of an object set may change
+    /// over the records already there; past it the declaration is refused
+    /// `too_large`, naming the set, and nothing is appended
+    /// (`docs/seams.md`, "Declaring a set over a large type").
+    pub max_set_changes: u32,
 }
 
 impl Default for Limits {
@@ -259,6 +261,7 @@ impl Default for Limits {
             commit_window_events: 32,
             max_graph_nodes: 100_000,
             max_offset: 100_000,
+            max_set_changes: 20_000,
         }
     }
 }

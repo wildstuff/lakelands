@@ -158,6 +158,62 @@ it held at `ce764acbd7`. **The list is closed for `0.8.0` as of
 `318aae2bdc`.** If the mainline moves before the tag, only the commits
 after it are checked.
 
+**Checked on 2026-10-03, for the `0.8.1` patch**, against the source's
+mainline at `60eb52f851`. That covers the 26 commits after `318aae2bdc`,
+1029 since the freeze in all, checked the same way.
+- **One commit touches a root, and it is the last row.** `580a645406`
+  reached the mainline through `60eb52f851`. It belongs to the source's
+  own adapter onto a lake and changes no storage behaviour.
+- **Three merges inside that branch** each bring it up to the mainline.
+  Compared with their side parent, their change under the roots is
+  exactly that commit's, by patch id.
+- **Two mainline merges** show a change under the roots only when
+  compared with their side parent. That parent branched before
+  `318aae2bdc`, and the change is exactly `d741fe684e`'s, by patch id,
+  which is already a row. Compared with their first parent, they change
+  nothing under the roots.
+
+Every root holds the files it held at `318aae2bdc`. **The list is
+closed for `0.8.1` as of `60eb52f851`.**
+
+**Checked on 2026-10-03, before the `0.9.0` tag**, against the source's
+mainline at `ccbe5d73a3`. That covers the 62 commits after `60eb52f851`,
+1091 since the freeze in all, checked the same way.
+- **No commit touches a root.** The roots are byte for byte what they
+  were at `60eb52f851`.
+- **Four merges** show a change under the roots only when compared with
+  their side parent: three on the mainline and one inside a branch. Each
+  side parent branched before `580a645406` reached the mainline, and the
+  change is exactly that commit's, by patch id, which is already a row.
+  Compared with their first parent, they change nothing under the roots.
+
+Every root holds the files it held at `60eb52f851`. No row is added.
+**The list is closed for `0.9.0` as of `ccbe5d73a3`.** If the mainline
+moves before the tag, only the commits after it are checked.
+
+**Checked again on 2026-10-03, before the `0.9.0` tag**, against the
+source's mainline at `c8979fff7a`: the mainline had moved, and the 4
+commits after `ccbe5d73a3` (1095 after the freeze in all) were checked
+the same way. None of them touches a root, neither of the two merges
+among them shows a change under one against either parent, and every
+root holds the files it held at `ccbe5d73a3`. No row is added. **The
+list is closed for `0.9.0` as of `c8979fff7a`.**
+
+**Checked a third time on 2026-10-03, before the `0.9.0` tag**, against
+the source's mainline at `d628b79a19`: the 19 commits after
+`c8979fff7a` (1114 after the freeze in all), checked the same way.
+- **One commit touches a root, and it is the last row.** `3aa65077c6`
+  reached the mainline through `31f2e71423`. It makes one function of
+  `{store}` public for the source's own adapter onto a lake and changes
+  no storage behaviour.
+- **Two further merges**, one on the mainline and one inside a branch,
+  show a change under the roots only against their side parent, which
+  branched before that commit reached the mainline. By patch id the
+  change is exactly that commit's.
+
+Every root holds the files it held at `c8979fff7a`. **The list is
+closed for `0.9.0` as of `d628b79a19`.**
+
 | Source commit | Behaviour, in one line | Ported in, or not applicable and why |
 |---|---|---|
 | `5914084de9` | One German user-interface sentence in the capabilities module changes its form of address from formal to informal. | Not applicable: the capabilities module was not carried (cut in O2: there is no capability negotiation; see `docs/import-ledger.md`), and no storage behaviour changes: no event, no fold rule, no signature, no stored byte. |
@@ -174,3 +230,5 @@ after it are checked.
 | `acbe9e4b50` | An effect whose dispatch was cut off when the source's daemon died is no longer freed for a re-run: it is reported as an unknown delivery, and only an effect its plugin declares repeatable runs again, since it may have reached the outside world and lost only its receipt. Under the roots, only a test fixture of the tool layer gains the new flag. | Not applicable: Lakelands has no effect daemon, no dispatch queue and no plugin declarations, and the tool layer's tests were not carried. A verb's external effect runs within its call or its acceptance. A retry with the same idempotency key answers the first outcome and runs nothing again (`docs/decisions/016-two-write-doors-by-origin.md`). |
 | `98fb09c1db` | The command an effect is submitted with carries an optional label, the operator's name for it: a domain verb's name and the record it acts on. An inbox row about an unknown delivery then names that, not the handler every data verb shares. | Not applicable: the effect command and the inbox were not carried. Lakelands records a verb's call as `verb_called`, which names the verb and the record it acts on itself. |
 | `d741fe684e` | The flow lint gains a check that warns, before a flow's first run, when a step files a record under a key an agent step produced with no confirm step between, since a retry could produce another key and file the record twice. | Not applicable: the flow lint (`{store}/src/flow_lint.rs`) was never imported, being a product feature (`docs/import-ledger.md`), and Lakelands has no flows. An idempotency key is the caller's own, and the same key answers the same outcome (`docs/decisions/016-two-write-doors-by-origin.md`). |
+| `580a645406` | The delete guard's rule for which relations hold a record alive moves into a public function, beside a public refusal helper, so that an engine counting its own referrers asks the same question and refuses in the same words. Two ownership functions become public. The field-grant set gains an accessor, and the error type gains a refusal for an operation the source's lake adapter does not carry. | Not applicable: the source exposes its own guard and helpers to its adapter. No event, fold rule, signature of ours or stored byte changes, and the guard's rule and wording stay as they were. |
+| `3aa65077c6` | The function of `{store}` that describes a type as its declaration states it becomes public, and `{engine}` re-exports it, so that the source's adapter onto a lake can answer a description. Two `use` lines change; the function itself does not. | Not applicable: only a visibility changes, for the source's own adapter. No event, fold rule, signature or stored byte changes. Lakelands answers a type's description through `describe_type`, which is a door of its contract already. |

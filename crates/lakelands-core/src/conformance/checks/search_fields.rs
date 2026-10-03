@@ -90,6 +90,8 @@ fn hybrid_in(text: &str, field: &str, vector: Option<Vec<f32>>, names: &[&str]) 
         field,
         vector,
         fields,
+        weight: None,
+        text_weight: None,
     }
 }
 

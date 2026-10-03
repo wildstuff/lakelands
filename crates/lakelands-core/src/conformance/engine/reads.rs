@@ -141,7 +141,7 @@ engine_check!(
 engine_check!(
     /// Kept states read at an earlier position.
     EARLIER_STATES = declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position,
-    "seams §ProjectionView: declarations, membership, recorded outputs and applied ids are kept states too, read at a view's own position"
+    "seams §ProjectionView: declarations, membership (a record's, and a set's members of a type), recorded outputs and applied ids are kept states too, read at a view's own position"
 );
 
 engine_check!(
@@ -974,6 +974,9 @@ fn declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position(
     fold(engine, 3, |p| {
         p.put_declaration(&v2, 2, None, Position(3))?;
         p.put_membership("big", &ty, &key, false, Position(3))?;
+        p.put_membership("big", &ty, &"stay".into(), true, Position(3))?;
+        p.put_membership("big", &"u".into(), &"x".into(), true, Position(3))?;
+        p.put_membership("small", &ty, &"y".into(), true, Position(3))?;
         p.put_output("fn", &Digest::zero(), &json!(42), Position(3))?;
         p.mark_applied(&seen, Position(3))
     })?;
@@ -1010,6 +1013,20 @@ fn declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position(
         .is_member("other", &ty, &key)
         .must("reading an unknown set")?;
     ensure!(!never, "a set never put answered membership");
+    let members = |v: &dyn lakelands_api::engine::ProjectionView, set: &str| {
+        let held = v.members(set, &ty).must("reading a set's members")?;
+        Ok::<_, Failure>(held.iter().map(ToString::to_string).collect::<Vec<_>>())
+    };
+    let (was, is, never) = (
+        members(then.as_ref(), "big")?,
+        members(now.as_ref(), "big")?,
+        members(now.as_ref(), "other")?,
+    );
+    ensure!(
+        was == ["k"] && is == ["stay"] && never.is_empty(),
+        "`big` holds `k` of `t` at 2 and `stay` at the head, whatever another set or type \
+         holds; its members read {was:?} and {is:?}, an unknown set's {never:?}"
+    );
     let (out_then, out_now) = (
         then.output("fn", &Digest::zero())
             .must("reading an output at 2")?,

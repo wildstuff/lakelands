@@ -729,7 +729,7 @@ fn in_field_order<E>(
         .after
         .as_ref()
         .map(|a| (a.values.first().filter(|v| !v.is_null()), a.key.as_str()));
-    // A run's rows ordered by the rulebook, those past `after` kept.
+    // A run's rows ordered by the rulebook, those past `after` kept; whether the page is full.
     let take_run = |run: &mut Vec<StoredRecord>, out: &mut Vec<StoredRecord>| {
         let mut keyed: Vec<(PlaceKey, StoredRecord)> = run
             .drain(..)
@@ -739,6 +739,7 @@ fn in_field_order<E>(
             .collect();
         keyed.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         out.extend(keyed.into_iter().map(|(_, r)| r).take(limit - out.len()));
+        out.len() >= limit
     };
     // The indexed rows, unless the page continues among the missing.
     if !matches!(first_after, Some((None, _))) {
@@ -762,9 +763,8 @@ fn in_field_order<E>(
             for (k, r) in rows {
                 from = Some((k.clone(), r.key.to_string()));
                 if !is_run(&k) {
-                    take_run(&mut run, &mut out);
                     run_key = None;
-                    if out.len() >= limit {
+                    if take_run(&mut run, &mut out) {
                         return Ok(out);
                     }
                     if admits(decl, &r, scan) {
@@ -776,8 +776,7 @@ fn in_field_order<E>(
                     continue;
                 }
                 if run_key.as_ref() != Some(&k) {
-                    take_run(&mut run, &mut out);
-                    if out.len() >= limit {
+                    if take_run(&mut run, &mut out) {
                         return Ok(out);
                     }
                     run_key = Some(k);
@@ -785,8 +784,7 @@ fn in_field_order<E>(
                 run.push(r);
             }
             if read_all {
-                take_run(&mut run, &mut out);
-                if out.len() >= limit {
+                if take_run(&mut run, &mut out) {
                     return Ok(out);
                 }
                 break;
@@ -1040,6 +1038,58 @@ pub fn fence_fault(
     }
 }
 
+/// Refuses `events` unless they continue a log kept as lines whose next
+/// position is `first` and whose last hash is `prev`, checked event by
+/// event, each in this order: its fence ([`fence_fault`], `floor` the
+/// fence of the event before the first), its position, its `prev`, and a
+/// line feed in its bytes, which canonical bytes never hold.
+pub fn append_fault(
+    events: &[lakelands_api::engine::CanonicalEvent],
+    first: u64,
+    mut prev: lakelands_api::event::Digest,
+    lease: Option<u64>,
+    mut floor: u64,
+) -> Result<()> {
+    for (expected, event) in (first..).zip(events) {
+        if let Some(why) = fence_fault(event, lease, floor) {
+            return Err(invalid(why));
+        }
+        floor = event.fence;
+        if event.position.0 != expected {
+            return Err(invalid(format!(
+                "the event at position {} does not continue the log, whose next position \
+                 is {expected}; nothing was appended",
+                event.position
+            )));
+        }
+        if event.prev != prev {
+            return Err(invalid(format!(
+                "the event at position {} names `{}` as the hash before it, but that hash \
+                 is `{}`; nothing was appended",
+                event.position, event.prev.0, prev.0
+            )));
+        }
+        if event.bytes.contains(&b'\n') {
+            return Err(invalid(format!(
+                "the event at position {} holds a line feed in its bytes, which canonical \
+                 bytes never do; nothing was appended",
+                event.position
+            )));
+        }
+        prev = event.hash.clone();
+    }
+    Ok(())
+}
+
+/// The refusal of the writer lease to a taker while `holder` holds it
+/// under `fence`.
+pub fn lease_held(holder: &str, fence: u64) -> Error {
+    crate::unavailable(format!(
+        "the lake's writer lease is held by `{holder}` (fence {fence}); it must be released \
+         before another writer can take it"
+    ))
+}
+
 /// Best first by score, ties by key, at most `k`.
 pub fn rank(hits: &mut Vec<(RecordKey, f64)>, k: u32) {
     hits.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
@@ -1145,6 +1195,8 @@ fn touched(
             })
             .collect(),
         ProposedWrite::Migrate { migration, .. } => vec![migration.to.name.clone()],
+        // A value type's tightening names no type, as its declaration names none.
+        ProposedWrite::MigrateValueType { .. } => Vec::new(),
     }
 }
 

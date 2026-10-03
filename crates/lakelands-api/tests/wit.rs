@@ -1,5 +1,5 @@
 //! The drift check between this crate and the WIT package in `wit/`
-//! (`lakelands:data@0.8.1`). The crate is the source; the WIT mirrors it,
+//! (`lakelands:data@0.9.0`). The crate is the source; the WIT mirrors it,
 //! and this test fails as soon as the two disagree.
 //!
 //! Three things are compared:
@@ -22,8 +22,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use lakelands_api::describe::{
-    FieldDescription, LakeDescription, LakeRights, TypeAccess, TypeDescription, TypeLifecycle,
-    TypeLineage, TypeRights, VerbDescription,
+    ExecutorDescription, FieldDescription, LakeDescription, LakeRights, TypeAccess,
+    TypeDescription, TypeLifecycle, TypeLineage, TypeRights, VerbDescription,
 };
 use lakelands_api::expr::Condition;
 use lakelands_api::location::Limits;
@@ -34,7 +34,8 @@ use lakelands_api::ontology::{
 };
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{
-    Depth, Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Start, Step, Walk,
+    Depth, Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Start, Step,
+    VectorTerm, Walk,
 };
 use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Direction, Group, Order, OrderBy};
 use lakelands_api::seam::{FeedBatch, FeedFilter};
@@ -530,12 +531,23 @@ fn type_description() -> TypeDescription {
     }
 }
 
+fn purge_reference() -> lakelands_api::write::PurgeReference {
+    lakelands_api::write::PurgeReference {
+        ty: "bill".into(),
+        relation: "billed_to".into(),
+        records: 1,
+        first: vec![],
+    }
+}
+
 fn search_mode() -> SearchMode {
     SearchMode::Hybrid {
         text: "t".into(),
         field: "f".into(),
         vector: Some(vec![1.0]),
         fields: Some(vec!["f".into()]),
+        weight: None,
+        text_weight: None,
     }
 }
 
@@ -733,6 +745,22 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             ),
         ),
         ("write_opts", members(&write_opts())),
+        // The `applied` record is the variant's members beside its tag.
+        ("applied", {
+            let mut m = members(&Outcome::Applied {
+                position: Position(1),
+                version: Some(Version(1)),
+                output: Some(serde_json::json!({})),
+                set_off: lakelands_api::SetOff {
+                    through: Some(Position(2)),
+                    fired: vec!["t".into()],
+                    joined: vec!["s".into()],
+                    left: vec!["s".into()],
+                },
+            });
+            m.remove("outcome");
+            m
+        }),
         (
             "proposal",
             members(&Proposal {
@@ -776,6 +804,14 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             }),
         ),
         ("depth", members(&Depth { min: 1, max: 2 })),
+        (
+            "vector_term",
+            members(&VectorTerm {
+                field: "f".into(),
+                vector: vec![1.0],
+                weight: Some(2.0),
+            }),
+        ),
         (
             "start",
             members(&Start {
@@ -888,7 +924,18 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 payload: vec![field_description()],
                 risk: Risk::High,
                 external: true,
+                executor: Some(ExecutorDescription {
+                    name: "ledger".into(),
+                    bound: true,
+                }),
                 description: Some("d".into()),
+            }),
+        ),
+        (
+            "executor_description",
+            members(&ExecutorDescription {
+                name: "ledger".into(),
+                bound: true,
             }),
         ),
         (
@@ -903,6 +950,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     payload: vec![],
                     risk: Risk::Low,
                     external: false,
+                    executor: None,
                     description: None,
                 }],
                 value_types: vec![ValueTypeDecl {
@@ -1007,8 +1055,11 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 types: vec![],
                 unsearched: vec![],
                 position: Position(3),
+                references: vec![purge_reference()],
+                report_id: "r".into(),
             }),
         ),
+        ("purge_reference", members(&purge_reference())),
         (
             "vector_coverage",
             members(&lakelands_api::read::VectorCoverage {
@@ -1042,6 +1093,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 commit_window_events: 5,
                 max_graph_nodes: 6,
                 max_offset: 7,
+                max_set_changes: 8,
             }),
         ),
         (
@@ -1150,6 +1202,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     position: Position(1),
                     version: None,
                     output: None,
+                    set_off: Default::default(),
                 },
                 Outcome::Proposed {
                     position: Position(1),
@@ -1266,7 +1319,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | ProposedWrite::Retire { .. }
             | ProposedWrite::Call { .. }
             | ProposedWrite::Declare { .. }
-            | ProposedWrite::Migrate { .. } => {}
+            | ProposedWrite::Migrate { .. }
+            | ProposedWrite::MigrateValueType { .. } => {}
         }
     }
     let _ = writes;
@@ -1300,6 +1354,10 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                         renames: vec![],
                     }),
                     report: Box::new(migration_report()),
+                },
+                ProposedWrite::MigrateValueType {
+                    to: serde_json::from_value(json!({"name": "v", "kind": "text"})).unwrap(),
+                    report: Default::default(),
                 },
             ],
             Some("write"),
@@ -1393,6 +1451,8 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                 SearchMode::Vector {
                     field: "f".into(),
                     vector: vec![],
+                    weight: None,
+                    also: Vec::new(),
                 },
                 search_mode(),
             ],

@@ -637,6 +637,45 @@ fn the_version_8_verb_on_its_type_recomputes_and_a_version_7_one_is_refused() {
 }
 
 #[test]
+fn the_version_10_proposed_tightening_recomputes_and_a_version_9_one_is_refused() {
+    let v9 = read_json("v9.json");
+    let v10 = read_json("v10.json");
+    let mut prev = v9["hashes"][0].as_str().unwrap().to_owned();
+    // The declared value type needs no format of its own; it is written in
+    // the version the lake had. The proposal needs 10.
+    for (line, want) in v10["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip([(9, 1), (10, 10)])
+    {
+        let line = line.as_str().unwrap();
+        let value: Value = serde_json::from_str(line).unwrap();
+        let event: Event = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(
+            canonical::of(&event),
+            line.as_bytes(),
+            "the contract writes it as the line"
+        );
+        let mut body = value;
+        body.as_object_mut().unwrap().remove("hash");
+        assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
+        assert_eq!(event.prev.0, prev, "it follows the event before it");
+        let needed = lakelands_core::versions::needed(&event.body, false);
+        assert_eq!((event.v, needed), want);
+        prev = event.hash.0;
+    }
+    assert_eq!(prev, v10["hashes"][1].as_str().unwrap());
+    let negative: Event = serde_json::from_str(v10["negative"].as_str().unwrap()).unwrap();
+    assert_eq!(negative.v, 9);
+    let why = lakelands_core::versions::below(&negative).expect("refused");
+    assert!(
+        why.contains("tightening") && why.contains("format 10 added"),
+        "{why}"
+    );
+}
+
+#[test]
 fn the_version_9_view_that_merges_recomputes_and_a_version_8_one_is_refused() {
     let v8 = read_json("v8.json");
     let v9 = read_json("v9.json");

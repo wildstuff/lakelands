@@ -207,8 +207,9 @@ pub fn check_probe<'a>(
 
 /// Refuse a search the principal may not make: a lexical search probes
 /// every searchable field of the type at once, so each must be readable;
-/// a vector search probes the vector field it names and, since a vector
-/// embedded from text encodes that text, every field it is embedded from.
+/// a vector search probes each vector field it names, in the order named,
+/// and, since a vector embedded from text encodes that text, before each
+/// every field it is embedded from.
 ///
 /// A lexical or hybrid search that names `text_fields` probes those
 /// instead of every searchable field, in name order; the vector half of a
@@ -220,16 +221,15 @@ pub fn check_search(
     who: &Principal,
     decl: &TypeDecl,
     text_fields: Option<&[FieldName]>,
-    vector_field: Option<&FieldName>,
+    vector_fields: &[&FieldName],
 ) -> Result<(), Error> {
-    let embedded_from = vector_field
-        .and_then(|v| decl.fields.iter().find(|f| &f.name == v))
-        .and_then(|f| f.embed.as_ref())
-        .into_iter()
-        .flat_map(|e| e.from.iter());
+    let vectors = vector_fields.iter().flat_map(|v| {
+        let field = decl.fields.iter().find(|f| &f.name == *v);
+        let embed = field.and_then(|f| f.embed.as_ref());
+        embed.into_iter().flat_map(|e| e.from.iter()).chain([*v])
+    });
     let Some(named) = text_fields else {
-        let searched = searched_fields(who, decl);
-        return check_probe(who, decl, searched.chain(embedded_from).chain(vector_field));
+        return check_probe(who, decl, searched_fields(who, decl).chain(vectors));
     };
     if named.is_empty() {
         return Err(crate::invalid(
@@ -244,7 +244,7 @@ pub fn check_search(
             return Err(refused(Some(name), Refusal::Invalid { message }));
         }
     }
-    check_probe(who, decl, embedded_from.chain(vector_field))
+    check_probe(who, decl, vectors)
 }
 
 /// The searchable fields a search that names none reads: those the

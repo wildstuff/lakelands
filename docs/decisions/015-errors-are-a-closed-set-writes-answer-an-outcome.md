@@ -59,3 +59,44 @@ word their refusals each their own way, and no door test pins a
 refusal's sentence: a test checks the kind, the field and, for a door,
 its own framing lines. What would otherwise tie a second implementation
 to the first one's wording is left free.
+
+## Extended: an outcome says what the write set off (lakelands#431)
+
+A write that fires a trigger or moves its record into or out of an object
+set appends those reactions after its own event, in the same append. The
+answer named only the write's own event. A caller that read next was then
+answered at a later position and could not tell its own doing from someone
+else's. An applied outcome now says what the write set off, in members left
+out when it set off nothing, so such an answer reads exactly as before:
+
+- `through`: the last position of what the write set off, when that lies
+  after `position`. Within the append, everything between the two is the
+  write's own doing. For an external verb, `through` is the position of
+  its executor's recorded output. That output is recorded in a later
+  append, so other writers' events may lie before it: a read at or after
+  `through` sees all the write set off, and nothing more is promised.
+- `fired`: the triggers fired, in the order fired.
+- `joined` and `left`: the object sets the record joined and left.
+
+What the write set off is its reactions, and an external verb's output;
+nothing else in the append counts. A declaration that brings link types
+with it, or a migration that migrates them, appends those as part of the
+write itself, so their answers stay as they were.
+
+The answer names a trigger or an object set only if `describe` lists it to
+the caller. One whose condition reads a field the caller may not read is
+not named, since naming it would tell the caller that the condition held
+(024). Using `describe`'s own rule means the two answers cannot drift
+apart. `through` still covers what is not named: positions are no secret,
+and every reply carries its own.
+
+A backed function's fill is not named. It is recorded in a later append,
+after the drain, and what it fires is that append's. The answer's
+`position` already moves to the drain's head, so a read there sees it.
+
+A retry with the write's idempotency key answers the same members, read
+back from the log, and judged by the caller's grants at the retry, as any
+read is. Accepting a proposal answers what the write it applied set off.
+An ingest window's answer already names the window's last event, its
+reactions included, and gains nothing: a host follows reactions in the
+feed.

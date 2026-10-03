@@ -26,9 +26,7 @@ use lakelands_api::ontology::Authority;
 use lakelands_api::principal::{WriteContext, WriteOrigin};
 use lakelands_api::record::Origin;
 use lakelands_api::write::{AgeReport, RuleRun};
-use lakelands_api::{
-    Error, FieldName, Patch, Position, Principal, Refusal, Result, Timestamp, TypeName, Value,
-};
+use lakelands_api::{FieldName, Patch, Position, Principal, Result, Timestamp, TypeName, Value};
 use lakelands_core::derive;
 use lakelands_core::expr::{self, Place, RecordScope};
 use lakelands_core::rights::{self, Door};
@@ -160,12 +158,10 @@ pub fn check_authority(who: &Principal, ontology: &Ontology, rule: &Rule) -> Res
 pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
     // `today` is a date: a time other than UTC midnight is refused.
     if today.0.rem_euclid(MICROS_PER_DAY) != 0 {
-        return Err(Error::Refused {
-            field: Some("today".into()),
-            reason: Refusal::Invalid {
-                message: format!("`today` is a date, at UTC midnight; `{today}` is not"),
-            },
-        });
+        return Err(declare::invalid_field(
+            &"today".into(),
+            format!("`today` is a date, at UTC midnight; `{today}` is not"),
+        ));
     }
     let system = lake.system("lakelands");
     let call = Call {
@@ -244,7 +240,7 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
             };
             let patch: Patch = [(rule.field.clone(), rule.to.clone())].into();
             let n = drafts.len();
-            let plan = match call.plan_record_as(
+            let plan = match call.plan_record(
                 &w,
                 view.as_ref(),
                 &pending,
@@ -264,17 +260,8 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
                     continue;
                 }
             };
-            let cause = writes::position_after(&w, n);
-            drafts.push(plan.draft);
-            drafts.extend(call.reactions(
-                &w,
-                view.as_ref(),
-                &mut pending,
-                plan.before.as_ref(),
-                &plan.after,
-                cause,
-                now,
-            )?);
+            let at = writes::position_after(&w, n);
+            drafts.extend(call.planned(&w, view.as_ref(), &mut pending, plan, at, now)?);
             ran.moved += 1;
         }
         drop(view);

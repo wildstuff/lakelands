@@ -144,8 +144,7 @@ fn literal(s: &str) -> String {
 fn index_bare(ty: &TypeName, field: &str) -> String {
     use sha2::{Digest as _, Sha256};
     let digest = Sha256::digest(format!("{ty}\0{field}").as_bytes());
-    let hex: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
-    format!("vindex_{hex}")
+    format!("vindex_{}", lakelands_core::canonical::hex(&digest[..8]))
 }
 
 /// The vector fields of `decl` the lake asks an index for, with their

@@ -371,14 +371,10 @@ fn props(pairs: impl IntoIterator<Item = (&'static str, Value)>) -> Map<String, 
 /// parameter required and of its kind's schema. Answers whether the view
 /// declares any.
 fn view_params(ty: &TypeDescription, lake: &LakeDescription, p: &mut Map<String, Value>) -> bool {
-    let Some(params) = ty
-        .view
-        .as_ref()
-        .map(|v| &v.params)
-        .filter(|ps| !ps.is_empty())
-    else {
+    let params = ty.view.as_ref().map_or(&[][..], |v| &v.params);
+    if params.is_empty() {
         return false;
-    };
+    }
     let properties: Map<String, Value> = params
         .iter()
         .map(|q| {
@@ -527,6 +523,15 @@ fn outcome_schema() -> Value {
             "outcome": {"enum": ["applied", "proposed"]},
             "position": {"type": "integer"},
             "version": {"type": "integer"},
+            "output": {"description": "An external verb's recorded output."},
+            "through": {"type": "integer",
+                        "description": "The last position of what the write set off, when after `position`."},
+            "fired": {"type": "array", "items": {"type": "string"},
+                      "description": "The triggers the write fired."},
+            "joined": {"type": "array", "items": {"type": "string"},
+                       "description": "The object sets the record joined."},
+            "left": {"type": "array", "items": {"type": "string"},
+                     "description": "The object sets the record left."},
             "proposal": {"type": "string"},
             "why": {"type": "string"},
         },
@@ -826,15 +831,27 @@ fn verb_tool(verb: &VerbDescription, lake: &LakeDescription) -> ToolSpec {
     });
     // By the risk: a `low` verb runs at once, an external one too. A verb
     // that reaches outside the lake runs through an executor its host
-    // binds, which the tool cannot see; it says what a call does without.
-    let how = match verb.risk {
-        crate::ontology::Risk::Low => "It runs at once",
-        _ => "It is recorded as a proposal and runs when accepted",
-    };
-    let through = if verb.external {
-        ", through an executor the lake's host binds; where none is bound, a call is refused and writes nothing."
+    // binds; the tool says whether it is bound here, and says what a call
+    // does without one when the answer does not tell (an older server).
+    let (how, refused) = if verb.risk == crate::ontology::Risk::Low {
+        ("It runs at once", "a call is refused")
     } else {
-        "."
+        (
+            "It is recorded as a proposal and runs when accepted",
+            "a call or a proposal is refused",
+        )
+    };
+    let through = match &verb.executor {
+        Some(e) if e.bound => format!(
+            ", through its executor `{}`, which this lake's host binds.",
+            e.name
+        ),
+        Some(e) => format!(
+            ", through its executor `{}`; that executor is not bound in this lake, so {refused} and writes nothing.",
+            e.name
+        ),
+        None if verb.external => ", through an executor the lake's host binds; where none is bound, a call is refused and writes nothing.".into(),
+        None => ".".into(),
     };
     ToolSpec {
         name: tool_base(verb.name.as_str()),
@@ -1000,7 +1017,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
         time_axes(&mut p);
         out.push(ToolSpec {
             name: QUERY.into(),
-            description: "Walk declared relations from a start (a record, a filter or a search) and return rows or a graph. Covers neighbours, traversal, paths and subgraphs, and two whole-graph measures: degree centrality and connected components.".into(),
+            description: "Walk declared relations from a start (a record, a filter or a search) and return rows or a graph. Covers neighbours, traversal, paths and subgraphs, and two whole-graph measures: degree centrality and connected components. A measure is computed whole for every page: read it in one page, with `limit` up to the lake's `max_graph_nodes`.".into(),
             input_schema: obj(p, &["start"]),
             output_schema: reply_schema(json!({"type": "object"})),
             door: Door::Query,
@@ -1019,6 +1036,20 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             (
                 "vector",
                 json!({"type": "array", "items": {"type": "number"}}),
+            ),
+            (
+                "weight",
+                json!({"type": "number", "exclusiveMinimum": 0, "maximum": 1000000,
+                "description": "The weight of `field`'s ranking against the text's (`text_weight`) or the fields' in `also`."}),
+            ),
+            (
+                "text_weight",
+                json!({"type": "number", "exclusiveMinimum": 0, "maximum": 1000000}),
+            ),
+            (
+                "also",
+                json!({"type": "array", "items": {"type": "object", "required": ["field", "vector"]},
+                "description": "vector: further vector fields, each {field, vector, weight}, fused with `field` by weighted rank."}),
             ),
             ("k", json!({"type": "integer", "minimum": 1})),
             ("cursor", json!({"type": "string"})),
@@ -1066,15 +1097,17 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             kind("declare", json!({"declarations": {"type": "array", "items": {"type": "object"}}}),
                  &["declarations"]),
             kind("migrate", json!({"migration": {"type": "object"}}), &["migration"]),
+            kind("migrate_value_type", json!({"to": {"type": "object",
+                 "description": "The value type's new, narrower declaration."}}), &["to"]),
         ]});
         out.push(ToolSpec {
             name: PROPOSE.into(),
             description: "Record a write as a proposal for review instead of applying it: a \
                 record write, a verb call, declarations (as apply takes them) or a migration \
-                (as migrate takes it). A record write or a verb call needs the grants it would \
-                need applied: a proposal waits for review, it does not lift a grant. \
-                Declarations and a migration need no `schema` grant to propose; a reviewer \
-                holding it accepts them."
+                (as migrate takes it), of a type or of a value type that is to accept less. A \
+                record write or a verb call needs the grants it would need applied: a proposal \
+                waits for review, it does not lift a grant. Declarations and a migration need \
+                no `schema` grant to propose; a reviewer holding it accepts them."
                 .into(),
             input_schema: obj(
                 props([("write", write), ("why", json!({"type": "string"}))]),
@@ -1094,7 +1127,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             ("type", names(|_| true)),
             (
                 "kind",
-                json!({"enum": ["upsert", "retire", "call", "declare", "migrate"]}),
+                json!({"enum": ["upsert", "retire", "call", "declare", "migrate", "migrate_value_type"]}),
             ),
             (
                 "order_by",

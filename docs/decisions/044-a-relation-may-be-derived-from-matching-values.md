@@ -81,3 +81,22 @@ the answer the same on every engine.
   value no record holds simply connects nothing.
 - It stores nothing. There is no edge to restrict, retire or purge; the
   records at either end are what visibility is asked of.
+
+## Extended: a step over an inverse (lakelands#438)
+
+"Both ways through `inverse`" holds for every relation, whether it is
+carried by a reference field, by link records or derived. The inverse is
+the relation's name as seen from its target. A pattern step that names it
+walks the relation the other way: `walk: out` over the inverse is
+`walk: in` over the relation, `in` is `out`, and `both` stays `both`.
+The step's `walk` counts from the name it gives, so a caller standing at
+the target reads the relation as one of its own.
+
+A relation declared under the name wins. A step is read as an inverse
+only when the type it stands on walks no relation of that name in the
+step's direction. That case can arise because `declare` does not refuse a
+type whose relation bears the name of an inverse reaching it (only a
+bundle checks that, within itself). Every answer a step gave before
+inverses were walked stays the same. The edges keep the declared
+relation, with its declaring side as `from`, whichever name the step
+gave.

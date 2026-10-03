@@ -4,10 +4,18 @@ use super::*;
 fn fusion_rewards_agreement_and_breaks_ties_by_key() {
     let a = vec![("x".into(), 1.0), ("y".into(), 0.5)];
     let b = vec![("y".into(), 0.9), ("x".into(), 0.1)];
-    let fused = fuse(&[a, b]);
+    let fused = fuse(&[(1.0, a.clone()), (1.0, b.clone())]);
     assert_eq!(fused[0].0.as_str(), "x");
     assert_eq!(fused[1].0.as_str(), "y");
-    let only = fuse(&[vec![("b".into(), 1.0)], vec![("a".into(), 1.0)]]);
+    // A list's weight multiplies what it adds: three times `b` puts its
+    // first before `a`'s, at exactly the weighted sum.
+    let weighed = fuse(&[(1.0, a), (3.0, b)]);
+    assert_eq!(weighed[0], ("y".into(), 1.0 / 61.0 + 3.0 / 60.0));
+    assert_eq!(weighed[1], ("x".into(), 1.0 / 60.0 + 3.0 / 61.0));
+    let only = fuse(&[
+        (1.0, vec![("b".into(), 1.0)]),
+        (1.0, vec![("a".into(), 1.0)]),
+    ]);
     assert_eq!(
         only.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
         ["a", "b"]
@@ -23,6 +31,7 @@ fn a_cursor_round_trips_and_a_foreign_one_is_refused() {
         params: Default::default(),
         door: "find".into(),
         ty: Some("note".into()),
+        of: String::new(),
     });
     let back = decode(&c).unwrap();
     assert_eq!(back.at, Position(7));

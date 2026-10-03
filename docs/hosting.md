@@ -162,7 +162,14 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   `LakeStore::purge_source(source)` (`lakelands purge --source <id>`):
   every record it brought in is retired in one append, and a record
   another hand also wrote refuses the purge
-  (`docs/decisions/039-a-source-is-retracted-as-one.md`).
+  (`docs/decisions/039-a-source-is-retracted-as-one.md`). The report
+  names, per relation, the live records outside the purge that still
+  refer to a record it took. A host that must know that before it acts
+  asks first: `LakeStore::purge_preflight(source)`
+  (`lakelands purge --source <id> --preflight`) appends nothing and
+  answers the same report under an id, and `purge_source(source,
+  Some(id))` (`--report <id>`) purges only if the lake has not moved
+  since.
   A lake's log is exported with `lakelands_store::export::write(store,
   dir)` (`lakelands export --to <dir>`) as files that verify without
   Lakelands (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`);
@@ -293,6 +300,32 @@ A host that already has a store of its own moves in four steps.
   that needs data from two lakes reads each of them, or mirrors the types
   one lake needs from the other. A mirror carries its provenance, and a
   lake whose types many lakes share is mirrored into each of them.
+- **A set over a large type is declared within a bound.** A set's
+  declaration decides the records already there in one append, at most
+  `max_set_changes` of them (20 000 unless the location sets it). Past
+  it the declaration is refused `too_large`. The host raises the limit
+  for a quiet moment, or widens the filter in steps; `docs/seams.md`,
+  "Declaring a set over a large type", has the costs.
+- **A whole-graph measure is read in one page.** `degree` and
+  `components` are computed whole for every page read, so a walk through
+  small pages computes the measure once per page. A host that wants the
+  whole answer, or its own first *n* rows, asks for it in one page: a
+  measure's `limit` may go up to the lake's `max_graph_nodes` (100 000
+  unless the location sets it), where every other read stops at
+  `max_limit`. See `docs/decisions/026-the-store-walks-the-graph.md`.
+- **A migration of a large type is a step for a quiet moment.** Applying
+  one reads, converts and writes again every record of the type under
+  the writer, and holds them in memory meanwhile; other writes wait. At
+  100 000 records of four small fields, measured under some load from
+  other processes (`tests/set_migrated.rs` in the SQLite and PostgreSQL
+  engines, by hand), the writer is held 7 to 9 s on SQLite and 20 to 26 s
+  on PostgreSQL, with a peak of about 600 MB and 1.1 GB. Both grow with
+  the type's records. An object set of the type adds little: its members
+  are read once, and 20 000 memberships changed cost one to three seconds
+  and 35 MB. Before that single read (lakelands#477) each set added a lookup
+  for each record: 41 s with one set and 74 to 79 s with three on
+  PostgreSQL, 9 to 15 s on SQLite. Bringing the migration's own cost
+  down is lakelands#480.
 - **Every answer carries its position.** A host that records what an
   agent saw records the position, and reads `as_of` it later. See
   `docs/decisions/009-every-response-carries-its-position.md`.
@@ -307,7 +340,9 @@ them:
   example, `FieldDecl { searchable: true, ..FieldDecl::of("note",
   StorageKind::Text) }`, `TypeDecl { fields, ..TypeDecl::named("invoice") }`,
   `RelationDecl::to("partner", "partner")`, and `SearchMode::lexical(text)`,
-  `::vector` and `::hybrid`. `TypeDecl`, `FieldDecl`, `RelationDecl`,
+  `::vector` and `::hybrid` (0.9.0 added `weight` and `also` to a vector
+  search and `weight` and `text_weight` to a hybrid one; a mode built by
+  its constructor leaves them out). `TypeDecl`, `FieldDecl`, `RelationDecl`,
   `TypeDescription`, `FieldDescription`, `LakeDescription` and
   `TypeLifecycle` all implement `Default`. A name left at its default is
   empty, and the store refuses it at declare. A field's kind defaults to

@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::expr::Condition;
 use crate::id::{
-    Cursor, FieldName, IdempotencyKey, Position, ProposalId, RecordKey, SourceId, TypeName,
-    ValueTypeName, VerbName, Version,
+    Cursor, FieldName, IdempotencyKey, Position, ProposalId, RecordKey, RelationName, SourceId,
+    TriggerName, TypeName, ValueTypeName, VerbName, Version,
 };
 use crate::ontology::{
     ANNOTATION_KEY_MAX_BYTES, ANNOTATIONS_MAX_BYTES, Annotations, FieldDecl, FieldType,
@@ -49,6 +49,9 @@ pub enum Outcome {
         /// it. `None` for every other write.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output: Option<serde_json::Value>,
+        /// What the write set off beyond the event it is visible from.
+        #[serde(flatten)]
+        set_off: SetOff,
     },
     /// The write was recorded as a proposal and waits for review.
     Proposed {
@@ -60,6 +63,41 @@ pub enum Outcome {
         /// policy of the lake).
         why: String,
     },
+}
+
+/// What a write set off: the reactions in its own append, and an external
+/// verb's recorded output. Empty, and left out of the answer, when it set
+/// off nothing, so such an answer reads as it always did
+/// (`docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`,
+/// extended).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetOff {
+    /// The last position of what the write set off, when that lies after
+    /// `position`: a read at or after it sees all of it. An external
+    /// verb's output is recorded in a later append, so other writers'
+    /// events may lie before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub through: Option<Position>,
+    /// The triggers it fired, in the order fired: only those `describe`
+    /// lists to the caller.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fired: Vec<TriggerName>,
+    /// The object sets its record joined, as `describe` lists them to the
+    /// caller. For a set's declaration, the set, once, when it took
+    /// records in.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub joined: Vec<String>,
+    /// The object sets its record left, likewise; for a set's
+    /// declaration, the set, once, when it let records go.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub left: Vec<String>,
+}
+
+impl SetOff {
+    /// Whether it names a trigger or an object set.
+    pub fn names_any(&self) -> bool {
+        !(self.fired.is_empty() && self.joined.is_empty() && self.left.is_empty())
+    }
 }
 
 impl Outcome {
@@ -129,6 +167,17 @@ pub enum ProposedWrite {
         #[serde(default)]
         report: Box<MigrationReport>,
     },
+    /// A value type's tightening, as `migrate_value_type_apply` applies it,
+    /// with the report its preflight answered when it was proposed (log
+    /// format version 10).
+    MigrateValueType {
+        /// The new declaration.
+        to: Box<ValueTypeDecl>,
+        /// The preflight's report at the proposal, for the reviewer. The
+        /// store answers it; whatever a proposer sends is replaced.
+        #[serde(default)]
+        report: Box<ValueTypeReport>,
+    },
 }
 
 impl ProposedWrite {
@@ -140,6 +189,7 @@ impl ProposedWrite {
             ProposedWrite::Call { .. } => ProposalKind::Call,
             ProposedWrite::Declare { .. } => ProposalKind::Declare,
             ProposedWrite::Migrate { .. } => ProposalKind::Migrate,
+            ProposedWrite::MigrateValueType { .. } => ProposalKind::MigrateValueType,
         }
     }
 
@@ -148,7 +198,9 @@ impl ProposedWrite {
     pub fn is_schema(&self) -> bool {
         matches!(
             self,
-            ProposedWrite::Declare { .. } | ProposedWrite::Migrate { .. }
+            ProposedWrite::Declare { .. }
+                | ProposedWrite::Migrate { .. }
+                | ProposedWrite::MigrateValueType { .. }
         )
     }
 }
@@ -167,6 +219,8 @@ pub enum ProposalKind {
     Declare,
     /// A migration.
     Migrate,
+    /// A value type's tightening.
+    MigrateValueType,
 }
 
 /// Where a proposal stands.
@@ -570,9 +624,10 @@ pub struct MigrationReport {
     /// Per field whose type changes: how many values convert.
     pub fields: Vec<FieldConversion>,
     /// Fields the migration removes, and how many records hold a value
-    /// that removing them discards. Removal is the migration's intent,
-    /// named here before anything is applied; it does not make the
-    /// report lossy.
+    /// that removing them discards; and each relation carried by link
+    /// records it removes, by the relation's name, with the number of its
+    /// live links. Removal is the migration's intent, named here before
+    /// anything is applied; it does not make the report lossy.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dropped: Vec<(FieldName, u64)>,
     /// Per type a re-key moves: its records, and the new keys that
@@ -659,7 +714,8 @@ pub struct RuleRun {
     pub skipped: Option<String>,
 }
 
-/// What `LakeStore::purge_source` retired
+/// What `LakeStore::purge_source` retired, or what
+/// `LakeStore::purge_preflight` says it would
 /// (`docs/decisions/039-a-source-is-retracted-as-one.md`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PurgeReport {
@@ -676,6 +732,30 @@ pub struct PurgeReport {
     /// The head after the append, or the head as it stood when nothing
     /// was appended.
     pub position: Position,
+    /// Per relation, in type then relation order, the live records outside
+    /// the purge that refer to a record inside it; relations with none
+    /// are left out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<PurgeReference>,
+    /// Names a preflight's report; `purge_source` may repeat it. Empty on
+    /// a purge's own report.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub report_id: String,
+}
+
+/// The records outside a purge that refer into it over one relation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PurgeReference {
+    /// The type that declares the relation.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// The relation.
+    pub relation: RelationName,
+    /// How many live records refer into the purge over it.
+    pub records: u64,
+    /// The first of them in key order, at most ten: the referring records
+    /// of a `via` relation, the link records of one carried by links.
+    pub first: Vec<RecordRef>,
 }
 
 /// The records a purge retired in one type.
@@ -691,7 +771,9 @@ pub struct TypeRetired {
 /// The preflight of a value type's migration: what its new declaration
 /// would refuse among the values stored under it, computed before
 /// anything changes (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// The empty report (`Default`) is what a proposer sends with a proposed
+/// tightening, which the store replaces with the preflight's.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValueTypeReport {
     /// The value type migrated.
     pub value_type: ValueTypeName,
@@ -803,3 +885,6 @@ pub struct CompactReport {
     /// The lake's head, which a compact never moves.
     pub head: Position,
 }
+
+#[cfg(test)]
+mod tests;

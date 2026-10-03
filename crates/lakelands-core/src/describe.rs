@@ -16,8 +16,8 @@
 //! neither. A field's own `function` still names its function.
 
 use lakelands_api::describe::{
-    FieldDescription, LakeDescription, LakeRights, TypeAccess, TypeDescription, TypeLifecycle,
-    TypeLineage, TypeRights, VerbDescription,
+    ExecutorDescription, FieldDescription, LakeDescription, LakeRights, TypeAccess,
+    TypeDescription, TypeLifecycle, TypeLineage, TypeRights, VerbDescription,
 };
 use lakelands_api::engine::Declared;
 use lakelands_api::expr::{Condition, Expr};
@@ -29,57 +29,39 @@ use crate::rights::{field_access, type_access};
 
 /// The lake as `who` may see it.
 pub fn lake(lake: &LakeId, declared: &[Declared], who: &Principal) -> LakeDescription {
-    let types: Vec<TypeDescription> = declared
-        .iter()
-        .filter_map(|d| match &d.declaration {
-            Declaration::Type(t) => type_description(t, d, declared, who),
-            _ => None,
-        })
-        .collect();
-    let verbs = declared
-        .iter()
-        .filter_map(|d| match &d.declaration {
-            Declaration::Verb(v) => verb_description(v, declared, who),
-            _ => None,
-        })
-        .collect();
-    let value_types = declared
-        .iter()
-        .filter_map(|d| match &d.declaration {
-            Declaration::ValueType(v) => Some(v.clone()),
-            _ => None,
-        })
-        .collect();
+    let types: Vec<TypeDescription> = each(declared, |d| match &d.declaration {
+        Declaration::Type(t) => type_description(t, d, declared, who),
+        _ => None,
+    });
+    let verbs = each(declared, |d| match &d.declaration {
+        Declaration::Verb(v) => verb_description(v, declared, who),
+        _ => None,
+    });
+    let value_types = each(declared, |d| match &d.declaration {
+        Declaration::ValueType(v) => Some(v.clone()),
+        _ => None,
+    });
     let described = |ty: &TypeName| types.iter().any(|t| &t.name == ty);
-    let functions = declared
-        .iter()
-        .filter_map(|d| match &d.declaration {
-            Declaration::Function(f) if function_visible(f, declared, who) => Some(f.clone()),
-            _ => None,
-        })
-        .collect();
-    let triggers = declared
-        .iter()
-        .filter_map(|d| match &d.declaration {
-            Declaration::Trigger(t)
-                if described(&t.on) && condition_visible(t.when.as_ref(), &t.on, declared, who) =>
-            {
-                Some(t.clone())
-            }
-            _ => None,
-        })
-        .collect();
-    let object_sets = declared
-        .iter()
-        .filter_map(|d| match &d.declaration {
-            Declaration::ObjectSet(s)
-                if described(&s.of) && condition_visible(Some(&s.filter), &s.of, declared, who) =>
-            {
-                Some(s.clone())
-            }
-            _ => None,
-        })
-        .collect();
+    let functions = each(declared, |d| match &d.declaration {
+        Declaration::Function(f) if function_visible(f, declared, who) => Some(f.clone()),
+        _ => None,
+    });
+    let triggers = each(declared, |d| match &d.declaration {
+        Declaration::Trigger(t)
+            if described(&t.on) && condition_visible(t.when.as_ref(), &t.on, declared, who) =>
+        {
+            Some(t.clone())
+        }
+        _ => None,
+    });
+    let object_sets = each(declared, |d| match &d.declaration {
+        Declaration::ObjectSet(s)
+            if described(&s.of) && condition_visible(Some(&s.filter), &s.of, declared, who) =>
+        {
+            Some(s.clone())
+        }
+        _ => None,
+    });
     LakeDescription {
         lake: lake.clone(),
         types,
@@ -125,6 +107,22 @@ fn reads_all<'a>(
 /// The fields a condition names; `None` when it does not parse.
 fn named(c: &Condition) -> Option<std::collections::BTreeSet<FieldName>> {
     parsed(c).map(|e| crate::derive::reads(&e))
+}
+
+/// Whether `who` is shown the declaration `d`: whether [`lake`] describes
+/// it to that principal. A refusal names a declaration only to one who is.
+/// `declared` is what is in force: over a type as a migration would leave
+/// it, a field it takes away is gone, and nothing that reads it would be
+/// shown to anyone without the `schema` grant.
+pub fn shown(d: &Declaration, declared: &[Declared], who: &Principal) -> bool {
+    let seen = lake(&who.lake, declared, who);
+    match d {
+        Declaration::Type(t) => seen.types.iter().any(|s| s.name == t.name),
+        Declaration::Verb(v) => seen.verbs.iter().any(|s| s.name == v.name),
+        Declaration::Trigger(t) => seen.triggers.iter().any(|s| s.name == t.name),
+        Declaration::ObjectSet(o) => seen.object_sets.iter().any(|s| s.name == o.name),
+        _ => true,
+    }
 }
 
 /// Whether a condition over type `ty` may be shown to `who`.
@@ -174,6 +172,43 @@ pub fn view_reads(v: &ViewDecl) -> Option<Vec<(TypeName, std::collections::BTree
         .collect()
 }
 
+/// The fields of `ty` a declaration other than a view reads: a derived
+/// field's expression on `ty` itself, the fields of `ty` a derived
+/// relation matches as its target, a set's `where`, a trigger's `when`,
+/// and a verb's `requires`, the fields it sets and what it sets them from
+/// (where `payload` is the call's). A condition that does not parse reads
+/// nothing here.
+pub fn declaration_reads(d: &Declaration, ty: &TypeName) -> std::collections::BTreeSet<FieldName> {
+    let of = |c: &Condition| named(c).unwrap_or_default();
+    match d {
+        Declaration::Type(t) => {
+            let own = t.fields.iter().filter(|_| &t.name == ty);
+            let matched = t.relations.iter().filter(|r| &r.target == ty);
+            own.filter_map(|f| f.derived.as_ref())
+                .flat_map(of)
+                .chain(
+                    matched
+                        .filter_map(|r| r.derived.as_ref())
+                        .flat_map(|m| m.pairs.iter().map(|p| p.to.clone())),
+                )
+                .collect()
+        }
+        Declaration::ObjectSet(s) if &s.of == ty => of(&s.filter),
+        Declaration::Trigger(t) if &t.on == ty => t.when.as_ref().map(of).unwrap_or_default(),
+        Declaration::Verb(v) if &v.on == ty => {
+            let mut names = v.requires.as_ref().map(of).unwrap_or_default();
+            if let VerbEffect::Write { set } = &v.effect {
+                for a in set {
+                    names.extend(of(&a.value).into_iter().filter(|n| n.as_str() != "payload"));
+                    names.insert(a.field.clone());
+                }
+            }
+            names
+        }
+        _ => Default::default(),
+    }
+}
+
 /// The fields a measure reads from its source's records: the paths inside
 /// an aggregate's arguments. A name outside an aggregate is read from the
 /// group, an earlier measure or a grouping field, and is no source field.
@@ -188,7 +223,7 @@ fn aggregated(e: &Expr, inside: bool, out: &mut std::collections::BTreeSet<Field
 }
 
 /// A condition in its typed form; `None` when it does not parse.
-fn parsed(c: &Condition) -> Option<Expr> {
+pub(crate) fn parsed(c: &Condition) -> Option<Expr> {
     match c {
         Condition::Expr(e) => Some(e.clone()),
         Condition::Text(t) => crate::expr::parse(t).ok(),
@@ -225,6 +260,11 @@ fn function_visible(f: &FunctionDecl, declared: &[Declared], who: &Principal) ->
                 who,
             )
         })
+}
+
+/// What `pick` takes from each declaration, in declaration order.
+fn each<'a, T>(declared: &'a [Declared], pick: impl FnMut(&'a Declared) -> Option<T>) -> Vec<T> {
+    declared.iter().filter_map(pick).collect()
 }
 
 fn find_type<'a>(declared: &'a [Declared], ty: &TypeName) -> Option<&'a TypeDecl> {
@@ -281,15 +321,10 @@ fn type_description(
             .map(|r| r.name.clone())
             .collect(),
     };
-    let verbs = declared
-        .iter()
-        .filter_map(|d| match &d.declaration {
-            Declaration::Verb(v) if v.on == t.name && verb_callable(v, t, who) => {
-                Some(v.name.clone())
-            }
-            _ => None,
-        })
-        .collect();
+    let verbs = each(declared, |d| match &d.declaration {
+        Declaration::Verb(v) if v.on == t.name && verb_callable(v, t, who) => Some(v.name.clone()),
+        _ => None,
+    });
     Some(TypeDescription {
         name: t.name.clone(),
         description: t.description.clone(),
@@ -395,6 +430,14 @@ fn verb_description(
             .collect(),
         risk: v.risk,
         external: matches!(v.effect, VerbEffect::External { .. }),
+        // Whether the host binds it is the store's to say.
+        executor: match &v.effect {
+            VerbEffect::External { executor } => Some(ExecutorDescription {
+                name: executor.clone(),
+                bound: false,
+            }),
+            VerbEffect::Write { .. } => None,
+        },
         description: v.description.clone(),
     })
 }

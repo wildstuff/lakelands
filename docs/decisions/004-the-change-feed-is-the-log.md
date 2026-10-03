@@ -113,3 +113,124 @@ and `retired()` is false. A declaration calling `retired` is written in
 log format 7 (`docs/log-format.md` §6), so a reader that does not know
 the function refuses the log instead of keeping a trigger it cannot
 evaluate, which would never fire.
+
+## Extended: a set's declaration decides the records already there (lakelands#453)
+
+A set's membership was decided only when a record was written. A set
+declared over records that already hold its filter, or declared again
+with another filter, left them as they were. A consumer of the feed never
+learned of those memberships, and the lake's membership disagreed with
+the filter until each record was written again.
+
+Now a set's declaration decides them. In the declaration's own append,
+after its `declared` (and the link types a type brings), the store
+appends an `object_set_changed` for each record of the set's type whose
+membership the declaration changes. Each is caused by the `declared`,
+written by the system and carries the declaration's context. The filter
+is evaluated as a write evaluates it, with the time of the declaration
+as `now`, and a retired record is never a member. A write and a
+declaration decide by one rule.
+
+- **A set declared again unchanged** appends nothing.
+- **One declared again over another type** lets go of the old type's
+  members.
+- **The same in every way in:** `declare`, `apply` and an accepted
+  declaration proposal.
+- **The declaration's answer names each set once,** however many
+  records it moves, and its `through` is the last change (015,
+  extended).
+
+The event is the existing one, and the fold already applies it. Only its
+cause is new: an `object_set_changed` may now name a `declared`, not
+only a record's write. No log format changes.
+
+**One append, bounded by the lake's `max_set_changes` (20 000 unless the
+location sets it).** A declaration that would change more is refused
+`too_large`, naming the set and the ceiling, and appends nothing:
+- windows of their own after the `declared` would leave the index and
+  the events wrong after a crash;
+- a new event carrying the keys would be a second shape every consumer
+  must learn.
+
+What it costs, and how a host declares a set over a large type, is in
+`docs/seams.md`, "Declaring a set over a large type".
+
+## Extended: a migration decides the membership again (lakelands#457)
+
+A migration changes the records of its type: a field converted to
+another kind or scale, a key moved. Their membership in the type's object
+sets was carried as it stood, so a set whose filter reads a converted
+field kept members its filter no longer holds for. Now the migration
+decides each record again, as migrated, by the rule a write uses. In its
+own append, directly after its `migrated`, it appends an
+`object_set_changed` for each record whose membership changes, caused by
+the `migrated`, written by the system, and naming the record's key after
+the migration. A re-keyed record's membership moves with it, as it did
+before; the decision concerns only what the converted fields hold.
+
+The changes stand before the events of the link types the migration
+changes or adds, as a write's reactions directly follow its event. The
+migration's answer reads what directly follows its `migrated`, so it
+names each set joined or left once and `through` the last change,
+whatever else the append carries.
+
+The decision is made in the walk the preflight makes over the type's
+records anyway, so a migration reads no record twice. Its changes count
+against the same `max_set_changes` as a set's declaration, over all sets
+of the type; past it the migration is refused `too_large`, naming a set
+and the ceiling, and appends nothing. A migration that changes nothing a
+filter reads appends no `object_set_changed`.
+
+The ceiling is the last of a migration's refusals. One applied with a
+stale report is refused for that, and one that is not lossless is refused
+with its report, whether or not it is also past the ceiling: the walk
+stops deciding once the changes pass it, and the refusal waits until the
+report has been compared and found lossless.
+
+## Extended: a migration decides every record it changes (lakelands#465, lakelands#466)
+
+A migration changes more records than those of its type. A re-key
+rewrites every reference to a moved key, in the migrated type and in any
+other, and it moves the links of the type's relations, which are keyed
+by their ends. A migration that changes a relation's fields converts the
+relation's links. The rule is one: **a migration decides again every
+record whose fields it changes, as the fold leaves it**: converted, its
+references to moved keys rewritten, under its key after the migration.
+- **The migrated type's records** are decided after the moves are known,
+  so a reference from the type to itself is read as rewritten.
+- **A record of another type that holds a reference to a moved key** is
+  decided for the sets whose filter reads that reference, and for no
+  other: nothing else of it changes. The type is read again, a page at a
+  time, only when it has such a set.
+- **A link of a relation whose fields the migration converts** is decided
+  for every set of the link type, in the read the preflight already makes
+  of the links.
+
+Each change is an `object_set_changed` naming the record's own type and
+its key after the migration, directly after the migration's `migrated`
+and caused by it, before the link types' own events. The fold of
+`object_set_changed` writes one membership and reads neither a record nor
+a declaration, so the index is the same wherever the event stands in the
+append. All of a migration's changes count against the one
+`max_set_changes`.
+
+**A move alone owes no event.** A re-keyed record, a link among them, is
+in every set under its new key that it was in under its old one, and no
+filter's truth has changed. The `migrated` event lists each move in
+`rekeyed`, for the link types too, and that is what tells a feed
+consumer.
+
+The fold carries that membership to the new key, and it does so the same
+whether it folds one append or many: a rebuild, an import and the
+catch-up of a lake opened behind its log fold a page of appends in one
+transaction, and a membership put earlier in the page is read from the
+page, as a record put earlier in it is (lakelands#492). Before, the fold
+asked the projection as it stood before the page, and a member whose
+join and re-key fell into one page was a member of nothing afterwards.
+
+**A filter's text is not rewritten.** A set declared as `boss = 'X'`
+names a key in a literal, and a literal is not known to be a key. After
+a re-key of `X` the filter holds for no record, and the members leave,
+which the events say. A host that means "under this person" declares the
+set again with the new key; that declaration decides the records
+(lakelands#453).

@@ -97,6 +97,40 @@ or reject it. Any other principal lists only the proposals it made
 itself, so a proposer can follow what became of its write, and decides
 none.
 
+## Extended: a value type's tightening is proposed like a migration (lakelands#476)
+
+A value type that is to accept less could be changed only by a principal
+holding `schema`, through its preflight and apply (027, extended). A
+principal without the grant could propose that a set gains a value and
+not that it loses one, and the refusal of the narrowed declaration
+pointed at a door it may not use.
+
+A tightening is the third change of the ontology that can be proposed,
+beside a set of declarations and a type's migration. The proposal
+carries the value type's new declaration. It is preflighted when it is
+made, without the `schema` grant, and the report replaces whatever the
+proposer sent and is logged with the proposal, for the reviewer.
+
+- **A report that does not fit refuses the proposal,** as invalid, and
+  nothing is appended. The refusal says how many stored values would not
+  fit and names none: a misfit names a record and a field, and the
+  proposer may know of neither. A reviewer runs the preflight to see
+  them.
+- **Accepting it takes `schema` beside `review`,** as for the other two.
+  It is preflighted again on the head and refused the same way when a
+  value no longer fits. It is also refused when the value type was
+  declared again since the proposal: `to` is the value type's whole
+  declaration, and a value the set gained in between would leave it
+  again, shown to no one. Either refusal leaves the proposal pending.
+  Accepted, it writes what the apply door writes: one `declared` at the
+  next version, as the proposer, caused by the acceptance.
+- **A listing shows the report's uses only in fields its reader may
+  read,** of types it may see, as a proposed shape is shown
+  (lakelands#475). The totals stay whole: a count names nothing. A
+  logged report fits, so it names no misfit to anyone.
+- **The log format is 10** from the append that holds the first such
+  proposal (`docs/log-format.md` §6).
+
 ## Extended: a declaration is proposed like a write
 
 A set of declarations, or a type's migration, can be proposed as a
@@ -120,6 +154,24 @@ moved. A change the head no longer admits refuses the accept, naming
 why, and the proposal stays pending. What the accept declares is logged
 in its append as the proposer's write, caused by the acceptance, and
 takes the next versions and schema hashes there, not at the proposal.
+
+A proposed shape, a migration's or a redeclared type's, is logged as
+the store completed it from its proposer's view
+(`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+extended, lakelands#475). `proposals` shows it to each reader without
+the fields that reader may not know of, a relation's link fields too:
+the proposer reads its own view again, and a reviewer who may see a
+carried field reads it in the shape and not under `dropped`.
+
+A proposed migration is accepted only on the shape it was proposed on
+(lakelands#489). Its `to` is the type's whole shape, so on a type
+declared or migrated since it would remove whatever was added, and the
+report the reviewer read says nothing of that. The accept compares the
+type's schema hash at the head with the report's `from_schema_hash` and
+refuses a difference as invalid, saying the type changed and the
+migration is proposed again; nothing is appended and the proposal stays
+pending. Records written since are the second preflight's to judge, as
+before.
 
 ## Extended: a verb called on its type (lakelands#277)
 
@@ -194,8 +246,9 @@ through the record checks; a retirement as `retire` from the type on; a
 call as `call` from the verb on, its executor included, and for a write
 effect through its assignments and the record checks; a declaration as
 `apply` checks a set; a migration by its preflight, then `migration` if
-it is not lossless. No `schema` grant is needed to propose a change of
-the ontology.
+it is not lossless; a value type's tightening by its preflight, then
+`invalid` with the count if a stored value would not fit. No `schema`
+grant is needed to propose a change of the ontology.
 
 **`accept`**: the `review` grant (`not_granted`); the proposal exists
 (`not_found`); it is pending (`decided`); a change of the ontology also
@@ -203,8 +256,11 @@ needs `schema` (`not_granted`); then the write, checked again at the
 head: an upsert through the record checks; a retirement for its record
 and version; a call for its verb, its scope, a view, the verb declared
 differently since (`invalid`), its executor, then as `call` from the
-record on; a declaration as `apply` checks a set; a migration by its
-preflight, then `migration`, then its embedding model (`unbound`). Any
+record on; a declaration as `apply` checks a set; a migration for the
+shape it was proposed on (`invalid`, lakelands#489), then by its
+preflight, then `migration`, then its embedding model (`unbound`); a
+value type's tightening for the declaration it was proposed on
+(`invalid`), then by its preflight, then `invalid` with the count. Any
 refusal leaves the proposal pending.
 
 **`reject`**: the `review` grant, the proposal exists, it is pending.
@@ -213,3 +269,31 @@ Two steps that answer the same kind for the same verb or field, such as
 the scope and a verb declared differently since, are stated here and not
 checked between themselves.
 
+
+## Extended: `describe` says whether the executor is bound (lakelands#432)
+
+A verb that reaches outside the lake is described with its executor's
+name and whether the host binds an executor of that name, and its tool
+says which. Without this, a caller learns that a verb cannot run in a
+lake only by calling it and being refused, and a host's interface cannot
+show the verb as unavailable beforehand. The name is no news to the
+principal: the verb is described only to one who may call it, and the
+`unbound` refusal names the executor to that principal anyway. A verb
+that sets fields of its record has no executor and is described without
+one. The tool of an unbound verb stays in the catalog, so a host that
+binds the executor later changes the tool's text, not the set of tools.
+
+`bound` is the binding when the answer is made, at whatever position
+`describe` is read. The binding is the host's configuration, not a fact
+of the log, so there is no earlier answer to give; and a call always
+runs at the head, so whether a verb can run is a question about now.
+The reply's position covers the declarations, not the binding: two
+answers at one position differ in `bound` when the host rebinds between
+them, as `search`'s `ranked_by` already reports the embedding backend
+bound when it ranks.
+
+A function's backing and an embedding model are not described the same
+way. Both are checked when they are declared, so a lake does not hold one
+its host never bound. No caller calls a function: a missing backing
+leaves the fields it computes due, and the host that unbound it is the one
+who can see that. A search already says how it ranked.

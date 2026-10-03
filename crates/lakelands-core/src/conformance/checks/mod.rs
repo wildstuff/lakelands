@@ -10,6 +10,7 @@ mod after;
 mod aggregates;
 mod aging;
 mod annotations;
+mod authors_view;
 mod backings;
 mod bundles;
 mod compact;
@@ -42,6 +43,7 @@ mod provenance;
 mod purge;
 mod reactions;
 mod reactive_depth;
+mod reads_kept;
 mod rebuild;
 mod references;
 mod rekey;
@@ -51,6 +53,9 @@ mod schema;
 mod schema_proposals;
 mod search;
 mod search_fields;
+mod set_declared;
+mod set_migrated;
+mod set_rewritten;
 mod settings;
 mod streaming;
 mod triggers;
@@ -152,6 +157,8 @@ pub const ALL: &[Check] = &[
     masking::NONE_HIDES,
     masking::VALID_AT_PROBES,
     masking::WRITE_ONLY,
+    authors_view::HIDDEN_FIELD_KEPT,
+    authors_view::HIDDEN_NAME_NOT_LEARNED,
     values::DATE_TIME_CANONICAL,
     values::BYTES_ONE_SPELLING,
     values::VECTOR_LENGTH,
@@ -185,6 +192,7 @@ pub const ALL: &[Check] = &[
     walks::UNDECLARED_RELATION,
     walks::TOO_DEEP,
     walks::WALK_ORDER,
+    walks::INVERSE_STEP,
     search::MATCH_SET,
     search::SEARCH_ORDER,
     search::SEARCH_PROBE_REFUSED,
@@ -205,7 +213,10 @@ pub const ALL: &[Check] = &[
     schema_proposals::DECLARED_ON_ACCEPT,
     schema_proposals::SCHEMA_TO_ACCEPT,
     schema_proposals::MIGRATION_PREFLIGHTED_AGAIN,
+    schema_proposals::MIGRATION_ON_ITS_SHAPE,
     schema_proposals::REJECTED_UNTOUCHED,
+    schema_proposals::TIGHTENING_PROPOSED,
+    schema_proposals::TIGHTENING_HELD_BACK,
     annotations::ROUND_TRIP,
     annotations::VERSION_NOT_HASH,
     annotations::MASKED_WITHOUT,
@@ -214,10 +225,12 @@ pub const ALL: &[Check] = &[
     cursors::CURSOR_STAYS,
     cursors::CURSOR_ONE_ANSWER,
     cursors::CURSOR_ONE_ORDER,
+    cursors::CURSOR_ONE_READ,
     feed::FEED_IS_THE_LOG,
     feed::REBUILD_LEAVES_THE_FEED,
     feed::TRIGGER_FIRES,
     feed::OBJECT_SET_CHANGES,
+    feed::HIDDEN_TRIGGER,
     feed::PAGED_FROM_NEXT,
     retire::RETIRE_NEEDS_EVERY_FIELD,
     retire::READABLE_BEFORE_RETIREMENT,
@@ -227,6 +240,11 @@ pub const ALL: &[Check] = &[
     keys::KEY_FIELDS_FROM_THE_KEY,
     restriction::HOLD_WITHHOLDS_AND_KEEPS,
     reactions::VERB_WRITE_REACTS,
+    reactions::SET_READ_BY_ITS_FILTER,
+    set_declared::SET_DECLARED_OVER_RECORDS,
+    set_migrated::SET_MIGRATED,
+    set_rewritten::SET_REKEYED_REFERENCES,
+    set_rewritten::SET_OVER_LINKS,
     link_triggers::LINK_TRIGGER_FIRES,
     link_triggers::VIA_LINK_TYPE_REFUSED,
     bundles::BUNDLE_WHOLE,
@@ -242,6 +260,8 @@ pub const ALL: &[Check] = &[
     migrate::VIA_REMOVAL_REFUSED,
     migrate::DROPPED_REPORTED,
     migrate::VIEW_NOT_MIGRATED,
+    reads_kept::MIGRATION_KEEPS_READ_FIELDS,
+    reads_kept::DECLARATION_READS_ITS_TYPE,
     migrate::VIEW_SOURCE_KEPT,
     schema::REORDERED_FIELDS,
     aggregates::EMPTY_AGGREGATE,
@@ -263,6 +283,7 @@ pub const ALL: &[Check] = &[
     graph_measures::MEASURES_AT_THEIR_POSITION,
     graph_measures::GRAPH_TOO_LARGE,
     graph_measures::MEASURE_REFUSALS,
+    graph_measures::MEASURE_IN_ONE_PAGE,
     search::SEARCH_FOLLOWS_TEXT,
     search::WITHHELD_NEVER_HITS,
     search::VECTOR_LEAVES_THE_NEIGHBOURS,
@@ -350,6 +371,8 @@ pub const ALL: &[Check] = &[
     fusion::HIDDEN_MOVES_NO_SCORE,
     fusion::PAGES_ONE_RANKING,
     fusion::SAME_LIST_UNREAD,
+    fusion::FUSED_BY_WEIGHT,
+    fusion::WEIGHTS_REFUSED,
     vocabulary::HOST_TYPES_AT_OPEN,
     vocabulary::RESERVED_NAME_REFUSES_OPEN,
     backings::FAILURE_RETRIED,
@@ -379,6 +402,8 @@ pub const ALL: &[Check] = &[
     concurrency::AGE_UNDER_WRITES,
     purge::CO_OWNED_COUNTED,
     purge::BACKED_NO_OWNER,
+    purge::PREFLIGHT,
+    purge::REFERENCES_NAMED,
     value_types::CONSTRAINT_AND_FORMAT,
     value_types::CONDITION_NEVER_HOLDS,
     streaming::STREAMS,

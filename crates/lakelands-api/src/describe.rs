@@ -153,35 +153,30 @@ impl FieldDescription {
     /// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
     pub fn of(decl: &FieldDecl, access: Access) -> FieldDescription {
         use crate::ontology::StorageKind::{Bytes, Json, Vector};
-        if !access.reads() {
-            return FieldDescription {
-                name: decl.name.clone(),
-                ty: decl.ty.clone(),
-                required: decl.required,
-                authority: decl.authority,
-                access,
-                on_input_change: decl.on_input_change,
-                sensitive: decl.sensitive,
-                ..FieldDescription::default()
-            };
-        }
-        FieldDescription {
+        let hidden = FieldDescription {
             name: decl.name.clone(),
             ty: decl.ty.clone(),
             required: decl.required,
             authority: decl.authority,
             access,
+            on_input_change: decl.on_input_change,
+            sensitive: decl.sensitive,
+            ..FieldDescription::default()
+        };
+        if !access.reads() {
+            return hidden;
+        }
+        FieldDescription {
             derived: decl.derived.clone(),
             function: decl.function.clone(),
             depends_on: decl.depends_on.clone(),
-            on_input_change: decl.on_input_change,
             filterable: !matches!(decl.ty.kind, Bytes | Json | Vector),
             searchable: decl.searchable,
-            sensitive: decl.sensitive,
             description: decl.description.clone(),
             label: decl.label.clone(),
             embed: decl.embed.clone(),
             annotations: decl.annotations.clone(),
+            ..hidden
         }
     }
 
@@ -275,9 +270,27 @@ pub struct VerbDescription {
     pub payload: Vec<FieldDescription>,
     /// Its declared risk: `low` runs, anything else is proposed.
     pub risk: Risk,
-    /// Whether it reaches outside the lake.
+    /// Whether it reaches outside the lake: exactly when `executor` is
+    /// there.
     pub external: bool,
+    /// For a verb that reaches outside the lake: its executor, and whether
+    /// this lake's host binds it. Absent for a verb that sets fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor: Option<ExecutorDescription>,
     /// What it does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+}
+
+/// The executor a verb that reaches outside the lake runs through.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutorDescription {
+    /// The name the verb declares.
+    pub name: String,
+    /// Whether the host binds an executor of that name when the answer is
+    /// made, whatever position it is read at: the binding is the host's
+    /// configuration, not a fact of the log
+    /// (`docs/decisions/013-verbs-run-by-declared-risk.md`, extended).
+    /// Without one, calling or proposing the verb is refused as `unbound`.
+    pub bound: bool,
 }

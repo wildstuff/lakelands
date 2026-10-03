@@ -174,7 +174,7 @@ belongs in the suite, not beside one engine:
 - `versions_start_at_one_and_grow_by_one_with_every_change` — the glossary and the log format: a version starts at 1 and grows by one per event that changes the record, retirement included
 - `a_write_expecting_a_superseded_version_is_refused_as_a_conflict` — 015: a write naming a version the record has moved past fails as a conflict, and nothing of it lands
 - `a_verb_called_at_a_stale_version_is_a_conflict_before_its_requires_is_judged` — 015 and 024, extended: a verb's call compares the expected version right after its record is found, so a call at a stale version is a conflict, never a precondition judged on a state the caller has not seen
-- `a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_appends_nothing` — 016 and the log format: one idempotency key from one principal is one write in the whole lake
+- `a_retry_with_the_same_idempotency_key_answers_the_first_outcome_and_appends_nothing` — 016 and the log format: one idempotency key from one principal is one write in the whole lake; a proposal made with a key carries it, and its retry answers the proposal and appends nothing
 - `a_write_expecting_the_version_before_a_retirement_is_a_conflict` — the glossary, the log format §2.3 and 015: a retired key keeps its count, so `expected_version` is compared with the retired record's version, a match re-creates it, and an older one is a conflict reporting that version
 
 **paging**
@@ -293,6 +293,11 @@ belongs in the suite, not beside one engine:
 - `a_read_at_a_valid_time_probes_the_types_valid_time_fields` — 024 and 006: a read at `valid_at` filters on the type's `valid_from` and `valid_to`, so `find`, `get` and a pattern started on the type probe them as a filter would: refused not_granted naming the field where it is masked, answered as an undeclared field where it is hidden; without `valid_at` the same reads are answered
 - `a_write_only_field_is_written_and_never_shown` — 006, extended (lakelands#393): a field granted write_only is written by upsert and retire like a writable one, while get, find, query, search, describe and the tools' read schemas never show it, a filter or a search that probes it is refused not_granted naming it, and the write answers no value; a writable field built from one the principal may not read, write-only or masked, is write-only in turn: written, and probed as not granted, never as undeclared
 
+**authors view**
+
+- `a_migration_keeps_the_fields_its_author_may_not_know_of` — 027 and 024, extended: a migration's `to` is read as its author's view, so a field hidden from the author stays as declared, with its values, whether the migration is applied by a principal with the schema grant or proposed and accepted; `dropped` lists only what the author saw and removed; the proposer reads its own proposal without the field, a reviewer who may see it reads it there
+- `a_change_of_shape_never_names_a_field_its_author_may_not_know_of` — 027 and 024, extended: a type declared again from its author's view is taken, keeping the fields and the link fields hidden from the author; a shape that names a hidden field is refused as a field declared twice; one that removes a field a hidden one is built from is refused on that field and names no other; a rename from a hidden field is a rename from no field
+
 **values**
 
 - `date_time_values_read_back_in_their_one_canonical_form` — the log format §5: a date-time is kept in UTC as YYYY-MM-DDTHH:MM:SS.ffffffZ, whatever offset it was written with
@@ -340,7 +345,7 @@ belongs in the suite, not beside one engine:
 - `a_relation_that_allows_one_link_per_target_refuses_a_second` — §2.3: one_to_many and one_to_one allow one live link per `to`; a second link into it is refused as a constraint
 - `a_relations_authority_changes_by_declaration_and_keeps_its_links` — 035, extended: a relation's authority changes by an ordinary declaration; the door its links arrive by swaps, and the links already written stay
 - `ingest_holds_a_source_relations_cardinality_over_the_lake_and_the_window` — §2.3: a link that arrives by ingest holds the relation's cardinality over the lake's live links and the window's, its ends read from the key when the record leaves them out
-- `a_relation_declared_again_with_another_target_is_a_migration` — 027 and 035, extended: a relation removed by migrate keeps its links; declaring it again with another target would reshape them, and is refused, naming the link type
+- `a_relation_declared_again_with_another_target_is_a_migration` — 027 and 035, extended: a relation removed by migrate keeps its links, and the preflight lists it under `dropped` with the number of its live links, or not at all when none is live; declaring it again with another target would reshape them, and is refused, naming the link type
 - `a_restricted_link_is_walked_only_with_the_restricted_grant` — 035 and the retention hold: a link's edge comes from its own record, so a restricted link is walked only by a principal with the `restricted` grant
 - `narrowing_a_relations_cardinality_is_refused_while_links_would_break` — 027 and §2.3: narrowing a relation's cardinality is a migration, and its preflight refuses it while live links would break the narrower rule
 
@@ -349,6 +354,7 @@ belongs in the suite, not beside one engine:
 - `a_step_over_a_relation_the_type_does_not_declare_is_refused` — 018: the planner knows the ontology; a step over an undeclared relation is refused, not answered empty
 - `a_step_deeper_than_the_lakes_limit_is_refused` — 018 and the location's limits: on a lake opened with the default limits, a step whose depth exceeds `max_depth` is refused rather than walked
 - `a_walk_answers_what_it_reaches_in_one_order` — 026 and 029: a graph includes its start, and a walk orders what it reaches by depth, type and key, so no engine's link order shows through
+- `a_step_naming_an_inverse_walks_the_relation_the_other_way` — 018 and 044, extended: a step naming a relation's `inverse` walks that relation the other way, its `walk` counting from the name it gives, and the edges keep the declared relation with its declaring side as `from`
 - `a_walk_over_a_cycle_ends_and_answers_each_record_once` — 026: the store walks the graph, so a walk over a cycle of links ends within its depth and reaches every record once
 
 **search**
@@ -358,7 +364,7 @@ belongs in the suite, not beside one engine:
 - `searching_a_type_whose_searchable_field_is_unreadable_is_refused` — 024: a search over a searchable field the principal may not read is refused, naming the field
 - `a_hybrid_search_over_an_unreadable_searchable_field_is_refused_whole` — 024: a hybrid search over a type whose searchable field the principal may not read is refused, naming the field, whether it brings a vector or not; it never answers from its vector half
 - `a_vector_search_over_an_unreadable_vector_field_is_refused` — 024: a vector or hybrid search that names a vector field the principal may not read is refused, naming that field
-- `a_search_over_a_vector_embedded_from_an_unreadable_field_is_refused` — 024: a vector embedded from a field encodes that field, so a vector or hybrid search over it is refused, naming the field, when the principal may not read one of the fields it is embedded from, even though it may read the vector
+- `a_search_over_a_vector_embedded_from_an_unreadable_field_is_refused` — 024: a vector embedded from a field encodes that field, so a vector or hybrid search over it is refused, naming the field, when the principal may not read one of the fields it is embedded from, even though it may read the vector; a vector field named in `also` is probed like the first, and one the principal may not know of is answered as undeclared
 - `a_search_finds_a_record_by_its_current_text_and_nothing_by_none` — 025: the index follows every write, so a record is found by its new words and no longer by its old ones, and a query of no words matches nothing
 - `a_retired_or_restricted_record_is_never_a_hit` — the log format §2.3 and 006: a retired record is invisible, and a restricted one invisible to a principal without the `restricted` grant; neither is ever a search hit
 - `a_retired_record_or_a_cleared_vector_is_no_longer_a_nearest_neighbour` — the engine seam's vector index: it follows the projection, so a retired record or a cleared vector field is no longer among the nearest
@@ -377,14 +383,14 @@ belongs in the suite, not beside one engine:
 **proposals**
 
 - `a_low_verb_runs_and_a_higher_one_is_proposed` — 013: a `low` verb that writes authored fields runs at once; any other risk is recorded as a proposal and runs only when accepted; a call is refused for its payload before its record, for its record before its version, and a retry answers before the grants (013, extended)
-- `an_external_verb_without_an_executor_is_unbound` — 013 and 015: a verb whose effect reaches outside the lake runs only through a bound executor; without one, calling it at any risk or proposing a call of it answers `unbound` naming the executor, after the grant and before the payload (013, extended), and nothing is appended
+- `an_external_verb_without_an_executor_is_unbound` — 013 and 015: a verb whose effect reaches outside the lake runs only through a bound executor; `describe` names the executor and says beforehand that it is not bound; without one, calling it at any risk or proposing a call of it answers `unbound` naming the executor, after the grant and before the payload (013, extended), and nothing is appended
 - `a_riskier_call_that_could_not_run_now_is_not_proposed` — 013, extended, and 024, extended: a call that would become a proposal is checked as if it ran now: at a stale version it is a conflict, and where its `requires` does not hold it is refused as a precondition, the version first; nothing is appended
 - `accepting_a_call_after_its_verb_was_declared_differently_is_refused` — 013, extended (lakelands#371): accepting a call whose verb was declared differently after the call was proposed, its effect or its payload changed, is refused as invalid naming the verb and leaves the proposal pending, as a scope that no longer fits does; a verb declared again with the same content, or changed and changed back, is accepted
 - `accepting_a_proposal_applies_its_write_as_the_proposers` — 013 and 004: a proposal is a `write_proposed` event; accepting it appends `write_accepted`, then the verb's run caused by that acceptance and its write caused by that run, written as the proposer
 - `a_rejected_proposal_writes_nothing_and_a_decided_one_stays_decided` — 013: rejecting appends `write_rejected` and nothing else; a decided proposal is refused as decided
 - `only_a_reviewer_decides_and_a_proposer_sees_its_own_proposals` — 006, 013 and Catalog::proposals: accept and reject need the review grant, checked before the proposal is looked up (013, extended); without it, `proposals` lists only the principal's own
 - `a_verbs_write_carries_the_verbs_procedure_version` — 010 and the log format §1.1: a value a verb produced carries, as its procedure_version, the version of the verb's declaration
-- `an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_position` — seams, VerbExecutor, and 013: the executor's answer is recorded as output_recorded caused by the event that made the verb due and returned in the outcome's output; a failure is recorded as {"error": …} at a real position; a retry of the same call answers the first outcome, its position and output, and like a rebuild runs nothing again
+- `an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_position` — seams, VerbExecutor, and 013: `describe` says the bound executor is bound; the executor's answer is recorded as output_recorded caused by the event that made the verb due and returned in the outcome's output; a failure is recorded as {"error": …} at a real position; a retry of the same call answers the first outcome, its position and output, and like a rebuild runs nothing again
 - `a_retried_external_verb_answers_its_call_though_a_host_write_names_it` — 013 and 021, extended: a host write naming an external verb's `verb_called` as its cause does not become the call's outcome; a retry with the call's idempotency key answers the verb's position and its recorded output, for a verb on a record and one on its type
 - `a_retried_write_verb_answers_its_own_write_though_a_host_write_names_it` — 013 and 021, extended: a retry of a write verb answers the record write the verb itself made and its version, though a later host write names the verb's `verb_called` as its cause
 - `a_retried_proposed_call_answers_its_proposal_after_it_is_accepted` — 013 and 015: a retry of a call that was proposed answers the proposal, its first outcome, after the proposal was accepted and a host write named the accepted call as its cause
@@ -394,7 +400,10 @@ belongs in the suite, not beside one engine:
 - `a_proposed_declaration_takes_effect_only_when_accepted` — 013, extended, and 007: a principal without the schema grant may propose declarations; nothing is declared and no schema hash moves until a reviewer with review and schema accepts, and then the declaration is logged at the acceptance, written as the proposer and caused by the acceptance
 - `accepting_a_schema_proposal_needs_the_schema_grant` — 013, extended: a reviewer with review alone may not accept a declaration or a migration; the refusal is not_granted, nothing is appended, and the proposal stays pending
 - `a_migration_proposal_carries_its_report_and_is_preflighted_again_at_accept` — 013, extended, and 027: a proposed migration carries the report its preflight answered then; at the acceptance it is preflighted again on the head, and one that would now lose information is refused with the fresh report, the proposal pending and the type unchanged
+- `a_proposed_migration_is_accepted_only_on_the_shape_it_was_proposed_on` — 013, extended (lakelands#489): a migration's `to` is the type's whole shape, so a proposed migration is accepted only while the type's schema hash is the one its report was made on; on a type declared or migrated since, the accept is refused as invalid, nothing is appended, the proposal stays pending and a field added since keeps its values; on the shape it was proposed on it applies
 - `a_rejected_schema_proposal_leaves_the_ontology_untouched` — 013, extended: a rejected declaration leaves the ontology as it was, and proposals can be listed by kind
+- `a_value_types_tightening_is_proposed_without_schema_and_applied_on_accept` — 013 and 027, extended (lakelands#476), and log format §6: a principal without the schema grant may propose a value type that accepts less; the proposal is written in format 10 and holds the preflight's report, whose uses a reader of the listing sees only in fields it may read, the totals whole; accepting it takes schema beside review, and then the value type is in force and a value it no longer accepts is refused
+- `a_tightening_is_refused_while_a_value_would_not_fit_or_the_value_type_changed` — 013 and 027, extended (lakelands#476): a value type's tightening is refused at the proposal while a stored value would not fit, as invalid, saying how many and naming none, with nothing appended; at the acceptance it is preflighted again and refused the same way, and it is refused when the value type was declared again since the proposal; each time the proposal stays pending and the value type as it was; a narrowed declaration's refusal points to the proposal
 
 **annotations**
 
@@ -408,13 +417,15 @@ belongs in the suite, not beside one engine:
 - `a_cursor_stays_on_the_position_of_its_first_page` — the glossary: a cursor is bound to the position its first page was read at, so a page set is stable while the lake is written
 - `a_cursor_continues_only_the_answer_it_was_handed_out_for` — 018 and 029: a page continues only the answer its cursor was handed out for, the same door and the same type: a cursor of `find` on one type continues that `find`, and is refused as invalid by `find` on another type, by `query` and by `search`, naming where it belongs; a cursor of `query` or `search` is refused by `find` alike
 - `a_cursor_handed_to_a_find_of_another_order_length_is_refused` — 018 and lakelands#436: a cursor of `find` holds one sort value per key of the `order_by` its first page was read with; handed to a `find` whose `order_by` is longer or shorter, on a stored type or on a view, it is refused as invalid, naming the order, and never answers a page or `unavailable`
+- `a_cursor_continues_only_the_read_it_was_handed_out_for` — 018 and lakelands#419: a cursor carries a digest of the read it was handed out for, so `find` under another `where` or an `order_by` of the same length, `search` for other words or in named fields, and `query` with another start `where` or projection refuse it as invalid; another page size, `with_meta` or `total` continue it
 
 **feed**
 
 - `the_feed_answers_the_log_from_a_position_by_kind_and_type` — 004: `poll` answers the events from a position in log order, filtered by kind and type, with the position to poll from next and the head
 - `rebuilding_the_projection_changes_nothing_in_the_feed` — 001 and 004: the log is the truth and the projection an index; deleting and rebuilding the projection leaves every event as it was
-- `a_trigger_fires_on_every_write_whose_guard_holds` — 004: when a write makes a trigger's guard hold, `trigger_fired` is appended with it; a write under which the guard does not hold fires nothing
-- `an_object_set_change_is_written_only_when_membership_changes` — 004: a write that moves a record into or out of an object set appends `object_set_changed`; one that leaves membership as it was appends none
+- `a_trigger_fires_on_every_write_whose_guard_holds` — 004 and 015, extended: when a write makes a trigger's guard hold, `trigger_fired` is appended with it, and the write's answer names the trigger, `through` its position; a write under which the guard does not hold fires nothing and answers nothing more; a retry answers the same, and an acceptance what the write it applied set off
+- `an_object_set_change_is_written_only_when_membership_changes` — 004 and 015, extended: a write that moves a record into or out of an object set appends `object_set_changed`, and its answer names the set as joined or left; one that leaves membership as it was appends none and names none
+- `a_trigger_whose_guard_the_writer_may_not_read_is_not_named` — 015, extended, and 024: a write's answer names a trigger it fired, or an object set its record joined or left, only if `describe` lists it to the writer; one whose condition reads a field the writer may not read is left out, and `through` still covers it
 - `polling_from_next_in_small_pages_sees_every_matching_event_once_in_order` — 004: a consumer that polls from the `next` each answer gives, in pages of one or two events and with writes landing between polls, sees every matching event once, in log order; this is the position a deliverer keeps
 - `a_poll_with_a_limit_of_zero_answers_one_event` — seams, ChangeFeed: a limit of 0 is read as 1, so a consumer that passes 0 still moves forward instead of polling the same position for ever
 - `a_feed_filtered_by_key_answers_that_records_events_only` — 004 and lakelands#146: a feed filtered by types and keys answers exactly the events about those records, in log order, each once: its upserts, a trigger it fired, its object-set changes, a restrict, an unrestrict and its retire; with types empty a key matches in any type and verb_called passes too; kinds narrow it further; no event that names no record passes
@@ -438,6 +449,20 @@ belongs in the suite, not beside one engine:
 **reactions**
 
 - `a_trigger_fires_on_a_verbs_write` — 004 and 013: a verb's write fires the triggers whose guard holds and changes object sets in the same append, caused by that write, as any other write does
+- `a_sets_filter_from_describe_finds_the_members_its_events_record` — 004, and seams `Reading an object set`: for records written after a set is declared, `find` under the filter `describe` answers for the set returns exactly the records the latest `object_set_changed` of each says are in it, and `(f1) and not (f2)` returns the members of one set that are not in the other
+
+**set declared**
+
+- `a_sets_declaration_decides_the_membership_of_the_records_there` — 004, extended: a set declared over records already written appends, in its declaration's append and caused by its `declared`, an `object_set_changed` joining each live record its filter holds for and no other; declared again with another filter, it joins and leaves exactly the records the change moves; declared again unchanged, it appends none; and a later write decides against the membership so kept; past the lake's `max_set_changes` a declaration is refused `too_large`, naming the set and the ceiling, and appends nothing
+
+**set migrated**
+
+- `a_migration_decides_the_membership_of_the_records_it_migrates` — 004, extended: a migration appends, directly after its `migrated` and caused by it, an `object_set_changed` for each record whose membership under a set of the type changes as migrated, and none when it changes nothing a filter reads; its answer names each set joined or left once and `through` the changes, also when it adds a relation carried by links; a re-keyed member stays a member under its new key, after a rebuild too; past the lake's `max_set_changes` a migration is refused `too_large`, naming a set and the ceiling, and appends nothing; one that is also applied with a stale report, or is not lossless, is refused for that first
+
+**set rewritten**
+
+- `a_rekey_decides_the_sets_that_read_a_rewritten_reference` — 004, extended: a re-keying migration appends, caused by its `migrated`, an `object_set_changed` for each record whose membership changes once its references to the moved keys are rewritten: a record of the migrated type under its new key, and a record of another type that holds such a reference, naming that type; a set whose filter reads no rewritten reference gets none
+- `a_migration_decides_the_sets_over_its_link_types` — 004, extended: a migration that converts a relation's field appends, directly after its `migrated` and caused by it, an `object_set_changed` for each link whose membership under a set of the link type changes, and its answer names those sets; a re-key of the owner moves a link's membership with it and changes only the set that reads a rewritten end; after either, and after the lake is opened again and its projection rebuilt, `find` under each set's filter returns exactly the links the log says are in it, and a later write of the link leaves a set under its new key
 
 **link triggers**
 
@@ -452,6 +477,11 @@ belongs in the suite, not beside one engine:
 
 - `a_write_referencing_a_record_that_does_not_exist_is_refused` — 011 and the log format §5: a reference is the key of a record of its target type; a write naming no such record is refused whole, one naming an existing record is accepted
 - `a_reference_to_a_record_earlier_in_the_same_ingest_resolves` — 016 and the log format §5: an ingest's records are written in order, so a record may refer to one delivered before it in the same window
+
+**reads kept**
+
+- `a_migration_keeps_the_fields_a_declaration_reads` — 027, extended: a migration that drops a field read by a derived field of its type, by another type's derived relation to it, or by an object set, a trigger or a verb on it (its `requires`, a field it sets, the value it sets one from) is refused as invalid by its preflight, naming the reader and the field, and one that renames such a field names the new name too; so is one that drops a relation's field a trigger on the relation's link type reads, naming the link type; a migration that drops a field no declaration reads goes through; an author who is not shown the reader, as `describe` shows it, is told that a declaration reads the field and not its name, nor a field hidden from it, which its migration does not take away
+- `a_declaration_reads_only_fields_its_type_has` — 028, extended: `declare` and `apply` refuse as invalid, naming the declaration and the field and appending nothing, a derived field, an object set's `where`, a trigger's `when` (`changed` and `previous` included) and a verb's `requires` or the value it sets a field from that read a field the type does not have, and so does a migration's preflight for the type it migrates to; `payload.<name>` in a verb's value, `setting`, `now`, `today` and a guard's `retired` read no field and are accepted
 
 **aggregates**
 
@@ -481,10 +511,11 @@ belongs in the suite, not beside one engine:
 - `a_measure_reads_the_graph_at_the_position_it_is_asked_at` — 009 and 026: a measure `as_of` an earlier position counts the links live there, not a link written later
 - `components_past_the_lakes_max_graph_nodes_are_refused_too_large` — 018 and the location's limits: `components` whose records, over all components, would number more than `max_graph_nodes` are refused as too_large naming the ceiling, and nothing partial is answered
 - `a_measure_refuses_depth_where_to_order_by_and_one_way_components` — 018: a measure refuses a step `depth` or `where`, `to`, `order_by`, and a `components` step that does not walk `both`, each as invalid, rather than answer less than it seems to
+- `a_measure_is_read_whole_in_one_page_up_to_max_graph_nodes` — 026, extended, and the location's limits: a measure's `limit` may go up to the lake's `max_graph_nodes` where that is above `max_limit`, so one page answers the rows its small pages answer in turn, with no cursor; above that bound, and above `max_limit` for a `rows` projection, a `limit` is refused as invalid naming the bound
 
 **vector index**
 
-- `an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_floor` — 043, 025 and 029: a search over a vector field the `vector_index.<type>` setting names says `ranked_by: index`, ranks the index's candidates by the one cosine with ties by key, answers the same bytes when asked again, and finds on average at least the engine's floor of the brute-force reference's hits for k = 1, 10 and 100, with and without a filter, at the head and at an earlier position, after records were retired, vectors cleared and rewritten and records added; an engine without such an index answers the reference, a recall of 1
+- `an_indexed_vector_field_answers_its_index_set_at_the_engines_recall_floor` — 043, 025 and 029: a search over a vector field the `vector_index.<type>` setting names says `ranked_by: index`, ranks the index's candidates by the one cosine with ties by key, answers the same bytes when asked again, and finds on average at least the engine's floor of the brute-force reference's hits for k = 1, 10 and 100, with and without a filter, at the head and at an earlier position, after records were retired, vectors cleared and rewritten and records added; an engine without such an index answers the reference, a recall of 1; a vector search fused over several fields says `index` when any of them is named
 
 **embeddings**
 
@@ -534,6 +565,8 @@ belongs in the suite, not beside one engine:
 - `a_record_whose_values_from_the_source_were_all_cleared_stays` — 039: whose a record is, is read over the fields that hold a value: a record whose values from the source were all cleared holds nothing of it and stays, whether the source brought it in or set and cleared a value on another source's record, while a record still holding one is purged
 - `a_co_owned_purge_names_the_count_and_the_first_ten` — 039 and seams: a purge refused because records are co-owned names how many there are, and the first ten, never more
 - `a_value_a_backing_filled_makes_no_owner` — 039: a backed output is the lake's own computation, like a derived value; it makes no owner, so the source's purge retires the record
+- `a_preflight_appends_nothing_and_a_purge_that_repeats_its_id_is_stale_once_the_lake_moved` — 039, extended: `purge_preflight` appends nothing and answers the report the purge then answers, under an id; it is refused as the purge is for a co-owned record; a purge that repeats the id is refused as invalid, appending nothing, once the lake has moved or when the id is another source's, and otherwise purges
+- `a_purge_names_the_records_outside_it_that_refer_into_it` — 039, extended, 026 and 035: the preflight and the purge name, per relation, the live records the purge does not take that refer to a record it takes, by a `via` field or as a link record with an end inside, restricted ones included, by type and key only: how many, and the first ten in key order; a retired record, one the purge takes itself and a relation derived from matching values are not named, and the purge is not refused
 
 **value types**
 
@@ -595,6 +628,8 @@ belongs in the suite, not beside one engine:
 - `a_record_the_read_may_not_see_moves_no_hybrid_score` — 046 and 024: a hybrid search ranks each list among the hits the read may see, so a restricted record, or one its `where` leaves out, ranked above a visible hit moves neither that hit's rank nor its score
 - `every_page_of_a_hybrid_search_reads_one_ranking` — 046 and 029: a hybrid search fuses each list to the lake's `max_limit` ranks whatever the page, so its pages through a cursor answer the one ranking a single page answers, keys and the scores' bits
 - `a_search_that_reads_no_record_to_rank_answers_what_reading_them_answers` — 046: at the head, a hybrid search by a principal who sees every live record, without `where` or `valid_at`, ranks without reading a record, and answers the keys and the scores' bits the same search answers under a `where` that holds for every record, with restricted and retired records in the lake
+- `a_search_fuses_its_rankings_each_by_its_weight` — 046, extended, and 024: a vector search that names further fields in `also` ranks each field among the hits the read may see and fuses the rankings by weighted reciprocal rank, each adding `weight / (60 + rank)` in the order named, an absent weight being 1; it answers the keys and the scores' bits of that rule on every engine, a record without a vector in a field gains nothing from it, and a restricted record first in every ranking moves no score; a hybrid search weighs its text (`text_weight`) and its vector (`weight`) by the same rule, and weights of 1 answer what no weights answer
+- `a_weight_that_cannot_weigh_or_a_field_named_twice_is_refused_naming_it` — 046, extended: a weight of 0, below 0 or above 1 000 000, a `weight` on a vector search that names no other field, and a vector field named twice are each refused as invalid, naming the field or `text_weight`, before the principal's rights to the field are looked at
 
 **vocabulary**
 
@@ -639,7 +674,7 @@ belongs in the suite, not beside one engine:
 **triggers**
 
 - `a_transition_guard_fires_on_open_to_closed_only` — 004, extended: a guard `previous(status) = 'open' and status = 'closed'` fires on open → closed and not on draft → closed, open → open or a record created closed (`previous` is null for it); `previous` outside a guard is refused as invalid naming it
-- `a_guard_tells_a_retirement_from_an_update` — 004, extended: a guard `status = 'closed' and not retired()` fires on closing a record and on updating a closed one but not on retiring it, and a guard `retired()` fires on the retirement only; the declaration calling `retired` is written in log format 7
+- `a_guard_tells_a_retirement_from_an_update` — 004, extended: a guard `status = 'closed' and not retired()` fires on closing a record and on updating a closed one but not on retiring it, and a guard `retired()` fires on the retirement only, caused by it, as it does on a proposed retirement when it is accepted; the declaration calling `retired` is written in log format 7
 - `a_revival_is_a_creation_to_a_guard` — 004, extended: an upsert of a retired record is a creation to a guard: `previous(f)` is null, `changed(f)` is true and `retired()` is false
 - `retired_outside_a_triggers_guard_is_refused_naming_it` — 004, extended: `retired()` in an object set's filter, a verb's `requires`, a derived field or a find's filter, and `retired` called with an argument in a guard, are refused as invalid naming `retired`, appending nothing
 - `a_reaction_past_its_triggers_max_depth_is_refused_naming_it` — 021, extended: a reactive write whose `cause` names a firing of a trigger with `max_depth` is refused too_deep naming the trigger when it is deeper than that ceiling, appending nothing, while the lake's own ceiling is higher; a reaction to another trigger, or naming no cause, at the same depth is taken
@@ -713,7 +748,7 @@ belongs in the suite, not beside one engine:
 - `nearest_ranks_by_cosine_with_ties_by_key` — seams §VectorIndex: nearest answers the exact top k by the cosine of the angle, best first, equal scores by key
 - `a_zero_vector_scores_zero_and_a_wrong_length_is_invalid` — seams §VectorIndex: a vector of zeros scores 0 against everything, and a query whose length differs from a stored vector's is refused as invalid
 - `put_replaces_a_vector_and_remove_forgets_it` — seams §VectorIndex: put replaces a record's vector for the field, remove forgets it, forgetting one that is absent does nothing, and count counts
-- `declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position` — seams §ProjectionView: declarations, membership, recorded outputs and applied ids are kept states too, read at a view's own position
+- `declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position` — seams §ProjectionView: declarations, membership (a record's, and a set's members of a type), recorded outputs and applied ids are kept states too, read at a view's own position
 - `a_later_output_for_the_same_call_replaces_the_earlier_from_its_position` — 022, extended, and seams §ProjectionView: the log may hold two outputs for one seam and input (a failure, then the answer a redeclaration asked for); the later one holds from its position, the earlier one before it
 - `the_first_applied_position_is_kept` — seams §ProjectionStore: marking an id applied twice keeps the first position, so a redelivery is recognised where the event first took effect
 - `proposals_filter_by_state_and_type_newest_first` — seams §ProjectionView: proposals match the filter's state and type, a call's type being its verb's `on`, newest first by their latest state, then by id

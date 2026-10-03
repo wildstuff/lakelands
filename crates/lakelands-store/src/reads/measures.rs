@@ -12,13 +12,11 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 
-use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Search, Walk};
-use lakelands_api::read::{Get, ReadAt};
-use lakelands_api::{Error, RecordKey, RelationName, Result, Value};
-use lakelands_core::expr::Place;
+use lakelands_api::query::{Depth, Pattern, Projection, QueryResult, Walk};
+use lakelands_api::{RecordKey, RelationName, Result, Value};
 use lakelands_core::graph::{self, Components, Node};
 
-use super::{CursorState, Reader, Visible, condition, core_derive, encode, invalid, rights};
+use super::{CursorState, Reader, Visible, encode, invalid};
 
 /// The records a seed page reads at once.
 const PAGE: usize = 256;
@@ -73,7 +71,7 @@ impl Reader<'_> {
     /// have been checked against the declarations.
     pub(super) fn measure(&self, p: &Pattern, limit: usize) -> Result<QueryResult> {
         let params = self.bound_params(&p.start.ty);
-        let offset = super::offset(p.cursor.as_ref(), &p.start.ty, &params)?;
+        let offset = super::offset(p.cursor.as_ref(), p, &params)?;
         let hidden = Visible { reader: self };
         let (rows, more) = match p.project {
             Projection::Degree => {
@@ -150,6 +148,7 @@ impl Reader<'_> {
                 params,
                 door: "query".into(),
                 ty: Some(p.start.ty.clone()),
+                of: super::pattern_read(p),
             })
         });
         Ok(QueryResult::Rows { rows, next_cursor })
@@ -162,49 +161,21 @@ impl Reader<'_> {
         let decl = self.visible_type(&p.start.ty)?.clone();
         let ty = decl.name.clone();
         if let Some(key) = &p.start.key {
-            let get = Get {
-                key: key.clone(),
-                with_meta: false,
-                at: ReadAt::default(),
-                params: p.start.params.clone(),
-            };
-            return match self.get(&ty, &get) {
-                Ok(_) => each((ty, key.clone())),
-                Err(Error::NotFound { .. }) => Ok(()),
-                Err(e) => Err(e),
+            return if self.start_found(p, key)? {
+                each((ty, key.clone()))
+            } else {
+                Ok(())
             };
         }
         if let Some(mode) = &p.start.search {
-            let s = Search {
-                ty: ty.clone(),
-                mode: mode.clone(),
-                k: self.lake.limits.max_limit,
-                cursor: None,
-                filter: p.start.filter.clone(),
-                with_meta: false,
-                at: ReadAt::default(),
-            };
-            let mut keys: Vec<RecordKey> = self
-                .search(&s)?
-                .hits
-                .into_iter()
-                .map(|h| h.record.key)
-                .collect();
+            let mut keys = self.start_hits(p, mode)?;
             keys.sort();
             for key in keys {
                 each((ty.clone(), key))?;
             }
             return Ok(());
         }
-        let filter = p
-            .start
-            .filter
-            .as_ref()
-            .map(|c| condition(c, Place::Record, "start where"))
-            .transpose()?;
-        if let Some(e) = &filter {
-            rights::check_probe(self.who, &decl, core_derive::reads(e).iter())?;
-        }
+        let filter = self.record_filter(&decl, p.start.filter.as_ref(), "start where")?;
         if decl.view.is_some() {
             for r in self.records(&decl, filter.as_ref())? {
                 each((r.ty, r.key))?;
@@ -229,7 +200,7 @@ impl Reader<'_> {
 }
 
 /// One page of rows already in their order, and whether more follow.
-fn page(
+pub(super) fn page(
     all: Vec<BTreeMap<String, Value>>,
     offset: usize,
     limit: usize,

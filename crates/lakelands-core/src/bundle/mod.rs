@@ -320,9 +320,8 @@ impl std::error::Error for BundleError {}
 
 impl BundleError {
     fn new(file: &str, problem: Problem, message: String) -> BundleError {
-        let file = file.to_owned();
         BundleError {
-            file,
+            file: file.to_owned(),
             problem,
             message,
         }
@@ -659,10 +658,8 @@ fn check_references(
         let mut fail = |problem: Problem, message: String| {
             errors.push(BundleError::new(file, problem, message));
         };
-        let has =
-            |ty: &lakelands_api::ontology::TypeDecl, f: &str| ty.fields.iter().any(|d| d.name == f);
         let mut want = |at: String, field: &str, of: &lakelands_api::ontology::TypeDecl| {
-            if !has(of, field) {
+            if !of.fields.iter().any(|d| d.name == field) {
                 fail(
                     Problem::UnknownReference,
                     format!(

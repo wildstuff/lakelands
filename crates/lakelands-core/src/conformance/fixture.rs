@@ -15,7 +15,7 @@ use std::task::{Context, Poll};
 
 use futures_core::Stream;
 use lakelands_api::ontology::{
-    Authority, EmbedDecl, FieldDecl, Measure, StorageKind, TypeDecl, ViewDecl,
+    Authority, EmbedDecl, FieldDecl, Measure, StorageKind, TypeDecl, ViewDecl, ViewParam,
 };
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{Depth, Pattern, Projection, Start, Step, Walk};
@@ -23,8 +23,8 @@ use lakelands_api::read::{AggFunc, AggMeasure, Direction, Order, OrderBy};
 use lakelands_api::write::Declaration;
 use lakelands_api::{
     Access, Catalog, Committed, Error, FieldName, Find, Found, Get, Grants, LakeStore, Outcome,
-    Patch, Position, Principal, PrincipalKind, ReadAt, Record, RecordKey, Refusal, SourceId,
-    SourceRecord, SourceStream, TypeName, Value, WriteContext, WriteOpts,
+    Params, Patch, Position, Principal, PrincipalKind, ReadAt, Record, RecordKey, Refusal,
+    SourceId, SourceRecord, SourceStream, TypeName, Value, WriteContext, WriteOpts,
 };
 use rust_decimal::Decimal;
 
@@ -210,17 +210,20 @@ impl Lake {
         Ok(d.must("describing the lake as the owner")?.data)
     }
 
+    /// The executor `describe` names for `verb` to the owner, and whether
+    /// it says it is bound.
+    pub async fn executor_of(&self, verb: &str) -> Result<Option<(String, bool)>, Failure> {
+        let d = self.describe().await?;
+        let v = d.verbs.into_iter().find(|v| v.name.as_str() == verb);
+        Ok(v.and_then(|v| v.executor).map(|e| (e.name, e.bound)))
+    }
+
     /// The type `ty` as `describe` answers it to the owner at the head.
     pub async fn describe_type(
         &self,
         ty: &str,
     ) -> Result<lakelands_api::describe::TypeDescription, Failure> {
-        let (t, what) = (
-            TypeName::from(ty),
-            format!("describing `{ty}` as the owner"),
-        );
-        let d = self.cat.describe_type(&self.own, &t, ReadAt::default());
-        Ok(d.await.must(&what)?.data)
+        describe_type(self.cat.as_ref(), &self.own, ty).await
     }
 
     /// Declares `d` as the owner; `what` names it if that fails.
@@ -334,6 +337,20 @@ pub fn field_access(
 pub fn field_writer(store: &dyn LakeStore, id: &str, ty: &str, fields: &[&str]) -> Principal {
     let fields: Vec<_> = fields.iter().map(|f| (*f, Access::Write)).collect();
     field_access(store, id, ty, &fields)
+}
+
+/// The type `ty` as `describe` answers it to `who` at the head.
+pub async fn describe_type(
+    cat: &dyn Catalog,
+    who: &Principal,
+    ty: &str,
+) -> Result<lakelands_api::describe::TypeDescription, Failure> {
+    let (t, what) = (
+        TypeName::from(ty),
+        format!("describing `{ty}` as `{}`", who.writer()),
+    );
+    let d = cat.describe_type(who, &t, ReadAt::default());
+    Ok(d.await.must(&what)?.data)
 }
 
 /// A field of a bare storage kind, authored, optional, with every other
@@ -467,6 +484,22 @@ pub fn count_view(name: &str, source: &str, by: &str) -> TypeDecl {
     view_of(name, source, &[by], fields, &[("n", "count()")])
 }
 
+/// A find of every record, binding `params`.
+pub fn bound(params: Params) -> Find {
+    Find {
+        params,
+        ..Find::default()
+    }
+}
+
+/// A view's parameter `name`, of `kind`.
+pub fn param(name: &str, kind: StorageKind) -> ViewParam {
+    ViewParam {
+        name: name.into(),
+        kind,
+    }
+}
+
 /// A find of the records `filter` holds for.
 pub fn find_where(filter: &str) -> Find {
     Find {
@@ -490,6 +523,17 @@ pub fn agg(name: &str, func: AggFunc, field: Option<&str>) -> AggMeasure {
         name: FieldName::from(name),
         func,
         field: field.map(FieldName::from),
+    }
+}
+
+/// A find of `measures` over every record, with no `group_by`.
+pub fn aggregate(measures: Vec<AggMeasure>) -> Find {
+    Find {
+        aggregate: Some(lakelands_api::read::Aggregate {
+            measures,
+            group_by: Vec::new(),
+        }),
+        ..Find::default()
     }
 }
 

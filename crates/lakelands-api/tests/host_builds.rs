@@ -99,4 +99,19 @@ fn a_host_builds_every_search_mode_through_its_constructor() {
         };
         assert_eq!(named, kind);
     }
+    // A mode built before the weights serialises as it did, so a cursor
+    // handed out for it still continues it; the new members read by name.
+    let plain = serde_json::to_value(SearchMode::vector("v", vec![1.0])).unwrap();
+    let wire = serde_json::json!({"mode": "vector", "field": "v", "vector": [1.0]});
+    assert_eq!(plain, wire);
+    let wire = serde_json::json!({"mode": "vector", "field": "v", "vector": [1.0],
+        "weight": 2.0, "also": [{"field": "w", "vector": [0.5]}]});
+    let mode: SearchMode = serde_json::from_value(wire).unwrap();
+    let fields: Vec<_> = mode
+        .vectors()
+        .into_iter()
+        .map(|v| (v.0.as_str(), v.2))
+        .collect();
+    assert_eq!(fields, [("v", Some(2.0)), ("w", None)]);
+    assert_eq!(mode.misfit(), None);
 }

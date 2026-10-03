@@ -375,8 +375,19 @@ impl LakeStore for MockLake {
         aging::run(&self.shared, &mut self.shared.log(), today)
     }
 
-    async fn purge_source(&self, source: &SourceId) -> Result<lakelands_api::write::PurgeReport> {
-        purge::run(&self.shared, &mut self.shared.log(), source)
+    async fn purge_source(
+        &self,
+        source: &SourceId,
+        id: Option<&str>,
+    ) -> Result<lakelands_api::write::PurgeReport> {
+        purge::run(&self.shared, &mut self.shared.log(), source, id)
+    }
+
+    async fn purge_preflight(
+        &self,
+        source: &SourceId,
+    ) -> Result<lakelands_api::write::PurgeReport> {
+        purge::preflight(&self.shared.log(), source)
     }
 
     async fn position_at(&self, known_at: Timestamp) -> Result<Option<Position>> {

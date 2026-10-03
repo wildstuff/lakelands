@@ -124,6 +124,13 @@ reshapes stored records is a migration there too, preflighted when it is
 proposed and again when it is accepted
 (`docs/decisions/013-verbs-run-by-declared-risk.md`, extended).
 
+A value type's tightening may be proposed the same way (lakelands#476):
+its preflight runs at the proposal and again at the acceptance, and it
+is applied only while every stored value fits and the value type is
+still the declaration it was proposed on. The refusal of a narrowed
+declaration names both ways: the preflight, for a holder of `schema`,
+and the proposal.
+
 ## Extended: an annotation is a change of meaning
 
 A revision that changes only a declaration's `annotations` reshapes no
@@ -163,6 +170,93 @@ is also checked as `declare` would check it against the new shape, so a
 grouping field whose kind no key is made of is refused too. A field no
 view reads migrates as before.
 
+## Extended: a migration keeps what a declaration reads (lakelands#461)
+
+A view is not the only declaration that reads a type's fields. A field a
+migration drops or renames away evaluates as null from then on, so a
+set's filter, a trigger's guard or a verb's `requires` over it would
+stop holding, or hold where it should not, and nothing would say so. So
+the preflight refuses a migration that drops or renames a field read by
+a declaration in force, as invalid, naming the declaration and the
+field, in the form it uses for a view:
+- a derived field of the migrated type: what its expression reads;
+- an object set of the type: its `where`;
+- a trigger on the type: its `when`, `changed(f)` and `previous(f)`
+  included;
+- a verb on the type: its `requires`, each field it sets, and what the
+  value it sets one from reads (`payload.<name>` is the call's, no
+  field);
+- another type's derived relation to the type: the field of the type
+  each pair matches;
+- an object set or a trigger on the link type of one of the type's
+  relations: the relation's fields it reads. A relation's fields are its
+  link type's, and the type's migration is what changes them, so the
+  refusal names the link type as the one the field is read of.
+
+The refusal names the reading declaration only to an author who is
+shown it, by the rule `describe` uses for that kind of declaration in
+force: a proposer without the `schema` grant is not shown a trigger, a
+set or a verb whose expression reads a field it may not know of. Such an
+author is told that a declaration reads the field, without its name
+("after the migration of `invoice`, a declaration reads `note` of
+`invoice`, which the migration drops"). The field it names is one the
+author knows of: a field hidden from it was not its to leave out, and its
+migration does not take it away (lakelands#475). The refusal stays
+`invalid` and can be acted on: the author keeps the field, or asks someone who is
+shown the reader (lakelands#495). At an acceptance the refusal goes to
+the one who accepts, who holds the `schema` grant and is shown every
+declaration.
+
+One function gathers these reads, beside the one for a view. The host
+declares the reader again first, so that it reads the shape the
+migration leaves, then migrates. A field no declaration reads migrates
+as before. An aging rule and an index setting are records, not
+declarations, and stay outside the rule: each already skips a field its
+type no longer has.
+
+## Extended: a removed relation is listed as a removed field is (lakelands#437)
+
+A relation carried by link records that a migration removes keeps its
+links as history, and takes them from the head: the walk follows only
+declared relations, and the link doors refuse a relation that is gone.
+That is what a removed field does to its values, so the preflight says
+it the same way: the relation is one entry in the report's `dropped`,
+named by the relation, with the number of its live links. A relation
+whose links are all unlinked removes nothing from the head and is not
+listed. The entry does not make the report lossy, as a removed field
+does not: removal is the migration's intent, named before it is applied.
+
+A relation removed and another added is that and nothing more: the old
+name is listed with its links, and the new relation starts with none. A
+rename of a relation is not inferred, as a field's is not.
+
+## Extended: a shape is its author's view (lakelands#475)
+
+A principal writes a type's new shape from what `describe` answers it,
+and `describe` leaves out a field the principal may not know of. Read
+literally, such a shape removes that field: a principal who was never
+told of `salary` would propose it away, and the lake could not tell that
+from a removal it meant. So a migration's `to`, and a type declared
+again, is read as its author's view of the type:
+- a field hidden from the author (`rights::field_access` answering
+  `none`, by its grant or through a field it is built from) is put back
+  as declared, at its declared place, and so is such a link field of
+  each relation the shape keeps;
+- the report is made on the completed shape: `dropped` lists what the
+  author saw and removed, and never a field the author may not know of;
+  the report id names the completed migration;
+- `migrate`, `migrate_apply`, `declare`, `apply` and `propose` complete
+  the shape from their caller's rights. A proposal logs the completed
+  shape, so `accept` asks no one's rights, and a reviewer who may not
+  see the field cannot remove it by accepting either.
+
+No refusal on the way names a field its author may not know of. A shape
+that names one declares it twice, which is how a taken name is refused.
+A rename from one is a rename from no field. A shape that removes a
+field a hidden one is built from is refused on the field it removes,
+saying only that another field reads it. A masked or a write-only field
+is shown to the principal, and stays its to remove.
+
 ## Extended: the order of refusals (lakelands#338)
 
 The migration doors refuse in this order, in the frame every write
@@ -171,11 +265,15 @@ door shares (016, extended).
 **`migrate_apply`**: the `schema` grant (`not_granted`); the preflight:
 the type is declared (`not_found`), not every key field is taken away
 (`invalid`), every new key field is required (`invalid`, naming it),
-the new declaration's own checks, its history converts, a narrowed
-cardinality breaks no live link (`constraint`); then the report id is
-the one the preflight answered (`invalid`); then the migration is
-lossless (`migration`, with the report); then each embedding's model is
-bound (`unbound`).
+the new declaration's own checks, every field a view or another
+declaration in force reads is kept (`invalid`, naming the reader), the
+type it migrates to reads only fields it has (`invalid`), its history
+converts, a narrowed cardinality breaks no live link (`constraint`);
+then the report id is the one the preflight answered (`invalid`); then
+the migration is lossless (`migration`, with the report); then the set
+memberships it changes are within the lake's `max_set_changes`
+(`too_large`, naming the set); then each embedding's model is bound
+(`unbound`).
 
 **`migrate_value_type_apply`**: the `schema` grant; the value type is
 declared, accepts something other than it does, and keeps its `kind`

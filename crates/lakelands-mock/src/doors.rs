@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use lakelands_api::describe::{
-    FieldDescription, LakeDescription, LakeRights, TypeAccess, TypeDescription, TypeLifecycle,
-    TypeLineage, TypeRights, VerbDescription,
+    ExecutorDescription, FieldDescription, LakeDescription, LakeRights, TypeAccess,
+    TypeDescription, TypeLifecycle, TypeLineage, TypeRights, VerbDescription,
 };
 use lakelands_api::error::{Error, Missing, Refusal, Result};
 use lakelands_api::event::{EventBody, EventId};
@@ -16,7 +16,7 @@ use lakelands_api::id::{
     VerbName, Version,
 };
 use lakelands_api::ontology::{
-    Authority, FieldDecl, Risk, TypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl,
+    Authority, FieldDecl, RelationDecl, Risk, TypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl,
 };
 use lakelands_api::principal::{Access, Principal, PrincipalKind, WriteContext};
 use lakelands_api::query::{Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Walk};
@@ -191,19 +191,33 @@ fn reserved(name: &str, who: &Principal) -> bool {
 /// A page token: the position the first page was read at, and how many
 /// rows came before this page.
 /// A cursor for the page at `offset` of an answer read at `p` through
-/// `door` on `ty`: it continues that answer and no other (018).
-fn cursor(p: Position, offset: usize, door: &str, ty: Option<&TypeName>) -> Cursor {
+/// `door` on `ty`, by the read whose digest is `of` ([`read_of`]): it
+/// continues that answer and no other (018).
+fn cursor(p: Position, offset: usize, door: &str, ty: Option<&TypeName>, of: &str) -> Cursor {
     let ty = ty.map_or("", TypeName::as_str);
-    Cursor(format!("{}.{offset}.{door}.{ty}", p.0))
+    Cursor(format!("{}.{offset}.{door}.{of}.{ty}", p.0))
+}
+
+/// The digest of what decides a read's rows and their order, as the
+/// store keeps one in its cursors; the mock's lives as long as its lake.
+fn read_of(shape: serde_json::Result<String>) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    shape.unwrap_or_default().hash(&mut h);
+    format!("{:016x}", h.finish())
 }
 
 /// A cursor's position and offset, when it was handed out for `door` on
-/// `ty`; any other use is refused, naming what differs.
-fn uncursor(c: &Cursor, door: &str, ty: Option<&TypeName>) -> Result<(Position, usize)> {
-    let mut parts = c.0.splitn(4, '.');
-    let (Some(p), Some(o), Some(d), Some(t)) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
+/// `ty` by the read `of`; any other use is refused, naming what differs.
+fn uncursor(c: &Cursor, door: &str, ty: Option<&TypeName>, of: &str) -> Result<(Position, usize)> {
+    let mut parts = c.0.splitn(5, '.');
+    let (Some(p), Some(o), Some(d), Some(f), Some(t)) = (
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+    ) else {
         return Err(invalid("the cursor was not issued by this lake"));
     };
     let (Ok(p), Ok(o)) = (p.parse(), o.parse()) else {
@@ -219,6 +233,12 @@ fn uncursor(c: &Cursor, door: &str, ty: Option<&TypeName>) -> Result<(Position, 
             "the cursor was handed out for {}, not {}; continue it there",
             on(d, t),
             on(door, here)
+        )));
+    }
+    if f != of {
+        return Err(invalid(format!(
+            "the cursor was handed out for another `{door}`; continue it with the read its \
+             first page was read with"
         )));
     }
     Ok((Position(p), o))
@@ -320,13 +340,13 @@ fn resume_after(
 /// A page of `rows` from `offset`, and the cursor after it.
 fn page<T>(
     rows: Vec<T>,
-    (at, door, ty): (Position, &str, Option<&TypeName>),
+    (at, door, ty, of): (Position, &str, Option<&TypeName>, &str),
     offset: usize,
     limit: usize,
 ) -> (Vec<T>, Option<Cursor>) {
     let more = rows.len() > offset + limit;
     let rows: Vec<T> = rows.into_iter().skip(offset).take(limit).collect();
-    (rows, more.then(|| cursor(at, offset + limit, door, ty)))
+    (rows, more.then(|| cursor(at, offset + limit, door, ty, of)))
 }
 
 impl MockCatalog {
@@ -387,9 +407,21 @@ impl MockCatalog {
         Ok((at, State::fold(&log.events[..=at.0 as usize])))
     }
 
-    fn limit(&self, asked: Option<u32>) -> usize {
+    /// The page a read asks for, refused outside the lake's bounds with
+    /// the store's sentence; a measure's may be as large as the lake's
+    /// `max_graph_nodes`, as the store's (026).
+    fn limit(&self, asked: Option<u32>, measure: bool) -> Result<usize> {
         let l = &self.shared.limits;
-        asked.unwrap_or(l.default_limit).clamp(1, l.max_limit) as usize
+        let max = if measure {
+            l.max_limit.max(l.max_graph_nodes)
+        } else {
+            l.max_limit
+        };
+        let asked = asked.unwrap_or(l.default_limit);
+        if asked == 0 || asked > max {
+            return Err(invalid(format!("a limit is between 1 and {max}")));
+        }
+        Ok(asked as usize)
     }
 
     fn commit(&self, log: &mut Log, batch: Batch) {
@@ -405,6 +437,8 @@ impl MockCatalog {
         declaration: Declaration,
     ) -> Result<Position> {
         let (_, st) = self.state_at(log, None)?;
+        let mut declaration = declaration;
+        redeclared(&st, who, std::slice::from_mut(&mut declaration))?;
         check_declaration(&st, who, &declaration)?;
         trigger_ceiling(&declaration, self.shared.limits.max_reactive_depth)?;
         let (schema_hash, version) = identity_version(&st, &declaration);
@@ -868,14 +902,17 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
                         _ => {}
                     }
                 }
-                // As the store: a trigger may watch any declared type, the
-                // link types of relations carried by link records among them.
-                if reserved(ty.as_str(), who) && !matches!(other, Declaration::Trigger(_)) {
+                // As the store: a trigger may watch any declared type, and an
+                // object set may hold its records, the link types of
+                // relations carried by link records among them.
+                let on_any = matches!(other, Declaration::Trigger(_) | Declaration::ObjectSet(_));
+                if reserved(ty.as_str(), who) && !on_any {
                     return Err(refused(Refusal::Reserved));
                 }
             }
         }
     }
+    reads_its_type(st, d)?;
     let mut link_relations: Vec<(TypeName, RelationName)> = st
         .types
         .values()
@@ -1158,6 +1195,14 @@ fn describe_lake(lake: &LakeId, st: &State, who: &Principal) -> LakeDescription 
                     .collect(),
                 risk: v.risk,
                 external: matches!(v.effect, VerbEffect::External { .. }),
+                // The mock binds no executor.
+                executor: match &v.effect {
+                    VerbEffect::External { executor } => Some(ExecutorDescription {
+                        name: executor.clone(),
+                        bound: false,
+                    }),
+                    VerbEffect::Write { .. } => None,
+                },
                 description: v.description.clone(),
             })
             .collect(),
@@ -1839,6 +1884,27 @@ fn plan_run(
     plan_upsert(&by, batch, &v.on, key, patch, opts)
 }
 
+/// The preflight's report of a value type's tightening, refused while a
+/// stored value would not fit, with the count alone: a proposal names no
+/// misfit, as the store's does not.
+fn tightening(
+    st: &State,
+    who: &Principal,
+    head: Position,
+    to: &lakelands_api::ontology::ValueTypeDecl,
+) -> Result<lakelands_api::write::ValueTypeReport> {
+    check_new_value_type(st, who, to)?;
+    let report = crate::valuetypes::preflight(st, head, to)?;
+    if !report.fits {
+        return Err(invalid(format!(
+            "value type `{}` is not tightened: {} stored value(s) would not fit it; change \
+             them first.",
+            to.name, report.misfits
+        )));
+    }
+    Ok(report)
+}
+
 fn plan_propose(
     st: &State,
     batch: &mut Batch,
@@ -1847,6 +1913,13 @@ fn plan_propose(
     why: String,
     key: Option<lakelands_api::IdempotencyKey>,
 ) -> Result<(Position, ProposalId)> {
+    // A change of shape is read as its proposer's view, and logged so.
+    let mut write = write;
+    match &mut write {
+        ProposedWrite::Declare { declarations } => redeclared(st, who, declarations)?,
+        ProposedWrite::Migrate { migration, .. } => authored(st, who, migration)?,
+        _ => {}
+    }
     // A proposal is checked as its write would be, so that an accept
     // cannot smuggle a field its proposer may not write.
     match &write {
@@ -1882,12 +1955,12 @@ fn plan_propose(
         // A change of the ontology is checked as its door would check it;
         // the proposer needs no `schema` grant.
         ProposedWrite::Declare { declarations } => check_set(st, who, declarations)?,
-        ProposedWrite::Migrate { .. } => {}
+        ProposedWrite::Migrate { .. } | ProposedWrite::MigrateValueType { .. } => {}
     }
     let write = match write {
         ProposedWrite::Migrate { migration, .. } => {
             let head = Position(batch.peek().0.saturating_sub(1));
-            let report = preflight(st, head, &migration)?;
+            let report = preflight(st, head, &migration, who)?;
             if !report.lossless {
                 return Err(refused(Refusal::Migration {
                     report: Box::new(report),
@@ -1897,6 +1970,11 @@ fn plan_propose(
                 migration,
                 report: Box::new(report),
             }
+        }
+        ProposedWrite::MigrateValueType { to, .. } => {
+            let head = Position(batch.peek().0.saturating_sub(1));
+            let report = Box::new(tightening(st, who, head, &to)?);
+            ProposedWrite::MigrateValueType { to, report }
         }
         other => other,
     };
@@ -2015,6 +2093,65 @@ fn view_reads(v: &ViewDecl) -> Vec<(TypeName, Vec<FieldName>)> {
         .collect()
 }
 
+/// The fields of `ty` a declaration other than a view reads, as the store
+/// counts them: a derived field's expression on `ty` itself, the fields of
+/// `ty` a derived relation matches as its target, a set's `where`, a
+/// trigger's `when`, and a verb's `requires`, the fields it sets and what
+/// it sets them from (where `payload` is the call's).
+fn declaration_reads(d: &Declaration, ty: &TypeName) -> BTreeSet<FieldName> {
+    let of = |c: &Condition| named(c).unwrap_or_default();
+    match d {
+        Declaration::Type(t) => {
+            let own = t.fields.iter().filter(|_| &t.name == ty);
+            let matched = t.relations.iter().filter(|r| &r.target == ty);
+            own.filter_map(|f| f.derived.as_ref())
+                .flat_map(of)
+                .chain(
+                    matched
+                        .filter_map(|r| r.derived.as_ref())
+                        .flat_map(|m| m.pairs.iter().map(|p| p.to.clone())),
+                )
+                .collect()
+        }
+        Declaration::ObjectSet(s) if &s.of == ty => of(&s.filter),
+        Declaration::Trigger(t) if &t.on == ty => t.when.as_ref().map(of).unwrap_or_default(),
+        Declaration::Verb(v) if &v.on == ty => {
+            let mut names = v.requires.as_ref().map(of).unwrap_or_default();
+            if let VerbEffect::Write { set } = &v.effect {
+                for a in set {
+                    names.extend(of(&a.value).into_iter().filter(|n| n.as_str() != "payload"));
+                    names.insert(a.field.clone());
+                }
+            }
+            names
+        }
+        _ => BTreeSet::new(),
+    }
+}
+
+/// As the store: a declaration reads only fields its type has, the link
+/// type's when it names one.
+fn reads_its_type(st: &State, d: &Declaration) -> Result<()> {
+    let on = match d {
+        Declaration::Type(t) => Some(t),
+        Declaration::Verb(v) => st.types.get(&v.on).map(|o| &o.decl),
+        Declaration::Trigger(t) => st.types.get(&t.on).map(|o| &o.decl),
+        Declaration::ObjectSet(s) => st.types.get(&s.of).map(|o| &o.decl),
+        _ => None,
+    };
+    if let Some(on) = on
+        && let reads = declaration_reads(d, &on.name)
+        && let Some(n) = (reads.iter()).find(|n| field(on, n).is_none())
+    {
+        return Err(invalid(format!(
+            "{} reads `{n}`, which `{}` does not have",
+            d.what(),
+            on.name
+        )));
+    }
+    Ok(())
+}
+
 /// As the store: a view with parameters is bound only by a read that names
 /// it, so a pattern's step that arrives at one other than its start is
 /// refused before anything is read.
@@ -2029,8 +2166,124 @@ fn unbound_view(start: &TypeName, reached: &DeclaredType, relation: &RelationNam
     }
 }
 
+/// Reads `to`, a migration's or a redeclaration's shape of the type
+/// declared as `before`, as its author's view, as the store does: a field
+/// `who` may not know of is put back as declared, at its declared place,
+/// and so are such link fields of each relation `to` keeps. A shape that
+/// names one declares it twice, a rename from one is from no field, and a
+/// field one is built from is refused on that field.
+fn as_author(
+    who: &Principal,
+    before: &TypeDecl,
+    to: &mut TypeDecl,
+    renames: &[(FieldName, FieldName)],
+) -> Result<()> {
+    let hidden = |t: &TypeDecl, f: &FieldDecl| access(who, t, f) == Access::None;
+    let on = |f: &FieldName, message: String| Error::Refused {
+        field: Some(f.clone()),
+        reason: Refusal::Invalid { message },
+    };
+    let put_back = |t: &TypeDecl, declared: &[FieldDecl], fields: &mut Vec<FieldDecl>| {
+        for (i, f) in declared.iter().enumerate().filter(|(_, f)| hidden(t, f)) {
+            fields.insert(i.min(fields.len()), f.clone());
+        }
+    };
+    let unknown: Vec<&FieldDecl> = (before.fields.iter().filter(|f| hidden(before, f))).collect();
+    for f in &unknown {
+        if renames.iter().any(|(from, _)| from == &f.name) {
+            let name = &f.name;
+            return Err(invalid(format!(
+                "rename from `{name}`: no such field before the migration"
+            )));
+        }
+        if field(to, &f.name).is_some() {
+            return Err(on(
+                &f.name,
+                format!("type `{}` declares `{}` twice", to.name, f.name),
+            ));
+        }
+    }
+    put_back(before, &before.fields, &mut to.fields);
+    for r in &mut to.relations {
+        if let Some(old) = before.relations.iter().find(|o| o.name == r.name) {
+            let link = links::link_type(&before.name, old);
+            put_back(&link, &old.fields, &mut r.fields);
+        }
+    }
+    let mut reads = (unknown.iter().copied())
+        .flat_map(|f| (f.depends_on.iter()).chain(f.embed.iter().flat_map(|e| &e.from)));
+    match reads.find(|n| field(to, n).is_none()) {
+        Some(n) => {
+            let ty = &to.name;
+            Err(on(
+                n,
+                format!("`{n}` is read by another field of `{ty}` and cannot be removed"),
+            ))
+        }
+        None => Ok(()),
+    }
+}
+
+/// A migration read as its author's view of its type.
+fn authored(st: &State, who: &Principal, m: &mut Migration) -> Result<()> {
+    match st.types.get(&m.to.name) {
+        Some(before) => as_author(who, &before.decl, &mut m.to, &m.renames),
+        None => Ok(()),
+    }
+}
+
+/// Each type of `declarations` the lake declares already, read as its
+/// author's view of it.
+fn redeclared(st: &State, who: &Principal, declarations: &mut [Declaration]) -> Result<()> {
+    for d in declarations {
+        if let Declaration::Type(t) = d
+            && let Some(before) = st.types.get(&t.name)
+        {
+            as_author(who, &before.decl, t, &[])?;
+        }
+    }
+    Ok(())
+}
+
+/// A proposed shape without the fields its reader may not know of, a
+/// relation's link fields too: the proposal holds the completed shape.
+fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite) {
+    let shown = |t: &mut TypeDecl| {
+        let whole = t.clone();
+        t.fields.retain(|f| access(who, &whole, f) != Access::None);
+        for r in &mut t.relations {
+            let link = links::link_type(&whole.name, r);
+            r.fields.retain(|f| access(who, &link, f) != Access::None);
+        }
+    };
+    match write {
+        ProposedWrite::Migrate { migration, .. } => shown(&mut migration.to),
+        ProposedWrite::Declare { declarations } => {
+            for d in declarations {
+                if let Declaration::Type(t) = d {
+                    shown(t);
+                }
+            }
+        }
+        // A use is shown only in a field the reader may read; the report's
+        // totals stay whole, and a logged report fits, so it names no misfit.
+        ProposedWrite::MigrateValueType { report, .. } => {
+            let read = |ty: &TypeName, f: &FieldName| {
+                (st.types.get(ty)).is_some_and(|t| readable(st, who, t, f).is_ok())
+            };
+            report.fields.retain(|u| read(&u.ty, &u.field));
+        }
+        _ => {}
+    }
+}
+
 /// The migration's preflight over the lake as it stands.
-fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationReport> {
+fn preflight(
+    st: &State,
+    head: Position,
+    m: &Migration,
+    who: &Principal,
+) -> Result<MigrationReport> {
     let ty = &m.to.name;
     let t = st.types.get(ty).ok_or_else(|| no_type(ty))?;
     // As the store: a view changes, or becomes a stored type, by being
@@ -2085,6 +2338,70 @@ fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationRepor
             }
         }
     }
+    // As the store: so does every other declaration in force, in the
+    // store's order (types, verbs, triggers, object sets, each by name):
+    // it keeps the fields it reads of the type, and of each link type the
+    // migration changes.
+    let mut readers: Vec<Declaration> = (st.types.values())
+        .map(|o| {
+            Declaration::Type(if &o.decl.name == ty {
+                m.to.clone()
+            } else {
+                o.decl.clone()
+            })
+        })
+        .chain(st.verbs.values().cloned().map(Declaration::Verb))
+        .collect();
+    let (mut triggers, mut sets) = (st.triggers.clone(), st.object_sets.clone());
+    triggers.sort_by(|a, b| a.name.cmp(&b.name));
+    sets.sort_by(|a, b| a.name.cmp(&b.name));
+    readers.extend(triggers.into_iter().map(Declaration::Trigger));
+    readers.extend(sets.into_iter().map(Declaration::ObjectSet));
+    let changed: Vec<(&TypeDecl, TypeDecl)> = links::of(&m.to)
+        .into_iter()
+        .filter_map(|is| Some((&st.types.get(&is.name)?.decl, is)))
+        .collect();
+    let kept = changed.iter().map(|(was, is)| (*was, is));
+    for (was, is) in std::iter::once((&t.decl, &m.to)).chain(kept) {
+        for d in &readers {
+            let reads = declaration_reads(d, &was.name);
+            let gone = |n: &&FieldName| field(was, n).is_some() && field(is, n).is_none();
+            let said = |reader: String, n: &FieldName| {
+                let renamed = |(from, _): &&(FieldName, FieldName)| from == n && &is.name == ty;
+                let how = match m.renames.iter().find(renamed) {
+                    Some((_, to)) => format!("renames to `{to}`"),
+                    None => "drops".to_owned(),
+                };
+                invalid(format!(
+                    "after the migration of `{ty}`, {reader} reads `{n}` of `{}`, which the \
+                     migration {how}",
+                    is.name
+                ))
+            };
+            let Some(n) = reads.iter().find(gone) else {
+                continue;
+            };
+            // As the store: the reader is named only to an author `describe`
+            // shows it to; another is told that a declaration reads the
+            // field, which is one it knows of (a hidden one was put back).
+            let seen = describe_lake(&who.lake, st, who);
+            let shown = match d {
+                Declaration::Type(t) => seen.types.iter().any(|s| s.name == t.name),
+                Declaration::Verb(v) => seen.verbs.iter().any(|s| s.name == v.name),
+                Declaration::Trigger(t) => seen.triggers.iter().any(|s| s.name == t.name),
+                Declaration::ObjectSet(o) => seen.object_sets.iter().any(|s| s.name == o.name),
+                _ => true,
+            };
+            let reader = if shown {
+                d.what()
+            } else {
+                "a declaration".to_owned()
+            };
+            return Err(said(reader, n));
+        }
+    }
+    // As the store: and the type it migrates to reads only fields it has.
+    reads_its_type(st, &Declaration::Type(m.to.clone()))?;
     let renamed = |old: &FieldName| -> FieldName {
         m.renames
             .iter()
@@ -2129,7 +2446,7 @@ fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationRepor
     }
     // Fields the new declaration no longer has under any name: the
     // migration drops them, and the report says how many values that is.
-    let dropped: Vec<(FieldName, u64)> = t
+    let mut dropped: Vec<(FieldName, u64)> = t
         .decl
         .fields
         .iter()
@@ -2142,6 +2459,20 @@ fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationRepor
             (old.name.clone(), holding)
         })
         .collect();
+    // A relation the migration removes takes its live links from the
+    // head: it is listed with their number, as the store lists it.
+    for lt in links::of(&t.decl) {
+        let live = st
+            .records
+            .values()
+            .filter(|r| r.ty == lt.name && !r.retired);
+        let relation = links::parts(&lt.name).map(|(_, r)| r);
+        if let (Some(r), n @ 1..) = (relation, live.count() as u64)
+            && !m.to.relations.iter().any(|kept| kept.name == r)
+        {
+            dropped.push((FieldName::from(r.as_str()), n));
+        }
+    }
     let mut report = MigrationReport {
         ty: ty.clone(),
         from_schema_hash: t.schema_hash.clone(),
@@ -2220,9 +2551,14 @@ impl Catalog for MockCatalog {
 
     async fn find(&self, who: &Principal, ty: &TypeName, find: Find) -> Result<Reply<Found>> {
         self.admit(who)?;
+        let of = read_of(serde_json::to_string(&(
+            &find.filter,
+            &find.order_by,
+            find.at.valid_at,
+        )));
         let (pinned, offset) = match &find.cursor {
             Some(c) => {
-                let (p, o) = uncursor(c, "find", Some(ty))?;
+                let (p, o) = uncursor(c, "find", Some(ty), &of)?;
                 (Some(p), o)
             }
             None => (find.at.as_of, 0),
@@ -2316,9 +2652,9 @@ impl Catalog for MockCatalog {
             .collect();
         let (rows, next_cursor) = page(
             rows,
-            (position, "find", Some(ty)),
+            (position, "find", Some(ty), &of),
             offset + skip,
-            self.limit(find.limit),
+            self.limit(find.limit, false)?,
         );
         Ok(Reply {
             position,
@@ -2377,6 +2713,7 @@ impl Catalog for MockCatalog {
             position: Position(position),
             version: Some(version),
             output: None,
+            set_off: Default::default(),
         })
     }
 
@@ -2409,6 +2746,7 @@ impl Catalog for MockCatalog {
             position,
             version: Some(version),
             output: None,
+            set_off: Default::default(),
         })
     }
 
@@ -2469,6 +2807,7 @@ impl Catalog for MockCatalog {
             position: Position(position),
             version: Some(version),
             output: None,
+            set_off: Default::default(),
         })
     }
 
@@ -2508,6 +2847,7 @@ impl Catalog for MockCatalog {
             position,
             version: Some(version),
             output: None,
+            set_off: Default::default(),
         })
     }
 
@@ -2550,6 +2890,7 @@ impl Catalog for MockCatalog {
                 position: Position(batch.peek().0 - 1),
                 version: Some(version),
                 output: None,
+                set_off: Default::default(),
             }
         } else {
             let why = format!(
@@ -2578,9 +2919,18 @@ impl Catalog for MockCatalog {
 
     async fn query(&self, who: &Principal, pattern: Pattern) -> Result<Reply<QueryResult>> {
         self.admit(who)?;
+        let of = read_of(serde_json::to_string(&Pattern {
+            cursor: None,
+            limit: None,
+            at: ReadAt {
+                as_of: None,
+                ..pattern.at
+            },
+            ..pattern.clone()
+        }));
         let (pinned, offset) = match &pattern.cursor {
             Some(c) => {
-                let (p, o) = uncursor(c, "query", Some(&pattern.start.ty))?;
+                let (p, o) = uncursor(c, "query", Some(&pattern.start.ty), &of)?;
                 (Some(p), o)
             }
             None => (pattern.at.as_of, 0),
@@ -2591,12 +2941,14 @@ impl Catalog for MockCatalog {
             .visible(who, &start.ty)
             .ok_or_else(|| no_type(&start.ty))?;
         bound(&t.decl, &start.params)?;
+        let measure = matches!(pattern.project, Projection::Degree | Projection::Components);
+        let limit = self.limit(pattern.limit, measure)?;
         if start.search.is_some() || pattern.to.is_some() {
             return Err(invalid(
                 "the in-memory mock starts a pattern from a key or a filter only",
             ));
         }
-        if matches!(pattern.project, Projection::Degree | Projection::Components) {
+        if measure {
             measures::check(&pattern)?;
             for step in &pattern.steps {
                 let declared = st.types.values().any(|o| {
@@ -2641,9 +2993,9 @@ impl Catalog for MockCatalog {
             )?;
             let (rows, next_cursor) = page(
                 rows,
-                (position, "query", Some(&pattern.start.ty)),
+                (position, "query", Some(&pattern.start.ty), &of),
                 offset,
-                self.limit(pattern.limit),
+                limit,
             );
             return Ok(Reply {
                 position,
@@ -2672,57 +3024,52 @@ impl Catalog for MockCatalog {
         let mut scope_ty = t;
         for step in &pattern.steps {
             // A step over a relation the type does not declare is
-            // refused, not answered empty.
-            let (target, via, forward, link_type) = match step.walk {
-                Walk::Out => {
-                    let rel = scope_ty
+            // refused, not answered empty. A step naming a relation's
+            // `inverse` walks that relation the other way; a relation
+            // declared under the name wins.
+            let forward = |named: &dyn Fn(&RelationDecl) -> bool| {
+                let r = scope_ty.decl.relations.iter().find(|r| named(r))?;
+                let link = links::name(&scope_ty.decl.name, &r.name);
+                Some((
+                    r.target.clone(),
+                    (r.via.clone(), r.derived.clone()),
+                    true,
+                    link,
+                ))
+            };
+            let backward = |named: &dyn Fn(&RelationDecl) -> bool| {
+                st.types.values().find_map(|o| {
+                    let r = o
                         .decl
                         .relations
                         .iter()
-                        .find(|r| r.name == step.relation);
-                    match rel {
-                        Some(r) => (
-                            r.target.clone(),
-                            (r.via.clone(), r.derived.clone()),
-                            true,
-                            links::name(&scope_ty.decl.name, &r.name),
-                        ),
-                        None => {
-                            return Err(invalid(format!(
-                                "`{}` declares no relation `{}`",
-                                scope_ty.decl.name, step.relation
-                            )));
-                        }
-                    }
-                }
-                _ => {
-                    let back = st.types.values().find_map(|o| {
-                        o.decl
-                            .relations
-                            .iter()
-                            .find(|r| {
-                                r.target == scope_ty.decl.name
-                                    && (r.inverse.as_ref() == Some(&step.relation)
-                                        || r.name == step.relation)
-                            })
-                            .map(|r| {
-                                (
-                                    o.decl.name.clone(),
-                                    (r.via.clone(), r.derived.clone()),
-                                    links::name(&o.decl.name, &r.name),
-                                )
-                            })
-                    });
-                    match back {
-                        Some((ty, via, lt)) => (ty, via, false, lt),
-                        None => {
-                            return Err(invalid(format!(
-                                "no relation `{}` reaches `{}`",
-                                step.relation, scope_ty.decl.name
-                            )));
-                        }
-                    }
-                }
+                        .find(|r| r.target == scope_ty.decl.name && named(r))?;
+                    let link = links::name(&o.decl.name, &r.name);
+                    Some((
+                        o.decl.name.clone(),
+                        (r.via.clone(), r.derived.clone()),
+                        false,
+                        link,
+                    ))
+                })
+            };
+            let name = |r: &RelationDecl| r.name == step.relation;
+            let inverse = |r: &RelationDecl| r.inverse.as_ref() == Some(&step.relation);
+            let walked = match step.walk {
+                Walk::Out => forward(&name).or_else(|| backward(&inverse)),
+                _ => backward(&name).or_else(|| forward(&inverse)),
+            };
+            let Some((target, via, forward, link_type)) = walked else {
+                return Err(invalid(match step.walk {
+                    Walk::Out => format!(
+                        "`{}` declares no relation `{}`",
+                        scope_ty.decl.name, step.relation
+                    ),
+                    _ => format!(
+                        "no relation `{}` reaches `{}`",
+                        step.relation, scope_ty.decl.name
+                    ),
+                }));
             };
             if step.depth.min != 1 || step.depth.max != 1 || step.walk == Walk::Both {
                 return Err(invalid(
@@ -2804,9 +3151,9 @@ impl Catalog for MockCatalog {
             .collect();
         let (rows, next_cursor) = page(
             rows,
-            (position, "query", Some(&pattern.start.ty)),
+            (position, "query", Some(&pattern.start.ty), &of),
             offset,
-            self.limit(pattern.limit),
+            limit,
         );
         Ok(Reply {
             position,
@@ -2816,9 +3163,14 @@ impl Catalog for MockCatalog {
 
     async fn search(&self, who: &Principal, search: Search) -> Result<Reply<Hits>> {
         self.admit(who)?;
+        let of = read_of(serde_json::to_string(&(
+            &search.mode,
+            &search.filter,
+            search.at.valid_at,
+        )));
         let (pinned, offset) = match &search.cursor {
             Some(c) => {
-                let (p, o) = uncursor(c, "search", Some(&search.ty))?;
+                let (p, o) = uncursor(c, "search", Some(&search.ty), &of)?;
                 (Some(p), o)
             }
             None => (search.at.as_of, 0),
@@ -2833,26 +3185,26 @@ impl Catalog for MockCatalog {
                 search.ty
             )));
         }
+        if let Some((field, message)) = search.mode.misfit() {
+            let reason = Refusal::Invalid { message };
+            return Err(Error::Refused { field, reason });
+        }
         // A search probes every searchable field, or the ones it names,
-        // then the vector field it names and the fields that vector is
-        // embedded from; one the caller may not read refuses the search
-        // whole (024), in the store's order. A named field is judged
-        // readable before searchable.
+        // then each vector field it names, after the fields that vector
+        // is embedded from; one the caller may not read refuses the
+        // search whole (024), in the store's order. A named field is
+        // judged readable before searchable.
         let text_fields = match &search.mode {
             SearchMode::Lexical { fields, .. } | SearchMode::Hybrid { fields, .. } => {
                 fields.as_deref()
             }
             SearchMode::Vector { .. } => None,
         };
-        let vector_field = match &search.mode {
-            SearchMode::Vector { field, .. } | SearchMode::Hybrid { field, .. } => Some(field),
-            SearchMode::Lexical { .. } => None,
-        };
-        let embedded_from = vector_field
-            .and_then(|v| field(&t.decl, v))
-            .and_then(|f| f.embed.as_ref())
-            .into_iter()
-            .flat_map(|e| e.from.iter());
+        let vectors = search.mode.vectors();
+        let probed = vectors.iter().flat_map(|(v, ..)| {
+            let embed = field(&t.decl, v).and_then(|f| f.embed.as_ref());
+            embed.into_iter().flat_map(|e| e.from.iter()).chain([*v])
+        });
         let searched: Vec<&FieldName> = match text_fields {
             // Naming none, it reads the searchable fields the caller knows
             // of; one it may not know of is never searched.
@@ -2880,38 +3232,30 @@ impl Catalog for MockCatalog {
                 named.into_iter().collect()
             }
         };
-        for name in searched
-            .iter()
-            .copied()
-            .chain(embedded_from)
-            .chain(vector_field)
-        {
+        for name in searched.iter().copied().chain(probed) {
             readable(&st, who, t, name)?;
         }
         let e = filter(&st, who, t, search.filter.as_ref())?;
         let rows = candidates(&st, who, t, search.at, e.as_ref())?;
         // A field the lake asks an index for at the head answers the
         // index's set, and says so; the mock's set is the exact ranking.
-        let indexed = match &search.mode {
-            SearchMode::Vector { field, .. }
-            | SearchMode::Hybrid {
-                field,
-                vector: Some(_),
-                ..
-            } => {
-                let later;
-                let head = match pinned {
-                    Some(_) => {
-                        later = self.state_at(&self.log(), None)?.1;
-                        &later
-                    }
-                    None => &st,
-                };
-                head.types.get(&search.ty).is_some_and(|h| {
-                    index_fields(head, &h.decl, VECTOR_INDEX_SETTING, indexable).contains(field)
-                })
-            }
-            SearchMode::Lexical { .. } | SearchMode::Hybrid { .. } => false,
+        let by_text = matches!(
+            &search.mode,
+            SearchMode::Lexical { .. } | SearchMode::Hybrid { vector: None, .. }
+        );
+        let indexed = !by_text && {
+            let later;
+            let head = match pinned {
+                Some(_) => {
+                    later = self.state_at(&self.log(), None)?.1;
+                    &later
+                }
+                None => &st,
+            };
+            head.types.get(&search.ty).is_some_and(|h| {
+                let asked = index_fields(head, &h.decl, VECTOR_INDEX_SETTING, indexable);
+                vectors.iter().any(|(f, ..)| asked.contains(*f))
+            })
         };
         // A stored vector is read back as the `f32`s it was written as.
         let nearest = |f: &FieldName, vector: &[f32]| -> Vec<(f64, &StoredRecord)> {
@@ -2947,32 +3291,48 @@ impl Catalog for MockCatalog {
             l.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.key.cmp(&b.1.key)));
             l
         }
-        let (scored, ranked_by) = match &search.mode {
-            SearchMode::Vector { field: f, vector } => {
-                readable(&st, who, t, f)?;
-                (nearest(f, vector), if indexed { "index" } else { "vector" })
-            }
+        // The rankings a search fuses, each with its weight, in the
+        // order they are summed: a hybrid search's text, then each vector
+        // field (046).
+        let mut lists = Vec::new();
+        if let (
             SearchMode::Hybrid {
-                text,
-                field: f,
-                vector: Some(vector),
-                ..
-            } => {
-                readable(&st, who, t, f)?;
-                // Both lists fused by reciprocal rank, the lexical first,
-                // each over what the read may see and to `max_limit` (046).
+                text, text_weight, ..
+            },
+            false,
+        ) = (&search.mode, by_text)
+        {
+            lists.push((text_weight.unwrap_or(1.0), matching(text)));
+        }
+        for (f, vector, weight) in vectors.iter().filter(|_| !by_text) {
+            lists.push((weight.unwrap_or(1.0), nearest(f, vector)));
+        }
+        let (scored, ranked_by) = match &search.mode {
+            SearchMode::Lexical { text, .. } | SearchMode::Hybrid { text, .. } if by_text => {
+                (matching(text), "lexical")
+            }
+            // One list keeps its own score.
+            SearchMode::Vector { also, .. } if also.is_empty() => {
+                let by = if indexed { "index" } else { "vector" };
+                (lists.remove(0).1, by)
+            }
+            mode => {
+                // Fused by weighted reciprocal rank, each list over what
+                // the read may see and to `max_limit` (046).
                 let window = self.shared.limits.max_limit as usize;
                 let mut fused: BTreeMap<&RecordKey, (f64, &StoredRecord)> = BTreeMap::new();
-                for list in [best_first(matching(text)), best_first(nearest(f, vector))] {
-                    for (rank, (_, r)) in list.into_iter().take(window).enumerate() {
-                        fused.entry(&r.key).or_insert((0.0, r)).0 += 1.0 / (60.0 + rank as f64);
+                for (weight, list) in lists {
+                    for (rank, (_, r)) in best_first(list).into_iter().take(window).enumerate() {
+                        fused.entry(&r.key).or_insert((0.0, r)).0 += weight / (60.0 + rank as f64);
                     }
                 }
-                let by = if indexed { "hybrid (index)" } else { "hybrid" };
+                let by = match (mode, indexed) {
+                    (SearchMode::Vector { .. }, true) => "index",
+                    (SearchMode::Vector { .. }, false) => "vector",
+                    (_, true) => "hybrid (index)",
+                    (_, false) => "hybrid",
+                };
                 (fused.into_values().collect(), by)
-            }
-            SearchMode::Lexical { text, .. } | SearchMode::Hybrid { text, .. } => {
-                (matching(text), "lexical")
             }
         };
         let hits: Vec<Hit> = best_first(scored)
@@ -2984,7 +3344,7 @@ impl Catalog for MockCatalog {
             .collect();
         let (hits, next_cursor) = page(
             hits,
-            (position, "search", Some(&search.ty)),
+            (position, "search", Some(&search.ty), &of),
             offset,
             search.k.max(1) as usize,
         );
@@ -3098,9 +3458,21 @@ impl Catalog for MockCatalog {
                 }
                 None
             }
-            ProposedWrite::Migrate { migration, .. } => {
+            ProposedWrite::Migrate {
+                migration,
+                report: shown,
+            } => {
+                // The shape is the type's whole: on a type changed since
+                // the proposal it would remove what was added since.
+                let ty = &migration.to.name;
+                let on = st.types.get(ty).map(|t| &t.schema_hash);
+                if on != Some(&shown.from_schema_hash) {
+                    return Err(invalid(format!(
+                        "`{ty}` changed since this migration was proposed; propose it again"
+                    )));
+                }
                 let head = Position(accepted.0.saturating_sub(1));
-                let report = preflight(&st, head, &migration)?;
+                let report = preflight(&st, head, &migration, who)?;
                 if !report.lossless {
                     return Err(refused(Refusal::Migration {
                         report: Box::new(report),
@@ -3125,6 +3497,29 @@ impl Catalog for MockCatalog {
                 batch.push(d);
                 None
             }
+            ProposedWrite::MigrateValueType { to, report: shown } => {
+                // As a migration: accepted only on the declaration it was
+                // proposed on, and only while every stored value fits.
+                let declaration = Declaration::ValueType((*to).clone());
+                let (schema_hash, version) = identity_version(&st, &declaration);
+                if version != shown.from_version + 1 {
+                    return Err(invalid(format!(
+                        "value type `{}` changed since this was proposed; propose it again",
+                        to.name
+                    )));
+                }
+                let head = Position(accepted.0.saturating_sub(1));
+                tightening(&st, &proposer, head, &to)?;
+                let body = EventBody::Declared {
+                    declaration,
+                    schema_hash,
+                    version,
+                };
+                let mut d = Draft::new(&proposer, Origin::System, body);
+                d.cause = Some(accepted);
+                batch.push(d);
+                None
+            }
         };
         let position = Position(batch.peek().0 - 1);
         self.commit(&mut log, batch);
@@ -3132,6 +3527,7 @@ impl Catalog for MockCatalog {
             position,
             version,
             output: None,
+            set_off: Default::default(),
         })
     }
 
@@ -3159,6 +3555,7 @@ impl Catalog for MockCatalog {
             position,
             version: None,
             output: None,
+            set_off: Default::default(),
         })
     }
 
@@ -3168,9 +3565,10 @@ impl Catalog for MockCatalog {
         filter: ProposalFilter,
     ) -> Result<Reply<Vec<Proposal>>> {
         self.admit(who)?;
+        let limit = self.limit(filter.limit, false)?;
         let (pinned, offset) = match &filter.cursor {
             Some(c) => {
-                let (p, o) = uncursor(c, "proposals", None)?;
+                let (p, o) = uncursor(c, "proposals", None, "")?;
                 (Some(p), o)
             }
             None => (filter.at.as_of, 0),
@@ -3187,6 +3585,7 @@ impl Catalog for MockCatalog {
                 Declaration::ValueType(_) | Declaration::Function(_) => false,
             }),
             ProposedWrite::Migrate { migration, .. } => &migration.to.name == ty,
+            ProposedWrite::MigrateValueType { .. } => false,
         };
         // A reviewer sees every proposal; anyone else sees their own, so
         // that a proposer can follow what became of it.
@@ -3210,12 +3609,9 @@ impl Catalog for MockCatalog {
         if !asc {
             rows.reverse();
         }
-        let (rows, _) = page(
-            rows,
-            (position, "proposals", None),
-            offset,
-            self.limit(filter.limit),
-        );
+        rows.iter_mut()
+            .for_each(|p| known_shape(&st, who, &mut p.write));
+        let (rows, _) = page(rows, (position, "proposals", None, ""), offset, limit);
         Ok(Reply {
             position,
             data: rows,
@@ -3233,6 +3629,7 @@ impl Catalog for MockCatalog {
             position,
             version: None,
             output: None,
+            set_off: Default::default(),
         })
     }
 
@@ -3246,6 +3643,8 @@ impl Catalog for MockCatalog {
         }
         let mut log = self.log();
         let (_, st) = self.state_at(&log, None)?;
+        let mut declarations = declarations;
+        redeclared(&st, who, &mut declarations)?;
         check_set(&st, who, &declarations)?;
         for d in &declarations {
             trigger_ceiling(d, self.shared.limits.max_reactive_depth)?;
@@ -3261,6 +3660,7 @@ impl Catalog for MockCatalog {
             position,
             version: None,
             output: None,
+            set_off: Default::default(),
         })
     }
 
@@ -3314,6 +3714,7 @@ impl Catalog for MockCatalog {
             position,
             version: None,
             output: None,
+            set_off: Default::default(),
         })
     }
 
@@ -3328,9 +3729,11 @@ impl Catalog for MockCatalog {
         }
         let log = self.log();
         let (position, st) = self.state_at(&log, None)?;
+        let mut migration = migration;
+        authored(&st, who, &mut migration)?;
         Ok(Reply {
             position,
-            data: preflight(&st, position, &migration)?,
+            data: preflight(&st, position, &migration, who)?,
         })
     }
 
@@ -3394,6 +3797,7 @@ impl Catalog for MockCatalog {
             position,
             version: None,
             output: None,
+            set_off: Default::default(),
         })
     }
 
@@ -3409,7 +3813,9 @@ impl Catalog for MockCatalog {
         }
         let mut log = self.log();
         let (head, st) = self.state_at(&log, None)?;
-        let report = preflight(&st, head, &migration)?;
+        let mut migration = migration;
+        authored(&st, who, &mut migration)?;
+        let report = preflight(&st, head, &migration, who)?;
         if report.report_id != report_id {
             return Err(invalid(
                 "the lake moved since this report was made; run the preflight again",
@@ -3425,6 +3831,8 @@ impl Catalog for MockCatalog {
             .get(&migration.to.name)
             .map_or(1, |t| t.version + 1);
         let mut batch = Batch::at(&log);
+        let link_types = links::of(&migration.to);
+        let report_id = report.report_id;
         let position = batch.push(Draft::new(
             who,
             Origin::System,
@@ -3432,15 +3840,51 @@ impl Catalog for MockCatalog {
                 schema_hash: report.to_schema_hash.clone(),
                 migration,
                 version,
-                report_id: report.report_id,
+                report_id: report_id.clone(),
                 rekeyed: Vec::new(),
             },
         ));
+        // As the store: each link type in force whose derivation changes
+        // migrates with the type, then a relation new with it gets its link
+        // type declared, in the same append.
+        for lt in &link_types {
+            if let Some(old) = st.types.get(&lt.name).filter(|old| &old.decl != lt) {
+                let migration = Migration {
+                    to: lt.clone(),
+                    renames: Vec::new(),
+                };
+                batch.push(Draft::new(
+                    who,
+                    Origin::System,
+                    EventBody::Migrated {
+                        schema_hash: lakelands_api::shape::schema_hash(lt).unwrap_or_default(),
+                        migration,
+                        version: old.version + 1,
+                        report_id: report_id.clone(),
+                        rekeyed: Vec::new(),
+                    },
+                ));
+            }
+        }
+        for lt in link_types
+            .into_iter()
+            .filter(|lt| !st.types.contains_key(&lt.name))
+        {
+            let declaration = Declaration::Type(lt);
+            let (schema_hash, version) = identity_version(&st, &declaration);
+            let body = EventBody::Declared {
+                declaration,
+                schema_hash,
+                version,
+            };
+            batch.push(Draft::new(who, Origin::System, body));
+        }
         self.commit(&mut log, batch);
         Ok(Outcome::Applied {
             position,
             version: None,
             output: None,
+            set_off: Default::default(),
         })
     }
 

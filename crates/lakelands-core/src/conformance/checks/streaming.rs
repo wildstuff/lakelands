@@ -72,7 +72,10 @@
 //! whole type, which hold every record they reach and so grow with the
 //! graph, reported; and the same components with the lake's
 //! `max_graph_nodes` at half the first size, refused at the cap at every
-//! size, so held by the cap. A
+//! size, so held by the cap. And every record grouped by its site, by
+//! `find`'s aggregate and by a view that is then counted: a group keeps
+//! what its measures fold, never its records, so each holds a batch and
+//! the groups (lakelands#388). A
 //! harness without a meter runs everything else the check claims and
 //! reports the heap as not measured.
 //!
@@ -122,7 +125,7 @@ use lakelands_api::ontology::{
     Authority, Cardinality, FieldDecl, RelationDecl, StorageKind, TypeDecl,
 };
 use lakelands_api::query::{Pattern, Projection, QueryResult, Search, SearchMode, Walk};
-use lakelands_api::read::{Direction, OrderBy};
+use lakelands_api::read::{AggFunc, Direction, OrderBy};
 use lakelands_api::seam::{FeedFilter, SETTING_TYPE, Seams};
 use lakelands_api::{
     Find, Found, LakeStore, Position, Principal, ReadAt, RecordKey, SourceId, SourceRecord,
@@ -133,8 +136,8 @@ use sha2::{Digest as _, Sha256};
 
 use crate::conformance::backing::EMBED_MODEL;
 use crate::conformance::fixture::{
-    Lake, Must, declare, doors, embedding, limits, order, owner, pattern, pause, reason,
-    source_record, sourced, step, type_decl,
+    Lake, Must, agg, aggregate, declare, doors, embedding, field, limits, order, owner, pattern,
+    pause, reason, source_record, sourced, step, type_decl, view_of,
 };
 use crate::conformance::{Failure, Given, Meter, backing, next};
 use crate::export;
@@ -169,6 +172,16 @@ const FOLLOWS: &str = "follows";
 /// itself alone, since every note is its own (044).
 const SAME_NOTE: &str = "same_note";
 const LINKS: &str = "chains";
+/// The view of every `reading` by its site, and what it and `find`'s
+/// aggregate measure of each site: every aggregate there is.
+const BY_SITE: &str = "by_site";
+const MEASURES: [(&str, AggFunc, &str); 5] = [
+    ("n", AggFunc::Count, "count()"),
+    ("total", AggFunc::Sum, "sum(value)"),
+    ("mean", AggFunc::Avg, "avg(value)"),
+    ("low", AggFunc::Min, "min(value)"),
+    ("high", AggFunc::Max, "max(value)"),
+];
 /// The record whose note the search asks for, and the one the walk
 /// starts from.
 const SOUGHT: u64 = 42;
@@ -215,6 +228,13 @@ fn reading() -> TypeDecl {
         ..RelationDecl::to(SAME_NOTE, TY)
     });
     ty
+}
+
+fn by_site() -> TypeDecl {
+    let mut fields = vec![field("site", StorageKind::Text)];
+    fields.extend(MEASURES.map(|(name, ..)| field(name, StorageKind::Number)));
+    let measures = MEASURES.map(|(name, _, expr)| (name, expr));
+    view_of(BY_SITE, TY, &["site"], fields, &measures)
 }
 
 fn key(i: u64) -> RecordKey {
@@ -844,6 +864,48 @@ impl Size<'_> {
         Ok(())
     }
 
+    /// Group every `reading` by its site, through `find`'s aggregate and
+    /// then by counting the view `by_site`, each measured: a group keeps
+    /// what its measures fold, never its records, so each holds a batch
+    /// and the groups, whatever the size of the type (lakelands#388).
+    async fn groups(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
+        let cat = doors(store);
+        let head = store.head().await.must("reading the head")?;
+        let of = |func| (func != AggFunc::Count).then_some("value");
+        let mut grouped = aggregate(MEASURES.map(|(n, func, _)| agg(n, func, of(func))).into());
+        grouped.aggregate.as_mut().expect("an aggregate").group_by = vec!["site".into()];
+        let counted = aggregate(vec![agg("n", AggFunc::Count, None)]);
+        // The aggregate counts every live record, and the view holds a
+        // record for each group the aggregate answered.
+        let mut want = self.live;
+        for (phase, ty, find) in [("aggregate", TY, grouped), ("view-count", BY_SITE, counted)] {
+            let started = Instant::now();
+            let m = Measure::start(&self.given.meter, false);
+            let reply = cat
+                .find(&self.own, &TypeName::from(ty), find)
+                .await
+                .must(&format!("grouping `{ty}` by site"))?;
+            let (heap, _) = m.stop();
+            let Found::Groups { rows } = &reply.data else {
+                return Err(Failure::new(format!(
+                    "an aggregate over `{ty}` answered records"
+                )));
+            };
+            let n =
+                |g: &lakelands_api::read::Group| g.values.get("n")?.as_str()?.parse::<u64>().ok();
+            let got: u64 = rows.iter().filter_map(n).sum();
+            ensure!(
+                got == want,
+                "{phase} over `{ty}` must count {want}; it counted {got}: {rows:?}"
+            );
+            want = rows.len() as u64;
+            let what = format!("{got} counted over `{ty}`, answered in {want} rows");
+            let measured = (heap, started.elapsed());
+            self.row(phase, Claim::Held, records, head.0 + 1, what, measured);
+        }
+        Ok(())
+    }
+
     /// Jump to the last page of `reading` with `offset`, asking for its
     /// `total`, measured: the rows skipped are read and dropped a page at
     /// a time, and the total counted a batch at a time, whatever the size
@@ -1221,6 +1283,8 @@ impl Size<'_> {
                         field: "vec".into(),
                         vector: None,
                         fields: None,
+                        weight: None,
+                        text_weight: None,
                     },
                     k: K,
                     cursor: None,
@@ -1572,6 +1636,7 @@ async fn a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_doe
     let cat = doors(store.as_ref());
     let own = owner(store.as_ref());
     declare(cat.as_ref(), &own, reading()).await?;
+    declare(cat.as_ref(), &own, by_site()).await?;
     let _ = fs::remove_dir_all(&given.scratch);
     let first = u64::from(given.large_lake.max(20));
     let mut size = Size {
@@ -1592,6 +1657,7 @@ async fn a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_doe
         size.export(store.as_ref(), records, &log, &dir).await?;
         size.find_walk(store.as_ref(), records).await?;
         size.counts(store.as_ref(), records).await?;
+        size.groups(store.as_ref(), records).await?;
         size.jump(store.as_ref(), records).await?;
         size.sorted_walks(store.as_ref(), records).await?;
         size.searches(store.as_ref(), records).await?;

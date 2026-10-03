@@ -71,6 +71,32 @@ rather than one error at a time.
 - It does not make the lake trust the bundle. Every declaration the
   loader produces is checked again when the lake declares it.
 
+## Extended: a declaration reads only fields its type has (lakelands#461)
+
+A view's `where` and measures were held to their sources' fields; the
+expressions of the other declarations were only parsed. A derived field,
+an object set's `where`, a trigger's `when` or a verb's `requires` that
+named a field its type does not have was accepted, read that field as
+null on every evaluation, and so never held, or always did, with nothing
+said. Now `declare`, `apply` and an accepted proposal of a declaration
+refuse it as invalid, naming the declaration and the field:
+- a type: what each derived field's expression reads;
+- an object set: its `where`;
+- a trigger: its `when`, where `changed(f)` and `previous(f)` read `f`;
+- a verb: its `requires`, and what the value it sets a field from reads.
+  `payload.<name>` there is the call's payload and no field.
+
+`setting`, `now`, `today` and a guard's `retired` read no field. The
+reads are gathered by the function the migration preflight keeps a
+field by (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+extended), so what `declare` takes, a migration keeps. A migrated type
+is checked as a declared one is: a migration to a type whose derived
+field reads a field it does not have is refused the same way, by the
+preflight, once the fields the migration itself takes away have been
+named. A
+declaration already in force is not checked again until it is declared
+again.
+
 ## Extended: the order of refusals (lakelands#338)
 
 The schema doors refuse in this order, in the frame every write door

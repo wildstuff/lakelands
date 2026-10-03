@@ -263,12 +263,13 @@ fn a_blind_agent_works_the_shop_through_mcp_alone() {
         answer(&r[5]),
         &json!({"outcome": "applied", "position": 20, "version": 2})
     );
+    // The write at 21 fired `order_settled` at 22, in its own append, and
+    // its answer says so; the read answers at 22.
     assert_eq!(
         answer(&r[6]),
-        &json!({"outcome": "applied", "position": 21, "version": 3})
+        &json!({"outcome": "applied", "position": 21, "version": 3, "through": 22,
+                "fired": ["order_settled"]})
     );
-    // The read answers at 22: the trigger the write at 21 fired, in its
-    // own append.
     assert_eq!(
         answer(&r[7]),
         &json!({"data": {"rows": [], "shape": "records"}, "position": 22})

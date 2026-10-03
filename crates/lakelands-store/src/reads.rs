@@ -53,14 +53,14 @@ use lakelands_api::engine::{After, ProjectionView, Scan};
 use lakelands_api::expr::{Expr, Func, Literal};
 use lakelands_api::ontology::{FieldType, MatchPair, RelationDecl, StorageKind, TypeDecl};
 use lakelands_api::query::{
-    Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Walk,
+    Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Step, Walk,
 };
 use lakelands_api::read::{
     After as ReadAfter, AggFunc, Aggregate, Direction, Find, Found, Get, Group, Order, OrderBy,
     Params, ReadAt,
 };
 use lakelands_api::record::StoredRecord;
-use lakelands_api::write::{Proposal, ProposalFilter};
+use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposedWrite};
 use lakelands_api::{
     Access, Cursor, Error, FieldName, Missing, Position, Principal, Record, RecordKey, Refusal,
     RelationName, Result, Timestamp, TypeName, Value,
@@ -112,15 +112,15 @@ mod measures;
 /// form, and as the literals `param()` is replaced by.
 type Bound = (Params, BTreeMap<String, Literal>);
 
-/// One source of a view as read: its members and its measures, bound.
-type Source = (Vec<StoredRecord>, Vec<(FieldName, Expr)>);
+/// One source of a view as read: its members, folded, and its measures, bound.
+type Source = (aggregate::Grouping, Vec<(FieldName, Expr)>);
 
 /// A row's sort values and its tiebreak.
 type SortKey = (Vec<Value>, RecordKey);
 
 /// One ranked list of a search, read to the depth it is given: the
 /// candidates best first, with their scores.
-type Ranking<'a> = &'a dyn Fn(u32) -> Result<Vec<(RecordKey, f64)>>;
+type Ranking<'a> = Box<dyn Fn(u32) -> Result<Vec<(RecordKey, f64)>> + 'a>;
 
 /// The state a cursor carries.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -140,6 +140,9 @@ struct CursorState {
     door: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ty: Option<TypeName>,
+    /// The digest of the read it was handed out for ([`read_of`]).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    of: String,
 }
 
 fn encode(c: &CursorState) -> Cursor {
@@ -147,9 +150,47 @@ fn encode(c: &CursorState) -> Cursor {
 }
 
 /// The offset a `query` page continues at: none without a cursor.
-fn offset(c: Option<&Cursor>, ty: &TypeName, params: &Params) -> Result<usize> {
+fn offset(c: Option<&Cursor>, p: &Pattern, params: &Params) -> Result<usize> {
     let Some(c) = c else { return Ok(0) };
-    Ok(resume(c, "query", Some(ty), params)?.offset as usize)
+    let state = resume(c, "query", Some(&p.start.ty), params)?;
+    same_read(&state, &pattern_read(p))?;
+    Ok(state.offset as usize)
+}
+
+/// The digest of what decides a read's rows and their order: a cursor
+/// carries it, and continues no other read through the same door. The
+/// page size, the position (the cursor's own) and what a row carries
+/// are left out by the callers.
+fn read_of(shape: impl serde::Serialize) -> String {
+    canonical::sha256_hex(&serde_json::to_value(shape).unwrap_or(Value::Null))
+}
+
+/// The digest of a pattern without its cursor, its page size and the
+/// position, which the cursor holds.
+fn pattern_read(p: &Pattern) -> String {
+    let at = ReadAt {
+        as_of: None,
+        ..p.at
+    };
+    read_of(Pattern {
+        cursor: None,
+        limit: None,
+        at,
+        ..p.clone()
+    })
+}
+
+/// Refuse a cursor handed out for another read through the same door:
+/// another filter, order, search or pattern (018).
+fn same_read(state: &CursorState, of: &str) -> Result<()> {
+    if state.of != of {
+        return Err(invalid(format!(
+            "the cursor was handed out for another `{}`; continue it with the read its first \
+             page was read with",
+            state.door
+        )));
+    }
+    Ok(())
 }
 
 /// A cursor's state, when it was handed out for this door, this type and
@@ -379,11 +420,40 @@ impl<'a> Reader<'a> {
         Ok(decl)
     }
 
+    /// Whether the principal may see a stored record at this read, before
+    /// masking: live, restricted only with the grant, valid at `valid_at`
+    /// when asked.
+    fn live(&self, decl: &TypeDecl, r: &StoredRecord) -> bool {
+        !r.retired
+            && (self.who.grants.restricted || !r.restricted)
+            && (self.valid_at).is_none_or(|t| valid_time::record_holds(decl, &r.fields, t))
+    }
+
+    /// A read's `where` over one record of `decl`, named `at`, after the
+    /// principal is found to read every field it reads (024).
+    fn record_filter(
+        &self,
+        decl: &TypeDecl,
+        c: Option<&lakelands_api::expr::Condition>,
+        at: &str,
+    ) -> Result<Option<Expr>> {
+        let Some(c) = c else { return Ok(None) };
+        let e = condition(c, Place::Record, at)?;
+        rights::check_probe(self.who, decl, core_derive::reads(&e).iter())?;
+        Ok(Some(e))
+    }
+
     /// `describe`.
     pub fn describe(&self) -> LakeDescription {
         let mut lake = describe::lake(&self.lake.id, &self.declared(), self.who);
         for t in &mut lake.types {
             self.name_sorted(t);
+        }
+        // Whether the host binds a verb's executor is the binding now, at
+        // any position: it is not in the log.
+        let executors = &self.lake.seams.executors;
+        for e in lake.verbs.iter_mut().filter_map(|v| v.executor.as_mut()) {
+            e.bound = executors.iter().any(|x| x.name() == e.name);
         }
         lake
     }
@@ -461,45 +531,21 @@ impl<'a> Reader<'a> {
         if let Some(v) = &decl.view {
             return self.view_records(decl, v, filter);
         }
-        let push = filter.filter(|e| !needs_store(e)).cloned();
-        let scan = Scan {
-            filter: push.clone(),
-            limit: u32::MAX,
-            valid_at: self.valid_at,
-            restricted: self.who.grants.restricted,
-            ..Default::default()
-        };
-        let mut out = self.view.scan(&decl.name, &scan)?;
-        out.retain(|r| !r.retired && (self.who.grants.restricted || !r.restricted));
-        if let Some(t) = self.valid_at {
-            out.retain(|r| valid_time::record_holds(decl, &r.fields, t));
-        }
-        if let (Some(e), None) = (filter, push) {
-            out.retain(|r| self.holds(e, &r.fields, Some(&r.meta)));
-        }
-        Ok(out)
+        self.page(decl, filter, &[], None, usize::MAX)
     }
 
     /// How many records of a type [`Self::records`] would answer, holding
     /// no more than a page of a stored type: the engine counts what it can
     /// select itself, and a filter only the store evaluates is applied a
-    /// page at a time. A view's records are computed whole first.
+    /// page at a time. A view's records, one per group, are computed first.
     fn count(&self, decl: &TypeDecl, filter: Option<&Expr>) -> Result<u64> {
         if let Some(v) = &decl.view {
             return Ok(self.view_records(decl, v, filter)?.len() as u64);
         }
         if let Some(e) = filter.filter(|e| needs_store(e)) {
-            let (mut n, mut after) = (0, None);
-            loop {
-                let rows = self.page(decl, Some(e), &[], after.take(), COUNT_PAGE)?;
-                n += rows.len() as u64;
-                match rows.last() {
-                    Some(last) if rows.len() == COUNT_PAGE => {
-                        after = Some((Vec::new(), last.key.clone()));
-                    }
-                    _ => return Ok(n),
-                }
-            }
+            let mut n = 0;
+            self.each_member(decl, Some(e), |_| n += 1)?;
+            return Ok(n);
         }
         let scan = Scan {
             filter: filter.cloned(),
@@ -508,6 +554,30 @@ impl<'a> Reader<'a> {
             ..Default::default()
         };
         self.view.count(&decl.name, &scan)
+    }
+
+    /// The records [`Self::records`] would answer, handed to `each` one at
+    /// a time in key order: a stored type's are read a page at a time and
+    /// never held together, a view's are computed first.
+    fn each_member(
+        &self,
+        decl: &TypeDecl,
+        filter: Option<&Expr>,
+        mut each: impl FnMut(&StoredRecord),
+    ) -> Result<()> {
+        if decl.view.is_some() {
+            self.records(decl, filter)?.iter().for_each(each);
+            return Ok(());
+        }
+        let mut after = None;
+        loop {
+            let rows = self.page(decl, filter, &[], after, COUNT_PAGE)?;
+            rows.iter().for_each(&mut each);
+            if rows.len() < COUNT_PAGE {
+                return Ok(());
+            }
+            after = rows.last().map(|r| (Vec::new(), r.key.clone()));
+        }
     }
 
     /// At most `want` records of a stored type the principal may see, in
@@ -547,13 +617,9 @@ impl<'a> Reader<'a> {
                 });
             }
             for r in rows {
-                let keep = !r.retired
-                    && (self.who.grants.restricted || !r.restricted)
-                    && self
-                        .valid_at
-                        .is_none_or(|t| valid_time::record_holds(decl, &r.fields, t))
-                    && here.is_none_or(|e| self.holds(e, &r.fields, Some(&r.meta)));
-                if keep {
+                if self.live(decl, &r)
+                    && here.is_none_or(|e| self.holds(e, &r.fields, Some(&r.meta)))
+                {
                     out.push(r);
                     if out.len() >= want {
                         return Ok(out);
@@ -638,7 +704,7 @@ impl<'a> Reader<'a> {
         };
         // A view without `group_by` is one total, kept over no records too,
         // under the key reserved for it: the rule over no fields makes none.
-        let ungrouped = v.group_by.is_empty();
+        let (ungrouped, none) = (v.group_by.is_empty(), aggregate::Folds::default());
         let key_of = |by: &BTreeMap<FieldName, Value>| {
             if ungrouped {
                 Some(RecordKey::from(lakelands_api::key::UNGROUPED))
@@ -646,18 +712,14 @@ impl<'a> Reader<'a> {
                 lakelands_core::log::record_key(&keyed_by, by)
             }
         };
-        let rows: Vec<&BTreeMap<FieldName, Value>> = members.iter().map(|r| &r.fields).collect();
-        type Group<'g> = (
-            BTreeMap<FieldName, Value>,
-            Vec<&'g BTreeMap<FieldName, Value>>,
-        );
-        let mut groups: BTreeMap<RecordKey, Group<'_>> = BTreeMap::new();
-        for (by, group) in aggregate::groups(&rows, &v.group_by) {
+        // A group keeps its values and its folds, never its members.
+        let mut groups: BTreeMap<RecordKey, (aggregate::Row, aggregate::Folds)> = BTreeMap::new();
+        for (by, folds) in members.groups() {
             if by.values().any(Value::is_null) {
                 continue;
             }
             if let Some(key) = key_of(&by) {
-                groups.insert(key, (by, group));
+                groups.insert(key, (by, folds));
             }
         }
         if ungrouped {
@@ -666,11 +728,11 @@ impl<'a> Reader<'a> {
                 .or_default();
         }
         // One group's measures, seeing the values `given` by name.
-        let measured = |rows: &[&BTreeMap<FieldName, Value>],
+        let measured = |folds: &aggregate::Folds,
                         by: &BTreeMap<FieldName, Value>,
                         measures: &[(FieldName, Expr)],
                         given| {
-            aggregate::measures(rows, by, measures, given, Some(&self.settings), self.now)
+            aggregate::measures(folds, by, measures, given, Some(&self.settings), self.now)
                 .map_err(|e| invalid(format!("view `{}`: {e}", decl.name)))
         };
         // Each merged source's measures by key; a key it lacks is measured
@@ -684,10 +746,8 @@ impl<'a> Reader<'a> {
                 &m.measures,
                 &literals,
             )?;
-            let rows: Vec<&BTreeMap<FieldName, Value>> =
-                members.iter().map(|r| &r.fields).collect();
             let mut at = BTreeMap::new();
-            for (own, group) in aggregate::groups(&rows, &m.group_by) {
+            for (own, folds) in members.groups() {
                 if own.values().any(Value::is_null) {
                     continue;
                 }
@@ -700,16 +760,16 @@ impl<'a> Reader<'a> {
                 let Some(key) = key_of(&by) else {
                     continue;
                 };
-                let values = measured(&group, &own, &measures, BTreeMap::new())?;
+                let values = measured(&folds, &own, &measures, BTreeMap::new())?;
                 groups
                     .entry(key.clone())
-                    .or_insert_with(|| (by, Vec::new()));
+                    .or_insert_with(|| (by, none.clone()));
                 at.insert(key, values);
             }
             merged.push((m, measures, at));
         }
         let mut out = Vec::new();
-        for (key, (by, group)) in groups {
+        for (key, (by, folds)) in groups {
             let mut given = BTreeMap::new();
             for (m, measures, at) in &merged {
                 let values = match at.get(&key) {
@@ -721,12 +781,12 @@ impl<'a> Reader<'a> {
                             .zip(&v.group_by)
                             .map(|(from, to)| (from.clone(), by[to].clone()))
                             .collect();
-                        measured(&[], &own, measures, BTreeMap::new())?
+                        measured(&none, &own, measures, BTreeMap::new())?
                     }
                 };
                 given.extend(values);
             }
-            let values = measured(&group, &by, &measures, given)?;
+            let values = measured(&folds, &by, &measures, given)?;
             let mut fields = by.clone();
             // A measure lands in the kind the view type declares for it.
             for (name, v) in values {
@@ -755,8 +815,9 @@ impl<'a> Reader<'a> {
         Ok(out)
     }
 
-    /// One source of a view, read as a read of that source: its records
-    /// its `where` covers, the parameters bound, and its measures, after
+    /// One source of a view, read as a read of that source: the records
+    /// its `where` covers, the parameters bound, folded into their groups
+    /// as they are read, and its measures, after
     /// the principal is found to read every field they and the grouping
     /// read (024).
     fn view_source(
@@ -794,15 +855,17 @@ impl<'a> Reader<'a> {
         // A `where` that read a parameter is evaluated here, never handed to
         // an engine: a bound date is text, and its arithmetic is the
         // evaluator's.
-        let members = if literals.is_empty() {
-            self.records(&source, where_.as_ref())?
-        } else {
-            let mut all = self.records(&source, None)?;
-            if let Some(w) = &where_ {
-                all.retain(|r| self.holds(w, &r.fields, Some(&r.meta)));
-            }
-            all
+        let (down, here) = match literals.is_empty() {
+            true => (where_.as_ref(), None),
+            false => (None, where_.as_ref()),
         };
+        let keys = group_by.iter().map(|f| (f.clone(), None)).collect();
+        let mut members = aggregate::Grouping::new(keys, &measures, self.now);
+        self.each_member(&source, down, |r| {
+            if here.is_none_or(|w| self.holds(w, &r.fields, Some(&r.meta))) {
+                members.add(&r.fields, Some(&self.settings));
+            }
+        })?;
         Ok((members, measures))
     }
 
@@ -854,13 +917,18 @@ impl<'a> Reader<'a> {
         a.1.cmp(&b.1)
     }
 
-    fn limit(&self, asked: Option<u32>) -> Result<usize> {
-        let l = asked.unwrap_or(self.lake.limits.default_limit);
-        if l == 0 || l > self.lake.limits.max_limit {
-            return Err(invalid(format!(
-                "a limit is between 1 and {}",
-                self.lake.limits.max_limit
-            )));
+    /// The page a read asks for, at most `max` rows: the lake's
+    /// `max_limit`, or for a whole-graph measure, which is computed whole
+    /// for every page, its `max_graph_nodes` where that is larger (026).
+    fn limit(&self, asked: Option<u32>, measure: bool) -> Result<usize> {
+        let limits = &self.lake.limits;
+        let max = match measure {
+            true => limits.max_limit.max(limits.max_graph_nodes),
+            false => limits.max_limit,
+        };
+        let l = asked.unwrap_or(limits.default_limit);
+        if l == 0 || l > max {
+            return Err(invalid(format!("a limit is between 1 and {max}")));
         }
         Ok(l as usize)
     }
@@ -935,13 +1003,14 @@ impl<'a> Reader<'a> {
                     }],
                 });
             }
-            let rows = self.records(&decl, filter.as_ref())?;
-            return self.aggregated(&decl, &rows, a);
+            return self.aggregated(&decl, filter.as_ref(), a);
         }
-        let limit = self.limit(find.limit)?;
+        let limit = self.limit(find.limit, false)?;
+        let find_read = read_of((&find.filter, &find.order_by, find.at.valid_at));
         let after = match &find.cursor {
             Some(c) => {
-                let after = resume(c, "find", Some(ty), &params)?.after;
+                let state = resume(c, "find", Some(ty), &params)?;
+                let after = state.after.clone();
                 // A cursor holds one sort value per key of the order its
                 // first page was read in; under another number of keys it
                 // places no page, and is refused before anything compares.
@@ -954,6 +1023,7 @@ impl<'a> Reader<'a> {
                          `order_by` its first page was read with",
                     ));
                 }
+                same_read(&state, &find_read)?;
                 after
             }
             None => asked,
@@ -989,6 +1059,7 @@ impl<'a> Reader<'a> {
                     params: params.clone(),
                     door: "find".into(),
                     ty: Some(ty.clone()),
+                    of: find_read.clone(),
                 })
             })
         } else {
@@ -1130,20 +1201,18 @@ impl<'a> Reader<'a> {
         Ok((values, a.key.clone()))
     }
 
-    fn aggregated(&self, decl: &TypeDecl, rows: &[StoredRecord], a: &Aggregate) -> Result<Found> {
-        let fields: Vec<&BTreeMap<FieldName, Value>> = rows.iter().map(|r| &r.fields).collect();
-        let mut groups = aggregate::aggregate(&fields, a, self.now)
-            .map_err(|e| invalid(format!("aggregate over `{}`: {e}", decl.name)))?;
+    /// `find`'s aggregate over the records `filter` holds for, folded into
+    /// their groups as they are read.
+    fn aggregated(&self, decl: &TypeDecl, filter: Option<&Expr>, a: &Aggregate) -> Result<Found> {
+        let named = |e| invalid(format!("aggregate over `{}`: {e}", decl.name));
+        let mut grouping = aggregate::grouping(a, self.now).map_err(named)?;
+        self.each_member(decl, filter, |r| grouping.add(&r.fields, None))?;
+        let mut groups = aggregate::answer(grouping, a).map_err(named)?;
         // A sum, minimum or maximum of a decimal field whose value type
         // declares a scale answers at that scale, so a sum over nothing is
         // `0.00` and not `0`.
         for m in &a.measures {
-            if !matches!(
-                m.func,
-                lakelands_api::read::AggFunc::Sum
-                    | lakelands_api::read::AggFunc::Min
-                    | lakelands_api::read::AggFunc::Max
-            ) {
+            if !matches!(m.func, AggFunc::Sum | AggFunc::Min | AggFunc::Max) {
                 continue;
             }
             let Some(scale) = m
@@ -1184,13 +1253,7 @@ impl<'a> Reader<'a> {
                 .into_iter()
                 .find(|r| r.key == get.key)
         } else {
-            self.view.get(ty, &get.key)?.filter(|r| {
-                !r.retired
-                    && (self.who.grants.restricted || !r.restricted)
-                    && self
-                        .valid_at
-                        .is_none_or(|t| valid_time::record_holds(&decl, &r.fields, t))
-            })
+            self.view.get(ty, &get.key)?.filter(|r| self.live(&decl, r))
         };
         stored
             .and_then(|r| rights::visible(self.who, &decl, &r, get.with_meta))
@@ -1199,7 +1262,7 @@ impl<'a> Reader<'a> {
 
     /// `proposals`: every proposal for a reviewer, one's own otherwise.
     pub fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
-        let limit = self.limit(filter.limit)?;
+        let limit = self.limit(filter.limit, false)?;
         let offset = match &filter.cursor {
             Some(c) => resume(c, "proposals", None, &Params::new())?.offset as usize,
             None => 0,
@@ -1210,15 +1273,58 @@ impl<'a> Reader<'a> {
             ..filter.clone()
         })?;
         let me = self.who.writer();
-        let mine: Vec<Proposal> = all
+        let mut mine: Vec<Proposal> = all
             .into_iter()
             .filter(|p| self.who.grants.review || p.proposer == me)
             .collect();
+        mine.iter_mut().for_each(|p| self.known_shape(&mut p.write));
         Ok(ordered_proposals(mine, &filter.order_by)?
             .into_iter()
             .skip(offset)
             .take(limit)
             .collect())
+    }
+
+    /// A proposed shape as its reader may know it (027, extended): the
+    /// store logs a migration and a redeclaration completed with the fields
+    /// hidden from their author, who reads its own proposal here, and a
+    /// field the reader may not know of is left out as `describe` leaves it
+    /// out, a relation's link fields too.
+    fn known_shape(&self, write: &mut ProposedWrite) {
+        let known = |t: &TypeDecl, f: &lakelands_api::ontology::FieldDecl| {
+            rights::field_access(self.who, t, f) != Access::None
+        };
+        let shown = |t: &mut TypeDecl| {
+            let whole = t.clone();
+            t.fields.retain(|f| known(&whole, f));
+            for r in &mut t.relations {
+                let link = lakelands_core::links::link_type(&whole.name, r);
+                r.fields.retain(|f| known(&link, f));
+            }
+        };
+        match write {
+            ProposedWrite::Migrate { migration, .. } => shown(&mut migration.to),
+            ProposedWrite::Declare { declarations } => {
+                for d in declarations {
+                    if let Declaration::Type(t) = d {
+                        shown(t);
+                    }
+                }
+            }
+            // A use says something of a field's values, so it is shown only
+            // in a field the reader may read, of a type it may see (024);
+            // the report's totals stay whole. Its `first` needs no such
+            // care: a logged proposal's report fits, so it names no misfit.
+            ProposedWrite::MigrateValueType { report, .. } => {
+                let read = |ty: &TypeName, field: &FieldName| {
+                    let t = self.visible_type(ty).ok();
+                    let f = t.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == field)?)));
+                    f.is_some_and(|(t, f)| rights::field_access(self.who, t, f).reads())
+                };
+                report.fields.retain(|u| read(&u.ty, &u.field));
+            }
+            _ => {}
+        }
     }
 
     /// `search`.
@@ -1233,19 +1339,19 @@ impl<'a> Reader<'a> {
                 s.ty
             )));
         }
-        let vector_field = match &s.mode {
-            SearchMode::Vector { field, .. } | SearchMode::Hybrid { field, .. } => {
-                Some(field.clone())
-            }
-            SearchMode::Lexical { .. } => None,
-        };
+        if let Some((field, message)) = s.mode.misfit() {
+            let reason = Refusal::Invalid { message };
+            return Err(Error::Refused { field, reason });
+        }
+        let vectors = s.mode.vectors();
+        let vector_fields: Vec<&FieldName> = vectors.iter().map(|v| v.0).collect();
         let text_fields = match &s.mode {
             SearchMode::Lexical { fields, .. } | SearchMode::Hybrid { fields, .. } => {
                 fields.as_deref()
             }
             SearchMode::Vector { .. } => None,
         };
-        rights::check_search(self.who, &decl, text_fields, vector_field.as_ref())?;
+        rights::check_search(self.who, &decl, text_fields, &vector_fields)?;
         // A search that names no fields reads only the searchable fields
         // the principal knows of (024); none hidden, it reads them all.
         let known: Vec<FieldName>;
@@ -1258,16 +1364,14 @@ impl<'a> Reader<'a> {
             }
             named => named,
         };
-        let filter = s
-            .filter
-            .as_ref()
-            .map(|c| condition(c, Place::Record, "where"))
-            .transpose()?;
-        if let Some(e) = &filter {
-            rights::check_probe(self.who, &decl, core_derive::reads(e).iter())?;
-        }
+        let filter = self.record_filter(&decl, s.filter.as_ref(), "where")?;
+        let search_read = read_of((&s.mode, &s.filter, s.at.valid_at));
         let offset = match &s.cursor {
-            Some(c) => resume(c, "search", Some(&s.ty), &Params::new())?.offset as usize,
+            Some(c) => {
+                let state = resume(c, "search", Some(&s.ty), &Params::new())?;
+                same_read(&state, &search_read)?;
+                state.offset as usize
+            }
             None => 0,
         };
         let k = s.k.max(1) as usize;
@@ -1282,32 +1386,50 @@ impl<'a> Reader<'a> {
                 }),
             }
         };
-        let ranked_by = match &s.mode {
-            SearchMode::Lexical { .. } => "lexical",
-            SearchMode::Vector { field, .. } if self.indexed(&decl, field)? => "index",
-            SearchMode::Vector { .. } => "vector",
-            SearchMode::Hybrid {
-                field,
-                vector: Some(_),
-                ..
-            } if self.indexed(&decl, field)? => "hybrid (index)",
-            SearchMode::Hybrid {
-                vector: Some(_), ..
-            } => "hybrid",
-            SearchMode::Hybrid { vector: None, .. } => {
-                "lexical (no query vector and no embedding backend)"
+        // A search without a query vector ranks its text alone; one over
+        // several vector fields answers an index's set when any of them is
+        // asked for an index.
+        let (mut by_text, mut indexed) = (true, false);
+        if !matches!(&s.mode, SearchMode::Hybrid { vector: None, .. }) {
+            for field in &vector_fields {
+                (by_text, indexed) = (false, indexed || self.indexed(&decl, field)?);
             }
         }
+        let ranked_by = match (&s.mode, indexed) {
+            (SearchMode::Lexical { .. }, _) => "lexical",
+            (SearchMode::Hybrid { .. }, _) if by_text => {
+                "lexical (no query vector and no embedding backend)"
+            }
+            (SearchMode::Hybrid { .. }, true) => "hybrid (index)",
+            (SearchMode::Hybrid { .. }, false) => "hybrid",
+            (SearchMode::Vector { .. }, true) => "index",
+            (SearchMode::Vector { .. }, false) => "vector",
+        }
         .to_owned();
-        let hits = match &s.mode {
+        // The rankings a search fuses, each with its weight, in the order
+        // they are summed (046): a hybrid search's text, then each vector
+        // field. A search of one ranking fuses nothing.
+        let mut lists: Vec<(f64, Ranking<'_>)> = Vec::new();
+        if let (
             SearchMode::Hybrid {
-                text,
-                field,
-                vector: Some(v),
-                ..
-            } => {
-                let lists: [Ranking<'_>; 2] =
-                    [&|pull| lexical(text, pull), &|pull| vector(field, v, pull)];
+                text, text_weight, ..
+            },
+            false,
+        ) = (&s.mode, by_text)
+        {
+            lists.push((
+                text_weight.unwrap_or(1.0),
+                Box::new(move |pull| lexical(text, pull)),
+            ));
+        }
+        for (field, v, weight) in vectors.iter().filter(|_| !by_text) {
+            lists.push((
+                weight.unwrap_or(1.0),
+                Box::new(move |pull| vector(field, v, pull)),
+            ));
+        }
+        let hits = match &s.mode {
+            _ if lists.len() > 1 => {
                 self.fused(&decl, filter.as_ref(), &lists, want, s.with_meta)?
             }
             mode => {
@@ -1317,7 +1439,9 @@ impl<'a> Reader<'a> {
                 let mut pull = u32::try_from(want.saturating_mul(4).max(64)).unwrap_or(u32::MAX);
                 loop {
                     let ranked = match mode {
-                        SearchMode::Vector { field, vector: v } => vector(field, v, pull)?,
+                        SearchMode::Vector {
+                            field, vector: v, ..
+                        } => vector(field, v, pull)?,
                         SearchMode::Lexical { text, .. } | SearchMode::Hybrid { text, .. } => {
                             lexical(text, pull)?
                         }
@@ -1341,6 +1465,7 @@ impl<'a> Reader<'a> {
                 params: Params::new(),
                 door: "search".into(),
                 ty: Some(s.ty.clone()),
+                of: search_read,
             })
         });
         Ok(Hits {
@@ -1350,7 +1475,7 @@ impl<'a> Reader<'a> {
         })
     }
 
-    /// A hybrid search's hits: its lists fused by reciprocal rank
+    /// A fused search's hits: its lists fused by weighted reciprocal rank
     /// ([`fuse`]), each ranked among the hits this read may see and to the
     /// lake's `max_limit` of them, so a record the read may not see moves
     /// no score and every page reads one ranking (046). The lists
@@ -1360,7 +1485,7 @@ impl<'a> Reader<'a> {
         &self,
         decl: &TypeDecl,
         filter: Option<&Expr>,
-        lists: &[Ranking<'_>],
+        lists: &[(f64, Ranking<'_>)],
         want: usize,
         with_meta: bool,
     ) -> Result<Vec<Hit>> {
@@ -1385,7 +1510,7 @@ impl<'a> Reader<'a> {
             // record it has not ranked yet could still gain from it:
             // nothing once the list is whole or its window full.
             let (mut keyed, mut gain) = (Vec::new(), Vec::new());
-            for list in lists {
+            for (weight, list) in lists {
                 let candidates = list(pull)?;
                 let whole = candidates.len() < pull as usize;
                 let mut seen: Vec<(RecordKey, f64)> = if open {
@@ -1401,13 +1526,13 @@ impl<'a> Reader<'a> {
                 gain.push(if done {
                     0.0
                 } else {
-                    1.0 / (60.0 + seen.len() as f64)
+                    weight / (60.0 + seen.len() as f64)
                 });
-                keyed.push(seen);
+                keyed.push((*weight, seen));
             }
             let fused = fuse(&keyed);
             let ranked: Vec<BTreeSet<&RecordKey>> = (keyed.iter())
-                .map(|l| l.iter().map(|(k, _)| k).collect())
+                .map(|(_, l)| l.iter().map(|(k, _)| k).collect())
                 .collect();
             let slack = |key: &RecordKey| -> f64 {
                 (ranked.iter().zip(&gain))
@@ -1478,13 +1603,7 @@ impl<'a> Reader<'a> {
             let Some(r) = stored.remove(&key) else {
                 continue;
             };
-            if r.retired || (r.restricted && !self.who.grants.restricted) {
-                continue;
-            }
-            if self
-                .valid_at
-                .is_some_and(|t| !valid_time::record_holds(decl, &r.fields, t))
-            {
+            if !self.live(decl, &r) {
                 continue;
             }
             if filter.is_some_and(|e| !self.holds(e, &r.fields, Some(&r.meta))) {
@@ -1521,9 +1640,12 @@ impl<'a> Reader<'a> {
 
     /// `query`: the one pattern query.
     pub fn query(&self, p: &Pattern) -> Result<QueryResult> {
+        // Its steps as declared: a step naming an inverse is rewritten below.
+        let mut p = p.clone();
+        let p = &mut p;
         let start_decl = self.visible_type(&p.start.ty)?.clone();
         let params = self.bind_params(&start_decl, &p.start.params)?;
-        let limit = self.limit(p.limit)?;
+        let limit = self.limit(p.limit, measures::is_measure(&p.project))?;
         let max_depth = self.lake.limits.max_depth;
         if measures::is_measure(&p.project) {
             measures::check(p)?;
@@ -1532,7 +1654,8 @@ impl<'a> Reader<'a> {
         let mut types = vec![start_decl.name.clone()];
         let mut filters = Vec::new();
         let measure = measures::is_measure(&p.project);
-        for (i, step) in p.steps.iter().enumerate() {
+        let lenient = matches!(p.project, Projection::Graph | Projection::Components);
+        for (i, step) in p.steps.iter_mut().enumerate() {
             // A measure's steps are the relations around its records, each
             // read from the start, not a chain.
             let here = if measure {
@@ -1540,12 +1663,8 @@ impl<'a> Reader<'a> {
             } else {
                 types.last().expect("the start is in").clone()
             };
-            let reached = self.step_target(
-                &here,
-                &step.relation,
-                step.walk,
-                matches!(p.project, Projection::Graph | Projection::Components),
-            )?;
+            self.as_declared(&here, step);
+            let reached = self.step_target(&here, &step.relation, step.walk, lenient)?;
             self.probe_derived(&here, &step.relation)?;
             if let (Some(t), Some(r)) = (&step.ty, &reached)
                 && t != r
@@ -1574,15 +1693,7 @@ impl<'a> Reader<'a> {
                     lakelands_core::value::kind_name(param.kind)
                 )));
             }
-            let f = step
-                .filter
-                .as_ref()
-                .map(|c| condition(c, Place::Record, "step where"))
-                .transpose()?;
-            if let Some(e) = &f {
-                rights::check_probe(self.who, &decl, core_derive::reads(e).iter())?;
-            }
-            filters.push(f);
+            filters.push(self.record_filter(&decl, step.filter.as_ref(), "step where")?);
             types.push(reached);
         }
         if measure {
@@ -1591,53 +1702,23 @@ impl<'a> Reader<'a> {
         let hidden = Visible { reader: self };
         // The start.
         let starts: Vec<StoredRecord> = if let Some(key) = &p.start.key {
-            match self.get(
-                &p.start.ty,
-                &lakelands_api::read::Get {
-                    key: key.clone(),
-                    with_meta: false,
-                    at: ReadAt::default(),
-                    params: p.start.params.clone(),
-                },
-            ) {
-                Ok(_) => self.get_one(&p.start.ty, key)?.into_iter().collect(),
-                Err(Error::NotFound { .. }) => Vec::new(),
-                Err(e) => return Err(e),
+            if self.start_found(p, key)? {
+                self.get_one(&p.start.ty, key)?.into_iter().collect()
+            } else {
+                Vec::new()
             }
         } else if let Some(mode) = &p.start.search {
-            let s = Search {
-                ty: p.start.ty.clone(),
-                mode: mode.clone(),
-                k: self.lake.limits.max_limit,
-                cursor: None,
-                filter: p.start.filter.clone(),
-                with_meta: false,
-                at: ReadAt::default(),
-            };
-            let keys: Vec<RecordKey> = self
-                .search(&s)?
-                .hits
-                .into_iter()
-                .map(|h| h.record.key)
-                .collect();
+            let keys = self.start_hits(p, mode)?;
             keys.iter()
                 .filter_map(|k| self.view.get(&p.start.ty, k).ok().flatten())
                 .collect()
         } else {
-            let f = p
-                .start
-                .filter
-                .as_ref()
-                .map(|c| condition(c, Place::Record, "start where"))
-                .transpose()?;
-            if let Some(e) = &f {
-                rights::check_probe(self.who, &start_decl, core_derive::reads(e).iter())?;
-            }
+            let f = self.record_filter(&start_decl, p.start.filter.as_ref(), "start where")?;
             self.records(&start_decl, f.as_ref())?
         };
+        let relations: Vec<RelationName> = p.steps.iter().map(|s| s.relation.clone()).collect();
         // A path.
         if let Some((to_ty, to_key)) = &p.to {
-            let relations: Vec<RelationName> = p.steps.iter().map(|s| s.relation.clone()).collect();
             let depth = p.steps.iter().map(|s| s.depth.max).max().unwrap_or(1);
             let mut nodes = Vec::new();
             let mut edges = Vec::new();
@@ -1660,7 +1741,6 @@ impl<'a> Reader<'a> {
         }
         // A subgraph.
         if p.project == Projection::Graph {
-            let relations: Vec<RelationName> = p.steps.iter().map(|s| s.relation.clone()).collect();
             let depth = p.steps.iter().map(|s| s.depth.max).max().unwrap_or(0);
             let walk = p.steps.first().map_or(Walk::Both, |s| s.walk);
             // Several starts merge into one walk: each record at the fewest
@@ -1713,7 +1793,6 @@ impl<'a> Reader<'a> {
         self.probe_rows(&paths)?;
         // Rows: one per match.
         let mut rows: Vec<BTreeMap<String, Value>> = Vec::new();
-        let mut truncated_any = false;
         for start in &starts {
             let from = (start.ty.clone(), start.key.clone());
             let keep = |i: usize, node: &lakelands_core::graph::Node| -> Result<bool> {
@@ -1725,7 +1804,6 @@ impl<'a> Reader<'a> {
                     .is_some_and(|r| self.holds(f, &r.fields, Some(&r.meta))))
             };
             let t = graph::traverse(&hidden, &from, &p.steps, max_depth, usize::MAX, keep)?;
-            truncated_any |= t.truncated;
             for binding in t.bindings {
                 let mut row = BTreeMap::new();
                 let mut chain = vec![from.clone()];
@@ -1736,7 +1814,6 @@ impl<'a> Reader<'a> {
                 rows.push(row);
             }
         }
-        let _ = truncated_any;
         if let Projection::Rows { fields } = &p.project
             && !fields.is_empty()
         {
@@ -1777,14 +1854,9 @@ impl<'a> Reader<'a> {
             })
             .collect();
         keyed.sort_by(|a, b| Self::compare(&order, &a.0, &b.0));
-        let offset = offset(p.cursor.as_ref(), &p.start.ty, &params)?;
-        let more = keyed.len() > offset + limit;
-        let rows = keyed
-            .into_iter()
-            .skip(offset)
-            .take(limit)
-            .map(|(_, r)| r)
-            .collect();
+        let offset = offset(p.cursor.as_ref(), p, &params)?;
+        let (rows, more) =
+            measures::page(keyed.into_iter().map(|(_, r)| r).collect(), offset, limit);
         let next_cursor = more.then(|| {
             encode(&CursorState {
                 at: self.position,
@@ -1793,9 +1865,45 @@ impl<'a> Reader<'a> {
                 params,
                 door: "query".into(),
                 ty: Some(p.start.ty.clone()),
+                of: pattern_read(p),
             })
         });
         Ok(QueryResult::Rows { rows, next_cursor })
+    }
+
+    /// Whether `get` answers the record a pattern's start names by key,
+    /// with the start's view parameters.
+    fn start_found(&self, p: &Pattern, key: &RecordKey) -> Result<bool> {
+        let get = Get {
+            key: key.clone(),
+            with_meta: false,
+            at: ReadAt::default(),
+            params: p.start.params.clone(),
+        };
+        match self.get(&p.start.ty, &get) {
+            Ok(_) => Ok(true),
+            Err(Error::NotFound { .. }) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The keys a pattern's start search finds, best first.
+    fn start_hits(&self, p: &Pattern, mode: &SearchMode) -> Result<Vec<RecordKey>> {
+        let s = Search {
+            ty: p.start.ty.clone(),
+            mode: mode.clone(),
+            k: self.lake.limits.max_limit,
+            cursor: None,
+            filter: p.start.filter.clone(),
+            with_meta: false,
+            at: ReadAt::default(),
+        };
+        Ok(self
+            .search(&s)?
+            .hits
+            .into_iter()
+            .map(|h| h.record.key)
+            .collect())
     }
 
     /// Refuse an order or a measure over a path of a pattern's rows whose
@@ -1812,6 +1920,42 @@ impl<'a> Reader<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Rewrite a step naming a relation's `inverse` to that relation,
+    /// walked the other way: the inverse is the relation's name from its
+    /// target, and the step's `walk` counts from the name it gives. A
+    /// relation declared under the name wins, so a step is read as an
+    /// inverse only when it walks no relation of that name from `here`.
+    fn as_declared(&self, here: &TypeName, step: &mut Step) {
+        let types = || self.ontology.types.values().map(|e| &e.decl);
+        let (name, walk) = (&step.relation, step.walk);
+        // Whether a relation leaves `here` (out) or reaches it (in) by the
+        // way the step walks.
+        let leaves = |t: &TypeDecl, w: Walk| &t.name == here && w != Walk::In;
+        let reaches = |r: &RelationDecl, w: Walk| &r.target == here && w != Walk::Out;
+        let flipped = match walk {
+            Walk::Out => Walk::In,
+            Walk::In => Walk::Out,
+            Walk::Both => Walk::Both,
+        };
+        let walked = |t: &TypeDecl, r: &RelationDecl, w: Walk| leaves(t, w) || reaches(r, w);
+        if types().any(|t| {
+            t.relations
+                .iter()
+                .any(|r| &r.name == name && walked(t, r, walk))
+        }) {
+            return;
+        }
+        let inverse = types().find_map(|t| {
+            t.relations
+                .iter()
+                .find(|r| r.inverse.as_ref() == Some(name) && walked(t, r, flipped))
+        });
+        if let Some(r) = inverse {
+            step.relation = r.name.clone();
+            step.walk = flipped;
+        }
     }
 
     /// The type a step over `relation` reaches from `here`, walking `walk`.
@@ -1859,15 +2003,14 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn bind(
-        &self,
-        row: &mut BTreeMap<String, Value>,
-        node: &lakelands_core::graph::Node,
-    ) -> Result<()> {
-        let decl = self.ontology.ty(&node.0)?;
-        if let Some(r) = self.get_one(&node.0, &node.1)?
-            && let Some(rec) = rights::visible(self.who, decl, &r, false)
-        {
+    /// The record a node names, as the principal may see it, if at all.
+    fn shown(&self, (ty, key): &graph::Node) -> Result<Option<Record>> {
+        let decl = self.ontology.ty(ty)?;
+        Ok((self.get_one(ty, key)?).and_then(|r| rights::visible(self.who, decl, &r, false)))
+    }
+
+    fn bind(&self, row: &mut BTreeMap<String, Value>, node: &graph::Node) -> Result<()> {
+        if let Some(rec) = self.shown(node)? {
             row.insert(format!("{}.key", node.0), Value::String(node.1.to_string()));
             for (f, v) in rec.fields {
                 row.insert(format!("{}.{f}", node.0), v);
@@ -1883,13 +2026,8 @@ impl<'a> Reader<'a> {
         truncated: bool,
     ) -> Result<QueryResult> {
         let mut records = Vec::new();
-        for (ty, key) in &nodes {
-            let decl = self.ontology.ty(ty)?;
-            if let Some(r) = self.get_one(ty, key)?
-                && let Some(rec) = rights::visible(self.who, decl, &r, false)
-            {
-                records.push(rec);
-            }
+        for node in &nodes {
+            records.extend(self.shown(node)?);
         }
         Ok(QueryResult::Graph {
             nodes: records,
@@ -2145,11 +2283,7 @@ impl EdgeSource for Visible<'_, '_> {
                 continue;
             }
             for rec in r.get_many(ty, &keys)? {
-                if !rec.retired
-                    && (r.who.grants.restricted || !rec.restricted)
-                    && r.valid_at
-                        .is_none_or(|t| valid_time::record_holds(decl, &rec.fields, t))
-                {
+                if r.live(decl, &rec) {
                     shown.insert((rec.ty, rec.key));
                 }
             }
@@ -2158,16 +2292,17 @@ impl EdgeSource for Visible<'_, '_> {
     }
 }
 
-/// Reciprocal rank fusion of ranked lists: each list adds `1 / (60 +
-/// rank)` for every key it ranks (rank from 0, best first), in the lists'
-/// order. Ties are broken by key, so the fused order is the same on every
-/// engine. A hybrid search hands it only what the read may see (046).
-pub fn fuse(lists: &[Vec<(RecordKey, f64)>]) -> Vec<(RecordKey, f64)> {
+/// Reciprocal rank fusion of ranked lists, each with its weight: a list
+/// adds `weight / (60 + rank)` for every key it ranks (rank from 0, best
+/// first), in the lists' order. Ties are broken by key, so the fused
+/// order is the same on every engine. A search hands it only what the
+/// read may see (046).
+pub fn fuse(lists: &[(f64, Vec<(RecordKey, f64)>)]) -> Vec<(RecordKey, f64)> {
     const K: f64 = 60.0;
     let mut score: BTreeMap<RecordKey, f64> = BTreeMap::new();
-    for list in lists {
+    for (weight, list) in lists {
         for (rank, (key, _)) in list.iter().enumerate() {
-            *score.entry(key.clone()).or_default() += 1.0 / (K + rank as f64);
+            *score.entry(key.clone()).or_default() += weight / (K + rank as f64);
         }
     }
     let mut out: Vec<(RecordKey, f64)> = score.into_iter().collect();

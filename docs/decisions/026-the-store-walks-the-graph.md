@@ -43,3 +43,15 @@ one record's links at a time and the start's records a page at a time,
 so measuring a whole type holds a page and the best rows asked for, not
 the type. Components hold every record they reach, up to the lake's
 `max_graph_nodes`, and are refused `too_large` past it, never cut.
+
+**A measure's page.** A read keeps nothing between calls, and a page in
+the middle of a measure cannot be made from less than the measure: a
+component's number and size are known only when the whole partition is.
+So a measure is computed whole for every page, and a walk through small
+pages computes it once per page (lakelands#474). The way to one
+computation is one page: a measure's `limit` may go up to the lake's
+`max_graph_nodes`, the bound the lake already puts on a whole-graph
+answer, where every other read stops at `max_limit`. A components answer
+always fits that page. An absent `limit` stays the lake's default, so an
+agent that names none is not handed the whole answer. Small pages are
+still answered, at their price; the `query` tool says so.

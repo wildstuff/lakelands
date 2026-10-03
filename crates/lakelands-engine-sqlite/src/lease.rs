@@ -119,10 +119,7 @@ impl LeaseFile {
             Err(TryLockError::Error(e)) => return Err(io_error("locking", &self.path, e)),
             Err(TryLockError::WouldBlock) => {
                 let (fence, held_by) = self.current()?;
-                return Err(unavailable(format!(
-                    "the lake's writer lease is held by `{held_by}` (fence {fence}); it must be \
-                     released before another writer can take it"
-                )));
+                return Err(lakelands_core::engines::lease_held(&held_by, fence));
             }
         }
         let mut recorded = read(&mut file, &self.path)?;

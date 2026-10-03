@@ -264,6 +264,7 @@ masking are the store's.
 | `lexical(type, text, fields, k)` | Full-text hits at the position, as below; with `fields`, in those of the type's searchable fields only. |
 | `proposals(filter)` | Every proposal whose latest state at the position matches `filter.state`, `filter.kind` (`upsert`, `retire`, `call`, `declare` or `migrate`) and `filter.type` (a `call`'s type is its verb's `on` type in force at the position; a `declare` touches every type it declares or a declaration of it acts on, a `migrate` its type), newest first — by the position of that latest state, descending, then by id — and at most `filter.limit`. `order_by`, `cursor` and the read position in the filter are the store's and the engine ignores them: the store applies the caller's `order_by` to the engine's answer, and refuses as `Invalid` an `order_by` naming a member a proposal does not have. |
 | `is_member(set, type, key)` | Whether the record is in the object set at the position; false if never put. |
+| `members(set, type)` | The keys of the type's records that are in the object set at the position; empty for a set never put. One read: the store asks it once for a set before it walks a type (a set declared again, a migration, a re-key), where `is_member` for each record would be a statement each on PostgreSQL (lakelands#477). |
 | `applied(id)` | The position `id` was applied at, if that is at or before the view's position. |
 | `output(seam, input)` | The recorded output valid at the position, if any: the latest recorded for that seam and input at or before it. |
 
@@ -320,7 +321,11 @@ answers without reading a state. The store counts through it: `find`
 with only `count()` measures and no `group_by` asks `count` with the
 filter the engine can apply, and a filter only the store can evaluate
 is applied over engine pages read one after another and dropped, as for
-`find`. A view is computed whole before it is counted (lakelands#388).
+`find`. A grouped aggregate and a view read their records the same way:
+each record is folded into its group's count, sum and best value and
+dropped with its batch, so `find`'s aggregate over a stored type, and a
+view counted or read, hold a batch and the groups, never the records
+(lakelands#388). A view that reads another view computes that one first.
 
 **The ceiling of `find`.** `find` asks the engine for its page,
 never the type: its order, the row it continues after, and `limit + 1`
@@ -477,6 +482,44 @@ from log format version 3 on, so a derived field can hold the bucket
 (`docs/decisions/017-one-expression-grammar.md`, extended). **The
 ceiling:** buckets are UTC only, and there is no number bucket.
 
+### Reading an object set
+
+No read takes a set by its name, and none needs to. A set is its filter
+(`ObjectSetDecl.where`), and a host reads it through that filter
+(lakelands#430):
+- **Which records, how many, a sum, a group:** `describe` lists the set
+  with its filter. `find` under that filter answers the members, with
+  `total` their count and `aggregate` their sums and groups. A pattern's
+  start and a search take the same filter as their `where`.
+- **At an earlier position:** `describe` at the same `as_of` gives the
+  filter in force there.
+- **At a valid time:** `find` with `valid_at` evaluates the filter over
+  the records valid then.
+- **Combined, sets of one type:** `(<f1>) and not (<f2>)`, or with `or`,
+  in the text form. The typed form has `and`, `or` and `not` nodes.
+
+`describe` lists a set only to a principal who reads every field its
+filter names, or who holds `schema`. That is the same rule by which
+`find` probes those fields (024), so a principal who may not see a set
+cannot read it through its filter either. A host that reads the filter
+from `describe` for each read never holds a copy that drifts when the
+set is declared again.
+
+The `object_set_changed` events describe the same members only where the
+filter is evaluated in the same way they were:
+- for records written after the set was declared, and for those already
+  there when it was declared or declared again, which its declaration
+  decides ("Declaring a set over a large type", below);
+- for a filter that does not read the clock: `now()` and `today()` are
+  the write's time in an event and the read's time in `find`, so a set
+  whose members move by date is moved by an aging rule, whose moves are
+  writes;
+- at system time: an event knows no valid time.
+
+The suite holds this (`SET_READ_BY_ITS_FILTER`): for records written
+after the set's declaration, `find` under the filter from `describe`
+answers what the events record, and `(f1) and not (f2)` the difference.
+
 ### `VectorIndex`
 
 `LakeStore::vector_coverage(type)` answers, for each embedding field of
@@ -604,7 +647,7 @@ holds it to.
 | `scan`'s filter matches the evaluator exactly, including comparisons across kinds and filters that error; the flags and `valid_at` | engine: `scan_filters_exactly_as_the_evaluator_including_mixed_kinds_and_errors`, `scan_honours_retired_restricted_and_valid_at` |
 | `lexical`'s hit set, its language, searchable fields only, live only (restricted included), ties by key, `k`; at an earlier position, visibility from the position and text from the head | engine: `lexical_hits_are_the_pipelines_over_searchable_live_records`, `lexical_finds_every_token_the_pipeline_makes_beyond_ascii`, `lexical_at_an_earlier_position_ranks_by_the_head_and_keeps_what_was_visible_then`, `lexical_over_named_fields_is_the_pipelines_over_those_fields` |
 | `nearest`'s exact top `k` by cosine, ties, a zero vector, a wrong length; `put` replaces; `clear` empties the index | engine: `nearest_ranks_by_cosine_with_ties_by_key`, `a_zero_vector_scores_zero_and_a_wrong_length_is_invalid`, `put_replaces_a_vector_and_remove_forgets_it`, `clear_empties_the_projection_and_the_vector_index` |
-| `declarations`, `is_member`, `output` and `applied` at an earlier position; `mark_applied` keeps the first position | engine: `declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position`, `the_first_applied_position_is_kept` |
+| `declarations`, `is_member`, `members`, `output` and `applied` at an earlier position; `mark_applied` keeps the first position | engine: `declarations_membership_outputs_and_applied_ids_read_at_an_earlier_position`, `the_first_applied_position_is_kept` |
 | `proposals`' filters, a `call`'s type, and its order | engine: `proposals_filter_by_state_and_type_newest_first` |
 
 ## `PrincipalResolver`
@@ -745,6 +788,14 @@ field declared with `embed` whose model or dimensions are not the bound
 backend's is refused as `Unbound`, naming both: that is a configuration to
 fix, not weather. A vector search, and a hybrid search that brings its
 own vector, never call the backend.
+
+**A search that fuses rankings** weighs each as it asks
+(`docs/decisions/046-a-hybrid-search-fuses-the-ranks-a-read-may-see.md`):
+a hybrid search its text (`text_weight`) and its vector (`weight`), a
+vector search its `field` and every further field it names in `also`.
+The store asks the engine for each ranking on its own, through `lexical`
+and `nearest` as before, and fuses them itself, so an engine sees
+neither a weight nor a second field.
 
 **A field declared with `embed`** is the embedding of text fields of its
 record (`docs/decisions/022-functions-are-declarations.md`, extended):
@@ -888,13 +939,16 @@ due is in the log, and its position is real. The failure is the recorded
 output — `{"error": "<the executor's error text>"}`. The caller's outcome
 is `applied` at the position that made the verb due, and carries the
 recorded output in its `output` member, the error form included, so an
-agent that called an external verb has the answer in the reply. The verb
+agent that called an external verb has the answer in the reply. Its
+`through` member is the position the output was recorded at
+(`docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`,
+extended). The verb
 is not run again for that position. A host that wants a retry calls the verb again, which is a new
 position.
 
 A call retried with the same idempotency key runs nothing and answers
-the first outcome: the position that made the verb due and the recorded
-output. The output's `input` digest holds the record as the executor was
+the first outcome: the position that made the verb due, the recorded
+output and its position. The output's `input` digest holds the record as the executor was
 given it, which a retry cannot rebuild, so the retry finds the output as
 the `output_recorded` caused by that position, among the 4,096 events
 after it. An output not among them (not recorded yet, or recorded after
@@ -905,6 +959,10 @@ There is no default: a verb whose executor is not bound is refused as
 `Unbound`, never faked. The store checks it when the verb is called or
 a call of it is proposed, and again when a proposal to call it is
 accepted, before anything is written.
+`describe` names each external verb's executor and says whether one of
+that name is bound when it answers, at any position, and the verb's tool
+says the same (`docs/decisions/013-verbs-run-by-declared-risk.md`,
+extended).
 
 ## `ChangeFeed`
 
@@ -1176,6 +1234,72 @@ refuses to start when it holds that lake but not as its writer.
   principal, and every reference and link leads to a type the connection
   mirrors; and, for a type with no position yet, the target admits the
   source's declaration.
+
+### Declaring a set over a large type
+
+A set's declaration decides the membership of the records already there,
+in its own append (`docs/decisions/004-the-change-feed-is-the-log.md`,
+extended): one `object_set_changed` per record whose membership it
+changes, caused by its `declared`. The writer is held while the store
+walks the type's live records, 1 024 at a time, and drafts the changes.
+
+Measured with `--release` at 100 000 live records, under some load from
+other processes (`crates/lakelands-engine-sqlite/tests/set_declared.rs`
+and `crates/lakelands-engine-pg/tests/set_declared.rs`, by hand):
+
+| | the walk alone | 25 000 changes | 50 000 changes |
+|---|---|---|---|
+| SQLite: writer held, peak memory, on disk | 0.34 s, 3 MB, 0 | 0.88 s, 72 MB, 16 MB | 1.38 s, 145 MB, 33 MB |
+| PostgreSQL: writer held, peak memory, in the schema | 0.57 s, 3 MB, 0 | 1.62 s, 104 MB, 26 MB | 2.62 s, 164 MB, 55 MB |
+
+The changes cost, the walk barely does:
+- **per change:** about 21 µs and 3 KB on SQLite, about 41 µs and 4 KB
+  on PostgreSQL;
+- **the walk:** about 0.35 s (SQLite) and 0.6 s (PostgreSQL) per
+  100 000 records.
+
+`Limits::max_set_changes` (20 000 unless the location sets it) bounds the
+changes of one declaration. Past it the declaration is refused
+`too_large`, naming the set and the ceiling, and nothing is appended. The
+walk stops at the first change past the ceiling. A host that needs the
+number counts what a new set would take in with `find`, the set's filter
+and `total`.
+
+A set over a large type is declared in one of two ways:
+- **Raise `max_set_changes` in the lake's location,** at the cost above.
+  On PostgreSQL, 100 000 changes hold the writer for about 4.7 s and need
+  about 400 MB. Other writes wait meanwhile, so this is a step for a
+  quiet moment.
+- **Widen the filter in steps under the ceiling,** with no limit raised.
+  Declare the set with a narrower filter (`status = 'open' and n <
+  20000`), then again with a wider one, and last with the filter meant.
+  Each step is a whole declaration whose events agree with the filter in
+  force after it. A crash between steps leaves a narrower set, never a
+  wrong one.
+
+The walk is not bounded: a type of a million live records holds the
+writer for several seconds even for a set nothing joins.
+
+A set declared again is compared with its members so far, which the walk
+reads once before it starts (`members`), not once for each record. A
+migration and a re-key read each set's members the same way. What a
+migration itself costs at size is in `docs/hosting.md`, "Rules the host
+inherits".
+
+A migration decides the membership of the records it migrates again,
+in the walk its preflight makes over the type's records anyway, and
+appends the changes in its own append, directly after its `migrated` and
+caused by it. Its changes count against the same `max_set_changes`, over all sets of the
+type; past it the migration is refused `too_large`, naming a set. Narrow
+the sets first (declare them again with a narrower filter), migrate, then
+widen them in steps. A re-key also decides the records of every other
+type whose reference to a moved key it rewrites, for the sets that read
+that reference, and a migration that converts a relation's fields decides
+the sets over the relation's link type; all count against the one
+ceiling. A type that holds such a reference and has such a set is read
+once more, a page at a time. A migration that drops or renames a field a set's
+filter reads never gets that far: its preflight refuses it, naming the
+set and the field.
 
 ## `SystemVocabulary`
 
@@ -1580,7 +1704,11 @@ since. What it appends is one `declared` at the next version: no record
 is rewritten. A change of `kind` or `scale` rewrites stored values, so it
 is not a value-type migration; the fields that use the value type are
 migrated instead. The `migrate` tool and REST route take `value_type`
-instead of `to`, one of the two, never both. The preflight checks stored
+instead of `to`, one of the two, never both. A principal without the
+`schema` grant proposes a tightening instead (`propose` with the write
+`migrate_value_type`): it is preflighted at the proposal and again at the
+acceptance, and a reviewer holding `schema` accepts it
+(`docs/decisions/013-verbs-run-by-declared-risk.md`, extended). The preflight checks stored
 values only: a condition that compares with a value the type no longer
 admits (a trigger's `when`, an object set's `where`) is not checked, and
 simply never holds afterwards; an aging rule whose `from` or `to` the
@@ -1606,6 +1734,22 @@ write of an old key's bare string with no key field has the key field
 filled from it and is a new record at version 1. A migration that takes
 every key field away, names a key field that is not required or of a
 kind no key is made of, or would re-key a view is refused.
+
+A migration keeps the fields the lake's declarations read
+(`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+extended). Its preflight refuses, as invalid, a migration that drops or
+renames a field read by a view over the type, a derived field of the
+type, an object set, a trigger or a verb on it, another type's derived
+relation to it, or an object set or a trigger on the link type of a
+relation whose fields it changes, naming the reader and the field ("after the
+migration of `invoice`, the object_set declaration `open` reads `status`
+of `invoice`, which the migration renames to `state`"). Declare the
+reader again so that it reads the shape the migration leaves, then
+migrate. For a rename, the reader is declared without the field first,
+and with its new name once the migration is applied. `declare` holds a
+declaration to the same reads: one that reads a field its type does not
+have is refused, naming it and the field
+(`docs/decisions/028-authoring-is-strict-and-whole.md`, extended).
 
 **Many callers, one writer.** A lake has one writing process
 (`docs/decisions/008-one-writer-per-lake.md`), and any number of callers

@@ -48,3 +48,51 @@ gate_range() {
 tracked_files() {
     git ls-files -z -- "$@" | perl -0 -ne "print unless \$_ eq \"$GATE_SELF\\0\""
 }
+
+# The pull request's base commit, or nothing when only HEAD is checked.
+gate_base() {
+    local range
+    range="$(gate_range)"
+    [ "${range%..HEAD}" != "$range" ] && printf '%s\n' "${range%..HEAD}"
+    return 0
+}
+
+# The number assigned as `NAME=<number>` in FILE on the base commit, or
+# the number FILE holds whole when NAME is empty; nothing when there is
+# no base or no such number.
+base_number() {
+    local file="$1" name="${2:-}" base
+    base="$(gate_base)"
+    [ -n "$base" ] || return 0
+    if [ -n "$name" ]; then
+        git show "$base:$file" 2>/dev/null | sed -n "s/^$name=\([0-9][0-9]*\).*/\1/p" | head -n 1
+    else
+        git show "$base:$file" 2>/dev/null | tr -d '[:space:]' | grep -x '[0-9][0-9]*' || true
+    fi
+}
+
+# A budget's number goes down by itself and is raised only by a recorded
+# decision (docs/decisions/047-a-ceiling-is-raised-by-a-recorded-rule.md):
+# red when WHAT rose from PREV to NOW, unless this pull request adds a
+# row to docs/budgets.md for BUDGET whose "to" is NOW.
+# raised BUDGET WHAT PREV NOW
+raised() {
+    local budget="$1" what="$2" prev="$3" now="$4" base
+    [[ "$prev" =~ ^[0-9]+$ ]] && [ "$now" -gt "$prev" ] || return 0
+    base="$(gate_base)"
+    if [ -n "$base" ] && git diff --no-color "$base...HEAD" -- docs/budgets.md \
+            | perl -ne '
+                BEGIN { ($budget, $now) = (shift, shift) }
+                next unless /^\+\s*\|/;
+                my @col = map { s/^\s+|\s+$//gr } split /\|/;
+                my ($name, $change) = @col[2, 3];
+                next unless defined $change && $change =~ /\xe2\x86\x92|->/;
+                my ($to) = $change =~ /(?:\xe2\x86\x92|->)\s*(.*)$/;
+                $to =~ s/\D//g;
+                $found = 1 if lc $name eq lc $budget && $to eq $now;
+                END { exit($found ? 0 : 1) }
+            ' "$budget" "$now"; then
+        return 0
+    fi
+    fail "$what rose from $prev to $now; a raise needs a row in docs/budgets.md for $budget whose \"to\" is $now"
+}

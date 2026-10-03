@@ -151,11 +151,7 @@ impl Read<'_> {
         n: u32,
     ) -> Result<Vec<StoredRecord>> {
         let limit = i64::from(n);
-        let from = if after.is_some() {
-            "AND key COLLATE \"C\" > $4"
-        } else {
-            ""
-        };
+        let from = after.map_or("", |_| "AND key COLLATE \"C\" > $4");
         let query = format!(
             "SELECT state FROM {} WHERE ty = $1 AND {} {from} ORDER BY key COLLATE \"C\" LIMIT $3",
             self.names.t("records"),
@@ -257,11 +253,7 @@ impl Read<'_> {
         n: u32,
     ) -> Result<Vec<StoredRecord>> {
         let limit = i64::from(n);
-        let from = if after.is_some() {
-            "AND r.key COLLATE \"C\" > $4"
-        } else {
-            ""
-        };
+        let from = after.map_or("", |_| "AND r.key COLLATE \"C\" > $4");
         let query = format!(
             "SELECT r.state FROM {records} r WHERE r.ty = $1 AND r.until IS NULL {from} \
              AND NOT EXISTS (SELECT 1 FROM {sorted} s \
@@ -383,11 +375,7 @@ impl Read<'_> {
         )?;
         let mut out = Vec::new();
         for r in rows {
-            if let Declaration::Type(t) =
-                decode::<Declared>(&r.get::<_, String>(0), "a declaration")?.declaration
-            {
-                out.push(t);
-            }
+            out.extend(projection::declared_type(Some(r.get(0)))?);
         }
         Ok(out)
     }
@@ -698,6 +686,23 @@ impl ProjectionView for PgView<'_> {
                     &[&set, &ty.as_str(), &key.as_str(), &r.at],
                 )?
                 .is_some_and(|row| row.get::<_, bool>(0)))
+        })
+    }
+
+    fn members(&self, set: &str, ty: &TypeName) -> Result<BTreeSet<RecordKey>> {
+        self.single(BTreeSet::new(), |r| {
+            let rows = r.db.query(
+                &format!(
+                    "SELECT key FROM {} WHERE object_set = $1 AND ty = $2 AND state AND {}",
+                    r.names.t("members"),
+                    holds_at(3)
+                ),
+                &[&set, &ty.as_str(), &r.at],
+            )?;
+            Ok(rows
+                .iter()
+                .map(|row| RecordKey::from(row.get::<_, String>(0)))
+                .collect())
         })
     }
 

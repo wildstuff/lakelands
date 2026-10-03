@@ -1,6 +1,6 @@
 # The log format
 
-**Format version 9.** Reviewed so that a verifier can be written from
+**Format version 10.** Reviewed so that a verifier can be written from
 this document alone (lakelands#14). `0.1.0` is tagged, so every change
 to the format bumps the version, and a lake writes the version it had
 until an event needs a newer one (§6). Version 2 adds one member,
@@ -11,7 +11,8 @@ the proposal of a declaration or a migration. Version 5 adds a
 declaration's `annotations`. Version 6 adds a derived relation and a trigger's `max_depth`.
 Version 7 adds a call of `retired` in a declaration. Version 8 adds a
 view's `params` and a call of `param`, and a verb called on its type.
-Version 9 adds a view's `merge`. §6 says
+Version 9 adds a view's `merge`. Version 10 adds the proposal of a value
+type's tightening. §6 says
 which event needs which version.
 
 A lake's event log is its truth (`docs/decisions/001-the-log-is-the-truth.md`).
@@ -317,7 +318,7 @@ the rules are deterministic, so a replay reproduces them.
 | Kind | Payload | Fold |
 |---|---|---|
 | `verb_called` | `verb`, `key`, `payload` | A verb ran. Its writes follow as `record_upserted` events with `cause` set to this position and `procedure` naming the verb. From version 8 on, a verb declared on its type (`scope: type`) is called with no record, and `key` is left out. |
-| `write_proposed` | `proposal`, `write`, `why` | A write was recorded as a proposal instead of being applied (`docs/decisions/013-verbs-run-by-declared-risk.md`). `write.write` is `upsert`, `retire` or `call`, with that write's arguments; from version 4 on also `declare`, a set of declarations, or `migrate`, a migration with its preflight's report (Appendix A). |
+| `write_proposed` | `proposal`, `write`, `why` | A write was recorded as a proposal instead of being applied (`docs/decisions/013-verbs-run-by-declared-risk.md`). `write.write` is `upsert`, `retire` or `call`, with that write's arguments; from version 4 on also `declare`, a set of declarations, or `migrate`, a migration with its preflight's report, and from version 10 on `migrate_value_type`, a value type's narrower declaration with its preflight's report (Appendix A). |
 | `write_accepted` | `proposal` | The proposal was accepted. Its write follows in the same append, with `cause` set to this position and the proposer as `writer`: for `declare` the `declared` events, for `migrate` the `migrated` event (the link types the store derives keep `system:lakelands` as writer). |
 | `write_rejected` | `proposal`, `reason` | The proposal was rejected; nothing else is written. |
 
@@ -326,7 +327,7 @@ the rules are deterministic, so a replay reproduces them.
 | Kind | Payload | Fold |
 |---|---|---|
 | `trigger_fired` | `trigger`, `type`, `key` | A write made a trigger's condition hold. Appended in the same append as that write, with `cause` naming it. The durable fact that something is due; acting on it is the host's (`docs/decisions/004-the-change-feed-is-the-log.md`). |
-| `object_set_changed` | `set`, `type`, `key`, `joined` (boolean) | A write moved a record into (`true`) or out of (`false`) an object set. Same append, same `cause`. |
+| `object_set_changed` | `set`, `type`, `key`, `joined` (boolean) | A write moved a record into (`true`) or out of (`false`) an object set, in the write's append and caused by it; or a set's declaration did, in the declaration's append and caused by its `declared` (lakelands#453); or a migration did, in its append and caused by its `migrated` (lakelands#457), for a record of the migrated type, of one of its link types, or of another type whose reference to a moved key it rewrites (lakelands#465, lakelands#466). |
 | `output_recorded` | `seam`, `input` (digest), `output`, `field` (optional `[type, key, field]`) | The output of a seam the store called: a function backing, an embedding backend, a verb executor. A replay reads this output instead of calling the seam (`docs/decisions/002-determinism-is-the-boundary.md`). |
 
 `seam` names the seam and what was called in it: `function:<backing
@@ -592,6 +593,7 @@ event raises it; "that append" is the append that holds it.
 | 7 | A call of `retired` in a declaration's expressions (Appendix B): in a trigger's `when`, the one place it means something. A lake writes the version it had until the append that holds its first event whose declaration calls `retired` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`); that append carries `v` 7, as does every event after it; a version-6 (or older) event that calls it is refused, naming it. A version-6 reader refuses the version-7 events rather than reading a guard it cannot evaluate, which would never fire. |
 | 8 | A view's `params` and a call of `param` in a declaration's expressions (Appendix A, Appendix B): a view may declare parameters, which a read binds and its `where` and measures read with `param('name')`. A lake writes the version it had until the append that holds its first event whose declaration is a view with a non-empty `params`, or calls `param` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`); that append carries `v` 8, as does every event after it; a version-7 (or older) event that carries either is refused, naming it. A version-7 reader refuses the version-8 events rather than computing a view whose parameters it cannot bind. `params` is part of the schema hash only when it is not empty (§2.2). The same version adds a verb called on its type (`docs/decisions/013-verbs-run-by-declared-risk.md`, extended): a verb declaration's `scope: type` (in a `declared` event or a proposed `declare`); a `verb_called` without `key`; and a proposed `call` without `key`. A lake writes the version it had until the append that holds its first such event; that append carries `v` 8, as does every event after it, and a version-7 (or older) event that carries one is refused, naming it. Version 8 took both while it was untagged. |
 | 9 | A view's `merge` (Appendix A): further sources a view merges on its key, each with its own `where`, `group_by` lined up with the view's by position, and aggregate measures the view's measures read by name. A lake writes the version it had until its first event whose declaration is a view with a non-empty `merge` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`), which carries `v` 9, as does every event after it; a version-8 (or older) event that carries one is refused, naming it. A version-8 reader refuses the version-9 events rather than computing a view from its main source alone. `merge` is part of the schema hash only when it is not empty (§2.2). |
+| 10 | A proposal of a value type's tightening: `write_proposed` whose `write` is `migrate_value_type` (§2.4, Appendix A). A lake writes the version it had until the append that holds its first such proposal; that append carries `v` 10, as does every event after it; a version-9 (or older) event that carries one is refused, naming it. A version-9 reader refuses the version-10 events rather than failing on a write it does not know. A lake that never holds such a proposal stays at the version it had. |
 
 ## Appendix A. Encodings
 
@@ -661,7 +663,13 @@ declarations as `declared` carries one each; `migrate` carries
 report when it was proposed (`type`, `from_schema_hash`,
 `to_schema_hash`, `records_scanned`, `fields`, `dropped`, `rekeyed`,
 `references`, `sample_collisions`, `lossless`, `report_id`, as the
-`migrate` door answers it).
+`migrate` door answers it). From version 10 on, `migrate_value_type`
+carries `to`, the value type's new declaration as `declared` carries
+one, and `report`, its preflight's report when it was proposed
+(`value_type`, `from_version`, `records_scanned`, `fields`, `misfits`,
+`first`, left out when empty, `fits`, `report_id`, as the
+`migrate_value_type` door answers it). A logged report fits, so its
+`first` is empty.
 
 ## Appendix B. Expressions in typed form
 

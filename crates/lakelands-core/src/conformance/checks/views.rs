@@ -715,6 +715,8 @@ async fn a_search_on_a_view_is_refused_naming_it(store: Arc<dyn LakeStore>) -> R
             fields: None,
             field: near().0,
             vector: Some(near().1),
+            weight: None,
+            text_weight: None,
         },
     ] {
         let what = format!("{mode:?}");

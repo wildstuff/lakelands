@@ -38,6 +38,11 @@ use lakelands_api::write::{Declaration, ProposedWrite};
 /// The lowest format version that can carry `body`, with `upstream` or
 /// without it.
 pub fn needed(body: &EventBody, upstream: bool) -> u32 {
+    if let EventBody::WriteProposed { write, .. } = body
+        && matches!(write, ProposedWrite::MigrateValueType { .. })
+    {
+        return 10;
+    }
     if merges_sources(body) {
         return 9;
     }
@@ -79,6 +84,9 @@ fn any_declaration(body: &EventBody, test: impl Fn(&Declaration) -> bool) -> boo
             ProposedWrite::Declare { declarations } => declarations.iter().any(test),
             ProposedWrite::Migrate { migration, .. } => {
                 test(&Declaration::Type(migration.to.clone()))
+            }
+            ProposedWrite::MigrateValueType { to, .. } => {
+                test(&Declaration::ValueType((**to).clone()))
             }
             _ => false,
         },
@@ -160,7 +168,9 @@ pub fn below(event: &Event) -> Option<String> {
     if event.v >= need {
         return None;
     }
-    let what = if need == 9 {
+    let what = if need == 10 {
+        "proposes a value type's tightening".to_owned()
+    } else if need == 9 {
         "declares a view that merges sources".to_owned()
     } else if need == 8 && declares_a_verb_on_its_type(&event.body) {
         "declares a verb on its type".to_owned()
@@ -199,7 +209,6 @@ pub fn below(event: &Event) -> Option<String> {
 /// puts either there; a reader holds the rule for a log written by
 /// something else.
 pub fn misplaced(event: &Event) -> Option<String> {
-    // A host's cause is the envelope's; `context` never carries it (021).
     if event.context.cause.is_some() {
         return Some("`context` carries `cause`, which the envelope carries".to_owned());
     }
@@ -253,10 +262,8 @@ pub fn declares_call(declaration: &Declaration, f: Func) -> bool {
         Declaration::ObjectSet(s) => conditions.push(&s.filter),
         Declaration::Function(f) => conditions.extend(f.expr.as_ref()),
     }
-    conditions.into_iter().any(|c| match c {
-        Condition::Expr(e) => calls(e, &|g| g == f),
-        Condition::Text(t) => lakelands_api::expr::parse(t).is_ok_and(|e| calls(&e, &|g| g == f)),
-    })
+    (conditions.into_iter())
+        .any(|c| crate::describe::parsed(c).is_some_and(|e| calls(&e, &|g| g == f)))
 }
 
 /// Whether an expression calls, anywhere, a function `f` accepts.

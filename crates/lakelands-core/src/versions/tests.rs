@@ -285,3 +285,18 @@ fn a_view_that_merges_sources_needs_format_9_and_says_so_below_it() {
         Some("a format 8 event declares a view that merges sources, which format 9 added")
     );
 }
+
+#[test]
+fn a_proposed_tightening_of_a_value_type_needs_format_10_and_says_so_below_it() {
+    let proposed = |write: serde_json::Value| json!({"kind": "write_proposed", "proposal": "p", "write": write, "why": "w"});
+    let to = json!({"name": "state", "kind": "text", "one_of": ["open"]});
+    let narrower = proposed(json!({"write": "migrate_value_type", "to": to}));
+    let declared = proposed(json!({"write": "declare", "declarations": [
+        {"declare": "value_type", "name": "state", "kind": "text", "one_of": ["open"]}]}));
+    let need = |v, body: &serde_json::Value| needed(&event_json(v, body.clone()).body, false);
+    assert_eq!((need(10, &narrower), need(4, &declared)), (10, 4));
+    assert_eq!(
+        below(&event_json(9, narrower)).as_deref(),
+        Some("a format 9 event proposes a value type's tightening, which format 10 added")
+    );
+}

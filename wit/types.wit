@@ -1,4 +1,4 @@
-package lakelands:data@0.8.1;
+package lakelands:data@0.9.0;
 
 /// The types every interface of the package shares: the contract of
 /// `lakelands-api`, type for type.
@@ -536,6 +536,15 @@ interface types {
         version: option<version>,
         /// An external verb's recorded output, the error form included.
         output: option<json>,
+        /// What the write set off: the last position of it, when after
+        /// `position`, and the triggers fired and object sets joined and
+        /// left that `describe` lists to the caller. For a set's
+        /// declaration, `joined` and `left` name the set, once, when it
+        /// took records in or let them go.
+        through: option<position>,
+        fired: list<trigger-name>,
+        joined: list<string>,
+        left: list<string>,
     }
 
     record proposed {
@@ -581,15 +590,23 @@ interface types {
         report: migration-report,
     }
 
+    /// A value type's tightening and the report its preflight answered
+    /// when it was proposed.
+    record migrate-value-type-write {
+        to: value-type-decl,
+        report: value-type-report,
+    }
+
     variant proposed-write {
         upsert(upsert-write),
         retire(retire-write),
         call(call-write),
         declare(declare-write),
         migrate(migrate-write),
+        migrate-value-type(migrate-value-type-write),
     }
 
-    enum proposal-kind { upsert, retire, call, declare, migrate }
+    enum proposal-kind { upsert, retire, call, declare, migrate, migrate-value-type }
 
     enum proposal-state { pending, accepted, rejected }
 
@@ -638,9 +655,17 @@ interface types {
         fields: option<list<field-name>>,
     }
 
+    record vector-term {
+        field: field-name,
+        vector: list<f32>,
+        weight: option<f64>,
+    }
+
     record vector-search {
         field: field-name,
         vector: list<f32>,
+        weight: option<f64>,
+        also: list<vector-term>,
     }
 
     record hybrid-search {
@@ -648,6 +673,8 @@ interface types {
         field: field-name,
         vector: option<list<f32>>,
         fields: option<list<field-name>>,
+        weight: option<f64>,
+        text-weight: option<f64>,
     }
 
     variant search-mode {
@@ -831,8 +858,17 @@ interface types {
         scope: verb-scope,
         payload: list<field-description>,
         risk: risk,
+        /// Exactly when `executor` is there.
         external: bool,
+        executor: option<executor-description>,
         description: option<string>,
+    }
+
+    /// The executor a verb that reaches outside the lake runs through, and
+    /// whether the host binds it when the answer is made, at any position.
+    record executor-description {
+        name: string,
+        bound: bool,
     }
 
     record lake-description {
@@ -970,14 +1006,26 @@ interface types {
         skipped: option<string>,
     }
 
-    /// What one purge retired: per type, the types it could not search,
-    /// and the position after its append.
+    /// What one purge retired, or its preflight says it would: per type,
+    /// the types it could not search, the position, what outside it refers
+    /// into it, and a preflight's id.
     record purge-report {
         source: source-id,
         retired: u32,
         types: list<type-retired>,
         unsearched: list<type-name>,
         position: position,
+        references: list<purge-reference>,
+        report-id: string,
+    }
+
+    /// The live records outside a purge that refer into it over one
+    /// relation: how many, and the first ten.
+    record purge-reference {
+        %type: type-name,
+        relation: relation-name,
+        records: u64,
+        first: list<record-ref>,
     }
 
     /// How much of one embedding field is embedded, at the head.
@@ -1009,6 +1057,7 @@ interface types {
         commit-window-events: u32,
         max-graph-nodes: u32,
         max-offset: u32,
+        max-set-changes: u32,
     }
 
     record feed-filter {

@@ -55,3 +55,40 @@ ingest, because the ingest id carries the version it was written over
 - It is not paged. The whole purge is one append, held in memory before
   it lands, under the writer's lock. A host that cannot afford that for a
   very large source retires through the doors, type by type.
+
+## Extended: a purge may be read before it is made
+
+A purge leaves behind every record of another hand that named a record
+it took: a bill whose `partner_id` holds a purged partner's key, another
+source's link at a purged end. The purge is right (a source is retracted
+as one) and the walk is right (a link to a retired end is no link, 026),
+but nothing told the host. A host whose own rule forbids such a
+retraction had to rebuild the purge's selection to hold it, or refuse
+every retraction (lakelands#473).
+
+- **The report names what the purge strands.** Per relation, in type
+  then relation order: how many live records outside the purge refer to
+  a record inside it, and the first ten in key order, by type and key
+  only. A reference is a relation's `via` field that holds the key of a
+  record the purge takes, or a link record one of whose ends it takes.
+  A restricted record counts; the report is the host's. A retired
+  record, a record the purge takes itself, and a relation derived from
+  matching values, which stores nothing, do not.
+- **A reference is reported, never a refusal.** A retraction a host owes
+  is not held back by a record of another hand. A host with the stricter
+  rule reads the report and does not purge.
+- **`purge_preflight` answers the report and appends nothing.** It is
+  refused as the purge would be, for a co-owned record, because both
+  select through one function. Its report carries an id.
+- **`purge_source` may repeat the id.** It is then refused as invalid if
+  the lake has moved since, by any append, as a migration's apply is.
+  The id names the source and the head: the report is a function of the
+  two, so the same head means the same report. Without an id the purge
+  is what it was, and its own report names what it left behind.
+
+The reference pass reads each type that can refer into the purge once,
+in key order, a page at a time: a type that declares a `via` relation
+to a type the purge takes from, and the link type of a relation one of
+whose ends it takes from. What it holds is the purged keys, a page and
+ten references per relation. The selection itself still reads each
+provenance type whole, as above.

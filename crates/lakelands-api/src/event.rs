@@ -26,8 +26,9 @@ use crate::write::{Declaration, Migration, ProposedWrite};
 /// declaration or migration; version 5 a declaration's `annotations`;
 /// version 6 a derived relation; version 7 a call of `retired` in a
 /// declaration; version 8 a view's `params` and a call of `param`, and a
-/// verb on its type; version 9 a view's `merge` (`docs/log-format.md` §6).
-pub const LOG_FORMAT_VERSION: u32 = 9;
+/// verb on its type; version 9 a view's `merge`; version 10 a proposed
+/// tightening of a value type (`docs/log-format.md` §6).
+pub const LOG_FORMAT_VERSION: u32 = 10;
 
 /// The version a lake is created with and writes until it needs a newer
 /// one: a lake that never re-keys a type stays at version 1, byte for

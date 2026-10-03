@@ -578,27 +578,26 @@ impl Lake {
         // Object-set membership moves with the record: the new key is in
         // every set the old key was in, and an ended key is in none.
         let mut members = Vec::new();
-        for (from, r) in &moved {
-            for s in w
-                .ontology
-                .object_sets
-                .values()
-                .filter(|s| s.decl.of == r.ty)
-            {
-                let name = &s.decl.name;
-                members.push((
-                    name.clone(),
-                    r.ty.clone(),
-                    from.clone(),
-                    r.key.clone(),
-                    view.is_member(name, &r.ty, from)?,
-                ));
+        for s in w.ontology.object_sets.values().map(|s| &s.decl) {
+            if !moves.contains_key(&s.of) {
+                continue;
+            }
+            // Read once for the set, not looked up for each moved record; a
+            // membership this page put is not in the view yet.
+            let held = view.members(&s.name, &s.of)?;
+            for (from, r) in moved.iter().filter(|(_, r)| r.ty == s.of) {
+                let (ty, to) = (r.ty.clone(), r.key.clone());
+                let put = staged
+                    .members
+                    .get(&(s.name.clone(), ty.clone(), from.clone()));
+                let member = put.copied().unwrap_or_else(|| held.contains(from));
+                members.push((s.name.clone(), ty, from.clone(), to, member));
             }
         }
         for (set, ty, from, to, member) in members {
-            projection.put_membership(&set, &ty, &to, member, e.position)?;
+            staged.member(projection, &set, &ty, &to, member, e.position)?;
             if member && !arrivals.contains(&(ty.clone(), from.clone())) {
-                projection.put_membership(&set, &ty, &from, false, e.position)?;
+                staged.member(projection, &set, &ty, &from, false, e.position)?;
             }
         }
         for (from, r) in moved {
@@ -621,7 +620,7 @@ impl Lake {
             {
                 continue;
             }
-            for r in staged_scan(view, staged, name)?
+            for r in staged_scan(view, staged, name, true)?
                 .into_iter()
                 .filter(|r| !r.is_ended())
             {
@@ -772,13 +771,7 @@ impl Lake {
                 // compute every live record's derived fields again, in this
                 // event.
                 for ty in rederive {
-                    let records = view.scan(&ty, &every(false))?;
-                    // The records written earlier in this append are staged,
-                    // not yet in the view.
-                    let mut all: BTreeMap<RecordKey, StoredRecord> =
-                        records.into_iter().map(|r| (r.key.clone(), r)).collect();
-                    all.extend(staged.of_type(&ty).map(|r| (r.key.clone(), r.clone())));
-                    for r in all.into_values() {
+                    for r in staged_scan(view, staged, &ty, false)? {
                         let mut outputs = Outputs {
                             view,
                             staged: Some(&staged.outputs),
@@ -801,7 +794,7 @@ impl Lake {
                 ..
             } => {
                 let before = w.ontology.ty(&migration.to.name)?.clone();
-                let records = staged_scan(view, staged, &migration.to.name)?;
+                let records = staged_scan(view, staged, &migration.to.name, true)?;
                 let decl = Declaration::Type(migration.to.clone());
                 w.ontology
                     .put(decl.clone(), *version, Some(schema_hash.clone()));
@@ -904,9 +897,7 @@ impl Lake {
                 ty,
                 key,
                 joined,
-            } => {
-                projection.put_membership(set, ty, key, *joined, e.position)?;
-            }
+            } => staged.member(projection, set, ty, key, *joined, e.position)?,
             EventBody::OutputRecorded {
                 seam,
                 input,
@@ -1379,16 +1370,17 @@ impl Reads {
     }
 }
 
-/// Every record of `ty` as the fold leaves it so far, retired and
-/// restricted ones included: the view's, with what this append wrote
-/// earlier over it. A fold of many events in one page (a rebuild, an
-/// import) writes records the view it opened does not show yet.
+/// Every record of `ty` as the fold leaves it so far, restricted ones
+/// included and retired ones when `retired`: the view's, with what this
+/// append wrote earlier over it. A fold of many events in one page (a
+/// rebuild, an import) writes records the view it opened does not show yet.
 fn staged_scan(
     view: &dyn ProjectionView,
     staged: &Staged,
     ty: &TypeName,
+    retired: bool,
 ) -> Result<Vec<StoredRecord>> {
-    let records = view.scan(ty, &every(true))?;
+    let records = view.scan(ty, &every(retired))?;
     let mut all: BTreeMap<RecordKey, StoredRecord> =
         records.into_iter().map(|r| (r.key.clone(), r)).collect();
     all.extend(staged.of_type(ty).map(|r| (r.key.clone(), r.clone())));
@@ -1405,6 +1397,8 @@ pub struct Staged {
     pub proposals: BTreeMap<ProposalId, Proposal>,
     /// Outputs recorded in this append, by seam and input.
     pub outputs: BTreeMap<(String, Digest), Value>,
+    /// Set memberships put in this append, by set, type and key.
+    members: BTreeMap<(String, TypeName, RecordKey), bool>,
 }
 
 impl Staged {
@@ -1429,6 +1423,23 @@ impl Staged {
             .range((ty.clone(), RecordKey::from(""))..)
             .take_while(move |((t, _), _)| t == ty)
             .map(|(_, r)| r)
+    }
+
+    /// Put a set membership, and remember it: the view a fold of several
+    /// appends opened does not show it, and a re-key later in the page
+    /// carries it to the record's new key.
+    fn member(
+        &mut self,
+        projection: &dyn lakelands_api::engine::ProjectionStore,
+        set: &str,
+        ty: &TypeName,
+        key: &RecordKey,
+        member: bool,
+        at: Position,
+    ) -> Result<()> {
+        self.members
+            .insert((set.to_owned(), ty.clone(), key.clone()), member);
+        projection.put_membership(set, ty, key, member, at)
     }
 
     /// Remember a record written in this append.

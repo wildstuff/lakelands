@@ -66,6 +66,12 @@ impl From<Error> for Failure {
                      in its location"
                         .to_owned()
                 }
+                Refusal::TooLarge { .. } if field.is_some() => {
+                    "declare the set with a narrower filter and widen it in steps, after the \
+                     migration if one was refused (`find` with the filter and `total` counts a \
+                     step); or raise the lake's `max_set_changes` in its location"
+                        .to_owned()
+                }
                 Refusal::TooLarge { .. } => {
                     "start from fewer records, or raise the lake's `max_graph_nodes` in its location"
                         .to_owned()

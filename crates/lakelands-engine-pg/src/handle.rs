@@ -299,11 +299,7 @@ impl LakeEngine for PgLake {
         let writing = self.writing()?;
         let mut held = lock(&self.held);
         if let Some(h) = held.as_ref() {
-            return Err(unavailable(format!(
-                "the lake's writer lease is held by `{}` (fence {}); it must be released before \
-                 another writer can take it",
-                h.holder, h.fence
-            )));
+            return Err(engines::lease_held(&h.holder, h.fence));
         }
         let lease = lease::take(
             &mut lock(&writing.lease),
