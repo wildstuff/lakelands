@@ -896,6 +896,7 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
             }
         }
     }
+    reads_its_type(st, d, None)?;
     let mut link_relations: Vec<(TypeName, RelationName)> = st
         .types
         .values()
@@ -2043,6 +2044,68 @@ fn view_reads(v: &ViewDecl) -> Vec<(TypeName, Vec<FieldName>)> {
         .collect()
 }
 
+/// The fields of `ty` a declaration other than a view reads, as the store
+/// counts them: a derived field's expression on `ty` itself, the fields of
+/// `ty` a derived relation matches as its target, a set's `where`, a
+/// trigger's `when`, and a verb's `requires`, the fields it sets and what
+/// it sets them from (where `payload` is the call's).
+fn declaration_reads(d: &Declaration, ty: &TypeName) -> BTreeSet<FieldName> {
+    let of = |c: &Condition| named(c).unwrap_or_default();
+    match d {
+        Declaration::Type(t) => {
+            let own = t.fields.iter().filter(|_| &t.name == ty);
+            let matched = t.relations.iter().filter(|r| &r.target == ty);
+            own.filter_map(|f| f.derived.as_ref())
+                .flat_map(of)
+                .chain(
+                    matched
+                        .filter_map(|r| r.derived.as_ref())
+                        .flat_map(|m| m.pairs.iter().map(|p| p.to.clone())),
+                )
+                .collect()
+        }
+        Declaration::ObjectSet(s) if &s.of == ty => of(&s.filter),
+        Declaration::Trigger(t) if &t.on == ty => t.when.as_ref().map(of).unwrap_or_default(),
+        Declaration::Verb(v) if &v.on == ty => {
+            let mut names = v.requires.as_ref().map(of).unwrap_or_default();
+            if let VerbEffect::Write { set } = &v.effect {
+                for a in set {
+                    names.extend(of(&a.value).into_iter().filter(|n| n.as_str() != "payload"));
+                    names.insert(a.field.clone());
+                }
+            }
+            names
+        }
+        _ => BTreeSet::new(),
+    }
+}
+
+/// As the store: a declaration reads only fields its type has, the link
+/// type's when it names one. A migrated type is held to the fields it did
+/// not have `before` either: one the migration takes away is the
+/// preflight's to name.
+fn reads_its_type(st: &State, d: &Declaration, before: Option<&TypeDecl>) -> Result<()> {
+    let on = match d {
+        Declaration::Type(t) => Some(t),
+        Declaration::Verb(v) => st.types.get(&v.on).map(|o| &o.decl),
+        Declaration::Trigger(t) => st.types.get(&t.on).map(|o| &o.decl),
+        Declaration::ObjectSet(s) => st.types.get(&s.of).map(|o| &o.decl),
+        _ => None,
+    };
+    let had = |n: &FieldName| before.is_some_and(|b| field(b, n).is_some());
+    if let Some(on) = on
+        && let reads = declaration_reads(d, &on.name)
+        && let Some(n) = (reads.iter()).find(|n| field(on, n).is_none() && !had(n))
+    {
+        return Err(invalid(format!(
+            "{} reads `{n}`, which `{}` does not have",
+            d.what(),
+            on.name
+        )));
+    }
+    Ok(())
+}
+
 /// As the store: a view with parameters is bound only by a read that names
 /// it, so a pattern's step that arrives at one other than its start is
 /// refused before anything is read.
@@ -2086,6 +2149,9 @@ fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationRepor
             "the in-memory mock does not re-key: `{ty}` keeps its key fields here"
         )));
     }
+    // As the store, which checks the migrated type whole first: what its
+    // own declaration reads, it has, or had and is named for below.
+    reads_its_type(st, &Declaration::Type(m.to.clone()), Some(&t.decl))?;
     // As the store: a view over the type, as its source or a merged one,
     // reads the shape the migration leaves, so every field it reads
     // (grouping, `where`, what its measures aggregate) must remain.
@@ -2109,6 +2175,49 @@ fn preflight(st: &State, head: Position, m: &Migration) -> Result<MigrationRepor
                     "after the migration of `{ty}`, view `{}` reads `{gone}` of `{ty}`, which \
                      the migration {how}",
                     o.decl.name
+                )));
+            }
+        }
+    }
+    // As the store: so does every other declaration in force, in the
+    // store's order (types, verbs, triggers, object sets, each by name):
+    // it keeps the fields it reads of the type, and of each link type the
+    // migration changes.
+    let mut readers: Vec<Declaration> = (st.types.values())
+        .map(|o| {
+            Declaration::Type(if &o.decl.name == ty {
+                m.to.clone()
+            } else {
+                o.decl.clone()
+            })
+        })
+        .chain(st.verbs.values().cloned().map(Declaration::Verb))
+        .collect();
+    let (mut triggers, mut sets) = (st.triggers.clone(), st.object_sets.clone());
+    triggers.sort_by(|a, b| a.name.cmp(&b.name));
+    sets.sort_by(|a, b| a.name.cmp(&b.name));
+    readers.extend(triggers.into_iter().map(Declaration::Trigger));
+    readers.extend(sets.into_iter().map(Declaration::ObjectSet));
+    let changed: Vec<(&TypeDecl, TypeDecl)> = links::of(&m.to)
+        .into_iter()
+        .filter_map(|is| Some((&st.types.get(&is.name)?.decl, is)))
+        .collect();
+    let kept = changed.iter().map(|(was, is)| (*was, is));
+    for (was, is) in std::iter::once((&t.decl, &m.to)).chain(kept) {
+        for d in &readers {
+            let reads = declaration_reads(d, &was.name);
+            let gone = |n: &&FieldName| field(was, n).is_some() && field(is, n).is_none();
+            if let Some(n) = reads.iter().find(gone) {
+                let renamed = |(from, _): &&(FieldName, FieldName)| from == n && &is.name == ty;
+                let how = match m.renames.iter().find(renamed) {
+                    Some((_, to)) => format!("renames to `{to}`"),
+                    None => "drops".to_owned(),
+                };
+                return Err(invalid(format!(
+                    "after the migration of `{ty}`, {} reads `{n}` of `{}`, which the migration \
+                     {how}",
+                    d.what(),
+                    is.name
                 )));
             }
         }

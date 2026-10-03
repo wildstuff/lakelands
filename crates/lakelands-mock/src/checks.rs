@@ -103,6 +103,8 @@ macro_rules! door_checks {
             a_step_to_an_unbound_view_is_refused,
             a_view_reads_only_what_its_source_has,
             a_migration_keeps_what_a_view_reads,
+            a_declaration_reads_only_what_its_type_has,
+            a_migration_keeps_what_a_declaration_reads,
             a_view_is_never_migrated,
             nothing_that_never_acts_is_declared_on_a_view,
             a_relation_on_a_view_is_derived,
@@ -1905,6 +1907,162 @@ pub async fn a_view_reads_only_what_its_source_has(store: Arc<dyn LakeStore>) {
         );
     }
     assert_eq!(f.head().await, head, "nothing is appended");
+}
+
+/// An invalid refusal whose text names each of `names`.
+fn invalid_naming(e: &Error, names: &[&str]) -> bool {
+    matches!(e, Error::Refused { reason: Refusal::Invalid { message }, .. }
+        if names.iter().all(|n| message.contains(n)))
+}
+
+/// A derived field, an object set's `where`, a trigger's `when` and a
+/// verb's `requires` or the value it sets a field from read only fields
+/// the type has: one that reads another is refused by `declare` and by
+/// `apply`, naming the declaration and the field, and nothing is
+/// appended, on the mock as on the store. `payload.<name>` and `setting`
+/// read no field.
+pub async fn a_declaration_reads_only_what_its_type_has(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let verb = |name: &str, requires: &str, value: &str| {
+        json!({"declare": "verb", "name": name, "on": INVOICE, "risk": "low",
+               "payload": [{"name": "reference", "type": {"kind": "text"}}],
+               "requires": requires, "effect": "write",
+               "set": [{"field": "status", "value": value}]})
+    };
+    let head = f.head().await;
+    for (reader, d) in [
+        (
+            "type declaration `memo`",
+            json!({"declare": "type", "name": "memo", "fields": [{"name": "loud",
+                   "type": {"kind": "text"}, "authority": "derived", "derived": "upper(ghost)"}]}),
+        ),
+        (
+            "verb declaration `close`",
+            verb("close", "ghost = 'x'", "'shut'"),
+        ),
+        (
+            "verb declaration `copy`",
+            verb("copy", "status = 'x'", "ghost"),
+        ),
+        (
+            "trigger declaration `t`",
+            json!({"declare": "trigger", "name": "t", "on": INVOICE, "when": "changed(ghost)"}),
+        ),
+        (
+            "object_set declaration `s`",
+            json!({"declare": "object_set", "name": "s", "of": INVOICE, "where": "ghost = 'x'"}),
+        ),
+    ] {
+        let d: Declaration = serde_json::from_value(d).expect("a declaration");
+        let names = [reader, "reads `ghost`"];
+        let e = f.catalog.declare(owner, d.clone()).await;
+        let e = e.expect_err("a declaration reads only what its type has");
+        assert!(invalid_naming(&e, &names), "declare: {e:?}");
+        let e = f.catalog.apply(owner, vec![d]).await;
+        let e = e.expect_err("a declaration reads only what its type has");
+        assert!(invalid_naming(&e, &names), "apply: {e:?}");
+    }
+    assert_eq!(f.head().await, head, "nothing is appended");
+    let fine = verb("refer", "status = setting('mode')", "payload.reference");
+    f.catalog
+        .declare(owner, serde_json::from_value(fine).expect("a declaration"))
+        .await
+        .expect("the call's payload and a setting are no fields of the type");
+}
+
+/// A declaration in force reads its type's shape after a migration as
+/// before: a migration that drops or renames a field read by a derived
+/// field of the type, or by an object set, a trigger or a verb on it, is
+/// refused at the preflight, naming the reader and the field; so is one
+/// that drops a relation's field a trigger on the relation's link type
+/// reads, naming the link type. A field no declaration reads migrates
+/// away. On the mock as on the store.
+pub async fn a_migration_keeps_what_a_declaration_reads(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let memo = |names: &[&str], link: &[&str]| -> TypeDecl {
+        let text = |n: &&str| json!({"name": n, "type": {"kind": "text"}});
+        let mut fields: Vec<Value> = names.iter().map(text).collect();
+        fields.push(
+            json!({"name": "loud", "type": {"kind": "text"}, "authority": "derived",
+                           "derived": "upper(a)"}),
+        );
+        serde_json::from_value(json!({"name": "memo", "field_meta": true, "fields": fields,
+            "relations": [{"name": "seen_by", "target": PARTNER,
+                           "fields": link.iter().map(text).collect::<Vec<_>>()}]}))
+        .expect("a type")
+    };
+    let all = ["a", "b", "c", "d", "free"];
+    f.catalog
+        .declare(owner, Declaration::Type(memo(&all, &["ok"])))
+        .await
+        .expect("the owner declares `memo`");
+    for d in [
+        json!({"declare": "object_set", "name": "s", "of": "memo", "where": "b = 'x'"}),
+        json!({"declare": "trigger", "name": "t", "on": "memo", "when": "changed(c)"}),
+        json!({"declare": "verb", "name": "settle", "on": "memo", "risk": "low",
+               "requires": "d = 'x'", "effect": "write",
+               "set": [{"field": "d", "value": "'y'"}]}),
+        json!({"declare": "trigger", "name": "lt", "on": "sys.link.memo.seen_by",
+               "when": "ok = 'x'"}),
+    ] {
+        let d: Declaration = serde_json::from_value(d).expect("a declaration");
+        f.catalog
+            .declare(owner, d)
+            .await
+            .expect("a reader of `memo`");
+    }
+    let without =
+        |gone: &str| -> Vec<&str> { all.iter().copied().filter(|n| *n != gone).collect() };
+    let migration = |to: TypeDecl, renames: &[(&str, &str)]| lakelands_api::write::Migration {
+        to,
+        renames: renames
+            .iter()
+            .map(|(a, b)| ((*a).into(), (*b).into()))
+            .collect(),
+    };
+    for (to, names) in [
+        (
+            migration(memo(&without("a"), &["ok"]), &[]),
+            vec!["type declaration `memo`", "reads `a`", "drops"],
+        ),
+        (
+            migration(memo(&without("b"), &["ok"]), &[]),
+            vec!["object_set declaration `s`", "reads `b`", "drops"],
+        ),
+        (
+            migration(memo(&without("c"), &["ok"]), &[]),
+            vec!["trigger declaration `t`", "reads `c`", "drops"],
+        ),
+        (
+            migration(memo(&without("d"), &["ok"]), &[]),
+            vec!["verb declaration `settle`", "reads `d`", "drops"],
+        ),
+        (
+            migration(
+                memo(&["a", "b2", "c", "d", "free"], &["ok"]),
+                &[("b", "b2")],
+            ),
+            vec!["object_set declaration `s`", "reads `b`", "renames to `b2`"],
+        ),
+        (
+            migration(memo(&all, &[]), &[]),
+            vec![
+                "trigger declaration `lt`",
+                "reads `ok` of `sys.link.memo.seen_by`",
+                "drops",
+            ],
+        ),
+    ] {
+        let e = f.catalog.migrate(owner, to).await;
+        let e = e.expect_err("a field a declaration reads stays");
+        assert!(invalid_naming(&e, &names), "must name {names:?}: {e:?}");
+    }
+    f.catalog
+        .migrate(owner, migration(memo(&without("free"), &["ok"]), &[]))
+        .await
+        .expect("a field no declaration reads migrates away");
 }
 
 /// A view with parameters is bound only by a read that names it: a
