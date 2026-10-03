@@ -186,8 +186,7 @@ pub fn apply(
             .ok()
             .and_then(|v| to_json(&v, decl.ty.kind, scale))
             .unwrap_or(Value::Null);
-        let old = fields.get(&name).cloned().unwrap_or(Value::Null);
-        if old != value {
+        if fields.get(&name).unwrap_or(&Value::Null) != &value {
             fields.insert(name.clone(), value);
             touched.insert(name);
         }

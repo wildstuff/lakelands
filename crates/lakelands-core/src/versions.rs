@@ -199,7 +199,6 @@ pub fn below(event: &Event) -> Option<String> {
 /// puts either there; a reader holds the rule for a log written by
 /// something else.
 pub fn misplaced(event: &Event) -> Option<String> {
-    // A host's cause is the envelope's; `context` never carries it (021).
     if event.context.cause.is_some() {
         return Some("`context` carries `cause`, which the envelope carries".to_owned());
     }
@@ -253,10 +252,8 @@ pub fn declares_call(declaration: &Declaration, f: Func) -> bool {
         Declaration::ObjectSet(s) => conditions.push(&s.filter),
         Declaration::Function(f) => conditions.extend(f.expr.as_ref()),
     }
-    conditions.into_iter().any(|c| match c {
-        Condition::Expr(e) => calls(e, &|g| g == f),
-        Condition::Text(t) => lakelands_api::expr::parse(t).is_ok_and(|e| calls(&e, &|g| g == f)),
-    })
+    (conditions.into_iter())
+        .any(|c| crate::describe::parsed(c).is_some_and(|e| calls(&e, &|g| g == f)))
 }
 
 /// Whether an expression calls, anywhere, a function `f` accepts.

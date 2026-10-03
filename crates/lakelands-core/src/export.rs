@@ -75,10 +75,10 @@ fn io(what: &str, path: &Path, e: std::io::Error) -> Error {
     crate::unavailable(format!("cannot {what} {}: {e}", path.display()))
 }
 
-fn damaged(position: impl std::fmt::Display, why: impl std::fmt::Display) -> Error {
-    Error::Unavailable {
-        message: format!("the export is damaged at position {position}: {why}"),
-    }
+fn damaged<T>(position: impl std::fmt::Display, why: impl std::fmt::Display) -> Result<T> {
+    Err(crate::unavailable(format!(
+        "the export is damaged at position {position}: {why}"
+    )))
 }
 
 /// The name of the file a segment starting at `first` is kept in.
@@ -190,12 +190,10 @@ async fn write_into(store: &dyn LakeStore, dir: &Path) -> Result<Manifest> {
                 break 'feed;
             }
             if event.position != next {
-                return Err(Error::Unavailable {
-                    message: format!(
-                        "the feed answered position {} where {next} was next; nothing is exported",
-                        event.position
-                    ),
-                });
+                return Err(crate::unavailable(format!(
+                    "the feed answered position {} where {next} was next; nothing is exported",
+                    event.position
+                )));
             }
             // A checkpoint starts the segment after the one it seals.
             if open.is_none() || matches!(event.body, EventBody::Checkpoint { .. }) {
@@ -222,12 +220,10 @@ async fn write_into(store: &dyn LakeStore, dir: &Path) -> Result<Manifest> {
     };
     segments.push(segment.finish()?);
     if next != through.next() {
-        return Err(Error::Unavailable {
-            message: format!(
-                "the feed ended at position {next}, before the head {through} it was read to; \
-                 nothing is exported"
-            ),
-        });
+        return Err(crate::unavailable(format!(
+            "the feed ended at position {next}, before the head {through} it was read to; \
+             nothing is exported"
+        )));
     }
     let manifest = Manifest {
         lake: store.lake().clone(),
@@ -258,66 +254,60 @@ impl Chain {
     fn line(&mut self, line: &[u8], index: usize, first: Position) -> Result<()> {
         let at = self.next;
         let value: Value = serde_json::from_slice(line)
-            .map_err(|e| damaged(at, format!("a line is not JSON: {e}")))?;
+            .or_else(|e| damaged(at, format!("a line is not JSON: {e}")))?;
         if canonical::to_vec(&value) != line {
-            return Err(damaged(at, "a line is not canonical"));
+            return damaged(at, "a line is not canonical");
         }
         let v = value.get("v").and_then(Value::as_u64).unwrap_or(0);
         if v < u64::from(LOG_FORMAT_BASE) || v > u64::from(LOG_FORMAT_VERSION) {
-            return Err(damaged(
+            return damaged(
                 at,
                 format!(
                     "written in log format {v}, and the formats are {LOG_FORMAT_BASE} to \
                      {LOG_FORMAT_VERSION}"
                 ),
-            ));
+            );
         }
         let v = v as u32;
         if v < self.version {
-            return Err(damaged(
+            return damaged(
                 at,
                 format!(
                     "written in format {v} after an event in format {}",
                     self.version
                 ),
-            ));
+            );
         }
         let event: Event = serde_json::from_value(value.clone())
-            .map_err(|e| damaged(at, format!("not an event: {e}")))?;
+            .or_else(|e| damaged(at, format!("not an event: {e}")))?;
         if canonical::of(&event) != line {
-            return Err(damaged(at, "a member is not in its one written form"));
+            return damaged(at, "a member is not in its one written form");
         }
         if event.position != at {
-            return Err(damaged(
-                at,
-                format!("the line is position {}", event.position),
-            ));
+            return damaged(at, format!("the line is position {}", event.position));
         }
         // `known_at` never goes back (log-format §1.3).
         if let Some(before) = self.known_at
             && event.known_at < before
         {
-            return Err(damaged(
+            return damaged(
                 at,
                 format!(
                     "its known_at {} is before the {before} of the event before it",
                     event.known_at
                 ),
-            ));
+            );
         }
         self.known_at = Some(event.known_at);
         if event.prev != self.prev {
-            return Err(damaged(
-                at,
-                "it does not name the hash of the event before it",
-            ));
+            return damaged(at, "it does not name the hash of the event before it");
         }
         let mut unhashed = value;
         if let Some(members) = unhashed.as_object_mut() {
             members.remove("hash");
         }
         if canonical::sha256_hex(&unhashed) != event.hash.0 {
-            return Err(damaged(at, "the hash does not match the event"));
+            return damaged(at, "the hash does not match the event");
         }
         let later_file_start = at == first && index > 0;
         match &event.body {
@@ -327,30 +317,24 @@ impl Chain {
                 segments,
             } => {
                 if !later_file_start {
-                    return Err(damaged(
-                        at,
-                        "a checkpoint is not the first event of a later file",
-                    ));
+                    return damaged(at, "a checkpoint is not the first event of a later file");
                 }
                 if through.next() != at || hash != &event.prev {
-                    return Err(damaged(
+                    return damaged(
                         at,
                         "the checkpoint does not name the position and hash before it",
-                    ));
+                    );
                 }
                 let listed: Vec<(Position, Position, String)> = segments
                     .iter()
                     .map(|s| (s.first, s.last, s.digest.0.clone()))
                     .collect();
                 if listed != self.sealed {
-                    return Err(damaged(
-                        at,
-                        "the checkpoint does not list the files before it",
-                    ));
+                    return damaged(at, "the checkpoint does not list the files before it");
                 }
             }
             _ if later_file_start => {
-                return Err(damaged(at, "a later file does not start with a checkpoint"));
+                return damaged(at, "a later file does not start with a checkpoint");
             }
             _ => {}
         }
@@ -401,16 +385,13 @@ pub fn verify(dir: &Path) -> Result<Verification> {
         match first_of(path) {
             Some(n) if n == first.0 => {}
             Some(n) => {
-                return Err(damaged(
-                    first,
-                    format!("the next file is {name}, starting at {n}"),
-                ));
+                return damaged(first, format!("the next file is {name}, starting at {n}"));
             }
             None => {
-                return Err(damaged(
+                return damaged(
                     first,
                     format!("{name} is not named by a first position in 20 digits"),
-                ));
+                );
             }
         }
         let mut reader = BufReader::new(File::open(path).map_err(|e| io("read", path, e))?);
@@ -426,15 +407,12 @@ pub fn verify(dir: &Path) -> Result<Verification> {
             }
             digest.update(&line);
             if line.pop() != Some(b'\n') {
-                return Err(damaged(
-                    chain.next,
-                    format!("{name} does not end in a line feed"),
-                ));
+                return damaged(chain.next, format!("{name} does not end in a line feed"));
             }
             chain.line(&line, index, first)?;
         }
         if chain.next == first {
-            return Err(damaged(first, format!("{name} holds no event")));
+            return damaged(first, format!("{name} holds no event"));
         }
         let last = Position(chain.next.0 - 1);
         chain
@@ -442,7 +420,7 @@ pub fn verify(dir: &Path) -> Result<Verification> {
             .push((first, last, canonical::hex(&digest.finalize())));
     }
     if chain.next == Position::GENESIS {
-        return Err(damaged(0, "there is no segment file under log/"));
+        return damaged(0, "there is no segment file under log/");
     }
     Ok(Verification {
         from: Position::GENESIS,

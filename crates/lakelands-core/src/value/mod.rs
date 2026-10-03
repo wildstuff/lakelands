@@ -202,15 +202,16 @@ pub fn check(
 /// from zero when it carries more, padded with zeros when it carries
 /// fewer, so every value of a money type reads with the same digits.
 fn to_scale(digits: &str, scale: u32) -> String {
-    use rust_decimal::{Decimal, RoundingStrategy};
-    match digits.parse::<Decimal>() {
-        Ok(d) => {
-            let mut r = d.round_dp_with_strategy(scale, RoundingStrategy::MidpointAwayFromZero);
-            r.rescale(scale);
-            r.to_string()
-        }
-        Err(_) => digits.to_owned(),
-    }
+    let d = digits.parse::<rust_decimal::Decimal>();
+    d.map_or_else(|_| digits.to_owned(), |d| at_scale(d, scale).to_string())
+}
+
+/// `d` at `scale` fractional digits, rounded half away from zero.
+pub(crate) fn at_scale(d: rust_decimal::Decimal, scale: u32) -> rust_decimal::Decimal {
+    let mut r =
+        d.round_dp_with_strategy(scale, rust_decimal::RoundingStrategy::MidpointAwayFromZero);
+    r.rescale(scale);
+    r
 }
 
 /// Refuse an integer anywhere in a value that lies outside ±(2^53 − 1).

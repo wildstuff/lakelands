@@ -729,7 +729,7 @@ fn in_field_order<E>(
         .after
         .as_ref()
         .map(|a| (a.values.first().filter(|v| !v.is_null()), a.key.as_str()));
-    // A run's rows ordered by the rulebook, those past `after` kept.
+    // A run's rows ordered by the rulebook, those past `after` kept; whether the page is full.
     let take_run = |run: &mut Vec<StoredRecord>, out: &mut Vec<StoredRecord>| {
         let mut keyed: Vec<(PlaceKey, StoredRecord)> = run
             .drain(..)
@@ -739,6 +739,7 @@ fn in_field_order<E>(
             .collect();
         keyed.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         out.extend(keyed.into_iter().map(|(_, r)| r).take(limit - out.len()));
+        out.len() >= limit
     };
     // The indexed rows, unless the page continues among the missing.
     if !matches!(first_after, Some((None, _))) {
@@ -762,9 +763,8 @@ fn in_field_order<E>(
             for (k, r) in rows {
                 from = Some((k.clone(), r.key.to_string()));
                 if !is_run(&k) {
-                    take_run(&mut run, &mut out);
                     run_key = None;
-                    if out.len() >= limit {
+                    if take_run(&mut run, &mut out) {
                         return Ok(out);
                     }
                     if admits(decl, &r, scan) {
@@ -776,8 +776,7 @@ fn in_field_order<E>(
                     continue;
                 }
                 if run_key.as_ref() != Some(&k) {
-                    take_run(&mut run, &mut out);
-                    if out.len() >= limit {
+                    if take_run(&mut run, &mut out) {
                         return Ok(out);
                     }
                     run_key = Some(k);
@@ -785,8 +784,7 @@ fn in_field_order<E>(
                 run.push(r);
             }
             if read_all {
-                take_run(&mut run, &mut out);
-                if out.len() >= limit {
+                if take_run(&mut run, &mut out) {
                     return Ok(out);
                 }
                 break;

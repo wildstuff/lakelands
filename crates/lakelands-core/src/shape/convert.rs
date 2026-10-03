@@ -392,11 +392,8 @@ fn numeral_to_number(s: &str) -> Option<Value> {
 
 /// An integral number's digits.
 fn integral_digits(n: &serde_json::Number) -> Option<String> {
-    if let Some(i) = n.as_i64() {
-        return Some(i.to_string());
-    }
-    if let Some(u) = n.as_u64() {
-        return Some(u.to_string());
+    if n.is_i64() || n.is_u64() {
+        return Some(number_text(n));
     }
     let f = n.as_f64()?;
     (f.fract() == 0.0 && f.abs() <= MAX_EXACT_INTEGER).then(|| (f as i64).to_string())

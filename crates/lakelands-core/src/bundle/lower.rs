@@ -100,6 +100,22 @@ impl<'a> Lower<'a> {
         cond.map(|c| self.cond(at, c))
     }
 
+    /// A view's or a merged source's measures; `at` leads each one's place.
+    fn measures(&mut self, at: &str, measures: Named<Cond>) -> Vec<Measure> {
+        measures
+            .0
+            .into_iter()
+            .map(|(name, expr)| {
+                self.name("measure", &name);
+                let expr = self.cond(&format!("{at}measure `{name}`"), expr);
+                Measure {
+                    name: FieldName::new(name),
+                    expr,
+                }
+            })
+            .collect()
+    }
+
     fn names<T: From<String>>(&mut self, what: &str, names: Vec<String>) -> Vec<T> {
         names
             .into_iter()
@@ -411,19 +427,7 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
             .collect();
         let filter = l.opt_cond("view, `where`", v.filter);
         let group_by = l.names("group_by field", v.group_by.0);
-        let measures = v
-            .measures
-            .0
-            .into_iter()
-            .map(|(name, expr)| {
-                l.name("measure", &name);
-                let expr = l.cond(&format!("measure `{name}`"), expr);
-                Measure {
-                    name: FieldName::new(name),
-                    expr,
-                }
-            })
-            .collect();
+        let measures = l.measures("", v.measures);
         let merge = v
             .merge
             .into_iter()
@@ -433,19 +437,7 @@ pub(super) fn type_decl(l: &mut Lower<'_>, doc: TypeDoc) -> TypeDecl {
                     source: l.type_ref(&at, &m.source),
                     r#where: l.opt_cond(&format!("{at}, `where`"), m.filter),
                     group_by: l.names("group_by field", m.group_by.0),
-                    measures: m
-                        .measures
-                        .0
-                        .into_iter()
-                        .map(|(name, expr)| {
-                            l.name("measure", &name);
-                            let expr = l.cond(&format!("{at}, measure `{name}`"), expr);
-                            Measure {
-                                name: FieldName::new(name),
-                                expr,
-                            }
-                        })
-                        .collect(),
+                    measures: l.measures(&format!("{at}, "), m.measures),
                 }
             })
             .collect();
