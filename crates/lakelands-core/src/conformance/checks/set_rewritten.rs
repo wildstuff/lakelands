@@ -93,7 +93,7 @@ async fn a_rekey_decides_the_sets_that_read_a_rewritten_reference(
 check!(
     /// A migration decides the sets over its link types.
     SET_OVER_LINKS = a_migration_decides_the_sets_over_its_link_types,
-    "004, extended: a migration that converts a relation's field appends, directly after its `migrated` and caused by it, an `object_set_changed` for each link whose membership under a set of the link type changes, and its answer names those sets; a re-key of the owner moves a link's membership with it and changes only the set that reads a rewritten end; after either, and after the lake is opened again, `find` under each set's filter returns exactly the links the log says are in it, and a later write of the link leaves a set under its new key",
+    "004, extended: a migration that converts a relation's field appends, directly after its `migrated` and caused by it, an `object_set_changed` for each link whose membership under a set of the link type changes, and its answer names those sets; a re-key of the owner moves a link's membership with it and changes only the set that reads a rewritten end; after either, and after the lake is opened again and its projection rebuilt, `find` under each set's filter returns exactly the links the log says are in it, and a later write of the link leaves a set under its new key",
     given
 );
 
@@ -205,8 +205,10 @@ async fn a_migration_decides_the_sets_over_its_link_types(
     let store = (given.reopen)(store, Seams::default())
         .await
         .map_err(|e| Failure::new(format!("opening the lake again: {e}")))?;
-    sets_read_as_logged(store.as_ref(), "after the lake is opened again").await?;
-    // The index holds the link in `yes` under its new key.
+    // A rebuild folds the link's join and its move in one page.
+    store.rebuild().await.must("rebuilding the projection")?;
+    sets_read_as_logged(store.as_ref(), "after the lake is opened again and rebuilt").await?;
+    // The rebuilt index holds the link in `yes` under its new key.
     let at = store.head().await.must("the head")?.next();
     link(&Lake::of(store.as_ref()), "D1", json!(false)).await?;
     let (got, want) = (

@@ -220,6 +220,14 @@ filter's truth has changed. The `migrated` event lists each move in
 `rekeyed`, for the link types too, and that is what tells a feed
 consumer.
 
+The fold carries that membership to the new key, and it does so the same
+whether it folds one append or many: a rebuild, an import and the
+catch-up of a lake opened behind its log fold a page of appends in one
+transaction, and a membership put earlier in the page is read from the
+page, as a record put earlier in it is (lakelands#492). Before, the fold
+asked the projection as it stood before the page, and a member whose
+join and re-key fell into one page was a member of nothing afterwards.
+
 **A filter's text is not rewritten.** A set declared as `boss = 'X'`
 names a key in a literal, and a literal is not known to be a key. After
 a re-key of `X` the filter holds for no record, and the members leave,

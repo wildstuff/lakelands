@@ -582,17 +582,22 @@ impl Lake {
             if !moves.contains_key(&s.of) {
                 continue;
             }
-            // Read once for the set, not looked up for each moved record.
+            // Read once for the set, not looked up for each moved record; a
+            // membership this page put is not in the view yet.
             let held = view.members(&s.name, &s.of)?;
             for (from, r) in moved.iter().filter(|(_, r)| r.ty == s.of) {
                 let (ty, to) = (r.ty.clone(), r.key.clone());
-                members.push((s.name.clone(), ty, from.clone(), to, held.contains(from)));
+                let put = staged
+                    .members
+                    .get(&(s.name.clone(), ty.clone(), from.clone()));
+                let member = put.copied().unwrap_or_else(|| held.contains(from));
+                members.push((s.name.clone(), ty, from.clone(), to, member));
             }
         }
         for (set, ty, from, to, member) in members {
-            projection.put_membership(&set, &ty, &to, member, e.position)?;
+            staged.member(projection, &set, &ty, &to, member, e.position)?;
             if member && !arrivals.contains(&(ty.clone(), from.clone())) {
-                projection.put_membership(&set, &ty, &from, false, e.position)?;
+                staged.member(projection, &set, &ty, &from, false, e.position)?;
             }
         }
         for (from, r) in moved {
@@ -898,9 +903,7 @@ impl Lake {
                 ty,
                 key,
                 joined,
-            } => {
-                projection.put_membership(set, ty, key, *joined, e.position)?;
-            }
+            } => staged.member(projection, set, ty, key, *joined, e.position)?,
             EventBody::OutputRecorded {
                 seam,
                 input,
@@ -1399,6 +1402,8 @@ pub struct Staged {
     pub proposals: BTreeMap<ProposalId, Proposal>,
     /// Outputs recorded in this append, by seam and input.
     pub outputs: BTreeMap<(String, Digest), Value>,
+    /// Set memberships put in this append, by set, type and key.
+    members: BTreeMap<(String, TypeName, RecordKey), bool>,
 }
 
 impl Staged {
@@ -1423,6 +1428,23 @@ impl Staged {
             .range((ty.clone(), RecordKey::from(""))..)
             .take_while(move |((t, _), _)| t == ty)
             .map(|(_, r)| r)
+    }
+
+    /// Put a set membership, and remember it: the view a fold of several
+    /// appends opened does not show it, and a re-key later in the page
+    /// carries it to the record's new key.
+    fn member(
+        &mut self,
+        projection: &dyn lakelands_api::engine::ProjectionStore,
+        set: &str,
+        ty: &TypeName,
+        key: &RecordKey,
+        member: bool,
+        at: Position,
+    ) -> Result<()> {
+        self.members
+            .insert((set.to_owned(), ty.clone(), key.clone()), member);
+        projection.put_membership(set, ty, key, member, at)
     }
 
     /// Remember a record written in this append.

@@ -20,7 +20,7 @@ use crate::conformance::{Failure, Given};
 check!(
     /// A migration decides set membership again.
     SET_MIGRATED = a_migration_decides_the_membership_of_the_records_it_migrates,
-    "004, extended: a migration appends, directly after its `migrated` and caused by it, an `object_set_changed` for each record whose membership under a set of the type changes as migrated, and none when it changes nothing a filter reads; its answer names each set joined or left once and `through` the changes, also when it adds a relation carried by links; a re-keyed member stays a member under its new key; past the lake's `max_set_changes` a migration is refused `too_large`, naming a set and the ceiling, and appends nothing; one that is also applied with a stale report, or is not lossless, is refused for that first",
+    "004, extended: a migration appends, directly after its `migrated` and caused by it, an `object_set_changed` for each record whose membership under a set of the type changes as migrated, and none when it changes nothing a filter reads; its answer names each set joined or left once and `through` the changes, also when it adds a relation carried by links; a re-keyed member stays a member under its new key, after a rebuild too; past the lake's `max_set_changes` a migration is refused `too_large`, naming a set and the ceiling, and appends nothing; one that is also applied with a stale report, or is not lossless, is refused for that first",
     given
 );
 
@@ -133,6 +133,9 @@ async fn a_migration_decides_the_membership_of_the_records_it_migrates(
         left,
         "`a`, re-keyed to `A`, is in `open` under its new key and leaves it"
     );
+    // A rebuild folds the joins and the re-key in one page, and leaves `A`
+    // and `B` in `yes` as the live fold did.
+    store.rebuild().await.must("rebuilding the projection")?;
     // Back to text, with a relation carried by links added: the link type's
     // `declared` rides in the append, and the answer still reads the changes.
     let linked = |kind| {
