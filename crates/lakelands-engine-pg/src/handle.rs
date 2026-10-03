@@ -173,11 +173,7 @@ impl PgLake {
     fn stage(&self, position: Position, f: impl FnOnce(&mut Buffer)) -> Result<()> {
         self.writing()?;
         let mut transaction = lock(&self.transaction);
-        let Some(t) = transaction.as_mut() else {
-            return Err(invalid(
-                "the projection is written inside a transaction: call `begin` first",
-            ));
-        };
+        let t = transaction.as_mut().ok_or_else(engines::unstaged)?;
         t.latest = t.latest.max(Some(position));
         f(&mut t.buffer);
         Ok(())
@@ -450,11 +446,7 @@ impl ProjectionStore for PgLake {
         };
         let writing = self.writing()?;
         let mut transaction = lock(&self.transaction);
-        let Some(t) = transaction.as_mut() else {
-            return Err(invalid(
-                "the projection is written inside a transaction: call `begin` first",
-            ));
-        };
+        let t = transaction.as_mut().ok_or_else(engines::unstaged)?;
         t.latest = t.latest.max(Some(at));
         let mut db = lock(&writing.projection);
         if let Some(ty) = projection::put_declaration(&mut db, &self.names, &mut t.types, &d)? {
@@ -623,12 +615,7 @@ impl VectorIndex for PgLake {
             let key: String = row.get(0);
             let v = vector_of(&row.get::<_, Vec<u8>>(1));
             if exact && v.len() != query.len() {
-                return Err(invalid(format!(
-                    "the query vector has {} dimensions, but `{ty}.{field}` holds vectors \
-                     of {} (record `{key}`)",
-                    query.len(),
-                    v.len()
-                )));
+                return Err(engines::dimensions(query.len(), v.len(), ty, field, &key));
             }
             top.push(&RecordKey::from(key), cosine(query, &v));
             Ok(())

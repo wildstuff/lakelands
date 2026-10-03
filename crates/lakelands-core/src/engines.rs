@@ -1090,6 +1090,15 @@ pub fn lease_held(holder: &str, fence: u64) -> Error {
     ))
 }
 
+/// The refusal of a query vector of `query` dimensions where the vector
+/// `ty.field` holds for the record `key` has `held`.
+pub fn dimensions(query: usize, held: usize, ty: &TypeName, field: &str, key: &str) -> Error {
+    invalid(format!(
+        "the query vector has {query} dimensions, but `{ty}.{field}` holds vectors of {held} \
+         (record `{key}`)"
+    ))
+}
+
 /// Best first by score, ties by key, at most `k`.
 pub fn rank(hits: &mut Vec<(RecordKey, f64)>, k: u32) {
     hits.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
@@ -1279,6 +1288,11 @@ pub fn commit_refusal(
         "a state valid from position {late} cannot be committed through the earlier \
          position {through}"
     )))
+}
+
+/// The refusal of a put made outside a transaction of the fold.
+pub fn unstaged() -> Error {
+    invalid("the projection is written inside a transaction: call `begin` first")
 }
 
 #[cfg(test)]
