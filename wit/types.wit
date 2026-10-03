@@ -831,8 +831,17 @@ interface types {
         scope: verb-scope,
         payload: list<field-description>,
         risk: risk,
+        /// Exactly when `executor` is there.
         external: bool,
+        executor: option<executor-description>,
         description: option<string>,
+    }
+
+    /// The executor a verb that reaches outside the lake runs through, and
+    /// whether the host binds it when the answer is made, at any position.
+    record executor-description {
+        name: string,
+        bound: bool,
     }
 
     record lake-description {

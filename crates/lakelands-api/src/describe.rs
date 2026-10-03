@@ -275,9 +275,27 @@ pub struct VerbDescription {
     pub payload: Vec<FieldDescription>,
     /// Its declared risk: `low` runs, anything else is proposed.
     pub risk: Risk,
-    /// Whether it reaches outside the lake.
+    /// Whether it reaches outside the lake: exactly when `executor` is
+    /// there.
     pub external: bool,
+    /// For a verb that reaches outside the lake: its executor, and whether
+    /// this lake's host binds it. Absent for a verb that sets fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor: Option<ExecutorDescription>,
     /// What it does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+}
+
+/// The executor a verb that reaches outside the lake runs through.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutorDescription {
+    /// The name the verb declares.
+    pub name: String,
+    /// Whether the host binds an executor of that name when the answer is
+    /// made, whatever position it is read at: the binding is the host's
+    /// configuration, not a fact of the log
+    /// (`docs/decisions/013-verbs-run-by-declared-risk.md`, extended).
+    /// Without one, calling or proposing the verb is refused as `unbound`.
+    pub bound: bool,
 }

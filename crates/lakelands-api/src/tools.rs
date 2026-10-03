@@ -826,15 +826,27 @@ fn verb_tool(verb: &VerbDescription, lake: &LakeDescription) -> ToolSpec {
     });
     // By the risk: a `low` verb runs at once, an external one too. A verb
     // that reaches outside the lake runs through an executor its host
-    // binds, which the tool cannot see; it says what a call does without.
-    let how = match verb.risk {
-        crate::ontology::Risk::Low => "It runs at once",
-        _ => "It is recorded as a proposal and runs when accepted",
-    };
-    let through = if verb.external {
-        ", through an executor the lake's host binds; where none is bound, a call is refused and writes nothing."
+    // binds; the tool says whether it is bound here, and says what a call
+    // does without one when the answer does not tell (an older server).
+    let (how, refused) = if verb.risk == crate::ontology::Risk::Low {
+        ("It runs at once", "a call is refused")
     } else {
-        "."
+        (
+            "It is recorded as a proposal and runs when accepted",
+            "a call or a proposal is refused",
+        )
+    };
+    let through = match &verb.executor {
+        Some(e) if e.bound => format!(
+            ", through its executor `{}`, which this lake's host binds.",
+            e.name
+        ),
+        Some(e) => format!(
+            ", through its executor `{}`; that executor is not bound in this lake, so {refused} and writes nothing.",
+            e.name
+        ),
+        None if verb.external => ", through an executor the lake's host binds; where none is bound, a call is refused and writes nothing.".into(),
+        None => ".".into(),
     };
     ToolSpec {
         name: tool_base(verb.name.as_str()),

@@ -213,3 +213,31 @@ Two steps that answer the same kind for the same verb or field, such as
 the scope and a verb declared differently since, are stated here and not
 checked between themselves.
 
+
+## Extended: `describe` says whether the executor is bound (lakelands#432)
+
+A verb that reaches outside the lake is described with its executor's
+name and whether the host binds an executor of that name, and its tool
+says which. Without this, a caller learns that a verb cannot run in a
+lake only by calling it and being refused, and a host's interface cannot
+show the verb as unavailable beforehand. The name is no news to the
+principal: the verb is described only to one who may call it, and the
+`unbound` refusal names the executor to that principal anyway. A verb
+that sets fields of its record has no executor and is described without
+one. The tool of an unbound verb stays in the catalog, so a host that
+binds the executor later changes the tool's text, not the set of tools.
+
+`bound` is the binding when the answer is made, at whatever position
+`describe` is read. The binding is the host's configuration, not a fact
+of the log, so there is no earlier answer to give; and a call always
+runs at the head, so whether a verb can run is a question about now.
+The reply's position covers the declarations, not the binding: two
+answers at one position differ in `bound` when the host rebinds between
+them, as `search`'s `ranked_by` already reports the embedding backend
+bound when it ranks.
+
+A function's backing and an embedding model are not described the same
+way. Both are checked when they are declared, so a lake does not hold one
+its host never bound. No caller calls a function: a missing backing
+leaves the fields it computes due, and the host that unbound it is the one
+who can see that. A search already says how it ranked.

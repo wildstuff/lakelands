@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use lakelands_api::describe::{
-    FieldDescription, LakeDescription, LakeRights, TypeAccess, TypeDescription, TypeLifecycle,
-    TypeLineage, TypeRights, VerbDescription,
+    ExecutorDescription, FieldDescription, LakeDescription, LakeRights, TypeAccess,
+    TypeDescription, TypeLifecycle, TypeLineage, TypeRights, VerbDescription,
 };
 use lakelands_api::error::{Error, Missing, Refusal, Result};
 use lakelands_api::event::{EventBody, EventId};
@@ -1158,6 +1158,14 @@ fn describe_lake(lake: &LakeId, st: &State, who: &Principal) -> LakeDescription 
                     .collect(),
                 risk: v.risk,
                 external: matches!(v.effect, VerbEffect::External { .. }),
+                // The mock binds no executor.
+                executor: match &v.effect {
+                    VerbEffect::External { executor } => Some(ExecutorDescription {
+                        name: executor.clone(),
+                        bound: false,
+                    }),
+                    VerbEffect::Write { .. } => None,
+                },
                 description: v.description.clone(),
             })
             .collect(),
