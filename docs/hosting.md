@@ -341,6 +341,18 @@ A host that already has a store of its own moves in four steps.
   for each record: 41 s with one set and 74 to 79 s with three on
   PostgreSQL, 9 to 15 s on SQLite. Bringing the migration's own cost
   down further is lakelands#480.
+- **A declaration that recomputes a type is a step for a quiet moment.**
+  A function declared again, or a type declared again with another
+  derived expression, computes the derived fields of every live record
+  of the type again in that one append, under the writer, and holds
+  them in memory meanwhile; other writes wait. At 100 000 records of
+  four small fields, one of them derived (`tests/recomputed.rs` in the
+  SQLite and PostgreSQL engines, by hand), the writer is held 4.3 to 5 s
+  on SQLite and 12 to 15.5 s on PostgreSQL, with a peak of about 330 MB
+  and 1.2 GB, whichever of the two is declared again. Both grow with the
+  type's records. A migration's fold holds a page of records at a time;
+  a recomputation's does not yet, and lakelands#523 holds what is done
+  about it.
 - **Every answer carries its position.** A host that records what an
   agent saw records the position, and reads `as_of` it later. See
   `docs/decisions/009-every-response-carries-its-position.md`.
