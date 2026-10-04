@@ -381,17 +381,27 @@ pub fn check(e: &Expr, place: Place) -> Result<()> {
                 Func::Setting | Func::Param if quoted(args.first()).is_none() => {
                     return err(format!("{name}() takes a quoted name"));
                 }
+                // A calendar unit, quoted, starts where the calendar says and
+                // takes no origin; a width is a duration above zero, with
+                // the origin its windows are counted from.
                 Func::DateBucket => {
-                    let Some(unit) = quoted(args.get(1)) else {
-                        return err(
-                            "date_bucket() takes its unit quoted: 'day', 'week', 'month', 'quarter' or 'year'",
-                        );
-                    };
-                    if !BUCKET_UNITS.contains(&unit.as_str()) {
+                    let unit = quoted(args.get(1));
+                    let width = matches!(args.get(1),
+                        Some(Expr::Lit { value: Literal::Duration(w) }) if *w > 0);
+                    let known = |u: &&String| BUCKET_UNITS.contains(&u.as_str());
+                    if let Some(u) = unit.filter(|u| !known(u)) {
                         return err(format!(
-                            "date_bucket() knows no unit '{unit}'; the units are 'day', 'week', \
-                             'month', 'quarter' and 'year'"
+                            "date_bucket() knows no unit '{u}'; the units are 'day', 'week', \
+                             'month', 'quarter' and 'year', and a width is written unquoted, as \
+                             in date_bucket(t, 30d, origin)"
                         ));
+                    }
+                    if (unit.is_some(), width) != (args.len() == 2, args.len() == 3) {
+                        return err(
+                            "date_bucket() takes a calendar unit quoted ('day', 'week', 'month', \
+                             'quarter' or 'year') and no origin, or a width above zero and the \
+                             origin its windows are counted from, as in date_bucket(t, 30d, origin)",
+                        );
                     }
                 }
                 Func::Previous | Func::Changed if !matches!(place, Place::Write | Place::Guard) => {
@@ -833,6 +843,17 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
         Func::Floor => Val::Num(number(&vals[0])?.floor()),
         Func::DateBucket => match (as_time(&vals[0]), &vals[1]) {
             (Some(t), Val::Text(unit)) => Val::Time(bucket_start(t, unit)?),
+            // The window of that width `t` falls in, counted from the origin
+            // in both directions: an instant before it is in a window too.
+            (Some(t), Val::Duration(w)) if *w > 0 => match vals.get(2).and_then(as_time) {
+                Some(o) => {
+                    let windows = t.0.checked_sub(o.0).map(|d| d.div_euclid(*w));
+                    let start = windows.and_then(|n| n.checked_mul(*w));
+                    let start = start.and_then(|d| o.0.checked_add(d));
+                    Val::Time(Timestamp(start.ok_or_else(overflow)?))
+                }
+                None => Val::Null,
+            },
             (None, _) => Val::Null,
             (_, other) => {
                 return err(format!(

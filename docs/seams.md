@@ -479,7 +479,12 @@ group, which sorts last. `date_bucket(x, unit)` answers the instant in
 UTC at which the bucket holding `x` starts, for `day`, `week` (ISO, from
 Monday), `month`, `quarter` and `year`. A declaration may call it too,
 from log format version 3 on, so a derived field can hold the bucket
-(`docs/decisions/017-one-expression-grammar.md`, extended). **The
+(`docs/decisions/017-one-expression-grammar.md`, extended).
+`date_bucket(x, 30d, origin)` answers the start of the window of that
+width holding `x`, the windows counted from `origin` in both directions:
+a width is a duration, written unquoted, and always takes its origin (a
+literal instant, a field, `today()`); a declaration may call it from log
+format version 11 on. **The
 ceiling:** buckets are UTC only, and there is no number bucket.
 
 ### Reading an object set

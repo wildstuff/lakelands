@@ -469,7 +469,9 @@ def main():
     # Format 11 is one release's step: each thing it added is a test here.
     v11 = json.loads((HERE / "v11.json").read_text("utf-8"))
     derived = lambda e: [f.get("derived", "") for f in e["body"].get("declaration", {}).get("fields", [])]
-    eleventh = [lambda e: any("floor(" in d for d in derived(e))]
+    by_a_width = re.compile(r"date_bucket\([^,]+, [0-9.]+[dhms],")
+    eleventh = [lambda e: any("floor(" in d for d in derived(e)),
+                lambda e: any(by_a_width.search(d) for d in derived(e))]
     for line, want in zip(v11["lines"], v11["hashes"]):
         event = json.loads(line)
         check(canonical(event) == line.encode("utf-8"), f"v11.json: position {event['position']} is canonical")

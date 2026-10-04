@@ -528,6 +528,7 @@ belongs in the suite, not beside one engine:
 - `find_groups_records_by_date_bucket_for_every_unit` — 017, extended, and 029: find groups by a named date_bucket key for day, week (ISO, from Monday), month, quarter and year, across a year's end and a leap day, with the same groups, counts and exact sums on every engine, the bucket answered under the key's name as its starting instant, and the records without a date in the null group, last
 - `a_where_selects_the_records_of_one_date_bucket` — 017, extended: a where comparing date_bucket(x, 'month') with an instant selects exactly that month's records; a unit outside the five is refused as invalid, naming it
 - `a_declaration_may_call_date_bucket_and_from_it_the_lake_writes_format_3` — 017, extended, and log-format §6: a declaration may call date_bucket (a derived field, a view's where, an object set's filter); the event that first declares such a call is written in format version 3, as is every event after it, and a derived bucket answers finds by it
+- `find_groups_records_by_windows_of_a_width_from_an_origin` — 017, extended (lakelands#559), and log format §6: date_bucket(x, width, origin) answers the start of the window of that width holding x, the windows counted from the origin in both directions, the same on every engine; a width without its origin, a width that is not above zero, a quoted width and a calendar unit with an origin are refused as invalid, each naming what to write; a declaration that calls it by a width is written in format version 11, as is every event after it
 
 **durations**
 

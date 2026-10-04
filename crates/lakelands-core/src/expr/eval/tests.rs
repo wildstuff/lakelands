@@ -68,11 +68,36 @@ fn date_bucket_answers_the_utc_start_of_its_bucket() {
 }
 
 #[test]
+fn date_bucket_by_a_width_counts_its_windows_from_the_origin_both_ways() {
+    let t = |s: &str| Val::Time(Timestamp::parse(s).unwrap());
+    let from = |d: Value, o: Value| ok("date_bucket(d, 30d, o)", json!({"d": d, "o": o}));
+    let window = |d: &str| from(json!(d), json!("2026-01-01T00:00:00Z"));
+    assert_eq!(window("2026-01-01T00:00:00Z"), t("2026-01-01T00:00:00Z"));
+    assert_eq!(window("2026-01-30T23:59:59Z"), t("2026-01-01T00:00:00Z"));
+    assert_eq!(window("2026-01-31T00:00:00Z"), t("2026-01-31T00:00:00Z"));
+    // Before the origin: the window that starts thirty days before it.
+    assert_eq!(window("2025-12-31T23:59:59Z"), t("2025-12-02T00:00:00Z"));
+    // The origin may be the clock's: `today()` is 2026-09-24 here.
+    let halves = ok(
+        "date_bucket(d, 12h, today())",
+        json!({"d": "2026-09-23T13:00:00Z"}),
+    );
+    assert_eq!(halves, t("2026-09-23T12:00:00Z"));
+    // No instant, or no origin: null.
+    assert_eq!(from(Value::Null, json!("2026-01-01T00:00:00Z")), Val::Null);
+    assert_eq!(from(json!("2026-01-01T00:00:00Z"), Value::Null), Val::Null);
+}
+
+#[test]
 fn date_bucket_takes_one_of_its_units_quoted() {
     for (text, why) in [
         ("date_bucket(d, 'fortnight')", "knows no unit 'fortnight'"),
-        ("date_bucket(d, unit)", "takes its unit quoted"),
-        ("date_bucket(d)", "takes 2 argument(s), not 1"),
+        ("date_bucket(d, unit)", "takes a calendar unit quoted"),
+        ("date_bucket(d, 30d)", "date_bucket(t, 30d, origin)"),
+        ("date_bucket(d, '30d', d)", "a width is written unquoted"),
+        ("date_bucket(d, 0d, d)", "a width above zero"),
+        ("date_bucket(d, 'month', d)", "and no origin"),
+        ("date_bucket(d)", "takes 2 to 3 argument(s), not 1"),
     ] {
         // Refused by the parser or by the check, whichever meets it.
         let e = match parse(text) {

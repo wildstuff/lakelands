@@ -291,6 +291,7 @@ pub const ALL: &[Check] = &[
     date_bucket::GROUPS,
     date_bucket::WHERE,
     date_bucket::DECLARED,
+    date_bucket::WINDOWS,
     durations::DAYS,
     durations::LANDS,
     durations::NEVER,
