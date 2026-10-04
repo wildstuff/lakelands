@@ -334,6 +334,7 @@ belongs in the suite, not beside one engine:
 - `an_ordinary_principal_cannot_declare_a_sys_type` — 003: every type name starting `sys.` is reserved; an ordinary principal, even the owner, is refused declaring one and nothing is appended
 - `redeclaring_a_type_with_its_fields_reordered_keeps_its_schema_hash` — 007: field order is not shape, so a type declared again with its fields in another order keeps its schema hash; the log keeps the declaration as written, so it is one revision
 - `a_declaration_that_is_the_one_in_force_appends_nothing` — 027, extended (lakelands#565): a declaration that is the one in force (a value type, a function, a type, a verb, a trigger, a set, and a type whose computed field is stated with its completed `depends_on` or without) is answered `applied` at the head and appends nothing, by `declare` and by `apply`, and its version stays; a refusal still comes first; of a set what differs is appended alone, and what it sets off happens; an accepted proposal of declarations in force appends its acceptance alone
+- `a_migration_to_what_is_in_force_appends_nothing` — 027, extended (lakelands#577): a migration whose `to` is the type in force and that renames nothing is answered `applied` at the head and appends nothing; a stale report is refused first; an accepted proposal of it appends its acceptance alone; a value type's migration to itself is refused as before, there being nothing to migrate
 
 **migrate**
 

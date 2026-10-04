@@ -16,9 +16,9 @@ use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, computed_by, dec, decimal, events_after, field, head_unmoved, object_set_on,
-    principal, reason, refused_unmoved, reviewer, trigger_on, type_decl, value, value_type,
-    write_verb,
+    Lake, Must, computed_by, dec, decimal, events_after, field, head_unmoved, is_invalid,
+    migration, object_set_on, principal, reason, refused_unmoved, reviewer, trigger_on, type_decl,
+    value, value_type, write_verb,
 };
 
 check!(
@@ -376,6 +376,61 @@ async fn a_declaration_that_is_the_one_in_force_appends_nothing(
         "an accepted proposal of declarations in force appends `write_accepted` alone; \
          after the function's, the log holds {:?}",
         &written[1..]
+    );
+    Ok(())
+}
+
+check!(
+    /// A migration to what is in force appends nothing.
+    MIGRATION_IN_FORCE = a_migration_to_what_is_in_force_appends_nothing,
+    "027, extended (lakelands#577): a migration whose `to` is the type in force and that renames nothing is answered `applied` at the head and appends nothing; a stale report is refused first; an accepted proposal of it appends its acceptance alone; a value type's migration to itself is refused as before, there being nothing to migrate"
+);
+
+async fn a_migration_to_what_is_in_force_appends_nothing(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let (bill, state) = (
+        type_decl("bill", vec![field("net", StorageKind::Decimal)]),
+        value_type("state", StorageKind::Text),
+    );
+    l.declare(bill.clone()).await?;
+    l.declare_as(Declaration::ValueType(state.clone()), "declaring `state`")
+        .await?;
+    l.upsert("bill", "b", json!({"net": "3"})).await?;
+    let before = store.head().await.must("reading the head")?;
+    let stale = l.cat.migrate_apply(&l.own, migration(bill.clone()), "none");
+    let (stale, typed) = (stale.await, l.cat.migrate_value_type(&l.own, state).await);
+    let got = l.migrate(bill.clone()).await?;
+    let (after, version) = (
+        store.head().await.must("reading the head")?,
+        l.describe_type("bill").await?.lifecycle.version,
+    );
+    ensure!(
+        is_invalid(&stale)
+            && is_invalid(&typed)
+            && matches!(got, Outcome::Applied { position, .. } if position == before)
+            && (after, version) == (before, 1),
+        "a migration to the type in force is answered `applied` at the head {before} and \
+         appends nothing, a stale report and a value type's migration to itself refused; \
+         the head is {after}, `bill` at version {version}, and they answered {stale:?}, \
+         {typed:?} and {got:?}"
+    );
+    // Proposed and accepted: the proposal and its acceptance, nothing more.
+    let (migration, report) = (Box::new(migration(bill)), Default::default());
+    let write = ProposedWrite::Migrate { migration, report };
+    let proposed = l.cat.propose(&l.own, write, "again".into()).await;
+    let Outcome::Proposed { proposal, .. } = proposed.must("proposing")? else {
+        return Err(Failure::new(
+            "a proposed migration is not answered as proposed",
+        ));
+    };
+    l.cat.accept(&l.own, &proposal).await.must("accepting")?;
+    let written = events_after(store.as_ref(), before).await?;
+    ensure!(
+        written.len() == 2 && matches!(written[1].body, EventBody::WriteAccepted { .. }),
+        "an accepted proposal of a migration to the type in force appends `write_accepted` \
+         alone; the log holds {written:?}"
     );
     Ok(())
 }

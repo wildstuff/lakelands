@@ -717,6 +717,12 @@ fn live_record(view: &dyn ProjectionView, ty: &TypeName, key: &RecordKey) -> Res
         })
 }
 
+/// Whether a migration changes nothing: its `to` is the type in force and
+/// it renames no field (027, extended).
+fn unchanged(o: &Ontology, m: &Migration) -> bool {
+    m.renames.is_empty() && o.in_force(&Declaration::Type(m.to.clone()))
+}
+
 /// The lake's head: the position of its last event.
 fn head(w: &Writer) -> Position {
     w.tip.as_ref().map_or(Position::GENESIS, |t| t.0)
@@ -1657,7 +1663,10 @@ impl Call<'_> {
                 renamed = self.known_renames(&w.ontology, migration);
                 let first = drafts.len();
                 let own = self.migration_drafts(&w, (**migration).clone(), plan, now, first)?;
-                drafts.extend(own.into_iter().map(&as_accepted));
+                let own = own
+                    .into_iter()
+                    .filter(|_| !unchanged(&w.ontology, migration));
+                drafts.extend(own.map(&as_accepted));
             }
             ProposedWrite::MigrateValueType { to, report } => {
                 // As a migration is accepted only on the shape it was
@@ -2565,7 +2574,9 @@ impl Call<'_> {
         })
     }
 
-    /// `migrate_apply`.
+    /// `migrate_apply`. A migration to the type in force that renames
+    /// nothing is answered at the head and appends nothing, after every
+    /// refusal, a stale report among them (027, extended).
     pub fn migrate_apply(&self, mut m: Migration, report_id: &str) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         granted(self.who.grants.schema)?;
@@ -2580,7 +2591,11 @@ impl Call<'_> {
             ));
         }
         let renamed = self.known_renames(&w.ontology, &m);
+        let same = unchanged(&w.ontology, &m);
         let drafts = self.migration_drafts(&w, m, plan, now, 0)?;
+        if same {
+            return Ok(applied(head(&w), None));
+        }
         drop(view);
         let events = self.lake.append(&mut w, drafts)?;
         Ok(self.answered(&events, renamed))

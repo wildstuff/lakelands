@@ -206,7 +206,8 @@ pub trait Catalog: Send + Sync {
 
     /// Apply a migration whose preflight the caller was shown. Refused if
     /// the lake moved since (the report differs) or if it is not
-    /// lossless.
+    /// lossless. One to the type in force that renames nothing is then
+    /// answered at the head and appends nothing.
     async fn migrate_apply(
         &self,
         who: &Principal,

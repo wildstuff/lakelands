@@ -284,6 +284,7 @@ pub const ALL: &[Check] = &[
     migrate::VIEW_SOURCE_KEPT,
     schema::REORDERED_FIELDS,
     schema::IN_FORCE_APPENDS_NOTHING,
+    schema::MIGRATION_IN_FORCE,
     aggregates::EMPTY_AGGREGATE,
     aggregates::COUNT_IS_THE_WALK,
     date_bucket::GROUPS,

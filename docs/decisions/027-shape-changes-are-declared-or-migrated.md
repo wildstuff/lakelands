@@ -474,6 +474,17 @@ lake's head and appends nothing. Its version stays.
   an object set. A function with a backing and a type with a field
   computed outside the lake are no exception (022).
 
+- **A migration to the type in force** (lakelands#577) is the same case:
+  its `to` is the type in force, judged the same way, and it renames
+  nothing. `migrate_apply` answers it `applied` at the head and appends
+  nothing, after every refusal, a stale report among them: the preflight
+  is made and its id compared as before, and answers as before. An
+  accepted proposal of one appends its acceptance alone. It used to
+  append a `migrated`, raise the version and read every record of the
+  type under the writer to change none. A value type's migration to
+  itself needs no rule: its preflight refuses it, there being nothing to
+  migrate.
+
 **What a declaration in force did besides its event, and no longer
 does.** None of it was a promise of this record:
 - An engine wrote the head index rows of the type's records again, and
