@@ -252,11 +252,7 @@ fn needs_store(e: &Expr) -> bool {
 
 impl<'a> Reader<'a> {
     /// Open a read at `at`.
-    pub fn open(
-        lake: &'a Lake,
-        who: &'a Principal,
-        at: lakelands_api::ReadAt,
-    ) -> Result<Reader<'a>> {
+    pub fn open(lake: &'a Lake, who: &'a Principal, at: ReadAt) -> Result<Reader<'a>> {
         let view = lake.engine.view(at.as_of)?;
         let position = view.position().unwrap_or(Position::GENESIS);
         let ontology = Ontology::from_declared(&view.declarations()?);
@@ -478,16 +474,13 @@ impl<'a> Reader<'a> {
         let Ok(decl) = self.ontology.ty(&t.name) else {
             return;
         };
+        let seen = |f: &FieldName| t.fields.iter().any(|d| d.name == *f);
         let setting = self.settings.get(&core_engines::sort_index_key(&t.name));
-        t.lifecycle.sorted = core_engines::sorted_fields(decl, setting)
-            .into_iter()
-            .filter(|f| t.fields.iter().any(|d| d.name == *f))
-            .collect();
+        t.lifecycle.sorted = core_engines::sorted_fields(decl, setting);
+        t.lifecycle.sorted.retain(seen);
         let setting = self.settings.get(&core_engines::vector_index_key(&t.name));
-        t.lifecycle.indexed = core_engines::indexed_fields(decl, setting)
-            .into_iter()
-            .filter(|f| t.fields.iter().any(|d| d.name == *f))
-            .collect();
+        t.lifecycle.indexed = core_engines::indexed_fields(decl, setting);
+        t.lifecycle.indexed.retain(seen);
     }
 
     fn holds(
@@ -546,7 +539,10 @@ impl<'a> Reader<'a> {
         }
         if let Some(e) = filter.filter(|e| needs_store(e)) {
             let mut n = 0;
-            self.each_member(decl, Some(e), |_| n += 1)?;
+            self.each_member(decl, Some(e), COUNT_PAGE, |_| {
+                n += 1;
+                Ok(())
+            })?;
             return Ok(n);
         }
         let scan = Scan {
@@ -559,23 +555,23 @@ impl<'a> Reader<'a> {
     }
 
     /// The records [`Self::records`] would answer, handed to `each` one at
-    /// a time in key order: a stored type's are read a page at a time and
-    /// never held together, a view's are computed first.
+    /// a time in key order until it fails: a stored type's are read `page`
+    /// at a time and never held together, a view's are computed first.
     fn each_member(
         &self,
         decl: &TypeDecl,
         filter: Option<&Expr>,
-        mut each: impl FnMut(&StoredRecord),
+        page: usize,
+        mut each: impl FnMut(&StoredRecord) -> Result<()>,
     ) -> Result<()> {
         if decl.view.is_some() {
-            self.records(decl, filter)?.iter().for_each(each);
-            return Ok(());
+            return self.records(decl, filter)?.iter().try_for_each(each);
         }
         let mut after = None;
         loop {
-            let rows = self.page(decl, filter, &[], after, COUNT_PAGE)?;
-            rows.iter().for_each(&mut each);
-            if rows.len() < COUNT_PAGE {
+            let rows = self.page(decl, filter, &[], after, page)?;
+            rows.iter().try_for_each(&mut each)?;
+            if rows.len() < page {
                 return Ok(());
             }
             after = rows.last().map(|r| (Vec::new(), r.key.clone()));
@@ -595,10 +591,7 @@ impl<'a> Reader<'a> {
         want: usize,
     ) -> Result<Vec<StoredRecord>> {
         let push = filter.filter(|e| !needs_store(e)).cloned();
-        let here = match (filter, &push) {
-            (Some(e), None) => Some(e),
-            _ => None,
-        };
+        let here = filter.filter(|_| push.is_none());
         let mut scan = Scan {
             filter: push,
             order_by: order.to_vec(),
@@ -707,6 +700,11 @@ impl<'a> Reader<'a> {
         // A view without `group_by` is one total, kept over no records too,
         // under the key reserved for it: the rule over no fields makes none.
         let (ungrouped, none) = (v.group_by.is_empty(), aggregate::Folds::default());
+        // A group's values under the names the other side groups by, field for field.
+        let renamed = |values: &aggregate::Row, from: &[FieldName], to: &[FieldName]| {
+            let pairs = to.iter().zip(from);
+            aggregate::Row::from_iter(pairs.map(|(to, from)| (to.clone(), values[from].clone())))
+        };
         let key_of = |by: &BTreeMap<FieldName, Value>| {
             if ungrouped {
                 Some(RecordKey::from(lakelands_api::key::UNGROUPED))
@@ -753,12 +751,7 @@ impl<'a> Reader<'a> {
                 if own.values().any(Value::is_null) {
                     continue;
                 }
-                let by: BTreeMap<FieldName, Value> = v
-                    .group_by
-                    .iter()
-                    .zip(&m.group_by)
-                    .map(|(to, from)| (to.clone(), own[from].clone()))
-                    .collect();
+                let by = renamed(&own, &m.group_by, &v.group_by);
                 let Some(key) = key_of(&by) else {
                     continue;
                 };
@@ -777,12 +770,7 @@ impl<'a> Reader<'a> {
                 let values = match at.get(&key) {
                     Some(values) => values.clone(),
                     None => {
-                        let own: BTreeMap<FieldName, Value> = m
-                            .group_by
-                            .iter()
-                            .zip(&v.group_by)
-                            .map(|(from, to)| (from.clone(), by[to].clone()))
-                            .collect();
+                        let own = renamed(&by, &v.group_by, &m.group_by);
                         measured(&none, &own, measures, BTreeMap::new())?
                     }
                 };
@@ -869,10 +857,11 @@ impl<'a> Reader<'a> {
         };
         let keys = group_by.iter().map(|f| (f.clone(), None)).collect();
         let mut members = aggregate::Grouping::new(keys, &measures, self.now);
-        self.each_member(&source, down, |r| {
+        self.each_member(&source, down, COUNT_PAGE, |r| {
             if here.is_none_or(|w| self.holds(w, &r.fields, Some(&r.meta))) {
                 members.add(&r.fields, Some(&self.settings));
             }
+            Ok(())
         })?;
         Ok((members, measures))
     }
@@ -880,29 +869,13 @@ impl<'a> Reader<'a> {
     fn sort_values(order: &[Order], r: &StoredRecord) -> Vec<Value> {
         order
             .iter()
-            .map(|o| match o.by {
-                OrderBy::Latest => Value::from(r.position.0),
-                OrderBy::Value => r.fields.get(&o.field).cloned().unwrap_or(Value::Null),
-                OrderBy::KnownAt => r
-                    .meta
-                    .get(&o.field)
-                    .map_or(Value::Null, |m| Value::String(m.known_at.to_string())),
-                OrderBy::SeenAt => r
-                    .meta
-                    .get(&o.field)
-                    .and_then(|m| m.seen_at)
-                    .map_or(Value::Null, |t| Value::String(t.to_string())),
-            })
+            .map(|o| core_engines::sort_value(r, o).unwrap_or(Value::Null))
             .collect()
     }
 
     /// The one ordering: sort values in turn, missing last either way, then
     /// the key ascending.
-    fn compare(
-        order: &[Order],
-        a: &(Vec<Value>, RecordKey),
-        b: &(Vec<Value>, RecordKey),
-    ) -> Ordering {
+    fn compare(order: &[Order], a: &SortKey, b: &SortKey) -> Ordering {
         for (i, o) in order.iter().enumerate() {
             let (x, y) = (&a.0[i], &b.0[i]);
             let c = match (x.is_null(), y.is_null()) {
@@ -947,10 +920,8 @@ impl<'a> Reader<'a> {
         let params = self.bind_params(&decl, &find.params)?;
         for o in &find.order_by {
             if let Some((field, message)) = o.misfit() {
-                return Err(Error::Refused {
-                    field,
-                    reason: Refusal::Invalid { message },
-                });
+                let reason = Refusal::Invalid { message };
+                return Err(Error::Refused { field, reason });
             }
             // A view's records are computed at the read's position; none
             // has an event of its own to order by.
@@ -1036,13 +1007,11 @@ impl<'a> Reader<'a> {
             }
             None => asked,
         };
-        let mut keyed: Vec<((Vec<Value>, RecordKey), StoredRecord)> = if decl.view.is_some() {
+        let row = |r: StoredRecord| ((Self::sort_values(&find.order_by, &r), r.key.clone()), r);
+        let mut keyed: Vec<(SortKey, StoredRecord)> = if decl.view.is_some() {
             // A view's records are computed from its source, whole.
-            let mut keyed: Vec<_> = self
-                .records(&decl, filter.as_ref())?
-                .into_iter()
-                .map(|r| ((Self::sort_values(&find.order_by, &r), r.key.clone()), r))
-                .collect();
+            let all = self.records(&decl, filter.as_ref())?;
+            let mut keyed: Vec<_> = all.into_iter().map(row).collect();
             keyed.sort_by(|a, b| Self::compare(&find.order_by, &a.0, &b.0));
             if let Some(after) = &after {
                 keyed.retain(|(k, _)| Self::compare(&find.order_by, k, after) == Ordering::Greater);
@@ -1051,28 +1020,22 @@ impl<'a> Reader<'a> {
             keyed
         } else {
             let after = self.skipped(&decl, filter.as_ref(), &find.order_by, after, skip)?;
-            self.page(&decl, filter.as_ref(), &find.order_by, after, limit + 1)?
-                .into_iter()
-                .map(|r| ((Self::sort_values(&find.order_by, &r), r.key.clone()), r))
-                .collect()
+            let rows = self.page(&decl, filter.as_ref(), &find.order_by, after, limit + 1)?;
+            rows.into_iter().map(row).collect()
         };
         let more = keyed.len() > limit;
         keyed.truncate(limit);
-        let next_cursor = if more {
-            keyed.last().map(|(k, _)| {
-                encode(&CursorState {
-                    at: self.position,
-                    after: Some(k.clone()),
-                    offset: 0,
-                    params: params.clone(),
-                    door: "find".into(),
-                    ty: Some(ty.clone()),
-                    of: find_read.clone(),
-                })
+        let next_cursor = keyed.last().filter(|_| more).map(|(k, _)| {
+            encode(&CursorState {
+                at: self.position,
+                after: Some(k.clone()),
+                offset: 0,
+                params: params.clone(),
+                door: "find".into(),
+                ty: Some(ty.clone()),
+                of: find_read.clone(),
             })
-        } else {
-            None
-        };
+        });
         let rows = keyed
             .into_iter()
             .filter_map(|(_, r)| rights::visible(self.who, &decl, &r, find.with_meta))
@@ -1214,7 +1177,10 @@ impl<'a> Reader<'a> {
     fn aggregated(&self, decl: &TypeDecl, filter: Option<&Expr>, a: &Aggregate) -> Result<Found> {
         let named = |e| invalid(format!("aggregate over `{}`: {e}", decl.name));
         let mut grouping = aggregate::grouping(a, self.now).map_err(named)?;
-        self.each_member(decl, filter, |r| grouping.add(&r.fields, None))?;
+        self.each_member(decl, filter, COUNT_PAGE, |r| {
+            grouping.add(&r.fields, None);
+            Ok(())
+        })?;
         let mut groups = aggregate::answer(grouping, a).map_err(named)?;
         // A sum, minimum or maximum of a decimal field whose value type
         // declares a scale answers at that scale, so a sum over nothing is
@@ -1840,8 +1806,7 @@ impl<'a> Reader<'a> {
                 depth_of.into_iter().map(|(n, d)| (d, n)).collect();
             nodes.sort();
             let nodes = nodes.into_iter().map(|(_, n)| n).collect();
-            edges.sort_by(|a, b| (&a.from, &a.relation, &a.to).cmp(&(&b.from, &b.relation, &b.to)));
-            edges.dedup_by(|a, b| (&a.from, &a.relation, &a.to) == (&b.from, &b.relation, &b.to));
+            core_engines::order_edges(&mut edges);
             return self.graph_result(nodes, edges, truncated);
         }
         // Rows are ordered and measured by their paths, `type.field`: each
@@ -1876,10 +1841,9 @@ impl<'a> Reader<'a> {
             let t = graph::traverse(&hidden, &from, &p.steps, max_depth, usize::MAX, keep)?;
             for binding in t.bindings {
                 let mut row = BTreeMap::new();
-                let mut chain = vec![from.clone()];
-                chain.extend(binding.into_iter().map(|r| r.node));
-                for node in &chain {
-                    self.bind(&mut row, node)?;
+                self.bind(&mut row, &from)?;
+                for r in &binding {
+                    self.bind(&mut row, &r.node)?;
                 }
                 rows.push(row);
             }
@@ -1925,20 +1889,8 @@ impl<'a> Reader<'a> {
             .collect();
         keyed.sort_by(|a, b| Self::compare(&order, &a.0, &b.0));
         let offset = offset(p.cursor.as_ref(), p, &params)?;
-        let (rows, more) =
-            measures::page(keyed.into_iter().map(|(_, r)| r).collect(), offset, limit);
-        let next_cursor = more.then(|| {
-            encode(&CursorState {
-                at: self.position,
-                after: None,
-                offset: (offset + limit) as u64,
-                params,
-                door: "query".into(),
-                ty: Some(p.start.ty.clone()),
-                of: pattern_read(p),
-            })
-        });
-        Ok(QueryResult::Rows { rows, next_cursor })
+        let rows = keyed.into_iter().map(|(_, r)| r).collect();
+        Ok(self.rows_page(p, rows, offset, limit, params))
     }
 
     /// Whether `get` answers the record a pattern's start names by key,
@@ -2042,22 +1994,15 @@ impl<'a> Reader<'a> {
             .iter()
             .find(|r| &r.name == relation)
             .map(|r| r.target.clone());
-        let inn: Vec<TypeName> = self
-            .ontology
-            .types
-            .values()
-            .filter(|e| {
-                e.decl
-                    .relations
-                    .iter()
-                    .any(|r| &r.name == relation && &r.target == here)
-            })
-            .map(|e| e.decl.name.clone())
-            .collect();
+        let reaches = |r: &RelationDecl| &r.name == relation && &r.target == here;
+        let mut owners = self.ontology.types.values().map(|e| &e.decl);
+        let inn = owners
+            .find(|t| t.relations.iter().any(reaches))
+            .map(|t| t.name.clone());
         let found = match walk {
             Walk::Out => out,
-            Walk::In => inn.first().cloned(),
-            Walk::Both => out.or_else(|| inn.first().cloned()),
+            Walk::In => inn,
+            Walk::Both => out.or(inn),
         };
         match found {
             Some(t) => Ok(Some(t)),
@@ -2140,7 +2085,7 @@ fn ordered_proposals(proposals: Vec<Proposal>, order_by: &[Order]) -> Result<Vec
             )));
         }
     }
-    let mut keyed: Vec<(Vec<Option<Value>>, Proposal)> = proposals
+    let mut keyed: Vec<(core_engines::Place<'_>, Proposal)> = proposals
         .into_iter()
         .map(|p| {
             let as_json = serde_json::to_value(&p).expect("a proposal serialises");
@@ -2153,16 +2098,10 @@ fn ordered_proposals(proposals: Vec<Proposal>, order_by: &[Order]) -> Result<Vec
                         .cloned()
                 })
                 .collect();
-            (values, p)
+            (core_engines::Place { values, key: "" }, p)
         })
         .collect();
-    keyed.sort_by(|a, b| {
-        let place = |values: &Vec<Option<Value>>| core_engines::Place {
-            values: values.clone(),
-            key: "",
-        };
-        core_engines::cmp_places(&place(&a.0), &place(&b.0), order_by)
-    });
+    keyed.sort_by(|a, b| core_engines::cmp_places(&a.0, &b.0, order_by));
     Ok(keyed.into_iter().map(|(_, p)| p).collect())
 }
 
@@ -2232,28 +2171,19 @@ fn derived_edges(
                 })
                 .collect()
         };
-        let scan = |other: &TypeName, equal| r.matching(other, equal);
-        for x in &owned {
+        // An owned relation leaves `near` for its target; a targeted one reaches it.
+        let leaving = owned.iter().map(|x| (&x.target, *x, true));
+        let reaching = targeted.iter().map(|&(owner, x)| (owner, x, false));
+        for (other, x, out) in leaving.chain(reaching) {
             let pairs = &x.derived.as_ref().expect("derived").pairs;
-            if let Some(equal) = equal(pairs, true) {
-                for m in scan(&x.target, equal)? {
+            if let Some(equal) = equal(pairs, out) {
+                for m in r.matching(other, equal)? {
+                    let (this, that) = ((ty.clone(), key.clone()), (other.clone(), m.key));
+                    let (from, to) = if out { (this, that) } else { (that, this) };
                     list.push(Edge {
-                        from: (ty.clone(), key.clone()),
+                        from,
                         relation: x.name.clone(),
-                        to: (x.target.clone(), m.key),
-                        fields: BTreeMap::new(),
-                    });
-                }
-            }
-        }
-        for &(owner, x) in &targeted {
-            let pairs = &x.derived.as_ref().expect("derived").pairs;
-            if let Some(equal) = equal(pairs, false) {
-                for m in scan(owner, equal)? {
-                    list.push(Edge {
-                        from: (owner.clone(), m.key),
-                        relation: x.name.clone(),
-                        to: (ty.clone(), key.clone()),
+                        to,
                         fields: BTreeMap::new(),
                     });
                 }
