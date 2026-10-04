@@ -471,7 +471,7 @@ fn decide(
 fn own_outcome(events: &[Event]) -> Outcome {
     let e = &events[0];
     let wrote = match (&e.body, events.get(1)) {
-        // An acceptance always appends something after `write_accepted`.
+        // An acceptance of declarations all in force appends nothing more.
         (EventBody::WriteAccepted { .. }, Some(n)) => n.cause == Some(e.position),
         (EventBody::VerbCalled { verb, .. }, Some(n)) => {
             n.cause == Some(e.position)
@@ -715,6 +715,11 @@ fn live_record(view: &dyn ProjectionView, ty: &TypeName, key: &RecordKey) -> Res
                 key: key.clone(),
             },
         })
+}
+
+/// The lake's head: the position of its last event.
+fn head(w: &Writer) -> Position {
+    w.tip.as_ref().map_or(Position::GENESIS, |t| t.0)
 }
 
 /// The next position in an append that already holds `n` drafts.
@@ -1632,7 +1637,9 @@ impl Call<'_> {
             // the store derives stay the system's.
             ProposedWrite::Declare { declarations } => {
                 self.check_bundle(&w.ontology, declarations)?;
-                let own = self.bundle_drafts(&w, declarations.clone(), now, drafts.len())?;
+                let mut changed = declarations.clone();
+                changed.retain(|d| !w.ontology.in_force(d));
+                let own = self.bundle_drafts(&w, changed, now, drafts.len())?;
                 drafts.extend(own.into_iter().map(&as_accepted));
             }
             ProposedWrite::Migrate { migration, report } => {
@@ -1803,12 +1810,17 @@ impl Call<'_> {
         self.declare_granted(declaration)
     }
 
-    /// `declare`, its context and the `schema` grant already checked.
+    /// `declare`, its context and the `schema` grant already checked. A
+    /// declaration that is the one in force is answered at the head and
+    /// appends nothing, after every refusal (027, extended).
     fn declare_granted(&self, mut declaration: Declaration) -> Result<Outcome> {
         let mut w = self.writer()?;
         self.redeclared(&w.ontology, std::slice::from_mut(&mut declaration))?;
         declare::check_declaration(&w.ontology, &declaration, false)?;
         self.check_bound(&declaration)?;
+        if w.ontology.in_force(&declaration) {
+            return Ok(applied(head(&w), None));
+        }
         let now = self.lake.clock(&mut w);
         let drafts = self.bundle_drafts(&w, vec![declaration], now, 0)?;
         let events = self.lake.append(&mut w, drafts)?;
@@ -1820,13 +1832,18 @@ impl Call<'_> {
     /// the lake's ontology with every other declaration of the set already
     /// in it, so a reference may point forward within the set and tool
     /// names are checked over all of it; every problem is collected, and
-    /// one refusal names them all.
+    /// one refusal names them all. Of a set that is admitted, what is in
+    /// force before it is not appended again (027, extended).
     pub fn apply(&self, mut declarations: Vec<Declaration>) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         granted(self.who.grants.schema)?;
         let mut w = self.writer()?;
         self.redeclared(&w.ontology, &mut declarations)?;
         self.check_bundle(&w.ontology, &declarations)?;
+        declarations.retain(|d| !w.ontology.in_force(d));
+        if declarations.is_empty() {
+            return Ok(applied(head(&w), None));
+        }
         let now = self.lake.clock(&mut w);
         let drafts = self.bundle_drafts(&w, declarations, now, 0)?;
         let events = self.lake.append(&mut w, drafts)?;

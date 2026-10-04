@@ -523,7 +523,7 @@ async fn a_backed_field_reading_another_waits_for_its_output(
 check!(
     /// A redeclaration calls again for an input whose output was a failure.
     FAILURE_RETRIED = a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds,
-    "022, extended: a settle forced by a declaration calls again, once, for an input whose recorded output is a failure, for a function backing as for an embedding; the later output holds for every record with that input"
+    "022, extended: a settle forced by a changed declaration calls again, once, for an input whose recorded output is a failure, for a function backing as for an embedding; the later output holds for every record with that input"
 );
 
 async fn a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds(
@@ -543,19 +543,18 @@ async fn a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds(
     );
 
     plug(token);
+    // Changed by a label: the declaration in force would append nothing.
     let name = computed_by("name", StorageKind::Text, "lookup", &["code"]);
-    l.declare(type_decl(
-        "place",
-        vec![field("code", StorageKind::Text), name],
-    ))
-    .await?;
+    let mut again = type_decl("place", vec![field("code", StorageKind::Text), name]);
+    again.label = Some("Place".into());
+    l.declare(again).await?;
     let calls = made(token) - failed;
     let (p1, p2) = (l.read("place", "p1").await?, l.read("place", "p2").await?);
     ensure!(
         calls == 1
             && value(&p1, "name") == Some(&json!("AT"))
             && value(&p2, "name") == Some(&json!("AT")),
-        "declaring `place` again retries the failed call for code AT: one more call, not \
+        "declaring `place` again with a label retries the failed call for code AT: one more call, not \
          {calls}, and its output fills `name` on both records; they read {:?} and {:?}",
         value(&p1, "name"),
         value(&p2, "name")

@@ -176,7 +176,9 @@ pub trait Catalog: Send + Sync {
         filter: ProposalFilter,
     ) -> Result<Reply<Vec<Proposal>>>;
 
-    /// Add or revise a declaration that does not reshape stored records.
+    /// Add or revise a declaration that does not reshape stored records. One
+    /// that is the declaration in force is answered at the head and appends
+    /// nothing (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`).
     async fn declare(&self, who: &Principal, declaration: Declaration) -> Result<Outcome>;
 
     /// Declare a set of declarations together, as a bundle is: validated as
@@ -184,7 +186,8 @@ pub trait Catalog: Send + Sync {
     /// are checked over the whole set, and one refusal names every problem —
     /// and appended in one append, or refused whole with nothing appended.
     /// The outcome names the position of the set's last declaration, from
-    /// which all of it is in force.
+    /// which all of it is in force. What is in force before the set is not
+    /// appended again; a set wholly in force is answered at the head.
     async fn apply(&self, who: &Principal, declarations: Vec<Declaration>) -> Result<Outcome>;
 
     /// Add one field to a type.

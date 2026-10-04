@@ -7,15 +7,18 @@
 
 use std::sync::Arc;
 
+use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl};
 use lakelands_api::tools::{Door, GENERIC_TOOLS, tools};
-use lakelands_api::write::Declaration;
+use lakelands_api::write::{Declaration, Outcome, ProposedWrite};
 use lakelands_api::{Error, Grants, LakeStore, PrincipalKind, ReadAt, Refusal, TypeName};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, field, head_unmoved, principal, reason, refused_unmoved, type_decl,
+    Lake, Must, computed_by, dec, decimal, events_after, field, head_unmoved, object_set_on,
+    principal, reason, refused_unmoved, reviewer, trigger_on, type_decl, value, value_type,
+    write_verb,
 };
 
 check!(
@@ -290,6 +293,89 @@ async fn redeclaring_a_type_with_its_fields_reordered_keeps_its_schema_hash(
         "the reordered declaration is a revision as written: one event and version \
          {} expected, but the head moved from {before} to {after} and the version is {next}",
         version + 1
+    );
+    Ok(())
+}
+
+check!(
+    /// The declaration in force appends nothing.
+    IN_FORCE_APPENDS_NOTHING = a_declaration_that_is_the_one_in_force_appends_nothing,
+    "027, extended (lakelands#565): a declaration that is the one in force (a value type, a function, a type, a verb, a trigger, a set, and a type whose computed field is stated with its completed `depends_on` or without) is answered `applied` at the head and appends nothing, by `declare` and by `apply`, and its version stays; a refusal still comes first; of a set what differs is appended alone, and what it sets off happens; an accepted proposal of declarations in force appends its acceptance alone"
+);
+
+async fn a_declaration_that_is_the_one_in_force_appends_nothing(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let scaled = |by: u8| -> Declaration {
+        serde_json::from_value(json!({"declare": "function", "name": "scaled", "backing": "expr",
+            "inputs": [{"name": "net", "type": {"kind": "decimal"}}], "expr": format!("net * {by}")}))
+        .expect("the check's function reads")
+    };
+    let bill = |deps: &[&str]| {
+        let net = field("net", StorageKind::Decimal);
+        let gross = computed_by("gross", StorageKind::Decimal, "scaled", deps);
+        Declaration::Type(type_decl("bill", vec![net, gross]))
+    };
+    let all = vec![
+        Declaration::ValueType(value_type("state", StorageKind::Text)),
+        scaled(2),
+        bill(&[]),
+        write_verb("zero", "bill", "net", "0"),
+        trigger_on("noted", "bill", None),
+        object_set_on("big", "bill", "net > 1"),
+    ];
+    for d in &all {
+        l.declare_as(d.clone(), "declaring the first time").await?;
+    }
+    l.upsert("bill", "b", json!({"net": "3"})).await?;
+    let before = store.head().await.must("reading the head")?;
+    // Each again, the type also with the list `describe` shows, then all as a set.
+    let mut got = Vec::new();
+    for d in all.iter().chain(&[bill(&["net"])]) {
+        got.push(l.declare_as(d.clone(), "declaring again").await?);
+    }
+    got.push(l.cat.apply(&l.own, all.clone()).await.must("applying")?);
+    got.retain(|o| !matches!(o, Outcome::Applied { position, .. } if *position == before));
+    let after = store.head().await.must("reading the head")?;
+    let version = l.describe_type("bill").await?.lifecycle.version;
+    ensure!(
+        got.is_empty() && after == before && version == 1,
+        "a declaration in force is answered `applied` at the head {before} and appends \
+         nothing; the head is {after}, `bill` stands at version {version}, and {got:?}"
+    );
+    // A refusal comes first: without the `schema` grant it is not told.
+    let unschooled = reviewer(store.as_ref(), false);
+    let refused = l.cat.declare(&unschooled, bill(&[])).await;
+    ensure!(
+        matches!(reason(&refused), Some(Refusal::NotGranted)),
+        "a declaration in force by one without the `schema` grant answered {refused:?}"
+    );
+    // Of a set, what differs is appended alone, and the type that reads the
+    // changed function is computed again.
+    let set = vec![scaled(3), bill(&[])];
+    l.cat.apply(&l.own, set).await.must("applying the set")?;
+    let written = events_after(store.as_ref(), before).await?;
+    let gross = decimal(value(&l.read("bill", "b").await?, "gross"));
+    ensure!(
+        written.len() == 1 && gross == Some(dec("9")),
+        "a set of a changed function and an unchanged type appends the function alone, \
+         and `gross` is computed again as 9; it reads {gross:?} after {written:?}"
+    );
+    // An accepted proposal of declarations in force: its acceptance alone.
+    let declarations = vec![scaled(3), bill(&["net"])];
+    let proposed = ProposedWrite::Declare { declarations };
+    let proposed = l.cat.propose(&l.own, proposed, "again".into()).await;
+    let Outcome::Proposed { proposal, .. } = proposed.must("proposing")? else {
+        return Err(Failure::new("a proposed set is not answered as proposed"));
+    };
+    l.cat.accept(&l.own, &proposal).await.must("accepting")?;
+    let written = events_after(store.as_ref(), before).await?;
+    ensure!(
+        written.len() == 3 && matches!(written[2].body, EventBody::WriteAccepted { .. }),
+        "an accepted proposal of declarations in force appends `write_accepted` alone; \
+         after the function's, the log holds {:?}",
+        &written[1..]
     );
     Ok(())
 }

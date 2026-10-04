@@ -284,7 +284,7 @@ async fn a_computed_field_is_read_no_further_than_what_it_is_computed_from(
     let before = store.head().await.must("reading the head")?;
     let mut all = vec![text("a"), text("b")];
     all.push(computed("x", upper(), &[]));
-    l.declare_json(json!({"declare": "type", "name": "by_expr", "fields": all}))
+    l.declare_json(json!({"declare": "type", "name": "by_expr", "label": "again", "fields": all}))
         .await?;
     let written = events_after(store.as_ref(), before).await?;
     let sent = written.iter().filter_map(|e| match &e.body {
@@ -294,8 +294,8 @@ async fn a_computed_field_is_read_no_further_than_what_it_is_computed_from(
     let sent: Vec<String> = sent.collect();
     ensure!(
         sent.len() == 1 && !sent[0].contains("depends_on"),
-        "a declaration sent again is logged once, as it was sent, without a completed list; \
-         the log holds {sent:?}"
+        "a declaration sent again with a label is logged once, as it was sent, without a \
+         completed list; the log holds {sent:?}"
     );
     // A function declared again with fewer inputs restricts by those alone,
     // for a reader and for an author: its view of `by_pair` takes `x` away

@@ -439,3 +439,56 @@ The test comes before the author's view is completed and before
 anything is appended. An accepter stays as it was: it may accept by its
 id a proposal on a type it is not shown, and the accept's answer names
 it nothing it may not know of.
+
+## Extended: a declaration in force appends nothing (lakelands#565)
+
+A host states its declarations again at every start. Each statement
+appended a `declared` with the next version, so the log grew with every
+start, and a declaration's version counted the starts instead of its
+changes: one function body declared six times stood at version 6 while
+the records it had computed named version 1.
+
+So a declaration that is the one in force is answered `applied` at the
+lake's head and appends nothing. Its version stays.
+
+- **In force is judged in the form the lake keeps.** A type is compared
+  after the store has put back what its author may not see (024) and has
+  completed each computed field's `depends_on`; the type in force is held
+  the same way. So a computed field stated with no input and one stated
+  with the inputs `describe` shows are the same declaration. The lists
+  the type was declared with stay as they were.
+- **Every refusal comes first:** the context, the `schema` grant, the
+  author's view, the declaration's own checks, the binding of a model or
+  an executor. Only a declaration that would have been applied is
+  compared, so the rule never answers where a refusal was.
+- **A set is compared one declaration at a time, against the ontology in
+  force before it.** Its refusals are judged over the whole set, as
+  before. What differs is appended in the set's order, and what that
+  sets off happens: a recomputation, a set's memberships. A set wholly
+  in force is answered at the head.
+- **A proposal is recorded as before,** in force or not. When it is
+  accepted, the proposal is decided and what is in force at that moment
+  is not appended again, so an acceptance may append `write_accepted`
+  alone.
+- **Every kind:** a value type, a type, a function, a verb, a trigger,
+  an object set. A function with a backing and a type with a field
+  computed outside the lake are no exception (022).
+
+**What a declaration in force did besides its event, and no longer
+does.** None of it was a promise of this record:
+- An engine wrote the head index rows of the type's records again, and
+  PostgreSQL built the type's vector indexes again. They came out as they
+  were.
+- A function computed every live record of every type that names it
+  again. One that reads only its inputs changed nothing. One that reads
+  a setting or the clock took their values at the declaration, and one
+  with a backing called again for an input whose recorded output was a
+  failure.
+- A type with a field computed outside the lake was settled again: a
+  recorded failure was called again, and a field waiting for its backend
+  was made.
+
+Each of these now follows a declaration that differs from the one in
+force, as the fold decides it from the `declared` event. The log format
+does not change, and a log that holds identical declarations folds as
+it did.

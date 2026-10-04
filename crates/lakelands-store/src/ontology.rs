@@ -151,6 +151,17 @@ impl Ontology {
         self.value_types.values().map(|e| e.decl.clone()).collect()
     }
 
+    /// Whether `declaration` is the one in force, in the form the lake
+    /// keeps: a type with its computed fields completed. Such a declaration
+    /// appends nothing and its version stays (027, extended).
+    pub fn in_force(&self, declaration: &Declaration) -> bool {
+        let mut d = declaration.clone();
+        if let Declaration::Type(t) = &mut d {
+            self.complete(t);
+        }
+        self.declared().iter().any(|held| held.declaration == d)
+    }
+
     /// The version a declaration of this name and kind would take next.
     pub fn next_version(&self, declaration: &Declaration) -> u32 {
         let current = match declaration {
