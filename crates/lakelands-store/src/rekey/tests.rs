@@ -38,7 +38,7 @@ fn a_system_type_in_the_closure_is_refused() {
         RecordKey::from("1"),
         [(FieldName::from("iban"), json!("DE1"))].into(),
     )];
-    let refused = plan(&after, view.as_ref(), &"account".into(), converted);
+    let refused = plan(&after, view.as_ref(), &"account".into(), converted, &[]);
     assert!(
         matches!(&refused, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
                 if message.contains("sys.hold")),

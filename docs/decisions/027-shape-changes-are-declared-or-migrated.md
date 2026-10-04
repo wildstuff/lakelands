@@ -68,8 +68,9 @@ everything that names the records it moves:
   new key, or a record without a value for a new key field, make the
   migration not lossless;
 - every type whose key fields reference a re-keyed type, re-keyed with it
-  (link records, keyed by their two ends, are the common case); the
-  closure is computed with a visited set;
+  (link records, keyed by their two ends, are the common case), each
+  after the types its own key references (see "a key is made after the
+  keys it reads" below);
 - every reference value, in any type, that names a moved key.
 
 The moves are listed in the `migrated` event (`rekeyed`, log format
@@ -370,3 +371,43 @@ no new one), and are stated, not checked; so are the report id against
 the fit of a value type, both `invalid` naming nothing a caller can
 tell apart.
 
+## Extended: a key is made after the keys it reads (lakelands#524)
+
+A type keyed by references to two types a re-key moves takes its new keys
+from both. Its keys were made when the first of the two had moved, in the
+order of the types' names, so a type whose name sorts before the second
+kept that one's old keys in its own: a link type, named `sys.link.…`,
+before any closure type whose name sorts after it. The fold rewrote the
+reference, the key stayed, and a link whose key is not what its ends make
+is found from neither end. The preflight had called it lossless.
+
+So the order is the one the keys need, not the one the names have:
+
+- **A type's keys are made after those of every type its key references.**
+  The types a re-key can reach are read from the declarations. Each waits
+  until every other type its key references has its moves, and is then
+  read once, and only if one of them moved anything. The report lists the
+  types in that order.
+- **Keys made of each other are refused.** A type keyed by a reference to
+  itself, or types keyed by each other, have no such order: a key would
+  have to be made from a key that is still to move. A re-key that would
+  move them is refused as invalid, naming them, and appends nothing. A
+  lake holds no record in a ring of two or more types, since the first
+  record of each would need a live record of the other; a type keyed by
+  itself holds records only when it was re-keyed into that shape, and that
+  is what is refused.
+- **A renamed reference field is counted.** The report's `references`
+  count the values a re-key rewrites. For the migrated type they are read
+  under the name its records still hold, so a field the same migration
+  renames is listed, under its new name. The entry is answered to a
+  reader who may know of the field in the shape the migration leaves, as
+  a conversion is.
+
+Where the names' order was already the keys' order, the report keeps its
+rows and its id. Where it was not, the rows come in the new order, and a
+report made before is refused as stale at the apply.
+
+This repairs no lake. A `migrated` event lists its moves, and the fold
+applies exactly those: a lake re-keyed before this keeps what that re-key
+left, and a link record whose key is not what its `from` and `to` make
+is how such a lake is found.

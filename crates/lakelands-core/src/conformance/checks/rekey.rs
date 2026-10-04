@@ -12,14 +12,16 @@ use std::sync::Arc;
 
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::query::{Projection, QueryResult, Walk};
-use lakelands_api::write::{Migration, MigrationReport};
-use lakelands_api::{Catalog, Error, LakeStore, Position, Principal, Refusal, TypeName, WriteOpts};
+use lakelands_api::write::{Declaration, Migration, MigrationReport};
+use lakelands_api::{
+    Access, Catalog, Error, LakeStore, Position, Principal, Refusal, TypeName, WriteOpts,
+};
 use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, events_after, get_at, head_unmoved, log_events, migration, patch, pattern, reason,
-    restrict, step,
+    Lake, Must, all, events_after, field_access, get_at, head_unmoved, invalid_naming, log_events,
+    migration, patch, pattern, reason, restrict, step,
 };
 
 check!(
@@ -110,6 +112,24 @@ check!(
     /// A re-key that retypes a link field moves and converts its links.
     LINK_RESHAPED = a_rekey_that_retypes_a_link_field_moves_and_converts_its_links,
     "027 and 035: a migration that re-keys a type and retypes a field of its relation appends the link type's migration after its own; a link is at its new pair key from the first on and holds the converted value from the second on"
+);
+
+check!(
+    /// A key is made after the keys it reads.
+    KEY_ORDER = a_key_is_made_after_every_key_it_reads_has_moved,
+    "027: a type keyed by references to two types a re-key moves, a link type among them, takes its new keys after both have theirs, whatever the order of their names: each key is what its fields make, a relation carried by links is walked out and in as before, and the report lists the types in the order their keys are made"
+);
+
+check!(
+    /// A ring of keys is refused.
+    KEY_RING = a_rekey_of_keys_made_of_keys_it_moves_is_refused,
+    "027: a re-key that would move a type keyed by a reference to itself, or types keyed by each other, is refused as invalid naming them, and appends nothing: no order makes such keys"
+);
+
+check!(
+    /// A renamed reference field is counted.
+    RENAMED_REFERENCE = a_rekeys_report_counts_a_reference_field_the_migration_renames,
+    "027, 013 and 024: the references a re-key rewrites are counted for a field the same migration renames, under its new name, and that entry is answered only to a reader who may know of the field in the shape the migration leaves"
 );
 
 fn account(key: &str, iban_required: bool) -> Value {
@@ -241,13 +261,14 @@ async fn found(
     }
 }
 
-async fn walked(l: &Lake, ty: &str, key: &str, relation: &str) -> Result<Vec<String>, Failure> {
-    let p = pattern(
-        ty,
-        Some(key),
-        vec![step(relation, Walk::Out)],
-        Projection::Graph,
-    );
+async fn walked(
+    l: &Lake,
+    ty: &str,
+    key: &str,
+    relation: &str,
+    walk: Walk,
+) -> Result<Vec<String>, Failure> {
+    let p = pattern(ty, Some(key), vec![step(relation, walk)], Projection::Graph);
     let reply = l
         .cat
         .query(&l.own, p)
@@ -399,7 +420,7 @@ async fn a_reference_to_a_rekeyed_record_names_its_new_key(
         "p1's account is {:?}; `DE1` was expected",
         p1.fields.get("account")
     );
-    let reached = walked(&l, "payment", "p1", "pays").await?;
+    let reached = walked(&l, "payment", "p1", "pays", Walk::Out).await?;
     ensure!(
         reached == ["DE1"],
         "the walk over `pays` reached {reached:?}"
@@ -418,7 +439,7 @@ async fn a_link_to_a_rekeyed_record_is_rekeyed_and_walked(
             && found(&l, lt, "1:x", None).await?.is_none(),
         "the link from account 1 to x was not moved to `DE1:x`"
     );
-    let reached = walked(&l, "account", "DE1", "owner").await?;
+    let reached = walked(&l, "account", "DE1", "owner", Walk::Out).await?;
     ensure!(
         reached == ["x"],
         "the walk over `owner` from `DE1` reached {reached:?}"
@@ -780,6 +801,202 @@ async fn a_rekeyed_type_migrates_again(store: Arc<dyn LakeStore>) -> Result<(), 
         one.as_ref()
             .is_some_and(|r| r.fields.get("iban") == Some(&json!("DE1"))),
         "account 1 is not back at `1` with its values: {one:?}"
+    );
+    Ok(())
+}
+
+/// A type from JSON.
+fn ty(json: Value) -> lakelands_api::ontology::TypeDecl {
+    serde_json::from_value(json).expect("a type")
+}
+
+/// `acct`, keyed by `key`, with `relations`.
+fn acct(key: &str, relations: Value) -> Value {
+    json!({"name": "acct", "key": [key], "relations": relations,
+           "fields": [{"name": "code", "type": {"kind": "text"}, "required": true},
+                      {"name": "tag", "type": {"kind": "text"}, "required": true}]})
+}
+
+/// A type keyed by an `acct` and by `b`: a number, or a reference to `to`.
+fn by_acct(name: &str, to: Option<&str>) -> Declaration {
+    let b = to.map_or(
+        json!({"kind": "number"}),
+        |t| json!({"kind": "reference", "target": t}),
+    );
+    Declaration::Type(ty(json!({"name": name, "key": ["a", "b"],
+        "fields": [{"name": "a", "type": {"kind": "reference", "target": "acct"}, "required": true},
+                   {"name": "b", "type": b, "required": true}]})))
+}
+
+/// The preflight's report of `m`, as `who` is answered it.
+async fn report(l: &Lake, who: &Principal, m: &Migration) -> Result<MigrationReport, Failure> {
+    let answered = l.cat.migrate(who, m.clone()).await;
+    Ok(answered.must("the preflight")?.data)
+}
+
+async fn a_key_is_made_after_every_key_it_reads_has_moved(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    // `zone` is keyed by an acct; `mid`, `zz` and the links of `zones` by an
+    // acct and a zone. `mid` and the link type sort before `zone`.
+    let zones = json!([{"name": "zones", "target": "zone", "cardinality": "many_to_many"}]);
+    let first = Declaration::Type(ty(acct("code", zones.clone())));
+    let rest = [("zone", None), ("mid", Some("zone")), ("zz", Some("zone"))];
+    let bundle = [first]
+        .into_iter()
+        .chain(rest.map(|(n, to)| by_acct(n, to)));
+    cat.apply(own, bundle.collect())
+        .await
+        .must("declaring the lake")?;
+    for (ty, key, fields) in [
+        ("acct", "a1", json!({"code": "a1", "tag": "T1"})),
+        ("acct", "a2", json!({"code": "a2", "tag": "T2"})),
+        ("zone", "a1:1", json!({"a": "a1", "b": 1})),
+        ("zone", "a2:2", json!({"a": "a2", "b": 2})),
+        ("mid", "a1:a2%3A2", json!({"a": "a1", "b": "a2:2"})),
+        ("zz", "a1:a2%3A2", json!({"a": "a1", "b": "a2:2"})),
+    ] {
+        l.upsert(ty, key, fields).await?;
+    }
+    for (from, to) in [("a1", "a1:1"), ("a1", "a2:2"), ("a2", "a1:1")] {
+        let (ty, zones, from, to) = ("acct".into(), "zones".into(), from.into(), to.into());
+        let (none, opts) = (patch(json!({})), WriteOpts::default());
+        let linked = cat.link(own, &ty, &from, &zones, &to, none, opts).await;
+        linked.must("linking an acct to a zone")?;
+    }
+    let m = migration(ty(acct("tag", zones)));
+    let r = report(&l, own, &m).await?;
+    let order: Vec<&str> = r.rekeyed.iter().map(|k| k.ty.as_str()).collect();
+    let links = "sys.link.acct.zones";
+    ensure!(
+        r.lossless && order == ["acct", "zone", "mid", links, "zz"],
+        "`zone` takes its keys before the three types keyed by it, which follow by name; \
+         the report lists {order:?}"
+    );
+    let applied = cat.migrate_apply(own, m, &r.report_id).await;
+    applied.must("applying the re-key")?;
+    for (ty, made) in [
+        ("zone", vec!["T1:1", "T2:2"]),
+        ("mid", vec!["T1:T2%3A2"]),
+        ("zz", vec!["T1:T2%3A2"]),
+        (links, vec!["T1:T1%3A1", "T1:T2%3A2", "T2:T1%3A1"]),
+    ] {
+        let found = all(cat.as_ref(), own, ty).await?;
+        let found: Vec<_> = found.iter().map(|r| r.key.as_str()).collect();
+        ensure!(
+            found == made,
+            "each key of `{ty}` is what its fields make, {made:?}; its records are at {found:?}"
+        );
+    }
+    let out = walked(&l, "acct", "T1", "zones", Walk::Out).await?;
+    let inn = walked(&l, "zone", "T1:1", "zones", Walk::In).await?;
+    ensure!(
+        out == ["T1:1", "T2:2"] && inn == ["T1", "T2"],
+        "`zones` is walked as before the re-key: out from `T1` it reached {out:?}, in to \
+         `T1:1` it came from {inn:?}"
+    );
+    Ok(())
+}
+
+async fn a_rekey_of_keys_made_of_keys_it_moves_is_refused(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    // `bush` references itself, and its root names itself; `p` and `q` are
+    // keyed by an acct and by each other.
+    let bush = |key: Value, required: bool| {
+        ty(json!({"name": "bush", "key": key,
+            "fields": [{"name": "code", "type": {"kind": "text"}, "required": true},
+                       {"name": "parent", "type": {"kind": "reference", "target": "bush"},
+                        "required": required}]}))
+    };
+    let bundle = vec![
+        Declaration::Type(bush(json!(["code"]), false)),
+        Declaration::Type(ty(acct("code", json!([])))),
+        by_acct("p", Some("q")),
+        by_acct("q", Some("p")),
+    ];
+    cat.apply(own, bundle).await.must("declaring the lake")?;
+    l.upsert("bush", "r", json!({"code": "r"})).await?;
+    l.upsert("bush", "r", json!({"parent": "r"})).await?;
+    l.upsert("acct", "a1", json!({"code": "a1", "tag": "T1"}))
+        .await?;
+    let before = store.head().await.must("reading the head")?;
+    for (what, to, names) in [
+        (
+            "re-keying `bush` by a reference to itself",
+            bush(json!(["parent", "code"]), true),
+            vec!["`bush`"],
+        ),
+        (
+            "re-keying `acct`, which `p` and `q` are keyed by",
+            ty(acct("tag", json!([]))),
+            vec!["`p`", "`q`"],
+        ),
+    ] {
+        invalid_naming(what, cat.migrate(own, migration(to)).await, &names)?;
+    }
+    head_unmoved(store.as_ref(), before, "a re-key of a ring of keys").await
+}
+
+async fn a_rekeys_report_counts_a_reference_field_the_migration_renames(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    let node = |key: &str, parent: &str| {
+        ty(json!({"name": "node", "key": [key],
+            "fields": [{"name": "code", "type": {"kind": "text"}, "required": true},
+                       {"name": "tag", "type": {"kind": "text"}, "required": true},
+                       {"name": parent, "type": {"kind": "reference", "target": "node"}}]}))
+    };
+    l.declare(node("code", "parent")).await?;
+    for (code, tag, parent) in [
+        ("n1", "T1", None),
+        ("n2", "T2", Some("n1")),
+        ("n3", "T3", Some("n1")),
+        ("n4", "T4", Some("n2")),
+    ] {
+        let fields = json!({"code": code, "tag": tag, "parent": parent});
+        l.upsert("node", code, fields).await?;
+    }
+    // Re-keyed by `tag`, and `parent` renamed to `up`.
+    let mut m = migration(node("tag", "up"));
+    m.renames = vec![("parent".into(), "up".into())];
+    let r = report(&l, own, &m).await?;
+    let counted = |r: &MigrationReport| -> Vec<(String, u64)> {
+        let entry = |x: &lakelands_api::write::ReferenceRewrite| {
+            (format!("{}.{}", x.ty, x.field), x.values)
+        };
+        r.references.iter().map(entry).collect()
+    };
+    ensure!(
+        counted(&r) == [("node.up".to_owned(), 3)] && !r.more,
+        "three values of the renamed `up` are rewritten, and the owner is shown the entry; \
+         the report says {:?}, more: {}",
+        r.references,
+        r.more
+    );
+    let mut hid = field_access(store.as_ref(), "hid", "node", &[("up", Access::None)]);
+    hid.grants.schema = true;
+    let shown = report(&l, &hid, &m).await?;
+    ensure!(
+        shown.references.is_empty() && shown.more && shown.report_id == r.report_id,
+        "a reader kept from `up` is shown no entry for it, and that there is more; it was \
+         shown {:?}, more: {}",
+        shown.references,
+        shown.more
+    );
+    let applied = cat.migrate_apply(own, m, &r.report_id).await;
+    applied.must("applying the re-key")?;
+    let nodes = all(cat.as_ref(), own, "node").await?;
+    let ups: Vec<_> = nodes.iter().filter_map(|n| n.fields.get("up")).collect();
+    ensure!(
+        ups == [&json!("T1"), &json!("T1"), &json!("T2")],
+        "the fold rewrote the three values the report counted; `up` reads {ups:?}"
     );
     Ok(())
 }

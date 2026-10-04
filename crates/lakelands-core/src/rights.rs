@@ -370,8 +370,9 @@ pub fn holds(t: &TypeDecl, name: &FieldName) -> bool {
 /// stands, `sees` a type the reader may see, `answered` whether it is
 /// answered a record. An entry is shown where the reader may see the type
 /// and know of the field: a conversion in the shape the migration leaves,
-/// and by the name it took its values from where it was renamed; a dropped
-/// field in the shape as it stands; a sample key where the record is
+/// and by the name it took its values from where it was renamed, as is a
+/// rewritten reference of the migrated type itself; a dropped field in
+/// the shape as it stands; a sample key where the record is
 /// answered. The totals, the hashes and the id, which names the whole
 /// report, stay; `more` says that something was left out.
 pub fn shown_report<'a>(
@@ -418,7 +419,10 @@ pub fn shown_report<'a>(
     }
     report.dropped.retain(|(f, _)| holds(&was, f));
     report.rekeyed.retain(|r| sees(&r.ty).is_some());
-    report.references.retain(|r| known(&r.ty, &r.field));
+    report.references.retain(|r| match r.ty == m.to.name {
+        true => holds(&to, &r.field) && sourced(&r.field),
+        false => known(&r.ty, &r.field),
+    });
     report.sample_collisions.retain(|c| sees(&c.ty).is_some());
     report.more = *report != whole;
 }
