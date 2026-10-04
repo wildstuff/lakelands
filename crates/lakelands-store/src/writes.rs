@@ -72,8 +72,8 @@ const RETRY_REACH: u32 = 4_096;
 /// their membership.
 const SET_PAGE: u32 = 1_024;
 
-/// A set membership a migration changes: the set, the record's type and
-/// its key after the migration, and whether it joined.
+/// A set membership that changes: the set, the record's type and its key
+/// (after the migration, when one changes it), and whether it joined.
 type Change = (String, TypeName, RecordKey, bool);
 
 /// A type's sets, each with its members before a migration.
@@ -241,6 +241,22 @@ impl Call<'_> {
         Draft {
             writer: self.who.writer(),
             origin,
+            context: self.context,
+            ..Draft::system(now, body)
+        }
+    }
+
+    /// The `object_set_changed` of one membership change, caused by the
+    /// event at `cause` and carrying this call's context.
+    fn changed(&self, (set, ty, key, joined): Change, cause: Position, now: Timestamp) -> Draft {
+        let body = EventBody::ObjectSetChanged {
+            set,
+            ty,
+            key,
+            joined,
+        };
+        Draft {
+            cause: Some(cause),
             context: self.context,
             ..Draft::system(now, body)
         }
@@ -913,12 +929,8 @@ impl Call<'_> {
                 pending
                     .members
                     .insert((s.name.clone(), after.ty.clone(), after.key.clone()), is);
-                out.push(system(EventBody::ObjectSetChanged {
-                    set: s.name.clone(),
-                    ty: after.ty.clone(),
-                    key: after.key.clone(),
-                    joined: is,
-                }));
+                let change = (s.name.clone(), after.ty.clone(), after.key.clone(), is);
+                out.push(self.changed(change, cause, now));
             }
         }
         pending
@@ -1931,17 +1943,8 @@ impl Call<'_> {
                             reason: Refusal::TooLarge { max },
                         });
                     }
-                    let body = EventBody::ObjectSetChanged {
-                        set: set.name.clone(),
-                        ty: ty.clone(),
-                        key: r.key.clone(),
-                        joined: is,
-                    };
-                    out.push(Draft {
-                        cause: Some(declared),
-                        context: self.context,
-                        ..Draft::system(now, body)
-                    });
+                    let change = (set.name.clone(), ty.clone(), r.key.clone(), is);
+                    out.push(self.changed(change, declared, now));
                 }
                 Ok(())
             })?;
@@ -2196,12 +2199,11 @@ impl Call<'_> {
         // check above ends at the reshaping, before it comes to the reads.
         declare::reads_its_type(&after, &Declaration::Type(m.to.clone()))?;
         let records = crate::rekey::stored(view, &before.name)?;
-        let mut report = shape::preflight(
-            &before,
-            m,
-            records.iter().map(|r| (r.key.clone(), r.fields.clone())),
-        )
-        .map_err(|e| invalid(e.to_string()))?;
+        let shaped = |decl: &TypeDecl, m: &Migration, records: &[StoredRecord]| {
+            let rows = records.iter().map(|r| (r.key.clone(), r.fields.clone()));
+            shape::preflight(decl, m, rows).map_err(|e| invalid(e.to_string()))
+        };
+        let mut report = shaped(&before, m, &records)?;
         // A key the new key fields make differently moves the record, and
         // what names it moves with it (`crate::rekey`). A record that does
         // not convert is already not lossless; its stored fields still tell
@@ -2253,22 +2255,17 @@ impl Call<'_> {
             }
             let lt = links::link_type_name(&m.to.name, &r.name);
             let live = view.scan(&lt, &every(false))?;
-            let mut from_seen: BTreeMap<String, u32> = BTreeMap::new();
-            let mut to_seen: BTreeMap<String, u32> = BTreeMap::new();
-            for l in &live {
-                let end = |f: &str| {
-                    l.fields
-                        .get(f)
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned()
-                };
-                *from_seen.entry(end(links::FROM)).or_default() += 1;
-                *to_seen.entry(end(links::TO)).or_default() += 1;
-            }
-            let over = |seen: &BTreeMap<String, u32>| seen.values().filter(|n| **n > 1).count();
-            let broken = if per_from { over(&from_seen) } else { 0 }
-                + if per_to { over(&to_seen) } else { 0 };
+            // How many records hold more than one live link at the end `at`.
+            let over = |at: &str| {
+                let mut seen: BTreeMap<&str, u32> = BTreeMap::new();
+                for l in &live {
+                    let key = l.fields.get(at).and_then(Value::as_str).unwrap_or_default();
+                    *seen.entry(key).or_default() += 1;
+                }
+                seen.values().filter(|n| **n > 1).count()
+            };
+            let broken = if per_from { over(links::FROM) } else { 0 }
+                + if per_to { over(links::TO) } else { 0 };
             if broken > 0 {
                 return Err(constraint(
                     None,
@@ -2289,12 +2286,7 @@ impl Call<'_> {
                 renames: vec![],
             };
             let links = crate::rekey::stored(view, &old.name)?;
-            let lr = shape::preflight(
-                &old,
-                &lm,
-                links.iter().map(|r| (r.key.clone(), r.fields.clone())),
-            )
-            .map_err(|e| invalid(e.to_string()))?;
+            let lr = shaped(&old, &lm, &links)?;
             if let Some(now) = now {
                 let sets = sets_of(w, view, &old.name, |_| true)?;
                 for r in links.iter().filter(|_| !sets.is_empty()) {
@@ -2345,7 +2337,6 @@ impl Call<'_> {
         // A record of another type whose reference to a moved key the fold
         // rewrites: decided for the sets whose filter reads that field, a
         // page of the type at a time.
-        let changed = changed_link_types(&w.ontology, &m.to);
         for (name, decl) in w.ontology.types.iter().map(|(n, e)| (n, &e.decl)) {
             let rewritten = crate::rekey::moved_references(decl, &plan.moves);
             let reads = |s: &ObjectSetDecl| {
@@ -2353,7 +2344,7 @@ impl Call<'_> {
                 let reads = filter.map(|e| lakelands_core::derive::reads(&e));
                 reads.is_ok_and(|r| rewritten.iter().any(|(f, _)| r.contains(*f)))
             };
-            let other = name != &m.to.name && !changed.iter().any(|(old, _)| &old.name == name);
+            let other = name != &m.to.name && !links.iter().any(|(old, _)| &old.name == name);
             let Some(now) = now.filter(|_| other && !rewritten.is_empty()) else {
                 continue;
             };
@@ -2424,19 +2415,7 @@ impl Call<'_> {
         let schema_hash = shape::schema_hash(&m.to).map_err(|e| invalid(e.to_string()))?;
         let version = w.ontology.next_version(&Declaration::Type(m.to.clone()));
         let migrated = position_after(w, first);
-        let changes = members.into_iter().map(|(set, ty, key, joined)| Draft {
-            cause: Some(migrated),
-            context: self.context,
-            ..Draft::system(
-                now,
-                EventBody::ObjectSetChanged {
-                    set,
-                    ty,
-                    key,
-                    joined,
-                },
-            )
-        });
+        let changes = members.into_iter().map(|c| self.changed(c, migrated, now));
         let mut drafts: Vec<Draft> = changes.collect();
         for (_, new) in changed_link_types(&w.ontology, &m.to) {
             let hash = shape::schema_hash(&new).map_err(|e| invalid(e.to_string()))?;
