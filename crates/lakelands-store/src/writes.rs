@@ -2273,7 +2273,7 @@ impl Call<'_> {
         for r in records.iter().filter(|_| !m.to.key.is_empty()) {
             converted.push((r.key.clone(), convert(&before, m, r)?));
         }
-        let plan = crate::rekey::plan(&after, view, &m.to.name, converted)?;
+        let plan = crate::rekey::plan(&after, view, &m.to.name, converted, &m.renames)?;
         // Applied, the migration decides again every record whose fields it
         // changes, as the fold leaves it (004, extended): converted, its
         // references to moved keys rewritten, under its key after it.

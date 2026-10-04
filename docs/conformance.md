@@ -625,6 +625,9 @@ belongs in the suite, not beside one engine:
 - `a_rekey_report_from_before_a_write_is_refused` — 027: a re-key is applied only against the report of the lake as it stands; a write between the preflight and the apply, one that changes a move, makes it refused
 - `object_set_membership_moves_with_a_rekeyed_record` — 027 and 004: a moved record keeps its object-set memberships at its new key: a write that keeps it in a set changes nothing, and retiring it leaves the set at the new key
 - `a_rekeyed_type_migrates_again` — 027 and log-format §2.3: the ended keys a re-key leaves are no records: a later migration that keeps the key, a value-type tightening, and a second re-key over them all apply
+- `a_key_is_made_after_every_key_it_reads_has_moved` — 027: a type keyed by references to two types a re-key moves, a link type among them, takes its new keys after both have theirs, whatever the order of their names: each key is what its fields make, a relation carried by links is walked out and in as before, and the report lists the types in the order their keys are made
+- `a_rekey_of_keys_made_of_keys_it_moves_is_refused` — 027: a re-key that would move a type keyed by a reference to itself, or types keyed by each other, is refused as invalid naming them, and appends nothing: no order makes such keys
+- `a_rekeys_report_counts_a_reference_field_the_migration_renames` — 027, 013 and 024: the references a re-key rewrites are counted for a field the same migration renames, under its new name, and that entry is answered only to a reader who may know of the field in the shape the migration leaves
 
 **export**
 

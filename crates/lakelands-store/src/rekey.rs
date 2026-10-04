@@ -10,7 +10,9 @@
 //! - the **closure**: every type whose key fields reference a re-keyed
 //!   type is re-keyed too, its references to the moved keys substituted
 //!   before its own key is made again. Link types, keyed by their two
-//!   ends, are this case. It is computed with a visited set, so it ends;
+//!   ends, are this case. A type's keys are made after those of every
+//!   type its key references, once, from keys that no longer move; a
+//!   re-key that would move keys made of each other is refused;
 //! - every reference field, in any type, whose value is a moved key: it is
 //!   rewritten to the new key.
 //!
@@ -108,6 +110,13 @@ pub fn rewritten(
     out
 }
 
+/// The types the key fields of `decl` reference: only a reference names a
+/// target.
+fn key_targets(decl: &TypeDecl) -> impl Iterator<Item = &TypeName> {
+    let keys = decl.fields.iter().filter(|f| decl.key.contains(&f.name));
+    keys.filter_map(|f| f.ty.target.as_ref())
+}
+
 /// Tally one type's new keys into `plan`: the moves, the collisions, the
 /// missing.
 fn tally(ty: &TypeName, keyed: Vec<(RecordKey, Option<RecordKey>)>, plan: &mut Plan) {
@@ -156,12 +165,14 @@ fn tally(ty: &TypeName, keyed: Vec<(RecordKey, Option<RecordKey>)>, plan: &mut P
 
 /// Plan a re-key. `after` is the ontology with the migrated type's new
 /// declaration in force; `converted` are that type's records, retired and
-/// restricted included, with their fields as the migration converts them.
+/// restricted included, with their fields as the migration converts them;
+/// `renames` are the migration's, each an old name and its new one.
 pub fn plan(
     after: &Ontology,
     view: &dyn ProjectionView,
     migrated: &TypeName,
     converted: Vec<(RecordKey, BTreeMap<FieldName, Value>)>,
+    renames: &[(FieldName, FieldName)],
 ) -> Result<Plan> {
     let mut plan = Plan::default();
     let decl = after.ty(migrated)?;
@@ -173,25 +184,26 @@ pub fn plan(
         })
         .collect();
     tally(migrated, keyed, &mut plan);
-    // The closure: types keyed by a reference to a re-keyed type.
-    let mut visited: BTreeSet<TypeName> = BTreeSet::from([migrated.clone()]);
-    loop {
-        let next = after.types.iter().find(|(name, e)| {
-            !visited.contains(*name)
-                && e.decl.key.iter().any(|k| {
-                    e.decl.fields.iter().any(|f| {
-                        &f.name == k
-                            && f.ty.kind == StorageKind::Reference
-                            && f.ty
-                                .target
-                                .as_ref()
-                                .is_some_and(|t| plan.moves.contains_key(t))
-                    })
-                })
-        });
-        let Some((name, entry)) = next else { break };
-        let (name, decl) = (name.clone(), entry.decl.clone());
-        visited.insert(name.clone());
+    // The closure: types keyed by a reference to a re-keyed type. Each one
+    // it can reach waits until every other type its key references has its
+    // moves, and is scanned only if one of them has any.
+    let types = || after.types.iter().map(|(name, e)| (name, &e.decl));
+    let mut waiting: BTreeSet<&TypeName> = BTreeSet::new();
+    while let Some((name, _)) = types().find(|(n, d)| {
+        let reached = |t| t == migrated || waiting.contains(t);
+        *n != migrated && !waiting.contains(n) && key_targets(d).any(reached)
+    }) {
+        waiting.insert(name);
+    }
+    let moving = |d: &TypeDecl, plan: &Plan| key_targets(d).any(|t| plan.moves.contains_key(t));
+    while let Some((name, decl)) = types().find(|(n, d)| {
+        waiting.contains(n) && key_targets(d).all(|t| t == *n || !waiting.contains(t))
+    }) {
+        waiting.remove(name);
+        if !moving(decl, &plan) {
+            continue;
+        }
+        let (name, decl) = (name.clone(), decl.clone());
         if decl.view.is_some() {
             return Err(invalid(format!(
                 "re-keying `{migrated}` would re-key the view `{name}`, which is keyed by it; a \
@@ -214,6 +226,25 @@ pub fn plan(
             .collect();
         tally(&name, keyed, &mut plan);
     }
+    // No order makes keys that are made of each other: those of a moved
+    // type whose key reads its own keys (the migrated type's: any that moved
+    // after it), and those of the types left waiting for each other.
+    let own = |n: &&TypeName| {
+        let later = |t| *n == migrated && plan.moves.contains_key(t);
+        key_targets(&after.types[*n].decl).any(|t| t == *n || later(t))
+    };
+    let mut ring: Vec<&TypeName> = plan.moves.keys().filter(own).collect();
+    if waiting.iter().any(|n| moving(&after.types[*n].decl, &plan)) {
+        ring.extend(waiting);
+    }
+    if !ring.is_empty() {
+        let ring: Vec<String> = ring.iter().map(|n| format!("`{n}`")).collect();
+        return Err(invalid(format!(
+            "re-keying `{migrated}` would move keys that are made of keys it moves, in {}; no \
+             order makes them, so that is not supported",
+            ring.join(", ")
+        )));
+    }
     // The reference fields, in any type, that hold a moved key.
     for (name, entry) in &after.types {
         if entry.decl.view.is_some() {
@@ -225,11 +256,14 @@ pub fn plan(
         }
         let records = stored(view, name)?;
         for (f, target) in refs {
+            // The migrated type's records hold a renamed field under its old name.
+            let renamed = |(_, new): &&(FieldName, FieldName)| name == migrated && new == f;
+            let held = renames.iter().find(renamed).map_or(f, |(old, _)| old);
             let values = records
                 .iter()
                 .filter(|r| {
                     r.fields
-                        .get(f)
+                        .get(held)
                         .and_then(Value::as_str)
                         .is_some_and(|v| plan.moves[target].contains_key(&RecordKey::from(v)))
                 })
