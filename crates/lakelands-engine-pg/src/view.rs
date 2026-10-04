@@ -163,6 +163,46 @@ impl Read<'_> {
             .records(&query, &args[..3 + usize::from(after.is_some())])
     }
 
+    /// What a key-ordered scan or count reads from, at most `n` records
+    /// in key order, bytewise, after `after`: with a `lookup`, the head
+    /// records whose field holds exactly its text, a walk of the exact-text
+    /// index's unique index `text_index_value`, `(ty, field, value, key
+    /// COLLATE "C")`; else the type's records. The index names candidates;
+    /// the rulebook admits each.
+    fn in_key_order(
+        &mut self,
+        ty: &TypeName,
+        lookup: &Option<(FieldName, String)>,
+        after: Option<&str>,
+        n: u32,
+    ) -> Result<Vec<StoredRecord>> {
+        let Some((field, text)) = lookup else {
+            return self.records_after(ty, after, n);
+        };
+        let limit = i64::from(n);
+        let from = after.map_or("", |_| "AND t.key COLLATE \"C\" > $5");
+        // The index's rows first, in key order and cut at the limit, then
+        // their records, as `sorted_after` reads its page. The cut before
+        // the join leans on this: every index row is a head state's,
+        // written in the same transaction as that state, so the join drops
+        // none. It must drop none: a batch shorter than `n` ends the walk
+        // (`engines::scan_in_key_order`), so this answers `n` records
+        // whenever `n` holders of the text remain after `after`.
+        let query = format!(
+            "SELECT r.state FROM \
+             (SELECT t.key FROM {text} t \
+              WHERE t.ty = $1 AND t.field = $2 AND t.value = $3 {from} \
+              ORDER BY t.key COLLATE \"C\" LIMIT $4) t \
+             JOIN {records} r ON r.ty = $1 AND r.key = t.key AND r.until IS NULL \
+             ORDER BY t.key COLLATE \"C\"",
+            text = self.names.t("text_index"),
+            records = self.names.t("records"),
+        );
+        let args: [&(dyn ToSql + Sync); 5] = [&ty.as_str(), &field.as_str(), text, &limit, &after];
+        self.db
+            .records(&query, &args[..4 + usize::from(after.is_some())])
+    }
+
     /// The fields of `ty` whose order index answers this read, in one round
     /// trip: none unless the index is kept through the head. At an earlier
     /// position it is read with the keys changed since ([`Read::changed`]).
@@ -419,9 +459,12 @@ impl ProjectionView for PgView<'_> {
             if r.head && scan.filter.is_none() && scan.equal.is_empty() && scan.valid_at.is_none() {
                 return r.count_in_force(ty, scan.retired, scan.restricted);
             }
+            // At the head, a count that must hold a text reads the records
+            // holding it, not the type.
             let decl = r.type_decl(ty)?;
+            let lookup = engines::text_lookup(scan).filter(|_| r.head);
             engines::count_in_key_order(decl.as_ref(), scan, |after, n| {
-                r.records_after(ty, after, n)
+                r.in_key_order(ty, &lookup, after, n)
             })
         })
     }
@@ -429,24 +472,26 @@ impl ProjectionView for PgView<'_> {
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
         self.read(Vec::new(), |r| {
             let decl = r.type_decl(ty)?;
-            let narrowed = match (r.head, engines::text_lookup(scan)) {
-                (true, Some((field, text))) => {
+            let lookup = engines::text_lookup(scan).filter(|_| r.head);
+            // Ordered by the key alone, the page is read from `after` in
+            // key order and stops when it is full: at the head, with a text
+            // the scan must hold, from the records holding it.
+            if scan.order_by.is_empty() {
+                return engines::scan_in_key_order(decl.as_ref(), scan, |after, n| {
+                    r.in_key_order(ty, &lookup, after, n)
+                });
+            }
+            let records = match lookup {
+                // In a field's order, every record holding the text is read
+                // and sorted.
+                Some((field, text)) => {
                     let query = format!(
                         "SELECT key FROM {} WHERE ty = $1 AND field = $2 AND value = $3",
                         r.names.t("text_index")
                     );
-                    Some(r.db.column(&query, &[&ty.as_str(), &field.as_str(), &text])?)
-                }
-                _ => None,
-            };
-            let records = match narrowed {
-                Some(keys) => r.records_by_key(ty, keys)?,
-                // Ordered by the key alone, the page is read from `after`
-                // in key order and stops when it is full.
-                None if scan.order_by.is_empty() => {
-                    return engines::scan_in_key_order(decl.as_ref(), scan, |after, n| {
-                        r.records_after(ty, after, n)
-                    });
+                    let keys =
+                        r.db.column(&query, &[&ty.as_str(), &field.as_str(), &text])?;
+                    r.records_by_key(ty, keys)?
                 }
                 // Ordered by a field the lake indexes, at the head, the page
                 // is read in the order index's order and stops when it is

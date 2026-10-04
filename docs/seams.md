@@ -280,7 +280,8 @@ masking are the store's.
   evaluator's `=`: a derived relation's walk asks for its matches this
   way (`docs/decisions/044-a-relation-may-be-derived-from-matching-values.md`).
   At the head an engine may look a string value up in its exact-text
-  index (`lakelands_core::engines::text_lookup`);
+  index (`lakelands_core::engines::text_lookup`): the index names
+  candidates, and this rule still decides each;
 - `scan.filter` holds for it, exactly as the one evaluator
   (`lakelands_core::expr::holds`) decides over the record's own fields,
   with no settings and no clock. A filter the evaluator cannot evaluate
@@ -290,7 +291,13 @@ masking are the store's.
   evaluator. The store hands an engine only filters that need neither
   the clock, the lake's settings, per-field provenance nor a pattern
   match (`now`, `today`, `setting`, `known_at`, `seen_at`, `matches`);
-  it evaluates any other filter itself.
+  it evaluates any other filter itself. When the filter is, or has as
+  one of its `and` terms, `field = 'text'` with a text that reads neither
+  as a number nor as an instant
+  (`lakelands_core::engines::exact_text_term`), only records holding
+  exactly that string can qualify, and at the head an engine may look
+  them up in its exact-text index as it does for `equal`; it still
+  evaluates the whole filter on each.
 
 The qualifying records come ordered by `scan.order_by` — each key the
 field's value, or its `known_at` or `seen_at`, or, with no field,
@@ -314,7 +321,13 @@ optimisation that may never change an answer
 time, never the type: every engine reads the type's states in key order,
 1 024 at a time, and counts those that qualify by the one rule
 (`lakelands_core::engines::count_in_key_order`), so its memory is a batch
-and its time is linear in the type. At the head, a count that qualifies
+and its time is linear in the type. At the head, a count whose scan
+must hold a text exactly (a string in `equal`, or the filter's exact-text
+term) reads on SQLite and PostgreSQL only the records holding that
+text, from the exact-text index in key order, a batch at a time: linear
+in those records, not in the type. The memory engine keeps no such index
+and reads the type, and so does every engine at an earlier position and
+under a filter only the store evaluates. At the head, a count that qualifies
 records by the flags alone (no `filter`, no `equal`, no `valid_at`) is
 SQLite's and PostgreSQL's `COUNT(*)` over the states in force, which
 answers without reading a state. The store counts through it: `find`
@@ -338,7 +351,24 @@ same position
 (`docs/decisions/045-a-table-reads-a-page-and-its-total.md`). A page ordered by key reads about
 `limit` rows, not the type; every engine reads it in key order from
 `after` and stops when it is full (`lakelands_core::engines::
-scan_in_key_order`). **A page ordered by a field reads its page when the
+scan_in_key_order`). **A filtered page by key costs the rows it passes
+over to fill itself,** read in batches from `after`: with a filter the
+engine applies, the type's rows from `after` until the page is full.
+When the scan must hold a text exactly (a string in `equal`, or the
+filter's exact-text term), at the head SQLite and PostgreSQL pass over
+only the records holding that text, read from the exact-text index in
+key order from `after`, so a walk of such pages reads those records a
+batch at a time as it goes and not all of them for each page
+(lakelands#574); a scan with
+`equal` and no limit, a derived relation's matches, reads them the same
+way, a batch at a time. The memory engine keeps no such index and passes
+over the type's rows. **Its ceilings:** a page in a field's order whose
+scan must hold a text still reads every record holding it and sorts
+them, for each page, whether or not the lake indexes the field; a filter
+only the store evaluates is not handed down, so no term of it reaches
+the index and the page passes over the type's rows; and an earlier
+position has no index of exact text, so there too the page passes over
+the type's rows from `after`. **A page ordered by a field reads its page when the
 lake asks for it:** the setting `sort_index.<type>` (below, §`SystemVocabulary`)
 names the fields of a type to keep an order index for, and a page at the
 head ordered first by one of them reads about `limit` rows too. Every
@@ -647,6 +677,7 @@ holds it to.
 | a put of the same thing at the same position replaces it | engine: `a_put_at_the_same_position_replaces_the_state_there` |
 | `scan`'s order, `after` and `limit`, including a limit of 0 and values of mixed kinds | engine: `mixed_kinds_sort_the_same_on_every_engine`, `a_scan_continues_strictly_after_its_keyset_position` |
 | a key-ordered `scan` read in batches answers as one scan over every state | engine: `a_key_ordered_scan_answers_across_its_batches_as_one_scan` |
+| a `scan` by key that must hold a text exactly, by `equal` or by a term of its filter, reads from `after` and not every record holding the text for each page, past those that do not qualify, an ended key and keys a collation orders otherwise; a `count` under it reads the records holding the text | engine: `a_page_by_key_under_an_exact_text_reads_from_after_not_every_match` |
 | `count` is the number of records its scan selects, across batches, at the head and earlier; `find`'s `count()` is a full walk's length, holding a batch | engine: `a_count_is_the_number_of_records_its_scan_selects`; suite: `a_count_answers_as_many_records_as_a_full_find_walk`, the streaming check's `count` rows |
 | a `find` page crosses the seam as about `limit` rows, with or without a filter only the store evaluates | store: `tests/find_pages.rs` |
 | `scan`'s filter matches the evaluator exactly, including comparisons across kinds and filters that error; the flags and `valid_at` | engine: `scan_filters_exactly_as_the_evaluator_including_mixed_kinds_and_errors`, `scan_honours_retired_restricted_and_valid_at` |

@@ -3,7 +3,8 @@
 //! page in key order, and one in the order of a field the lake indexes.
 //! The engine keeps no statistics, so a statement's plan is the same on
 //! every lake, and it is read here from a new one, of each such statement
-//! as the engine itself writes it.
+//! as the engine itself writes it. Where a statement joins `records` to
+//! an index's rows, it seeks each record by its key (lakelands#574).
 
 use std::path::PathBuf;
 
@@ -37,6 +38,17 @@ fn a_first_page_is_planned_without_a_sort() {
             !plan.iter().any(|step| step.contains("TEMP B-TREE")),
             "a first page is planned with a sort, so it reads every row it could answer before \
              it answers its limit:\n  {statement}\n  {plan:#?}"
+        );
+        // An index's rows are cut at the limit before their records are
+        // joined: each record is then sought by its key. Joined before the
+        // cut, the planner seeks `records` by a range of the key for every
+        // index row, with no sort to show it.
+        assert!(
+            !statement.contains("JOIN records r")
+                || (plan.iter())
+                    .any(|step| step.starts_with("SEARCH r ") && step.contains("key=?")),
+            "a first page joins `records` to an index's rows without seeking each record by \
+             its key:\n  {statement}\n  {plan:#?}"
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
