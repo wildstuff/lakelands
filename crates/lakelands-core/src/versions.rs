@@ -26,7 +26,8 @@
 //!   the places 5 names.
 //! - **10**: a `write_proposed` event whose write tightens a value type.
 //! - **11**: what [`ELEVENTH`] lists, each in the places 5 names: a
-//!   declaration that calls `floor` in any expression it keeps.
+//!   declaration that calls `floor`, or `date_bucket` by a width, in any
+//!   expression it keeps.
 //!
 //! The store writes every event of one append at the greatest of the
 //! lake's version and what [`needed`] answers for each event of the
@@ -86,10 +87,22 @@ pub type Added = (fn(&EventBody) -> bool, &'static str);
 /// What format version 11 added to what an event carries, each with the
 /// words an event below 11 that carries it is refused in. One release
 /// makes one step of the format: what it adds besides is a line here.
-pub const ELEVENTH: &[Added] = &[(
-    |body| any_declaration(body, |d| declares_call(d, Func::Floor)),
-    "declares a call of `floor`",
-)];
+pub const ELEVENTH: &[Added] = &[
+    (
+        |body| any_declaration(body, |d| declares_call(d, Func::Floor)),
+        "declares a call of `floor`",
+    ),
+    (
+        |body| any_declaration(body, |d| declares(d, &by_a_width)),
+        "declares a call of `date_bucket` by a width",
+    ),
+];
+
+/// Whether a node is `date_bucket` with its third argument, the origin a
+/// width is counted from.
+fn by_a_width(e: &Expr) -> bool {
+    matches!(e, Expr::Call { func: Func::DateBucket, args } if args.len() == 3)
+}
 
 /// What `body` carries that format version 11 added, if anything.
 pub fn eleventh(body: &EventBody) -> Option<&'static str> {
@@ -268,6 +281,15 @@ pub fn calls_date_bucket(declaration: &Declaration) -> bool {
 /// object set's filter, and an expression function's body. A condition in
 /// text form that does not parse calls nothing.
 pub fn declares_call(declaration: &Declaration, f: Func) -> bool {
+    declares(
+        declaration,
+        &|e| matches!(e, Expr::Call { func, .. } if *func == f),
+    )
+}
+
+/// Whether an expression the log keeps of a declaration holds, anywhere,
+/// a node `test` accepts.
+pub fn declares(declaration: &Declaration, test: &dyn Fn(&Expr) -> bool) -> bool {
     let mut conditions: Vec<&Condition> = Vec::new();
     match declaration {
         Declaration::Type(t) => {
@@ -288,14 +310,16 @@ pub fn declares_call(declaration: &Declaration, f: Func) -> bool {
         Declaration::ObjectSet(s) => conditions.push(&s.filter),
         Declaration::Function(f) => conditions.extend(f.expr.as_ref()),
     }
-    (conditions.into_iter())
-        .any(|c| crate::describe::parsed(c).is_some_and(|e| calls(&e, &|g| g == f)))
+    (conditions.into_iter()).any(|c| crate::describe::parsed(c).is_some_and(|e| holds(&e, test)))
 }
 
 /// Whether an expression calls, anywhere, a function `f` accepts.
 pub fn calls(e: &Expr, f: &dyn Fn(Func) -> bool) -> bool {
-    matches!(e, Expr::Call { func, .. } if f(*func))
-        || crate::expr::children(e).any(|c| calls(c, f))
+    holds(e, &|e| matches!(e, Expr::Call { func, .. } if f(*func)))
+}
+
+fn holds(e: &Expr, test: &dyn Fn(&Expr) -> bool) -> bool {
+    test(e) || crate::expr::children(e).any(|c| holds(c, test))
 }
 
 #[cfg(test)]

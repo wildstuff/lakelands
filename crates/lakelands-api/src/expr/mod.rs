@@ -286,10 +286,12 @@ pub enum Func {
     Floor,
     /// `date_bucket(x, 'unit')`: the instant, in UTC, at which the bucket
     /// holding `x` starts; `unit` is `'day'`, `'week'` (ISO, from Monday),
-    /// `'month'`, `'quarter'` or `'year'`. Null when `x` is not an
-    /// instant. A read's function only: it is refused in a declaration,
-    /// whose expressions the log keeps, until a format version admits it
-    /// (`docs/log-format.md` §6, Appendix B).
+    /// `'month'`, `'quarter'` or `'year'`. `date_bucket(x, 30d, origin)`:
+    /// the start of the window of that width holding `x`, the windows
+    /// counted from `origin` in both directions. Null when `x` or the
+    /// origin is not an instant. What a declaration, whose expressions
+    /// the log keeps, may call is the format's (`docs/log-format.md` §6,
+    /// Appendix B).
     DateBucket,
     /// `count(…)`: aggregate; see the module documentation.
     Count,

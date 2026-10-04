@@ -315,4 +315,16 @@ fn a_declared_call_of_floor_needs_format_11_and_says_so_below_it() {
         below(&declared_event(10, &whole)).as_deref(),
         Some("a format 10 event declares a call of `floor`, which format 11 added")
     );
+    // A bucket by a width is format 11's; by a calendar unit it stays 3's.
+    let (window, month) = (
+        days("date_bucket(a, 7d, a)"),
+        days("date_bucket(a, 'month')"),
+    );
+    assert_eq!((need(&window), need(&month)), (11, 3));
+    assert_eq!(
+        below(&declared_event(10, &window)).as_deref(),
+        Some(
+            "a format 10 event declares a call of `date_bucket` by a width, which format 11 added"
+        )
+    );
 }
