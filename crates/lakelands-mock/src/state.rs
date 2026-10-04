@@ -72,6 +72,7 @@ impl State {
             version,
             output: None,
             set_off: Default::default(),
+            renamed: Vec::new(),
         };
         match &e.body {
             EventBody::Declared {

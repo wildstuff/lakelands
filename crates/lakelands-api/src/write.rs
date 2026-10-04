@@ -52,6 +52,12 @@ pub enum Outcome {
         /// What the write set off beyond the event it is visible from.
         #[serde(flatten)]
         set_off: SetOff,
+        /// For a migration: each field it renamed, old name and new, as the
+        /// one answered may know of them. A grant by name restricts a field
+        /// under every name it has borne; a host that grants a renamed
+        /// field more names the new one (`docs/hosting.md`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        renamed: Vec<(FieldName, FieldName)>,
     },
     /// The write was recorded as a proposal and waits for review.
     Proposed {

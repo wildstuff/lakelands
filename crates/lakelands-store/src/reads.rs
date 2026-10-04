@@ -62,7 +62,7 @@ use lakelands_api::read::{
     Params, ReadAt,
 };
 use lakelands_api::record::StoredRecord;
-use lakelands_api::write::{Declaration, Migration, Proposal, ProposalFilter, ProposedWrite};
+use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposedWrite};
 use lakelands_api::{
     Access, Cursor, Error, FieldName, Missing, Position, Principal, Record, RecordKey, Refusal,
     RelationName, Result, Timestamp, TypeName, Value, VerbName,
@@ -252,8 +252,12 @@ fn needs_store(e: &Expr) -> bool {
 
 impl<'a> Reader<'a> {
     /// Open a read at `at`.
-    pub fn open(lake: &'a Lake, who: &'a Principal, at: ReadAt) -> Result<Reader<'a>> {
-        let view = lake.engine.view(at.as_of)?;
+    pub fn open(
+        lake: &'a Lake,
+        who: &'a Principal,
+        at: ReadAt,
+        view: Box<dyn ProjectionView + 'a>,
+    ) -> Result<Reader<'a>> {
         let position = view.position().unwrap_or(Position::GENESIS);
         let ontology = Ontology::at(view.as_ref())?;
         let settings = settings_in(view.as_ref())?;
@@ -1349,10 +1353,7 @@ impl<'a> Reader<'a> {
                 };
                 let sees = |ty: &TypeName| self.visible_type(ty).ok();
                 rights::shown_report(self.who, was, migration, report, sees, answered);
-                let (mut was, Migration { to, renames }) = (was.clone(), &mut **migration);
-                rights::known_fields(self.who, &mut was);
-                rights::known_fields(self.who, to);
-                renames.retain(|(old, new)| rights::holds(&was, old) && rights::holds(to, new));
+                rights::known_migration(self.who, was, migration);
                 true
             }
             // Each declaration as `describe` would show it once the bundle

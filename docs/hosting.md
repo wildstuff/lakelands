@@ -303,6 +303,20 @@ A host that already has a store of its own moves in four steps.
   `schema` to a principal it keeps from a field or a type. See
   `docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
   extended.
+- **A grant by name holds a field through its renames.** A field's
+  access is the lowest of what a principal's grants say under every name
+  the field has borne. A restriction follows the field, at the head and
+  in a read as of before the rename; a permission stays with its name.
+  So a host that does nothing stays closed, and a host that wants a
+  renamed field read or written by a principal names the new name and
+  drops the restriction on the old. A migration's answer names what it
+  renamed (`renamed`), and the feed's `migrated` event carries it. Two
+  fields that have borne one name (after a swap, or when a name is taken
+  again) are restricted together by it; grant by a name only one of them
+  has borne. A lake made before this finds its renames at its next open
+  from the declarations it keeps, not from its log; until a writer has
+  opened it once, each read-only open finds them again. See
+  `docs/decisions/006-grants-not-roles.md`, extended.
 - **One writer per lake.** A lake has one writing process at a time,
   held by a lease; one process may write many lakes. See
   `docs/decisions/008-one-writer-per-lake.md`.

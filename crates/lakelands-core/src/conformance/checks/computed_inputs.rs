@@ -12,13 +12,13 @@ use lakelands_api::query::{Projection, Search, SearchMode};
 use lakelands_api::read::{AggFunc, Direction, OrderBy};
 use lakelands_api::seam::Seams;
 use lakelands_api::write::{Migration, ProposedWrite};
-use lakelands_api::{Access, Find, LakeStore, Principal};
+use lakelands_api::{Access, Find, LakeStore, Position, Principal};
 use serde_json::{Value, json};
 
 use crate::conformance::backing::{self, KIND};
 use crate::conformance::fixture::{
     Lake, Must, agg, aggregate, events_after, field_access, find_where, get_at, log_events, order,
-    pattern,
+    pattern, read_at,
 };
 use crate::conformance::{Failure, Reopen};
 
@@ -43,8 +43,15 @@ fn computed(n: &str, how: Value, deps: &[&str]) -> Value {
     f
 }
 
-/// The doors that answer `clerk` the value of `ty`'s computed `field`.
-async fn told(l: &Lake, clerk: &Principal, ty: &str, field: &str) -> Vec<&'static str> {
+/// The doors that answer `clerk` the value of `ty`'s `field`, read as of
+/// `as_of`.
+pub(super) async fn told(
+    l: &Lake,
+    clerk: &Principal,
+    ty: &str,
+    field: &str,
+    as_of: Option<Position>,
+) -> Vec<&'static str> {
     let (c, view) = (&l.cat, format!("v_{ty}_{field}"));
     let by = vec![order(field, OrderBy::Value, Direction::Asc)];
     let by = Find {
@@ -54,9 +61,10 @@ async fn told(l: &Lake, clerk: &Principal, ty: &str, field: &str) -> Vec<&'stati
     let max = aggregate(vec![agg("m", AggFunc::Max, Some(field))]);
     let filter = find_where(&format!("{field} = 'SECRET' or {field} = 'secret'"));
     let fields = vec![format!("{ty}.{field}")];
-    let rows = pattern(ty, Some("1"), vec![], Projection::Rows { fields });
+    let mut rows = pattern(ty, Some("1"), vec![], Projection::Rows { fields });
+    rows.at = read_at(as_of);
     let mode = SearchMode::lexical("secret");
-    let (k, cursor, filtered, at) = (5, None, None, Default::default());
+    let (k, cursor, filtered, at) = (5, None, None, read_at(as_of));
     let search = Search {
         ty: ty.into(),
         mode,
@@ -72,14 +80,15 @@ async fn told(l: &Lake, clerk: &Principal, ty: &str, field: &str) -> Vec<&'stati
             told.push(door);
         }
     };
-    let one = c.get(clerk, &ty.into(), get_at("1", None)).await;
+    let one = c.get(clerk, &ty.into(), get_at("1", as_of)).await;
     answer("get", one.map(|r| format!("{:?}", r.data)));
-    for (door, on, find) in [
+    for (door, on, mut find) in [
         ("where", ty, filter),
         ("order_by", ty, by),
         ("aggregate", ty, max),
         ("view", view.as_str(), Find::default()),
     ] {
+        find.at = read_at(as_of);
         let found = c.find(clerk, &on.into(), find).await;
         answer(door, found.map(|r| format!("{:?}", r.data)));
     }
@@ -128,7 +137,7 @@ async fn leaks(store: &dyn LakeStore) -> String {
     let (l, mut red) = (Lake::of(store), Vec::new());
     for (ty, fields) in WAYS {
         for field in fields {
-            let doors = told(&l, &clerk(store, ty, Access::None), ty, field).await;
+            let doors = told(&l, &clerk(store, ty, Access::None), ty, field, None).await;
             if !doors.is_empty() {
                 red.push(format!("`{ty}.{field}` through {doors:?}"));
             }

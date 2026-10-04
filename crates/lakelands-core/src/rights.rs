@@ -25,10 +25,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::ontology::{Authority, FieldDecl, TypeDecl};
+use lakelands_api::principal::Renamed;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::{Migration, MigrationReport};
 use lakelands_api::{
-    Access, Error, FieldName, Principal, Record, RecordKey, Refusal, TypeName, Value,
+    Access, Error, FieldName, Position, Principal, Record, RecordKey, Refusal, TypeName, Value,
 };
 
 /// The prefix every system type's name carries
@@ -339,6 +340,20 @@ fn field_of<'d>(decl: &'d TypeDecl, name: &FieldName) -> Result<&'d FieldDecl, E
 fn no_field(decl: &TypeDecl, name: &FieldName) -> Error {
     let message = format!("`{}` has no field `{name}`", decl.name);
     refused(Some(name), Refusal::Invalid { message })
+}
+
+/// A migration that is not in force as `who` may know it: the shape it
+/// leaves without a field `who` may not know of, judged with its grants
+/// held through the migration's own renames; and a rename only where
+/// `who` may know of the field under both names, the old one in `was`,
+/// the type as it stands.
+pub fn known_migration(who: &Principal, was: &TypeDecl, m: &mut Migration) {
+    let (at, ty, renames) = (Position(u64::MAX), m.to.name.clone(), m.renames.clone());
+    let (mut then, mut was) = (who.clone(), was.clone());
+    (then.grants).follow(&[Renamed { at, ty, renames }], None);
+    known_fields(who, &mut was);
+    known_fields(&then, &mut m.to);
+    (m.renames).retain(|(old, new)| holds(&was, old) && holds(&m.to, new));
 }
 
 /// `t` without the fields `who` may not know of, a relation's link fields

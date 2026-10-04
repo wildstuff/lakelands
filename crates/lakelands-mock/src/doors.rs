@@ -9,7 +9,7 @@ use lakelands_api::describe::{
     TypeDescription, TypeLifecycle, TypeLineage, TypeRights, VerbDescription,
 };
 use lakelands_api::error::{Error, Missing, Refusal, Result};
-use lakelands_api::event::{EventBody, EventId};
+use lakelands_api::event::{Event, EventBody, EventId};
 use lakelands_api::expr::{Condition, Expr};
 use lakelands_api::id::{
     Cursor, FieldName, LakeId, Position, ProposalId, RecordKey, RelationName, SourceId, TypeName,
@@ -18,7 +18,7 @@ use lakelands_api::id::{
 use lakelands_api::ontology::{
     Authority, FieldDecl, RelationDecl, Risk, TypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl,
 };
-use lakelands_api::principal::{Access, Principal, PrincipalKind, WriteContext};
+use lakelands_api::principal::{Access, Principal, PrincipalKind, Renamed, WriteContext};
 use lakelands_api::query::{Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Walk};
 use lakelands_api::read::{After, Direction, Find, Found, Get, Order, OrderBy, ReadAt, Reply};
 use lakelands_api::record::{Origin, Patch, Record, SourceRecord, StoredRecord, Value};
@@ -360,6 +360,27 @@ impl MockCatalog {
             return Err(refused(Refusal::NotGranted));
         }
         Ok(())
+    }
+
+    /// As the store: a principal with its grants held through the lake's
+    /// renames (`Grants::follow`), for a read at `at` or a write at the head.
+    /// The list is every `migrated` event's renames, in the log's order.
+    fn followed(&self, who: &Principal, at: Option<Position>) -> Principal {
+        let mut who = who.clone();
+        let renamed = |e: &Event| match &e.body {
+            EventBody::Migrated { migration, .. } if !migration.renames.is_empty() => {
+                let (ty, renames) = (migration.to.name.clone(), migration.renames.clone());
+                Some(Renamed {
+                    at: e.position,
+                    ty,
+                    renames,
+                })
+            }
+            _ => None,
+        };
+        let list: Vec<Renamed> = self.log().events.iter().filter_map(renamed).collect();
+        who.grants.follow(&list, at);
+        who
     }
 
     /// Admit a write: also refuse a write deeper in a chain of reactions
@@ -2529,14 +2550,11 @@ fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite) -> bool {
         // The report names what the migration does to the type as it
         // stands; its totals, hashes and id stay whole.
         ProposedWrite::Migrate { migration, report } => {
-            let Some(was) = st.visible(who, &migration.to.name) else {
+            if st.visible(who, &migration.to.name).is_none() {
                 return false;
-            };
+            }
             shown_report(st, who, migration, report);
-            let (mut was, Migration { to, renames }) = (was.decl.clone(), &mut **migration);
-            known_fields(who, &mut was);
-            known_fields(who, to);
-            renames.retain(|(old, new)| holds(&was, old) && holds(to, new));
+            known_migration(st, who, migration);
             true
         }
         // Each declaration as `describe` would show it once the bundle is
@@ -2562,6 +2580,23 @@ fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite) -> bool {
             true
         }
     }
+}
+
+/// As the store: a migration that is not in force as `who` may know it,
+/// its shape judged with the grants held through its own renames, and a
+/// rename only where `who` may know of the field under both names.
+fn known_migration(st: &State, who: &Principal, m: &mut Migration) {
+    let (at, ty, renames) = (Position(u64::MAX), m.to.name.clone(), m.renames.clone());
+    let mut then = who.clone();
+    (then.grants).follow(&[Renamed { at, ty, renames }], None);
+    let mut was = st.types.get(&m.to.name).map(|t| t.decl.clone());
+    if let Some(was) = &mut was {
+        known_fields(who, was);
+    }
+    known_fields(&then, &mut m.to);
+    let old = |n: &FieldName| was.as_ref().is_none_or(|w| holds(w, n));
+    m.renames
+        .retain(|(from, new)| old(from) && holds(&m.to, new));
 }
 
 /// As the store: whether a proposed declaration is listed to `who`, over
@@ -2866,6 +2901,7 @@ impl Catalog for MockCatalog {
 
     async fn describe(&self, who: &Principal, at: ReadAt) -> Result<Reply<LakeDescription>> {
         self.admit(who)?;
+        let who = &self.followed(who, at.as_of);
         let (position, st) = self.state_at(&self.log(), at.as_of)?;
         Ok(Reply {
             position,
@@ -2880,6 +2916,7 @@ impl Catalog for MockCatalog {
         at: ReadAt,
     ) -> Result<Reply<TypeDescription>> {
         self.admit(who)?;
+        let who = &self.followed(who, at.as_of);
         let (position, st) = self.state_at(&self.log(), at.as_of)?;
         let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
         Ok(Reply {
@@ -2890,6 +2927,7 @@ impl Catalog for MockCatalog {
 
     async fn find(&self, who: &Principal, ty: &TypeName, find: Find) -> Result<Reply<Found>> {
         self.admit(who)?;
+        let who = &self.followed(who, find.at.as_of);
         let of = read_of(serde_json::to_string(&(
             &find.filter,
             &find.order_by,
@@ -3008,6 +3046,7 @@ impl Catalog for MockCatalog {
 
     async fn get(&self, who: &Principal, ty: &TypeName, get: Get) -> Result<Reply<Record>> {
         self.admit(who)?;
+        let who = &self.followed(who, get.at.as_of);
         let (position, st) = self.state_at(&self.log(), get.at.as_of)?;
         let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
         bound(&t.decl, &get.params)?;
@@ -3033,6 +3072,7 @@ impl Catalog for MockCatalog {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         self.admit_write(who)?;
+        let who = &self.followed(who, None);
         if links::is_link_type(ty) {
             return Err(refused(Refusal::WrongDoor));
         }
@@ -3055,6 +3095,7 @@ impl Catalog for MockCatalog {
             version: Some(version),
             output: None,
             set_off: Default::default(),
+            renamed: Vec::new(),
         })
     }
 
@@ -3066,6 +3107,7 @@ impl Catalog for MockCatalog {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         self.admit_write(who)?;
+        let who = &self.followed(who, None);
         if links::is_link_type(ty) {
             return Err(refused(Refusal::WrongDoor));
         }
@@ -3088,6 +3130,7 @@ impl Catalog for MockCatalog {
             version: Some(version),
             output: None,
             set_off: Default::default(),
+            renamed: Vec::new(),
         })
     }
 
@@ -3102,6 +3145,7 @@ impl Catalog for MockCatalog {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         self.admit_write(who)?;
+        let who = &self.followed(who, None);
         let mut log = self.log();
         let (_, st) = self.state_at(&log, None)?;
         if let Some(o) = remembered(&st, who, &opts) {
@@ -3149,6 +3193,7 @@ impl Catalog for MockCatalog {
             version: Some(version),
             output: None,
             set_off: Default::default(),
+            renamed: Vec::new(),
         })
     }
 
@@ -3162,6 +3207,7 @@ impl Catalog for MockCatalog {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         self.admit_write(who)?;
+        let who = &self.followed(who, None);
         let mut log = self.log();
         let (_, st) = self.state_at(&log, None)?;
         if let Some(o) = remembered(&st, who, &opts) {
@@ -3189,6 +3235,7 @@ impl Catalog for MockCatalog {
             version: Some(version),
             output: None,
             set_off: Default::default(),
+            renamed: Vec::new(),
         })
     }
 
@@ -3201,6 +3248,7 @@ impl Catalog for MockCatalog {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         self.admit_write(who)?;
+        let who = &self.followed(who, None);
         let mut log = self.log();
         let (_, st) = self.state_at(&log, None)?;
         if let Some(o) = remembered(&st, who, &opts) {
@@ -3232,6 +3280,7 @@ impl Catalog for MockCatalog {
                 version: Some(version),
                 output: None,
                 set_off: Default::default(),
+                renamed: Vec::new(),
             }
         } else {
             let why = format!(
@@ -3260,6 +3309,7 @@ impl Catalog for MockCatalog {
 
     async fn query(&self, who: &Principal, pattern: Pattern) -> Result<Reply<QueryResult>> {
         self.admit(who)?;
+        let who = &self.followed(who, pattern.at.as_of);
         let of = read_of(serde_json::to_string(&Pattern {
             cursor: None,
             limit: None,
@@ -3506,6 +3556,7 @@ impl Catalog for MockCatalog {
 
     async fn search(&self, who: &Principal, search: Search) -> Result<Reply<Hits>> {
         self.admit(who)?;
+        let who = &self.followed(who, search.at.as_of);
         let of = read_of(serde_json::to_string(&(
             &search.mode,
             &search.filter,
@@ -3703,6 +3754,7 @@ impl Catalog for MockCatalog {
 
     async fn propose(&self, who: &Principal, write: ProposedWrite, why: String) -> Result<Outcome> {
         self.admit_write(who)?;
+        let who = &self.followed(who, None);
         if let ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } = &write
             && links::is_link_type(ty)
         {
@@ -3728,6 +3780,7 @@ impl Catalog for MockCatalog {
 
     async fn accept(&self, who: &Principal, proposal: &ProposalId) -> Result<Outcome> {
         self.admit_write(who)?;
+        let who = &self.followed(who, None);
         let mut log = self.log();
         let (_, st) = self.state_at(&log, None)?;
         let p = decidable(&st, who, proposal)?;
@@ -3755,6 +3808,7 @@ impl Catalog for MockCatalog {
             who: &proposer,
             cause: Some(accepted),
         };
+        let mut renamed = Vec::new();
         let version = match write {
             ProposedWrite::Upsert {
                 ty,
@@ -3820,6 +3874,9 @@ impl Catalog for MockCatalog {
                 if !report.lossless {
                     return Err(lossy(&st, who, &migration, report));
                 }
+                let mut known = (*migration).clone();
+                known_migration(&st, who, &mut known);
+                renamed = known.renames;
                 let version = st
                     .types
                     .get(&migration.to.name)
@@ -3870,6 +3927,7 @@ impl Catalog for MockCatalog {
             version,
             output: None,
             set_off: Default::default(),
+            renamed,
         })
     }
 
@@ -3880,6 +3938,7 @@ impl Catalog for MockCatalog {
         reason: String,
     ) -> Result<Outcome> {
         self.admit_write(who)?;
+        let who = &self.followed(who, None);
         let mut log = self.log();
         let (_, st) = self.state_at(&log, None)?;
         decidable(&st, who, proposal)?;
@@ -3898,6 +3957,7 @@ impl Catalog for MockCatalog {
             version: None,
             output: None,
             set_off: Default::default(),
+            renamed: Vec::new(),
         })
     }
 
@@ -3907,6 +3967,7 @@ impl Catalog for MockCatalog {
         filter: ProposalFilter,
     ) -> Result<Reply<Vec<Proposal>>> {
         self.admit(who)?;
+        let who = &self.followed(who, None);
         let limit = self.limit(filter.limit, false)?;
         let (pinned, offset) = match &filter.cursor {
             Some(c) => {
@@ -3973,6 +4034,7 @@ impl Catalog for MockCatalog {
 
     async fn declare(&self, who: &Principal, declaration: Declaration) -> Result<Outcome> {
         self.admit_write(who)?;
+        let who = &self.followed(who, None);
         if !who.grants.schema {
             return Err(refused(Refusal::NotGranted));
         }
@@ -3983,6 +4045,7 @@ impl Catalog for MockCatalog {
             version: None,
             output: None,
             set_off: Default::default(),
+            renamed: Vec::new(),
         })
     }
 
@@ -3991,6 +4054,7 @@ impl Catalog for MockCatalog {
     /// not yet resolve a reference to a declaration later in the set.
     async fn apply(&self, who: &Principal, declarations: Vec<Declaration>) -> Result<Outcome> {
         self.admit_write(who)?;
+        let who = &self.followed(who, None);
         if !who.grants.schema {
             return Err(refused(Refusal::NotGranted));
         }
@@ -4014,11 +4078,13 @@ impl Catalog for MockCatalog {
             version: None,
             output: None,
             set_off: Default::default(),
+            renamed: Vec::new(),
         })
     }
 
     async fn add_field(&self, who: &Principal, ty: &TypeName, f: FieldDecl) -> Result<Outcome> {
         self.admit_write(who)?;
+        let who = &self.followed(who, None);
         if !who.grants.schema {
             return Err(refused(Refusal::NotGranted));
         }
@@ -4068,6 +4134,7 @@ impl Catalog for MockCatalog {
             version: None,
             output: None,
             set_off: Default::default(),
+            renamed: Vec::new(),
         })
     }
 
@@ -4077,6 +4144,7 @@ impl Catalog for MockCatalog {
         migration: Migration,
     ) -> Result<Reply<MigrationReport>> {
         self.admit(who)?;
+        let who = &self.followed(who, None);
         if !who.grants.schema {
             return Err(refused(Refusal::NotGranted));
         }
@@ -4095,6 +4163,7 @@ impl Catalog for MockCatalog {
         to: lakelands_api::ontology::ValueTypeDecl,
     ) -> Result<Reply<lakelands_api::write::ValueTypeReport>> {
         self.admit_write(who)?;
+        let who = &self.followed(who, None);
         if !who.grants.schema {
             return Err(refused(Refusal::NotGranted));
         }
@@ -4114,6 +4183,7 @@ impl Catalog for MockCatalog {
         report_id: &str,
     ) -> Result<Outcome> {
         self.admit_write(who)?;
+        let who = &self.followed(who, None);
         if !who.grants.schema {
             return Err(refused(Refusal::NotGranted));
         }
@@ -4150,6 +4220,7 @@ impl Catalog for MockCatalog {
             version: None,
             output: None,
             set_off: Default::default(),
+            renamed: Vec::new(),
         })
     }
 
@@ -4160,6 +4231,7 @@ impl Catalog for MockCatalog {
         report_id: &str,
     ) -> Result<Outcome> {
         self.admit_write(who)?;
+        let who = &self.followed(who, None);
         if !who.grants.schema {
             return Err(refused(Refusal::NotGranted));
         }
@@ -4183,6 +4255,9 @@ impl Catalog for MockCatalog {
         let mut batch = Batch::at(&log);
         let link_types = links::of(&migration.to);
         let report_id = report.report_id;
+        // The answer names each rename as the one answered may know it.
+        let mut known = migration.clone();
+        known_migration(&st, who, &mut known);
         let position = batch.push(Draft::new(
             who,
             Origin::System,
@@ -4235,6 +4310,7 @@ impl Catalog for MockCatalog {
             version: None,
             output: None,
             set_off: Default::default(),
+            renamed: known.renames,
         })
     }
 
@@ -4245,6 +4321,7 @@ impl Catalog for MockCatalog {
         mut records: SourceStream,
     ) -> Result<CommitStream> {
         self.admit_write(who)?;
+        let who = &self.followed(who, None);
         if !who.grants.ingest {
             return Err(refused(Refusal::NotGranted));
         }

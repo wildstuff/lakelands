@@ -53,8 +53,16 @@ pub fn window(
     records: Vec<SourceRecord>,
 ) -> Result<Committed> {
     crate::writes::check_context(lake, &context)?;
-    let call = Call { lake, who, context };
     let mut w = lake.writer();
+    // Under the writer, so through every rename the lake has folded.
+    let (who, _) = lake.followed(who.clone(), None, None)?;
+    let (who, followed) = (&who, None);
+    let call = Call {
+        lake,
+        who,
+        context,
+        followed,
+    };
     let view = lake.engine.view(None)?;
     let now = lake.clock(&mut w);
     let mut pending = Pending::default();

@@ -77,7 +77,7 @@ type Held<'a> = Vec<(&'a ObjectSetDecl, BTreeSet<RecordKey>)>;
 
 /// What a migration's preflight finds: its report, the record keys it
 /// moves and, when it is applied, the set memberships it changes.
-struct MigrationPlan {
+pub(crate) struct MigrationPlan {
     report: MigrationReport,
     rekeyed: Vec<lakelands_api::write::Rekey>,
     members: Vec<Change>,
@@ -177,6 +177,9 @@ pub struct Call<'a> {
     pub who: &'a Principal,
     /// The host's context.
     pub context: WriteContext,
+    /// How many entries of the lake's renames `who`'s grants were followed
+    /// through; `None` for one whose grants name no field.
+    pub followed: Option<usize>,
 }
 
 /// The record events of one append that are not in the projection yet.
@@ -502,6 +505,7 @@ fn applied(position: Position, version: Option<Version>) -> Outcome {
         version,
         output: None,
         set_off: Default::default(),
+        renamed: Vec::new(),
     }
 }
 
@@ -1012,7 +1016,7 @@ impl Call<'_> {
         opts: WriteOpts,
         check: impl FnOnce(&Writer, &dyn ProjectionView) -> Result<()>,
     ) -> Result<Outcome> {
-        let mut w = self.lake.writer();
+        let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
         if let Some(o) = self.replay(&w, &opts.idempotency_key, view.as_ref())? {
             return Ok(o);
@@ -1100,7 +1104,7 @@ impl Call<'_> {
     /// A retirement of one record, as `retire` and `unlink` make it, their
     /// context already checked.
     fn retire_record(&self, ty: &TypeName, key: &RecordKey, opts: WriteOpts) -> Result<Outcome> {
-        let mut w = self.lake.writer();
+        let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
         if let Some(o) = self.replay(&w, &opts.idempotency_key, view.as_ref())? {
             return Ok(o);
@@ -1265,7 +1269,7 @@ impl Call<'_> {
         opts: WriteOpts,
     ) -> Result<(Outcome, Option<External>)> {
         check_context(self.lake, &self.context)?;
-        let mut w = self.lake.writer();
+        let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
         if let Some(o) = self.replay(&w, &opts.idempotency_key, view.as_ref())? {
             return Ok((o, None));
@@ -1358,7 +1362,7 @@ impl Call<'_> {
     /// would.
     pub fn propose(&self, mut write: ProposedWrite, why: String) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
-        let mut w = self.lake.writer();
+        let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
         let now = self.lake.clock(&mut w);
         let key_opt = match &write {
@@ -1486,7 +1490,7 @@ impl Call<'_> {
     pub fn accept(&self, proposal: &ProposalId) -> Result<(Outcome, Option<External>)> {
         check_context(self.lake, &self.context)?;
         granted(self.who.grants.review)?;
-        let mut w = self.lake.writer();
+        let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
         let p = find_proposal(view.as_ref(), proposal)?;
         if p.state != ProposalState::Pending {
@@ -1526,7 +1530,7 @@ impl Call<'_> {
                 ..d
             },
         };
-        let mut external = None;
+        let (mut external, mut renamed) = (None, Vec::new());
         let mut pending = Pending::default();
         match write {
             ProposedWrite::Upsert {
@@ -1643,6 +1647,7 @@ impl Call<'_> {
                     )));
                 }
                 let plan = self.preflight_plan(&w, view.as_ref(), migration, Some(now))?;
+                renamed = self.known_renames(&w.ontology, migration);
                 let first = drafts.len();
                 let own = self.migration_drafts(&w, (**migration).clone(), plan, now, first)?;
                 drafts.extend(own.into_iter().map(&as_accepted));
@@ -1666,14 +1671,47 @@ impl Call<'_> {
         }
         drop(view);
         let events = self.lake.append(&mut w, drafts)?;
-        Ok((outcome_of(&events), external))
+        Ok((self.answered(&events, renamed), external))
+    }
+
+    /// The writer, held by this call. Its grants were followed through the
+    /// lake's renames before it waited here; where a migration renamed a
+    /// field meanwhile they no longer hold it, and the call is refused to
+    /// be sent again (006, extended).
+    pub(crate) fn writer(&self) -> Result<std::sync::MutexGuard<'_, crate::lake::Writer>> {
+        let w = self.lake.writer();
+        match self.followed {
+            Some(n) if self.lake.renames(None)?.len() != n => Err(lakelands_core::unavailable(
+                "a migration renamed a field while this write waited; send it again",
+            )),
+            _ => Ok(w),
+        }
+    }
+
+    /// A migration's renames as the one answered may know of them, taken
+    /// before the append, while the type stands as it was.
+    fn known_renames(&self, o: &Ontology, m: &Migration) -> Vec<(FieldName, FieldName)> {
+        let mut m = m.clone();
+        if let Ok(was) = o.ty(&m.to.name) {
+            rights::known_migration(self.who, was, &mut m);
+        }
+        m.renames
+    }
+
+    /// [`outcome_of`], with the fields the migration it applied renamed.
+    fn answered(&self, events: &[Event], known: Vec<(FieldName, FieldName)>) -> Outcome {
+        let mut outcome = outcome_of(events);
+        if let Outcome::Applied { renamed, .. } = &mut outcome {
+            *renamed = known;
+        }
+        outcome
     }
 
     /// `reject`.
     pub fn reject(&self, proposal: &ProposalId, reason: String) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         granted(self.who.grants.review)?;
-        let mut w = self.lake.writer();
+        let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
         let p = find_proposal(view.as_ref(), proposal)?;
         if p.state != ProposalState::Pending {
@@ -1767,7 +1805,7 @@ impl Call<'_> {
 
     /// `declare`, its context and the `schema` grant already checked.
     fn declare_granted(&self, mut declaration: Declaration) -> Result<Outcome> {
-        let mut w = self.lake.writer();
+        let mut w = self.writer()?;
         self.redeclared(&w.ontology, std::slice::from_mut(&mut declaration))?;
         declare::check_declaration(&w.ontology, &declaration, false)?;
         self.check_bound(&declaration)?;
@@ -1786,7 +1824,7 @@ impl Call<'_> {
     pub fn apply(&self, mut declarations: Vec<Declaration>) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         granted(self.who.grants.schema)?;
-        let mut w = self.lake.writer();
+        let mut w = self.writer()?;
         self.redeclared(&w.ontology, &mut declarations)?;
         self.check_bundle(&w.ontology, &declarations)?;
         let now = self.lake.clock(&mut w);
@@ -2114,7 +2152,7 @@ impl Call<'_> {
     /// preflight makes anyway. Past the lake's `max_set_changes` it decides
     /// no further, and the plan holds one change too many: a stale report
     /// and a migration that is not lossless are refused before that is.
-    fn preflight_plan(
+    pub(crate) fn preflight_plan(
         &self,
         w: &Writer,
         view: &dyn ProjectionView,
@@ -2476,7 +2514,7 @@ impl Call<'_> {
     pub fn migrate_apply(&self, mut m: Migration, report_id: &str) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         granted(self.who.grants.schema)?;
-        let mut w = self.lake.writer();
+        let mut w = self.writer()?;
         self.authored(&w.ontology, &mut m)?;
         let view = self.lake.engine.view(None)?;
         let now = self.lake.clock(&mut w);
@@ -2486,10 +2524,11 @@ impl Call<'_> {
                 "the lake moved since that preflight report; run the preflight again",
             ));
         }
+        let renamed = self.known_renames(&w.ontology, &m);
         let drafts = self.migration_drafts(&w, m, plan, now, 0)?;
         drop(view);
         let events = self.lake.append(&mut w, drafts)?;
-        Ok(outcome_of(&events))
+        Ok(self.answered(&events, renamed))
     }
 
     /// The drafts that apply a migration its preflight planned, refused
@@ -2498,7 +2537,7 @@ impl Call<'_> {
     /// which is the `first` draft of its append not yet counted (an answer
     /// reads what directly follows its event), then the link types it
     /// changes or adds.
-    fn migration_drafts(
+    pub(crate) fn migration_drafts(
         &self,
         w: &Writer,
         m: Migration,
@@ -2680,7 +2719,7 @@ impl Call<'_> {
     pub fn migrate_value_type_apply(&self, to: ValueTypeDecl, report_id: &str) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         granted(self.who.grants.schema)?;
-        let mut w = self.lake.writer();
+        let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
         let report = self.preflight_value_type(&w, view.as_ref(), &to)?;
         if report.report_id != report_id {

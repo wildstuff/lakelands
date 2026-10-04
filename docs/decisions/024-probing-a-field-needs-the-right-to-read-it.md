@@ -297,3 +297,12 @@ is not handed to a principal that is kept from a field or a type
 A declaration in force that reads a field its declarer may not read
 stays in force. It is held when it is declared again, and until then the
 second rule covers what it tells.
+
+## Extended: a field is the same field under another name (lakelands#527)
+
+The right to read a field is asked by the field's name, and a migration
+can change the name. The rule above holds through it: a field a
+principal may not read is not read under the name a rename gives it, nor
+under the name it had in a read as of before. How a grant holds a field
+through its renames is in `docs/decisions/006-grants-not-roles.md`,
+extended.

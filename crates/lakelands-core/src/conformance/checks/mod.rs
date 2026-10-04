@@ -51,6 +51,7 @@ mod reads_kept;
 mod rebuild;
 mod references;
 mod rekey;
+mod renamed_grants;
 mod report_names;
 mod restriction;
 mod retire;
@@ -163,6 +164,7 @@ pub const ALL: &[Check] = &[
     masking::BUILT_FROM_HIDDEN,
     computed_inputs::COMPUTED_AS_ITS_INPUTS,
     authored_reads::AUTHOR_READS,
+    renamed_grants::GRANT_FOLLOWS,
     masking::NONE_HIDES,
     masking::VALID_AT_PROBES,
     masking::WRITE_ONLY,
