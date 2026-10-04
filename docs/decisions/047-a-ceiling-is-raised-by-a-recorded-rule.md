@@ -31,6 +31,8 @@ The core's budgets are four:
 
 **The fourth raise:** the specification, from 42 500 to 43 000 lines, by slot a's word under the rule, for the checks of what a listing of proposals shows its reader (lakelands#499). It rides in the pull request of the code it is for.
 
+**The fifth raise:** the specification, from 43 000 to 44 000 lines, by slot a's word under the rule, for three pull requests that need the room at once: the checks of a migration's cost and memory (lakelands#480: what the head indexes answer after a record changes, and what a fold leaves where a later read goes through a migration) and the check of a rule of rights (lakelands#540).
+
 ## Why
 
 The budgets keep the core small enough for one reader to hold. They have done that: four diets took out about 5 000 lines without losing a check.

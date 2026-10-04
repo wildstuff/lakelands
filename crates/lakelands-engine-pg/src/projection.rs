@@ -620,42 +620,26 @@ type SortRows<'r> = (Vec<&'r str>, Vec<String>, Vec<&'r str>, Vec<Vec<u8>>);
 
 /// Rewrite the head indexes of records from their latest states, each
 /// under the declaration of its type at the head, in two statements: the
-/// old rows of the `stale` records go, then the new rows of all of them
-/// go in. A record not in `stale` had no state before, so no index holds
-/// a row of it.
+/// old rows of the `stale` records that are not among the new ones go,
+/// then the new rows of all of them go in, passing over those that stayed.
+/// A write that changes one field of a record, or a migration that
+/// converts one, leaves most of its rows as they were, and those are not
+/// written again. A record not in `stale` had no state before, so no index
+/// holds a row of it.
+///
+/// A row stays only when the new rows hold it column for column, and no
+/// column of `text_index`, `full_text` or `sort_index` can be null, so `=`
+/// compares them whole. A row of `full_text` or `sort_index` that stayed is
+/// passed over by its key, not by a conflict: most of their rows are new
+/// (a declaration drops a type's `sort_index` rows whole), and a plain
+/// insert is the cheaper one. `edges` has no key (a record may hold one
+/// link twice), so its rows go and come as before.
 pub(crate) fn index_records(
     db: &mut Db,
     names: &Names,
     records: &[(&HeadType, &StoredRecord)],
     stale: &[(&str, &str)],
 ) -> Result<()> {
-    // Only a type the lake keeps an order index for has rows in it; the
-    // setting's rebuild drops a type's rows with its last field. So the
-    // statements name `sort_index` only when a record's type has one.
-    let sorted = records.iter().any(|(head, _)| !head.sorted.is_empty());
-    if !stale.is_empty() {
-        let (tys, keys): (Vec<&str>, Vec<&str>) = stale.iter().copied().unzip();
-        let z = if sorted {
-            format!(
-                ", z AS (DELETE FROM {} t USING d WHERE t.ty = d.ty AND t.key = d.key)",
-                names.t("sort_index")
-            )
-        } else {
-            String::new()
-        };
-        db.execute(
-            &format!(
-                "WITH d AS (SELECT * FROM unnest($1::text[], $2::text[]) AS d(ty, key)), \
-                 x AS (DELETE FROM {text} t USING d WHERE t.ty = d.ty AND t.key = d.key), \
-                 y AS (DELETE FROM {full} t USING d WHERE t.ty = d.ty AND t.key = d.key){z} \
-                 DELETE FROM {edges} t USING d WHERE t.src_ty = d.ty AND t.src_key = d.key",
-                text = names.t("text_index"),
-                full = names.t("full_text"),
-                edges = names.t("edges"),
-            ),
-            &[&tys, &keys],
-        )?;
-    }
     let mut rows = IndexRows::default();
     for (head, r) in records {
         let decl = head.decl.as_ref();
@@ -694,26 +678,72 @@ pub(crate) fn index_records(
             rows.tokens[2].push(key.to_owned());
         }
     }
-    if rows.text[0].is_empty()
-        && rows.tokens[0].is_empty()
-        && rows.edges[0].is_empty()
-        && rows.sorted.0.is_empty()
-    {
-        return Ok(());
-    }
     let [t1, t2, t3, t4] = &rows.text;
     let [f1, f2, f3] = &rows.tokens;
     let [e1, e2, e3, e4, e5] = &rows.edges;
     let (s1, s2, s3, s4) = &rows.sorted;
+    let sort = [s1 as &(dyn ToSql + Sync), s2, s3, s4];
+    if !stale.is_empty() {
+        // Only a type the lake keeps an order index for has rows in it; the
+        // setting's rebuild drops a type's rows with its last field. So the
+        // statement names `sort_index` only when a record's type has one.
+        let sorted = records.iter().any(|(head, _)| !head.sorted.is_empty());
+        let (tys, keys): (Vec<&str>, Vec<&str>) = stale.iter().copied().unzip();
+        let mut params: Vec<&(dyn ToSql + Sync)> = vec![&tys, &keys, t1, t2, t3, t4, f1, f2, f3];
+        params.extend(sort.iter().filter(|_| sorted));
+        // The rows of the stale records in `table`, but for those among the
+        // new rows `new`, which have `columns`.
+        let gone = |table: &str, new: &str, columns: &[&str]| {
+            let same: Vec<String> = columns.iter().map(|c| format!("n.{c} = t.{c}")).collect();
+            format!(
+                "DELETE FROM {} t USING d WHERE t.ty = d.ty AND t.key = d.key AND NOT EXISTS \
+                 (SELECT 1 FROM unnest({new}) AS n({}) WHERE {})",
+                names.t(table),
+                columns.join(", "),
+                same.join(" AND ")
+            )
+        };
+        let z = if sorted {
+            let new = "$10::text[], $11::text[], $12::text[], $13::bytea[]";
+            let columns = ["ty", "field", "key", "sort_key"];
+            format!(", z AS ({})", gone("sort_index", new, &columns))
+        } else {
+            String::new()
+        };
+        db.execute(
+            &format!(
+                "WITH d AS (SELECT * FROM unnest($1::text[], $2::text[]) AS d(ty, key)), \
+                 x AS ({x}), y AS ({y}){z} \
+                 DELETE FROM {edges} t USING d WHERE t.src_ty = d.ty AND t.src_key = d.key",
+                x = gone(
+                    "text_index",
+                    "$3::text[], $4::text[], $5::text[], $6::text[]",
+                    &["ty", "field", "value", "key"]
+                ),
+                y = gone(
+                    "full_text",
+                    "$7::text[], $8::text[], $9::text[]",
+                    &["ty", "token", "key"]
+                ),
+                edges = names.t("edges"),
+            ),
+            &params,
+        )?;
+    }
+    if t1.is_empty() && f1.is_empty() && e1.is_empty() && s1.is_empty() {
+        return Ok(());
+    }
     let mut params: Vec<&(dyn ToSql + Sync)> = vec![t1, t2, t3, t4, f1, f2, f3, e1, e2, e3, e4, e5];
-    let z = if rows.sorted.0.is_empty() {
+    let z = if s1.is_empty() {
         String::new()
     } else {
-        params.extend([s1 as &(dyn ToSql + Sync), s2, s3, s4]);
+        params.extend(sort);
         format!(
-            ", z AS (INSERT INTO {} (ty, field, key, sort_key) \
-               SELECT * FROM unnest($13::text[], $14::text[], $15::text[], $16::bytea[]))",
-            names.t("sort_index")
+            ", z AS (INSERT INTO {sorted} (ty, field, key, sort_key) \
+               SELECT * FROM unnest($13::text[], $14::text[], $15::text[], $16::bytea[]) \
+               AS n(ty, field, key, sort_key) WHERE NOT EXISTS (SELECT 1 FROM {sorted} t \
+               WHERE t.ty = n.ty AND t.key = n.key AND t.field = n.field))",
+            sorted = names.t("sort_index")
         )
     };
     db.execute(
@@ -722,7 +752,9 @@ pub(crate) fn index_records(
                SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[]) \
                ON CONFLICT DO NOTHING), \
              y AS (INSERT INTO {full} (ty, token, key) \
-               SELECT * FROM unnest($5::text[], $6::text[], $7::text[])){z} \
+               SELECT * FROM unnest($5::text[], $6::text[], $7::text[]) AS n(ty, token, key) \
+               WHERE NOT EXISTS (SELECT 1 FROM {full} t \
+               WHERE t.ty = n.ty AND t.token = n.token AND t.key = n.key)){z} \
              INSERT INTO {edges} (src_ty, src_key, relation, dst_ty, dst_key) \
              SELECT * FROM unnest($8::text[], $9::text[], $10::text[], $11::text[], $12::text[])",
             text = names.t("text_index"),
