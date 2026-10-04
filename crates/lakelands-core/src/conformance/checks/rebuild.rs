@@ -17,7 +17,7 @@ use serde_json::json;
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, all_found, derived, doors, field, find_at, find_where, get_at, owner, pattern,
-    reference, step, type_decl, type_of, vector, view_of,
+    reference, source_record, sourced, step, type_decl, type_of, vector, view_of,
 };
 
 check!(
@@ -30,6 +30,12 @@ check!(
     /// A rebuild leaves the chain as it was.
     REBUILD_REPRODUCES_THE_CHAIN = a_rebuild_reproduces_the_chain,
     "001 and 020: the log is the truth and a rebuild only re-derives the projection, so verifying the chain answers the same range and hash before and after"
+);
+
+check!(
+    /// A rebuild folds a later page over the records the pages before wrote.
+    REBUILD_FOLDS_OVER_RECORDS = a_rebuild_folds_a_page_over_the_records_the_pages_before_wrote,
+    "001, 027 and the engine seam: a rebuild folds the log in pages of 1 024 events, each over the projection the pages before left; a page that holds a write, a re-keying migration, a write at a new key and one at an old, and a second migration, over records an earlier page wrote, leaves what the live lake's appends left, at the head and as of each of them"
 );
 
 /// Everything the check reads: every record of every type with
@@ -197,6 +203,65 @@ async fn migrated_snapshot(
         }
     }
     Ok(out)
+}
+
+async fn a_rebuild_folds_a_page_over_the_records_the_pages_before_wrote(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    // The re-key's fixture, then enough events to end a rebuild's first
+    // page: what follows is folded over a projection that holds the fixture.
+    let l = super::rekey::lake(store.as_ref(), super::rekey::IBANS).await?;
+    l.declare(type_decl("filler", vec![sourced("n", StorageKind::Number)]))
+        .await?;
+    let filler = (0..1_100).map(|i| source_record("filler", &format!("f{i:04}"), json!({"n": i})));
+    l.ingest("load", filler.collect())
+        .await
+        .must("loading the filler")?;
+    let payment = |amount: &str| -> lakelands_api::ontology::TypeDecl {
+        let fields = json!([{"name": "account", "type": {"kind": "reference", "target": "account"}},
+                            {"name": "amount", "type": {"kind": amount}}]);
+        let relations = json!([{"name": "pays", "target": "account", "via": "account"}]);
+        serde_json::from_value(json!({"name": "payment", "fields": fields, "relations": relations}))
+            .expect("a type")
+    };
+    let moved = json!({"holder": "moved"});
+    let fresh = json!({"number": "9", "iban": "1", "kind": "giro", "meta": {}});
+    let at = [
+        l.upsert("payment", "p1", json!({"amount": 6}))
+            .await?
+            .position(),
+        super::rekey::apply(store.as_ref()).await?,
+        l.upsert("account", "DE1", moved).await?.position(),
+        l.upsert("account", "1", fresh).await?.position(),
+        l.migrate(payment("text")).await?.position(),
+    ];
+    ensure!(
+        at[0].0 >= 1_024 && at[4].0 < 2_048,
+        "the check's five appends stand in the second page of 1 024 events: {at:?}"
+    );
+    let read = || async {
+        let mut out = Vec::new();
+        for ty in ["account", "payment", "entry", "sys.link.account.owner"] {
+            for at in at.iter().map(|p| Some(*p)).chain([None]) {
+                out.push((
+                    format!("{ty} as of {at:?}"),
+                    l.all_found(ty, find_at(at)).await?,
+                ));
+            }
+        }
+        Ok::<_, Failure>(out)
+    };
+    let live = read().await?;
+    store.rebuild().await.must("rebuilding the projection")?;
+    for ((label, before), (_, after)) in live.iter().zip(&read().await?) {
+        ensure!(
+            before == after,
+            "after the rebuild, `{label}` reads differently.\n  before: {before:?}\n  \
+             after:  {after:?}\nA page folded over records an earlier page wrote must \
+             leave what the live lake's appends left"
+        );
+    }
+    Ok(())
 }
 
 async fn a_rebuild_reproduces_the_chain(store: Arc<dyn LakeStore>) -> Result<(), Failure> {

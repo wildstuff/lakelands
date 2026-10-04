@@ -438,13 +438,74 @@ fn a_commit_backwards_or_with_a_put_past_through_is_invalid(
 }
 
 fn a_view_does_not_see_an_open_transaction(engine: &dyn LakeEngine) -> Result<(), Failure> {
-    fold_one(engine, 1, record("t", "a", json!({"n": 1}), 1))?;
+    let t = TypeName::from("t");
+    let declared = |fields: Value| {
+        serde_json::from_value::<Declaration>(
+            json!({"declare": "type", "name": "t", "fields": fields}),
+        )
+        .map_err(|e| Failure::new(format!("the check's declaration does not read: {e}")))
+    };
+    let (one, two) = (
+        declared(json!([]))?,
+        declared(json!([{"name": "n", "type": {"kind": "number"}}]))?,
+    );
+    fold(engine, 1, |p| {
+        p.put_declaration(&one, 1, None, Position(1))?;
+        p.put_record(&record("t", "a", json!({"n": 1}), 1))?;
+        p.put_record(&record("t", "c", json!({"n": 1}), 1))?;
+        p.put_membership("s", &t, &RecordKey::from("a"), true, Position(1))
+    })?;
     let p = engine.projection();
     p.begin().must("beginning a transaction")?;
+    // The view a fold reads through: opened before the transaction's puts
+    // and read between them, a page at a time.
+    let before = view(engine, None)?;
+    let page = |after: Option<&str>| -> Result<Vec<(String, Value)>, Failure> {
+        let scan = lakelands_api::engine::Scan {
+            limit: 1,
+            after: after.map(|k| lakelands_api::engine::After {
+                values: Vec::new(),
+                key: RecordKey::from(k),
+            }),
+            ..Default::default()
+        };
+        let rows = before.scan(&t, &scan).must("scanning between the puts")?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.key.to_string(), json!(r.fields)))
+            .collect())
+    };
+    p.put_declaration(&two, 2, None, Position(2))
+        .must("putting a declaration")?;
     p.put_record(&record("t", "a", json!({"n": 2}), 2))
         .must("putting a record")?;
+    let first = page(None)?;
     p.put_record(&record("t", "b", json!({}), 2))
         .must("putting a record")?;
+    for (key, member) in [("b", true), ("a", false)] {
+        p.put_membership("s", &t, &RecordKey::from(key), member, Position(2))
+            .must("putting a membership")?;
+    }
+    let next = page(Some("a"))?;
+    let members = before.members("s", &t).must("reading the members")?;
+    let versions: Vec<u32> = (before
+        .declarations()
+        .must("reading the declarations")?
+        .iter())
+    .filter(|d| matches!(&d.declaration, Declaration::Type(ty) if ty.name == t))
+    .map(|d| d.version)
+    .collect();
+    drop(before);
+    ensure!(
+        first == [("a".to_owned(), json!({"n": 1}))]
+            && next == [("c".to_owned(), json!({"n": 1}))]
+            && members.iter().map(RecordKey::as_str).eq(["a"])
+            && versions == [1],
+        "a view opened before a transaction's puts and read between them answered the page \
+         {first:?}, after `a` the page {next:?}, the members {members:?} and `t` at versions \
+         {versions:?}; it must answer what was committed: `a` with n = 1, then `c`, the \
+         member `a`, version 1"
+    );
     let during = view(engine, None)?;
     let (a, b, at) = (
         during

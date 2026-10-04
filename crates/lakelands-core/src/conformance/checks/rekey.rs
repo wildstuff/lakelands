@@ -106,6 +106,12 @@ check!(
     "027 and log-format §2.3: the ended keys a re-key leaves are no records: a later migration that keeps the key, a value-type tightening, and a second re-key over them all apply"
 );
 
+check!(
+    /// A re-key that retypes a link field moves and converts its links.
+    LINK_RESHAPED = a_rekey_that_retypes_a_link_field_moves_and_converts_its_links,
+    "027 and 035: a migration that re-keys a type and retypes a field of its relation appends the link type's migration after its own; a link is at its new pair key from the first on and holds the converted value from the second on"
+);
+
 fn account(key: &str, iban_required: bool) -> Value {
     json!({"name": "account", "key": [key],
            "fields": [
@@ -417,6 +423,51 @@ async fn a_link_to_a_rekeyed_record_is_rekeyed_and_walked(
         reached == ["x"],
         "the walk over `owner` from `DE1` reached {reached:?}"
     );
+    Ok(())
+}
+
+async fn a_rekey_that_retypes_a_link_field_moves_and_converts_its_links(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = lake(store.as_ref(), IBANS).await?;
+    let Lake { cat, own } = &l;
+    // `owner` with a `rank`, of `kind`, on an account keyed by `key`.
+    let ranked = |key: &str, kind: &str| {
+        let mut a = account(key, key == "iban");
+        a["relations"][0]["fields"] = json!([{"name": "rank", "type": {"kind": kind}}]);
+        a
+    };
+    let mut first = ranked("number", "number");
+    first["declare"] = json!("type");
+    l.declare_json(first).await?;
+    let (account, owner) = ("account".into(), "owner".into());
+    let rank = patch(json!({"rank": 2}));
+    cat.link(
+        own,
+        &account,
+        &"1".into(),
+        &owner,
+        &"x".into(),
+        rank,
+        WriteOpts::default(),
+    )
+    .await
+    .must("giving the link from account 1 to x a rank")?;
+    let to = serde_json::from_value(ranked("iban", "text")).expect("a type");
+    let applied = l.migrate(to).await?.position();
+    let lt = "sys.link.account.owner";
+    // The link type's migration is the event after the account's.
+    for (at, rank) in [(Some(applied), json!(2)), (None, json!("2"))] {
+        let link = found(&l, lt, "DE1:x", at).await?;
+        ensure!(
+            link.as_ref()
+                .is_some_and(|r| r.fields.get("rank") == Some(&rank))
+                && found(&l, lt, "1:x", at).await?.is_none(),
+            "a migration that re-keys `account` and retypes `rank` to text moves the link to \
+             `DE1:x` at its own position and converts its rank to \"2\" at the next; as of \
+             {at:?} it is {link:?}"
+        );
+    }
     Ok(())
 }
 

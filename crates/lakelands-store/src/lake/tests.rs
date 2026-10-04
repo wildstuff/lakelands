@@ -1,0 +1,146 @@
+use lakelands_api::Version;
+use lakelands_api::engine::EngineOpener;
+use lakelands_api::write::Rekey;
+use serde_json::json;
+
+use super::*;
+
+fn ty(v: serde_json::Value) -> TypeDecl {
+    serde_json::from_value(v).unwrap()
+}
+
+/// `doc`, its first field named `first` and its `n` of `kind`.
+fn doc(first: &str, kind: &str) -> TypeDecl {
+    ty(
+        json!({"name": "doc", "fields": [{"name": first, "type": {"kind": "text"}},
+                                         {"name": "n", "type": {"kind": kind}}]}),
+    )
+}
+
+fn record(ty: &str, key: &str, fields: serde_json::Value, at: u64) -> StoredRecord {
+    let fields = serde_json::from_value(fields).unwrap();
+    StoredRecord {
+        fields,
+        version: Version(3),
+        position: Position(at),
+        retired: false,
+        ..StoredRecord::ended(ty.into(), key.into(), Position(at))
+    }
+}
+
+/// A step at `at` that migrates `doc` from `before` to `to`, renaming a
+/// `title` to `name`, and moves `moves` of its keys, in a lake that also
+/// holds `note`, which refers to a `doc`.
+fn step(at: u64, before: TypeDecl, to: TypeDecl, moves: &[(&str, &str)]) -> Step {
+    let note = ty(json!({"name": "note", "fields": [
+        {"name": "about", "type": {"kind": "reference", "target": "doc"}}]}));
+    let mut ontology = Ontology::default();
+    for t in [to.clone(), note] {
+        ontology.put(Declaration::Type(t), 1, None);
+    }
+    let titled = before.fields.iter().any(|f| f.name.as_str() == "title");
+    let migration = Migration {
+        to,
+        renames: (titled.then(|| ("title".into(), "name".into())).into_iter()).collect(),
+    };
+    let rekeyed: Vec<Rekey> = (moves.iter())
+        .map(|(from, to)| Rekey {
+            ty: "doc".into(),
+            from: (*from).into(),
+            to: (*to).into(),
+        })
+        .collect();
+    Step::new(&ontology, Position(at), before, &migration, &rekeyed)
+}
+
+#[test]
+fn a_step_converts_moves_and_rewrites_and_leaves_the_rest() {
+    let s = step(
+        7,
+        doc("title", "text"),
+        doc("name", "number"),
+        &[("a", "b")],
+    );
+    let mut a = record("doc", "a", json!({"title": "T", "n": "12"}), 2);
+    a.restricted = true;
+    let after = s.apply(a).unwrap();
+    assert_eq!(
+        (after.key.as_str(), json!(after.fields), after.position),
+        ("b", json!({"name": "T", "n": 12}), Position(7)),
+        "a record of the migrated type is converted and moved, at the step's position"
+    );
+    assert_eq!(
+        (after.version, after.retired, after.restricted),
+        (Version(3), false, true),
+        "its version and its flags are not touched"
+    );
+    let about = |key: &str| record("note", "n", json!({"about": key}), 2);
+    assert_eq!(
+        s.apply(about("a")).unwrap(),
+        StoredRecord {
+            position: Position(7),
+            ..about("b")
+        },
+        "a reference to a moved key names the new one, at the step's position"
+    );
+    assert_eq!(
+        s.apply(about("u")).unwrap(),
+        about("u"),
+        "another is as it was"
+    );
+    let refused = s.apply(record("doc", "x", json!({"n": "abc"}), 2));
+    let why = refused.unwrap_err().to_string();
+    assert!(why.contains("`doc` `x`") || why.contains("abc"), "{why}");
+}
+
+#[test]
+fn a_key_is_traced_back_through_the_steps() {
+    let same = || doc("name", "text");
+    let chain = step(2, same(), same(), &[("a", "b"), ("b", "c")]);
+    let (doc, k) = (TypeName::from("doc"), |key: &str| RecordKey::from(key));
+    let source = |key: &str| chain.source(&doc, &k(key)).map(|k| k.to_string());
+    assert_eq!(
+        [source("c"), source("b"), source("a"), source("u")],
+        [Some("b".into()), Some("a".into()), None, Some("u".into())],
+        "a new key comes from its old one; an old key no record arrives at is ended"
+    );
+    assert_eq!(
+        (chain.moved(&doc, &k("a")), chain.moved(&doc, &k("u"))),
+        (&k("b"), &k("u"))
+    );
+    assert_eq!(chain.moved(&"note".into(), &k("a")), &k("a"));
+
+    // Two steps over a view that holds `a` and `v`: `a` moves to `b`, then
+    // `b` to `c` while `v` arrives at `b`.
+    let engine = lakelands_engine_mem::MemoryOpener::new()
+        .open(&Location::memory("steps"), OpenMode::Create)
+        .unwrap();
+    let p = engine.projection();
+    p.begin().unwrap();
+    for key in ["a", "v"] {
+        p.put_record(&record("doc", key, json!({"name": key}), 1))
+            .unwrap();
+    }
+    p.commit(Position(1)).unwrap();
+    let view = engine.view(None).unwrap();
+    let staged = Staged {
+        steps: vec![
+            step(2, same(), same(), &[("a", "b")]),
+            step(3, same(), same(), &[("b", "c"), ("v", "b")]),
+        ],
+        ..Staged::default()
+    };
+    let read = |key: &str| {
+        let r = staged.record(view.as_ref(), &doc, &k(key)).unwrap()?;
+        Some((r.fields.get("name").cloned(), r.position.0))
+    };
+    assert_eq!(read("c"), Some((Some(json!("a")), 3)), "from `a`, by both");
+    assert_eq!(
+        read("b"),
+        Some((Some(json!("v")), 3)),
+        "from `v`, by the second"
+    );
+    assert_eq!(read("a"), Some((None, 2)), "ended at the first step");
+    assert_eq!(read("v"), Some((None, 3)), "ended at the second");
+    assert_eq!(read("u"), None, "never written");
+}
