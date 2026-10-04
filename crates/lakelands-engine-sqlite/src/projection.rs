@@ -563,18 +563,35 @@ pub(crate) fn fts_term(token: &str) -> String {
     lakelands_core::canonical::hex(token.as_bytes())
 }
 
-/// Put a record's state and, when it is the latest, its head indexes.
-pub(crate) fn put_record(conn: &Connection, r: &StoredRecord) -> Result<()> {
+/// A type as a record of it is indexed: its declaration at the head and
+/// the fields its order index keeps.
+pub(crate) type Kept = (TypeName, Option<TypeDecl>, Vec<FieldName>);
+
+/// Put a record's state and, when it is the latest, its head indexes. Its
+/// type is read into `kept` and not again for the next record of the same
+/// type. A record of another type replaces what is kept; a
+/// `sort_index.<type>` setting forgets it, since the type it names may be
+/// the settings' own; the caller forgets it at a declaration.
+pub(crate) fn put_record(
+    conn: &Connection,
+    kept: &mut Option<Kept>,
+    r: &StoredRecord,
+) -> Result<()> {
     let state = serde_json::to_string(r).expect("a record serialises");
     RECORDS.put(conn, &[&r.ty.as_str(), &r.key.as_str()], r.position, &state)?;
     if is_head(conn, &r.ty, &r.key, r.position)? {
-        let decl = type_at(conn, &r.ty, None)?;
-        let sorted = sorted_fields(conn, &r.ty, decl.as_ref())?;
-        index_record(conn, decl.as_ref(), &sorted, r)?;
+        if kept.as_ref().is_none_or(|k| k.0 != r.ty) {
+            let decl = type_at(conn, &r.ty, None)?;
+            let sorted = sorted_fields(conn, &r.ty, decl.as_ref())?;
+            *kept = Some((r.ty.clone(), decl, sorted));
+        }
+        let (_, decl, sorted) = kept.as_ref().expect("kept above");
+        index_record(conn, decl.as_ref(), sorted, r)?;
         // The setting's write rebuilds the index it asks for, so the index
         // describes the head from the next read on.
         if let Some(ty) = engines::sort_index_type(r) {
             rebuild_sorted(conn, &ty, r.position)?;
+            *kept = None;
         }
     }
     Ok(())

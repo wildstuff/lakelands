@@ -1391,18 +1391,23 @@ fn a_field_ordered_scan_walks_page_by_page_as_one_scan(
         (0..N).try_for_each(|i| p.put_record(&state(i, 1)))
     })?;
     // Every fourth moves, and every tenth loses or gains `v`, some twice
-    // in the transaction; then the setting.
+    // in the transaction; the setting comes between them, so the records
+    // put after it in the same transaction are indexed under it.
     fold(engine, 2, |p| {
         (0..N)
             .filter(|i| i.is_multiple_of(4) || i.is_multiple_of(10))
             .try_for_each(|i| {
+                if i == N / 2 {
+                    p.put_record(&sort_setting(json!(["v", "w", "x"]), 2))?;
+                }
                 let mut again = state(i, 1);
                 again.position = Position(2);
                 p.put_record(&again)?;
                 p.put_record(&state(i, 2))
-            })?;
-        p.put_record(&sort_setting(json!(["v", "w", "x"]), 2))
+            })
     })?;
+    let after_the_setting = "at the head, before the type is declared again";
+    walk_field_orders(engine, None, &two, 2, N, &state, after_the_setting)?;
     fold(engine, 3, |p| {
         p.put_declaration(&three, 2, None, Position(3))
     })?;
@@ -1428,6 +1433,42 @@ fn a_field_ordered_scan_walks_page_by_page_as_one_scan(
         &state,
         "at the head, the setting without `v`",
     )
+}
+
+engine_check!(
+    /// A setting that orders the settings type is read by the next setting.
+    SETTINGS_ORDERED = a_sort_setting_for_the_settings_type_orders_the_settings_put_after_it,
+    "041 and seams §ProjectionStore: a `sort_index.<type>` setting takes effect for the records put after it in the same transaction, the settings type's own included: a setting put before it and one put after it are both in the order index"
+);
+
+fn a_sort_setting_for_the_settings_type_orders_the_settings_put_after_it(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    use lakelands_api::seam::SETTING_TYPE;
+    let settings = declare(json!({
+        "declare": "type", "name": SETTING_TYPE,
+        "fields": [{"name": "key", "type": {"kind": "text"}},
+                   {"name": "value", "type": {"kind": "json"}}]
+    }));
+    let setting =
+        |key: &str, value: Value| record(SETTING_TYPE, key, json!({"key": key, "value": value}), 1);
+    fold(engine, 1, |p| {
+        p.put_declaration(&settings, 1, None, Position(0))?;
+        p.put_record(&setting("a.one", json!(1)))?;
+        p.put_record(&setting("sort_index.sys.setting", json!(["key"])))?;
+        p.put_record(&setting("a.two", json!(2)))
+    })?;
+    let by_key = scan_with(|s| s.order_by = vec![order("key", OrderBy::Value, Direction::Desc)]);
+    let page = view(engine, None)?
+        .scan(&TypeName::from(SETTING_TYPE), &by_key)
+        .must("a page of the settings ordered by `key`")?;
+    ensure!(
+        keys(&page) == ["sort_index.sys.setting", "a.two", "a.one"],
+        "one transaction put the setting `a.one`, then `sort_index.sys.setting` asking for \
+         `key`, then `a.two`; the settings by `key`, descending, came as {:?}",
+        keys(&page)
+    );
+    Ok(())
 }
 
 /// Walk every field order of the check's type `t` page by page at `at`,

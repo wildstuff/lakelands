@@ -38,6 +38,10 @@ struct Transaction {
     /// The types declared in it, each with the position of its latest
     /// declaration: the commit indexes their older records under it.
     redeclared: BTreeMap<TypeName, Position>,
+    /// The type `put_record` last indexed a record under: read once for a
+    /// run of records of one type, and forgotten when a declaration or a
+    /// `sort_index.<type>` setting is put, which may change it.
+    kept: Option<projection::Kept>,
 }
 
 /// One handle onto a lake kept by the SQLite engine.
@@ -216,7 +220,11 @@ impl SqliteLake {
     }
 
     /// Hold a put for the open transaction.
-    fn stage(&self, position: Position, f: impl FnOnce(&Connection) -> Result<()>) -> Result<()> {
+    fn stage(
+        &self,
+        position: Position,
+        f: impl FnOnce(&Connection, &mut Transaction) -> Result<()>,
+    ) -> Result<()> {
         let mut transaction = lock(&self.transaction);
         let Some(t) = transaction.as_mut() else {
             return Err(invalid(
@@ -224,7 +232,7 @@ impl SqliteLake {
             ));
         };
         t.latest = t.latest.max(Some(position));
-        self.write(f)
+        self.write(|conn| f(conn, t))
     }
 }
 
@@ -410,24 +418,23 @@ impl ProjectionStore for SqliteLake {
             schema_hash: schema_hash.map(str::to_owned),
             since: at,
         };
-        let mut redeclared = None;
-        self.stage(at, |conn| {
-            redeclared = projection::put_declaration(conn, &d)?;
+        self.stage(at, |conn, t| {
+            t.kept = None;
+            let redeclared = projection::put_declaration(conn, &d)?;
+            t.redeclared.extend(redeclared.map(|ty| (ty, at)));
             Ok(())
-        })?;
-        if let (Some(ty), Some(t)) = (redeclared, lock(&self.transaction).as_mut()) {
-            t.redeclared.insert(ty, at);
-        }
-        Ok(())
+        })
     }
 
     fn put_record(&self, record: &StoredRecord) -> Result<()> {
-        self.stage(record.position, |conn| projection::put_record(conn, record))
+        self.stage(record.position, |conn, t| {
+            projection::put_record(conn, &mut t.kept, record)
+        })
     }
 
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
         let state = serde_json::to_string(proposal).expect("a proposal serialises");
-        self.stage(at, |conn| {
+        self.stage(at, |conn, _| {
             PROPOSALS.put(conn, &[&proposal.id.as_str()], at, &state)
         })
     }
@@ -440,20 +447,20 @@ impl ProjectionStore for SqliteLake {
         member: bool,
         at: Position,
     ) -> Result<()> {
-        self.stage(at, |conn| {
+        self.stage(at, |conn, _| {
             MEMBERS.put(conn, &[&set, &ty.as_str(), &key.as_str()], at, &member)
         })
     }
 
     fn put_output(&self, seam: &str, input: &Digest, output: &Value, at: Position) -> Result<()> {
         let state = serde_json::to_string(output).expect("a value serialises");
-        self.stage(at, |conn| {
+        self.stage(at, |conn, _| {
             OUTPUTS.put(conn, &[&seam, &input.0.as_str()], at, &state)
         })
     }
 
     fn mark_applied(&self, id: &EventId, at: Position) -> Result<()> {
-        self.stage(at, |conn| {
+        self.stage(at, |conn, _| {
             conn.prepare_cached("INSERT OR IGNORE INTO applied (id, at) VALUES (?1, ?2)")
                 .and_then(|mut s| s.execute(params![id.0, at.0 as i64]))
                 .map(|_| ())
