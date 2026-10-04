@@ -49,7 +49,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use lakelands_api::describe::{LakeDescription, TypeDescription};
-use lakelands_api::engine::{After, Declared, ProjectionView, Scan};
+use lakelands_api::engine::{After, ProjectionView, Scan};
 use lakelands_api::expr::{Expr, Func, Literal};
 use lakelands_api::ontology::{
     FieldType, MatchPair, RelationDecl, StorageKind, TypeDecl, VerbEffect,
@@ -255,7 +255,7 @@ impl<'a> Reader<'a> {
     pub fn open(lake: &'a Lake, who: &'a Principal, at: ReadAt) -> Result<Reader<'a>> {
         let view = lake.engine.view(at.as_of)?;
         let position = view.position().unwrap_or(Position::GENESIS);
-        let ontology = Ontology::from_declared(&view.declarations()?);
+        let ontology = Ontology::at(view.as_ref())?;
         let settings = settings_in(view.as_ref())?;
         Ok(Reader {
             lake,
@@ -1257,7 +1257,9 @@ impl<'a> Reader<'a> {
             .collect();
         let verb_on = |v: &VerbName| self.ontology.verb(v).ok().map(|d| d.on.clone());
         for p in &mut mine {
-            let logged = p.write.take();
+            // `more` is what the trim left out, not what the completion added.
+            let mut logged = p.write.take();
+            logged.iter_mut().for_each(|w| self.completed(w));
             let shown = logged.clone();
             p.write = shown.and_then(|mut w| self.known_shape(&mut w).then_some(w));
             p.more = p.write != logged;
@@ -1268,6 +1270,25 @@ impl<'a> Reader<'a> {
             .skip(offset)
             .take(limit)
             .collect())
+    }
+
+    /// A proposed shape completed as one in force is: a shape that is not
+    /// in force is completed before it is judged or compared.
+    fn completed(&self, write: &mut ProposedWrite) {
+        match write {
+            ProposedWrite::Migrate { migration, .. } => self.ontology.complete(&mut migration.to),
+            ProposedWrite::Declare { declarations } => {
+                let mut after = self.ontology.clone();
+                let all = declarations.iter().cloned();
+                all.for_each(|d| after.put(d, 0, None));
+                for d in declarations.iter_mut() {
+                    if let Declaration::Type(t) = d {
+                        after.complete(t);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// A proposed write as its reader may know it (013 and 024, extended):
@@ -1337,14 +1358,12 @@ impl<'a> Reader<'a> {
             // Each declaration as `describe` would show it once the bundle
             // is in force; one it would not show leaves the list.
             ProposedWrite::Declare { declarations } => {
-                let proposed = declarations.iter().cloned().map(|declaration| Declared {
-                    declaration,
-                    version: 0,
-                    schema_hash: None,
-                    since: Position(0),
-                });
-                let after: Vec<Declared> = proposed.chain(self.declared()).collect();
-                declarations.retain(|d| describe::listed(d, &after, self.who));
+                let mut after = self.ontology.clone();
+                declarations
+                    .iter()
+                    .for_each(|d| after.put(d.clone(), 0, None));
+                let declared = after.declared();
+                declarations.retain(|d| describe::listed(d, &declared, self.who));
                 for d in declarations.iter_mut() {
                     if let Declaration::Type(t) = d {
                         rights::known_fields(self.who, t);

@@ -25,6 +25,15 @@ pub(crate) struct DeclaredType {
     pub decl: TypeDecl,
     pub version: u32,
     pub schema_hash: String,
+    /// Each field's `depends_on` as declared: the completed lists are made
+    /// again from them.
+    pub listed: Vec<Vec<FieldName>>,
+}
+
+/// A type's fields and its relations' link fields: all that may be computed.
+fn computed(t: &mut TypeDecl) -> impl Iterator<Item = &mut FieldDecl> {
+    let links = t.relations.iter_mut().flat_map(|r| r.fields.iter_mut());
+    t.fields.iter_mut().chain(links)
 }
 
 /// The lake as it stood at one position.
@@ -102,14 +111,8 @@ impl State {
                         }
                     }
                 }
-                self.types.insert(
-                    ty.clone(),
-                    DeclaredType {
-                        decl: migration.to.clone(),
-                        version: *version,
-                        schema_hash: schema_hash.clone(),
-                    },
-                );
+                let to = Declaration::Type(migration.to.clone());
+                self.declare(&to, Some(schema_hash.clone()), *version);
             }
             EventBody::RecordUpserted {
                 ty,
@@ -233,14 +236,15 @@ impl State {
     pub(crate) fn declare(&mut self, d: &Declaration, schema_hash: Option<String>, version: u32) {
         match d {
             Declaration::Type(t) => {
-                self.types.insert(
-                    t.name.clone(),
-                    DeclaredType {
-                        decl: t.clone(),
-                        version,
-                        schema_hash: schema_hash.unwrap_or_default(),
-                    },
-                );
+                let mut decl = t.clone();
+                let mut held = DeclaredType {
+                    listed: computed(&mut decl).map(|f| f.depends_on.clone()).collect(),
+                    decl,
+                    version,
+                    schema_hash: schema_hash.unwrap_or_default(),
+                };
+                self.complete(&mut held.decl);
+                self.types.insert(t.name.clone(), held);
             }
             Declaration::Verb(v) => {
                 self.verbs.insert(v.name.clone(), v.clone());
@@ -257,10 +261,49 @@ impl State {
                 self.object_sets.retain(|x| x.name != s.name);
                 self.object_sets.push(s.clone());
             }
+            // As the store: a function's inputs are what its fields are
+            // computed from, so the types in force are completed again,
+            // from their lists as declared.
             Declaration::Function(f) => {
                 self.functions.retain(|x| x.name != f.name);
                 self.functions.push(f.clone());
+                for name in self.types.keys().cloned().collect::<Vec<_>>() {
+                    let mut held = self.types.remove(&name).expect("a type in force");
+                    for (f, declared) in computed(&mut held.decl).zip(&held.listed) {
+                        f.depends_on.clone_from(declared);
+                    }
+                    self.complete(&mut held.decl);
+                    self.types.insert(name, held);
+                }
             }
+        }
+    }
+
+    /// As the store: a shape with every computed field's `depends_on`
+    /// holding each field it is computed from, what its expression reads or
+    /// its function's inputs; a field is read no further than those.
+    pub(crate) fn complete(&self, t: &mut TypeDecl) {
+        for f in computed(t).filter(|f| f.embed.is_none()) {
+            let function = f.function.as_deref();
+            let inputs = function.and_then(|n| self.functions.iter().find(|x| x.name == n));
+            let mut reads: Vec<FieldName> = match (inputs, &f.derived) {
+                (Some(func), _) => func.inputs.iter().map(|i| i.name.clone()).collect(),
+                (None, Some(e)) => {
+                    let mut paths = Vec::new();
+                    if let Ok(e) = crate::expr::typed(e) {
+                        crate::expr::paths(&e, &mut paths);
+                    }
+                    paths
+                        .into_iter()
+                        .filter_map(|p| p.first().cloned())
+                        .collect()
+                }
+                (None, None) => Vec::new(),
+            };
+            reads.retain(|r| !f.depends_on.contains(r));
+            reads.sort();
+            reads.dedup();
+            f.depends_on.extend(reads);
         }
     }
 

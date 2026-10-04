@@ -14,6 +14,7 @@ mod authors_view;
 mod backings;
 mod bundles;
 mod compact;
+mod computed_inputs;
 mod concurrency;
 mod cursors;
 mod date_bucket;
@@ -158,6 +159,7 @@ pub const ALL: &[Check] = &[
     provenance::FIELD_PROVENANCE,
     masking::MASKED_AND_ABSENT,
     masking::BUILT_FROM_HIDDEN,
+    computed_inputs::COMPUTED_AS_ITS_INPUTS,
     masking::NONE_HIDES,
     masking::VALID_AT_PROBES,
     masking::WRITE_ONLY,
