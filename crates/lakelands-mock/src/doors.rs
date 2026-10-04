@@ -2101,24 +2101,39 @@ fn view_reads(v: &ViewDecl) -> Vec<(TypeName, Vec<FieldName>)> {
         .collect()
 }
 
-/// The fields of `ty` a declaration other than a view reads, as the store
-/// counts them: a derived field's expression on `ty` itself, the fields of
-/// `ty` a derived relation matches as its target, a set's `where`, a
-/// trigger's `when`, and a verb's `requires`, the fields it sets and what
-/// it sets them from (where `payload.<name>` is the call's).
+/// The fields of `ty` a declaration reads, as the store counts them: what
+/// it probes and the fields a verb sets.
 fn declaration_reads(d: &Declaration, ty: &TypeName) -> BTreeSet<FieldName> {
+    let mut names = declaration_probes(d, ty);
+    if let Declaration::Verb(v) = d
+        && let VerbEffect::Write { set } = &v.effect
+        && &v.on == ty
+    {
+        names.extend(set.iter().map(|a| a.field.clone()));
+    }
+    names
+}
+
+/// The fields of `ty` whose values a declaration reads, as the store counts
+/// them: a derived field's expression on `ty` itself, the fields a derived
+/// relation matches, its own and those of `ty` as its target, what a view
+/// reads of `ty` as a source, a set's `where`, a trigger's `when`, and a
+/// verb's `requires` and what it sets its fields from (where
+/// `payload.<name>` is the call's).
+fn declaration_probes(d: &Declaration, ty: &TypeName) -> BTreeSet<FieldName> {
     let of = |c: &Condition| named(c).unwrap_or_default();
     match d {
         Declaration::Type(t) => {
             let own = t.fields.iter().filter(|_| &t.name == ty);
-            let matched = t.relations.iter().filter(|r| &r.target == ty);
+            let pairs = |r: &RelationDecl| r.derived.clone().map(|m| m.pairs).unwrap_or_default();
+            let matching = (t.relations.iter().filter(|_| &t.name == ty)).flat_map(pairs);
+            let matched = (t.relations.iter().filter(|r| &r.target == ty)).flat_map(pairs);
+            let view = t.view.iter().flat_map(|v| view_reads(v));
             own.filter_map(|f| f.derived.as_ref())
                 .flat_map(of)
-                .chain(
-                    matched
-                        .filter_map(|r| r.derived.as_ref())
-                        .flat_map(|m| m.pairs.iter().map(|p| p.to.clone())),
-                )
+                .chain(matching.map(|p| p.from))
+                .chain(matched.map(|p| p.to))
+                .chain(view.filter(|(source, _)| source == ty).flat_map(|v| v.1))
                 .collect()
         }
         Declaration::ObjectSet(s) if &s.of == ty => of(&s.filter),
@@ -2130,7 +2145,6 @@ fn declaration_reads(d: &Declaration, ty: &TypeName) -> BTreeSet<FieldName> {
                     let record = value_paths(&a.value).into_iter();
                     let record = record.filter(|p| expr::payload_member(p).is_none());
                     names.extend(record.filter_map(|p| p.first().cloned()));
-                    names.insert(a.field.clone());
                 }
             }
             names
@@ -2261,15 +2275,126 @@ fn as_author(
 
 /// A migration read as its author's view of its type.
 fn authored(st: &State, who: &Principal, m: &mut Migration) -> Result<()> {
+    reads_as_author(st, who, &[Declaration::Type(m.to.clone())], true)?;
     match st.types.get(&m.to.name) {
         Some(before) => as_author(who, &before.decl, &mut m.to, &m.renames),
         None => Ok(()),
     }
 }
 
+/// As the store: a declaration reads only what its author may read. The
+/// set is checked as sent against the lake as its author is shown it, so a
+/// field the author may not know of answers as one the type does not have;
+/// then a field it knows of and may not read is refused as not granted,
+/// where the declaration probes it and the one in force did not.
+fn reads_as_author(
+    st: &State,
+    who: &Principal,
+    sent: &[Declaration],
+    reshapes: bool,
+) -> Result<()> {
+    let mut seen = st.clone();
+    for t in seen.types.values_mut() {
+        known_fields(who, &mut t.decl);
+    }
+    // As the store: what a type's shape names stands as declared, known to
+    // its author or not: a key field, a valid time, a relation's `via`.
+    let mut shaped = sent.to_vec();
+    for d in &mut shaped {
+        let Declaration::Type(t) = d else { continue };
+        let (Some(was), Some(e)) = (st.types.get(&t.name), seen.types.get_mut(&t.name)) else {
+            continue;
+        };
+        let via = t.relations.iter().filter_map(|r| r.via.as_ref());
+        let named = t
+            .key
+            .iter()
+            .chain(&t.valid_from)
+            .chain(&t.valid_to)
+            .chain(via);
+        let named: Vec<FieldName> = named.cloned().collect();
+        let declared = was.decl.fields.iter().enumerate();
+        for (i, f) in declared.filter(|(_, f)| named.contains(&f.name)) {
+            for fields in [&mut t.fields, &mut e.decl.fields] {
+                if !fields.iter().any(|x| x.name == f.name) {
+                    fields.insert(i.min(fields.len()), f.clone());
+                }
+            }
+        }
+    }
+    // A migration's shape is refused as a declaration, of the type or of
+    // a relation's links.
+    let reshaping = |e: &Error| {
+        let why = e.to_string();
+        reshapes && (why.contains("change it with `migrate`") || why.contains("is a migration"))
+    };
+    check_set(&seen, who, &shaped).or_else(|e| if reshaping(&e) { Ok(()) } else { Err(e) })?;
+    let mut after = st.clone();
+    for d in sent {
+        let (hash, version) = identity_version(&after, d);
+        after.declare(d, hash, version);
+    }
+    for d in sent {
+        let named = |x: &&lakelands_api::ontology::TriggerDecl| matches!(d, Declaration::Trigger(t) if t.name == x.name);
+        let held = |x: &&lakelands_api::write::ObjectSetDecl| matches!(d, Declaration::ObjectSet(s) if s.name == x.name);
+        let was = match d {
+            Declaration::Type(t) => st
+                .types
+                .get(&t.name)
+                .map(|t| Declaration::Type(t.decl.clone())),
+            Declaration::Verb(v) => st.verbs.get(&v.name).cloned().map(Declaration::Verb),
+            Declaration::Trigger(_) => st
+                .triggers
+                .iter()
+                .find(named)
+                .cloned()
+                .map(Declaration::Trigger),
+            Declaration::ObjectSet(_) => st
+                .object_sets
+                .iter()
+                .find(held)
+                .cloned()
+                .map(Declaration::ObjectSet),
+            _ => None,
+        };
+        // Only what its author adds or changes: of a type, the fields, the
+        // relations and the view that do not stand as they are.
+        let mut new = d.clone();
+        if let Declaration::Type(t) = &mut new {
+            after.complete(t);
+        }
+        match (&mut new, &was) {
+            (Declaration::Type(t), Some(Declaration::Type(w))) => {
+                t.fields.retain(|f| !w.fields.contains(f));
+                t.relations.retain(|r| !w.relations.contains(r));
+                t.view = t.view.take().filter(|v| Some(v) != w.view.as_ref());
+            }
+            (_, Some(w)) if w == d => continue,
+            _ => {}
+        }
+        for t in st.types.values() {
+            let mut names = declaration_probes(&new, &t.decl.name);
+            // A function's inputs and what an embedding is made from.
+            if let Declaration::Type(x) = &new
+                && x.name == t.decl.name
+            {
+                for f in &x.fields {
+                    names.extend(f.depends_on.iter().cloned());
+                    names.extend(f.embed.iter().flat_map(|e| e.from.clone()));
+                }
+            }
+            for n in names.iter().filter(|n| field(&t.decl, n).is_some()) {
+                readable(st, who, t, n)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Each type of `declarations` the lake declares already, read as its
 /// author's view of it.
 fn redeclared(st: &State, who: &Principal, declarations: &mut [Declaration]) -> Result<()> {
+    reads_as_author(st, who, declarations, false)?;
     for d in declarations {
         if let Declaration::Type(t) = d
             && let Some(before) = st.types.get(&t.name)

@@ -115,9 +115,8 @@ impl Doors {
     /// Make the calls of backed functions the write made due, and answer
     /// its outcome at the position of the last output recorded, from which
     /// the filled fields are visible. Of what the write set off, it names
-    /// only the triggers and object sets `describe` lists to `who`: naming
-    /// one whose condition reads a field `who` may not read would tell it
-    /// that the condition held (024). `through` still covers them all.
+    /// only what [`lakelands_core::describe::named_reactions`] leaves `who` (024);
+    /// `through` still covers it all.
     async fn settled(&self, who: &Principal, mut outcome: Outcome, seen: u64) -> Result<Outcome> {
         let last = crate::backed::settle(&self.lake, seen).await?;
         let named = matches!(&outcome, Outcome::Applied { set_off, .. } if set_off.names_any());
@@ -133,12 +132,7 @@ impl Doors {
             *position = (*position).max(last.unwrap_or(*position));
             set_off.through = set_off.through.filter(|t| t > position);
             if let Some(lake) = lake {
-                set_off
-                    .fired
-                    .retain(|t| lake.triggers.iter().any(|d| &d.name == t));
-                let listed = |s: &String| lake.object_sets.iter().any(|d| &d.name == s);
-                set_off.joined.retain(listed);
-                set_off.left.retain(listed);
+                lakelands_core::describe::named_reactions(&lake, set_off);
             }
         }
         Ok(outcome)

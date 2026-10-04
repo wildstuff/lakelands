@@ -10,6 +10,7 @@ mod after;
 mod aggregates;
 mod aging;
 mod annotations;
+mod authored_reads;
 mod authors_view;
 mod backings;
 mod bundles;
@@ -160,6 +161,7 @@ pub const ALL: &[Check] = &[
     masking::MASKED_AND_ABSENT,
     masking::BUILT_FROM_HIDDEN,
     computed_inputs::COMPUTED_AS_ITS_INPUTS,
+    authored_reads::AUTHOR_READS,
     masking::NONE_HIDES,
     masking::VALID_AT_PROBES,
     masking::WRITE_ONLY,
