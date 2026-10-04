@@ -48,7 +48,8 @@ engine.
   has a mark (`vindex.<type>.<field>`) the fold keeps at `folded`, as the
   order index's (041). A search uses the index only while the mark equals
   `folded`; otherwise it scans, and answers the reference. The setting's
-  write builds its type's indexes in the fold's transaction; a
+  write builds its type's indexes in the fold's transaction, at its
+  commit, so no search waits on a build before then; a
   redeclaration of the type builds them again; a writer's open builds
   those whose mark is behind; `rebuild` and `clear` take them with the
   projection.

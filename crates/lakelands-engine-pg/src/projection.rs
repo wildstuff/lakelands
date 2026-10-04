@@ -453,10 +453,7 @@ pub(crate) fn rebuild_sorted(
     )?;
     let head = head_type(db, names, ty)?;
     if head.sorted.is_empty() {
-        return db.execute(
-            &format!("DELETE FROM {} WHERE k = $1", names.t("meta")),
-            &[&engines::sorted_mark(ty)],
-        );
+        return set_sorted(db, names, ty, None);
     }
     // A page of the type at a time, so the pass holds a page, not the type.
     let mut after = String::new();
@@ -484,12 +481,19 @@ pub(crate) fn rebuild_sorted(
             break;
         }
     }
+    set_sorted(db, names, ty, Some(through))
+}
+
+/// Mark `ty`'s order index kept through `through`; with none, drop its
+/// mark: the index keeps no field.
+fn set_sorted(db: &mut Db, names: &Names, ty: &TypeName, through: Option<Position>) -> Result<()> {
+    let (meta, mark) = (names.t("meta"), engines::sorted_mark(ty));
+    let Some(at) = through else {
+        return db.execute(&format!("DELETE FROM {meta} WHERE k = $1"), &[&mark]);
+    };
     db.execute(
-        &format!(
-            "INSERT INTO {} (k, n) VALUES ($1, $2) ON CONFLICT (k) DO UPDATE SET n = $2",
-            names.t("meta"),
-        ),
-        &[&engines::sorted_mark(ty), &(through.0 as i64)],
+        &format!("INSERT INTO {meta} (k, n) VALUES ($1, $2) ON CONFLICT (k) DO UPDATE SET n = $2"),
+        &[&mark, &(at.0 as i64)],
     )
 }
 
@@ -761,8 +765,12 @@ pub(crate) fn index_records(
     )
 }
 
-/// The puts of the fold's open transaction, held until it commits and
-/// then written a table at a time ([`Buffer::write`]). Each thing's
+/// How many puts the buffer holds before it is written, and how many
+/// records a pass over a type reads at a time.
+pub(crate) const PAGE: usize = 1_024;
+
+/// The puts of the fold's open transaction, held until they are a page
+/// or it commits, then written a table at a time ([`Buffer::write`]). Each thing's
 /// states are keyed by its identifying columns and position, so a put at
 /// a position already put in the transaction replaces it, as the one-row
 /// put replaces a state at the same position.
@@ -771,8 +779,8 @@ pub(crate) fn index_records(
 /// transaction, and the store reads a state it put in the same fold from
 /// what it staged. The questions the engine asks of a put (the state it
 /// supersedes, where it ends, whether it is the head, whether the thing
-/// had a state before) are answered at the commit, over the buffer and
-/// the table together.
+/// had a state before) are answered when it is written, over the buffer
+/// and the table together.
 #[derive(Default)]
 pub(crate) struct Buffer {
     records: BTreeMap<(Vec<String>, i64), StoredRecord>,
@@ -784,9 +792,13 @@ pub(crate) struct Buffer {
 }
 
 impl Buffer {
-    /// The record states the transaction put.
-    pub(crate) fn records_put(&self) -> usize {
-        self.records.len()
+    /// The puts it holds, of every kind.
+    pub(crate) fn len(&self) -> usize {
+        let (records, states) = (
+            self.records.len(),
+            self.proposals.len() + self.outputs.len(),
+        );
+        records + states + self.members.len() + self.applied.len()
     }
 
     pub(crate) fn record(&mut self, r: &StoredRecord) {
@@ -817,13 +829,14 @@ impl Buffer {
     /// head indexes of the records whose latest state is now a buffered
     /// one, under their types' declarations at the head as `types` reads
     /// them after every declaration the transaction put, and the applied
-    /// ids. That leaves what putting them one by one leaves.
+    /// ids. That leaves what putting them one by one leaves. The types
+    /// whose `vector_index.<type>` setting it wrote go into `asked`.
     pub(crate) fn write(
         self,
         db: &mut Db,
         names: &Names,
         types: &mut HeadTypes,
-        pgvector: Option<&crate::vector_index::Pgvector>,
+        asked: &mut BTreeMap<TypeName, Position>,
     ) -> Result<()> {
         let records: BTreeMap<(Vec<String>, i64), String> = self
             .records
@@ -838,7 +851,7 @@ impl Buffer {
         OUTPUTS.put_many(db, names, &self.outputs)?;
         MEMBERS.put_many(db, names, &self.members)?;
         let mut latest = Vec::with_capacity(heads.len());
-        let (mut settings, mut vector_settings) = (Vec::new(), Vec::new());
+        let mut settings = Vec::new();
         for (ident, had) in &heads {
             let r = self
                 .records
@@ -853,9 +866,10 @@ impl Buffer {
                 settings.push((ty, r.position));
             }
             // A `vector_index.<type>` setting whose head state the buffer
-            // holds rebuilds its type's vector indexes, after the records are in.
+            // holds has its type's vector indexes built again at the commit:
+            // a build holds `vectors` against every other session until then.
             if let Some(ty) = engines::vector_index_type(r) {
-                vector_settings.push((ty, r.position));
+                asked.insert(ty, r.position);
             }
             latest.push((r, *had));
         }
@@ -874,9 +888,6 @@ impl Buffer {
         // describes the head from the next read on.
         for (ty, at) in settings {
             rebuild_sorted(db, names, &ty, at)?;
-        }
-        for (ty, at) in vector_settings {
-            crate::vector_index::rebuild(db, names, pgvector, &ty, at)?;
         }
         if !self.applied.is_empty() {
             let (ids, at): (Vec<&str>, Vec<i64>) = self
@@ -902,7 +913,7 @@ impl Buffer {
 /// records' head indexes are to be rewritten under it, and it answers the
 /// type: the commit does that with [`index_older`], for the records the
 /// transaction has not put again by then. Records the transaction buffered
-/// are indexed at its commit, under the declaration in force then.
+/// are indexed as they are written, under the declaration in force then.
 pub(crate) fn put_declaration(
     db: &mut Db,
     names: &Names,
@@ -916,22 +927,27 @@ pub(crate) fn put_declaration(
     let Declaration::Type(t) = &d.declaration else {
         return Ok(None);
     };
-    if types.get(db, names, &t.name)?.decl.as_ref() != Some(t) {
+    let head = types.get(db, names, &t.name)?;
+    if head.decl.as_ref() != Some(t) {
         return Ok(None);
     }
     // The rows go whole: the declaration may have dropped a field the index
-    // kept.
+    // kept. The mark follows the fields it leaves the index, which the
+    // records written after it and the commit fill: a setting written before
+    // the declaration that first declares its fields found none to mark.
     db.execute(
         &format!("DELETE FROM {} WHERE ty = $1", names.t("sort_index")),
         &[&t.name.as_str()],
     )?;
+    let kept = (!head.sorted.is_empty()).then_some(d.since);
+    set_sorted(db, names, &t.name, kept)?;
     Ok(Some(t.name.clone()))
 }
 
 /// Rewrite the head indexes of the records of `ty` whose latest state is
 /// older than `at`, under the type's declaration at the head. A record put
-/// at `at` or after is indexed under that declaration by the commit that
-/// writes it: a migration puts every record again, and nothing is left to
+/// at `at` or after is indexed under that declaration when its page is
+/// written: a migration puts every record again, and nothing is left to
 /// do here.
 pub(crate) fn index_older(
     db: &mut Db,
@@ -941,17 +957,22 @@ pub(crate) fn index_older(
     at: Position,
 ) -> Result<()> {
     let head = types.get(db, names, ty)?;
-    let records = db.records(
-        &format!(
-            "SELECT state FROM {} WHERE ty = $1 AND until IS NULL AND since < $2 \
-             ORDER BY key COLLATE \"C\"",
-            names.t("records")
-        ),
-        &[&ty.as_str(), &(at.0 as i64)],
-    )?;
-    let indexed: Vec<(&HeadType, &StoredRecord)> = records.iter().map(|r| (&head, r)).collect();
-    let stale: Vec<(&str, &str)> = (records.iter())
-        .map(|r| (r.ty.as_str(), r.key.as_str()))
-        .collect();
-    index_records(db, names, &indexed, &stale)
+    let page = format!(
+        "SELECT state FROM {} WHERE ty = $1 AND until IS NULL AND since < $2 \
+         AND key COLLATE \"C\" > $3 ORDER BY key COLLATE \"C\" LIMIT {PAGE}",
+        names.t("records")
+    );
+    // A page of the type at a time; an ended key has no index rows.
+    let mut after = String::new();
+    loop {
+        let records = db.records(&page, &[&ty.as_str(), &(at.0 as i64), &after])?;
+        let live = || records.iter().filter(|r| !r.is_ended());
+        let indexed: Vec<(&HeadType, &StoredRecord)> = live().map(|r| (&head, r)).collect();
+        let stale: Vec<(&str, &str)> = live().map(|r| (r.ty.as_str(), r.key.as_str())).collect();
+        index_records(db, names, &indexed, &stale)?;
+        match records.last() {
+            Some(last) if records.len() == PAGE => after = last.key.to_string(),
+            _ => return Ok(()),
+        }
+    }
 }

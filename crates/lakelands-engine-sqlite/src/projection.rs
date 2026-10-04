@@ -618,12 +618,22 @@ pub(crate) fn put_declaration(conn: &Connection, d: &Declared) -> Result<Option<
 pub(crate) fn index_older(conn: &Connection, ty: &TypeName, at: Position) -> Result<()> {
     let head = type_at(conn, ty, None)?;
     let sorted = sorted_fields(conn, ty, head.as_ref())?;
-    let older = column(
-        conn,
-        "SELECT state FROM records WHERE ty = ?1 AND until IS NULL AND since < ?2 ORDER BY key",
-        params![ty.as_str(), at.0 as i64],
-        |s: String| decode_record(&s),
-    );
-    let older: Vec<StoredRecord> = older?;
-    (older.iter()).try_for_each(|r| index_record(conn, head.as_ref(), &sorted, r))
+    // A page of the type at a time; an ended key has no index rows.
+    let mut after = String::new();
+    loop {
+        let older: Vec<StoredRecord> = column(
+            conn,
+            "SELECT state FROM records WHERE ty = ?1 AND until IS NULL AND since < ?2 \
+             AND key > ?3 ORDER BY key LIMIT 1024",
+            params![ty.as_str(), at.0 as i64, after],
+            |s: String| decode_record(&s),
+        )?;
+        for r in older.iter().filter(|r| !r.is_ended()) {
+            index_record(conn, head.as_ref(), &sorted, r)?;
+        }
+        match older.last() {
+            Some(last) if older.len() == 1024 => after = last.key.to_string(),
+            _ => return Ok(()),
+        }
+    }
 }

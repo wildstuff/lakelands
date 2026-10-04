@@ -50,7 +50,7 @@ use crate::{NAME, invalid, lease, lock, log, unavailable};
 
 /// The open transaction of the fold: the latest position a put in it
 /// names, which the commit must reach, the head declarations it read, and
-/// the puts it holds until the commit writes them.
+/// the puts it holds until a full page of them, or the commit, is written.
 #[derive(Default)]
 struct Transaction {
     latest: Option<Position>,
@@ -59,6 +59,13 @@ struct Transaction {
     /// The types declared in it, each with the position of its latest
     /// declaration: the commit indexes their older records under it.
     redeclared: BTreeMap<TypeName, Position>,
+    /// The types whose `vector_index.<type>` setting a page wrote, each with
+    /// the setting's position: the commit builds their indexes, once.
+    asked: BTreeMap<TypeName, Position>,
+    /// The record states staged in it, for the count that tells the
+    /// planner: counted as they are staged, since the buffer is written and
+    /// emptied a page at a time.
+    put: u64,
 }
 
 /// The records a writer puts between two analyses of its tables.
@@ -159,14 +166,21 @@ impl PgLake {
     }
 
     /// Take a put into the open transaction: `f` holds it in the buffer,
-    /// which the commit writes.
+    /// which is written inside the transaction once it holds a page of
+    /// puts, and at the commit. So the engine holds a page of a
+    /// transaction's puts, not all of them; no view sees a written page
+    /// before the commit.
     fn stage(&self, position: Position, f: impl FnOnce(&mut Buffer)) -> Result<()> {
-        self.writing()?;
+        let writing = self.writing()?;
         let mut transaction = lock(&self.transaction);
         let t = transaction.as_mut().ok_or_else(engines::unstaged)?;
         t.latest = t.latest.max(Some(position));
         f(&mut t.buffer);
-        Ok(())
+        if t.buffer.len() < projection::PAGE {
+            return Ok(());
+        }
+        let (page, mut db) = (std::mem::take(&mut t.buffer), lock(&writing.projection));
+        page.write(&mut db, &self.names, &mut t.types, &mut t.asked)
     }
 }
 
@@ -380,7 +394,9 @@ impl ProjectionStore for PgLake {
             .take()
             .ok_or_else(|| invalid("there is no transaction to commit: call `begin` first"))?;
         let mut db = lock(&writing.projection);
-        let folded = projection::folded(&mut db, &self.names)?;
+        // After a page the server refused, this read fails too: the
+        // transaction is taken by now, so its session is rolled back here.
+        let folded = projection::folded(&mut db, &self.names).or_else(|e| db.end(Err(e)))?;
         if let Some(refused) = engines::commit_refusal(folded, t.latest, through) {
             return db.end(Err(refused));
         }
@@ -388,16 +404,23 @@ impl ProjectionStore for PgLake {
             mut types,
             buffer,
             redeclared,
+            mut asked,
+            put,
             ..
         } = t;
-        let put = buffer.records_put() as u64;
+        // The last page, then the records a declaration left to index and
+        // the vector indexes a setting asked for.
         let written = buffer
-            .write(&mut db, &self.names, &mut types, self.pgvector.as_ref())
+            .write(&mut db, &self.names, &mut types, &mut asked)
             .and_then(|()| {
                 let older = |(ty, at): (&TypeName, &Position)| {
                     projection::index_older(&mut db, &self.names, &mut types, ty, *at)
                 };
-                redeclared.iter().try_for_each(older)
+                redeclared.iter().try_for_each(older)?;
+                let v = self.pgvector.as_ref();
+                asked.iter().try_for_each(|(ty, at)| {
+                    vector_index::rebuild(&mut db, &self.names, v, ty, *at)
+                })
             })
             .and_then(|()| projection::set_folded(&mut db, &self.names, through));
         db.end(written)?;
@@ -451,7 +474,11 @@ impl ProjectionStore for PgLake {
     }
 
     fn put_record(&self, record: &StoredRecord) -> Result<()> {
-        self.stage(record.position, |b| b.record(record))
+        self.stage(record.position, |b| b.record(record))?;
+        if let Some(t) = lock(&self.transaction).as_mut() {
+            t.put += 1;
+        }
+        Ok(())
     }
 
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {
