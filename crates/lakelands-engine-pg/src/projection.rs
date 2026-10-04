@@ -42,7 +42,7 @@ use lakelands_api::ontology::TypeDecl;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::{SETTING_TYPE, SORT_INDEX_SETTING};
 use lakelands_api::write::Declaration;
-use lakelands_core::engines;
+use lakelands_core::engines::{self, decode};
 use postgres::types::ToSql;
 
 use crate::connect::Db;
@@ -429,12 +429,6 @@ pub(crate) fn analyze(db: &mut Db, names: &Names) -> Result<()> {
     db.batch(&format!("ANALYZE {}", tables.join(", ")))
 }
 
-/// The meta row marking the position `ty`'s order index was last kept
-/// through.
-pub(crate) fn sorted_mark(ty: &TypeName) -> String {
-    format!("sorted.{ty}")
-}
-
 /// Rewrite `ty`'s order index from its head records, under its setting and
 /// declaration at the head, and mark it kept through `through`; with no
 /// field to keep, drop its rows and its mark. The fold does this when it
@@ -454,7 +448,7 @@ pub(crate) fn rebuild_sorted(
     if head.sorted.is_empty() {
         return db.execute(
             &format!("DELETE FROM {} WHERE k = $1", names.t("meta")),
-            &[&sorted_mark(ty)],
+            &[&engines::sorted_mark(ty)],
         );
     }
     // A page of the type at a time, so the pass holds a page, not the type.
@@ -488,7 +482,7 @@ pub(crate) fn rebuild_sorted(
             "INSERT INTO {} (k, n) VALUES ($1, $2) ON CONFLICT (k) DO UPDATE SET n = $2",
             names.t("meta"),
         ),
-        &[&sorted_mark(ty), &(through.0 as i64)],
+        &[&engines::sorted_mark(ty), &(through.0 as i64)],
     )
 }
 
@@ -522,11 +516,6 @@ pub(crate) fn catch_up_sorted(db: &mut Db, names: &Names) -> Result<()> {
         }
         Ok(())
     })
-}
-
-pub(crate) fn decode<T: serde::de::DeserializeOwned>(state: &str, what: &str) -> Result<T> {
-    serde_json::from_str(state)
-        .map_err(|e| crate::unavailable(format!("the projection holds {what} it cannot read: {e}")))
 }
 
 pub(crate) fn decode_record(state: &str) -> Result<StoredRecord> {

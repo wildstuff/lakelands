@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::Mutex;
 
 use lakelands_api::engine::{
     CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
@@ -53,7 +53,7 @@ pub struct SqliteLake {
     lease_file: LeaseFile,
     held: Mutex<Option<Held>>,
     writer: Mutex<Option<Connection>>,
-    reader: Mutex<Connection>,
+    pub(crate) reader: Mutex<Connection>,
     transaction: Mutex<Option<Transaction>>,
 }
 
@@ -149,11 +149,6 @@ impl SqliteLake {
             reader: Mutex::new(reader),
             transaction: Mutex::new(None),
         })
-    }
-
-    /// The reader connection.
-    pub(crate) fn reader(&self) -> Result<MutexGuard<'_, Connection>> {
-        Ok(lock(&self.reader))
     }
 
     /// Run `f` on the writer connection; a handle opened read-only has
@@ -348,7 +343,7 @@ impl LakeEngine for SqliteLake {
     }
 
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>> {
-        let folded = projection::folded(&*self.reader()?)?;
+        let folded = projection::folded(&lock(&self.reader))?;
         let at = engines::view_at(as_of, folded)?;
         Ok(Box::new(SqliteView { lake: self, at }))
     }
@@ -397,7 +392,7 @@ impl ProjectionStore for SqliteLake {
     }
 
     fn folded_through(&self) -> Result<Option<Position>> {
-        projection::folded(&*self.reader()?)
+        projection::folded(&lock(&self.reader))
     }
 
     fn put_declaration(
@@ -575,7 +570,7 @@ impl VectorIndex for SqliteLake {
         query: &[f32],
         k: u32,
     ) -> Result<Vec<(RecordKey, f64)>> {
-        let conn = self.reader()?;
+        let conn = lock(&self.reader);
         let mut stmt = conn
             .prepare_cached(
                 "SELECT key, data FROM vectors WHERE ty = ?1 AND field = ?2 ORDER BY key",
@@ -602,7 +597,7 @@ impl VectorIndex for SqliteLake {
     }
 
     fn count(&self, ty: &TypeName, field: &str) -> Result<u64> {
-        self.reader()?
+        lock(&self.reader)
             .prepare_cached("SELECT count(*) FROM vectors WHERE ty = ?1 AND field = ?2")
             .and_then(|mut s| s.query_row(params![ty.as_str(), field], |r| r.get::<_, i64>(0)))
             .map(|n| n as u64)

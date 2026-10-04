@@ -407,6 +407,12 @@ pub fn sort_index_key(ty: &TypeName) -> String {
     format!("{}{ty}", lakelands_api::seam::SORT_INDEX_SETTING)
 }
 
+/// The meta row by which an engine that keeps `ty`'s order index in
+/// tables marks the position it was last kept through.
+pub fn sorted_mark(ty: &TypeName) -> String {
+    format!("sorted.{ty}")
+}
+
 /// The key of the setting that asks for `ty`'s vector index.
 pub fn vector_index_key(ty: &TypeName) -> String {
     format!("{}{ty}", lakelands_api::seam::VECTOR_INDEX_SETTING)
@@ -969,17 +975,16 @@ fn field_tokens(
 /// records of one type as they stand at the head, `decl` the type's
 /// declaration there, are hits when their searchable text holds a query
 /// token — the text of the searchable fields `fields` names, when it
-/// names any; `visible` keeps those live at the view's own
-/// position. A hit scores the distinct query tokens its head text holds;
-/// best first, ties by key, at most `k`.
+/// names any; each comes with whether it is live at the view's own
+/// position, and only those are kept. A hit scores the distinct query
+/// tokens its head text holds; best first, ties by key, at most `k`.
 ///
 /// An engine may hand in any superset of the hits as `head`: a record
 /// whose named fields hold no query token scores nothing and is dropped
 /// here, before the ranking is cut at `k`.
 pub fn lexical<'a>(
     decl: &TypeDecl,
-    head: impl IntoIterator<Item = &'a StoredRecord>,
-    visible: impl Fn(&RecordKey) -> bool,
+    head: impl IntoIterator<Item = (&'a StoredRecord, bool)>,
     text: &str,
     fields: Option<&[FieldName]>,
     k: u32,
@@ -987,9 +992,9 @@ pub fn lexical<'a>(
     let query = tokens(text, decl.language.as_deref().unwrap_or(""));
     let mut hits: Vec<(RecordKey, f64)> = head
         .into_iter()
-        .filter_map(|r| {
+        .filter_map(|(r, live)| {
             let score = query.intersection(&field_tokens(decl, r, fields)).count();
-            (score > 0 && visible(&r.key)).then(|| (r.key.clone(), score as f64))
+            (score > 0 && live).then(|| (r.key.clone(), score as f64))
         })
         .collect();
     rank(&mut hits, k);
@@ -1244,6 +1249,13 @@ pub fn proposals<'a>(
         .take(filter.limit.map_or(usize::MAX, |l| l as usize))
         .cloned()
         .collect()
+}
+
+/// A state an engine's projection stored as JSON, read back; `what`
+/// names it (`a record`) in the fault of one that cannot be read.
+pub fn decode<T: serde::de::DeserializeOwned>(state: &str, what: &str) -> Result<T> {
+    serde_json::from_str(state)
+        .map_err(|e| crate::unavailable(format!("the projection holds {what} it cannot read: {e}")))
 }
 
 /// A vector as an index stores it: its components as little-endian

@@ -76,8 +76,8 @@ struct Writing {
 pub struct PgLake {
     lake: LakeId,
     target: Target,
-    names: Names,
-    reader: Mutex<Db>,
+    pub(crate) names: Names,
+    pub(crate) reader: Mutex<Db>,
     writing: Option<Writing>,
     held: Mutex<Option<Lease>>,
     transaction: Mutex<Option<Transaction>>,
@@ -133,16 +133,6 @@ impl PgLake {
             transaction: Mutex::new(None),
             pgvector,
         })
-    }
-
-    /// The reader connection.
-    pub(crate) fn reader(&self) -> MutexGuard<'_, Db> {
-        lock(&self.reader)
-    }
-
-    /// The lake's tables.
-    pub(crate) fn names(&self) -> &Names {
-        &self.names
     }
 
     fn writing(&self) -> Result<&Writing> {
@@ -327,7 +317,7 @@ impl LakeEngine for PgLake {
     }
 
     fn tip(&self) -> Result<Option<(Position, Digest)>> {
-        log::tip(&mut self.reader(), &self.names)
+        log::tip(&mut lock(&self.reader), &self.names)
     }
 
     fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
@@ -341,7 +331,7 @@ impl LakeEngine for PgLake {
     }
 
     fn read(&self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>> {
-        log::read(&mut self.reader(), &self.names, from, limit)
+        log::read(&mut lock(&self.reader), &self.names, from, limit)
     }
 
     fn seal_segment(&self, lease: &Lease) -> Result<Option<SegmentDigest>> {
@@ -350,7 +340,7 @@ impl LakeEngine for PgLake {
     }
 
     fn segments(&self) -> Result<Vec<SegmentDigest>> {
-        log::segments(&mut self.reader(), &self.names)
+        log::segments(&mut lock(&self.reader), &self.names)
     }
 
     fn projection(&self) -> &dyn ProjectionStore {
@@ -358,7 +348,7 @@ impl LakeEngine for PgLake {
     }
 
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>> {
-        let folded = projection::folded(&mut self.reader(), &self.names)?;
+        let folded = projection::folded(&mut lock(&self.reader), &self.names)?;
         let at = engines::view_at(as_of, folded)?;
         Ok(Box::new(PgView { lake: self, at }))
     }
@@ -428,7 +418,7 @@ impl ProjectionStore for PgLake {
     }
 
     fn folded_through(&self) -> Result<Option<Position>> {
-        projection::folded(&mut self.reader(), &self.names)
+        projection::folded(&mut lock(&self.reader), &self.names)
     }
 
     fn put_declaration(
@@ -620,7 +610,7 @@ impl VectorIndex for PgLake {
             top.push(&RecordKey::from(key), cosine(query, &v));
             Ok(())
         };
-        let mut db = self.reader();
+        let mut db = lock(&self.reader);
         // A field the lake asks an index for, whose index describes the
         // head, answers the index's `k` candidates, ranked by the one
         // cosine (`crate::vector_index`); every other search scans.
@@ -647,8 +637,7 @@ impl VectorIndex for PgLake {
     }
 
     fn count(&self, ty: &TypeName, field: &str) -> Result<u64> {
-        let n: i64 = self
-            .reader()
+        let n: i64 = lock(&self.reader)
             .query_one(
                 &format!(
                     "SELECT count(*) FROM {} WHERE ty = $1 AND field = $2",
@@ -669,5 +658,5 @@ pub fn export(location: &lakelands_api::Location, dir: &std::path::Path) -> Resu
         crate::target(location)?,
         OpenMode::Read,
     )?;
-    log::export(&mut lake.reader(), &lake.names, dir)
+    log::export(&mut lock(&lake.reader), &lake.names, dir)
 }
