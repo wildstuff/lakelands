@@ -845,6 +845,81 @@ fn a_record_put_after_a_redeclaration_in_the_same_transaction_is_indexed_under_i
     Ok(())
 }
 
+engine_check!(
+    /// A changed record is found by what it holds now, and by nothing else.
+    CHANGED_ROWS = a_changed_record_is_found_by_what_it_holds_now_and_read_no_more,
+    "seams §ProjectionStore, 025 and 041: after a record changes, the head indexes hold the rows of its latest state and no others: an exact text lookup, a search and a page in an indexed field's order answer by what it holds now, a field it cleared included, and an exact lookup hands the rulebook no record that matched only before"
+);
+
+fn a_changed_record_is_found_by_what_it_holds_now_and_read_no_more(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    let t = declare(json!({
+        "declare": "type", "name": "t", "language": "en",
+        "fields": [
+            {"name": "a", "type": {"kind": "text"}},
+            {"name": "b", "type": {"kind": "text"}},
+            {"name": "same", "type": {"kind": "text"}},
+            {"name": "body", "type": {"kind": "text"}, "searchable": true}
+        ]
+    }));
+    let k1 = json!({"a": "x", "b": "y", "same": "s", "body": "river bank"});
+    fold(engine, 1, |p| {
+        p.put_declaration(&t, 1, None, Position(0))?;
+        p.put_record(&sort_setting(json!(["a"]), 1))?;
+        p.put_record(&record("t", "k1", k1, 1))?;
+        p.put_record(&record(
+            "t",
+            "k2",
+            json!({"a": "m", "b": "y", "body": "hill"}),
+            1,
+        ))
+    })?;
+    // `k1` changes `a` and a word of `body`, clears `b` and keeps `same`.
+    let k1 = json!({"a": "c", "same": "s", "body": "meadow bank"});
+    fold_one(engine, 2, record("t", "k1", k1, 2))?;
+    let (ty, head) = (TypeName::from("t"), view(engine, None)?);
+    // What an exact lookup answers, with the rows it handed the rulebook. A
+    // search may hand in any superset of its hits, so its rows are not
+    // counted.
+    let lookup = |filter: &str| -> Result<(Vec<String>, u64), Failure> {
+        let filter = crate::expr::parse(filter).expect("the check's filter parses");
+        let before = crate::engines::rows_read();
+        let scan = scan_with(|s| s.filter = Some(filter));
+        let rows = head.scan(&ty, &scan).must("an exact lookup")?;
+        Ok((keys(&rows), crate::engines::rows_read() - before))
+    };
+    let search = |text: &str| -> Result<(Vec<String>, u64), Failure> {
+        let hits = head.lexical(&ty, text, None, 10).must("searching")?;
+        Ok((hit_keys(&hits), 0))
+    };
+    let answers = [
+        ("a = 'x'", lookup("a = 'x'")?, vec![]),
+        ("a = 'c'", lookup("a = 'c'")?, vec!["k1"]),
+        ("b = 'y'", lookup("b = 'y'")?, vec!["k2"]),
+        ("river", search("river")?, vec![]),
+        ("meadow", search("meadow")?, vec!["k1"]),
+        ("bank", search("bank")?, vec!["k1"]),
+    ];
+    for (asked, (keys, rows), must) in &answers {
+        ensure!(
+            keys == must && *rows <= must.len() as u64,
+            "`k1` changed `a` from `x` to `c` and `river bank` to `meadow bank`, cleared its \
+             `b`, which `k2` still holds as `y`, and kept `same`; `{asked}` answered {keys:?} \
+             from {rows} row(s) handed to the rulebook; it must answer {must:?} from no more \
+             rows than that"
+        );
+    }
+    let by_a = scan_with(|s| s.order_by = vec![order("a", OrderBy::Value, Direction::Asc)]);
+    let page = keys(&head.scan(&ty, &by_a).must("a page ordered by `a`")?);
+    ensure!(
+        page == ["k1", "k2"],
+        "`k1` changed its `a` from `x` to `c`, before `k2`'s `m`; the page ordered by `a` \
+         answered {page:?}; it must be `k1` then `k2`"
+    );
+    Ok(())
+}
+
 fn vectors(engine: &dyn LakeEngine) -> Result<&dyn lakelands_api::engine::VectorIndex, Failure> {
     engine
         .vectors()
