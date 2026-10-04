@@ -41,6 +41,68 @@ struct Read<'c> {
     head: bool,
 }
 
+/// The bound on the key `column` that every key-ordered page's statement
+/// carries: after the key bound as `?4`, or for the first page from the
+/// empty key, which every key passes. With no bound the planner, which has
+/// no statistics, may read a type through an index in another order and
+/// sort it for the page (lakelands#580).
+fn key_from(column: &str, after: bool) -> String {
+    let bound = if after { "> ?4" } else { ">= ''" };
+    format!("AND {column} {bound}")
+}
+
+/// The statement of [`Read::records_after`].
+fn records_after_sql(after: bool) -> String {
+    format!(
+        "SELECT state FROM records WHERE ty = ?1 AND {} {} ORDER BY key LIMIT ?3",
+        holds_at(2),
+        key_from("key", after)
+    )
+}
+
+/// The statement of [`Read::unsorted_after`].
+fn unsorted_after_sql(after: bool) -> String {
+    format!(
+        "SELECT r.state FROM records r WHERE r.ty = ?1 AND r.until IS NULL {} \
+         AND NOT EXISTS (SELECT 1 FROM sort_index s \
+         WHERE s.ty = r.ty AND s.field = ?2 AND s.key = r.key) \
+         ORDER BY r.key LIMIT ?3",
+        key_from("r.key", after)
+    )
+}
+
+/// The statement of [`Read::sorted_after`], seeking past the sort key and
+/// key bound as `?4` and `?5` when `from` is set.
+fn sorted_after_sql(dir: Direction, from: bool) -> String {
+    let (seek, by) = match dir {
+        Direction::Asc => ("AND (s.sort_key, s.key) > (?4, ?5)", "s.sort_key, s.key"),
+        Direction::Desc => (
+            "AND (s.sort_key < ?4 OR (s.sort_key = ?4 AND s.key > ?5))",
+            "s.sort_key DESC, s.key",
+        ),
+    };
+    let seek = if from { seek } else { "" };
+    format!(
+        "SELECT s.sort_key, r.state FROM \
+         (SELECT s.sort_key, s.key FROM sort_index s \
+          WHERE s.ty = ?1 AND s.field = ?2 {seek} ORDER BY {by} LIMIT ?3) s \
+         JOIN records r ON r.ty = ?1 AND r.key = s.key AND r.until IS NULL \
+         ORDER BY {by}"
+    )
+}
+
+/// The statement of each first page the view reads from an index in the
+/// page's order, as the view runs it, for the engine's own test of their
+/// plans: none may sort (lakelands#580).
+pub fn first_page_statements() -> Vec<String> {
+    vec![
+        records_after_sql(false),
+        unsorted_after_sql(false),
+        sorted_after_sql(Direction::Asc, false),
+        sorted_after_sql(Direction::Desc, false),
+    ]
+}
+
 impl SqliteView<'_> {
     /// Run `f` in one read transaction at the view's position; an empty
     /// projection answers `empty`.
@@ -108,12 +170,8 @@ impl Read<'_> {
         after: Option<&str>,
         n: u32,
     ) -> Result<Vec<StoredRecord>> {
-        let from = after.map_or("", |_| "AND key > ?4");
         self.page(
-            &format!(
-                "SELECT state FROM records WHERE ty = ?1 AND {} {from} ORDER BY key LIMIT ?3",
-                holds_at(2)
-            ),
+            &records_after_sql(after.is_some()),
             &[&ty.as_str(), &self.at(), &n],
             after,
         )
@@ -188,23 +246,9 @@ impl Read<'_> {
         from: Option<(&[u8], &str)>,
         n: u32,
     ) -> Result<Vec<(Vec<u8>, StoredRecord)>> {
-        let (seek, by) = match order.dir {
-            Direction::Asc => ("AND (s.sort_key, s.key) > (?4, ?5)", "s.sort_key, s.key"),
-            Direction::Desc => (
-                "AND (s.sort_key < ?4 OR (s.sort_key = ?4 AND s.key > ?5))",
-                "s.sort_key DESC, s.key",
-            ),
-        };
-        let seek = if from.is_some() { seek } else { "" };
         let mut stmt = self
             .conn
-            .prepare_cached(&format!(
-                "SELECT s.sort_key, r.state FROM \
-                 (SELECT s.sort_key, s.key FROM sort_index s \
-                  WHERE s.ty = ?1 AND s.field = ?2 {seek} ORDER BY {by} LIMIT ?3) s \
-                 JOIN records r ON r.ty = ?1 AND r.key = s.key AND r.until IS NULL \
-                 ORDER BY {by}"
-            ))
+            .prepare_cached(&sorted_after_sql(order.dir, from.is_some()))
             .map_err(sql)?;
         let row = |r: &rusqlite::Row<'_>| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, String>(1)?));
         let rows: Vec<(Vec<u8>, String)> = match from {
@@ -230,14 +274,8 @@ impl Read<'_> {
         after: Option<&str>,
         n: u32,
     ) -> Result<Vec<StoredRecord>> {
-        let from = after.map_or("", |_| "AND r.key > ?4");
         self.page(
-            &format!(
-                "SELECT r.state FROM records r WHERE r.ty = ?1 AND r.until IS NULL {from} \
-                 AND NOT EXISTS (SELECT 1 FROM sort_index s \
-                 WHERE s.ty = r.ty AND s.field = ?2 AND s.key = r.key) \
-                 ORDER BY r.key LIMIT ?3"
-            ),
+            &unsorted_after_sql(after.is_some()),
             &[&ty.as_str(), &field.as_str(), &n],
             after,
         )
