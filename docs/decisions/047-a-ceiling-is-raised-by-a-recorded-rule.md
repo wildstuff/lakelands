@@ -43,6 +43,10 @@ The core's budgets are four:
 
 **The tenth raise:** the specification, from 45 000 to 45 500 lines, by slot a's word under the rule, for the checks of a type its author is not shown (lakelands#538), which the room of the eighth raise did not hold after the checks it was sized for. It rides in the pull request of the code it is for.
 
+**The eleventh raise:** the product code, from 37 500 to 38 000 lines, by slot a's word under the rule, for five pull requests measured before any of them was pushed: sets composed by name (lakelands#552), arithmetic on durations (lakelands#549), a bucket from a chosen start (lakelands#559), an identical declaration that appends nothing (lakelands#565) and PostgreSQL's transaction written by pages (lakelands#480). It stands alone: three slots push them in an order no one of them decides, and a raise that rode in one would hold the others.
+
+**The twelfth raise:** the specification, from 45 500 to 46 000 lines, by slot a's word under the rule, for the checks of four of those pull requests as measured; it stands alone with the eleventh.
+
 ## Why
 
 The budgets keep the core small enough for one reader to hold. They have done that: four diets took out about 5 000 lines without losing a check.
