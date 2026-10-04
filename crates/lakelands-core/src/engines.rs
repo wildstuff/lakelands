@@ -238,7 +238,10 @@ pub fn key_batch(scan: &Scan) -> u32 {
 /// read in batches (`key_batch`), each continuing after the last key read,
 /// until the page is full or the type is out. `read(after, n)` answers at
 /// most `n` states after the key `after` (from the first when `None`), in
-/// key order. It answers what [`scan`] answers over every state.
+/// key order. It may leave out states the scan cannot select (an engine's
+/// index names the candidates, [`text_lookup`]), but a batch shorter than
+/// `n` ends the walk: it answers `n` whenever `n` remain. It answers what
+/// [`scan`] answers over every state.
 pub fn scan_in_key_order<E>(
     decl: Option<&TypeDecl>,
     scan: &Scan,
@@ -253,6 +256,7 @@ pub fn scan_in_key_order<E>(
     let mut after: Option<String> = scan.after.as_ref().map(|a| a.key.to_string());
     loop {
         let rows = read(after.as_deref(), batch)?;
+        count_read(rows.len());
         let read_all = rows.len() < batch as usize;
         for r in rows {
             after = Some(r.key.to_string());
@@ -459,12 +463,13 @@ thread_local! {
     static LINKS_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// The rows the scans on this thread were handed to order: the whole
-/// type in the fallback, [`scan`], the index rows and missing records
-/// in [`scan_in_field_order`], and those and the changed states in
-/// [`scan_in_field_order_at`]. It exists for the engine checks, which
-/// count by it that a page ordered by an indexed field reads its page,
-/// not the type; it costs one add per call or batch.
+/// The rows the scans and counts on this thread were handed: the whole
+/// type in the fallback, [`scan`], every batch of a key-ordered page
+/// ([`scan_in_key_order`]) and of a count ([`count_in_key_order`]), the
+/// index rows and missing records in [`scan_in_field_order`], and those
+/// and the changed states in [`scan_in_field_order_at`]. It exists for
+/// the engine checks, which count by it that a page reads its page, not
+/// the type or every match; it costs one add per call or batch.
 pub fn rows_read() -> u64 {
     ROWS_READ.with(|n| n.get())
 }

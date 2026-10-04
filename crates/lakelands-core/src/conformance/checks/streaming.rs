@@ -49,7 +49,8 @@
 //! head's index and the keys changed since (lakelands#382). Each of these
 //! pages is also held to the rows the engine reads for it, counted by
 //! [`crate::engines::rows_read_in_process`]: its page, the one row more the
-//! store asks for, three more, and two per key changed since. And the rebuild, which folds the log a page
+//! store asks for, three more, two per key changed since, and the lake's
+//! settings, which the store reads by key for every read. And the rebuild, which folds the log a page
 //! at a time (lakelands#130), and the reopen, which reads the log a page at a time
 //! and on SQLite keeps a mark per 256 events of its index, not the index
 //! (lakelands#133), and a walk over link records: a pattern query of
@@ -1041,8 +1042,9 @@ impl Size<'_> {
     async fn sorted_walks(&mut self, store: &dyn LakeStore, records: u64) -> Result<(), Failure> {
         let limit = u64::from(limits().max_limit);
         // The store asks the engine for a page and one more row, which
-        // tells it whether another page follows.
-        let asked = limit + 1;
+        // tells it whether another page follows, and reads the lake's
+        // settings by key for every read: this check writes three.
+        let asked = limit + 1 + 3;
         let live = self.live;
         let sorted = self
             .sorted_walk(store, records, "find-sorted-fallback", None, |_| {

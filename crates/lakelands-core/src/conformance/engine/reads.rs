@@ -48,6 +48,13 @@ engine_check!(
 );
 
 engine_check!(
+    /// A page by key under an exact text reads from `after`, not every
+    /// match.
+    TEXT_PAGE = a_page_by_key_under_an_exact_text_reads_from_after_not_every_match,
+    "seams §scan and lakelands#574: a scan ordered by the key alone that must hold a text exactly, by a term of its filter or by `equal`, walked page by page from `after` and read whole, answers what one scan over every state answers, past records that hold the text and do not qualify (another term, retired, restricted) and a key that ended on both sides of a batch's end, over keys a database's collation orders otherwise than their bytes; a walk is handed at most twice the type's rows and a batch, not every record holding the text for each page, and a count no more rows than hold the text and a batch"
+);
+
+engine_check!(
     /// A field-ordered scan walks page by page as one scan.
     FIELD_ORDER_WALK = a_field_ordered_scan_walks_page_by_page_as_one_scan,
     "seams §scan and lakelands#137: a scan ordered by fields, walked page by page from `after`, answers what one scan over every state answers, whatever its directions, its filter and its flags, after later puts, a redeclaration and a change of the `sort_index.<type>` setting, at the head and at an earlier position"
@@ -390,6 +397,106 @@ fn a_key_ordered_scan_answers_across_its_batches_as_one_scan(
             }
         }
     }
+    Ok(())
+}
+
+fn a_page_by_key_under_an_exact_text_reads_from_after_not_every_match(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    const N: u64 = 4100;
+    const BATCH: u64 = 1024;
+    // Keys in three runs, which the bytes order `B`, `_`, `a` and a
+    // database's collation otherwise. All but two hold `v = 'a'`. On each
+    // side of the first batch's end, be it a batch of the type (after
+    // 1 023) or of the records holding the text (after 1 024): one that
+    // fails the filter's other term, a retired one, a restricted one, and
+    // a key that ended after it held the text.
+    let first: Vec<(StoredRecord, bool)> = (0..N)
+        .map(|i| {
+            let odd = (1020..=1028).contains(&i).then(|| (i - 1020) % 5);
+            let key = format!("{}{i:04}", ["B", "_", "a"][(i / 1367) as usize]);
+            let v = if i % 1500 == 1499 { "b" } else { "a" };
+            let n = if odd == Some(0) { -1 } else { 1 };
+            let mut r = record("t", &key, json!({"v": v, "n": n}), 1);
+            (r.retired, r.restricted) = (odd == Some(1), odd == Some(2));
+            (r, odd == Some(3))
+        })
+        .collect();
+    fold(engine, 1, |p| {
+        first.iter().try_for_each(|(r, _)| p.put_record(r))
+    })?;
+    let ended = |r: StoredRecord| StoredRecord::ended(r.ty, r.key, Position(2));
+    let states: Vec<StoredRecord> = (first.into_iter())
+        .map(|(r, ends)| if ends { ended(r) } else { r })
+        .collect();
+    fold(engine, 2, |p| {
+        (states.iter().filter(|r| r.is_ended())).try_for_each(|r| p.put_record(r))
+    })?;
+    let (ty, head) = (TypeName::from("t"), view(engine, None)?);
+    // The pages of a scan, each after the last key of the one before, and
+    // the rows the engine handed the rulebook for them all.
+    let walk = |mut scan: Scan, what: &str| -> Result<(), Failure> {
+        let mut read = 0;
+        loop {
+            let before = crate::engines::rows_read();
+            let page = head.scan(&ty, &scan).must(what)?;
+            read += crate::engines::rows_read() - before;
+            let whole = crate::engines::scan(None, &states, &scan);
+            ensure!(
+                keys(&page) == keys(&whole),
+                "{what}, after {:?}, answered {} rows, first {:?}, last {:?}; one scan over \
+                 every state answers {}, first {:?}, last {:?}",
+                scan.after.as_ref().map(|a| a.key.as_str()),
+                page.len(),
+                page.first().map(|r| r.key.as_str()),
+                page.last().map(|r| r.key.as_str()),
+                whole.len(),
+                whole.first().map(|r| r.key.as_str()),
+                whole.last().map(|r| r.key.as_str())
+            );
+            let Some(last) = page.last().filter(|_| page.len() as u64 == BATCH) else {
+                break;
+            };
+            scan.after = Some(After {
+                values: vec![],
+                key: last.key.clone(),
+            });
+        }
+        ensure!(
+            read <= 2 * N + BATCH,
+            "{what}, walked to its end, was handed {read} rows of a type of {N}; a page reads \
+             from `after` what fills it, at most a batch over, not every record holding the \
+             text for each page"
+        );
+        Ok(())
+    };
+    let filter = crate::expr::parse("v = 'a' and n >= 0").expect("the check's filter parses");
+    let equal = vec![("v".into(), json!("a"))];
+    let scan = scan_with(|s| s.filter = Some(filter));
+    let paged = |scan: Scan| Scan {
+        limit: BATCH as u32,
+        ..scan
+    };
+    walk(
+        paged(scan.clone()),
+        "pages by key under `v = 'a' and n >= 0`",
+    )?;
+    let by_equal = scan_with(|s| s.equal = equal);
+    walk(paged(by_equal.clone()), "pages by key with `equal`")?;
+    walk(by_equal, "a scan with `equal` and no limit")?;
+    let holding = (states.iter())
+        .filter(|r| r.fields.get("v") == Some(&json!("a")))
+        .count() as u64;
+    let selected = crate::engines::scan(None, &states, &scan).len() as u64;
+    let before = crate::engines::rows_read();
+    let counted = head.count(&ty, &scan).must("counting under the filter")?;
+    let read = crate::engines::rows_read() - before;
+    ensure!(
+        counted == selected && read <= holding + BATCH,
+        "a count under `v = 'a' and n >= 0` answered {counted} from {read} rows handed to the \
+         rulebook; its scan selects {selected}, and {holding} records hold the text: a count \
+         reads them once, at most a batch over"
+    );
     Ok(())
 }
 
@@ -848,7 +955,7 @@ fn a_record_put_after_a_redeclaration_in_the_same_transaction_is_indexed_under_i
 engine_check!(
     /// A changed record is found by what it holds now, and by nothing else.
     CHANGED_ROWS = a_changed_record_is_found_by_what_it_holds_now_and_read_no_more,
-    "seams §ProjectionStore, 025 and 041: after a record changes, the head indexes hold the rows of its latest state and no others: an exact text lookup, a search and a page in an indexed field's order answer by what it holds now, a field it cleared included, and an exact lookup hands the rulebook no record that matched only before"
+    "seams §ProjectionStore, 025 and 041: after a record changes, the head indexes hold the rows of its latest state and no others: an exact text lookup, a search and a page in an indexed field's order answer by what it holds now, a field it cleared included, and an exact lookup hands the rulebook no record that matched only before, unless the engine keeps no index of exact text and reads the type for every lookup"
 );
 
 fn a_changed_record_is_found_by_what_it_holds_now_and_read_no_more(
@@ -901,13 +1008,16 @@ fn a_changed_record_is_found_by_what_it_holds_now_and_read_no_more(
         ("meadow", search("meadow")?, vec!["k1"]),
         ("bank", search("bank")?, vec!["k1"]),
     ];
+    // An engine that keeps no index of exact text reads the type, both
+    // records, for every lookup.
+    let whole = answers[..3].iter().all(|(_, (_, rows), _)| *rows == 2);
     for (asked, (keys, rows), must) in &answers {
         ensure!(
-            keys == must && *rows <= must.len() as u64,
+            keys == must && (whole || *rows <= must.len() as u64),
             "`k1` changed `a` from `x` to `c` and `river bank` to `meadow bank`, cleared its \
              `b`, which `k2` still holds as `y`, and kept `same`; `{asked}` answered {keys:?} \
              from {rows} row(s) handed to the rulebook; it must answer {must:?} from no more \
-             rows than that"
+             rows than that, unless every lookup reads the type"
         );
     }
     let by_a = scan_with(|s| s.order_by = vec![order("a", OrderBy::Value, Direction::Asc)]);

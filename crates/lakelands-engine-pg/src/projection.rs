@@ -65,6 +65,12 @@ impl Names {
     }
 
     /// The statements that create the lake's tables, if absent.
+    ///
+    /// `text_index` has no primary key: a record's value is in it once by
+    /// the unique index `text_index_value`, whose last column is the key
+    /// in byte order, so the records holding a text are read from it in
+    /// key order (`in_key_order` in `view.rs`). A lake made with a primary
+    /// key there keeps it and gains the index.
     pub(crate) fn schema_sql(&self) -> String {
         let s = &self.schema;
         format!(
@@ -115,9 +121,10 @@ CREATE TABLE IF NOT EXISTS {s}.applied (
     id TEXT PRIMARY KEY, at BIGINT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS {s}.text_index (
-    ty TEXT NOT NULL, field TEXT NOT NULL, value TEXT NOT NULL, key TEXT NOT NULL,
-    PRIMARY KEY (ty, field, value, key)
+    ty TEXT NOT NULL, field TEXT NOT NULL, value TEXT NOT NULL, key TEXT NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS text_index_value
+    ON {s}.text_index (ty, field, value, key COLLATE \"C\");
 CREATE INDEX IF NOT EXISTS text_index_key ON {s}.text_index (ty, key);
 CREATE TABLE IF NOT EXISTS {s}.edges (
     src_ty TEXT NOT NULL, src_key TEXT NOT NULL, relation TEXT NOT NULL,

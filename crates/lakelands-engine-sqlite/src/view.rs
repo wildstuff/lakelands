@@ -41,6 +41,87 @@ struct Read<'c> {
     head: bool,
 }
 
+/// The bound on the key `column` that every key-ordered page's statement
+/// carries: after the key bound as the parameter `after` numbers, or for
+/// the first page from the empty key, which every key passes. With no
+/// bound the planner, which has no statistics, may read a type through an
+/// index in another order and sort it for the page (lakelands#580).
+fn key_from(column: &str, after: Option<usize>) -> String {
+    match after {
+        Some(n) => format!("AND {column} > ?{n}"),
+        None => format!("AND {column} >= ''"),
+    }
+}
+
+/// The statement of [`Read::records_after`].
+fn records_after_sql(after: bool) -> String {
+    format!(
+        "SELECT state FROM records WHERE ty = ?1 AND {} {} ORDER BY key LIMIT ?3",
+        holds_at(2),
+        key_from("key", after.then_some(4))
+    )
+}
+
+/// The statement of [`Read::in_key_order`] with a lookup: the index's
+/// rows first, in key order and cut at the limit, then their records.
+/// Every index row is written from a head state in the same transaction,
+/// so the join keeps them all. Joined before the cut, the planner seeks
+/// `records` by a range of the key for every index row.
+fn holding_after_sql(after: bool) -> String {
+    format!(
+        "SELECT r.state FROM \
+         (SELECT t.key FROM text_index t \
+          WHERE t.ty = ?1 AND t.field = ?2 AND t.value = ?4 {} ORDER BY t.key LIMIT ?3) t \
+         JOIN records r ON r.ty = ?1 AND r.key = t.key AND r.until IS NULL \
+         ORDER BY t.key",
+        key_from("t.key", after.then_some(5))
+    )
+}
+
+/// The statement of [`Read::unsorted_after`].
+fn unsorted_after_sql(after: bool) -> String {
+    format!(
+        "SELECT r.state FROM records r WHERE r.ty = ?1 AND r.until IS NULL {} \
+         AND NOT EXISTS (SELECT 1 FROM sort_index s \
+         WHERE s.ty = r.ty AND s.field = ?2 AND s.key = r.key) \
+         ORDER BY r.key LIMIT ?3",
+        key_from("r.key", after.then_some(4))
+    )
+}
+
+/// The statement of [`Read::sorted_after`], seeking past the sort key and
+/// key bound as `?4` and `?5` when `from` is set.
+fn sorted_after_sql(dir: Direction, from: bool) -> String {
+    let (seek, by) = match dir {
+        Direction::Asc => ("AND (s.sort_key, s.key) > (?4, ?5)", "s.sort_key, s.key"),
+        Direction::Desc => (
+            "AND (s.sort_key < ?4 OR (s.sort_key = ?4 AND s.key > ?5))",
+            "s.sort_key DESC, s.key",
+        ),
+    };
+    let seek = if from { seek } else { "" };
+    format!(
+        "SELECT s.sort_key, r.state FROM \
+         (SELECT s.sort_key, s.key FROM sort_index s \
+          WHERE s.ty = ?1 AND s.field = ?2 {seek} ORDER BY {by} LIMIT ?3) s \
+         JOIN records r ON r.ty = ?1 AND r.key = s.key AND r.until IS NULL \
+         ORDER BY {by}"
+    )
+}
+
+/// The statement of each first page the view reads from an index in the
+/// page's order, as the view runs it, for the engine's own test of their
+/// plans: none may sort (lakelands#580).
+pub fn first_page_statements() -> Vec<String> {
+    vec![
+        records_after_sql(false),
+        holding_after_sql(false),
+        unsorted_after_sql(false),
+        sorted_after_sql(Direction::Asc, false),
+        sorted_after_sql(Direction::Desc, false),
+    ]
+}
+
 impl SqliteView<'_> {
     /// Run `f` in one read transaction at the view's position; an empty
     /// projection answers `empty`.
@@ -108,13 +189,31 @@ impl Read<'_> {
         after: Option<&str>,
         n: u32,
     ) -> Result<Vec<StoredRecord>> {
-        let from = after.map_or("", |_| "AND key > ?4");
         self.page(
-            &format!(
-                "SELECT state FROM records WHERE ty = ?1 AND {} {from} ORDER BY key LIMIT ?3",
-                holds_at(2)
-            ),
+            &records_after_sql(after.is_some()),
             &[&ty.as_str(), &self.at(), &n],
+            after,
+        )
+    }
+
+    /// What a key-ordered scan or count reads from, at most `n` records
+    /// in key order after `after`: with a `lookup`, the head records whose
+    /// field holds exactly its text, a seek into the exact-text index's
+    /// primary key `(ty, field, value, key)`; else the type's records. The
+    /// index names candidates; the rulebook admits each.
+    fn in_key_order(
+        &self,
+        ty: &TypeName,
+        lookup: &Option<(FieldName, String)>,
+        after: Option<&str>,
+        n: u32,
+    ) -> Result<Vec<StoredRecord>> {
+        let Some((field, text)) = lookup else {
+            return self.records_after(ty, after, n);
+        };
+        self.page(
+            &holding_after_sql(after.is_some()),
+            &[&ty.as_str(), &field.as_str(), &n, text],
             after,
         )
     }
@@ -188,23 +287,9 @@ impl Read<'_> {
         from: Option<(&[u8], &str)>,
         n: u32,
     ) -> Result<Vec<(Vec<u8>, StoredRecord)>> {
-        let (seek, by) = match order.dir {
-            Direction::Asc => ("AND (s.sort_key, s.key) > (?4, ?5)", "s.sort_key, s.key"),
-            Direction::Desc => (
-                "AND (s.sort_key < ?4 OR (s.sort_key = ?4 AND s.key > ?5))",
-                "s.sort_key DESC, s.key",
-            ),
-        };
-        let seek = if from.is_some() { seek } else { "" };
         let mut stmt = self
             .conn
-            .prepare_cached(&format!(
-                "SELECT s.sort_key, r.state FROM \
-                 (SELECT s.sort_key, s.key FROM sort_index s \
-                  WHERE s.ty = ?1 AND s.field = ?2 {seek} ORDER BY {by} LIMIT ?3) s \
-                 JOIN records r ON r.ty = ?1 AND r.key = s.key AND r.until IS NULL \
-                 ORDER BY {by}"
-            ))
+            .prepare_cached(&sorted_after_sql(order.dir, from.is_some()))
             .map_err(sql)?;
         let row = |r: &rusqlite::Row<'_>| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, String>(1)?));
         let rows: Vec<(Vec<u8>, String)> = match from {
@@ -230,20 +315,14 @@ impl Read<'_> {
         after: Option<&str>,
         n: u32,
     ) -> Result<Vec<StoredRecord>> {
-        let from = after.map_or("", |_| "AND r.key > ?4");
         self.page(
-            &format!(
-                "SELECT r.state FROM records r WHERE r.ty = ?1 AND r.until IS NULL {from} \
-                 AND NOT EXISTS (SELECT 1 FROM sort_index s \
-                 WHERE s.ty = r.ty AND s.field = ?2 AND s.key = r.key) \
-                 ORDER BY r.key LIMIT ?3"
-            ),
+            &unsorted_after_sql(after.is_some()),
             &[&ty.as_str(), &field.as_str(), &n],
             after,
         )
     }
 
-    /// The records a page's statement answers, `after` bound as its fourth
+    /// The records a page's statement answers, `after` bound as its last
     /// parameter when there is one; decoded once all are read.
     fn page(
         &self,
@@ -364,9 +443,12 @@ impl ProjectionView for SqliteView<'_> {
             if r.head && scan.filter.is_none() && scan.equal.is_empty() && scan.valid_at.is_none() {
                 return r.count_in_force(ty, scan.retired, scan.restricted);
             }
+            // At the head, a count that must hold a text reads the records
+            // holding it, not the type.
             let decl = r.type_decl(ty)?;
+            let lookup = engines::text_lookup(scan).filter(|_| r.head);
             engines::count_in_key_order(decl.as_ref(), scan, |after, n| {
-                r.records_after(ty, after, n)
+                r.in_key_order(ty, &lookup, after, n)
             })
         })
     }
@@ -374,21 +456,24 @@ impl ProjectionView for SqliteView<'_> {
     fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
         self.read(Vec::new(), |r| {
             let decl = r.type_decl(ty)?;
-            let narrowed = match (r.head, engines::text_lookup(scan)) {
-                (true, Some((field, text))) => Some(r.keys(
-                    "SELECT key FROM text_index WHERE ty = ?1 AND field = ?2 AND value = ?3",
-                    &[&ty.as_str(), &field.as_str(), &text],
-                )?),
-                _ => None,
-            };
-            let records = match narrowed {
-                Some(keys) => r.records_by_key(ty, keys)?,
-                // Ordered by the key alone, the page is read from `after`
-                // in key order and stops when it is full.
-                None if scan.order_by.is_empty() => {
-                    return engines::scan_in_key_order(decl.as_ref(), scan, |after, n| {
-                        r.records_after(ty, after, n)
-                    });
+            let lookup = engines::text_lookup(scan).filter(|_| r.head);
+            // Ordered by the key alone, the page is read from `after` in
+            // key order and stops when it is full: at the head, with a text
+            // the scan must hold, from the records holding it.
+            if scan.order_by.is_empty() {
+                return engines::scan_in_key_order(decl.as_ref(), scan, |after, n| {
+                    r.in_key_order(ty, &lookup, after, n)
+                });
+            }
+            let records = match lookup {
+                // In a field's order, every record holding the text is read
+                // and sorted.
+                Some((field, text)) => {
+                    let keys = r.keys(
+                        "SELECT key FROM text_index WHERE ty = ?1 AND field = ?2 AND value = ?3",
+                        &[&ty.as_str(), &field.as_str(), &text],
+                    )?;
+                    r.records_by_key(ty, keys)?
                 }
                 // Ordered by a field the lake indexes, at the head, the page
                 // is read in the order index's order and stops when it is
