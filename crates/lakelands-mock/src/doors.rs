@@ -26,8 +26,9 @@ use lakelands_api::seam::{
     SETTING_TYPE, SORT_INDEX_SETTING, VECTOR_INDEX_SETTING, indexable, sortable,
 };
 use lakelands_api::write::{
-    Committed, Declaration, FieldConversion, FunctionDecl, Migration, MigrationReport, Outcome,
-    Proposal, ProposalFilter, ProposalState, ProposedWrite, Recompute, WriteOpts,
+    Committed, Declaration, FieldConversion, FunctionDecl, Migration, MigrationReport,
+    ObjectSetDecl, Outcome, Proposal, ProposalFilter, ProposalState, ProposedWrite, Recompute,
+    WriteOpts,
 };
 use lakelands_api::{Catalog, CommitStream, SourceStream};
 
@@ -1149,9 +1150,37 @@ fn reads_all<'a>(
         .all(|n| field(&t.decl, n).is_some_and(|f| access(who, &t.decl, f).reads()))
 }
 
-/// The fields a condition names: the first segment of each path.
-fn named(c: &Condition) -> Option<BTreeSet<FieldName>> {
-    let e = expr::typed(c).ok()?;
+/// As the store: a condition over `ty`'s records with the filter of each
+/// set it names (`in_set('name')`) in the name's place. `set` answers a
+/// set by its name, as its caller holds it.
+fn expanded<'s>(
+    set: &dyn Fn(&str) -> Option<&'s ObjectSetDecl>,
+    ty: &TypeName,
+    e: &Expr,
+    at: &str,
+) -> Result<Expr> {
+    let named = |name: &str| match set(name) {
+        Some(s) if &s.of == ty => expr::typed(&s.filter).map_err(|e| e.to_string()),
+        Some(s) => Err(format!(
+            "in_set('{name}') names a set of `{}`, not of `{ty}`",
+            s.of
+        )),
+        None => Err(format!(
+            "in_set('{name}') names an object set that is not declared"
+        )),
+    };
+    lakelands_api::expr::expand(e, &named).map_err(|e| invalid(format!("{at}: {e}")))
+}
+
+/// The fields a condition names: the first segment of each path, and what
+/// the sets it names read, among `sets`. `None` when it does not parse or
+/// names a set that is not among them.
+fn named(sets: &[ObjectSetDecl], c: &Condition) -> Option<BTreeSet<FieldName>> {
+    let filter = |n: &str| {
+        let s = sets.iter().find(|s| s.name == n).ok_or_else(String::new)?;
+        expr::typed(&s.filter).map_err(|e| e.to_string())
+    };
+    let e = lakelands_api::expr::expand(&expr::typed(c).ok()?, &filter).ok()?;
     let mut paths = vec![];
     expr::paths(&e, &mut paths);
     Some(
@@ -1165,6 +1194,7 @@ fn named(c: &Condition) -> Option<BTreeSet<FieldName>> {
 /// A trigger's guard or an object set's condition is shown to a principal
 /// who reads every field it names, or holds the `schema` grant.
 fn condition_visible(st: &State, who: &Principal, ty: &TypeName, c: Option<&Condition>) -> bool {
+    let named = |c| named(&st.object_sets, c);
     who.grants.schema || c.is_none_or(|c| named(c).is_some_and(|n| reads_all(st, who, ty, &n)))
 }
 
@@ -1185,7 +1215,7 @@ fn view_visible(st: &State, who: &Principal, v: &ViewDecl) -> bool {
     }
     let mut names: BTreeSet<FieldName> = v.group_by.iter().cloned().collect();
     for c in v.r#where.iter().chain(v.measures.iter().map(|m| &m.expr)) {
-        match named(c) {
+        match named(&[], c) {
             Some(n) => names.extend(n),
             None => return false,
         }
@@ -1310,7 +1340,19 @@ fn filter(
     c: Option<&lakelands_api::expr::Condition>,
 ) -> Result<Option<Expr>> {
     let Some(c) = c else { return Ok(None) };
-    let e = expr::typed(c)?;
+    // As the store: a set whose filter reads a field its reader is kept
+    // from is, to that reader, a set that is not declared.
+    let all = |n: &str| st.object_sets.iter().find(|s| s.name == n);
+    let shown = |s: &&ObjectSetDecl| {
+        let reads = named(&st.object_sets, &s.filter);
+        reads.is_some_and(|names| reads_all(st, who, &s.of, &names))
+    };
+    let e = expanded(
+        &|n| all(n).filter(shown),
+        &t.decl.name,
+        &expr::typed(c)?,
+        "where",
+    )?;
     let mut paths = Vec::new();
     expr::paths(&e, &mut paths);
     for p in paths {
@@ -2144,7 +2186,7 @@ fn view_reads(v: &ViewDecl) -> Vec<(TypeName, Vec<FieldName>)> {
         )
         .map(|(source, filter, group_by, measures)| {
             let mut reads: Vec<FieldName> = group_by.clone();
-            if let Some(n) = filter.and_then(named) {
+            if let Some(n) = filter.and_then(|c| named(&[], c)) {
                 reads.extend(n);
             }
             for m in measures {
@@ -2159,8 +2201,8 @@ fn view_reads(v: &ViewDecl) -> Vec<(TypeName, Vec<FieldName>)> {
 
 /// The fields of `ty` a declaration reads, as the store counts them: what
 /// it probes and the fields a verb sets.
-fn declaration_reads(d: &Declaration, ty: &TypeName) -> BTreeSet<FieldName> {
-    let mut names = declaration_probes(d, ty);
+fn declaration_reads(st: &State, d: &Declaration, ty: &TypeName) -> BTreeSet<FieldName> {
+    let mut names = declaration_probes(st, d, ty);
     if let Declaration::Verb(v) = d
         && let VerbEffect::Write { set } = &v.effect
         && &v.on == ty
@@ -2176,8 +2218,8 @@ fn declaration_reads(d: &Declaration, ty: &TypeName) -> BTreeSet<FieldName> {
 /// reads of `ty` as a source, a set's `where`, a trigger's `when`, and a
 /// verb's `requires` and what it sets its fields from (where
 /// `payload.<name>` is the call's).
-fn declaration_probes(d: &Declaration, ty: &TypeName) -> BTreeSet<FieldName> {
-    let of = |c: &Condition| named(c).unwrap_or_default();
+fn declaration_probes(st: &State, d: &Declaration, ty: &TypeName) -> BTreeSet<FieldName> {
+    let of = |c: &Condition| named(&st.object_sets, c).unwrap_or_default();
     match d {
         Declaration::Type(t) => {
             let own = t.fields.iter().filter(|_| &t.name == ty);
@@ -2244,8 +2286,37 @@ fn reads_its_type(st: &State, d: &Declaration) -> Result<()> {
         Declaration::ObjectSet(s) => st.types.get(&s.of).map(|o| &o.decl),
         _ => None,
     };
+    // As the store: a set is of one type; the sets a set's `where` and a
+    // trigger's `when` name are declared, of its type and name it not in
+    // turn; and what the condition reads can be walked.
+    if let Declaration::ObjectSet(s) = d
+        && let Some(was) = st
+            .object_sets
+            .iter()
+            .find(|x| x.name == s.name && x.of != s.of)
+    {
+        let message = format!(
+            "object set `{}` holds records of `{}`; a set of `{}` takes another name",
+            s.name, was.of, s.of
+        );
+        return Err(self::on(&"of".into(), Refusal::Invalid { message }));
+    }
+    let condition = match d {
+        Declaration::ObjectSet(s) => Some(&s.filter),
+        Declaration::Trigger(t) => t.when.as_ref(),
+        _ => None,
+    };
+    if let (Some(c), Some(on)) = (condition, on)
+        && let Ok(e) = expr::typed(c)
+    {
+        let pending = |n: &str| match d {
+            Declaration::ObjectSet(s) if s.name == n => Some(s),
+            _ => st.object_sets.iter().find(|x| x.name == n),
+        };
+        evaluates(&expanded(&pending, &on.name, &e, &d.what())?, on)?;
+    }
     if let Some(on) = on
-        && let reads = declaration_reads(d, &on.name)
+        && let reads = declaration_reads(st, d, &on.name)
         && let Some(n) = (reads.iter()).find(|n| field(on, n).is_none())
     {
         return Err(invalid(format!(
@@ -2443,7 +2514,7 @@ fn reads_as_author(
             _ => {}
         }
         for t in st.types.values() {
-            let mut names = declaration_probes(&new, &t.decl.name);
+            let mut names = declaration_probes(st, &new, &t.decl.name);
             // A function's inputs and what an embedding is made from.
             if let Declaration::Type(x) = &new
                 && x.name == t.decl.name
@@ -2777,7 +2848,7 @@ fn preflight(
     let kept = changed.iter().map(|(was, is)| (*was, is));
     for (was, is) in std::iter::once((&t.decl, &m.to)).chain(kept) {
         for d in &readers {
-            let reads = declaration_reads(d, &was.name);
+            let reads = declaration_reads(st, d, &was.name);
             let gone = |n: &&FieldName| field(was, n).is_some() && field(is, n).is_none();
             let said = |reader: String, n: &FieldName| {
                 let renamed = |(from, _): &&(FieldName, FieldName)| from == n && &is.name == ty;

@@ -26,8 +26,8 @@
 //!   the places 5 names.
 //! - **10**: a `write_proposed` event whose write tightens a value type.
 //! - **11**: what [`ELEVENTH`] lists, each in the places 5 names: a
-//!   declaration that calls `floor`, or `date_bucket` by a width, in any
-//!   expression it keeps.
+//!   declaration that calls `floor`, `date_bucket` by a width or `in_set`
+//!   in any expression it keeps.
 //!
 //! The store writes every event of one append at the greatest of the
 //! lake's version and what [`needed`] answers for each event of the
@@ -95,6 +95,10 @@ pub const ELEVENTH: &[Added] = &[
     (
         |body| any_declaration(body, |d| declares(d, &by_a_width)),
         "declares a call of `date_bucket` by a width",
+    ),
+    (
+        |body| any_declaration(body, |d| declares_call(d, Func::InSet)),
+        "declares a call of `in_set`",
     ),
 ];
 

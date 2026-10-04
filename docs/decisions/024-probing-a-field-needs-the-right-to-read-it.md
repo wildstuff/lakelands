@@ -317,3 +317,17 @@ field's values. Now the preview and the refused apply are held the same
 way. A use and a misfit are shown where their caller is shown the type
 and reads the field; the totals and the report's id, which names the
 whole report, stay.
+
+## Extended: a named set is read by its filter's right (lakelands#552)
+
+`in_set('open')` reads what `open`'s filter reads, and what the sets
+that filter names read. So every rule that asks what a condition reads
+asks it of the filters in the names' place: a read probes those fields;
+`describe` lists a set or a trigger to one who reads them all; a write's
+answer names a set joined or left, and a trigger fired, to one who reads
+them all; an author declares a condition naming a set only where it may
+read them.
+
+To a reader kept from a field, a set whose filter reads it is a set that
+is not declared, by its name as in `describe`: the refusal is the one a
+name no set has gets, and names nothing of the field.

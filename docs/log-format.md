@@ -12,8 +12,8 @@ declaration's `annotations`. Version 6 adds a derived relation and a trigger's `
 Version 7 adds a call of `retired` in a declaration. Version 8 adds a
 view's `params` and a call of `param`, and a verb called on its type.
 Version 9 adds a view's `merge`. Version 10 adds the proposal of a value
-type's tightening. Version 11 adds a call of `floor` in a declaration, and of `date_bucket`
-by a width.
+type's tightening. Version 11 adds a call of `floor` in a declaration, of `date_bucket` by a
+width, and of `in_set`.
 §6 says
 which event needs which version.
 
@@ -596,7 +596,7 @@ event raises it; "that append" is the append that holds it.
 | 8 | A view's `params` and a call of `param` in a declaration's expressions (Appendix A, Appendix B): a view may declare parameters, which a read binds and its `where` and measures read with `param('name')`. A lake writes the version it had until the append that holds its first event whose declaration is a view with a non-empty `params`, or calls `param` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`); that append carries `v` 8, as does every event after it; a version-7 (or older) event that carries either is refused, naming it. A version-7 reader refuses the version-8 events rather than computing a view whose parameters it cannot bind. `params` is part of the schema hash only when it is not empty (§2.2). The same version adds a verb called on its type (`docs/decisions/013-verbs-run-by-declared-risk.md`, extended): a verb declaration's `scope: type` (in a `declared` event or a proposed `declare`); a `verb_called` without `key`; and a proposed `call` without `key`. A lake writes the version it had until the append that holds its first such event; that append carries `v` 8, as does every event after it, and a version-7 (or older) event that carries one is refused, naming it. Version 8 took both while it was untagged. |
 | 9 | A view's `merge` (Appendix A): further sources a view merges on its key, each with its own `where`, `group_by` lined up with the view's by position, and aggregate measures the view's measures read by name. A lake writes the version it had until its first event whose declaration is a view with a non-empty `merge` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`), which carries `v` 9, as does every event after it; a version-8 (or older) event that carries one is refused, naming it. A version-8 reader refuses the version-9 events rather than computing a view from its main source alone. `merge` is part of the schema hash only when it is not empty (§2.2). |
 | 10 | A proposal of a value type's tightening: `write_proposed` whose `write` is `migrate_value_type` (§2.4, Appendix A). A lake writes the version it had until the append that holds its first such proposal; that append carries `v` 10, as does every event after it; a version-9 (or older) event that carries one is refused, naming it. A version-9 reader refuses the version-10 events rather than failing on a write it does not know. A lake that never holds such a proposal stays at the version it had. |
-| 11 | What one release added to what the log keeps, each of which needs the version by itself: a call of `floor` in a declaration's expressions, and a call of `date_bucket` by a width, with its third argument (Appendix B). A lake writes the version it had until the append that holds its first event that carries one of them (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`); that append carries `v` 11, as does every event after it; a version-10 (or older) event that carries one is refused, naming it. A version-10 reader refuses the version-11 events rather than folding a declaration it cannot evaluate. A lake that carries none of them stays at the version it had. |
+| 11 | What one release added to what the log keeps, each of which needs the version by itself: a call of `floor` in a declaration's expressions, a call of `date_bucket` by a width, with its third argument, and a call of `in_set` (Appendix B). A lake writes the version it had until the append that holds its first event that carries one of them (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`); that append carries `v` 11, as does every event after it; a version-10 (or older) event that carries one is refused, naming it. A version-10 reader refuses the version-11 events rather than folding a declaration it cannot evaluate. A lake that carries none of them stays at the version it had. |
 
 ## Appendix A. Encodings
 
@@ -750,8 +750,13 @@ with three arguments, the value, a width as a duration literal above
 zero, and the origin: the start of the window of that width holding the
 value, the windows counted from the origin in both directions,
 `origin + floor((value - origin) / width) * width`. A calendar unit
-takes no third argument and a width takes one. A read may call either in
-any version; a declaration from version 11 on (§6).
+takes no third argument and a width takes one. And `in_set`, with one
+argument, an object set's name as a string literal: true for a record
+where that set's filter holds for it, the filter read in the call's
+place when the condition is read, never stored membership; in an object
+set's `where`, a trigger's `when` and a read's `where` only, a set of
+the record's type, and no set through itself. A read may call each of
+the three in any version; a declaration from version 11 on (§6).
 
 **From text to typed form.**
 

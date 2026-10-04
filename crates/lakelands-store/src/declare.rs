@@ -41,7 +41,7 @@ use lakelands_api::ontology::{
     VerbScope, ViewDecl,
 };
 use lakelands_api::tools::name_problems;
-use lakelands_api::write::Declaration;
+use lakelands_api::write::{Declaration, ObjectSetDecl};
 use lakelands_api::{Error, FieldName, Refusal, RelationName, Result, TypeName, VerbName};
 use lakelands_core::expr::{Place, check, parse};
 use lakelands_core::rights::is_system;
@@ -336,6 +336,32 @@ fn view_params(owner: &str, v: &ViewDecl, read: &BTreeSet<String>) -> Result<()>
 /// version 3 on; the event that declares it is written at 3
 /// (`lakelands_core::versions`, `docs/log-format.md` §6).
 pub fn condition(c: &Condition, place: Place, at: &str) -> Result<Expr> {
+    let e = typed(c, place, at)?;
+    // A set is named only where its filter is put in the name's place.
+    if lakelands_core::versions::calls(&e, &|f| f == Func::InSet) {
+        return Err(invalid(format!(
+            "{at}: in_set() has meaning in an object set's `where`, a trigger's `when` and a \
+             read's `where`"
+        )));
+    }
+    Ok(e)
+}
+
+/// Whether the filter of `s` names the set `target`, itself or through
+/// the sets it names, as `o` holds them.
+pub fn names_set(o: &Ontology, s: &ObjectSetDecl, target: &str) -> bool {
+    let asked = std::cell::Cell::new(false);
+    let lookup = |n: &str| {
+        asked.set(asked.get() || n == target);
+        o.set(n)
+    };
+    let _ = filter(&lookup, &s.of, &s.filter, Place::Record, "object set");
+    asked.get()
+}
+
+/// A condition parsed and checked for its place, the sets it names left
+/// as it names them.
+fn typed(c: &Condition, place: Place, at: &str) -> Result<Expr> {
     let e = match c {
         Condition::Expr(e) => e.clone(),
         Condition::Text(t) => {
@@ -344,6 +370,34 @@ pub fn condition(c: &Condition, place: Place, at: &str) -> Result<Expr> {
     };
     check(&e, place).map_err(|e| invalid(format!("{at}: {e}")))?;
     Ok(e)
+}
+
+/// A condition over the records of `ty` that may name object sets
+/// (`in_set('name')`): each named set's filter stands in the call's place.
+/// `set` answers a set by its name, as its caller holds it. A set it does
+/// not answer is one that is not declared; one of another type and one
+/// that names itself through others are refused. Only a set's `where`, a
+/// trigger's `when` and a read's `where` are read this way; anywhere else
+/// `in_set` evaluates to its refusal.
+pub fn filter<'s>(
+    set: &dyn Fn(&str) -> Option<&'s ObjectSetDecl>,
+    ty: &TypeName,
+    c: &Condition,
+    place: Place,
+    at: &str,
+) -> Result<Expr> {
+    let e = typed(c, place, at)?;
+    let named = |name: &str| match set(name) {
+        Some(s) if &s.of == ty => typed(&s.filter, Place::Record, at).map_err(|e| e.to_string()),
+        Some(s) => Err(format!(
+            "in_set('{name}') names a set of `{}`, not of `{ty}`",
+            s.of
+        )),
+        None => Err(format!(
+            "in_set('{name}') names an object set that is not declared"
+        )),
+    };
+    lakelands_api::expr::expand(&e, &named).map_err(|e| invalid(format!("{at}: {e}")))
 }
 
 /// The kind an expression certainly computes over `decl`'s records, or the
@@ -778,7 +832,7 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
         _ => None,
     };
     if let Some(on) = on
-        && let reads = lakelands_core::describe::declaration_reads(d, &on.name)
+        && let reads = lakelands_core::describe::declaration_reads(d, &on.name, &|_| None)
         && let Some(n) = (reads.iter()).find(|n| !on.fields.iter().any(|f| &f.name == *n))
     {
         return Err(invalid(format!(
@@ -1031,12 +1085,23 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 ));
             }
             if let Some(w) = &t.when {
-                condition(w, Place::Guard, &format!("trigger `{}`", t.name))?;
+                let at = format!("trigger `{}`", t.name);
+                filter(&|n| o.set(n), &t.on, w, Place::Guard, &at)?;
             }
         }
         Declaration::ObjectSet(s) => {
             name("object set", &s.name)?;
             let of = declared(o, &s.of, &format!("object set `{}` holds", s.name))?;
+            // A set is of one type: declared again, it holds that type.
+            if let Some(was) = o.object_sets.get(&s.name).filter(|e| e.decl.of != s.of) {
+                return Err(invalid_field(
+                    &"of".into(),
+                    format!(
+                        "object set `{}` holds records of `{}`; a set of `{}` takes another name",
+                        s.name, was.decl.of, s.of
+                    ),
+                ));
+            }
             // A set holds stored records; a view's are computed on read,
             // and no set is evaluated over them.
             if of.view.is_some() {
@@ -1049,11 +1114,9 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     ),
                 ));
             }
-            condition(
-                &s.filter,
-                Place::Record,
-                &format!("object set `{}`", s.name),
-            )?;
+            let at = format!("object set `{}`", s.name);
+            let named = |n: &str| Some(s).filter(|s| s.name == n).or_else(|| o.set(n));
+            filter(&named, &s.of, &s.filter, Place::Record, &at)?;
         }
         Declaration::Function(f) => {
             name("function", &f.name)?;

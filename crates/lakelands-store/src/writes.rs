@@ -373,9 +373,10 @@ fn outcome_of(events: &[Event]) -> Outcome {
 
 /// Whether `record` is a member of `set`: live, and the set's filter holds
 /// over its fields at `now`, the time of the write or the declaration that
-/// decides it. A write and a set's declaration decide by this one rule.
+/// decides it, the sets it names read as `o` holds them. A write and a
+/// set's declaration decide by this one rule.
 fn member_of(
-    set: &ObjectSetDecl,
+    (set, o): (&ObjectSetDecl, &Ontology),
     record: &StoredRecord,
     w: &Writer,
     now: Timestamp,
@@ -383,7 +384,13 @@ fn member_of(
     if record.retired {
         return Ok(false);
     }
-    let e = declare::condition(&set.filter, Place::Record, "object set")?;
+    let e = declare::filter(
+        &|n| o.set(n),
+        &set.of,
+        &set.filter,
+        Place::Record,
+        "object set",
+    )?;
     let scope = RecordScope {
         fields: &record.fields,
         settings: Some(&w.settings),
@@ -449,7 +456,7 @@ fn decide(
 ) -> Result<()> {
     for (s, held) in sets {
         let member = held.contains(was);
-        if changes.len() <= max && member != member_of(s, is, w, now)? {
+        if changes.len() <= max && member != member_of((s, &w.ontology), is, w, now)? {
             changes.push((s.name.clone(), is.ty.clone(), is.key.clone(), !member));
         }
     }
@@ -914,7 +921,8 @@ impl Call<'_> {
             let fires = match &t.when {
                 None => true,
                 Some(c) => {
-                    let e = declare::condition(c, Place::Guard, "trigger")?;
+                    let sets = |n: &str| w.ontology.set(n);
+                    let e = declare::filter(&sets, &t.on, c, Place::Guard, "trigger")?;
                     let live = before.filter(|b| !b.retired);
                     let scope = WriteScope {
                         after: &after.fields,
@@ -943,7 +951,7 @@ impl Call<'_> {
             .filter(|s| s.of == after.ty)
         {
             let was = pending.member(view, &s.name, &after.ty, &after.key)?;
-            let is = member_of(s, after, w, now)?;
+            let is = member_of((s, &w.ontology), after, w, now)?;
             if was != is {
                 pending
                     .members
@@ -1967,7 +1975,8 @@ impl Call<'_> {
                 _ => {}
             }
             for t in o.types.values().map(|e| &e.decl) {
-                let mut names = describe::declaration_probes(&new, &t.name);
+                let sets = |n: &str| after.set(n).map(|s| s.filter.clone());
+                let mut names = describe::declaration_probes(&new, &t.name, &sets);
                 // A function's inputs and what an embedding is made from.
                 if let Declaration::Type(x) = &new
                     && x.name == t.name
@@ -2094,6 +2103,12 @@ impl Call<'_> {
         first: usize,
     ) -> Result<Vec<Draft>> {
         let mut drafts = Vec::with_capacity(declarations.len());
+        // A set is decided over the sets it names as the bundle leaves them.
+        let (mut after, mut decided) = (w.ontology.clone(), Vec::new());
+        let sets = |d: &&Declaration| matches!(d, Declaration::ObjectSet(_));
+        for d in declarations.iter().filter(sets) {
+            after.put(d.clone(), 0, None);
+        }
         for declaration in declarations {
             let declared = position_after(w, first + drafts.len());
             // A type's hash and link types, or the memberships a set decides.
@@ -2102,7 +2117,10 @@ impl Call<'_> {
                     let hash = shape::schema_hash(t).map_err(|e| invalid(e.to_string()))?;
                     (Some(hash), link_type_drafts(&w.ontology, t, now)?)
                 }
-                Declaration::ObjectSet(set) => (None, self.set_drafts(w, set, declared, now)?),
+                Declaration::ObjectSet(set) => {
+                    let with = (w, &after, &mut decided);
+                    (None, self.set_drafts(with, set, declared, now)?)
+                }
                 _ => (None, Vec::new()),
             };
             let version = w.ontology.next_version(&declaration);
@@ -2122,53 +2140,59 @@ impl Call<'_> {
 
     /// The membership a set's declaration decides for the records already
     /// there: an `object_set_changed` for each record of its type whose
-    /// membership under `set` differs from the index, read a page at a
-    /// time, each caused by the `declared` at `declared` (004, extended).
-    /// A set declared again unchanged decides nothing; one declared again
-    /// over another type lets go of that type's members. Past the lake's
-    /// `max_set_changes` the declaration is refused `too_large`, naming the
-    /// set, before anything is appended; the walk stops there.
+    /// membership differs from the index, read a page at a time, each
+    /// caused by the `declared` at `declared` (004, extended). The sets in
+    /// force that name a set are decided with it, over `after`, the
+    /// ontology as the append leaves it: a set is its filter, so a change
+    /// reaches every set built on it, in the same append, and each of them
+    /// once, whatever number of the sets it names the append declares
+    /// (`decided`). A set declared again unchanged decides nothing. Past the lake's
+    /// `max_set_changes`, counted over all of them, the declaration is
+    /// refused `too_large`, naming the set whose change passed it, before
+    /// anything is appended; the walk stops there.
     fn set_drafts(
         &self,
-        w: &Writer,
+        (w, after, decided): (&Writer, &Ontology, &mut Vec<String>),
         set: &ObjectSetDecl,
         declared: Position,
         now: Timestamp,
     ) -> Result<Vec<Draft>> {
         let old = w.ontology.object_sets.get(&set.name).map(|e| &e.decl);
-        if old.is_some_and(|o| o.of == set.of && o.filter == set.filter) {
+        if old.is_some_and(|o| o.filter == set.filter) {
             return Ok(Vec::new());
         }
-        let view = self.lake.engine.view(None)?;
-        let mut types = vec![&set.of];
-        types.extend(old.map(|o| &o.of).filter(|t| *t != &set.of));
+        let (view, ty) = (self.lake.engine.view(None)?, &set.of);
+        // The sets in force that name this one and stand as they are, each
+        // decided once in an append, with its members so far, read once.
+        let mut sets = sets_of(w, view.as_ref(), ty, |s| {
+            let stands = after.object_sets.get(&s.name).is_some_and(|e| &e.decl == s);
+            stands && !decided.contains(&s.name) && declare::names_set(after, s, &set.name)
+        })?;
+        decided.extend(sets.iter().map(|(s, _)| s.name.clone()));
+        // A new set has no member so far.
+        let held = match old {
+            Some(_) => view.members(&set.name, ty)?,
+            None => BTreeSet::new(),
+        };
+        sets.insert(0, (set, held));
         let max = self.lake.limits.max_set_changes;
         let mut out = Vec::new();
-        for ty in types {
-            if w.ontology.ty(ty).is_err() {
-                continue;
-            }
-            // The set's members so far, read once: a new set has none.
-            let held = match old {
-                Some(_) => view.members(&set.name, ty)?,
-                None => BTreeSet::new(),
-            };
-            live(view.as_ref(), ty, |r| {
-                let was = held.contains(&r.key);
-                let is = ty == &set.of && member_of(set, r, w, now)?;
-                if was != is {
+        live(view.as_ref(), ty, |r| {
+            for (s, held) in &sets {
+                let is = member_of((s, after), r, w, now)?;
+                if held.contains(&r.key) != is {
                     if out.len() as u64 >= u64::from(max) {
                         return Err(Error::Refused {
-                            field: Some(set.name.as_str().into()),
+                            field: Some(s.name.as_str().into()),
                             reason: Refusal::TooLarge { max },
                         });
                     }
-                    let change = (set.name.clone(), ty.clone(), r.key.clone(), is);
+                    let change = (s.name.clone(), ty.clone(), r.key.clone(), is);
                     out.push(self.changed(change, declared, now));
                 }
-                Ok(())
-            })?;
-        }
+            }
+            Ok(())
+        })?;
         Ok(out)
     }
 
@@ -2397,7 +2421,7 @@ impl Call<'_> {
         let kept = links.iter().map(|(was, is)| (was, is));
         for (was, is) in std::iter::once((&before, &m.to)).chain(kept) {
             for d in after.declared() {
-                let reads = describe::declaration_reads(&d.declaration, &was.name);
+                let reads = describe::declaration_reads(&d.declaration, &was.name, &|_| None);
                 let Some(named) = gone(d.declaration.what(), &reads, was, is) else {
                     continue;
                 };
@@ -2580,7 +2604,8 @@ impl Call<'_> {
         for (name, decl) in w.ontology.types.iter().map(|(n, e)| (n, &e.decl)) {
             let rewritten = crate::rekey::moved_references(decl, &plan.moves);
             let reads = |s: &ObjectSetDecl| {
-                let filter = declare::condition(&s.filter, Place::Record, "object set");
+                let sets = |n: &str| w.ontology.set(n);
+                let filter = declare::filter(&sets, &s.of, &s.filter, Place::Record, "object set");
                 let reads = filter.map(|e| lakelands_core::derive::reads(&e));
                 reads.is_ok_and(|r| rewritten.iter().any(|(f, _)| r.contains(*f)))
             };

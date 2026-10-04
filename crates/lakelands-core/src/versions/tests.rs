@@ -327,4 +327,12 @@ fn a_declared_call_of_floor_needs_format_11_and_says_so_below_it() {
             "a format 10 event declares a call of `date_bucket` by a width, which format 11 added"
         )
     );
+    // A set that names a set is format 11's too.
+    let urgent = json!({"declare": "object_set", "name": "urgent", "of": "t",
+                        "where": "in_set('open')"});
+    assert_eq!(need(&urgent), 11);
+    assert_eq!(
+        below(&declared_event(10, &urgent)).as_deref(),
+        Some("a format 10 event declares a call of `in_set`, which format 11 added")
+    );
 }

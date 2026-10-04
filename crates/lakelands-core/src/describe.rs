@@ -104,9 +104,62 @@ fn reads_all<'a>(
     })
 }
 
-/// The fields a condition names; `None` when it does not parse.
-fn named(c: &Condition) -> Option<std::collections::BTreeSet<FieldName>> {
-    parsed(c).map(|e| crate::derive::reads(&e))
+/// An object set's filter by the set's name, as a caller holds the sets.
+pub type Sets<'a> = &'a dyn Fn(&str) -> Option<Condition>;
+
+/// The sets among `declared`.
+fn sets_of(declared: &[Declared]) -> impl Fn(&str) -> Option<Condition> + '_ {
+    move |name| {
+        declared.iter().find_map(|d| match &d.declaration {
+            Declaration::ObjectSet(s) if s.name == name => Some(s.filter.clone()),
+            _ => None,
+        })
+    }
+}
+
+/// The fields a condition names, and those the sets it names read, through
+/// the sets those name: a set is its filter, so who reads a condition
+/// reads what its sets read. `None` when it does not parse, or names a set
+/// `sets` does not answer.
+fn named(c: &Condition, sets: Sets<'_>) -> Option<std::collections::BTreeSet<FieldName>> {
+    fn gather(
+        c: &Condition,
+        sets: Sets<'_>,
+        seen: &mut Vec<String>,
+        out: &mut std::collections::BTreeSet<FieldName>,
+    ) -> Option<()> {
+        let e = parsed(c)?;
+        out.extend(crate::derive::reads(&e));
+        let mut names = Vec::new();
+        in_sets(&e, &mut names);
+        for n in names
+            .into_iter()
+            .filter(|n| !seen.contains(n))
+            .collect::<Vec<_>>()
+        {
+            seen.push(n.clone());
+            gather(&sets(&n)?, sets, seen, out)?;
+        }
+        Some(())
+    }
+    let mut out = Default::default();
+    gather(c, sets, &mut Vec::new(), &mut out).map(|()| out)
+}
+
+/// The sets an expression names with `in_set`.
+fn in_sets(e: &Expr, out: &mut Vec<String>) {
+    use lakelands_api::expr::{Func, Literal};
+    if let Expr::Call {
+        func: Func::InSet,
+        args,
+    } = e
+        && let Some(Expr::Lit {
+            value: Literal::Text(name),
+        }) = args.first()
+    {
+        out.push(name.clone());
+    }
+    crate::expr::children(e).for_each(|c| in_sets(c, out));
 }
 
 /// Whether `who` is shown the declaration `d`: whether [`lake`] describes
@@ -175,7 +228,9 @@ fn condition_visible(
     who: &Principal,
 ) -> bool {
     who.grants.schema
-        || c.is_none_or(|c| named(c).is_some_and(|n| reads_all(&n, ty, declared, who)))
+        || c.is_none_or(|c| {
+            named(c, &sets_of(declared)).is_some_and(|n| reads_all(&n, ty, declared, who))
+        })
 }
 
 /// Whether a view may be shown whole to `who`: every source field it names
@@ -204,7 +259,7 @@ pub fn view_reads(v: &ViewDecl) -> Option<Vec<(TypeName, std::collections::BTree
             let mut names: std::collections::BTreeSet<FieldName> =
                 group_by.iter().cloned().collect();
             if let Some(f) = filter {
-                names.extend(named(f)?);
+                names.extend(named(f, &|_| None)?);
             }
             for m in measures {
                 aggregated(&parsed(&m.expr)?, false, &mut names);
@@ -216,8 +271,12 @@ pub fn view_reads(v: &ViewDecl) -> Option<Vec<(TypeName, std::collections::BTree
 
 /// The fields of `ty` a declaration reads: what it probes
 /// ([`declaration_probes`]) and the fields a verb sets.
-pub fn declaration_reads(d: &Declaration, ty: &TypeName) -> std::collections::BTreeSet<FieldName> {
-    let mut names = declaration_probes(d, ty);
+pub fn declaration_reads(
+    d: &Declaration,
+    ty: &TypeName,
+    sets: Sets<'_>,
+) -> std::collections::BTreeSet<FieldName> {
+    let mut names = declaration_probes(d, ty, sets);
     if let Declaration::Verb(v) = d
         && let VerbEffect::Write { set } = &v.effect
         && &v.on == ty
@@ -232,10 +291,17 @@ pub fn declaration_reads(d: &Declaration, ty: &TypeName) -> std::collections::BT
 /// own and those of `ty` as its target, what a view reads of `ty` as a
 /// source ([`view_reads`]), a set's `where`, a trigger's `when`, and a
 /// verb's `requires` and what it sets its fields from (where
-/// `payload.<name>` is the call's and reads no field). A condition that
-/// does not parse reads nothing here.
-pub fn declaration_probes(d: &Declaration, ty: &TypeName) -> std::collections::BTreeSet<FieldName> {
-    let of = |c: &Condition| named(c).unwrap_or_default();
+/// `payload.<name>` is the call's and reads no field), each with what the
+/// sets it names read, as `sets` answers them. A condition that does not
+/// parse reads nothing here.
+pub fn declaration_probes(
+    d: &Declaration,
+    ty: &TypeName,
+    sets: Sets<'_>,
+) -> std::collections::BTreeSet<FieldName> {
+    // A set `sets` does not answer takes none of the condition's own reads.
+    let own = |c: &Condition| parsed(c).map(|e| crate::derive::reads(&e));
+    let of = |c: &Condition| named(c, sets).or_else(|| own(c)).unwrap_or_default();
     match d {
         Declaration::Type(t) => {
             let own = t.fields.iter().filter(|_| &t.name == ty);
@@ -280,7 +346,11 @@ pub fn named_reactions(lake: &LakeDescription, set_off: &mut lakelands_api::writ
         let read = |n: &FieldName| {
             fields.is_some_and(|f| f.iter().any(|f| &f.name == n && f.access.reads()))
         };
-        c.is_none_or(|c| named(c).is_some_and(|names| names.iter().all(read)))
+        let sets = |n: &str| {
+            let named = lake.object_sets.iter().find(|d| d.name == n);
+            named.map(|d| d.filter.clone())
+        };
+        c.is_none_or(|c| named(c, &sets).is_some_and(|names| names.iter().all(read)))
     };
     let fired = |t: &lakelands_api::TriggerName| {
         let mut named = lake.triggers.iter().filter(|d| &d.name == t);

@@ -431,6 +431,30 @@ impl<'a> Reader<'a> {
             && (self.valid_at).is_none_or(|t| valid_time::record_holds(decl, &r.fields, t))
     }
 
+    /// A read's condition with the filter of each set it names in the
+    /// name's place, as the ontology read holds it. A set whose filter,
+    /// with the sets it names, reads a field its reader is kept from is, to
+    /// that reader, a set that is not declared (024): the refusal names
+    /// nothing of the field.
+    fn named_sets(
+        &self,
+        ty: &TypeName,
+        c: &lakelands_api::expr::Condition,
+        at: &str,
+    ) -> Result<Expr> {
+        let all = |n: &str| self.ontology.set(n);
+        let shown = |s: &&lakelands_api::write::ObjectSetDecl| {
+            let filter = crate::declare::filter(&all, &s.of, &s.filter, Place::Record, at);
+            let reads = filter.map(|e| core_derive::reads(&e));
+            let of = self.ontology.ty(&s.of);
+            of.is_ok_and(|t| {
+                reads.is_ok_and(|r| rights::check_probe(self.who, t, r.iter()).is_ok())
+            })
+        };
+        let set = |n: &str| self.ontology.set(n).filter(shown);
+        crate::declare::filter(&set, ty, c, Place::Record, at)
+    }
+
     /// A read's `where` over one record of `decl`, named `at`, after the
     /// principal is found to read every field it reads (024).
     fn record_filter(
@@ -440,7 +464,7 @@ impl<'a> Reader<'a> {
         at: &str,
     ) -> Result<Option<Expr>> {
         let Some(c) = c else { return Ok(None) };
-        let e = condition(c, Place::Record, at)?;
+        let e = self.named_sets(&decl.name, c, at)?;
         rights::check_probe(self.who, decl, core_derive::reads(&e).iter())?;
         crate::declare::evaluates(&e, decl, at)?;
         Ok(Some(e))
@@ -940,7 +964,7 @@ impl<'a> Reader<'a> {
         let filter = find
             .filter
             .as_ref()
-            .map(|c| condition(c, Place::Record, "where"))
+            .map(|c| self.named_sets(&decl.name, c, "where"))
             .transpose()?;
         let mut probed: Vec<FieldName> = filter
             .as_ref()

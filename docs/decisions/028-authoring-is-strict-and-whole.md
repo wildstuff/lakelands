@@ -204,3 +204,21 @@ Two rules hold by it:
 
 A failure that depends on a record's value stays that record's. A
 declaration in force is not checked again until it is declared again.
+
+## Extended: a path steps only into a value that has members (lakelands#552)
+
+A path's first name was checked against the type, and the rest was not:
+`partner.name = 'x'` on a reference read null for every record, so a set
+declared with it had no member, a trigger never fired and a read
+answered nothing, each with nothing said.
+
+A path of more than one name is a walk into a `json` or `geo` value's
+members. Into a field of any other kind it is refused as `invalid`,
+where lakelands#549's rule refuses what can never be evaluated: at the
+declaration of a set, a trigger, a verb and a derived field, and at a
+read, once the reader is known to read the field. The refusal of a step
+through a reference says what to write: a condition reads the record's
+own fields; compare the reference's key, or walk to the record it names
+in a pattern. Reading through a reference in a condition is not built
+(lakelands#567). A declaration in force that holds such a path stays in
+force until it is declared again.

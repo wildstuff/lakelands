@@ -197,6 +197,11 @@ impl Ontology {
         current.map_or(1, |v| v + 1)
     }
 
+    /// The object set `name`, if one is declared.
+    pub fn set(&self, name: &str) -> Option<&ObjectSetDecl> {
+        self.object_sets.get(name).map(|e| &e.decl)
+    }
+
     /// Every declaration, as the engine stores them.
     pub fn declared(&self) -> Vec<Declared> {
         fn each<T: Clone>(
