@@ -1290,32 +1290,79 @@ impl Reads {
 /// The records of `ty` a view holds, a page at a time by key, restricted
 /// ones included and retired ones when `retired`; an ended key is passed
 /// over. Whether a page is the last, and where the next continues, are
-/// decided on the rows as the view returned them.
+/// decided on the rows as the view returned them. A page that cannot be
+/// read ends the walk: it yields nothing more, and whoever drove it asks
+/// [`Walk::failed`] before it uses anything the walk produced.
+pub(crate) struct Walk<'v> {
+    view: &'v dyn ProjectionView,
+    ty: &'v TypeName,
+    scan: lakelands_api::engine::Scan,
+    page: std::vec::IntoIter<StoredRecord>,
+    more: bool,
+    failed: Option<Error>,
+}
+
+impl<'v> Walk<'v> {
+    pub(crate) fn new(view: &'v dyn ProjectionView, ty: &'v TypeName, retired: bool) -> Self {
+        let scan = lakelands_api::engine::Scan {
+            limit: PAGE,
+            ..every(retired)
+        };
+        Walk {
+            view,
+            ty,
+            scan,
+            page: Vec::new().into_iter(),
+            more: true,
+            failed: None,
+        }
+    }
+
+    /// The error of the page read that ended the walk, if one did.
+    pub(crate) fn failed(&mut self) -> Result<()> {
+        self.failed.take().map_or(Ok(()), Err)
+    }
+}
+
+impl Iterator for Walk<'_> {
+    type Item = StoredRecord;
+
+    fn next(&mut self) -> Option<StoredRecord> {
+        loop {
+            match self.page.next() {
+                Some(r) if r.is_ended() => continue,
+                Some(r) => return Some(r),
+                None if !self.more => return None,
+                None => {}
+            }
+            let rows = match self.view.scan(self.ty, &self.scan) {
+                Ok(rows) => rows,
+                Err(e) => {
+                    (self.more, self.failed) = (false, Some(e));
+                    return None;
+                }
+            };
+            self.more = rows.len() == PAGE as usize;
+            self.scan.after = rows.last().map(|r| lakelands_api::engine::After {
+                values: Vec::new(),
+                key: r.key.clone(),
+            });
+            self.page = rows.into_iter();
+        }
+    }
+}
+
+/// [`Walk`], each record handed to `each`: the first error, of a page read
+/// or of `each`, ends it.
 pub(crate) fn walk(
     view: &dyn ProjectionView,
     ty: &TypeName,
     retired: bool,
     mut each: impl FnMut(StoredRecord) -> Result<()>,
 ) -> Result<()> {
-    let mut scan = lakelands_api::engine::Scan {
-        limit: PAGE,
-        ..every(retired)
-    };
-    loop {
-        let rows = view.scan(ty, &scan)?;
-        let last = rows.last().filter(|_| rows.len() == PAGE as usize);
-        let after = last.map(|r| lakelands_api::engine::After {
-            values: Vec::new(),
-            key: r.key.clone(),
-        });
-        rows.into_iter()
-            .filter(|r| !r.is_ended())
-            .try_for_each(&mut each)?;
-        if after.is_none() {
-            return Ok(());
-        }
-        scan.after = after;
-    }
+    let mut walk = Walk::new(view, ty, retired);
+    walk.by_ref().try_for_each(&mut each)?;
+    walk.failed()
 }
 
 /// Every live record of `ty` as the fold leaves it so far, restricted ones

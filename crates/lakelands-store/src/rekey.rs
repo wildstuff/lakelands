@@ -164,25 +164,19 @@ fn tally(ty: &TypeName, keyed: Vec<(RecordKey, Option<RecordKey>)>, plan: &mut P
 }
 
 /// Plan a re-key. `after` is the ontology with the migrated type's new
-/// declaration in force; `converted` are that type's records, retired and
-/// restricted included, with their fields as the migration converts them;
-/// `renames` are the migration's, each an old name and its new one.
+/// declaration in force; `keyed` are that type's records, retired and
+/// restricted included and moved or not, each with its key and the key its
+/// fields make as the migration converts them (`None` where they make
+/// none); `renames` are the migration's, each an old name and its new one.
+/// Every other type is walked a page at a time; what is kept is keys.
 pub fn plan(
     after: &Ontology,
     view: &dyn ProjectionView,
     migrated: &TypeName,
-    converted: Vec<(RecordKey, BTreeMap<FieldName, Value>)>,
+    keyed: Vec<(RecordKey, Option<RecordKey>)>,
     renames: &[(FieldName, FieldName)],
 ) -> Result<Plan> {
     let mut plan = Plan::default();
-    let decl = after.ty(migrated)?;
-    let keyed = converted
-        .into_iter()
-        .map(|(old, fields)| {
-            let new = lakelands_core::log::record_key(decl, &fields);
-            (old, new)
-        })
-        .collect();
     tally(migrated, keyed, &mut plan);
     // The closure: types keyed by a reference to a re-keyed type. Each one
     // it can reach waits until every other type its key references has its
@@ -216,14 +210,12 @@ pub fn plan(
                  by it; that is not supported"
             )));
         }
-        let keyed = stored(view, &name)?
-            .into_iter()
-            .map(|r| {
-                let fields = rewritten(&decl, &r.fields, &plan.moves);
-                let new = lakelands_core::log::record_key(&decl, &fields);
-                (r.key, new)
-            })
-            .collect();
+        let mut keyed = Vec::new();
+        crate::lake::walk(view, &name, true, |r| {
+            let fields = rewritten(&decl, &r.fields, &plan.moves);
+            keyed.push((r.key, lakelands_core::log::record_key(&decl, &fields)));
+            Ok(())
+        })?;
         tally(&name, keyed, &mut plan);
     }
     // No order makes keys that are made of each other: those of a moved
@@ -254,20 +246,31 @@ pub fn plan(
         if refs.is_empty() {
             continue;
         }
-        let records = stored(view, name)?;
-        for (f, target) in refs {
-            // The migrated type's records hold a renamed field under its old name.
+        // The migrated type's records hold a renamed field under its old name.
+        let held = |f: &FieldName| {
             let renamed = |(_, new): &&(FieldName, FieldName)| name == migrated && new == f;
-            let held = renames.iter().find(renamed).map_or(f, |(old, _)| old);
-            let values = records
+            renames
                 .iter()
-                .filter(|r| {
+                .find(renamed)
+                .map_or(f, |(old, _)| old)
+                .clone()
+        };
+        let held: Vec<FieldName> = refs.iter().map(|(f, _)| held(f)).collect();
+        // Counted over the stored fields, one walk for all the type's fields.
+        let mut counts = vec![0u64; refs.len()];
+        crate::lake::walk(view, name, true, |r| {
+            for (((_, target), held), n) in refs.iter().zip(&held).zip(&mut counts) {
+                let names = |v| plan.moves[*target].contains_key(&RecordKey::from(v));
+                *n += u64::from(
                     r.fields
                         .get(held)
                         .and_then(Value::as_str)
-                        .is_some_and(|v| plan.moves[target].contains_key(&RecordKey::from(v)))
-                })
-                .count() as u64;
+                        .is_some_and(names),
+                );
+            }
+            Ok(())
+        })?;
+        for ((f, _), values) in refs.into_iter().zip(counts) {
             if values > 0 {
                 plan.references.push(ReferenceRewrite {
                     ty: name.clone(),
