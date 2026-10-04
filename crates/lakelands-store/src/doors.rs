@@ -669,6 +669,17 @@ fn about(body: &EventBody) -> (Option<&TypeName>, Option<&RecordKey>) {
     }
 }
 
+/// Whether a `migrated` event is also about one of `types`: the link
+/// types its renamed relations move records between, old and new, so a
+/// consumer that follows either hears of the move (035, extended).
+fn moves(body: &EventBody, types: &[TypeName]) -> bool {
+    let EventBody::Migrated { migration, .. } = body else {
+        return false;
+    };
+    let moved = lakelands_core::links::moved(migration);
+    (moved.iter()).any(|(old, new)| types.contains(old) || types.contains(new))
+}
+
 #[async_trait]
 impl ChangeFeed for Feed {
     async fn poll(&self, from: Position, filter: &FeedFilter, limit: u32) -> Result<FeedBatch> {
@@ -693,8 +704,9 @@ impl ChangeFeed for Feed {
                     let kind_ok =
                         filter.kinds.is_empty() || filter.kinds.iter().any(|k| k == e.body.kind());
                     let (ty, key) = about(&e.body);
-                    let type_ok =
-                        filter.types.is_empty() || ty.is_some_and(|t| filter.types.contains(t));
+                    let type_ok = filter.types.is_empty()
+                        || ty.is_some_and(|t| filter.types.contains(t))
+                        || moves(&e.body, &filter.types);
                     let key_ok =
                         filter.keys.is_empty() || key.is_some_and(|k| filter.keys.contains(k));
                     if kind_ok && type_ok && key_ok {

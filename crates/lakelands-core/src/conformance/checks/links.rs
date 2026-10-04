@@ -125,7 +125,7 @@ check!(
 );
 
 const LT: &str = "sys.link.invoice.approved_by";
-const SEPT: &str = "2026-09-01T00:00:00.000000Z";
+pub(super) const SEPT: &str = "2026-09-01T00:00:00.000000Z";
 const OCT: &str = "2026-10-01T00:00:00.000000Z";
 
 fn approved_by(fields: Vec<FieldDecl>, authority: Authority) -> RelationDecl {
@@ -141,14 +141,14 @@ fn approved_by(fields: Vec<FieldDecl>, authority: Authority) -> RelationDecl {
 }
 
 /// `approved_by` as the lake declares it: authored, with a `since`.
-fn dated() -> RelationDecl {
+pub(super) fn dated() -> RelationDecl {
     approved_by(
         vec![field("since", StorageKind::DateTime)],
         Authority::Authored,
     )
 }
 
-fn invoice(relations: Vec<RelationDecl>) -> TypeDecl {
+pub(super) fn invoice(relations: Vec<RelationDecl>) -> TypeDecl {
     let mut t = type_decl("invoice", vec![field("amount", StorageKind::Decimal)]);
     t.relations = relations;
     t
@@ -156,7 +156,7 @@ fn invoice(relations: Vec<RelationDecl>) -> TypeDecl {
 
 /// Partners p1 and p2, invoices i1 and i2, and `approved_by` from an
 /// invoice to a partner, carried by link records with a `since`.
-async fn lake(store: &dyn LakeStore) -> Result<Lake, Failure> {
+pub(super) async fn lake(store: &dyn LakeStore) -> Result<Lake, Failure> {
     let l = Lake::of(store);
     l.declare(type_decl("partner", vec![field("name", StorageKind::Text)]))
         .await?;
@@ -190,7 +190,12 @@ async fn link(
 }
 
 /// Links `from` to `to` over `approved_by` as the owner.
-async fn link_ok(l: &Lake, from: &str, to: &str, fields: Value) -> Result<Outcome, Failure> {
+pub(super) async fn link_ok(
+    l: &Lake,
+    from: &str,
+    to: &str,
+    fields: Value,
+) -> Result<Outcome, Failure> {
     let linked = link(l.cat.as_ref(), &l.own, from, to, fields).await;
     linked.must(&format!("linking {from} to {to}"))
 }
@@ -230,7 +235,7 @@ async fn walked(
     }
 }
 
-fn pairs(edges: &[Edge]) -> Vec<String> {
+pub(super) fn pairs(edges: &[Edge]) -> Vec<String> {
     edges
         .iter()
         .map(|e| format!("{}>{}", e.from.1, e.to.1))

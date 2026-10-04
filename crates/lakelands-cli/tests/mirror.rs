@@ -524,6 +524,7 @@ async fn migrate(lake: &dyn LakeStore, to: Value) {
     let migration = Migration {
         to: serde_json::from_value(to).unwrap(),
         renames: vec![],
+        relation_renames: Vec::new(),
     };
     let report = cat.migrate(&who, migration.clone()).await.unwrap().data;
     assert!(report.lossless, "{report:?}");

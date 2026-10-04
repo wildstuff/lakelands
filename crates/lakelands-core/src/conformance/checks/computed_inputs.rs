@@ -232,6 +232,7 @@ async fn a_computed_field_is_read_no_further_than_what_it_is_computed_from(
     let migration = Box::new(Migration {
         to: to.expect("a type"),
         renames: vec![],
+        relation_renames: Vec::new(),
     });
     let write = ProposedWrite::Migrate {
         migration,
@@ -313,6 +314,7 @@ async fn a_computed_field_is_read_no_further_than_what_it_is_computed_from(
     let view = Migration {
         to: view.expect("a type"),
         renames: vec![],
+        relation_renames: Vec::new(),
     };
     let mut reads = Vec::new();
     for inputs in [&["a", "b"][..], &["a"], &["a", "b"]] {

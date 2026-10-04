@@ -148,17 +148,23 @@ pub struct Grants {
     pub restricted: bool,
 }
 
-/// One migration's renames of a type's fields, and the position it took
-/// effect at: an entry of the lake's list of renames, in the log's order.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// An entry of the lake's list of renames, in the log's order, of one of
+/// two kinds: one migration's renames of a type's fields, or a type's own
+/// new name (a link type's, when its relation is renamed), with the
+/// position it took effect at.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Renamed {
     /// The position of the `migrated` event.
     pub at: Position,
-    /// The type migrated.
+    /// The type migrated; for a type's new name, the name it had.
     #[serde(rename = "type")]
     pub ty: TypeName,
     /// Each field's old and new name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub renames: Vec<(FieldName, FieldName)>,
+    /// The type's new name, in an entry of the second kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<TypeName>,
 }
 
 /// The grants of one principal on one type.
@@ -209,6 +215,7 @@ impl Grants {
     /// chain of names that ends in its old name, the newest where several
     /// do, or starts one.
     pub fn follow(&mut self, list: &[Renamed], at: Option<Position>) {
+        self.follow_names(list, at);
         let lake = self.default;
         for (ty, held) in self.types.iter_mut().filter(|t| !t.1.fields.is_empty()) {
             let mut chains: Vec<Vec<(&FieldName, Position)>> = Vec::new();
@@ -242,6 +249,79 @@ impl Grants {
                     let own = own.or(held.default).unwrap_or(lake);
                     (held.fields).insert(borne.clone(), said.fold(own, |a, b| a.lowest(*b)));
                 }
+            }
+        }
+    }
+
+    /// The step over a type's names, before the one over its fields: the
+    /// grants on every name a type has borne or will bear become one entry
+    /// under the name it bears at `at`. A field's access there is the
+    /// lowest of what that name's entry says (the field's grant, else its
+    /// default, else the lake's) and of what each other name's entry says
+    /// for it (its grant, else its default; an entry with neither says
+    /// nothing). So a restriction follows the type in both directions of
+    /// time and a permission stays with its name. A name's chain continues
+    /// as a field's does: the newest of those that end in the old name.
+    /// A name two chains bear at `at` is written once, by the chain that
+    /// took it last; where both took it at one position, the lower of the
+    /// two. Each chain reads the grants as they were given.
+    fn follow_names(&mut self, list: &[Renamed], at: Option<Position>) {
+        let lake = self.default;
+        // The chains, and for each name the chain that took it last: a
+        // name is free when a rename takes it.
+        let mut chains: Vec<Vec<(&TypeName, Position)>> = Vec::new();
+        let mut ends: BTreeMap<&TypeName, usize> = BTreeMap::new();
+        for (r, to) in list.iter().filter_map(|r| Some((r, r.to.as_ref()?))) {
+            let i = ends.remove(&r.ty).unwrap_or_else(|| {
+                chains.push(vec![(&r.ty, Position::GENESIS)]);
+                chains.len() - 1
+            });
+            chains[i].push((to, r.at));
+            ends.insert(to, i);
+        }
+        let names = |c: &Vec<(&TypeName, Position)>| c.iter().any(|n| self.types.contains_key(n.0));
+        if !chains.iter().any(names) {
+            return;
+        }
+        let given = self.types.clone();
+        let said = |t: &TypeGrants, f: &FieldName| t.fields.get(f).copied().or(t.default);
+        // What `own` and `others` say together, the lower for each field.
+        let lowest = |mut own: TypeGrants, others: &[&TypeGrants]| {
+            let named = others.iter().copied().chain([&own]);
+            let named: std::collections::BTreeSet<FieldName> =
+                named.flat_map(|t| t.fields.keys()).cloned().collect();
+            let field = |f: FieldName| {
+                let mine = said(&own, &f).unwrap_or(lake);
+                let low = (others.iter().filter_map(|t| said(t, &f))).fold(mine, Access::lowest);
+                (f, low)
+            };
+            let fields = named.into_iter().map(field).collect();
+            let mut defaults = others.iter().filter_map(|t| t.default).peekable();
+            if defaults.peek().is_some() {
+                let mine = own.default.unwrap_or(lake);
+                own.default = Some(defaults.fold(mine, Access::lowest));
+            }
+            own.fields = fields;
+            own
+        };
+        // For each name borne at `at`: when it was taken, and the entry.
+        let mut borne: BTreeMap<&TypeName, (Position, TypeGrants)> = BTreeMap::new();
+        for chain in &chains {
+            let held = chain.iter().rfind(|c| at.is_none_or(|p| c.1 <= p));
+            let (name, since) = *held.unwrap_or(&chain[0]);
+            let others = chain.iter().filter(|c| c.0 != name);
+            let others: Vec<&TypeGrants> = others.filter_map(|c| given.get(c.0)).collect();
+            let entry = lowest(given.get(name).cloned().unwrap_or_default(), &others);
+            let entry = match borne.remove(name) {
+                Some((taken, by)) if taken > since => (taken, by),
+                Some((taken, by)) if taken == since => (since, lowest(entry, &[&by])),
+                _ => (since, entry),
+            };
+            borne.insert(name, entry);
+        }
+        for (name, (_, entry)) in borne {
+            if entry != TypeGrants::default() || given.contains_key(name) {
+                self.types.insert(name.clone(), entry);
             }
         }
     }

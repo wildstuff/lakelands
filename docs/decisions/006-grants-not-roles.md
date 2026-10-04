@@ -170,6 +170,16 @@ position before it, down to its first version. The handle that writes
 records the list; one opened read-only before any writer has opened
 keeps it in memory.
 
-Nothing is built for a type's name. A renamed relation will rename its
-link type, which a grant can name; the same rule holds there
-(lakelands#429).
+**A type's name follows the same rule (lakelands#429).** A renamed
+relation carried by link records moves them to the link type of its new
+name, and a grant can name a link type. The list holds an entry of a
+second kind for it: the position, the link type's old name and its new
+one. The step over a type's names comes before the step over fields:
+the grants on every name the type has borne or will bear become one
+entry under the name it bears at the position read, a field's access
+there the lowest of what that name's entry says (its grant, else its
+default, else the lake's) and of what each other name's entry says for
+it (its grant, else its default). A grant that is only a `default` is
+followed too, so a principal is followed whenever its grants name a
+type. Each chain of names reads the grants as they were given, and of
+the chains that end in a name the one that took it last continues.

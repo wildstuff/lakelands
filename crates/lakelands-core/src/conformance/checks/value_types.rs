@@ -478,6 +478,7 @@ async fn a_value_type_migration_needs_the_schema_grant(
     let missing = lakelands_api::write::Migration {
         to: type_decl("nothing", vec![]),
         renames: vec![],
+        relation_renames: Vec::new(),
     };
     let answers = [
         cat.migrate_value_type_apply(&clerk, none, "r")

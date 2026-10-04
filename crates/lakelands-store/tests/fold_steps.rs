@@ -103,6 +103,7 @@ fn migrated(to: TypeDecl, renames: &[(&str, &str)], moves: &[(&str, &str, &str)]
             renames: (renames.iter())
                 .map(|(from, to)| ((*from).into(), (*to).into()))
                 .collect(),
+            relation_renames: Vec::new(),
         },
         version: 2,
         report_id: "by hand".into(),

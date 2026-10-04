@@ -108,6 +108,7 @@ macro_rules! door_checks {
             a_duration_by_a_unit_is_a_number_and_what_never_lands_is_refused,
             recompute_appends_the_function_in_force_again,
             a_set_names_a_set_and_tells_no_more_than_its_filter,
+            a_renamed_relation_keeps_its_edges,
             a_migration_keeps_what_a_declaration_reads,
             a_view_is_never_migrated,
             nothing_that_never_acts_is_declared_on_a_view,
@@ -1217,6 +1218,7 @@ pub async fn a_field_built_from_a_hidden_one_is_hidden_too(store: Arc<dyn LakeSt
         migration: Box::new(lakelands_api::write::Migration {
             to: memo("memo", true),
             renames: vec![],
+            relation_renames: Vec::new(),
         }),
         report: Default::default(),
     };
@@ -1262,6 +1264,7 @@ pub async fn a_grant_holds_a_field_through_its_rename(store: Arc<dyn LakeStore>)
     let m = lakelands_api::write::Migration {
         to: doc("text"),
         renames: vec![("body".into(), "text".into())],
+        relation_renames: Vec::new(),
     };
     let report = c.migrate(owner, m.clone()).await.expect("the preflight");
     let answer = c
@@ -1315,6 +1318,7 @@ pub async fn a_type_its_proposer_is_not_shown_is_a_type_that_is_not_declared(
         let migration = Box::new(lakelands_api::write::Migration {
             to: shape(name),
             renames: vec![],
+            relation_renames: Vec::new(),
         });
         let writes = [
             ProposedWrite::Declare {
@@ -2009,6 +2013,7 @@ pub async fn a_view_is_never_migrated(store: Arc<dyn LakeStore>) {
         let m = lakelands_api::write::Migration {
             to,
             renames: vec![],
+            relation_renames: Vec::new(),
         };
         let e = f
             .catalog
@@ -2104,7 +2109,14 @@ pub async fn a_migration_keeps_what_a_view_reads(store: Arc<dyn LakeStore>) {
     ] {
         let e = f
             .catalog
-            .migrate(owner, lakelands_api::write::Migration { to, renames })
+            .migrate(
+                owner,
+                lakelands_api::write::Migration {
+                    to,
+                    renames,
+                    relation_renames: Vec::new(),
+                },
+            )
             .await
             .expect_err("a field a view reads stays");
         assert!(
@@ -2130,6 +2142,7 @@ pub async fn a_migration_keeps_what_a_view_reads(store: Arc<dyn LakeStore>) {
         migration: Box::new(lakelands_api::write::Migration {
             to: without_amount,
             renames: vec![],
+            relation_renames: Vec::new(),
         }),
         report: Default::default(),
     };
@@ -2191,6 +2204,76 @@ pub async fn a_view_reads_only_what_its_source_has(store: Arc<dyn LakeStore>) {
 fn invalid_naming(e: &Error, names: &[&str]) -> bool {
     matches!(e, Error::Refused { reason: Refusal::Invalid { message }, .. }
         if names.iter().all(|n| message.contains(n)))
+}
+
+/// A migration that names a relation's rename keeps its edges: the report
+/// lists the relation with the links that move, and the links are records
+/// of the new name's link type and of the old no more; a rename of a
+/// relation whose link type another type refers to is refused, naming
+/// that type, on the mock as on the store.
+pub async fn a_renamed_relation_keeps_its_edges(store: Arc<dyn LakeStore>) {
+    use lakelands_api::write::{Carrier, Migration};
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let memo = |relation: &str| -> lakelands_api::ontology::TypeDecl {
+        let text = json!({"name": "t", "type": {"kind": "text"}});
+        let cites = json!({"name": relation, "target": "memo", "cardinality": "many_to_many"});
+        serde_json::from_value(json!({"name": "memo", "fields": [text], "relations": [cites]}))
+            .expect("a type")
+    };
+    let declared = f.catalog.declare(owner, Declaration::Type(memo("cites")));
+    declared.await.expect("declaring `memo`");
+    let (ty, a, b) = (
+        TypeName::from("memo"),
+        RecordKey::from("a"),
+        RecordKey::from("b"),
+    );
+    for key in [&a, &b] {
+        let patch = serde_json::from_value(json!({"t": "x"})).expect("a patch");
+        let wrote = f
+            .catalog
+            .upsert(owner, &ty, key, patch, WriteOpts::default());
+        wrote.await.expect("writing a memo");
+    }
+    let (cites, opts) = ("cites".into(), WriteOpts::default());
+    let linked = (f.catalog).link(owner, &ty, &a, &cites, &b, Default::default(), opts);
+    linked.await.expect("linking over `cites`");
+    let m = Migration {
+        to: memo("quotes"),
+        renames: Vec::new(),
+        relation_renames: vec![("cites".into(), "quotes".into())],
+    };
+    let report = f.catalog.migrate(owner, m.clone()).await;
+    let report = report.expect("the preflight").data;
+    let moved: Vec<_> = (report.relations.iter().map(|r| (r.carrier, r.links))).collect();
+    assert_eq!(moved, [(Carrier::Links, 1)], "{report:?}");
+    let applied = f.catalog.migrate_apply(owner, m, &report.report_id).await;
+    applied.expect("applying the rename");
+    let mut held = Vec::new();
+    for lt in ["sys.link.memo.quotes", "sys.link.memo.cites"] {
+        let found = f.catalog.find(owner, &lt.into(), Default::default()).await;
+        held.push(match found.expect("finding the links").data {
+            lakelands_api::read::Found::Records { rows, .. } => rows.len(),
+            _ => usize::MAX,
+        });
+    }
+    assert_eq!(held, [1, 0], "the links are the new link type's");
+    // A reference into the link type holds a rename: its keys would end.
+    let about =
+        json!({"name": "about", "type": {"kind": "reference", "target": "sys.link.memo.quotes"}});
+    let gloss = serde_json::from_value(json!({"name": "gloss", "fields": [about]}));
+    let declared = f
+        .catalog
+        .declare(owner, Declaration::Type(gloss.expect("a type")));
+    declared.await.expect("declaring `gloss`");
+    let back = Migration {
+        to: memo("cites"),
+        renames: Vec::new(),
+        relation_renames: vec![("quotes".into(), "cites".into())],
+    };
+    let e = f.catalog.migrate(owner, back).await;
+    let e = e.expect_err("a rename of a relation whose link type is referred to");
+    assert!(invalid_naming(&e, &["quotes", "`gloss` refers"]), "{e:?}");
 }
 
 /// `recompute` appends the function in force again and answers its
@@ -2506,6 +2589,7 @@ pub async fn a_migration_keeps_what_a_declaration_reads(store: Arc<dyn LakeStore
             .iter()
             .map(|(a, b)| ((*a).into(), (*b).into()))
             .collect(),
+        relation_renames: Vec::new(),
     };
     for (to, names) in [
         (
@@ -3616,6 +3700,7 @@ pub async fn a_schema_proposal_is_refused_by_kind_at_propose_and_at_accept(
                 migration: Box::new(Migration {
                     to,
                     renames: vec![],
+                    relation_renames: Vec::new(),
                 }),
                 report: Default::default(),
             },
@@ -5289,6 +5374,7 @@ pub async fn a_migration_keeps_a_field_its_author_may_not_know_of(store: Arc<dyn
         migration: Box::new(lakelands_api::write::Migration {
             to: invoice(&["status"]),
             renames: vec![],
+            relation_renames: Vec::new(),
         }),
         report: Default::default(),
     };
@@ -5377,6 +5463,7 @@ pub async fn a_relation_declared_again_with_another_target_reshapes_its_links(
     let m = lakelands_api::write::Migration {
         to: without,
         renames: vec![],
+        relation_renames: Vec::new(),
     };
     let report = c.migrate(own, m.clone()).await.unwrap();
     assert_eq!(
@@ -5437,6 +5524,7 @@ pub async fn a_migration_migrates_and_declares_its_link_types_in_its_append(
              "fields": [{"name": "at", "type": {"kind": "text"}}]},
             {"name": "witnessed_by", "target": "person"}])),
         renames: vec![],
+        relation_renames: Vec::new(),
     };
     let report = c.migrate(own, m.clone()).await.unwrap();
     let from = store.head().await.unwrap().next();

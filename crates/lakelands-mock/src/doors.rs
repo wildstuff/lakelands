@@ -368,18 +368,28 @@ impl MockCatalog {
     /// The list is every `migrated` event's renames, in the log's order.
     fn followed(&self, who: &Principal, at: Option<Position>) -> Principal {
         let mut who = who.clone();
-        let renamed = |e: &Event| match &e.body {
-            EventBody::Migrated { migration, .. } if !migration.renames.is_empty() => {
-                let (ty, renames) = (migration.to.name.clone(), migration.renames.clone());
-                Some(Renamed {
-                    at: e.position,
-                    ty,
-                    renames,
-                })
-            }
-            _ => None,
+        // As the store: a migration's field renames, then each link type a
+        // renamed relation moves.
+        let renamed = |e: &Event| {
+            let EventBody::Migrated { migration, .. } = &e.body else {
+                return Vec::new();
+            };
+            let (at, ty) = (e.position, &migration.to.name);
+            let fields = (!migration.renames.is_empty()).then(|| Renamed {
+                at,
+                ty: ty.clone(),
+                renames: migration.renames.clone(),
+                to: None,
+            });
+            let names = moved(migration).into_iter().map(|(ty, to)| Renamed {
+                at,
+                ty,
+                to: Some(to),
+                ..Renamed::default()
+            });
+            fields.into_iter().chain(names).collect()
         };
-        let list: Vec<Renamed> = self.log().events.iter().filter_map(renamed).collect();
+        let list: Vec<Renamed> = self.log().events.iter().flat_map(renamed).collect();
         who.grants.follow(&list, at);
         who
     }
@@ -2139,6 +2149,80 @@ fn check_set(st: &State, who: &Principal, declarations: &[Declaration]) -> Resul
     }
 }
 
+/// As the store: the link types a migration's renamed relations move
+/// their records between, old name to new. A rename keeps the carrier, so
+/// it is read off the relation as the new shape declares it.
+fn moved(m: &Migration) -> Vec<(TypeName, TypeName)> {
+    let by_links = |new: &RelationName| {
+        let is = m.to.relations.iter().find(|r| &r.name == new);
+        is.is_some_and(|r| {
+            lakelands_api::write::Carrier::of(r) == lakelands_api::write::Carrier::Links
+        })
+    };
+    let pairs = m.relation_renames.iter().filter(|(_, new)| by_links(new));
+    let ty = &m.to.name;
+    pairs
+        .map(|(old, new)| (links::name(ty, old), links::name(ty, new)))
+        .collect()
+}
+
+/// As the store: the declarations that name a link type whose records a
+/// migration moves, each as it is declared again under the new name.
+fn carried(st: &State, m: &Migration) -> Vec<Declaration> {
+    let ty = &m.to.name;
+    let to = |t: &TypeName| {
+        let (of, relation) = links::parts(t).filter(|(of, _)| of == ty)?;
+        let renamed = m
+            .relation_renames
+            .iter()
+            .find(|(old, _)| old == &relation)?;
+        st.types
+            .contains_key(t)
+            .then(|| links::name(&of, &renamed.1))
+    };
+    let mut out = Vec::new();
+    for t in &st.triggers {
+        out.extend(to(&t.on).map(|on| {
+            Declaration::Trigger(lakelands_api::ontology::TriggerDecl { on, ..t.clone() })
+        }));
+    }
+    for v in st.verbs.values() {
+        out.extend(to(&v.on).map(|on| Declaration::Verb(VerbDecl { on, ..v.clone() })));
+    }
+    for s in &st.object_sets {
+        out.extend(to(&s.of).map(|of| {
+            Declaration::ObjectSet(lakelands_api::write::ObjectSetDecl { of, ..s.clone() })
+        }));
+    }
+    for t in st.types.values().map(|t| &t.decl) {
+        let Some(mut view) = t.view.clone() else {
+            continue;
+        };
+        let sources = view.merge.iter_mut().map(|s| &mut s.source);
+        let mut reads = false;
+        for source in std::iter::once(&mut view.source).chain(sources) {
+            if let Some(new) = to(source) {
+                (*source, reads) = (new, true);
+            }
+        }
+        if reads {
+            let view = Some(view);
+            out.push(Declaration::Type(TypeDecl { view, ..t.clone() }));
+        }
+    }
+    out
+}
+
+/// A carried declaration as the report lists it: its kind and its name.
+fn carried_entry(d: &Declaration) -> lakelands_api::write::Carried {
+    let v = serde_json::to_value(d).unwrap_or_default();
+    let text = |k: &str| v[k].as_str().unwrap_or_default().to_owned();
+    lakelands_api::write::Carried {
+        kind: text("declare"),
+        name: text("name"),
+    }
+}
+
 /// As the store: whether a migration changes nothing, its `to` the type in
 /// force and no field renamed.
 fn unchanged(st: &State, m: &Migration) -> bool {
@@ -2580,6 +2664,8 @@ fn shown_report(st: &State, who: &Principal, m: &Migration, report: &mut Migrati
         (report.ty, report.more) = (TypeName::default(), true);
         report.fields.clear();
         report.dropped.clear();
+        report.relations.clear();
+        report.carried.clear();
         report.rekeyed.clear();
         report.references.clear();
         report.sample_collisions.clear();
@@ -2602,6 +2688,17 @@ fn shown_report(st: &State, who: &Principal, m: &Migration, report: &mut Migrati
         .fields
         .retain(|c| holds(&to, &c.field) && sourced(&c.field));
     report.dropped.retain(|(f, _)| holds(&was, f));
+    // As the store: a renamed relation as a dropped one, by the name it
+    // had; a carried declaration where `describe` names it.
+    (report.relations).retain(|r| holds(&was, &r.from.as_str().into()));
+    let shown = describe_lake(&who.lake, st, who);
+    let described = |c: &lakelands_api::write::Carried| match c.kind.as_str() {
+        "trigger" => shown.triggers.iter().any(|t| t.name.as_str() == c.name),
+        "verb" => shown.verbs.iter().any(|v| v.name.as_str() == c.name),
+        "object_set" => shown.object_sets.iter().any(|s| s.name == c.name),
+        _ => shown.types.iter().any(|t| t.name.as_str() == c.name),
+    };
+    report.carried.retain(described);
     report.rekeyed.retain(|r| sees(&r.ty).is_some());
     report.references.retain(|r| known(&r.ty, &r.field));
     report.sample_collisions.retain(|c| sees(&c.ty).is_some());
@@ -2707,8 +2804,20 @@ fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite) -> bool {
 /// rename only where `who` may know of the field under both names.
 fn known_migration(st: &State, who: &Principal, m: &mut Migration) {
     let (at, ty, renames) = (Position(u64::MAX), m.to.name.clone(), m.renames.clone());
+    let mut list = vec![Renamed {
+        at,
+        ty,
+        renames,
+        to: None,
+    }];
+    list.extend(moved(m).into_iter().map(|(ty, to)| Renamed {
+        at,
+        ty,
+        to: Some(to),
+        ..Renamed::default()
+    }));
     let mut then = who.clone();
-    (then.grants).follow(&[Renamed { at, ty, renames }], None);
+    (then.grants).follow(&list, None);
     let mut was = st.types.get(&m.to.name).map(|t| t.decl.clone());
     if let Some(was) = &mut was {
         known_fields(who, was);
@@ -2952,6 +3061,54 @@ fn preflight(
             (old.name.clone(), holding)
         })
         .collect();
+    // As the store: a renamed relation keeps its edges; its link records
+    // move to the new name's link type, which must hold none.
+    let pairs = m.renamed_relations(&t.decl).map_err(invalid)?;
+    let held = |lt: &TypeName| st.records.values().filter(|r| &r.ty == lt).count() as u64;
+    let mut relations = Vec::new();
+    for (was, is) in &pairs {
+        let carrier = lakelands_api::write::Carrier::of(was);
+        let by_links = carrier == lakelands_api::write::Carrier::Links;
+        if by_links && held(&links::name(ty, &is.name)) > 0 {
+            return Err(invalid(format!(
+                "renaming relation `{}` to `{}`: the lake keeps the links of an earlier \
+                 relation of that name; take another name",
+                was.name, is.name
+            )));
+        }
+        // As the store: a reference into the link type would name keys that
+        // end, and the type that refers to it is named to one who sees it.
+        let old = links::name(ty, &was.name);
+        let refers = |d: &&DeclaredType| {
+            let field = |f: &FieldDecl| f.ty.target.as_ref() == Some(&old);
+            d.decl.fields.iter().any(field) || d.decl.relations.iter().any(|r| r.target == old)
+        };
+        let mut referring = st
+            .types
+            .values()
+            .filter(|d| by_links && refers(d))
+            .peekable();
+        if referring.peek().is_some() {
+            let named = referring.find(|d| st.visible(who, &d.decl.name).is_some());
+            let it = named.map_or("a declaration".into(), |d| format!("`{}`", d.decl.name));
+            return Err(invalid(format!(
+                "renaming relation `{}` to `{}`: {it} refers to its link type `{old}`, whose \
+                 records would move; retarget it first",
+                was.name, is.name
+            )));
+        }
+        relations.push(lakelands_api::write::RelationRename {
+            from: was.name.clone(),
+            to: is.name.clone(),
+            carrier,
+            links: if by_links {
+                held(&links::name(ty, &was.name))
+            } else {
+                0
+            },
+        });
+    }
+    let carried = carried(st, m).iter().map(carried_entry).collect();
     // A relation the migration removes takes its live links from the
     // head: it is listed with their number, as the store lists it.
     for lt in links::of(&t.decl) {
@@ -2962,6 +3119,7 @@ fn preflight(
         let relation = links::parts(&lt.name).map(|(_, r)| r);
         if let (Some(r), n @ 1..) = (relation, live.count() as u64)
             && !m.to.relations.iter().any(|kept| kept.name == r)
+            && !pairs.iter().any(|(was, _)| was.name == r)
         {
             dropped.push((FieldName::from(r.as_str()), n));
         }
@@ -2980,6 +3138,8 @@ fn preflight(
         sample_collisions: Vec::new(),
         report_id: String::new(),
         more: false,
+        relations,
+        carried,
     };
     let seed = serde_json::to_vec(&(&report, head.0, m)).unwrap_or_default();
     report.report_id = value::hex(&seed, 1);
@@ -4444,6 +4604,7 @@ impl Catalog for MockCatalog {
             .map_or(1, |t| t.version + 1);
         let mut batch = Batch::at(&log);
         let link_types = links::of(&migration.to);
+        let carry = carried(&st, &migration);
         let report_id = report.report_id;
         // The answer names each rename as the one answered may know it.
         let mut known = migration.clone();
@@ -4467,6 +4628,7 @@ impl Catalog for MockCatalog {
                 let migration = Migration {
                     to: lt.clone(),
                     renames: Vec::new(),
+                    relation_renames: Vec::new(),
                 };
                 batch.push(Draft::new(
                     who,
@@ -4486,6 +4648,17 @@ impl Catalog for MockCatalog {
             .filter(|lt| !st.types.contains_key(&lt.name))
         {
             let declaration = Declaration::Type(lt);
+            let (schema_hash, version) = identity_version(&st, &declaration);
+            let body = EventBody::Declared {
+                declaration,
+                schema_hash,
+                version,
+            };
+            batch.push(Draft::new(who, Origin::System, body));
+        }
+        // As the store: what names a link type whose records move is
+        // declared again under the new name.
+        for declaration in carry {
             let (schema_hash, version) = identity_version(&st, &declaration);
             let body = EventBody::Declared {
                 declaration,
@@ -4600,6 +4773,20 @@ fn plan_window(
             &mut fields,
             Origin::Source,
         )?;
+        // As the store: a link type no relation carries takes no link.
+        let carried = st.types.values().any(|o| {
+            let by_links =
+                (o.decl.relations.iter()).filter(|x| x.via.is_none() && x.derived.is_none());
+            by_links
+                .into_iter()
+                .any(|x| links::name(&o.decl.name, &x.name) == r.ty)
+        });
+        if links::is_link_type(&r.ty) && !carried {
+            return Err(invalid(format!(
+                "`{}` is the link type of no relation: its relation was renamed or removed",
+                r.ty
+            )));
+        }
         // A link holds its relation's cardinality, over the lake's live
         // links and those earlier in this window.
         if links::is_link_type(&r.ty)

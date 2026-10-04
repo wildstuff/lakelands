@@ -23,9 +23,10 @@ The files:
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
 - `v11.json`: version 11's additions after `v10.json`'s position 22, one
-  line each: a `declared` type whose derived field calls `floor`, and one
-  whose derived field calls `date_bucket` by a width, and an object set
-  whose `where` names a set with `in_set`; and `negatives`,
+  line each: a `declared` type whose derived field calls `floor`, one
+  whose derived field calls `date_bucket` by a width, an object set
+  whose `where` names a set with `in_set`, and a `migrated` whose
+  migration renames a relation (`relation_renames`); and `negatives`,
   each line written as version 10, which a reader refuses.
 - `v10.json`: two events after `v9.json`'s position 20: a `declared`
   value type `slip_state`, still version 9, and a version-10

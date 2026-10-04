@@ -328,6 +328,29 @@ interface types {
     record migration {
         to: type-decl,
         renames: list<tuple<field-name, field-name>>,
+        /// Relations renamed, old name to new name: each keeps its edges.
+        relation-renames: list<tuple<relation-name, relation-name>>,
+    }
+
+    /// How a relation's edges are carried.
+    enum carrier {
+        via,
+        links,
+        derived,
+    }
+
+    /// A declaration a migration declares again under a link type's new name.
+    record carried {
+        kind: string,
+        name: string,
+    }
+
+    /// One relation a migration renames, in its preflight's report.
+    record relation-rename {
+        %from: relation-name,
+        to: relation-name,
+        carrier: carrier,
+        links: u64,
     }
 
     record field-conversion {
@@ -347,6 +370,8 @@ interface types {
         records-scanned: u64,
         fields: list<field-conversion>,
         dropped: list<tuple<field-name, u64>>,
+        relations: list<relation-rename>,
+        carried: list<carried>,
         rekeyed: list<rekeyed>,
         references: list<reference-rewrite>,
         sample-collisions: list<record-ref>,

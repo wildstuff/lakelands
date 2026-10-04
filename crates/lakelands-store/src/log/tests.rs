@@ -137,6 +137,7 @@ fn a_version_1_event_that_carries_rekeyed_is_refused() {
         migration: lakelands_api::write::Migration {
             to: serde_json::from_value(json!({"name": "t"})).unwrap(),
             renames: vec![],
+            relation_renames: Vec::new(),
         },
         schema_hash: "h".into(),
         version: 2,

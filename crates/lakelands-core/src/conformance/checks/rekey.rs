@@ -151,6 +151,7 @@ fn account_to(key: &str) -> Migration {
     Migration {
         to: serde_json::from_value(Value::Object(to)).expect("a type"),
         renames: vec![],
+        relation_renames: Vec::new(),
     }
 }
 

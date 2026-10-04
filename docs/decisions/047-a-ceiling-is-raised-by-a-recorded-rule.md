@@ -49,6 +49,10 @@ The core's budgets are four:
 
 **The thirteenth raise:** the specification, from 46 000 to 46 500 lines, by slot a's word under the rule, for the checks of a set that names a set (lakelands#552): a rule of rights and the log's format, 83 lines more than the room the twelfth raise left, after the check was cut. It rides in the pull request of the code it is for.
 
+**The fourteenth raise:** the product code, from 38 000 to 38 500 lines, by slot a's word under the rule, for a migration that renames a relation and keeps its edges (lakelands#429): 506 lines as measured with the review's fixes, 493 over the ceiling, after what the store and the mock share, and what the fold and a proposal's listing share, was written once.
+
+**The fifteenth raise:** the specification, from 46 500 to 48 000 lines, by slot a's word under the rule, for the checks of the same pull request: rules of rights and the integrity of the log's answers, 1 275 lines as measured with the review's rows, on a develop that stood 71 under the ceiling: 1 204 over it; three steps of 500, since two do not hold them. Both ride in the pull request of the code they are for.
+
 ## Why
 
 The budgets keep the core small enough for one reader to hold. They have done that: four diets took out about 5 000 lines without losing a check.

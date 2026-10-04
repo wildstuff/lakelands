@@ -40,10 +40,10 @@ use lakelands_api::query::{
 use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Direction, Group, Order, OrderBy};
 use lakelands_api::seam::{FeedBatch, FeedFilter};
 use lakelands_api::write::{
-    AgeReport, CompactReport, Declaration, FieldConversion, FunctionDecl, Migration,
-    MigrationReport, Misfit, ObjectSetDecl, Proposal, ProposalFilter, ProposalState, ProposedWrite,
-    PurgeReport, RecordRef, ReferenceRewrite, Rekeyed, RuleRun, TypeRetired, ValueTypeReport,
-    ValueTypeUse,
+    AgeReport, Carried, Carrier, CompactReport, Declaration, FieldConversion, FunctionDecl,
+    Migration, MigrationReport, Misfit, ObjectSetDecl, Proposal, ProposalFilter, ProposalState,
+    ProposedWrite, PurgeReport, RecordRef, ReferenceRewrite, Rekeyed, RelationRename, RuleRun,
+    TypeRetired, ValueTypeReport, ValueTypeUse,
 };
 use lakelands_api::{
     Access, After, Committed, Cursor, Error, FieldMeta, Find, Found, Get, Grants, Missing, Origin,
@@ -443,6 +443,16 @@ fn migration_report() -> MigrationReport {
         lossless: true,
         report_id: "r".into(),
         more: true,
+        relations: vec![RelationRename {
+            from: "r".into(),
+            to: "s".into(),
+            carrier: Carrier::Links,
+            links: 1,
+        }],
+        carried: vec![Carried {
+            kind: "trigger".into(),
+            name: "t".into(),
+        }],
     }
 }
 
@@ -681,6 +691,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             members(&Migration {
                 to: type_decl(),
                 renames: vec![("a".into(), "b".into())],
+                relation_renames: vec![("r".into(), "s".into())],
             }),
         ),
         ("migration_report", members(&migration_report())),
@@ -688,6 +699,11 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             "field_conversion",
             members(&migration_report().fields[0].clone()),
         ),
+        (
+            "relation_rename",
+            members(&migration_report().relations[0].clone()),
+        ),
+        ("carried", members(&migration_report().carried[0].clone())),
         ("upstream", members(&upstream())),
         ("field_meta", members(&field_meta())),
         ("record", members(&record())),
@@ -1190,6 +1206,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
     units!("access", Access, [None, Masked, Read, Write, WriteOnly]);
     units!("write_origin", WriteOrigin, [Direct, Reactive, Scheduled]);
     units!("walk", Walk, [Out, In, Both]);
+    units!("carrier", Carrier, [Via, Links, Derived]);
 
     fn outcomes(o: &Outcome) {
         match o {
@@ -1358,6 +1375,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     migration: Box::new(lakelands_api::write::Migration {
                         to: serde_json::from_value(json!({"name": "t"})).unwrap(),
                         renames: vec![],
+                        relation_renames: Vec::new(),
                     }),
                     report: Box::new(migration_report()),
                 },

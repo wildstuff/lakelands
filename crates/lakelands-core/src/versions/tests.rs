@@ -97,6 +97,7 @@ fn annotations_anywhere_in_a_declaration_need_format_5() {
     let migration = lakelands_api::write::Migration {
         to: to.clone(),
         renames: vec![],
+        relation_renames: Vec::new(),
     };
     let migrated = EventBody::Migrated {
         migration: migration.clone(),

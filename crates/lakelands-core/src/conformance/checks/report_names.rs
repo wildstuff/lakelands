@@ -46,6 +46,7 @@ fn migrate_to(to: Value) -> Migration {
     Migration {
         to,
         renames: vec![],
+        relation_renames: Vec::new(),
     }
 }
 

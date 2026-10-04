@@ -581,5 +581,32 @@ async fn a_redeclaration_retries_a_failed_call_once_and_the_later_output_holds(
         value(&p1, "name"),
         value(&p2, "name")
     );
+    // By a type, the door appends the type as it was declared: a computed
+    // field that listed no input lists none, where the lake completes it.
+    let bare = computed_by("name", StorageKind::Text, "lookup", &[]);
+    l.declare(type_decl(
+        "spot",
+        vec![field("code", StorageKind::Text), bare],
+    ))
+    .await?;
+    let before = store.head().await.must("reading the head")?;
+    let spot = Recompute::Type("spot".into());
+    l.cat
+        .recompute(&l.own, spot)
+        .await
+        .must("the door, by a type")?;
+    let appended = events_from(store.as_ref(), before.next()).await?;
+    let listed = appended.iter().find_map(|e| match &e.body {
+        EventBody::Declared {
+            declaration: Declaration::Type(t),
+            ..
+        } => Some(t.fields.iter().map(|f| f.depends_on.len()).sum::<usize>()),
+        _ => None,
+    });
+    ensure!(
+        listed == Some(0),
+        "the door appends `spot` as it was declared, its computed field listing no input; \
+         the event's fields list {listed:?}"
+    );
     Ok(())
 }

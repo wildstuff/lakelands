@@ -161,6 +161,7 @@ async fn migrations(store: &dyn LakeStore) -> Result<Vec<Position>, Failure> {
     let m = Migration {
         to,
         renames: Vec::new(),
+        relation_renames: Vec::new(),
     };
     let report = cat
         .migrate(own, m.clone())

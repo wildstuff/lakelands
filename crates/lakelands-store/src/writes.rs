@@ -40,14 +40,16 @@ use std::sync::Arc;
 use lakelands_api::engine::ProjectionView;
 use lakelands_api::event::{Digest, Event, EventBody, Procedure};
 use lakelands_api::ontology::{
-    Authority, FieldDecl, RelationDecl, Risk, TypeDecl, ValueTypeDecl, VerbDecl, VerbEffect,
+    Authority, FieldDecl, RelationDecl, Risk, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl,
+    VerbEffect,
 };
 use lakelands_api::principal::WriteContext;
 use lakelands_api::record::{Origin, StoredRecord};
 use lakelands_api::seam::VerbExecutor;
 use lakelands_api::write::{
-    Declaration, Migration, MigrationReport, Misfit, ObjectSetDecl, Outcome, ProposalState,
-    ProposedWrite, Recompute, ValueTypeReport, ValueTypeUse, WriteOpts,
+    Carried, Carrier, Declaration, Migration, MigrationReport, Misfit, ObjectSetDecl, Outcome,
+    ProposalState, ProposedWrite, Recompute, RelationRename, ValueTypeReport, ValueTypeUse,
+    WriteOpts,
 };
 use lakelands_api::{
     Access, Error, FieldName, IdempotencyKey, Missing, Patch, Position, Principal, ProposalId,
@@ -419,6 +421,54 @@ fn shaped(
     walk.failed()?;
     seen?;
     report.map_err(|e| invalid(e.to_string()))
+}
+
+/// The declarations that name a link type whose records a migration
+/// moves, each as the lake declares it again under the new name: a trigger
+/// or a verb on it, an object set of it, a view that reads it (035,
+/// extended).
+fn carried(o: &Ontology, m: &Migration) -> Vec<Declaration> {
+    let moved = links::moved(m);
+    let to = |t: &TypeName| moved.get(t).cloned();
+    let mut out = Vec::new();
+    for t in o.triggers.values().map(|e| &e.decl) {
+        out.extend(to(&t.on).map(|on| Declaration::Trigger(TriggerDecl { on, ..t.clone() })));
+    }
+    for v in o.verbs.values().map(|e| &e.decl) {
+        out.extend(to(&v.on).map(|on| Declaration::Verb(VerbDecl { on, ..v.clone() })));
+    }
+    for s in o.object_sets.values().map(|e| &e.decl) {
+        out.extend(to(&s.of).map(|of| Declaration::ObjectSet(ObjectSetDecl { of, ..s.clone() })));
+    }
+    for t in o.types.values().map(|e| &e.decl) {
+        let mut view = t.view.clone();
+        for v in view.iter_mut().map(|v| &mut **v) {
+            let sources = v.merge.iter_mut().map(|s| &mut s.source);
+            for source in std::iter::once(&mut v.source).chain(sources) {
+                *source = to(source).unwrap_or_else(|| source.clone());
+            }
+        }
+        if view != t.view {
+            out.push(Declaration::Type(TypeDecl { view, ..t.clone() }));
+        }
+    }
+    out
+}
+
+/// How many records of `ty` the view holds, retired ones included, an
+/// ended key not: read a page at a time.
+fn stored(view: &dyn ProjectionView, ty: &TypeName) -> Result<u64> {
+    // A count answers none at once; past that the walk leaves out an ended
+    // key by the store's own rule.
+    if view.count(ty, &every(true))? == 0 {
+        return Ok(0);
+    }
+    let mut n = 0;
+    crate::lake::walk(view, ty, true, |_| {
+        n += 1;
+        Ok(())
+    })?;
+    Ok(n)
 }
 
 /// Every live record of `ty`, restricted ones included, a page at a time.
@@ -1084,7 +1134,7 @@ impl Call<'_> {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
-        let (lt, r) = link_relation(&self.lake.writer(), ty, relation)?;
+        let (lt, r) = link_relation(&*self.writer()?, ty, relation)?;
         if r.authority != Authority::Authored {
             return Err(refused(Refusal::WrongDoor));
         }
@@ -1116,7 +1166,7 @@ impl Call<'_> {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
-        let (lt, _) = link_relation(&self.lake.writer(), ty, relation)?;
+        let (lt, _) = link_relation(&*self.writer()?, ty, relation)?;
         self.retire_record(&lt, &links::link_key(key, to), opts)
     }
 
@@ -1700,13 +1750,14 @@ impl Call<'_> {
 
     /// The writer, held by this call. Its grants were followed through the
     /// lake's renames before it waited here; where a migration renamed a
-    /// field meanwhile they no longer hold it, and the call is refused to
-    /// be sent again (006, extended).
+    /// field or a relation meanwhile they may no longer hold it, and the
+    /// call is refused to be sent again, in words that name no migration
+    /// (006, extended).
     pub(crate) fn writer(&self) -> Result<std::sync::MutexGuard<'_, crate::lake::Writer>> {
         let w = self.lake.writer();
         match self.followed {
             Some(n) if self.lake.renames(None)?.len() != n => Err(lakelands_core::unavailable(
-                "a migration renamed a field while this write waited; send it again",
+                "the lake's names moved while this write waited; send it again",
             )),
             _ => Ok(w),
         }
@@ -2023,7 +2074,10 @@ impl Call<'_> {
         }
         self.reads_as_author(o, &[Declaration::Type(m.to.clone())], true)?;
         match o.types.get(&m.to.name) {
-            Some(before) => as_author(self.who, &before.decl, &mut m.to, &m.renames),
+            Some(before) => {
+                let (to, pairs) = (&mut m.to, &m.relation_renames);
+                as_author(self.who, &before.decl, to, &m.renames, pairs)
+            }
             None => Ok(()),
         }
     }
@@ -2036,7 +2090,7 @@ impl Call<'_> {
             if let Declaration::Type(t) = d
                 && let Some(before) = o.types.get(&t.name)
             {
-                as_author(self.who, &before.decl, t, &[])?;
+                as_author(self.who, &before.decl, t, &[], &[])?;
             }
         }
         Ok(())
@@ -2255,7 +2309,8 @@ impl Call<'_> {
         };
         let (was, mut m) = (w.ontology.ty(&m.to.name)?, m.clone());
         w.ontology.complete(&mut m.to);
-        rights::shown_report(self.who, was, &m, &mut report, sees, answered);
+        let described = || describe::lake(&self.who.lake, &declared, self.who);
+        rights::shown_report(self.who, was, &m, &mut report, described, sees, answered);
         Ok(report)
     }
 
@@ -2416,8 +2471,9 @@ impl Call<'_> {
         // So does every other declaration in force (027, extended): the
         // type's derived fields, another type's derived relation to it, and
         // the sets, triggers and verbs on it keep the fields they read; and
-        // those on a link type it changes keep the relation's fields.
-        let links = changed_link_types(&w.ontology, &m.to);
+        // those on a link type it changes keep the relation's fields, one
+        // that stands for a renamed relation's links to arrive in too.
+        let links = changed_link_types(&w.ontology, m, true);
         let kept = links.iter().map(|(was, is)| (was, is));
         for (was, is) in std::iter::once((&before, &m.to)).chain(kept) {
             for d in after.declared() {
@@ -2542,10 +2598,11 @@ impl Call<'_> {
         // The relations carried by link records whose fields change migrate
         // their link types with the type: their records are checked here,
         // each field named with its relation.
-        for (old, new) in changed_link_types(&w.ontology, &m.to) {
+        for (old, new) in changed_link_types(&w.ontology, m, false) {
             let lm = Migration {
                 to: new,
                 renames: vec![],
+                relation_renames: Vec::new(),
             };
             let sets = held(&old.name)?;
             let lr = shaped(view, &old, &lm, |r| {
@@ -2573,8 +2630,11 @@ impl Call<'_> {
         // takes its live links from the head, as a removed field takes its
         // values: it is listed with their number. A relation of another
         // name is another relation; a rename is not inferred.
+        let pairs = m.renamed_relations(&before).map_err(invalid)?;
         let removed = |r: &&RelationDecl| {
-            links::carried_by_links(r) && !m.to.relations.iter().any(|n| n.name == r.name)
+            links::carried_by_links(r)
+                && !m.to.relations.iter().any(|n| n.name == r.name)
+                && !pairs.iter().any(|(was, _)| was.name == r.name)
         };
         for r in before.relations.iter().filter(removed) {
             let lt = links::link_type_name(&m.to.name, &r.name);
@@ -2584,6 +2644,62 @@ impl Call<'_> {
                     .dropped
                     .push((FieldName::from(r.name.as_str()), live));
             }
+        }
+        // A renamed relation keeps its edges. One carried by link records
+        // moves them to the link type of its new name, which must hold none
+        // of an earlier relation's, and not in the migration that re-keys.
+        for (was, is) in pairs {
+            let (carrier, mut moved) = (Carrier::of(was), 0);
+            if carrier == Carrier::Links {
+                let wrong = |why: &str| {
+                    let named = format!("renaming relation `{}` to `{}`", was.name, is.name);
+                    invalid(format!("{named}: {why}"))
+                };
+                if !plan.moves.is_empty() {
+                    return Err(wrong(
+                        "the same migration re-keys records; rename in one migration and \
+                         re-key in another",
+                    ));
+                }
+                if stored(view, &links::link_type_name(&m.to.name, &is.name))? > 0 {
+                    return Err(wrong(
+                        "the lake keeps the links of an earlier relation of that name; take \
+                         another name",
+                    ));
+                }
+                let old = links::link_type_name(&m.to.name, &was.name);
+                // A reference into the link type would name keys that end.
+                let refers = |t: &&TypeDecl| {
+                    let field = |f: &FieldDecl| f.ty.target.as_ref() == Some(&old);
+                    t.fields.iter().any(field) || t.relations.iter().any(|r| r.target == old)
+                };
+                // The type is named only to an author `describe` shows it to.
+                let declared = w.ontology.declared();
+                let shown = |t: &&TypeDecl| describe::one_type(&t.name, &declared, self.who);
+                let types = w.ontology.types.values().map(|e| &e.decl);
+                let mut referring = types.filter(|t| t.name != old && refers(t)).peekable();
+                if referring.peek().is_some() {
+                    let named = referring.find(|t| shown(t).is_some());
+                    let who = named.map_or("a declaration".into(), |t| format!("`{}`", t.name));
+                    return Err(wrong(&format!(
+                        "{who} refers to its link type `{old}`, whose records would move; \
+                         retarget it first"
+                    )));
+                }
+                moved = stored(view, &old)?;
+            }
+            report.relations.push(RelationRename {
+                from: was.name.clone(),
+                to: is.name.clone(),
+                carrier,
+                links: moved,
+            });
+        }
+        for d in carried(&w.ontology, m) {
+            let key = lakelands_core::engines::declaration_key(&d);
+            let (kind, name) = key.split_once(' ').unwrap_or_default();
+            let (kind, name) = (kind.to_owned(), name.to_owned());
+            report.carried.push(Carried { kind, name });
         }
         report.rekeyed = plan.rekeyed.clone();
         report.references = plan.references.clone();
@@ -2699,7 +2815,7 @@ impl Call<'_> {
         let migrated = position_after(w, first);
         let changes = members.into_iter().map(|c| self.changed(c, migrated, now));
         let mut drafts: Vec<Draft> = changes.collect();
-        for (_, new) in changed_link_types(&w.ontology, &m.to) {
+        for (_, new) in changed_link_types(&w.ontology, &m, false) {
             let hash = shape::schema_hash(&new).map_err(|e| invalid(e.to_string()))?;
             let version = w.ontology.next_version(&Declaration::Type(new.clone()));
             drafts.push(Draft::system(
@@ -2708,6 +2824,7 @@ impl Call<'_> {
                     migration: Migration {
                         to: new,
                         renames: vec![],
+                        relation_renames: Vec::new(),
                     },
                     schema_hash: hash,
                     version,
@@ -2716,14 +2833,22 @@ impl Call<'_> {
                 },
             ));
         }
-        // A relation new with this migration gets its link type declared.
+        // A relation new with this migration gets its link type declared,
+        // and so does a renamed one whose new name's link type stands in
+        // another shape: declared again, in the shape of the links it takes.
+        let arriving = arriving(&m);
         let declared = link_type_drafts(&w.ontology, &m.to, now)?
             .into_iter()
             .filter(|d| {
                 matches!(&d.body, EventBody::Declared { declaration: Declaration::Type(t), .. }
-                    if !w.ontology.types.contains_key(&t.name))
+                    if !w.ontology.types.contains_key(&t.name) || arriving.contains(&t.name))
             });
         drafts.extend(declared);
+        // What names a link type whose records move is declared again by
+        // the lake under the new name, after that link type's declaration.
+        for declaration in carried(&w.ontology, &m) {
+            drafts.push(system_declared(&w.ontology, declaration, now)?);
+        }
         let d = self.draft(
             now,
             Origin::Authored,
@@ -2904,13 +3029,14 @@ fn fits(report: ValueTypeReport, named: bool) -> Result<ValueTypeReport> {
 /// declared as `before`, as its author's view of the type (027, extended):
 /// a field `who` may not know of was not its to leave out, so it is put
 /// back as declared, at its declared place, and so are such link fields of
-/// each relation `to` keeps. No refusal names one: a rename from it is from
+/// each relation `to` keeps or renames. No refusal names one: a rename from it is from
 /// no field, and a field it is built from is refused on that field.
 fn as_author(
     who: &Principal,
     before: &TypeDecl,
     to: &mut TypeDecl,
     renames: &[(FieldName, FieldName)],
+    relations: &[(RelationName, RelationName)],
 ) -> Result<()> {
     let hidden = |t: &TypeDecl, f: &FieldDecl| rights::field_access(who, t, f) == Access::None;
     let put_back = |t: &TypeDecl, declared: &[FieldDecl], fields: &mut Vec<FieldDecl>| {
@@ -2928,7 +3054,10 @@ fn as_author(
     }
     put_back(before, &before.fields, &mut to.fields);
     for r in &mut to.relations {
-        if let Some(old) = before.relations.iter().find(|o| o.name == r.name) {
+        // A renamed relation is the one it was, under its old name.
+        let was = relations.iter().find(|(_, new)| new == &r.name);
+        let name = was.map_or(&r.name, |(old, _)| old);
+        if let Some(old) = before.relations.iter().find(|o| &o.name == name) {
             let link = links::link_type(&before.name, old);
             put_back(&link, &old.fields, &mut r.fields);
         }
@@ -2963,30 +3092,47 @@ fn link_type_drafts(o: &Ontology, t: &TypeDecl, now: Timestamp) -> Result<Vec<Dr
         if o.types.get(&lt.name).map(|e| &e.decl) == Some(&lt) {
             continue;
         }
-        let hash = shape::schema_hash(&lt).map_err(|e| invalid(e.to_string()))?;
-        let version = o.next_version(&Declaration::Type(lt.clone()));
-        out.push(Draft::system(
-            now,
-            EventBody::Declared {
-                declaration: Declaration::Type(lt),
-                schema_hash: Some(hash),
-                version,
-            },
-        ));
+        out.push(system_declared(o, Declaration::Type(lt), now)?);
     }
     Ok(out)
 }
 
-/// The link types in force whose derivation from `to` differs: each with
-/// the declaration in force and the one `to` calls for.
-fn changed_link_types(o: &Ontology, to: &TypeDecl) -> Vec<(TypeDecl, TypeDecl)> {
-    links::link_types_of(to)
+/// The system's `declared` of a declaration, at its next version.
+fn system_declared(o: &Ontology, declaration: Declaration, now: Timestamp) -> Result<Draft> {
+    let schema_hash = match &declaration {
+        Declaration::Type(t) => Some(shape::schema_hash(t).map_err(|e| invalid(e.to_string()))?),
+        _ => None,
+    };
+    let version = o.next_version(&declaration);
+    let body = EventBody::Declared {
+        declaration,
+        schema_hash,
+        version,
+    };
+    Ok(Draft::system(now, body))
+}
+
+/// The link types in force whose derivation from the migration's `to`
+/// differs: each with the declaration in force and the one `to` calls for.
+/// One a renamed relation moves its links to is among them only where
+/// `standing` asks: it stands from an earlier relation of that name and
+/// holds no record, so it is declared again in the renamed relation's
+/// shape, never migrated from its own ([`arriving`]; 035, extended).
+fn changed_link_types(o: &Ontology, m: &Migration, standing: bool) -> Vec<(TypeDecl, TypeDecl)> {
+    let arriving = arriving(m);
+    links::link_types_of(&m.to)
         .into_iter()
         .filter_map(|new| {
             let old = &o.types.get(&new.name)?.decl;
-            (old != &new).then(|| (old.clone(), new))
+            let asked = standing || !arriving.contains(&new.name);
+            (old != &new && asked).then(|| (old.clone(), new))
         })
         .collect()
+}
+
+/// The link types a migration's renamed relations move their links to.
+fn arriving(m: &Migration) -> BTreeSet<TypeName> {
+    links::moved(m).into_values().collect()
 }
 
 /// Refuse a link type's records at a door other than the link doors.

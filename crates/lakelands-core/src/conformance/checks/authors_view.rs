@@ -181,6 +181,7 @@ async fn a_change_of_shape_never_names_a_field_its_author_may_not_know_of(
     let shape = |to: TypeDecl, renames: &[(&str, &str)]| Migration {
         to,
         renames: (renames.iter().map(|(a, b)| ((*a).into(), (*b).into()))).collect(),
+        relation_renames: Vec::new(),
     };
     for (what, m, field, says) in [
         (
