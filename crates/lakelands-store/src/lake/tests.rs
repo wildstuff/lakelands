@@ -144,3 +144,41 @@ fn a_key_is_traced_back_through_the_steps() {
     assert_eq!(read("v"), Some((None, 3)), "ended at the second");
     assert_eq!(read("u"), None, "never written");
 }
+
+#[test]
+fn a_walk_reads_page_by_page_and_passes_over_ended_keys() {
+    // `n` records, the sixth an ended key and every seventh retired.
+    let walked = |n: usize, retired: bool| {
+        let engine = lakelands_engine_mem::MemoryOpener::new()
+            .open(&Location::memory("walk"), OpenMode::Create)
+            .unwrap();
+        let p = engine.projection();
+        p.begin().unwrap();
+        for i in 0..n {
+            let mut r = record("t", &format!("k{i:04}"), json!({}), 1);
+            r.retired = i % 7 == 0;
+            let ended = StoredRecord::ended(r.ty.clone(), r.key.clone(), Position(1));
+            p.put_record(if i == 5 { &ended } else { &r }).unwrap();
+        }
+        p.commit(Position(1)).unwrap();
+        let view = engine.view(None).unwrap();
+        let ty = TypeName::from("t");
+        let mut walk = Walk::new(view.as_ref(), &ty, retired);
+        let keys: Vec<RecordKey> = walk.by_ref().map(|r| r.key).collect();
+        walk.failed().unwrap();
+        assert!(
+            keys.is_sorted() && !keys.contains(&"k0005".into()),
+            "{keys:?}"
+        );
+        keys.len()
+    };
+    let live = |n: usize| n - n.div_ceil(7) - 1;
+    for n in [1_024, 1_025, 2_500] {
+        assert_eq!(
+            walked(n, true),
+            n - 1,
+            "{n} records, the retired ones included"
+        );
+        assert_eq!(walked(n, false), live(n), "{n} records, the live ones");
+    }
+}

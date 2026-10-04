@@ -389,6 +389,28 @@ fn member_of(
     Ok(expr::holds(&e, &scope).unwrap_or(false))
 }
 
+/// The preflight of `m` over the stored records of `decl`'s type, retired
+/// and restricted ones included, read a page at a time. `each` sees every
+/// record before the report counts it. An error of a page read or of
+/// `each` ends the walk and is answered before the report is.
+fn shaped(
+    view: &dyn ProjectionView,
+    decl: &TypeDecl,
+    m: &Migration,
+    mut each: impl FnMut(&StoredRecord) -> Result<()>,
+) -> Result<MigrationReport> {
+    let mut walk = crate::lake::Walk::new(view, &decl.name, true);
+    let mut seen = Ok(());
+    let rows = walk.by_ref().map_while(|r| {
+        seen = each(&r);
+        seen.is_ok().then_some((r.key, r.fields))
+    });
+    let report = shape::preflight(decl, m, rows);
+    walk.failed()?;
+    seen?;
+    report.map_err(|e| invalid(e.to_string()))
+}
+
 /// Every live record of `ty`, restricted ones included, a page at a time.
 pub(crate) fn live(
     view: &dyn ProjectionView,
@@ -2254,45 +2276,66 @@ impl Call<'_> {
         // And the type it migrates to reads only fields it has: `declare`'s
         // check above ends at the reshaping, before it comes to the reads.
         declare::reads_its_type(&after, &Declaration::Type(m.to.clone()))?;
-        let records = crate::rekey::stored(view, &before.name)?;
-        let shaped = |decl: &TypeDecl, m: &Migration, records: &[StoredRecord]| {
-            let rows = records.iter().map(|r| (r.key.clone(), r.fields.clone()));
-            shape::preflight(decl, m, rows).map_err(|e| invalid(e.to_string()))
-        };
-        let mut report = shaped(&before, m, &records)?;
-        // A key the new key fields make differently moves the record, and
-        // what names it moves with it (`crate::rekey`). A record that does
-        // not convert is already not lossless; its stored fields still tell
-        // whether it has a new key.
+        // A record that does not convert is already not lossless; its
+        // stored fields still tell whether it has a new key.
         let convert = |decl: &TypeDecl, m: &Migration, r: &StoredRecord| {
             let fields = shape::migrate_record(decl, m, &r.fields);
             let fields = fields.map_err(|e| invalid(e.to_string()))?;
             Ok::<_, Error>(fields.unwrap_or_else(|| r.fields.clone()))
         };
-        let mut converted = Vec::new();
-        for r in records.iter().filter(|_| !m.to.key.is_empty()) {
-            converted.push((r.key.clone(), convert(&before, m, r)?));
-        }
-        let plan = crate::rekey::plan(&after, view, &m.to.name, converted, &m.renames)?;
         // Applied, the migration decides again every record whose fields it
         // changes, as the fold leaves it (004, extended): converted, its
-        // references to moved keys rewritten, under its key after it.
+        // references to moved keys rewritten, under its key after `moves`.
         let mut members = Vec::new();
         let limit = self.lake.limits.max_set_changes as usize;
-        let mut left = |sets: &Held<'_>, decl: &TypeDecl, r: &StoredRecord, fields, now| {
-            let moved = plan.moves.get(&r.ty).and_then(|m| m.get(&r.key));
+        let left = |moves: &crate::rekey::Moves,
+                    sets: &Held<'_>,
+                    decl: &TypeDecl,
+                    r: &StoredRecord,
+                    fields,
+                    now,
+                    members: &mut Vec<Change>| {
+            let moved = moves.get(&r.ty).and_then(|m| m.get(&r.key));
             let is = StoredRecord {
                 key: moved.unwrap_or(&r.key).clone(),
-                fields: crate::rekey::rewritten(decl, &fields, &plan.moves),
+                fields: crate::rekey::rewritten(decl, &fields, moves),
                 ..r.clone()
             };
-            decide(sets, &r.key, &is, (w, now, limit), &mut members)
+            decide(sets, &r.key, &is, (w, now, limit), members)
         };
-        if let Some(now) = now {
-            let sets = sets_of(w, view, &m.to.name, |_| true)?;
-            for r in records.iter().filter(|_| !sets.is_empty()) {
-                left(&sets, &m.to, r, convert(&before, m, r)?, now)?;
+        let held = |ty: &TypeName| match now {
+            Some(_) => sets_of(w, view, ty, |_| true),
+            None => Ok(Vec::new()),
+        };
+        // One walk of the type, a page at a time, makes the report, the key
+        // of every record as the new key fields make it, moved or not (a
+        // key the new fields make differently moves the record, and what
+        // names it moves with it: `crate::rekey`), and each record's
+        // memberships as if no key moved.
+        let (sets, mut keyed) = (held(&m.to.name)?, Vec::new());
+        let mut report = shaped(view, &before, m, |r| {
+            if m.to.key.is_empty() && sets.is_empty() {
+                return Ok(());
             }
+            let fields = convert(&before, m, r)?;
+            if !m.to.key.is_empty() {
+                let key = lakelands_core::log::record_key(&m.to, &fields);
+                keyed.push((r.key.clone(), key));
+            }
+            match now.filter(|_| !sets.is_empty()) {
+                Some(now) => left(&BTreeMap::new(), &sets, &m.to, r, fields, now, &mut members),
+                None => Ok(()),
+            }
+        })?;
+        let plan = crate::rekey::plan(&after, view, &m.to.name, keyed, &m.renames)?;
+        // With moves the memberships are decided again, under the keys and
+        // the references the moves leave: a second walk.
+        if let Some(now) = now.filter(|_| !sets.is_empty() && !plan.moves.is_empty()) {
+            members.clear();
+            crate::lake::walk(view, &before.name, true, |r| {
+                let fields = convert(&before, m, &r)?;
+                left(&plan.moves, &sets, &m.to, &r, fields, now, &mut members)
+            })?;
         }
         // A relation carried by link records whose cardinality narrows
         // keeps its links only if none would break the narrower rule.
@@ -2310,18 +2353,19 @@ impl Call<'_> {
                 continue;
             }
             let lt = links::link_type_name(&m.to.name, &r.name);
-            let live = view.scan(&lt, &every(false))?;
-            // How many records hold more than one live link at the end `at`.
-            let over = |at: &str| {
-                let mut seen: BTreeMap<&str, u32> = BTreeMap::new();
-                for l in &live {
+            // The live links at each end, by the record there: a page of
+            // the links at a time, the ends kept.
+            let mut ends: [BTreeMap<String, u32>; 2] = Default::default();
+            live(view, &lt, |l| {
+                for (seen, at) in ends.iter_mut().zip([links::FROM, links::TO]) {
                     let key = l.fields.get(at).and_then(Value::as_str).unwrap_or_default();
-                    *seen.entry(key).or_default() += 1;
+                    *seen.entry(key.to_owned()).or_default() += 1;
                 }
-                seen.values().filter(|n| **n > 1).count()
-            };
-            let broken = if per_from { over(links::FROM) } else { 0 }
-                + if per_to { over(links::TO) } else { 0 };
+                Ok(())
+            })?;
+            // How many records hold more than one live link at an end.
+            let over = |end: usize| ends[end].values().filter(|n| **n > 1).count();
+            let broken = if per_from { over(0) } else { 0 } + if per_to { over(1) } else { 0 };
             if broken > 0 {
                 return Err(constraint(
                     None,
@@ -2341,14 +2385,16 @@ impl Call<'_> {
                 to: new,
                 renames: vec![],
             };
-            let links = crate::rekey::stored(view, &old.name)?;
-            let lr = shaped(&old, &lm, &links)?;
-            if let Some(now) = now {
-                let sets = sets_of(w, view, &old.name, |_| true)?;
-                for r in links.iter().filter(|_| !sets.is_empty()) {
-                    left(&sets, &lm.to, r, convert(&old, &lm, r)?, now)?;
+            let sets = held(&old.name)?;
+            let lr = shaped(view, &old, &lm, |r| {
+                match now.filter(|_| !sets.is_empty()) {
+                    Some(now) => {
+                        let fields = convert(&old, &lm, r)?;
+                        left(&plan.moves, &sets, &lm.to, r, fields, now, &mut members)
+                    }
+                    None => Ok(()),
                 }
-            }
+            })?;
             let relation = old.name.as_str().rsplit('.').next().unwrap_or_default();
             let named = |f: &FieldName| FieldName::from(format!("{relation}.{f}"));
             report.records_scanned += lr.records_scanned;
@@ -2406,7 +2452,17 @@ impl Call<'_> {
             };
             let sets = sets_of(w, view, name, reads)?;
             if !sets.is_empty() {
-                live(view, name, |r| left(&sets, decl, r, r.fields.clone(), now))?;
+                live(view, name, |r| {
+                    left(
+                        &plan.moves,
+                        &sets,
+                        decl,
+                        r,
+                        r.fields.clone(),
+                        now,
+                        &mut members,
+                    )
+                })?;
             }
         }
         Ok(MigrationPlan {

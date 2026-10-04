@@ -325,19 +325,27 @@ A host that already has a store of its own moves in four steps.
   `max_limit`. See `docs/decisions/026-the-store-walks-the-graph.md`.
 - **A migration of a large type is a step for a quiet moment.** Applying
   one reads, converts and writes again every record of the type under
-  the writer; other writes wait. The fold holds a page of records at a
-  time, but the check before the append, and on PostgreSQL the engine
-  until its commit, still hold the type's records in memory. At
-  100 000 records of four small fields, measured under some load from
-  other processes (`tests/set_migrated.rs` in the SQLite and PostgreSQL
-  engines, by hand), the writer is held 4 to 5.5 s on SQLite and 10.5 to
-  14 s on PostgreSQL, with a peak of about 300 MB and 820 MB. Both grow with
-  the type's records: at 400 000 the peak is about 1.2 GB and 3.3 GB. On PostgreSQL the statements that write a migration
+  the writer; other writes wait. The check before the append and the fold
+  read the type a page of 1 024 records at a time. What the store still
+  holds for the whole type is keys, not records: for a type with key
+  fields the old and the new key of every record; for a re-key its moves,
+  in the report's id, the event and the fold, and one membership for each
+  moved record and set; the ends of the live links of a relation it
+  narrows; a set's members and its changes up to `max_set_changes`. On
+  PostgreSQL the engine still holds the transaction's records until its
+  commit. At 100 000 records of four small fields, measured under some
+  load from other processes (`tests/set_migrated.rs` in the SQLite and
+  PostgreSQL engines, by hand), the writer is held 4 to 5.5 s on SQLite
+  and 10.5 to 14 s on PostgreSQL. On SQLite the peak is a few megabytes
+  whatever the type's size, 57 MB with a set that changes 20 000
+  memberships, and for a re-key of every record about 160 MB, which grows
+  with the records moved (630 MB at 400 000). On PostgreSQL it is about
+  820 MB and grows with the type (3.3 GB at 400 000). On PostgreSQL the statements that write a migration
   sort and hash a row for every record; at the server's default `work_mem`
   of 4 MB they do it on disk, so a host that migrates large types gives
   the lake's connections more. An object set of the type adds little: its members
   are read once, and 20 000 memberships changed cost one to three seconds
-  and 35 MB. Before that single read (lakelands#477) each set added a lookup
+  and 40 to 55 MB. Before that single read (lakelands#477) each set added a lookup
   for each record: 41 s with one set and 74 to 79 s with three on
   PostgreSQL, 9 to 15 s on SQLite. Bringing the migration's own cost
   down further is lakelands#480.
