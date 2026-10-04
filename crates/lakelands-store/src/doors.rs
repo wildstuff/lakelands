@@ -197,19 +197,6 @@ impl Doors {
     }
 }
 
-/// An outcome with an external verb's recorded output in it, and the
-/// position it was recorded at as the last of what the call set off.
-fn with_output(mut outcome: Outcome, (at, recorded): (Position, serde_json::Value)) -> Outcome {
-    if let Outcome::Applied {
-        output, set_off, ..
-    } = &mut outcome
-    {
-        *output = Some(recorded);
-        set_off.through = Some(at);
-    }
-    outcome
-}
-
 #[async_trait]
 impl Catalog for Doors {
     fn lake(&self) -> &LakeId {
@@ -312,7 +299,7 @@ impl Catalog for Doors {
             .await?;
         let outcome = self.settled(who, outcome, seen).await?;
         match external {
-            Some(ext) => Ok(with_output(outcome, self.execute(ext).await?)),
+            Some(ext) => Ok(writes::with_output(outcome, self.execute(ext).await?)),
             None => Ok(outcome),
         }
     }
@@ -395,7 +382,7 @@ impl Catalog for Doors {
         let (outcome, external) = self.write(who, move |c| c.accept(&p)).await?;
         let outcome = self.settled(who, outcome, seen).await?;
         match external {
-            Some(ext) => Ok(with_output(outcome, self.execute(ext).await?)),
+            Some(ext) => Ok(writes::with_output(outcome, self.execute(ext).await?)),
             None => Ok(outcome),
         }
     }

@@ -18,11 +18,10 @@
 use std::collections::BTreeSet;
 
 use lakelands_api::engine::ProjectionView;
-use lakelands_api::event::EventBody;
 use lakelands_api::record::{Origin, StoredRecord, Value};
 use lakelands_api::write::{PurgeReference, PurgeReport, RecordRef, TypeRetired};
 use lakelands_api::{
-    FieldName, Position, RecordKey, RelationName, Result, SourceId, TypeName, Version, WriteContext,
+    FieldName, Position, RecordKey, RelationName, Result, SourceId, TypeName, WriteContext,
 };
 
 use lakelands_core::{invalid, links};
@@ -237,14 +236,8 @@ pub fn run(lake: &Lake, source: &SourceId, report_id: Option<&str>) -> Result<Pu
     let mut pending = Pending::default();
     let mut drafts = Vec::new();
     for before in purged {
-        let d = Draft::system(
-            now,
-            EventBody::RecordRetired {
-                ty: before.ty.clone(),
-                key: before.key.clone(),
-                version: Version(before.version.0 + 1),
-            },
-        );
+        let body = writes::retirement(&before.ty, &before.key, before.version);
+        let d = Draft::system(now, body);
         let at = writes::position_after(&w, drafts.len());
         drafts.extend(call.retiring(&w, view.as_ref(), &mut pending, &before, d, at, now)?);
     }
