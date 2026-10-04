@@ -170,3 +170,14 @@ than its reader is shown says `more`
 (`docs/decisions/013-verbs-run-by-declared-risk.md` and
 `docs/decisions/027-shape-changes-are-declared-or-migrated.md`, each
 extended).
+
+## Extended: a report's sample keys are of records its reader is answered (lakelands#531)
+
+A migration's report names records by their keys: the first that do not
+convert, the first new keys that collide. A key is a name of a record,
+and a reader without the `restricted` grant is answered a restricted
+record by no read. So a sample key of such a record is not answered to
+it either, in a preview and in a refusal alike; the count beside it
+stays whole, and the report says `more`
+(`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+extended).

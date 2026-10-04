@@ -167,6 +167,10 @@ impl fmt::Display for Error {
                     Refusal::TooLarge { max } => {
                         write!(f, ": a graph measure may reach {max} records, no more")
                     }
+                    // The type is not named to one who may not see it.
+                    Refusal::Migration { report } if report.ty.as_str().is_empty() => {
+                        write!(f, ": the migration would lose information")
+                    }
                     Refusal::Migration { report } => write!(
                         f,
                         ": the migration of `{}` would lose information",

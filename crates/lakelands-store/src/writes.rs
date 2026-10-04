@@ -1435,9 +1435,7 @@ impl Call<'_> {
                     .preflight_plan(&w, view.as_ref(), migration, None)?
                     .report;
                 if !found.lossless {
-                    return Err(refused(Refusal::Migration {
-                        report: Box::new(found),
-                    }));
+                    return Err(self.lossy(&w, migration, found));
                 }
                 **report = found;
             }
@@ -1987,7 +1985,41 @@ impl Call<'_> {
         granted(self.who.grants.schema)?;
         let mut m = m.clone();
         self.authored(&w.ontology, &mut m)?;
-        Ok(self.preflight_plan(w, view, &m, None)?.report)
+        let report = self.preflight_plan(w, view, &m, None)?.report;
+        self.shown(w, &m, report)
+    }
+
+    /// A report as the caller may know it (013, 024 and 027, extended):
+    /// wherever one is answered or refuses a write, its reader is a reader
+    /// like any other, the author of its own preview too. The id stays the
+    /// whole report's, so a preview read trimmed is applied by it.
+    fn shown(
+        &self,
+        w: &Writer,
+        m: &Migration,
+        mut report: MigrationReport,
+    ) -> Result<MigrationReport> {
+        let (view, declared) = (self.lake.engine.view(None)?, w.ontology.declared());
+        let seen = |ty: &TypeName| describe::one_type(ty, &declared, self.who).is_some();
+        let sees = |ty: &TypeName| w.ontology.ty(ty).ok().filter(|_| seen(ty));
+        let answered = |ty: &TypeName, key: &RecordKey| {
+            let stored = view.get(ty, key).ok().flatten();
+            self.who.grants.restricted || !stored.is_some_and(|r| r.restricted)
+        };
+        let was = w.ontology.ty(&m.to.name)?;
+        rights::shown_report(self.who, was, m, &mut report, sees, answered);
+        Ok(report)
+    }
+
+    /// The refusal of a migration that is not lossless, with its report as
+    /// the caller may know it.
+    fn lossy(&self, w: &Writer, m: &Migration, report: MigrationReport) -> Error {
+        match self.shown(w, m, report) {
+            Ok(report) => refused(Refusal::Migration {
+                report: Box::new(report),
+            }),
+            Err(e) => e,
+        }
     }
 
     /// The preflight, the record keys the migration moves and, given the
@@ -2379,9 +2411,7 @@ impl Call<'_> {
             members,
         } = plan;
         if !report.lossless {
-            return Err(refused(Refusal::Migration {
-                report: Box::new(report),
-            }));
+            return Err(self.lossy(w, &m, report));
         }
         // Past the lake's ceiling, naming the set whose change passed it.
         let max = self.lake.limits.max_set_changes;

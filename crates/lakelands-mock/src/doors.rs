@@ -1972,9 +1972,7 @@ fn plan_propose(
             let head = Position(batch.peek().0.saturating_sub(1));
             let report = preflight(st, head, &migration, who)?;
             if !report.lossless {
-                return Err(refused(Refusal::Migration {
-                    report: Box::new(report),
-                }));
+                return Err(lossy(st, who, &migration, report));
             }
             ProposedWrite::Migrate {
                 migration,
@@ -2282,25 +2280,82 @@ fn redeclared(st: &State, who: &Principal, declarations: &mut [Declaration]) -> 
     Ok(())
 }
 
+/// `t` without the fields `who` may not know of, a relation's link fields
+/// too.
+fn known_fields(who: &Principal, t: &mut TypeDecl) {
+    let whole = t.clone();
+    t.fields.retain(|f| access(who, &whole, f) != Access::None);
+    for r in &mut t.relations {
+        let link = links::link_type(&whole.name, r);
+        r.fields.retain(|f| access(who, &link, f) != Access::None);
+    }
+}
+
+/// Whether a shape holds what a migration's report names by `name`: a
+/// field, a link field (`relation.field`), or a relation, which a report
+/// lists as dropped by its own name.
+fn holds(t: &TypeDecl, name: &FieldName) -> bool {
+    let relation = |r: &str| t.relations.iter().find(|x| x.name.as_str() == r);
+    match name.as_str().split_once('.') {
+        Some((r, f)) => relation(r).is_some_and(|x| x.fields.iter().any(|x| x.name.as_str() == f)),
+        None => t.fields.iter().any(|f| &f.name == name) || relation(name.as_str()).is_some(),
+    }
+}
+
+/// As the store: a migration's report as `who` may know it, wherever one
+/// is answered. An entry is shown where the reader may see the type and
+/// know of the field; the totals, the hashes and the id stay, and `more`
+/// says that something was left out. The mock restricts no record, so
+/// every sample key is of a record its reader is answered.
+fn shown_report(st: &State, who: &Principal, m: &Migration, report: &mut MigrationReport) {
+    // As the store: one who may not see the migrated type is answered no
+    // name at all.
+    let Some(was) = st.visible(who, &m.to.name) else {
+        (report.ty, report.more) = (TypeName::default(), true);
+        report.fields.clear();
+        report.dropped.clear();
+        report.rekeyed.clear();
+        report.references.clear();
+        report.sample_collisions.clear();
+        return;
+    };
+    let whole = report.clone();
+    let (mut was, mut to) = (was.decl.clone(), m.to.clone());
+    known_fields(who, &mut was);
+    known_fields(who, &mut to);
+    let sourced = |new: &FieldName| {
+        let mut from = m.renames.iter().filter(|(_, n)| n == new);
+        from.all(|(old, _)| holds(&was, old))
+    };
+    let sees = |ty: &TypeName| st.visible(who, ty).map(|t| &t.decl);
+    let known = |ty: &TypeName, f: &FieldName| {
+        let found = sees(ty).and_then(|t| Some((t, field(t, f)?)));
+        found.is_some_and(|(t, f)| access(who, t, f) != Access::None)
+    };
+    report
+        .fields
+        .retain(|c| holds(&to, &c.field) && sourced(&c.field));
+    report.dropped.retain(|(f, _)| holds(&was, f));
+    report.rekeyed.retain(|r| sees(&r.ty).is_some());
+    report.references.retain(|r| known(&r.ty, &r.field));
+    report.sample_collisions.retain(|c| sees(&c.ty).is_some());
+    report.more = *report != whole;
+}
+
+/// The refusal of a migration that is not lossless, with its report as
+/// the caller may know it.
+fn lossy(st: &State, who: &Principal, m: &Migration, mut report: MigrationReport) -> Error {
+    shown_report(st, who, m, &mut report);
+    refused(Refusal::Migration {
+        report: Box::new(report),
+    })
+}
+
 /// As the store: a proposed write as its reader may know it, a value where
 /// a read of the record would show it and a name where `describe` would.
 /// False when the reader may see nothing of it. The proposal holds the
 /// completed shape, so a relation's link fields are trimmed too.
 fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite) -> bool {
-    let known = |t: &TypeDecl, f: &FieldDecl| access(who, t, f) != Access::None;
-    let shown = |t: &mut TypeDecl| {
-        let whole = t.clone();
-        t.fields.retain(|f| known(&whole, f));
-        for r in &mut t.relations {
-            let link = links::link_type(&whole.name, r);
-            r.fields.retain(|f| known(&link, f));
-        }
-    };
-    let has = |t: &TypeDecl, name: &FieldName| match name.as_str().split_once('.') {
-        Some((r, f)) => (t.relations.iter().filter(|x| x.name.as_str() == r))
-            .any(|x| x.fields.iter().any(|x| x.name.as_str() == f)),
-        None => t.fields.iter().any(|f| &f.name == name),
-    };
     let seen = |ty: &TypeName| st.visible(who, ty).is_some();
     let read = |ty: &TypeName, f: &FieldName| {
         (st.visible(who, ty)).is_some_and(|t| readable(st, who, t, f).is_ok())
@@ -2332,26 +2387,11 @@ fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite) -> bool {
             let Some(was) = st.visible(who, &migration.to.name) else {
                 return false;
             };
+            shown_report(st, who, migration, report);
             let (mut was, Migration { to, renames }) = (was.decl.clone(), &mut **migration);
-            shown(&mut was);
-            shown(to);
-            // A conversion names its field as the migration leaves it, and
-            // the one it took its values from where it was renamed.
-            let sourced = |new: &FieldName| {
-                let mut from = renames.iter().filter(|(_, n)| n == new);
-                from.all(|(old, _)| has(&was, old))
-            };
-            report
-                .fields
-                .retain(|c| has(to, &c.field) && sourced(&c.field));
-            renames.retain(|(old, new)| has(&was, old) && has(to, new));
-            report.dropped.retain(|(f, _)| has(&was, f));
-            report.rekeyed.retain(|r| seen(&r.ty));
-            let names = |ty: &TypeName, f: &FieldName| {
-                let t = st.visible(who, ty).map(|t| &t.decl);
-                t.is_some_and(|t| field(t, f).is_some_and(|f| known(t, f)))
-            };
-            report.references.retain(|r| names(&r.ty, &r.field));
+            known_fields(who, &mut was);
+            known_fields(who, to);
+            renames.retain(|(old, new)| holds(&was, old) && holds(to, new));
             true
         }
         // Each declaration as `describe` would show it once the bundle is
@@ -2365,7 +2405,7 @@ fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite) -> bool {
             declarations.retain(|d| listed(&after, who, d));
             for d in declarations.iter_mut() {
                 if let Declaration::Type(t) = d {
-                    shown(t);
+                    known_fields(who, t);
                 }
             }
             !declarations.is_empty()
@@ -2639,6 +2679,7 @@ fn preflight(
         references: Vec::new(),
         sample_collisions: Vec::new(),
         report_id: String::new(),
+        more: false,
     };
     let seed = serde_json::to_vec(&(&report, head.0, m)).unwrap_or_default();
     report.report_id = value::hex(&seed, 1);
@@ -3632,9 +3673,7 @@ impl Catalog for MockCatalog {
                 let head = Position(accepted.0.saturating_sub(1));
                 let report = preflight(&st, head, &migration, who)?;
                 if !report.lossless {
-                    return Err(refused(Refusal::Migration {
-                        report: Box::new(report),
-                    }));
+                    return Err(lossy(&st, who, &migration, report));
                 }
                 let version = st
                     .types
@@ -3898,10 +3937,9 @@ impl Catalog for MockCatalog {
         let (position, st) = self.state_at(&log, None)?;
         let mut migration = migration;
         authored(&st, who, &mut migration)?;
-        Ok(Reply {
-            position,
-            data: preflight(&st, position, &migration, who)?,
-        })
+        let mut data = preflight(&st, position, &migration, who)?;
+        shown_report(&st, who, &migration, &mut data);
+        Ok(Reply { position, data })
     }
 
     async fn migrate_value_type(
@@ -3989,9 +4027,7 @@ impl Catalog for MockCatalog {
             ));
         }
         if !report.lossless {
-            return Err(refused(Refusal::Migration {
-                report: Box::new(report),
-            }));
+            return Err(lossy(&st, who, &migration, report));
         }
         let version = st
             .types

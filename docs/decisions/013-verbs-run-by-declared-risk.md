@@ -150,6 +150,12 @@ field, and to another says only that a declaration reads a field the
 migration takes away: the proposer took the field away knowingly, the
 accepter may not know that it exists.
 
+An accept refused because the migration is no longer lossless carries
+the fresh report as the accepter may know it, by the rule of the
+listing, and says `more` where that is less than the whole
+(`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+extended, lakelands#531).
+
 ## Extended: a value type's tightening is proposed like a migration (lakelands#476)
 
 A value type that is to accept less could be changed only by a principal

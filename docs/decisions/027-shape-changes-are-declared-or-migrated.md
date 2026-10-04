@@ -294,6 +294,52 @@ logged report is lossless, so it names no record that would not convert
 or would collide. A migration of a type its reader may not see is
 listed without its write.
 
+## Extended: a report is answered as its reader may know it (lakelands#531)
+
+The listing was one of five places that answer a migration's report. The
+preview answers one, and a migration that is not lossless is refused
+with one, to whoever proposes, applies or accepts it. Those four gave
+the report whole: a field hidden from an accepter with its kinds, its
+counts and its sample keys; the key of a restricted record to a reader
+without the grant; a type the reader may not see among the re-keyed
+types, the rewritten references and the colliding keys.
+
+One function trims a report now, and all five places call it. The rule
+is the listing's, with two members that only a report that is not
+lossless holds, and such a report is never logged:
+
+- **`sample_keys`**: the keys of records the reader is answered. A
+  restricted record's key leaves them for a reader without the grant;
+  the counts stay whole.
+- **`sample_collisions`**: the keys of types the reader may see. A key
+  is shown to whoever may see its type.
+
+**`more`.** A report says `more` when it holds more than its reader is
+shown, and nothing else of it. A reader told that a migration is not
+lossless, and shown no misfit, reads `more`: the reason lies where it
+may not look, and one who may see it reads why. The refusal keeps its
+kind. A logged and a stored report never say it, so a `write_proposed`
+event and a projection row stay what they are.
+
+**The id names the whole report.** A preview read trimmed is applied by
+the id it carried, and the apply is refused or applied as for the whole
+report: the trim changes what is read, not what is decided.
+
+**An author is a reader like any other.** Its migration is completed
+with the fields hidden from it, and the report is made over the whole;
+what it may not see, it is not answered, in its own preview too.
+
+**One who may not see the migrated type is answered no name.** A
+reviewer may accept a migration of a type it may not see, by its id. If
+that accept is refused as not lossless, the report's `type` is the empty
+name, which no type's is, every list is empty and `more` is true; the
+totals, the hashes and the id stay; and the refusal says that the
+migration would lose information, without the type's name. A refusal
+that named the type would say what the listing withholds.
+
+A relation the migration removes is listed under `dropped` by its own
+name, to one who sees the type.
+
 ## Extended: the order of refusals (lakelands#338)
 
 The migration doors refuse in this order, in the frame every write

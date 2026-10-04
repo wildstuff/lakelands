@@ -190,6 +190,7 @@ pub fn preflight(
         references: Vec::new(),
         sample_collisions: Vec::new(),
         report_id: String::new(),
+        more: false,
     };
     report.report_id = canonical::sha256_hex(
         &serde_json::to_value(&report).expect("a migration report serialises to JSON"),
