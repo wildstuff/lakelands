@@ -342,7 +342,7 @@ fn put(
 /// The fields a computed field reads: a derived expression's reads, the
 /// inputs of the function that computes it, or the fields an embedding
 /// is made from. `None` for a field the fold does not compute.
-fn computed_reads(o: &Ontology, f: &FieldDecl) -> Option<BTreeSet<FieldName>> {
+pub(crate) fn computed_reads(o: &Ontology, f: &FieldDecl) -> Option<BTreeSet<FieldName>> {
     if let Some(e) = &f.embed {
         return Some(e.from.iter().cloned().collect());
     }

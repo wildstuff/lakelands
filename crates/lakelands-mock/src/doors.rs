@@ -2351,6 +2351,26 @@ fn lossy(st: &State, who: &Principal, m: &Migration, mut report: MigrationReport
     })
 }
 
+/// As the store: a proposed shape completed, as a shape in force is.
+fn completed(st: &State, write: &mut ProposedWrite) {
+    match write {
+        ProposedWrite::Migrate { migration, .. } => st.complete(&mut migration.to),
+        ProposedWrite::Declare { declarations } => {
+            let mut after = st.clone();
+            for d in declarations.iter() {
+                let (hash, version) = identity_version(&after, d);
+                after.declare(d, hash, version);
+            }
+            for d in declarations.iter_mut() {
+                if let Declaration::Type(t) = d {
+                    after.complete(t);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// As the store: a proposed write as its reader may know it, a value where
 /// a read of the record would show it and a name where `describe` would.
 /// False when the reader may see nothing of it. The proposal holds the
@@ -3807,7 +3827,9 @@ impl Catalog for MockCatalog {
         // As the store: the entry as its reader is shown it, and the kind
         // and the type asked of that.
         for p in &mut rows {
-            let logged = p.write.take();
+            // `more` is what the trim left out, not what the completion added.
+            let mut logged = p.write.take();
+            logged.iter_mut().for_each(|w| completed(&st, w));
             let shown = logged.clone();
             p.write = shown.and_then(|mut w| known_shape(&st, who, &mut w).then_some(w));
             p.more = p.write != logged;

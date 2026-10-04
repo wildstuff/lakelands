@@ -207,7 +207,7 @@ fn id(source: &SourceId, head: Option<Position>) -> String {
 /// repeat.
 pub fn preflight(lake: &Lake, source: &SourceId) -> Result<PurgeReport> {
     let view = lake.engine.view(None)?;
-    let ontology = Ontology::from_declared(&view.declarations()?);
+    let ontology = Ontology::at(view.as_ref())?;
     let (purged, unsearched) = selection(view.as_ref(), &ontology, source)?;
     let mut report = report(view.as_ref(), &ontology, source, &purged, unsearched)?;
     report.report_id = id(source, view.position());

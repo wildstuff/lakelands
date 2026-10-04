@@ -2004,8 +2004,9 @@ impl Call<'_> {
             let stored = view.get(ty, key).ok().flatten();
             self.who.grants.restricted || !stored.is_some_and(|r| r.restricted)
         };
-        let was = w.ontology.ty(&m.to.name)?;
-        rights::shown_report(self.who, was, m, &mut report, sees, answered);
+        let (was, mut m) = (w.ontology.ty(&m.to.name)?, m.clone());
+        w.ontology.complete(&mut m.to);
+        rights::shown_report(self.who, was, &m, &mut report, sees, answered);
         Ok(report)
     }
 

@@ -304,7 +304,7 @@ impl Lake {
         let folded = self.engine.projection().folded_through()?;
         {
             let view = self.engine.view(None)?;
-            w.ontology = Ontology::from_declared(&view.declarations()?);
+            w.ontology = Ontology::at(view.as_ref())?;
             w.settings = settings_in(view.as_ref())?;
         }
         // The last event's time and format: versions only go up, so the
@@ -507,8 +507,8 @@ impl Lake {
                 w.behind = true;
                 w.due.truncate(due);
                 if let Ok(view) = self.engine.view(None) {
-                    if let Ok(d) = view.declarations() {
-                        w.ontology = Ontology::from_declared(&d);
+                    if let Ok(o) = Ontology::at(view.as_ref()) {
+                        w.ontology = o;
                     }
                     if let Ok(s) = settings_in(view.as_ref()) {
                         w.settings = s;
@@ -1088,9 +1088,7 @@ impl Lake {
         ty: &TypeName,
     ) -> Result<Vec<lakelands_api::read::VectorCoverage>> {
         let view = self.engine.view(None)?;
-        let decl = Ontology::from_declared(&view.declarations()?)
-            .ty(ty)?
-            .clone();
+        let decl = Ontology::at(view.as_ref())?.ty(ty)?.clone();
         let mut out = Vec::new();
         for f in &decl.fields {
             let Some(embed) = &f.embed else {

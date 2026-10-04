@@ -856,9 +856,10 @@ pub async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) {
         description: Some(format!("the invoice's {name}")),
         ..text(name)
     };
-    let derived = |name: &str, by: &str| FieldDecl {
+    let derived = |name: &str, by: &str, from: &str| FieldDecl {
         authority: Authority::Derived,
         function: Some(by.into()),
+        depends_on: vec![from.into()],
         ..described(name)
     };
     // The fixture's invoice, labelled and described throughout, with a
@@ -873,8 +874,8 @@ pub async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) {
         x.label = Some(x.name.as_str().to_uppercase());
         x.description = Some(format!("the invoice's {}", x.name));
     }
-    invoice.fields.push(derived("loud", "shout"));
-    invoice.fields.push(derived("quiet", "hush"));
+    invoice.fields.push(derived("loud", "shout", "status"));
+    invoice.fields.push(derived("quiet", "hush", "note"));
     invoice.language = Some("en".into());
     invoice.label = Some("Invoice".into());
     let trigger = |name: &str, when: &str| TriggerDecl {
@@ -962,9 +963,9 @@ pub async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) {
         .find(|x| x.name.as_str() == "quiet")
         .unwrap();
     assert_eq!(
-        quiet.function.as_deref(),
-        Some("hush"),
-        "a field names its function"
+        (quiet.function.as_deref(), quiet.access),
+        (None, Access::Masked),
+        "a field computed from a masked one is masked, and shows its shape only"
     );
     assert_eq!(d.functions, [shout], "`hush` reads the note");
     assert_eq!(d.triggers, [opened], "`noted` names the note");
@@ -1158,38 +1159,78 @@ pub async fn a_valid_time_read_probes_the_valid_time_fields(store: Arc<dyn LakeS
 /// out.
 pub async fn a_field_built_from_a_hidden_one_is_hidden_too(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
-    let g: FieldDecl = serde_json::from_value(json!({
-        "name": "g", "type": {"kind": "text"}, "authority": "derived",
-        "derived": "secret", "depends_on": ["secret"]
-    }))
-    .expect("a field");
-    f.catalog
-        .add_field(&f.cast.owner, &ty(INVOICE), g)
-        .await
-        .expect("the owner adds `g`, derived from `secret`");
-    let find = Find {
-        filter: Some("g = 's3'".into()),
-        ..Find::default()
+    // `g` lists what it is derived from; `h` does not, and is held to it
+    // all the same.
+    for (name, listed) in [("g", json!(["secret"])), ("h", json!([]))] {
+        let field: FieldDecl = serde_json::from_value(json!({
+            "name": name, "type": {"kind": "text"}, "authority": "derived",
+            "derived": "secret", "depends_on": listed
+        }))
+        .expect("a field");
+        f.catalog
+            .add_field(&f.cast.owner, &ty(INVOICE), field)
+            .await
+            .expect("the owner adds a field derived from `secret`");
+        let find = Find {
+            filter: Some(format!("{name} = 's3'").as_str().into()),
+            ..Find::default()
+        };
+        let e = f
+            .catalog
+            .find(&f.cast.clerk, &ty(INVOICE), find)
+            .await
+            .unwrap_err();
+        assert!(
+            no_field(&e, name),
+            "a filter on `{name}`, derived from the hidden `secret`, is answered as for a \
+             field the type does not declare: {e:?}"
+        );
+        let d = f
+            .catalog
+            .describe_type(&f.cast.clerk, &ty(INVOICE), ReadAt::default())
+            .await
+            .expect("describing `invoice`")
+            .data;
+        assert!(
+            d.fields.iter().all(|x| x.name.as_str() != name),
+            "`{name}` hands out `secret`, so it is described as `secret` is: not at all; {d:?}"
+        );
+    }
+    // A proposed shape is completed as one in force is, and `more` says
+    // what was left out, not what was completed: the owner lists a proposed
+    // type and a proposed migration whole, with the list `x` did not give.
+    let memo = |name: &str, x: bool| -> TypeDecl {
+        let a = json!({"name": "a", "type": {"kind": "text"}});
+        let x = x.then(|| json!({"name": "x", "type": {"kind": "text"}, "authority": "derived", "derived": "a"}));
+        let fields: Vec<Value> = [a].into_iter().chain(x).collect();
+        serde_json::from_value(json!({"name": name, "fields": fields})).expect("a type")
     };
-    let e = f
-        .catalog
-        .find(&f.cast.clerk, &ty(INVOICE), find)
-        .await
-        .unwrap_err();
+    let (c, owner) = (&f.catalog, &f.cast.owner);
+    let declared = c.declare(owner, Declaration::Type(memo("memo", false)));
+    declared.await.expect("the owner declares `memo`");
+    let migrate = ProposedWrite::Migrate {
+        migration: Box::new(lakelands_api::write::Migration {
+            to: memo("memo", true),
+            renames: vec![],
+        }),
+        report: Default::default(),
+    };
+    let declare = ProposedWrite::Declare {
+        declarations: vec![Declaration::Type(memo("minute", true))],
+    };
+    for write in [migrate, declare] {
+        let proposed = c.propose(owner, write, "adding x".into()).await;
+        proposed.expect("the owner proposes a shape");
+    }
+    let listed = c.proposals(owner, ProposalFilter::default()).await;
+    let listed = listed.expect("the proposals are listed").data;
+    let whole = |p: &&lakelands_api::write::Proposal| {
+        !p.more && json!(p.write).to_string().contains(r#""depends_on":["a"]"#)
+    };
     assert!(
-        no_field(&e, "g"),
-        "a filter on `g`, derived from the hidden `secret`, is answered as for a field the \
-         type does not declare: {e:?}"
-    );
-    let d = f
-        .catalog
-        .describe_type(&f.cast.clerk, &ty(INVOICE), ReadAt::default())
-        .await
-        .expect("describing `invoice`")
-        .data;
-    assert!(
-        d.fields.iter().all(|x| x.name.as_str() != "g"),
-        "`g` hands out `secret`, so it is described as `secret` is: not at all; {d:?}"
+        listed.len() == 2 && listed.iter().filter(whole).count() == 2,
+        "the owner is shown each proposed shape with `x`'s completed list and no `more`: \
+         {listed:?}"
     );
 }
 

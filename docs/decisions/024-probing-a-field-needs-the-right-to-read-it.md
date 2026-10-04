@@ -181,3 +181,47 @@ it either, in a preview and in a refusal alike; the count beside it
 stays whole, and the report says `more`
 (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
 extended).
+
+## Extended: a computed field is read as what it is computed from, listed or not (lakelands#540)
+
+A field built from another is read no further than what it is built
+from. The rule followed `depends_on` and `embed.from`, the lists a
+declaration gives, and a declaration need not give the first: a derived
+field whose `depends_on` did not name what its expression reads, and a
+field computed by a function whose inputs it did not list, were read
+whole by a principal the host had kept from the input. Every read door
+answered them: `get`, a `where`, an `order_by`, an aggregate, a view's
+measure, a pattern's projection and a search.
+
+What a computed field is computed from is not the declaration's to
+leave out. So wherever a declaration comes into force in memory, each
+computed field's `depends_on` is completed with every field its
+expression reads, or with the inputs of the function that computes it.
+The rule above then holds as it stands, in every door at once:
+
+- **Nothing logged changes.** The log holds a declaration as it was
+  sent; the completion is made when it is read into memory, at the
+  declaration and at every open. A lake that holds such a field is
+  closed when it is opened by a store that completes; the schema hash
+  does not cover `depends_on`, so no hash moves.
+- **The completion is made from what was declared, each time.** A
+  function declared again with fewer inputs leaves no field held by an
+  input it lost.
+- **A shape that is not in force is completed before it is judged:** a
+  proposed migration's shape and a proposed type, in the listing and in
+  a report.
+- **`describe` shows the completed list.** It is what the field is read
+  by, and a host that reads it sees what its declaration left out.
+- **One list.** A field that declared `on_input_change: clear` is
+  cleared with every field it is computed from, listed or not. For a
+  field computed by a backed function that is a value due again where a
+  stale one was kept: a host may see more calls of its backing for such
+  a field.
+
+An embedding names what it is made from in `embed.from`, which has no
+unlisted form; it is untouched.
+
+Why not follow the expression where rights are asked: a field's access
+is asked for every field of every record a read answers, a function's
+inputs are on another declaration, and the list `declare` checks and
+`describe` shows would then say less than the rule that reads it.
