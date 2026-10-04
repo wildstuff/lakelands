@@ -559,3 +559,59 @@ async fn a_narrowed_relation_counts_live_links_across_pages() {
         "a retired link beside a live one breaks nothing: {accepted:?}"
     );
 }
+
+/// A value type's preflight reads each using type a page at a time, and
+/// lists its first misfits as it did: a field's before the next field's,
+/// each field's by key, ten in all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_value_types_preflight_lists_its_misfits_by_field_across_pages() {
+    let (store, probe) = lake("preflight-value-type", 20_000).await;
+    let l = Lake::of(store.as_ref());
+    let kind = |declare: bool, one_of: &[&str]| {
+        let mut d = json!({"name": "kind", "kind": "text", "one_of": one_of});
+        if declare {
+            d["declare"] = json!("value_type");
+        }
+        d
+    };
+    let field = |name: &str| json!({"name": name, "type": {"kind": "text", "value_type": "kind"}});
+    l.declare_json(kind(true, &["new", "old"])).await.unwrap();
+    l.declare_json(json!({"declare": "type", "name": "t", "fields": [field("p"), field("q")]}))
+        .await
+        .unwrap();
+    // `p` holds `old` twice in the second page, `q` twelve times in the first.
+    for i in 0..1_100 {
+        let old = |is: bool| if is { "old" } else { "new" };
+        let (p, q) = (old(i == 1_050 || i == 1_060), old((1..=12).contains(&i)));
+        l.upsert("t", &key(i), json!({"p": p, "q": q}))
+            .await
+            .unwrap();
+    }
+    let to = serde_json::from_value(kind(false, &["new"])).unwrap();
+    probe.most.store(0, Ordering::SeqCst);
+    let report = l.cat.migrate_value_type(&l.own, to).await.unwrap().data;
+    let fields: Vec<_> = (report.fields.iter())
+        .map(|u| (u.field.as_str(), u.values_scanned, u.misfits))
+        .collect();
+    assert_eq!(
+        (report.records_scanned, report.misfits, report.fits, fields),
+        (1_100, 14, false, vec![("p", 1_100, 2), ("q", 1_100, 12)])
+    );
+    let first: Vec<_> = (report.first.iter())
+        .map(|m| format!("{} {}", m.field, m.key))
+        .collect();
+    let listed = ["p k1050", "p k1060"].into_iter().map(str::to_owned);
+    let listed: Vec<String> = listed
+        .chain((1..=8).map(|i| format!("q {}", key(i))))
+        .collect();
+    assert_eq!(first, listed, "`p`'s misfits, a page on, come before `q`'s");
+    assert_eq!(
+        report.report_id, "0961385c926416d1e66063156210881f5f662d30981a0ae0bb4bb4e088a127fa",
+        "the report's id, as the preflight that read the type whole made it"
+    );
+    assert!(
+        probe.most.load(Ordering::SeqCst) <= 1_024,
+        "the preflight read {} rows in one scan; it reads a page at a time",
+        probe.most.load(Ordering::SeqCst)
+    );
+}

@@ -24,12 +24,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::engine::ProjectionView;
 use lakelands_api::ontology::{StorageKind, TypeDecl};
-use lakelands_api::record::StoredRecord;
 use lakelands_api::write::{RecordRef, ReferenceRewrite, Rekey, Rekeyed};
 use lakelands_api::{FieldName, RecordKey, Result, TypeName, Value};
 use lakelands_core::{invalid, links};
 
-use crate::lake::every;
 use crate::ontology::Ontology;
 
 /// How many colliding keys a report names.
@@ -67,13 +65,6 @@ impl Plan {
             })
             .collect()
     }
-}
-
-/// Every stored record of `ty`, retired and restricted ones included; an
-/// ended key is not one.
-pub(crate) fn stored(view: &dyn ProjectionView, ty: &TypeName) -> Result<Vec<StoredRecord>> {
-    let all = view.scan(ty, &every(true))?;
-    Ok(all.into_iter().filter(|r| !r.is_ended()).collect())
 }
 
 /// The reference fields of `decl` that name a type with moves.

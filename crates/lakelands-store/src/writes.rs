@@ -2672,16 +2672,22 @@ impl Call<'_> {
             if uses.is_empty() || decl.view.is_some() {
                 continue;
             }
-            let records = crate::rekey::stored(view, name)?;
-            report.records_scanned += records.len() as u64;
-            for f in uses {
-                let mut used = ValueTypeUse {
-                    ty: name.clone(),
-                    field: f.name.clone(),
-                    values_scanned: 0,
-                    misfits: 0,
-                };
-                for r in &records {
+            // One walk of the type, a page at a time. Each field keeps its
+            // tally and its first misfits, as many as the report still has
+            // room for; they are joined in the fields' order afterwards, so
+            // the report lists a field's misfits before the next field's.
+            let room = 10 - report.first.len();
+            let tally = |f: &&FieldDecl| ValueTypeUse {
+                ty: name.clone(),
+                field: f.name.clone(),
+                values_scanned: 0,
+                misfits: 0,
+            };
+            let mut used: Vec<(ValueTypeUse, Vec<Misfit>)> =
+                uses.iter().map(|f| (tally(f), Vec::new())).collect();
+            crate::lake::walk(view, name, true, |r| {
+                report.records_scanned += 1;
+                for (f, (used, first)) in uses.iter().zip(&mut used) {
                     let Some(v) = r.fields.get(&f.name).filter(|v| !v.is_null()) else {
                         continue;
                     };
@@ -2689,8 +2695,8 @@ impl Call<'_> {
                     let patch: Patch = [(f.name.clone(), v.clone())].into();
                     if check_values(&probe, decl, &patch, &decl.fields).is_err() {
                         used.misfits += 1;
-                        if report.first.len() < 10 {
-                            report.first.push(Misfit {
+                        if first.len() < room {
+                            first.push(Misfit {
                                 ty: name.clone(),
                                 key: r.key.clone(),
                                 field: f.name.clone(),
@@ -2698,6 +2704,11 @@ impl Call<'_> {
                         }
                     }
                 }
+                Ok(())
+            })?;
+            for (used, first) in used {
+                let room = 10 - report.first.len();
+                report.first.extend(first.into_iter().take(room));
                 report.misfits += used.misfits;
                 report.fields.push(used);
             }
