@@ -758,6 +758,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     joined: vec!["s".into()],
                     left: vec!["s".into()],
                 },
+                renamed: vec![("a".into(), "b".into())],
             });
             m.remove("outcome");
             m
@@ -1205,6 +1206,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     version: None,
                     output: None,
                     set_off: Default::default(),
+                    renamed: Vec::new(),
                 },
                 Outcome::Proposed {
                     position: Position(1),

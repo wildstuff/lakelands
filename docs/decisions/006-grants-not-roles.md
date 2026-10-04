@@ -90,3 +90,86 @@ other field is writable too.
   values; it asks whether a grant reads, writes, or appears in a read
   answer. A host that matches on the access enum gains one arm.
 
+## Extended: a grant holds a field through its renames (lakelands#527)
+
+A grant names a field, and a migration can rename one. The grant stayed
+on the old name and the field fell to the type's default: a principal
+held at `none` or `masked` on `holder` read it whole as `keeper`, with
+nothing but the rename having happened. A host that renamed its grant
+with the field was answered the old name's value in every read as of a
+position before the rename.
+
+> A field's access is the lowest of what its grants say under every name
+> the field bears, has borne, or, for a read as of an earlier position,
+> will bear. A grant reaches further than its own name only to take away.
+
+- **What a name says.** The name the field bears at the position read
+  says what it always said: its grant by name, else the type's default,
+  else the lake's. Any other name of the field says something only where
+  the grants name it. A name they do not name says nothing, or a default
+  would undo a grant on the present name.
+- **The lowest of two accesses** judges reading and writing apart: it
+  reads the value only if both do, shows the field masked if both at
+  least show it, and writes only if both write. So `write` with
+  `write_only` is `write_only`, and `read` or `masked` with `write_only`
+  is `none`.
+- **A restriction follows the field, in both directions of time.**
+  `holder: none` holds for `keeper`, for `owner` after a second rename,
+  and `keeper: none` holds for `holder` in a read as of before.
+- **A permission stays with its name.** A principal granted `holder:
+  write` on a type it may otherwise not see loses the field at the
+  rename; its host names the new name to give it back. A host that
+  widens a renamed field names the new name and drops the restriction on
+  the old.
+- **The result is a grant by name** on the name the field bears at the
+  position read, put where the principal enters, before any door asks.
+  So every place a field's name meets a grant holds it, and a
+  restriction that followed counts as one given by name: a `sensitive`
+  field held at `none` under a former name is hidden, not masked.
+- **A migration that is not in force** is judged with its own renames as
+  the last of the list: a proposed rename is listed to a reader kept
+  from the old name with neither the pair nor the new name, and a
+  migration's answer names in `renamed` each rename the one answered may
+  know of.
+
+**Two costs, taken with the rule.**
+
+- **Two fields that have borne one name cannot be told apart by that
+  name.** After a swap of `a` and `b` each of the two names restricts
+  both fields; after `holder` became `keeper` and a new field took
+  `holder`, a grant on `holder` restricts both. A host tells them apart
+  by a name only one of them has borne: it renames one once more.
+- **The list holds renames, not removals.** A field that is removed, and
+  whose last name a new field takes and is later renamed from, has its
+  chain of names continued by the new field, which is then restricted by
+  the removed field's former names too. It errs to the closed side.
+  Where several chains end in the name a rename takes, the rename
+  continues the one whose last name was taken latest: a name is free
+  when a rename takes it, so every earlier bearer of it is gone, and a
+  field renamed onto a name another field bore is held by its own names.
+
+**Where the rule is applied, and when.** To the principal, where it
+enters: a read takes the list from the view it reads at the head, so a
+rename is in its shape and in its grants or in neither; a read as of a
+position takes the head's list, where a later rename can only take away.
+A write is followed before it waits for the writer, and a migration can
+rename a field while it waits. Where the list has grown when the write
+takes the writer, it is refused to be sent again; an ingest is followed
+under the writer itself.
+
+**Where the renames are kept.** A rename happens only in a `migrated`
+event. The fold keeps the lake's list of them, each with its position
+and type, as one recorded output under a seam name of the store's own,
+`sys:renames` (`docs/seams.md`); it is no event, and no door answers it.
+A rebuild and an import fold the log and make the list again. A lake
+made before this holds no list: its first open finds one from what the
+projection keeps, without reading the log. A type's declaration is in
+force since the event that put it, so for each type past its first
+version the one event at that position is read, then the type as of the
+position before it, down to its first version. The handle that writes
+records the list; one opened read-only before any writer has opened
+keeps it in memory.
+
+Nothing is built for a type's name. A renamed relation will rename its
+link type, which a grant can name; the same rule holds there
+(lakelands#429).

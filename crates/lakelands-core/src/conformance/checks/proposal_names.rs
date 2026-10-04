@@ -169,6 +169,8 @@ async fn a_proposed_shape_names_only_what_its_reader_may_know_of(
     let rekey = ["\"payment\"", "\"entry\"", "\"holder\""];
     let converted = "\"field\":\"hidden\"";
     let rename = ["\"secret\"", "\"signed_by.ok\"", converted];
+    // A field kept from its reader is kept under the name a rename gives it.
+    let renamed = [rename[0], rename[1], converted, "\"name\":\"hidden\""];
     let all = ["held", "numbered", "rich", "rename", "close", "ledger"];
     let all = all.map(|n| format!("\"name\":\"{n}\""));
     let all: Vec<&str> = all.iter().map(String::as_str).collect();
@@ -177,13 +179,7 @@ async fn a_proposed_shape_names_only_what_its_reader_may_know_of(
         (&reads, "rekey", &rekey, &[], false),
         (&hid, "rekey", &["\"sys.link.account.owner\""], &rekey, true),
         (&reads, "rename", &rename, &[], false),
-        (
-            &hid,
-            "rename",
-            &["\"name\":\"hidden\"", "\"added\""],
-            &rename,
-            true,
-        ),
+        (&hid, "rename", &["\"added\""], &renamed, true),
         (&hid, "drop", &["\"title\""], &["\"secret\""], true),
         (&hid, "bundle", &all, &[], false),
         (&plain, "bundle", &[all[1], all[5]], &gone, true),

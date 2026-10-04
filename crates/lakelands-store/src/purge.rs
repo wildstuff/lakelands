@@ -222,6 +222,7 @@ pub fn run(lake: &Lake, source: &SourceId, report_id: Option<&str>) -> Result<Pu
         lake,
         who: &system,
         context: WriteContext::default(),
+        followed: None,
     };
     let mut w = lake.writer();
     let view = lake.engine.view(None)?;

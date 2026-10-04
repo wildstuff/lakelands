@@ -548,6 +548,9 @@ interface types {
         fired: list<trigger-name>,
         joined: list<string>,
         left: list<string>,
+        /// For a migration: each field it renamed, old name and new, as
+        /// the one answered may know of them.
+        renamed: list<tuple<field-name, field-name>>,
     }
 
     record proposed {

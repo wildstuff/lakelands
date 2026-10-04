@@ -80,7 +80,12 @@ impl Doors {
         same_lake(&self.lake, who)?;
         let (lake, who) = (self.lake.clone(), who.clone());
         exec::run(move || {
-            let r = Reader::open(&lake, &who, at)?;
+            // The list comes from the view the read reads, so that a rename
+            // is in its shape and in its grants, or in neither.
+            let view = lake.engine.view(at.as_of)?;
+            let head = at.as_of.is_none().then_some(view.as_ref());
+            let (who, _) = lake.followed(who, at.as_of, head)?;
+            let r = Reader::open(&lake, &who, at, view)?;
             let data = f(&r)?;
             Ok(Reply {
                 position: r.position,
@@ -98,10 +103,12 @@ impl Doors {
         same_lake(&self.lake, who)?;
         let (lake, who, context) = (self.lake.clone(), who.clone(), self.context);
         exec::run(move || {
+            let (who, followed) = lake.followed(who, None, None)?;
             f(&Call {
                 lake: &lake,
                 who: &who,
                 context,
+                followed,
             })
         })
         .await
@@ -422,7 +429,7 @@ impl Catalog for Doors {
         migration: Migration,
     ) -> Result<Reply<MigrationReport>> {
         self.write(who, move |c| {
-            let w = c.lake.writer();
+            let w = c.writer()?;
             let view = c.lake.engine.view(None)?;
             Ok(Reply {
                 position: view.position().unwrap_or(Position::GENESIS),
@@ -450,7 +457,7 @@ impl Catalog for Doors {
     ) -> Result<Reply<ValueTypeReport>> {
         self.write(who, move |c| {
             crate::writes::granted(c.who.grants.schema)?;
-            let w = c.lake.writer();
+            let w = c.writer()?;
             let view = c.lake.engine.view(None)?;
             Ok(Reply {
                 position: view.position().unwrap_or(Position::GENESIS),
@@ -704,3 +711,6 @@ impl ChangeFeed for Feed {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

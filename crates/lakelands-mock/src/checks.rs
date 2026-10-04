@@ -96,6 +96,7 @@ macro_rules! door_checks {
             describe_answers_the_declaration_whole,
             a_masked_field_is_named_but_its_value_is_absent,
             a_field_built_from_a_hidden_one_is_hidden_too,
+            a_grant_holds_a_field_through_its_rename,
             a_valid_time_read_probes_the_valid_time_fields,
             a_write_only_field_is_written_and_never_shown,
             the_tools_follow_the_grants,
@@ -1232,6 +1233,58 @@ pub async fn a_field_built_from_a_hidden_one_is_hidden_too(store: Arc<dyn LakeSt
         "the owner is shown each proposed shape with `x`'s completed list and no `more`: \
          {listed:?}"
     );
+}
+
+/// A grant by name holds a field through its renames
+/// (`docs/decisions/006-grants-not-roles.md`, extended): the clerk sees
+/// `body` of a `doc` masked; renamed to `text`, the field is masked under
+/// that name, and under `body` in a read as of before the rename. The
+/// migration's answer names the rename.
+pub async fn a_grant_holds_a_field_through_its_rename(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let (c, owner, clerk) = (&f.catalog, &f.cast.owner, &f.cast.clerk);
+    let doc = |body: &str| -> TypeDecl {
+        serde_json::from_value(json!({"name": "doc", "fields": [
+            {"name": "title", "type": {"kind": "text"}},
+            {"name": body, "type": {"kind": "text"}}]}))
+        .expect("a type")
+    };
+    let declared = c.declare(owner, Declaration::Type(doc("body"))).await;
+    declared.expect("the owner declares `doc`");
+    let fields = patch(&[("title", json!("t")), ("body", json!("b"))]);
+    let (doc_ty, one) = (ty("doc"), key("1"));
+    let wrote = c.upsert(owner, &doc_ty, &one, fields, WriteOpts::default());
+    let before = applied(&wrote.await.expect("the owner writes a `doc`")).0;
+    let m = lakelands_api::write::Migration {
+        to: doc("text"),
+        renames: vec![("body".into(), "text".into())],
+    };
+    let report = c.migrate(owner, m.clone()).await.expect("the preflight");
+    let answer = c
+        .migrate_apply(owner, m.clone(), &report.data.report_id)
+        .await;
+    assert!(
+        matches!(&answer, Ok(Outcome::Applied { renamed, .. }) if renamed == &m.renames),
+        "the migration's answer names the rename: {answer:?}"
+    );
+    for (name, as_of) in [("text", None), ("body", Some(before))] {
+        let read = Get {
+            at: ReadAt {
+                as_of,
+                valid_at: None,
+            },
+            ..get("1")
+        };
+        let got = c
+            .get(clerk, &ty("doc"), read)
+            .await
+            .expect("the clerk reads")
+            .data;
+        assert!(
+            field(&got, name).is_none() && got.masked.iter().any(|m| m.as_str() == name),
+            "the clerk sees `{name}` masked as of {as_of:?}, as it saw `body`: {got:?}"
+        );
+    }
 }
 
 /// The tools a principal is offered come from the generator over what
