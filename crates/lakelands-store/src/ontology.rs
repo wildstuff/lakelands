@@ -153,13 +153,24 @@ impl Ontology {
 
     /// Whether `declaration` is the one in force, in the form the lake
     /// keeps: a type with its computed fields completed. Such a declaration
-    /// appends nothing and its version stays (027, extended).
+    /// appends nothing and its version stays (027, extended). The one entry
+    /// of its kind and name is looked up, whatever the lake declares.
     pub fn in_force(&self, declaration: &Declaration) -> bool {
-        let mut d = declaration.clone();
-        if let Declaration::Type(t) = &mut d {
-            self.complete(t);
+        fn is<T: PartialEq>(held: Option<&Entry<T>>, d: &T) -> bool {
+            held.is_some_and(|e| &e.decl == d)
         }
-        self.declared().iter().any(|held| held.declaration == d)
+        match declaration {
+            Declaration::Type(t) => {
+                let mut t = t.clone();
+                self.complete(&mut t);
+                is(self.types.get(&t.name), &t)
+            }
+            Declaration::ValueType(v) => is(self.value_types.get(v.name.as_str()), v),
+            Declaration::Verb(v) => is(self.verbs.get(&v.name), v),
+            Declaration::Trigger(t) => is(self.triggers.get(t.name.as_str()), t),
+            Declaration::ObjectSet(s) => is(self.object_sets.get(&s.name), s),
+            Declaration::Function(f) => is(self.functions.get(&f.name), f),
+        }
     }
 
     /// The version a declaration of this name and kind would take next.

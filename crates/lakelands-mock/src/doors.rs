@@ -2072,6 +2072,12 @@ fn check_set(st: &State, who: &Principal, declarations: &[Declaration]) -> Resul
     }
 }
 
+/// As the store: whether a migration changes nothing, its `to` the type in
+/// force and no field renamed.
+fn unchanged(st: &State, m: &Migration) -> bool {
+    m.renames.is_empty() && st.in_force(&Declaration::Type(m.to.clone()))
+}
+
 /// The drafts that declare a checked set, each with the link types it
 /// calls for; as the store, none for a declaration in force before it.
 fn set_drafts(st: &State, who: &Principal, declarations: Vec<Declaration>) -> Vec<Draft> {
@@ -3899,6 +3905,7 @@ impl Catalog for MockCatalog {
                     .types
                     .get(&migration.to.name)
                     .map_or(1, |t| t.version + 1);
+                let same = unchanged(&st, &migration);
                 let mut d = Draft::new(
                     &proposer,
                     Origin::System,
@@ -3911,7 +3918,9 @@ impl Catalog for MockCatalog {
                     },
                 );
                 d.cause = Some(accepted);
-                batch.push(d);
+                if !same {
+                    batch.push(d);
+                }
                 None
             }
             ProposedWrite::MigrateValueType { to, report: shown } => {
@@ -4273,6 +4282,17 @@ impl Catalog for MockCatalog {
         }
         if !report.lossless {
             return Err(lossy(&st, who, &migration, report));
+        }
+        // As the store: a migration to the type in force appends nothing.
+        if unchanged(&st, &migration) {
+            let (version, output, set_off, renamed) = Default::default();
+            return Ok(Outcome::Applied {
+                position: head,
+                version,
+                output,
+                set_off,
+                renamed,
+            });
         }
         let version = st
             .types
