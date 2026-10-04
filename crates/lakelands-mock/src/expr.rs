@@ -142,6 +142,13 @@ pub(crate) fn eval(e: &Expr, s: &Scope<'_>) -> Result<Value, Error> {
         }
         Expr::Arith { arith, lhs, rhs } => {
             let (a, b) = (eval(lhs, s)?, eval(rhs, s)?);
+            // The difference of two instants is a duration, a number of
+            // microseconds here.
+            if let (Value::String(a), Value::String(b), ArithOp::Sub) = (&a, &b, arith)
+                && let (Ok(a), Ok(b)) = (Timestamp::parse(a), Timestamp::parse(b))
+            {
+                return Ok(num((a.0 - b.0) as f64));
+            }
             // A date-time shifted by a duration (a number of microseconds).
             if let (Value::String(t), Value::Number(d), ArithOp::Add | ArithOp::Sub) =
                 (&a, &b, arith)
@@ -235,6 +242,7 @@ fn call(func: Func, args: &[Value]) -> Result<Value, Error> {
             .find(|a| !a.is_null())
             .cloned()
             .unwrap_or(Value::Null),
+        Func::Floor => (args.first().and_then(number)).map_or(Value::Null, |n| num(n.floor())),
         other => {
             return Err(invalid(format!(
                 "the in-memory mock does not evaluate `{}`",

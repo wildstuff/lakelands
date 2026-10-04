@@ -24,6 +24,9 @@
 //!   (a `call` without `key`).
 //! - **9**: an event whose declaration is a view that `merge`s sources, in
 //!   the places 5 names.
+//! - **10**: a `write_proposed` event whose write tightens a value type.
+//! - **11**: what [`ELEVENTH`] lists, each in the places 5 names: a
+//!   declaration that calls `floor` in any expression it keeps.
 //!
 //! The store writes every event of one append at the greatest of the
 //! lake's version and what [`needed`] answers for each event of the
@@ -38,6 +41,9 @@ use lakelands_api::write::{Declaration, ProposedWrite};
 /// The lowest format version that can carry `body`, with `upstream` or
 /// without it.
 pub fn needed(body: &EventBody, upstream: bool) -> u32 {
+    if eleventh(body).is_some() {
+        return 11;
+    }
     if let EventBody::WriteProposed { write, .. } = body
         && matches!(write, ProposedWrite::MigrateValueType { .. })
     {
@@ -71,6 +77,24 @@ pub fn needed(body: &EventBody, upstream: bool) -> u32 {
         EventBody::Migrated { rekeyed, .. } if !rekeyed.is_empty() => 2,
         _ => lakelands_api::event::LOG_FORMAT_BASE,
     }
+}
+
+/// Whether an event carries one thing a format version added, and the
+/// words an event below that version which carries it is refused in.
+pub type Added = (fn(&EventBody) -> bool, &'static str);
+
+/// What format version 11 added to what an event carries, each with the
+/// words an event below 11 that carries it is refused in. One release
+/// makes one step of the format: what it adds besides is a line here.
+pub const ELEVENTH: &[Added] = &[(
+    |body| any_declaration(body, |d| declares_call(d, Func::Floor)),
+    "declares a call of `floor`",
+)];
+
+/// What `body` carries that format version 11 added, if anything.
+pub fn eleventh(body: &EventBody) -> Option<&'static str> {
+    let added = ELEVENTH.iter().find(|(carries, _)| carries(body));
+    added.map(|(_, what)| *what)
 }
 
 /// Whether any declaration the event carries holds for `test`: a
@@ -168,7 +192,9 @@ pub fn below(event: &Event) -> Option<String> {
     if event.v >= need {
         return None;
     }
-    let what = if need == 10 {
+    let what = if let Some(what) = eleventh(&event.body) {
+        what.to_owned()
+    } else if need == 10 {
         "proposes a value type's tightening".to_owned()
     } else if need == 9 {
         "declares a view that merges sources".to_owned()

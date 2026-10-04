@@ -23,6 +23,7 @@ mod decimals;
 mod derived_fields;
 mod derived_relations;
 mod describe;
+mod durations;
 mod embeddings;
 mod export;
 mod feed;
@@ -288,6 +289,9 @@ pub const ALL: &[Check] = &[
     date_bucket::GROUPS,
     date_bucket::WHERE,
     date_bucket::DECLARED,
+    durations::DAYS,
+    durations::LANDS,
+    durations::NEVER,
     filters::CLEARED_FIELD,
     walks::CYCLE_TERMINATES,
     derived_relations::BOTH_WAYS,

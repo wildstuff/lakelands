@@ -594,6 +594,7 @@ fn import_seams() -> lakelands_api::seam::Seams {
 /// guard calls `retired` (version 7), a view with a parameter and a verb
 /// called on its type (version 8), a view that merges a second source
 /// (version 9), a proposed tightening of a value type (version 10), a
+/// derived field calling `floor` (version 11), a
 /// record ingested with an upstream,
 /// a second checkpoint and more invoices.
 /// Answers the
@@ -681,6 +682,12 @@ async fn exported_lake(
     };
     let proposed = cat.propose(own, narrower, "one state".into()).await;
     proposed.must("proposing a narrower `stamp_state`")?;
+    // Format version 11: a derived field calling `floor`.
+    let days = json!({"name": "days", "type": {"kind": "number"}, "authority": "derived",
+                      "derived": "floor((now() - at) / 1d)"});
+    let days = serde_json::from_value(days).expect("a field");
+    let added = cat.add_field(own, &"stamp".into(), days).await;
+    added.must("adding `days` to `stamp`")?;
     // Format version 8 too: a verb on its type, called with no key.
     l.declare_json(json!({
         "declare": "verb", "name": "print_stamp", "on": "stamp", "scope": "type",

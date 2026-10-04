@@ -34,6 +34,7 @@
 
 use std::collections::BTreeSet;
 
+use lakelands_api::expr::kind::{self, Kind};
 use lakelands_api::expr::{Condition, Expr, Func};
 use lakelands_api::ontology::{
     Authority, Derived, FieldDecl, RelationDecl, StorageKind, TypeDecl, ValueTypeDecl, VerbEffect,
@@ -345,6 +346,15 @@ pub fn condition(c: &Condition, place: Place, at: &str) -> Result<Expr> {
     Ok(e)
 }
 
+/// The kind an expression certainly computes over `decl`'s records, or the
+/// refusal of one that can never be evaluated over them (028, extended).
+/// A failure that depends on one record's value is not known here, and
+/// stays that record's: it does not match, or its value is null.
+pub fn evaluates(e: &Expr, decl: &TypeDecl, at: &str) -> Result<Option<Kind>> {
+    let field = |n: &FieldName| decl.fields.iter().find(|f| &f.name == n).map(|f| f.ty.kind);
+    kind::of(e, &field).map_err(|why| invalid(format!("{at}: {why}")))
+}
+
 fn field_type(o: &Ontology, owner: &str, f: &FieldDecl, pending: &TypeName) -> Result<()> {
     name("field", f.name.as_str())?;
     let ty = &f.ty;
@@ -633,6 +643,25 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
         view_fields(&owner, t, v)?;
         view_params(&owner, v, &read)?;
     }
+    // A derived field's expression can be evaluated, and what it computes
+    // can land in the field: one that never could would be taken and never
+    // filled (028, extended).
+    for f in t
+        .fields
+        .iter()
+        .filter(|f| t.view.is_none() && f.derived.is_some())
+    {
+        let at = format!("{owner}, field `{}`", f.name);
+        let e = condition(f.derived.as_ref().expect("derived"), Place::Write, &at)?;
+        if let Some(k) = evaluates(&e, t, &at)?.filter(|k| !k.lands(f.ty.kind)) {
+            let (is, holds) = (k.name(), value::kind_name(f.ty.kind));
+            let unit = "; divide a duration by a unit, as in `(a - b) / 1d`";
+            let hint = if k == Kind::Duration { unit } else { "" };
+            let why =
+                format!("{at}: its expression is {is}, which a {holds} field never holds{hint}");
+            return Err(invalid_field(&f.name, why));
+        }
+    }
     // Order the fields as the fold will compute them: a field computed by
     // a function reads what that function's expression reads, so it is
     // ordered, and checked for cycles, with the function resolved.
@@ -757,6 +786,27 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
             d.what(),
             on.name
         )));
+    }
+    // And each of its conditions can be evaluated over that type's records.
+    let conditions: Vec<&Condition> = match d {
+        Declaration::Trigger(t) => t.when.iter().collect(),
+        Declaration::ObjectSet(s) => vec![&s.filter],
+        Declaration::Verb(v) => match &v.effect {
+            VerbEffect::Write { set } => (v.requires.iter())
+                .chain(set.iter().map(|a| &a.value))
+                .collect(),
+            _ => v.requires.iter().collect(),
+        },
+        _ => vec![],
+    };
+    for c in conditions {
+        let typed = match c {
+            Condition::Expr(e) => Some(e.clone()),
+            Condition::Text(t) => parse(t).ok(),
+        };
+        if let (Some(on), Some(e)) = (on, typed) {
+            evaluates(&e, on, &d.what())?;
+        }
     }
     Ok(())
 }

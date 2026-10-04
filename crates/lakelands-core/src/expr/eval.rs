@@ -24,7 +24,9 @@
 //! - **Arithmetic is exact and checked.** Decimal arithmetic never passes
 //!   through a binary float; overflow and division by zero are errors,
 //!   never a wrapped or infinite value. An instant plus or minus a duration
-//!   is an instant; the difference of two instants is a duration.
+//!   is an instant; the difference of two instants is a duration. A
+//!   duration divided by a duration is a number; a duration times or
+//!   divided by a number is a duration, to the microsecond.
 //! - **`and`, `or` and `if` are lazy.** Only the operands that decide the
 //!   answer are evaluated, so `if(b != 0, a / b, 0)` never divides by zero.
 //!   An operand that is not a boolean counts as false.
@@ -32,6 +34,7 @@
 //!   empty pattern changes nothing. `matches` takes an I-Regexp (RFC 9485)
 //!   and matches the whole text.
 //! - **`round` rounds half away from zero,** the rule money is kept by.
+//!   `floor` is the greatest whole number not above its operand.
 //! - **Time is the caller's.** `now()` and `today()` read the scope's
 //!   clock: the fold binds it to the `known_at` of the event it folds, so a
 //!   replay computes the same value; a read binds it to the time of the
@@ -40,8 +43,11 @@
 //! An expression that cannot be evaluated — a type misuse, an overflow, a
 //! function used where it has no meaning — is an [`EvalError`]. What an
 //! error means is the caller's posture, stated where each caller lives: a
-//! filter refuses the read, a trigger guard does not fire, a derived field
-//! is cleared.
+//! record its filter fails for does not match, a group key that fails is
+//! null, a trigger guard does not fire, a derived field is cleared. One
+//! record's value never fails a read of the others. What can never be
+//! evaluated, whatever the record holds, is refused before any of them
+//! runs (`lakelands_api::expr::kind`).
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -649,6 +655,26 @@ fn time_arith(op: ArithOp, l: &Val, r: &Val) -> Result<Val> {
                 describe(b)
             )),
         },
+        // A duration by a duration is how many of the one the other holds;
+        // a duration by or times a number is a duration, to the microsecond.
+        (ArithOp::Div, Val::Duration(a), Val::Duration(b)) if *b != 0 => {
+            let n = Decimal::from(*a).checked_div(Decimal::from(*b));
+            n.map(Val::Num).ok_or_else(overflow)
+        }
+        (ArithOp::Div, Val::Duration(_), Val::Duration(_)) => err("division by zero"),
+        (ArithOp::Mul | ArithOp::Div, Val::Duration(d), n)
+        | (ArithOp::Mul, n, Val::Duration(d))
+            if as_number(n).is_some() =>
+        {
+            let n = number(n)?;
+            let scaled = match op {
+                ArithOp::Div if n.is_zero() => return err("division by zero"),
+                ArithOp::Div => Decimal::from(*d).checked_div(n),
+                _ => Decimal::from(*d).checked_mul(n),
+            };
+            let micros = scaled.and_then(|m| m.trunc().to_i64());
+            micros.map(Val::Duration).ok_or_else(overflow)
+        }
         (_, a, b) => err(format!(
             "{} and {} cannot be multiplied or divided",
             describe(a),
@@ -804,6 +830,7 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
         }
         Func::Matches => Val::Bool(i_regexp(&s(1))?.is_match(&s(0))),
         Func::Abs => Val::Num(number(&vals[0])?.abs()),
+        Func::Floor => Val::Num(number(&vals[0])?.floor()),
         Func::DateBucket => match (as_time(&vals[0]), &vals[1]) {
             (Some(t), Val::Text(unit)) => Val::Time(bucket_start(t, unit)?),
             (None, _) => Val::Null,

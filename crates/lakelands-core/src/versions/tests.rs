@@ -300,3 +300,19 @@ fn a_proposed_tightening_of_a_value_type_needs_format_10_and_says_so_below_it() 
         Some("a format 9 event proposes a value type's tightening, which format 10 added")
     );
 }
+
+#[test]
+fn a_declared_call_of_floor_needs_format_11_and_says_so_below_it() {
+    let days = |expr: &str| {
+        json!({"declare": "type", "name": "t", "fields": [
+            {"name": "a", "type": {"kind": "date_time"}},
+            {"name": "days", "type": {"kind": "number"}, "authority": "derived", "derived": expr}]})
+    };
+    let (whole, exact) = (days("floor((now() - a) / 1d)"), days("(now() - a) / 1d"));
+    let need = |d: &serde_json::Value| needed(&declared_event(11, d).body, false);
+    assert_eq!((need(&whole), need(&exact)), (11, 1));
+    assert_eq!(
+        below(&declared_event(10, &whole)).as_deref(),
+        Some("a format 10 event declares a call of `floor`, which format 11 added")
+    );
+}

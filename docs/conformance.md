@@ -527,6 +527,12 @@ belongs in the suite, not beside one engine:
 - `a_where_selects_the_records_of_one_date_bucket` — 017, extended: a where comparing date_bucket(x, 'month') with an instant selects exactly that month's records; a unit outside the five is refused as invalid, naming it
 - `a_declaration_may_call_date_bucket_and_from_it_the_lake_writes_format_3` — 017, extended, and log-format §6: a declaration may call date_bucket (a derived field, a view's where, an object set's filter); the event that first declares such a call is written in format version 3, as is every event after it, and a derived bucket answers finds by it
 
+**durations**
+
+- `a_duration_divided_by_a_unit_is_a_number` — 017, extended: a duration divided by a duration is an exact number, a duration times or divided by a number is a duration, and floor(n) is the whole number below; so (paid_on - due_on) / 1d answers the days between two instants as a group key, in a where and in a derived number field, the same on every engine; log format §6: the declaration that calls floor is written in format version 11, as is every event after it
+- `a_derived_field_its_expression_can_never_fill_is_refused` — 028, extended: a derived field whose expression is certainly of a kind its field never holds is refused as invalid on that field by declare, add_field and a migration, naming both kinds, and nothing is appended; a text into a number field and an expression whose kind depends on the record are taken
+- `what_can_never_be_evaluated_is_refused_and_a_records_own_failure_is_not` — 028, extended: an operation between two kinds that has no meaning is refused as invalid in a find's where and group key and a pattern's where, and in a trigger's when, an object set's where and a verb's requires and value, naming the operation; a reader kept from a field it names is answered as for a field the type lacks; an evaluation that fails for one record's value refuses nothing: that record does not match, and its key is null
+
 **derived relations**
 
 - `a_walk_over_a_derived_relation_finds_exactly_the_matching_records_both_ways` — 044: a pattern step over a derived relation reaches exactly the records whose matched fields hold the same value, out and in, over one pair and over two, at the head and as_of an earlier position; `'010'` does not match `'10'`

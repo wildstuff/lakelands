@@ -54,3 +54,29 @@ call is written in version 3, and so is every event after it
 any other field.
 A new function is still a contract change. Where it may stand is part of
 that contract, and a function that only reads moves no log format.
+
+## Extended: arithmetic on durations (lakelands#549)
+
+The difference of two instants was a duration, and nothing could be done
+with one but add it to an instant. A host that asked for the days between
+two instants found no spelling that answered: `(today() - due_on) / 1d`
+failed for every record, which a read showed as no match and a null key,
+and a derived field as a field never filled.
+
+The grammar stays as it is, and three operations get a meaning:
+
+| operation | answer |
+|---|---|
+| a duration `/` a duration | a number, exact: how many of the one the other holds |
+| a duration `/` a number, a duration `*` a number, a number `*` a duration | a duration, to the microsecond |
+
+So the days between two instants are `(paid_on - due_on) / 1d`, the
+hours `/ 1h`, the weeks `/ 7d`: one spelling for every unit, and no
+function a unit. One function is added, `floor(n)`, the greatest whole
+number not above `n`: the whole days that have passed are
+`floor((now() - due_on) / 1d)`, where `round` would count a day from its
+noon on.
+
+`now()` and `today()` are the fold's clock in a derived field, the
+`known_at` of the event folded: a derived "days overdue" is as of the
+record's last write. A read that computes it asks as of the read.

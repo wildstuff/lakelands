@@ -1861,13 +1861,14 @@ impl Call<'_> {
         // A type its author is not shown is a type that is not declared,
         // for whatever names it; to declare it is not granted, and names
         // nothing of it.
-        let hidden = |d: &Declaration| {
-            matches!(d, Declaration::Type(t)
-            if o.types.contains_key(&t.name) && self.shown_type(o, &t.name).is_err())
-        };
+        // The lake's declarations are listed once, and each type is judged
+        // against the list.
+        let declared = o.declared();
+        let shown = |ty: &TypeName| describe::one_type(ty, &declared, self.who).is_some();
+        let hidden = |d: &Declaration| matches!(d, Declaration::Type(t) if o.types.contains_key(&t.name) && !shown(&t.name));
         granted(!sent.iter().any(hidden))?;
         let mut seen = o.clone();
-        (seen.types).retain(|name, _| self.shown_type(o, name).is_ok());
+        (seen.types).retain(|name, _| shown(name));
         for e in seen.types.values_mut() {
             rights::known_fields(self.who, &mut e.decl);
         }
@@ -1948,8 +1949,9 @@ impl Call<'_> {
     /// misfit are shown where it is shown the type and reads the field. The
     /// totals and the id, which names the whole report, stay.
     pub fn shown_value_type(&self, o: &Ontology, mut report: ValueTypeReport) -> ValueTypeReport {
+        // A caller that reads a field is shown its type.
         let read = |ty: &TypeName, field: &FieldName| {
-            let Ok(t) = self.shown_type(o, ty) else {
+            let Ok(t) = o.ty(ty) else {
                 return false;
             };
             let f = t.fields.iter().find(|f| &f.name == field);

@@ -105,6 +105,7 @@ macro_rules! door_checks {
             a_view_reads_only_what_its_source_has,
             a_migration_keeps_what_a_view_reads,
             a_declaration_reads_only_what_its_type_has,
+            a_duration_by_a_unit_is_a_number_and_what_never_lands_is_refused,
             a_migration_keeps_what_a_declaration_reads,
             a_view_is_never_migrated,
             nothing_that_never_acts_is_declared_on_a_view,
@@ -2258,6 +2259,65 @@ pub async fn a_declaration_reads_only_what_its_type_has(store: Arc<dyn LakeStore
         .declare(owner, serde_json::from_value(fine).expect("a declaration"))
         .await
         .expect("the call's payload and a setting are no fields of the type");
+}
+
+/// The days between two instants are their difference divided by a unit
+/// (`docs/decisions/017-one-expression-grammar.md`, extended): a `where`
+/// compares `(to - from) / 1d` with a number, and a derived number field
+/// may be `floor` of it. A derived number field that is the duration
+/// itself would never be filled, and is refused on the field; a `where`
+/// adding a number to a duration can never be evaluated, and is refused
+/// as invalid. On the mock as on the store; what the field then holds is
+/// the suite's to say, the mock computes no derived field.
+pub async fn a_duration_by_a_unit_is_a_number_and_what_never_lands_is_refused(
+    store: Arc<dyn LakeStore>,
+) {
+    let f = setup(store).await;
+    let (c, owner, term) = (&f.catalog, &f.cast.owner, ty("term"));
+    let declared = |days: &str| {
+        let when = |name: &str| json!({"name": name, "type": {"kind": "date_time"}});
+        let days = json!({"name": "days", "type": {"kind": "number"}, "authority": "derived",
+                          "derived": days});
+        let t =
+            json!({"declare": "type", "name": "term", "fields": [when("from"), when("to"), days]});
+        serde_json::from_value::<Declaration>(t).expect("a declaration")
+    };
+    let head = f.head().await;
+    let e = c.declare(owner, declared("to - from")).await;
+    let e = e.expect_err("a duration never lands in a number field");
+    assert!(
+        matches!(refusal(&e), (Some(n), Refusal::Invalid { message })
+            if n.as_str() == "days" && message.contains("a duration") && message.contains("never holds")),
+        "{e:?}"
+    );
+    assert_eq!(f.head().await, head, "nothing is appended");
+    c.declare(owner, declared("floor((to - from) / 1d)"))
+        .await
+        .expect("a duration divided by a unit is a number");
+    let span = [
+        ("from", json!("2026-08-01T00:00:00Z")),
+        ("to", json!("2026-08-03T12:00:00Z")),
+    ];
+    c.upsert(owner, &term, &key("t1"), patch(&span), WriteOpts::default())
+        .await
+        .expect("the write applies");
+    let asked = |filter: &str| Find {
+        filter: Some(filter.into()),
+        ..Find::default()
+    };
+    for (filter, want) in [("(to - from) / 1d > 2", 1), ("(to - from) / 1d > 3", 0)] {
+        let found = c.find(owner, &term, asked(filter)).await;
+        let Found::Records { rows, .. } = found.expect("the find answers").data else {
+            panic!("`{filter}` answers records");
+        };
+        assert_eq!(rows.len(), want, "`{filter}`");
+    }
+    let e = c.find(owner, &term, asked("(to - from) + 1 > 0")).await;
+    let e = e.expect_err("a duration plus a number has no meaning");
+    assert!(
+        invalid_naming(&e, &["has no meaning", "a duration and a number"]),
+        "{e:?}"
+    );
 }
 
 /// A declaration in force reads its type's shape after a migration as

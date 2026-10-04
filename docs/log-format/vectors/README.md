@@ -22,6 +22,9 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
+- `v11.json`: version 11's additions after `v10.json`'s position 22, one
+  line each: a `declared` type whose derived field calls `floor`; and
+  `negatives`, each line written as version 10, which a reader refuses.
 - `v10.json`: two events after `v9.json`'s position 20: a `declared`
   value type `slip_state`, still version 9, and a version-10
   `write_proposed` whose write is `migrate_value_type`, the value type
@@ -82,7 +85,7 @@ Two implementations check them, sharing no code:
 only `<dir>/log/` and checks every line is canonical, the positions run
 from 0 and name their files in 20 digits, the hash chain, every
 checkpoint against the position, the hash and the files before it, and
-that format versions are 1 to 10 and never go down; it prints the last position and hash, or the position where the
+that format versions are 1 to 11 and never go down; it prints the last position and hash, or the position where the
 files stop being the log. `crates/lakelands-store/tests/export.rs` runs
 it in CI over an export with a checkpoint and a re-key, and over the
 same export damaged, and `crates/lakelands-engine-sqlite/tests/lake_directory.rs`
