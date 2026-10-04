@@ -117,6 +117,9 @@ impl Catalog for DownCatalog {
     ) -> Reply<Vec<Proposal>>);
     refuse!(declare<'life1>(who: &'life1 Principal, declaration: Declaration) -> Outcome);
     refuse!(apply<'life1>(who: &'life1 Principal, declarations: Vec<Declaration>) -> Outcome);
+    refuse!(recompute<'life1>(
+        who: &'life1 Principal, what: lakelands_api::write::Recompute
+    ) -> Outcome);
     refuse!(add_field<'life1, 'life2>(
         who: &'life1 Principal, ty: &'life2 TypeName, field: FieldDecl
     ) -> Outcome);

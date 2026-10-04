@@ -370,6 +370,18 @@ A host that already has a store of its own moves in four steps.
   the inputs `describe` shows or without them. A declaration's version
   counts its changes. See
   `docs/decisions/027-shape-changes-are-declared-or-migrated.md`.
+- **`recompute` is how a host computes again.** It names a function, or
+  a type with an embedding or a field of a function with a backing, and
+  does three things a declaration in force no longer does: it calls
+  again for a recorded failure, makes a field that waited for its
+  backend, and computes a function's fields with the settings and the
+  time of the call. It appends one `declared` and holds the writer for a
+  walk of the type, as a recomputation does (below). A derived expression
+  of a type that reads a setting or the clock is not its business: such
+  a field is as of its record's last write, and a write of the record
+  brings it up to date. From a shell: `lakelands recompute --function
+  <name>` or `--type <name>`. See
+  `docs/decisions/022-functions-are-declarations.md`.
 - **A write that changes nothing is still a write.** An upsert of the
   values a record already holds appends an event and raises the version:
   it says who vouches for the values and when, a trigger reacts to it,

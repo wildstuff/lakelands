@@ -98,12 +98,12 @@ with the lake beside it.
 - a type is declared again with other functions on its fields: that
   type's live records;
 - a type whose fields are computed outside the lake is declared again,
-  whatever of it changed: that type's live records (see "a redeclaration
-  retries a recorded failure" below).
+  whatever of it changed: that type's live records.
 
-"Declared again" is a `declared` event in the log. A declaration that is
-the one in force appends none (027, extended, lakelands#565), so it makes
-nothing due.
+"Declared again" is a `declared` event in the log: a declaration that
+differs from the one in force, or the one in force appended again by
+`recompute` (below). A declaration that is the one in force appends none
+(027, extended), so it makes nothing due.
 
 A due field whose call already has an output recorded in the lake is
 filled from it in the same event, and nothing is called. Otherwise the
@@ -184,9 +184,9 @@ carries the reason as `error`, with the event's provenance. A read with
 `with_meta` shows that metadata though the field holds no value. A
 failure is an output like any other. The same call is not made again;
 the field is computed again when an input changes, or when the function
-is declared with a different configuration. A declaration is the one
-deliberate exception (see "a redeclaration retries a recorded failure"
-below).
+is declared with a different configuration. `recompute` is the one
+deliberate exception (see "`recompute` computes again, and retries a
+recorded failure" below).
 
 **Why.** A field whose inputs moved on no longer holds the value those
 inputs compute. Clearing it until the output arrives is the only state
@@ -202,18 +202,39 @@ for the calls that append made due. It is not a way to retry: a host
 that wants a failed call made again changes the function's
 configuration or the inputs, and the log shows it did.
 
-## Extended: a redeclaration retries a recorded failure
+## Extended: `recompute` computes again, and retries a recorded failure
 
 This qualifies "The same call is not made again" and "It is not a way to
-retry" above. A settle forced by a declaration calls again for an input
-whose recorded output is a failure. The declaration is a function
-declared again, or a type whose fields are computed outside the lake,
-declared again whatever of it changed: a label is enough. One that is
-the declaration in force appends nothing and forces no settle (027,
-extended, lakelands#565). A recorded value is still never asked for
-twice: the forced settle reads it back, as any settle does. So an
-operator who wants a failed call made again declares the function or
-the type again with a change, and the log shows it did.
+retry" above. A settle forced by a `declared` event calls again for an
+input whose recorded output is a failure, and a recorded value is still
+never asked for twice: the forced settle reads it back, as any settle
+does.
+
+Until lakelands#565 an operator forced that settle by declaring the
+function or the type again, unchanged. A declaration in force now appends
+nothing (027, extended), because a host states its declarations at every
+start and each of them walked the type. So the act has a door of its
+own, `recompute`, under the `schema` grant:
+
+- **It names a function, whatever its backing, or a type with a field
+  computed outside the lake** (an embedding, or a field of a function
+  with a backing). Anything else is refused and nothing is appended: a
+  name no function or type has, and a type its caller is not shown, as
+  not found; a view, and a type whose fields are all computed inside the
+  lake, as invalid, saying that a derived field is as of its record's
+  last write.
+- **It appends the declaration in force again,** as it was declared, at
+  its next version, written by the caller. The fold does at that event
+  what it does at any `declared`: a function's fields are computed with
+  the settings and the time of that event, a call whose recorded output
+  is a failure is made again, a field that waits for its backend is
+  made. No event kind of its own, and the log's format does not move: a
+  log written before holds such events and folds the same.
+- **It is not proposed and takes no idempotency key.** Called twice it
+  appends twice; the second changes no record.
+- **Its caller is told nothing by it:** the answer is a position, and of
+  a type it is shown without every field it is described what it was
+  described before.
 
 The log may then hold two outputs for one `seam` + `input`, the failure
 and the later answer. The later one holds: the fold, and an engine's
@@ -226,10 +247,10 @@ lake did.
 **Why.** A failure is often weather: a timeout, a refused connection, a
 limit reached during a backfill. When the digest carries nothing the
 operator can change, as with an embedding, whose input is the text
-alone, a failure recorded for good would stay for good. A redeclaration
-is a deliberate, visible act in the log, so a retry made through it
-keeps the promise the rule protects: nothing is called twice behind
-anyone's back, and the log says why a second call was made.
+alone, a failure recorded for good would stay for good. The door is a
+deliberate, visible act in the log, so a retry made through it keeps the
+promise the rule protects: nothing is called twice behind anyone's back,
+and the log says why a second call was made.
 
 ## Extended: an embedding is a computed field's declaration
 
@@ -245,8 +266,8 @@ field computed by a backed function, and follows every rule above:
   as `output_recorded` under the seam `embed:<model>`, keyed by the
   digest of `{"texts": [text]}`. So one text is embedded once per model
   in a lake, whichever record or field asks.
-- A failure is recorded and clears the field with its reason; a
-  redeclaration that differs from the one in force retries it.
+- A failure is recorded and clears the field with its reason;
+  `recompute` retries it.
 
 `embed` is not shape (007). Which fields feed a vector, and which model
 makes it, say how the value is computed, not what the field is. So a

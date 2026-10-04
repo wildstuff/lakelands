@@ -581,6 +581,17 @@ fn refusal(
     }
 }
 
+/// What `recompute` names: the declaration in force whose fields the lake
+/// computes again (`docs/decisions/022-functions-are-declarations.md`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Recompute {
+    /// A function, whatever its backing: every type that names it.
+    Function(String),
+    /// A type with a field computed outside the lake.
+    Type(TypeName),
+}
+
 /// A function: a named computation a [`FunctionBacking`](crate::seam::FunctionBacking)
 /// performs. The backing kind is an open token; `expr` is evaluated in the
 /// store from `expr`, any other kind is called through its seam and its

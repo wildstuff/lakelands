@@ -28,6 +28,7 @@ fn intent(e: &Error) -> &'static str {
             Missing::Type { .. } => "no such type at the position read",
             Missing::Record { .. } => "no such record at the position read",
             Missing::Verb { .. } => "no such verb",
+            Missing::Function { .. } => "no such function",
             Missing::Proposal { .. } => "no such proposal",
         },
         Error::Conflict { .. } => "the record moved: retry against its version",

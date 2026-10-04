@@ -189,6 +189,12 @@ fn command() -> Command {
                 .arg(Arg::new("bundle").value_name("DIR").required(true).help("The bundle's directory")),
         )
         .subcommand(
+            Command::new("recompute")
+                .about("Compute again what a function or a type in force computes: retry a failed call, make a field that waits")
+                .arg(Arg::new("function").long("function").value_name("NAME").conflicts_with("type").help("A function: every type that names it"))
+                .arg(Arg::new("type").long("type").value_name("NAME").help("A type with a field computed outside the lake")),
+        )
+        .subcommand(
             Command::new("ingest")
                 .about("Feed the lake records from a source")
                 .arg(Arg::new("file").value_name("FILE").required(true).help("One JSON record per line, or CSV with --map"))
@@ -399,6 +405,10 @@ async fn dispatch(
                 Path::new(&text(sub, "bundle").unwrap_or_default()),
             )
             .await
+        }
+        "recompute" => {
+            let (function, ty) = (text(sub, "function"), text(sub, "type"));
+            commands::recompute(out, catalog.as_ref(), &who, function, ty).await
         }
         "ingest" => {
             let map = text(sub, "map").map(PathBuf::from);

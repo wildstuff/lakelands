@@ -303,6 +303,13 @@ impl Catalog for Doors {
     async fn add_field(&self, who: &Principal, ty: &TypeName, field: FieldDecl) -> Result<Outcome> {
         self.inner.add_field(who, ty, field).await
     }
+    async fn recompute(
+        &self,
+        who: &Principal,
+        what: lakelands_api::write::Recompute,
+    ) -> Result<Outcome> {
+        self.inner.recompute(who, what).await
+    }
     async fn migrate(
         &self,
         who: &Principal,

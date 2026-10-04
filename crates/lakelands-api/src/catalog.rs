@@ -25,7 +25,7 @@ use crate::record::{Patch, Record, SourceRecord};
 use crate::seam::ChangeFeed;
 use crate::write::{
     Committed, Declaration, Migration, MigrationReport, Outcome, Proposal, ProposalFilter,
-    ProposedWrite, ValueTypeReport, WriteOpts,
+    ProposedWrite, Recompute, ValueTypeReport, WriteOpts,
 };
 
 /// A stream of records from one source, as `ingest` takes it.
@@ -189,6 +189,15 @@ pub trait Catalog: Send + Sync {
     /// which all of it is in force. What is in force before the set is not
     /// appended again; a set wholly in force is answered at the head.
     async fn apply(&self, who: &Principal, declarations: Vec<Declaration>) -> Result<Outcome>;
+
+    /// Compute again what a declaration in force computes: it is appended
+    /// again as it stands, at its next version, and the fold does what it
+    /// does at any `declared`: a function's fields are computed with the
+    /// settings and the time of that event, a call whose recorded output is
+    /// a failure is made again, a field that waits for its backend is made.
+    /// A deliberate act the log shows; an identical `declare` does none of
+    /// it (`docs/decisions/022-functions-are-declarations.md`).
+    async fn recompute(&self, who: &Principal, what: Recompute) -> Result<Outcome>;
 
     /// Add one field to a type.
     async fn add_field(&self, who: &Principal, ty: &TypeName, field: FieldDecl) -> Result<Outcome>;

@@ -262,6 +262,10 @@ pub(crate) async fn run(
             let d: D = declaring(label, &a)?;
             to_json(&c.apply(who, d.declarations).await?)
         }
+        Door::Recompute => {
+            let what: lakelands_api::write::Recompute = declaring(label, &a)?;
+            to_json(&c.recompute(who, what).await?)
+        }
         Door::AddField => {
             #[derive(Deserialize)]
             struct D {

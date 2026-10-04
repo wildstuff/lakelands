@@ -117,6 +117,8 @@ pub enum Door {
     Apply,
     /// `add_field`.
     AddField,
+    /// `recompute`.
+    Recompute,
     /// `migrate`: the preflight, or with a `report_id` argument the
     /// `migrate_apply` door.
     Migrate,
@@ -149,6 +151,7 @@ const ACCEPT: &str = "accept";
 const REJECT: &str = "reject";
 const DECLARE_TYPE: &str = "declare_type";
 const ADD_FIELD: &str = "add_field";
+const RECOMPUTE: &str = "recompute";
 const MIGRATE: &str = "migrate";
 
 /// The kinds of change a session may subscribe to: the log's event kinds
@@ -164,7 +167,7 @@ pub const CHANGE_KINDS: [&str; 6] = [
 
 /// The names of the generic tools, which no type or verb may produce.
 /// The generator emits these constants and no other generic name.
-pub const GENERIC_TOOLS: [&str; 13] = [
+pub const GENERIC_TOOLS: [&str; 14] = [
     DESCRIBE,
     PIN,
     SUBSCRIBE,
@@ -177,6 +180,7 @@ pub const GENERIC_TOOLS: [&str; 13] = [
     REJECT,
     DECLARE_TYPE,
     ADD_FIELD,
+    RECOMPUTE,
     MIGRATE,
 ];
 
@@ -1191,6 +1195,19 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             ),
             output_schema: outcome_schema(),
             door: Door::AddField,
+        });
+        out.push(ToolSpec {
+            name: RECOMPUTE.into(),
+            description: "Compute again what a declaration in force computes: name a `function`, or a `type` with a field computed outside the lake. Retries a failed call and makes a field that waits.".into(),
+            input_schema: obj(
+                props([
+                    ("function", json!({"type": "string"})),
+                    ("type", names(|_| true)),
+                ]),
+                &[],
+            ),
+            output_schema: outcome_schema(),
+            door: Door::Recompute,
         });
         out.push(ToolSpec {
             name: MIGRATE.into(),

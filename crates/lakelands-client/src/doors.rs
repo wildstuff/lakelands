@@ -30,7 +30,7 @@ use lakelands_api::read::{Find, Found, Get, ReadAt, Reply};
 use lakelands_api::record::{Patch, Record};
 use lakelands_api::write::{
     Committed, Declaration, Migration, MigrationReport, Outcome, Proposal, ProposalFilter,
-    ProposedWrite, ValueTypeReport, WriteOpts,
+    ProposedWrite, Recompute, ValueTypeReport, WriteOpts,
 };
 use serde_json::{Value, json};
 
@@ -286,6 +286,11 @@ impl Catalog for RemoteCatalog {
     async fn apply(&self, who: &Principal, declarations: Vec<Declaration>) -> Result<Outcome> {
         let call = Call::new(Method::POST, "schema/apply".into())
             .json(&json!({ "declarations": declarations }));
+        self.go(who, call).await
+    }
+
+    async fn recompute(&self, who: &Principal, what: Recompute) -> Result<Outcome> {
+        let call = Call::new(Method::POST, "schema/recompute".into()).json(&json!(what));
         self.go(who, call).await
     }
 

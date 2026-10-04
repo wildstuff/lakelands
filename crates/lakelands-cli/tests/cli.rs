@@ -366,6 +366,37 @@ fn apply_applies_a_bundle_as_one_set_at_one_position() {
 }
 
 #[test]
+fn recompute_names_a_function_or_a_type_and_says_where_it_holds() {
+    for backend in BACKENDS {
+        let sh = Shell::on("recompute", backend);
+        sh.lake();
+        let rated = sh.bundle(
+            "rated",
+            &[("functions/twice.yaml", "name: twice\nexpr: \"1\"\n")],
+        );
+        let applied = sh.run(&["apply", &rated]);
+        assert_eq!((applied.code, applied.err.as_str()), (0, ""));
+        let done = sh.run(&["recompute", "--function", "twice"]);
+        assert_eq!((done.code, done.err.as_str()), (0, ""), "{}", done.out);
+        assert!(
+            done.out
+                .starts_with("computed function `twice` again, from position "),
+            "{}",
+            done.out
+        );
+        // What it cannot name is refused, saying why; neither name is one.
+        for (args, names) in [
+            (&["recompute", "--function", "ghost"][..], "ghost"),
+            (&["recompute"][..], "--function"),
+        ] {
+            let s = sh.run(args);
+            assert_eq!((s.code, s.out.as_str()), (1, ""), "{}", s.err);
+            assert!(s.err.contains(names), "{}", s.err);
+        }
+    }
+}
+
+#[test]
 fn apply_refuses_a_broken_bundle_whole_naming_every_problem() {
     for backend in BACKENDS {
         let sh = Shell::on("apply-broken", backend);

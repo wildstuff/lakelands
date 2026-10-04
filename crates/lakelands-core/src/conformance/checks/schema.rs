@@ -10,7 +10,7 @@ use std::sync::Arc;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{FieldDecl, FieldType, StorageKind, TypeDecl};
 use lakelands_api::tools::{Door, GENERIC_TOOLS, tools};
-use lakelands_api::write::{Declaration, Outcome, ProposedWrite};
+use lakelands_api::write::{Declaration, Outcome, ProposedWrite, Recompute};
 use lakelands_api::{Error, Grants, LakeStore, PrincipalKind, ReadAt, Refusal, TypeName};
 use serde_json::{Value, json};
 
@@ -18,7 +18,7 @@ use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, computed_by, dec, decimal, events_after, field, head_unmoved, is_invalid,
     migration, object_set_on, principal, reason, refused_unmoved, reviewer, trigger_on, type_decl,
-    value, value_type, write_verb,
+    value, value_type, view_of, write_verb,
 };
 
 check!(
@@ -433,6 +433,117 @@ async fn a_migration_to_what_is_in_force_appends_nothing(
          alone; the log holds {written:?}"
     );
     Ok(())
+}
+
+check!(
+    /// The door computes again what a declaration in force computes.
+    RECOMPUTED = the_door_computes_again_what_a_declaration_in_force_computes,
+    "022, extended (lakelands#565): `recompute` appends the declaration in force again as it was declared, at its next version; a function that reads a setting is computed again with the setting as it stands, where declaring it again changes nothing; called again it changes no record and still appends; without the `schema` grant it is not granted before the name is looked at, a name no function or type has and a type its caller is not shown are not found, a view and a type with no field computed outside the lake are invalid, and nothing is appended"
+);
+
+async fn the_door_computes_again_what_a_declaration_in_force_computes(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let rated: Declaration = serde_json::from_value(json!({"declare": "function", "name": "rated",
+        "backing": "expr", "inputs": [{"name": "net", "type": {"kind": "decimal"}}],
+        "expr": "net * setting('rate')"}))
+    .expect("the check's function reads");
+    l.set("rate", json!("2")).await?;
+    l.declare_as(rated.clone(), "declaring `rated`").await?;
+    let gross = computed_by("gross", StorageKind::Decimal, "rated", &[]);
+    l.declare(type_decl(
+        "bill",
+        vec![field("net", StorageKind::Decimal), gross],
+    ))
+    .await?;
+    let n = vec![field("n", StorageKind::Number)];
+    l.declare(view_of("bills", "bill", &[], n, &[("n", "count()")]))
+        .await?;
+    l.upsert("bill", "b", json!({"net": "3"})).await?;
+    l.set("rate", json!("5")).await?;
+    l.declare_as(rated.clone(), "declaring `rated` again")
+        .await?;
+    let before = store.head().await.must("reading the head")?;
+    let mut read = Vec::new();
+    for _ in 0..3 {
+        read.push(decimal(value(&l.read("bill", "b").await?, "gross")));
+        let what = Recompute::Function("rated".into());
+        l.cat.recompute(&l.own, what).await.must("the door")?;
+    }
+    let written = events_after(store.as_ref(), before).await?;
+    let as_declared = |(e, v): (&lakelands_api::event::Event, u32)| {
+        matches!(&e.body, EventBody::Declared { declaration, version, .. }
+            if *declaration == rated && *version == v)
+    };
+    ensure!(
+        read == [dec("6"), dec("15"), dec("15")].map(Some)
+            && written.len() == 3
+            && written.iter().zip(2..).all(as_declared),
+        "`gross` is 6 while `rated` is only declared again, and 15 once the door computed it \
+         with the setting as it stands; each call appends `rated` as it was declared, at \
+         versions 2 to 4; it read {read:?} and the log holds {written:?}"
+    );
+    // The refusals, in their order; nothing is appended.
+    let before = store.head().await.must("reading the head")?;
+    let (unschooled, blind) = (
+        reviewer(store.as_ref(), false),
+        principal(
+            store.as_ref(),
+            PrincipalKind::Agent,
+            "blind",
+            Grants {
+                schema: true,
+                ..Grants::default()
+            },
+        ),
+    );
+    let (function, ty) = (
+        |n: &str| Recompute::Function(n.into()),
+        |n: &str| Recompute::Type(n.into()),
+    );
+    let mut red = Vec::new();
+    for (what, who, named, want) in [
+        (
+            "without the `schema` grant",
+            &unschooled,
+            function("none"),
+            "not granted",
+        ),
+        (
+            "a name no function has",
+            &l.own,
+            function("none"),
+            "not found",
+        ),
+        ("a name no type has", &l.own, ty("none"), "not found"),
+        (
+            "a type its caller is not shown",
+            &blind,
+            ty("bill"),
+            "not found",
+        ),
+        (
+            "a type computed inside the lake",
+            &l.own,
+            ty("bill"),
+            "invalid",
+        ),
+        ("a view", &l.own, ty("bills"), "invalid"),
+    ] {
+        let got = l.cat.recompute(who, named).await;
+        let is = match &got {
+            Err(Error::NotFound { .. }) => "not found",
+            _ if matches!(reason(&got), Some(Refusal::NotGranted)) => "not granted",
+            _ if is_invalid(&got) => "invalid",
+            _ => "something else",
+        };
+        if is != want {
+            red.push(format!("{what} must be {want} and answered {got:?}"));
+        }
+    }
+    ensure!(red.is_empty(), "the door's refusals: {}", red.join("; "));
+    head_unmoved(store.as_ref(), before, "the door").await
 }
 
 async fn add_field_without_the_schema_grant_is_refused_before_it_looks_at_the_type(

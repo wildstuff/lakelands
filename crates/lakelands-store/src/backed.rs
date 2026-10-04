@@ -138,6 +138,14 @@ pub fn is_backed(f: &FunctionDecl) -> bool {
     f.backing != EXPR
 }
 
+/// Whether a type has a field computed outside the lake: an embedding, or
+/// a field computed by a function with a backing. Such a type is settled
+/// again at every `declared` of it (022, extended).
+pub fn computed_outside(o: &crate::ontology::Ontology, t: &TypeDecl) -> bool {
+    let backed = |n: &str| o.functions.get(n).is_some_and(|f| is_backed(&f.decl));
+    (t.fields.iter()).any(|f| f.embed.is_some() || f.function.as_deref().is_some_and(backed))
+}
+
 /// The seam a function's outputs are recorded under.
 pub fn seam(f: &FunctionDecl) -> String {
     format!("function:{}:{}", f.backing, f.name)
