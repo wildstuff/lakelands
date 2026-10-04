@@ -225,3 +225,75 @@ Why not follow the expression where rights are asked: a field's access
 is asked for every field of every record a read answers, a function's
 inputs are on another declaration, and the list `declare` checks and
 `describe` shows would then say less than the rule that reads it.
+
+## Extended: a declaration reads only what its author may read, and a reaction is named to one who reads its condition (lakelands#538)
+
+A principal with the `schema` grant that was kept from a field could
+still read it, record by record. It declared an object set or a trigger
+whose condition named the field, and the answer of a write named the
+set a record joined and the trigger that fired. It needed no declaration
+of its own where another's condition read the field: `describe` shows
+one who holds `schema` every definition, and a write's answer named
+every reaction `describe` lists to its caller. The same declaration also
+told whether a name was a field's: one over a field the type has was
+taken, one over a name it has not was refused.
+
+Two rules close it.
+
+**A declaration reads only what its author may read.** Where a
+declaration is its author's, at `declare`, `apply`, `add_field`, a
+migration and a proposal of either:
+
+- **A field its author may not know of answers as one the type does not
+  have.** The set is checked, as sent, against the ontology as its
+  author is shown it, by the checks every declaration passes. So the
+  answer is the one a name the type never had gets, word for word, and
+  it holds for whatever reads a field: a set's `where`, a trigger's
+  `when`, a verb's `requires`, what a verb sets a field from and the
+  field it sets, a derived field, a field computed by a function, what
+  an embedding is made from, a view's `where`, grouping and measures,
+  and the pairs a derived relation matches. A reader added later is held
+  with them, since it is the existing check that refuses.
+- **A field its author knows of and may not read is refused as not
+  granted on it**, wherever the declaration reads its value. A verb may
+  still set such a field: a call is held to its caller's right to write
+  each field the verb sets, so the declaration grants nothing.
+- **What a type's shape names stands as declared.** A key field, a
+  valid time and a relation's `via` are named by the shape, not read by
+  it. An author who may not know of such a field still names it, or
+  sends the relation `describe` shows it, and declares its type again or
+  migrates it as before: the reads are held to its view, the shape is
+  not.
+- **Only what its author adds or changes is its author's.** A type that
+  holds another's derived field over a field its author sees masked is
+  declared again as it stands; a field of the author's own over the same
+  field is refused.
+- **`add_field` adds to its author's view of the type.** It built the
+  new shape from the whole type before, so a field derived from a hidden
+  one went in through it, and an author kept from any field could add
+  none.
+
+**Not at the accept.** An accepter did not write the declaration, and a
+refusal there would name a field to one who may not know of it. The
+author is held at the proposal; a proposal made before a lake ran this
+is accepted as it was proposed.
+
+**A write's answer names a reaction to one who reads what its condition
+reads.** `fired`, `joined` and `left` name a trigger or an object set
+only where the one answered is listed it by `describe` and reads every
+field its condition names. Being shown a definition is not reading what
+it reads. So a condition another principal declared, or one in force
+from before, tells its reader nothing by name.
+
+**What stays.** A principal with `schema` is shown every definition, and
+a write answers `through`, the position its consequences reach. One who
+is shown a condition and sees that a write reached further than itself
+can infer that the condition held, where nothing else explains it. The
+lake no longer answers a name or a value; it cannot hide that something
+reacted from one who must read its own write's consequences. So `schema`
+is not handed to a principal that is kept from a field or a type
+(`docs/hosting.md`).
+
+A declaration in force that reads a field its declarer may not read
+stays in force. It is held when it is declared again, and until then the
+second rule covers what it tells.

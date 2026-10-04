@@ -761,6 +761,17 @@ pub fn reads_its_type(o: &Ontology, d: &Declaration) -> Result<()> {
     Ok(())
 }
 
+/// Passes the refusal of a reshaping declaration, which a migration is.
+pub(crate) fn unless_a_migration(e: Error) -> Result<()> {
+    match &e {
+        Error::Refused {
+            reason: Refusal::Invalid { message },
+            ..
+        } if message.contains("that is a migration") => Ok(()),
+        _ => Err(e),
+    }
+}
+
 /// Check one declaration against the ontology it would join. `who_is_system`
 /// is true only for the store's own declarations.
 pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> Result<()> {

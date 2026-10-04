@@ -293,6 +293,16 @@ A host that already has a store of its own moves in four steps.
   host-side check is never a substitute and never needed. See
   `docs/decisions/010-provenance-per-field.md` and
   `docs/decisions/012-writes-touch-only-their-fields.md`.
+- **`schema` is for a principal that reads everything it may declare
+  over.** A principal with `schema` is shown every definition, and a
+  write answers `through`, the position its consequences reach. The lake
+  refuses a declaration that reads a field its author may not read, and
+  names a trigger or an object set in a write's answer only to one who
+  reads what its condition reads; it cannot hide from such a principal
+  that something reacted to its own write. So a host does not hand
+  `schema` to a principal it keeps from a field or a type. See
+  `docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+  extended.
 - **One writer per lake.** A lake has one writing process at a time,
   held by a lease; one process may write many lakes. See
   `docs/decisions/008-one-writer-per-lake.md`.

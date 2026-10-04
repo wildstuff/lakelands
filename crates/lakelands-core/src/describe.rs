@@ -214,25 +214,43 @@ pub fn view_reads(v: &ViewDecl) -> Option<Vec<(TypeName, std::collections::BTree
         .collect()
 }
 
-/// The fields of `ty` a declaration other than a view reads: a derived
-/// field's expression on `ty` itself, the fields of `ty` a derived
-/// relation matches as its target, a set's `where`, a trigger's `when`,
-/// and a verb's `requires`, the fields it sets and what it sets them from
-/// (where `payload.<name>` is the call's and reads no field). A condition
-/// that does not parse reads nothing here.
+/// The fields of `ty` a declaration reads: what it probes
+/// ([`declaration_probes`]) and the fields a verb sets.
 pub fn declaration_reads(d: &Declaration, ty: &TypeName) -> std::collections::BTreeSet<FieldName> {
+    let mut names = declaration_probes(d, ty);
+    if let Declaration::Verb(v) = d
+        && let VerbEffect::Write { set } = &v.effect
+        && &v.on == ty
+    {
+        names.extend(set.iter().map(|a| a.field.clone()));
+    }
+    names
+}
+
+/// The fields of `ty` whose values a declaration reads: a derived field's
+/// expression on `ty` itself, the fields a derived relation matches, its
+/// own and those of `ty` as its target, what a view reads of `ty` as a
+/// source ([`view_reads`]), a set's `where`, a trigger's `when`, and a
+/// verb's `requires` and what it sets its fields from (where
+/// `payload.<name>` is the call's and reads no field). A condition that
+/// does not parse reads nothing here.
+pub fn declaration_probes(d: &Declaration, ty: &TypeName) -> std::collections::BTreeSet<FieldName> {
     let of = |c: &Condition| named(c).unwrap_or_default();
     match d {
         Declaration::Type(t) => {
             let own = t.fields.iter().filter(|_| &t.name == ty);
-            let matched = t.relations.iter().filter(|r| &r.target == ty);
+            let pairs = |r: &RelationDecl| r.derived.clone().map(|m| m.pairs).unwrap_or_default();
+            let matching = (t.relations.iter().filter(|_| &t.name == ty)).flat_map(pairs);
+            let matched = (t.relations.iter().filter(|r| &r.target == ty)).flat_map(pairs);
+            let view = t
+                .view
+                .iter()
+                .flat_map(|v| view_reads(v).unwrap_or_default());
             own.filter_map(|f| f.derived.as_ref())
                 .flat_map(of)
-                .chain(
-                    matched
-                        .filter_map(|r| r.derived.as_ref())
-                        .flat_map(|m| m.pairs.iter().map(|p| p.to.clone())),
-                )
+                .chain(matching.map(|p| p.from))
+                .chain(matched.map(|p| p.to))
+                .chain(view.filter(|(source, _)| source == ty).flat_map(|v| v.1))
                 .collect()
         }
         Declaration::ObjectSet(s) if &s.of == ty => of(&s.filter),
@@ -243,13 +261,38 @@ pub fn declaration_reads(d: &Declaration, ty: &TypeName) -> std::collections::BT
                 for a in set {
                     let value = parsed(&a.value).map(|e| crate::derive::verb_reads(&e).0);
                     names.extend(value.unwrap_or_default());
-                    names.insert(a.field.clone());
                 }
             }
             names
         }
         _ => Default::default(),
     }
+}
+
+/// Leaves a write's answer the reactions it names to the reader `lake` is
+/// described to (024): the triggers and object sets `describe` lists to
+/// it, and of those only where it reads every field the condition names.
+/// Being shown a definition is not reading what it reads, and naming a
+/// reaction says that its condition held.
+pub fn named_reactions(lake: &LakeDescription, set_off: &mut lakelands_api::write::SetOff) {
+    let reads = |ty: &TypeName, c: Option<&Condition>| {
+        let fields = lake.types.iter().find(|t| &t.name == ty).map(|t| &t.fields);
+        let read = |n: &FieldName| {
+            fields.is_some_and(|f| f.iter().any(|f| &f.name == n && f.access.reads()))
+        };
+        c.is_none_or(|c| named(c).is_some_and(|names| names.iter().all(read)))
+    };
+    let fired = |t: &lakelands_api::TriggerName| {
+        let mut named = lake.triggers.iter().filter(|d| &d.name == t);
+        named.any(|d| reads(&d.on, d.when.as_ref()))
+    };
+    set_off.fired.retain(fired);
+    let listed = |s: &String| {
+        let mut named = lake.object_sets.iter().filter(|d| &d.name == s);
+        named.any(|d| reads(&d.of, Some(&d.filter)))
+    };
+    set_off.joined.retain(listed);
+    set_off.left.retain(listed);
 }
 
 /// The fields a measure reads from its source's records: the paths inside

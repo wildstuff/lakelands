@@ -3175,11 +3175,16 @@ pub async fn a_proposal_shows_its_reader_the_values_it_may_read(store: Arc<dyn L
 }
 
 /// `proposals` names what its reader may know of and says where there is
-/// more: of the clerk's own bundle the trigger on `note`, which it sees
-/// masked, is left out and the entry says `more`; the keeper's proposed
-/// type, which it could not see once declared, is listed without its write
-/// and matches no `kind`; a reviewer who reads both lists each whole
-/// (`docs/decisions/013-verbs-run-by-declared-risk.md`, extended).
+/// more: the keeper's proposed type, which it could not see once declared,
+/// is listed without its write and matches no `kind`; a reviewer who reads
+/// both lists each whole. And a proposal reads only what its proposer may
+/// read: a trigger over `note`, which the clerk sees masked, or over
+/// `secret`, which the keeper writes and never reads, is refused as not
+/// granted on the field, and one over `secret` by the clerk, who may not
+/// know of it, as over a field the type does not have
+/// (`docs/decisions/013-verbs-run-by-declared-risk.md` and
+/// `docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+/// extended).
 pub async fn a_proposal_names_what_its_reader_may_know_and_says_there_is_more(
     store: Arc<dyn LakeStore>,
 ) {
@@ -3193,29 +3198,53 @@ pub async fn a_proposal_names_what_its_reader_may_know_and_says_there_is_more(
     let vault = json!({"declare": "type", "name": "vault",
                        "fields": [{"name": "x", "type": {"kind": "text"}}]});
     let vault = vec![serde_json::from_value(vault).expect("a type")];
-    let both = vec![
-        trigger("noted", "note = 'x'"),
-        trigger("stated", "status = 'x'"),
-    ];
-    for (who, declarations) in [(clerk, both), (keeper, vault)] {
+    let stated = vec![trigger("stated", "status = 'x'")];
+    for (who, declarations) in [(clerk, stated), (keeper, vault)] {
         let bundle = ProposedWrite::Declare { declarations };
         let proposed = c.propose(who, bundle, "a bundle".into()).await;
         proposed.expect("a principal without `schema` proposes a bundle");
     }
+    let refused = |who: &Principal, field: &str| {
+        let declarations = vec![trigger("noted", &format!("{field} = 'x'"))];
+        let (c, who) = (c.clone(), who.clone());
+        let proposed = async move {
+            let bundle = ProposedWrite::Declare { declarations };
+            c.propose(&who, bundle, "a bundle".into()).await
+        };
+        async move {
+            proposed
+                .await
+                .expect_err("a trigger over a field its proposer may not read")
+        }
+    };
+    for (who, field) in [(clerk, "note"), (keeper, "secret")] {
+        let e = refused(who, field).await;
+        assert!(
+            matches!(refusal(&e), (Some(f), Refusal::NotGranted) if f.as_str() == field),
+            "`{}` proposes a trigger over `{field}`, which it knows of and may not read: {e:?}",
+            who.id
+        );
+    }
+    let (hidden, absent) = (refused(clerk, "secret").await, refused(clerk, "nope").await);
+    assert_eq!(
+        hidden.to_string().replace("secret", "nope"),
+        absent.to_string(),
+        "a field its proposer may not know of answers as one the type does not have"
+    );
     // Per reader: the names its listing shows by kind, and each `more`.
     let declared = || ProposalFilter {
         kind: Some(ProposalKind::Declare),
         ..ProposalFilter::default()
     };
     let rows: [(&Principal, _, &[&str], &[bool]); 5] = [
-        (clerk, ProposalFilter::default(), &["stated"], &[true]),
+        (clerk, ProposalFilter::default(), &["stated"], &[false]),
         (keeper, ProposalFilter::default(), &[], &[true]),
         (keeper, declared(), &[], &[]),
-        (clerk, declared(), &["stated"], &[true]),
+        (clerk, declared(), &["stated"], &[false]),
         (
             &f.cast.reviewer,
             declared(),
-            &["vault", "noted", "stated"],
+            &["vault", "stated"],
             &[false, false],
         ),
     ];

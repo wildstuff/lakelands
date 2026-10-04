@@ -1792,8 +1792,85 @@ impl Call<'_> {
         Ok(applied(last.position, None))
     }
 
+    /// A declaration reads only what its author may read (024 and 028,
+    /// extended). The set is checked as sent against the ontology as its
+    /// author is shown it, so a field the author may not know of answers as
+    /// one the type does not have, whatever reads it. Then a field it knows
+    /// of and may not read is refused as not granted, where what its author
+    /// adds or changes reads its value.
+    fn reads_as_author(&self, o: &Ontology, sent: &[Declaration], reshapes: bool) -> Result<()> {
+        let mut seen = o.clone();
+        for e in seen.types.values_mut() {
+            rights::known_fields(self.who, &mut e.decl);
+        }
+        // What a type's shape names stands as declared, known to its author
+        // or not: a key field, a valid time, a relation's `via`. Both sides
+        // hold it, at its declared place.
+        let mut shaped = sent.to_vec();
+        for d in &mut shaped {
+            let Declaration::Type(t) = d else { continue };
+            let Some(e) = seen.types.get_mut(&t.name) else {
+                continue;
+            };
+            let via = t.relations.iter().filter_map(|r| r.via.as_ref());
+            let named = t
+                .key
+                .iter()
+                .chain(&t.valid_from)
+                .chain(&t.valid_to)
+                .chain(via);
+            let named: Vec<FieldName> = named.cloned().collect();
+            let was = o.ty(&t.name)?.fields.iter().enumerate();
+            for (i, f) in was.filter(|(_, f)| named.contains(&f.name)) {
+                for fields in [&mut t.fields, &mut e.decl.fields] {
+                    if !fields.iter().any(|x| x.name == f.name) {
+                        fields.insert(i.min(fields.len()), f.clone());
+                    }
+                }
+            }
+        }
+        // A migration's shape is refused as a declaration; its preflight is next.
+        match self.check_bundle(&seen, &shaped) {
+            Err(e) if reshapes => declare::unless_a_migration(e)?,
+            checked => checked?,
+        }
+        let (before, mut after) = (o.declared(), o.clone());
+        sent.iter().for_each(|d| after.put(d.clone(), 0, None));
+        let key = lakelands_core::engines::declaration_key;
+        for d in sent {
+            // Only what its author adds or changes: of a type, the fields,
+            // the relations and the view that do not stand as they are.
+            let mut was = before.iter().map(|b| &b.declaration);
+            let (was, mut new) = (was.find(|b| key(b) == key(d)), d.clone());
+            match (&mut new, was) {
+                (Declaration::Type(t), Some(Declaration::Type(w))) => {
+                    *t = after.ty(&t.name)?.clone();
+                    t.fields.retain(|f| !w.fields.contains(f));
+                    t.relations.retain(|r| !w.relations.contains(r));
+                    t.view = t.view.take().filter(|v| Some(v) != w.view.as_ref());
+                }
+                (_, Some(w)) if w == d => continue,
+                _ => {}
+            }
+            for t in o.types.values().map(|e| &e.decl) {
+                let mut names = describe::declaration_probes(&new, &t.name);
+                // A function's inputs and what an embedding is made from.
+                if let Declaration::Type(x) = &new
+                    && x.name == t.name
+                {
+                    let read = |f| crate::backed::computed_reads(&after, f);
+                    names.extend(x.fields.iter().filter_map(read).flatten());
+                }
+                let has = |n: &&FieldName| t.fields.iter().any(|f| &f.name == *n);
+                rights::check_probe(self.who, t, names.iter().filter(has))?;
+            }
+        }
+        Ok(())
+    }
+
     /// Reads a migration as its author's view of its type ([`as_author`]).
     fn authored(&self, o: &Ontology, m: &mut Migration) -> Result<()> {
+        self.reads_as_author(o, &[Declaration::Type(m.to.clone())], true)?;
         match o.types.get(&m.to.name) {
             Some(before) => as_author(self.who, &before.decl, &mut m.to, &m.renames),
             None => Ok(()),
@@ -1803,6 +1880,7 @@ impl Call<'_> {
     /// Reads each type of `declarations` that is declared already as its
     /// author's view of it ([`as_author`]).
     fn redeclared(&self, o: &Ontology, declarations: &mut [Declaration]) -> Result<()> {
+        self.reads_as_author(o, declarations, false)?;
         for d in declarations {
             if let Declaration::Type(t) = d
                 && let Some(before) = o.types.get(&t.name)
@@ -1957,6 +2035,8 @@ impl Call<'_> {
         check_context(self.lake, &self.context)?;
         granted(self.who.grants.schema)?;
         let mut t = self.lake.writer().ontology.ty(ty)?.clone();
+        // The field is added to its author's view of the type (027).
+        rights::known_fields(self.who, &mut t);
         if t.fields.iter().any(|f| f.name == field.name) {
             return Err(invalid_field(
                 &field.name,
@@ -2083,15 +2163,8 @@ impl Call<'_> {
         }
         let mut probe = w.ontology.clone();
         probe.put(Declaration::Type(before.clone()), 0, None);
-        declare::check_declaration(&probe, &Declaration::Type(m.to.clone()), false).or_else(
-            |e| match &e {
-                Error::Refused {
-                    reason: Refusal::Invalid { message },
-                    ..
-                } if message.contains("that is a migration") => Ok(()),
-                _ => Err(e),
-            },
-        )?;
+        declare::check_declaration(&probe, &Declaration::Type(m.to.clone()), false)
+            .or_else(declare::unless_a_migration)?;
         // A view over the type, as its source or a merged one, reads the
         // shape the migration leaves: `declare` must still take each such
         // view against it, or the view would refuse every read after.

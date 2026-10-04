@@ -97,6 +97,20 @@ named. A
 declaration already in force is not checked again until it is declared
 again.
 
+## Extended: the fields a declaration reads are those its author is shown (lakelands#538)
+
+"A field its type has" is said for the one who declares. A declaration
+is checked as sent against the ontology as its author is shown it,
+before it is checked against the lake's own, so a field its author may
+not know of is refused as a field the type does not have, by the same
+check and in the same words. What a declaration reads is gathered as
+before, with two additions: what a view reads of a source, and the own
+side of a derived relation's pairs. The fields a verb sets are kept
+apart from what it reads: its author must know of them, not read them.
+The rule and its reasons are in
+`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+extended.
+
 ## Extended: in a verb's value only `payload.<name>` is the call's (lakelands#470)
 
 The rule above left the name `payload` out of what a verb's value
