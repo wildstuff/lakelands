@@ -19,12 +19,12 @@ use lakelands_api::query::{Edge, Walk};
 use lakelands_api::read::{Direction, Order};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter};
-use lakelands_core::engines;
+use lakelands_core::engines::{self, decode};
 use rusqlite::{Connection, ToSql, params};
 
 use crate::handle::SqliteLake;
 use crate::projection::{self, column, decode_record, holds_at, one};
-use crate::{sql, unavailable};
+use crate::sql;
 
 /// A read view of one lake's projection at one position.
 pub(crate) struct SqliteView<'a> {
@@ -41,11 +41,6 @@ struct Read<'c> {
     head: bool,
 }
 
-fn decode<T: serde::de::DeserializeOwned>(state: &str) -> Result<T> {
-    serde_json::from_str(state)
-        .map_err(|e| unavailable(format!("the projection holds a state it cannot read: {e}")))
-}
-
 impl SqliteView<'_> {
     /// Run `f` in one read transaction at the view's position; an empty
     /// projection answers `empty`.
@@ -53,7 +48,7 @@ impl SqliteView<'_> {
         let Some(at) = self.at else {
             return Ok(empty);
         };
-        let conn = self.lake.reader()?;
+        let conn = crate::lock(&self.lake.reader);
         conn.execute_batch("BEGIN").map_err(sql)?;
         let result = projection::folded(&conn).and_then(|folded| {
             f(&Read {
@@ -287,7 +282,7 @@ impl Read<'_> {
             params![format!("verb {verb}"), self.at()],
         )
         .ok()??;
-        match decode::<Declared>(&state).ok()?.declaration {
+        match decode::<Declared>(&state, "a state").ok()?.declaration {
             Declaration::Verb(v) => Some(v.on),
             _ => None,
         }
@@ -324,7 +319,7 @@ impl Read<'_> {
                 holds_at(1)
             ),
             params![self.at()],
-            |s: String| match decode::<Declared>(&s)?.declaration {
+            |s: String| match decode::<Declared>(&s, "a state")?.declaration {
                 Declaration::Type(t) => Ok(Some(t)),
                 _ => Ok(None),
             },
@@ -347,7 +342,7 @@ impl ProjectionView for SqliteView<'_> {
                     holds_at(1)
                 ),
                 params![r.at()],
-                |s: String| decode(&s),
+                |s: String| decode(&s, "a state"),
             )
         })
     }
@@ -537,7 +532,6 @@ impl ProjectionView for SqliteView<'_> {
                 &[&matching, &ty.as_str()],
             )?;
             let mut head = Vec::with_capacity(keys.len());
-            let mut visible = BTreeSet::new();
             for key in keys {
                 let key = RecordKey::from(key);
                 if let Some(record) = projection::head_record(r.conn, ty, &key)? {
@@ -546,20 +540,11 @@ impl ProjectionView for SqliteView<'_> {
                     } else {
                         r.record(ty, &key)?
                     };
-                    if engines::searchable(then.as_ref()) {
-                        visible.insert(key);
-                    }
-                    head.push(record);
+                    head.push((record, engines::searchable(then.as_ref())));
                 }
             }
-            Ok(engines::lexical(
-                &decl,
-                &head,
-                |key| visible.contains(key),
-                text,
-                fields,
-                k,
-            ))
+            let head = head.iter().map(|(state, live)| (state, *live));
+            Ok(engines::lexical(&decl, head, text, fields, k))
         })
     }
 
@@ -569,7 +554,7 @@ impl ProjectionView for SqliteView<'_> {
                 r.conn,
                 &format!("SELECT state FROM proposals WHERE {}", holds_at(1)),
                 params![r.at()],
-                |s: String| decode(&s),
+                |s: String| decode(&s, "a state"),
             )?;
             Ok(engines::proposals(&all, filter, |v| r.verb_on(v)))
         })
@@ -624,7 +609,7 @@ impl ProjectionView for SqliteView<'_> {
                 ),
                 params![seam, input.0, r.at()],
             )?;
-            state.as_deref().map(decode).transpose()
+            state.as_deref().map(|s| decode(s, "a state")).transpose()
         })
     }
 }

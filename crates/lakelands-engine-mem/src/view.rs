@@ -279,7 +279,8 @@ impl ProjectionView for MemView {
                         .and_then(|h| h.at(at)),
                 )
             };
-            engines::lexical(decl, p.records_at(ty, p.folded), visible, text, fields, k)
+            let head = p.records_at(ty, p.folded).map(|r| (r, visible(&r.key)));
+            engines::lexical(decl, head, text, fields, k)
         }))
     }
 

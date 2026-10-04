@@ -11,7 +11,7 @@
 //! `lakelands_core::engines` decides what matches, where it sorts and what
 //! it scores, exactly as on every other engine.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::engine::{Declared, ProjectionView, Scan};
 use lakelands_api::error::Result;
@@ -22,12 +22,12 @@ use lakelands_api::query::{Edge, Walk};
 use lakelands_api::read::{Direction, Order};
 use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter};
-use lakelands_core::engines;
+use lakelands_core::engines::{self, decode};
 use postgres::types::ToSql;
 
 use crate::connect::Db;
 use crate::handle::PgLake;
-use crate::projection::{self, Names, PROPOSALS, decode, decode_record, holds_at};
+use crate::projection::{self, Names, PROPOSALS, decode_record, holds_at};
 
 /// A read view of one lake's projection at one position.
 pub(crate) struct PgView<'a> {
@@ -52,8 +52,8 @@ impl PgView<'_> {
         let Some(at) = self.at else {
             return Ok(empty);
         };
-        let mut db = self.lake.reader();
-        let names = self.lake.names();
+        let mut db = crate::lock(&self.lake.reader);
+        let names = &self.lake.names;
         // The transaction opens and reads the folded marker in one round
         // trip, so the head flag is of the state every query in it sees.
         let folded = db.simple(&format!(
@@ -82,8 +82,8 @@ impl PgView<'_> {
             return Ok(empty);
         };
         f(&mut Read {
-            db: &mut self.lake.reader(),
-            names: self.lake.names(),
+            db: &mut crate::lock(&self.lake.reader),
+            names: &self.lake.names,
             at: at.0 as i64,
             folded: None,
             head: false,
@@ -178,7 +178,7 @@ impl Read<'_> {
                 r = self.names.t("records"),
             ),
             &[
-                &crate::projection::sorted_mark(ty),
+                &engines::sorted_mark(ty),
                 &lakelands_api::seam::SETTING_TYPE,
                 &engines::sort_index_key(ty),
             ],
@@ -321,7 +321,7 @@ impl Read<'_> {
     }
 
     /// The type each verb declared at the view's position is on.
-    fn verbs(&mut self) -> Result<std::collections::BTreeMap<VerbName, TypeName>> {
+    fn verbs(&mut self) -> Result<BTreeMap<VerbName, TypeName>> {
         let rows = self.db.query(
             &format!(
                 "SELECT state FROM {} WHERE ident LIKE 'verb %' AND {}",
@@ -330,7 +330,7 @@ impl Read<'_> {
             ),
             &[&self.at],
         )?;
-        let mut out = std::collections::BTreeMap::new();
+        let mut out = BTreeMap::new();
         for r in rows {
             if let Declaration::Verb(v) =
                 decode::<Declared>(&r.get::<_, String>(0), "a declaration")?.declaration
@@ -511,7 +511,7 @@ impl ProjectionView for PgView<'_> {
         self.read(vec![Vec::new(); keys.len()], |r| {
             let out = matches!(walk, Walk::Out | Walk::Both);
             let inn = matches!(walk, Walk::In | Walk::Both);
-            let mut index: std::collections::BTreeMap<&str, Vec<usize>> = Default::default();
+            let mut index: BTreeMap<&str, Vec<usize>> = Default::default();
             for (i, k) in keys.iter().enumerate() {
                 index.entry(k.as_str()).or_default().push(i);
             }
@@ -546,8 +546,7 @@ impl ProjectionView for PgView<'_> {
                 if inn {
                     // The declaring types' records at the position, read
                     // once for the page, not once per key.
-                    let mut read: std::collections::BTreeMap<TypeName, Vec<StoredRecord>> =
-                        Default::default();
+                    let mut read: BTreeMap<TypeName, Vec<StoredRecord>> = Default::default();
                     for key in index.keys() {
                         let key = RecordKey::from(*key);
                         let into = engines::in_links(ty, &key, relation, &types, |name| {
@@ -628,7 +627,6 @@ impl ProjectionView for PgView<'_> {
             );
             let keys: BTreeSet<String> = r.db.column(&sql, &[&ty.as_str(), &query])?;
             let mut head = Vec::with_capacity(keys.len());
-            let mut visible = BTreeSet::new();
             for key in keys {
                 let key = RecordKey::from(key);
                 if let Some(record) = projection::head_record(r.db, r.names, ty, &key)? {
@@ -637,20 +635,11 @@ impl ProjectionView for PgView<'_> {
                     } else {
                         r.record(ty, &key)?
                     };
-                    if engines::searchable(then.as_ref()) {
-                        visible.insert(key);
-                    }
-                    head.push(record);
+                    head.push((record, engines::searchable(then.as_ref())));
                 }
             }
-            Ok(engines::lexical(
-                &decl,
-                &head,
-                |key| visible.contains(key),
-                text,
-                fields,
-                k,
-            ))
+            let head = head.iter().map(|(state, live)| (state, *live));
+            Ok(engines::lexical(&decl, head, text, fields, k))
         })
     }
 

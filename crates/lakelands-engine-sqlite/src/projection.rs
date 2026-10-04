@@ -32,7 +32,7 @@ use lakelands_api::ontology::TypeDecl;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::{SETTING_TYPE, SORT_INDEX_SETTING};
 use lakelands_api::write::Declaration;
-use lakelands_core::engines;
+use lakelands_core::engines::{self, sorted_mark};
 use rusqlite::types::FromSql;
 use rusqlite::{Connection, OptionalExtension, Params, ToSql, params};
 
@@ -261,12 +261,6 @@ pub(crate) fn folded(conn: &Connection) -> Result<Option<Position>> {
         .map(|v: Option<i64>| v.map(|v| Position(v as u64)))
 }
 
-/// The meta row marking the position `ty`'s order index was last kept
-/// through.
-fn sorted_mark(ty: &TypeName) -> String {
-    format!("sorted.{ty}")
-}
-
 /// The position `ty`'s order index was last kept through, if the lake
 /// keeps one. It describes the head only when it is the position folded
 /// through: a writer that does not keep the index leaves it behind.
@@ -454,9 +448,7 @@ pub(crate) fn head_record(
 }
 
 pub(crate) fn decode_record(state: &str) -> Result<StoredRecord> {
-    serde_json::from_str(state).map_err(|e| {
-        crate::unavailable(format!("the projection holds a record it cannot read: {e}"))
-    })
+    engines::decode(state, "a record")
 }
 
 /// Whether a record's state put at `position` is its latest.
