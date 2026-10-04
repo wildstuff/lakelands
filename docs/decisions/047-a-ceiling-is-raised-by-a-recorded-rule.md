@@ -47,6 +47,8 @@ The core's budgets are four:
 
 **The twelfth raise:** the specification, from 45 500 to 46 000 lines, by slot a's word under the rule, for the checks of four of those pull requests as measured; it stands alone with the eleventh.
 
+**The thirteenth raise:** the specification, from 46 000 to 46 500 lines, by slot a's word under the rule, for the checks of a set that names a set (lakelands#552): a rule of rights and the log's format, 83 lines more than the room the twelfth raise left, after the check was cut. It rides in the pull request of the code it is for.
+
 ## Why
 
 The budgets keep the core small enough for one reader to hold. They have done that: four diets took out about 5 000 lines without losing a check.

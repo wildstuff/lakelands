@@ -107,6 +107,7 @@ macro_rules! door_checks {
             a_declaration_reads_only_what_its_type_has,
             a_duration_by_a_unit_is_a_number_and_what_never_lands_is_refused,
             recompute_appends_the_function_in_force_again,
+            a_set_names_a_set_and_tells_no_more_than_its_filter,
             a_migration_keeps_what_a_declaration_reads,
             a_view_is_never_migrated,
             nothing_that_never_acts_is_declared_on_a_view,
@@ -2351,6 +2352,104 @@ pub async fn a_duration_by_a_unit_is_a_number_and_what_never_lands_is_refused(
         invalid_naming(&e, &["has no meaning", "a duration and a number"]),
         "{e:?}"
     );
+}
+
+/// A set names a set with `in_set('name')`, in a set's `where` and in a
+/// read's (`docs/decisions/004-the-change-feed-is-the-log.md`, extended):
+/// the named filter stands in the name's place. A set that is not
+/// declared, one of another type, one that names it in turn and a path
+/// that steps through a reference are refused at the declaration, and a
+/// set declared again for another type on `of`; nothing is appended. To a
+/// reader kept from a field, a set whose filter reads it, itself or
+/// through a set it names, is a set that is not declared. On the mock as
+/// on the store.
+pub async fn a_set_names_a_set_and_tells_no_more_than_its_filter(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let (c, owner, clerk) = (&f.catalog, &f.cast.owner, &f.cast.clerk);
+    let set = |name: &str, of: &str, filter: &str| {
+        let d = json!({"declare": "object_set", "name": name, "of": of, "where": filter});
+        serde_json::from_value::<Declaration>(d).expect("a declaration")
+    };
+    let both = "in_set('open') and in_set('hush')";
+    for (name, filter) in [
+        ("open", "status = 'open'"),
+        ("hush", "secret = 's3'"),
+        ("both", both),
+    ] {
+        let declared = c.declare(owner, set(name, INVOICE, filter)).await;
+        declared.expect("the owner declares the set");
+    }
+    let open = ("status", json!("open"));
+    f.write(owner, "INV-1", &[open.clone(), ("secret", json!("s3"))])
+        .await;
+    f.write(owner, "INV-2", &[open]).await;
+    let keys = |who: &Principal, filter: &str| {
+        let find = Find {
+            filter: Some(filter.into()),
+            ..Find::default()
+        };
+        let (c, who) = (c.clone(), who.clone());
+        async move {
+            match c.find(&who, &ty(INVOICE), find).await?.data {
+                Found::Records { rows, .. } => Ok::<_, Error>(keys_of(&rows)),
+                other => panic!("find lists records, got {other:?}"),
+            }
+        }
+    };
+    assert_eq!(keys(owner, "in_set('both')").await.unwrap(), ["INV-1"]);
+    let rest = keys(owner, "in_set('open') and not in_set('hush')").await;
+    assert_eq!(rest.unwrap(), ["INV-2"]);
+
+    let head = f.head().await;
+    let when = json!({"declare": "trigger", "name": "t", "on": INVOICE,
+                      "when": "partner.name = 'x'"});
+    for (d, names) in [
+        (set("s", INVOICE, "in_set('ghost')"), "is not declared"),
+        (
+            set("s", INVOICE, "nope = 1 and in_set('open')"),
+            "reads `nope`",
+        ),
+        (
+            set("s", PARTNER, "in_set('open')"),
+            "a set of `invoice`, not of `partner`",
+        ),
+        (set("open", INVOICE, "in_set('both')"), "names it in turn"),
+        (
+            set("s", INVOICE, "partner.name = 'x'"),
+            "steps into `partner`",
+        ),
+        (
+            serde_json::from_value(when).expect("a trigger"),
+            "steps into `partner`",
+        ),
+    ] {
+        let e = c.declare(owner, d.clone()).await;
+        let e = e.expect_err("the declaration is refused");
+        assert!(invalid_naming(&e, &[names]), "{d:?}: {e:?}");
+    }
+    let e = c.declare(owner, set("open", PARTNER, "name = 'x'")).await;
+    let e = e.expect_err("a set is of one type");
+    assert!(
+        matches!(refusal(&e), (Some(n), Refusal::Invalid { .. }) if n.as_str() == "of"),
+        "{e:?}"
+    );
+    assert_eq!(f.head().await, head, "nothing is appended");
+
+    // The clerk reads `status` and is kept from `secret`.
+    let said = |name: &'static str| {
+        let asked = keys(clerk, &format!("in_set('{name}')"));
+        async move {
+            asked
+                .await
+                .map_err(|e| e.to_string().replace(name, "ghost"))
+        }
+    };
+    let ghost = said("ghost").await.expect_err("no such set");
+    for name in ["hush", "both"] {
+        let hidden = said(name).await;
+        assert_eq!(hidden, Err(ghost.clone()), "`{name}` reads `secret`");
+    }
+    assert_eq!(said("open").await.unwrap(), ["INV-1", "INV-2"]);
 }
 
 /// A declaration in force reads its type's shape after a migration as

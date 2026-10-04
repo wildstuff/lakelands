@@ -4,6 +4,7 @@
 //! by its declared kind. A text is never certain to fail, since one that
 //! reads as a number or an instant is one; where the kind depends on the
 //! record (a `json` field, two kinds under `if`, a setting) nothing is said.
+//! A path that steps into a field that holds no members can never read.
 
 use super::{ArithOp, Expr, Func, Literal};
 use crate::FieldName;
@@ -73,6 +74,25 @@ pub fn of(
             ([_], Some(StorageKind::Boolean)) => Some(Boolean),
             ([_], Some(StorageKind::DateTime)) => Some(Instant),
             ([_], Some(StorageKind::Text | StorageKind::Reference)) => Some(Text),
+            // A longer path walks into a `json` or `geo` value's members;
+            // into anything else it reads nothing, whatever the record
+            // holds. `payload.<name>` is a call's payload.
+            ([first, _, ..], Some(k))
+                if !matches!(k, StorageKind::Json | StorageKind::Geo)
+                    && first.as_str() != "payload" =>
+            {
+                let into = match k {
+                    StorageKind::Reference => {
+                        "a reference: a condition reads the record's own fields. Compare the \
+                         reference's key, or walk to the record it names in a pattern"
+                    }
+                    _ => "no `json` field, and has no members",
+                };
+                return Err(format!(
+                    "`{}` steps into `{first}`, which is {into}",
+                    super::print(e)
+                ));
+            }
             _ => None,
         },
         Expr::Cmp { lhs, rhs, .. } => of(lhs, field).and(of(rhs, field)).map(|_| Some(Boolean))?,
@@ -115,6 +135,7 @@ pub fn of(
                     Some(Instant)
                 }
                 Func::Changed | Func::Retired | Func::Contains | Func::StartsWith => Some(Boolean),
+                Func::InSet => Some(Boolean),
                 Func::Matches => Some(Boolean),
                 Func::Lower | Func::Upper | Func::Trim | Func::Concat | Func::Substr => Some(Text),
                 Func::Replace => Some(Text),

@@ -94,7 +94,9 @@ use crate::id::FieldName;
 mod parse;
 
 pub mod kind;
+mod rewrite;
 pub use parse::{ParseError, arity, func_name, parse, print};
+pub use rewrite::{expand, rewrite};
 
 /// An expression in the one grammar, typed. A member this form does not
 /// know is refused, never ignored.
@@ -246,6 +248,12 @@ pub enum Func {
     /// that name. Only a view's `where` and `measures` may call it. Format 8
     /// (`docs/log-format.md` §6).
     Param,
+    /// `in_set('name')`: whether the named object set's filter holds for
+    /// the record: the filter in the call's place, bound when the
+    /// condition is read, never stored membership. In an object set's
+    /// `where`, a trigger's `when` and a read's `where`. Format 11
+    /// (`docs/log-format.md` §6).
+    InSet,
     /// `changed(field)`: in a guard, whether the write changes the field.
     Changed,
     /// `retired()`: in a trigger's guard, whether the write retires the

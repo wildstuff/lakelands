@@ -489,9 +489,12 @@ ceiling:** buckets are UTC only, and there is no number bucket.
 
 ### Reading an object set
 
-No read takes a set by its name, and none needs to. A set is its filter
-(`ObjectSetDecl.where`), and a host reads it through that filter
-(lakelands#430):
+A set is its filter (`ObjectSetDecl.where`), and a host reads it through
+that filter (lakelands#430). A condition may name a set, `in_set('open')`,
+and still reads the set's filter, never stored membership: the filter
+stands in the name's place when the condition is read, in a read's
+`where`, in another set's `where` and in a trigger's `when`
+(lakelands#552):
 - **Which records, how many, a sum, a group:** `describe` lists the set
   with its filter. `find` under that filter answers the members, with
   `total` their count and `aggregate` their sums and groups. A pattern's
@@ -500,15 +503,24 @@ No read takes a set by its name, and none needs to. A set is its filter
   filter in force there.
 - **At a valid time:** `find` with `valid_at` evaluates the filter over
   the records valid then.
-- **Combined, sets of one type:** `(<f1>) and not (<f2>)`, or with `or`,
-  in the text form. The typed form has `and`, `or` and `not` nodes.
+- **Combined, sets of one type:** `in_set('a') and not in_set('b')`, or
+  with `or`: union, intersection and difference are `or`, `and` and
+  `and not`. A set declared from two others names them, so it follows
+  them when one is declared again, in that declaration's append.
+- **At an earlier position** a named set is the filter in force there.
 
 `describe` lists a set only to a principal who reads every field its
 filter names, or who holds `schema`. That is the same rule by which
 `find` probes those fields (024), so a principal who may not see a set
-cannot read it through its filter either. A host that reads the filter
-from `describe` for each read never holds a copy that drifts when the
-set is declared again.
+cannot read it through its filter either, nor by its name: to a reader
+kept from a field, a set whose filter reads it, itself or through the
+sets it names, is a set that is not declared. A host that names the set
+holds no copy of its filter that drifts when the set is declared again.
+
+A path of more than one name steps into a `json` or `geo` value's
+members. Into anything else it reads nothing, and is refused: a
+condition reads the record's own fields, so `partner = 'p1'` compares a
+reference's key, and a pattern walks to the record it names.
 
 The `object_set_changed` events describe the same members only where the
 filter is evaluated in the same way they were:

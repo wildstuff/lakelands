@@ -378,7 +378,7 @@ pub fn check(e: &Expr, place: Place) -> Result<()> {
                 {
                     return err(format!("{name}() takes one field name"));
                 }
-                Func::Setting | Func::Param if quoted(args.first()).is_none() => {
+                Func::Setting | Func::Param | Func::InSet if quoted(args.first()).is_none() => {
                     return err(format!("{name}() takes a quoted name"));
                 }
                 // A calendar unit, quoted, starts where the calendar says and
@@ -438,43 +438,16 @@ pub fn check(e: &Expr, place: Place) -> Result<()> {
 /// for that name; a name it does not hold is left as the call, which reads
 /// null.
 pub fn bind_params(e: &Expr, values: &BTreeMap<String, Literal>) -> Expr {
-    let b = |x: &Expr| Box::new(bind_params(x, values));
-    let all = |xs: &[Expr]| xs.iter().map(|x| bind_params(x, values)).collect();
-    match e {
+    lakelands_api::expr::rewrite(e, &|x| match x {
         Expr::Call {
             func: Func::Param,
             args,
-        } => match quoted(args.first()) {
-            Some(name) if values.contains_key(name) => Expr::Lit {
-                value: values[name].clone(),
-            },
-            _ => e.clone(),
-        },
-        Expr::Call { func, args } => Expr::Call {
-            func: *func,
-            args: all(args),
-        },
-        Expr::Cmp { cmp, lhs, rhs } => Expr::Cmp {
-            cmp: *cmp,
-            lhs: b(lhs),
-            rhs: b(rhs),
-        },
-        Expr::Arith { arith, lhs, rhs } => Expr::Arith {
-            arith: *arith,
-            lhs: b(lhs),
-            rhs: b(rhs),
-        },
-        Expr::Neg { arg } => Expr::Neg { arg: b(arg) },
-        Expr::Not { arg } => Expr::Not { arg: b(arg) },
-        Expr::IsNull { arg } => Expr::IsNull { arg: b(arg) },
-        Expr::And { args } => Expr::And { args: all(args) },
-        Expr::Or { args } => Expr::Or { args: all(args) },
-        Expr::In { arg, list } => Expr::In {
-            arg: b(arg),
-            list: all(list),
-        },
-        Expr::Lit { .. } | Expr::Path { .. } => e.clone(),
-    }
+        } => {
+            let value = quoted(args.first()).and_then(|name| values.get(name));
+            value.map(|v| Expr::Lit { value: v.clone() })
+        }
+        _ => None,
+    })
 }
 
 /// The names every `param('name')` in `e` reads, added to `out`.
@@ -810,6 +783,14 @@ fn call(func: Func, args: &[Expr], scope: &dyn Scope) -> Result<Val> {
             Val::Text(key) => scope.setting(key).map_or(Val::Null, |v| from_json(&v)),
             other => return err(format!("setting() takes a key, not {}", describe(other))),
         },
+        // A set's filter stands in the call's place before a condition is
+        // evaluated ([`expand`]); a call that is left names no place for it.
+        Func::InSet => {
+            return err(
+                "in_set() has meaning in an object set's `where`, a trigger's `when` \
+                        and a read's `where`",
+            );
+        }
         Func::Param => match &vals[0] {
             Val::Text(name) => scope.param(name).map_or(Val::Null, |v| from_json(&v)),
             other => return err(format!("param() takes a name, not {}", describe(other))),
