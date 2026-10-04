@@ -280,19 +280,8 @@ impl Call<'_> {
         let external = events.iter().any(|e| {
             e.position == outcome.position() && matches!(e.body, EventBody::VerbCalled { .. })
         });
-        if let (
-            Outcome::Applied {
-                position,
-                output,
-                set_off,
-                ..
-            },
-            true,
-        ) = (&mut outcome, external)
-            && let Some((at, recorded)) = self.recorded_output(*position)?
-        {
-            *output = Some(recorded);
-            set_off.through = Some(at);
+        if external && let Some(found) = self.recorded_output(outcome.position())? {
+            outcome = with_output(outcome, found);
         }
         Ok(Some(outcome))
     }
@@ -314,6 +303,19 @@ impl Call<'_> {
             _ => None,
         }))
     }
+}
+
+/// An outcome with an external verb's recorded output in it, and the
+/// position it was recorded at as the last of what the call set off.
+pub(crate) fn with_output(mut outcome: Outcome, (at, recorded): (Position, Value)) -> Outcome {
+    if let Outcome::Applied {
+        output, set_off, ..
+    } = &mut outcome
+    {
+        *output = Some(recorded);
+        set_off.through = Some(at);
+    }
+    outcome
 }
 
 /// An append's outcome, as [`own_outcome`] tells it, with what the write
@@ -662,6 +664,15 @@ fn cas(expected: Option<Version>, before: Option<&StoredRecord>) -> Result<()> {
             actual,
         }),
         _ => Ok(()),
+    }
+}
+
+/// The `record_retired` that takes the record of `ty` at `key` past the version `was`.
+pub(crate) fn retirement(ty: &TypeName, key: &RecordKey, was: Version) -> EventBody {
+    EventBody::RecordRetired {
+        ty: ty.clone(),
+        key: key.clone(),
+        version: Version(was.0 + 1),
     }
 }
 
@@ -1084,15 +1095,7 @@ impl Call<'_> {
         let before = live_record(view.as_ref(), ty, key)?;
         cas(opts.expected_version, Some(&before))?;
         let now = self.lake.clock(&mut w);
-        let mut d = self.draft(
-            now,
-            Origin::Authored,
-            EventBody::RecordRetired {
-                ty: ty.clone(),
-                key: key.clone(),
-                version: Version(before.version.0 + 1),
-            },
-        );
+        let mut d = self.draft(now, Origin::Authored, retirement(ty, key, before.version));
         self.keyed(&mut d, &opts.idempotency_key);
         let mut pending = Pending::default();
         let at = position_after(&w, 0);
@@ -1544,15 +1547,8 @@ impl Call<'_> {
             ProposedWrite::Retire { ty, key, opts } => {
                 let before = live_record(view.as_ref(), ty, key)?;
                 cas(opts.expected_version, Some(&before))?;
-                let d = as_proposer(self.draft(
-                    now,
-                    Origin::Authored,
-                    EventBody::RecordRetired {
-                        ty: ty.clone(),
-                        key: key.clone(),
-                        version: Version(before.version.0 + 1),
-                    },
-                ));
+                let body = retirement(ty, key, before.version);
+                let d = as_proposer(self.draft(now, Origin::Authored, body));
                 let at = Position(accepted_at.0 + 1);
                 let own = self.retiring(&w, view.as_ref(), &mut pending, &before, d, at, now)?;
                 drafts.extend(own);
@@ -1647,7 +1643,9 @@ impl Call<'_> {
                     )));
                 }
                 fits(self.preflight_value_type(&w, view.as_ref(), to)?, false)?;
-                drafts.push(as_accepted(self.tightened(&w, (**to).clone(), now)));
+                let declared = vec![Declaration::ValueType((**to).clone())];
+                let own = self.bundle_drafts(&w, declared, now, drafts.len())?;
+                drafts.extend(own.into_iter().map(&as_accepted));
             }
         }
         drop(view);
@@ -2601,24 +2599,10 @@ impl Call<'_> {
         }
         fits(report, true)?;
         let now = self.lake.clock(&mut w);
-        let d = self.tightened(&w, to, now);
+        let drafts = self.bundle_drafts(&w, vec![Declaration::ValueType(to)], now, 0)?;
         drop(view);
-        let events = self.lake.append(&mut w, vec![d])?;
+        let events = self.lake.append(&mut w, drafts)?;
         Ok(outcome_of(&events))
-    }
-
-    /// The `declared` that puts a tightened value type in force at its
-    /// next version; no record changes.
-    fn tightened(&self, w: &Writer, to: ValueTypeDecl, now: Timestamp) -> Draft {
-        let declaration = Declaration::ValueType(to);
-        let version = w.ontology.next_version(&declaration);
-        let schema_hash = None;
-        let body = EventBody::Declared {
-            declaration,
-            schema_hash,
-            version,
-        };
-        self.draft(now, Origin::Authored, body)
     }
 }
 
