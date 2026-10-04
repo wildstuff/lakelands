@@ -685,6 +685,21 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
     }
     if let Declaration::Type(t) = d {
         embeddings(t)?;
+        // As the store: a derived field's expression can be evaluated, and
+        // what it computes can land in the field.
+        for f in t.fields.iter().filter(|_| t.view.is_none()) {
+            let Some(e) = f.derived.as_ref().and_then(|c| expr::typed(c).ok()) else {
+                continue;
+            };
+            if let Some(k) = evaluates(&e, t)?.filter(|k| !k.lands(f.ty.kind)) {
+                let is = k.name();
+                let message = format!(
+                    "`{}`: its expression is {is}, which the field never holds",
+                    f.name
+                );
+                return Err(on(&f.name, Refusal::Invalid { message }));
+            }
+        }
     }
     if let Declaration::ValueType(v) = d {
         crate::valuetypes::check_declared(st, v)?;
@@ -1279,6 +1294,13 @@ fn describe_lake(lake: &LakeId, st: &State, who: &Principal) -> LakeDescription 
 
 // ---- reading ----
 
+/// As the store: the kind an expression certainly computes over a type's
+/// records, or the refusal of one that can never be evaluated over them.
+fn evaluates(e: &Expr, t: &TypeDecl) -> Result<Option<lakelands_api::expr::kind::Kind>> {
+    let kind = |n: &FieldName| field(t, n).map(|f| f.ty.kind);
+    lakelands_api::expr::kind::of(e, &kind).map_err(invalid)
+}
+
 /// The typed filter, with every path it reads checked against the type
 /// and the principal's grants.
 fn filter(
@@ -1308,6 +1330,9 @@ fn filter(
         };
         readable(st, who, t, name)?;
     }
+    // As the store: what can never be evaluated is refused, once the reader
+    // is known to read the fields it names.
+    evaluates(&e, &t.decl)?;
     Ok(Some(e))
 }
 

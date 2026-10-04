@@ -78,6 +78,7 @@ pub fn func_name(f: Func) -> &'static str {
         Func::Matches => "matches",
         Func::Abs => "abs",
         Func::Round => "round",
+        Func::Floor => "floor",
         Func::DateBucket => "date_bucket",
         Func::Count => "count",
         Func::Sum => "sum",
@@ -109,6 +110,7 @@ pub fn arity(f: Func) -> (usize, Option<usize>) {
         | Func::Trim
         | Func::Len
         | Func::Abs
+        | Func::Floor
         | Func::Sum
         | Func::Min
         | Func::Max

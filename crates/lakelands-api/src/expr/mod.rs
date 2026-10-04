@@ -55,6 +55,12 @@
 //! binds to the view parameter of that name; only a view's `where` and
 //! `measures` may call it, since only a view declares parameters.
 //!
+//! **Durations.** The difference of two instants is a duration. A
+//! duration divided by a duration is a number, so the days between two
+//! instants are `(paid_on - due_on) / 1d`, and the whole days
+//! `floor(...)` of it; a duration times or divided by a number is a
+//! duration. What an expression certainly computes is [`kind::of`].
+//!
 //! **Comparisons across kinds.** A comparison between values of kinds
 //! that do not compare — a number against text that is not a number, a
 //! boolean against anything but a boolean, a JSON value against anything
@@ -87,6 +93,7 @@ use crate::id::FieldName;
 
 mod parse;
 
+pub mod kind;
 pub use parse::{ParseError, arity, func_name, parse, print};
 
 /// An expression in the one grammar, typed. A member this form does not
@@ -274,6 +281,9 @@ pub enum Func {
     Abs,
     /// `round(n, digits)`.
     Round,
+    /// `floor(n)`: the greatest whole number not above `n`, as in the
+    /// whole days of `floor((now() - due_on) / 1d)`.
+    Floor,
     /// `date_bucket(x, 'unit')`: the instant, in UTC, at which the bucket
     /// holding `x` starts; `unit` is `'day'`, `'week'` (ISO, from Monday),
     /// `'month'`, `'quarter'` or `'year'`. Null when `x` is not an

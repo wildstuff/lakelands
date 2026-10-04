@@ -169,3 +169,38 @@ A trigger, a function and a type each need one thing bound, so the
 bound checks never meet in one declaration, and an undeclared type has
 no field: those pairs are stated, not checked.
 
+## Extended: what can never be evaluated is refused (lakelands#549)
+
+An expression that fails is, to the fold and to a read, a record that
+does not match, a null key or a derived field that is cleared. That is
+right where the failure is one record's: a division by a field that is
+zero in one record must not fail a read of the others. It was wrong
+where the failure is the expression's own. A derived `number` field that
+is `today() - due_on` was declared and never filled, and a `where`
+multiplying a boolean answered no record, each with nothing said.
+
+What an expression computes is now read off it where that is certain: a
+literal's kind, a function's result, arithmetic over certain kinds, a
+field by its declared kind (`lakelands_api::expr::kind`). Where it
+depends on the record (a `json` field, `if` or `coalesce` over two
+kinds, a setting, a parameter) nothing is said, and a text is never
+certain to fail, since one that reads as a number or an instant is one.
+Two rules hold by it:
+
+- **A derived field its expression can never fill is refused,** as
+  `invalid` on the field, by `declare`, `apply`, `add_field`, a migration
+  and a proposal. The fold lands a value by the field's kind, and what it
+  never lands is: a duration, a boolean or an instant in a `number` or
+  `decimal` field; anything but a boolean in a `boolean` field; a
+  duration, a boolean or a number in a `date_time` field. A duration says
+  how it becomes a number: divided by a unit.
+- **An operation that has no meaning is refused,** as `invalid`, naming
+  it: an instant plus an instant, a boolean in arithmetic, a duration
+  plus a number, a function of a number given an instant. In a derived
+  field, a trigger's `when`, an object set's `where` and a verb's
+  `requires` and values at the declaration; in a read's `where` and
+  group keys at the door, once the reader is known to read the fields
+  named, so the refusal tells nothing of a field it is kept from.
+
+A failure that depends on a record's value stays that record's. A
+declaration in force is not checked again until it is declared again.

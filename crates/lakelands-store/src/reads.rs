@@ -442,6 +442,7 @@ impl<'a> Reader<'a> {
         let Some(c) = c else { return Ok(None) };
         let e = condition(c, Place::Record, at)?;
         rights::check_probe(self.who, decl, core_derive::reads(&e).iter())?;
+        crate::declare::evaluates(&e, decl, at)?;
         Ok(Some(e))
     }
 
@@ -945,6 +946,7 @@ impl<'a> Reader<'a> {
             .as_ref()
             .map(|e| core_derive::reads(e).into_iter().collect())
             .unwrap_or_default();
+        let mut asked: Vec<(Expr, String)> = Vec::new();
         probed.extend(
             find.order_by
                 .iter()
@@ -959,11 +961,23 @@ impl<'a> Reader<'a> {
             for (name, expr) in keys {
                 match expr {
                     None => probed.push(name),
-                    Some(e) => probed.extend(core_derive::reads(&e)),
+                    Some(e) => {
+                        probed.extend(core_derive::reads(&e));
+                        asked.push((e, format!("group `{name}`")));
+                    }
                 }
             }
         }
         rights::check_probe(self.who, &decl, probed.iter())?;
+        // What can never be evaluated is refused, once the reader is known
+        // to read the fields it names (028, extended).
+        for (e, at) in filter
+            .iter()
+            .map(|e| (e.clone(), "where".to_owned()))
+            .chain(asked)
+        {
+            crate::declare::evaluates(&e, &decl, &at)?;
+        }
         let asked = find
             .after
             .as_ref()
