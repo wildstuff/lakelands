@@ -1311,30 +1311,10 @@ impl<'a> Reader<'a> {
     /// The store logs a migration and a redeclaration completed with the
     /// fields hidden from their author, who reads its own proposal here.
     fn known_shape(&self, write: &mut ProposedWrite) -> bool {
-        let known = |t: &TypeDecl, f: &lakelands_api::ontology::FieldDecl| {
-            rights::field_access(self.who, t, f) != Access::None
-        };
-        let shown = |t: &mut TypeDecl| {
-            let whole = t.clone();
-            t.fields.retain(|f| known(&whole, f));
-            for r in &mut t.relations {
-                let link = lakelands_core::links::link_type(&whole.name, r);
-                r.fields.retain(|f| known(&link, f));
-            }
-        };
-        // Whether a shown type holds the field `name`, a link field as a
-        // report names it (`relation.field`) too.
-        let has = |t: &TypeDecl, name: &FieldName| match name.as_str().split_once('.') {
-            Some((r, f)) => (t.relations.iter().filter(|x| x.name.as_str() == r))
-                .any(|x| x.fields.iter().any(|x| x.name.as_str() == f)),
-            None => t.fields.iter().any(|f| &f.name == name),
-        };
-        let field = |ty: &TypeName, field: &FieldName| {
+        let read = |ty: &TypeName, field: &FieldName| {
             let t = self.visible_type(ty).ok();
-            t.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == field)?)))
-        };
-        let read = |ty: &TypeName, f: &FieldName| {
-            field(ty, f).is_some_and(|(t, f)| rights::field_access(self.who, t, f).reads())
+            let f = t.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == field)?)));
+            f.is_some_and(|(t, f)| rights::field_access(self.who, t, f).reads())
         };
         // A record the reader is not answered: restricted, without the grant.
         let answered = |ty: &TypeName, key: &RecordKey| {
@@ -1380,23 +1360,12 @@ impl<'a> Reader<'a> {
                 let Ok(was) = self.visible_type(&migration.to.name) else {
                     return false;
                 };
+                let sees = |ty: &TypeName| self.visible_type(ty).ok();
+                rights::shown_report(self.who, was, migration, report, sees, answered);
                 let (mut was, Migration { to, renames }) = (was.clone(), &mut **migration);
-                shown(&mut was);
-                shown(to);
-                // A conversion names its field as the migration leaves it,
-                // and the one it took its values from where it was renamed.
-                let sourced = |new: &FieldName| {
-                    let mut from = renames.iter().filter(|(_, n)| n == new);
-                    from.all(|(old, _)| has(&was, old))
-                };
-                report
-                    .fields
-                    .retain(|c| has(to, &c.field) && sourced(&c.field));
-                renames.retain(|(old, new)| has(&was, old) && has(to, new));
-                report.dropped.retain(|(f, _)| has(&was, f));
-                report.rekeyed.retain(|r| self.visible_type(&r.ty).is_ok());
-                (report.references)
-                    .retain(|r| field(&r.ty, &r.field).is_some_and(|(t, f)| known(t, f)));
+                rights::known_fields(self.who, &mut was);
+                rights::known_fields(self.who, to);
+                renames.retain(|(old, new)| rights::holds(&was, old) && rights::holds(to, new));
                 true
             }
             // Each declaration as `describe` would show it once the bundle
@@ -1412,7 +1381,7 @@ impl<'a> Reader<'a> {
                 declarations.retain(|d| describe::listed(d, &after, self.who));
                 for d in declarations.iter_mut() {
                     if let Declaration::Type(t) = d {
-                        shown(t);
+                        rights::known_fields(self.who, t);
                     }
                 }
                 !declarations.is_empty()

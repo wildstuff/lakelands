@@ -619,7 +619,8 @@ pub struct Migration {
 /// proposed migration, which the store replaces with the preflight's.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MigrationReport {
-    /// The type migrated.
+    /// The type migrated. Empty, which no type's name is, in an answer to
+    /// a reader who may not see the type.
     #[serde(rename = "type")]
     pub ty: TypeName,
     /// The schema hash before.
@@ -650,8 +651,13 @@ pub struct MigrationReport {
     /// True when every stored value converts without loss, and every
     /// record a re-key moves takes a new key of its own.
     pub lossless: bool,
-    /// Names this report; `migrate_apply` must repeat it.
+    /// Names this report; `migrate_apply` must repeat it. It is the id of
+    /// the whole report, whatever its reader is shown of it.
     pub report_id: String,
+    /// Whether the report holds more than this reader is shown: an answer
+    /// says so, without a name. A logged and a stored report hold `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub more: bool,
 }
 
 /// How the values of one field convert to its new type.

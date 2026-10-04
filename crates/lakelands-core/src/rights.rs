@@ -26,7 +26,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::ontology::{Authority, FieldDecl, TypeDecl};
 use lakelands_api::record::StoredRecord;
-use lakelands_api::{Access, Error, FieldName, Principal, Record, Refusal, TypeName, Value};
+use lakelands_api::write::{Migration, MigrationReport};
+use lakelands_api::{
+    Access, Error, FieldName, Principal, Record, RecordKey, Refusal, TypeName, Value,
+};
 
 /// The prefix every system type's name carries
 /// (`docs/decisions/003-reservation-by-namespace.md`).
@@ -336,6 +339,88 @@ fn field_of<'d>(decl: &'d TypeDecl, name: &FieldName) -> Result<&'d FieldDecl, E
 fn no_field(decl: &TypeDecl, name: &FieldName) -> Error {
     let message = format!("`{}` has no field `{name}`", decl.name);
     refused(Some(name), Refusal::Invalid { message })
+}
+
+/// `t` without the fields `who` may not know of, a relation's link fields
+/// too: a shape as `describe` would show it.
+pub fn known_fields(who: &Principal, t: &mut TypeDecl) {
+    let whole = t.clone();
+    t.fields
+        .retain(|f| field_access(who, &whole, f) != Access::None);
+    for r in &mut t.relations {
+        let link = crate::links::link_type(&whole.name, r);
+        r.fields
+            .retain(|f| field_access(who, &link, f) != Access::None);
+    }
+}
+
+/// Whether a shape holds what a migration's report names by `name`: a
+/// field, a link field (`relation.field`), or a relation, which a report
+/// lists as dropped by its own name.
+pub fn holds(t: &TypeDecl, name: &FieldName) -> bool {
+    let relation = |r: &str| t.relations.iter().find(|x| x.name.as_str() == r);
+    match name.as_str().split_once('.') {
+        Some((r, f)) => relation(r).is_some_and(|x| x.fields.iter().any(|x| x.name.as_str() == f)),
+        None => t.fields.iter().any(|f| &f.name == name) || relation(name.as_str()).is_some(),
+    }
+}
+
+/// A migration's report as `who` may know it (013, 024 and 027, extended):
+/// every place that answers one calls this. `was` is the type as it
+/// stands, `sees` a type the reader may see, `answered` whether it is
+/// answered a record. An entry is shown where the reader may see the type
+/// and know of the field: a conversion in the shape the migration leaves,
+/// and by the name it took its values from where it was renamed; a dropped
+/// field in the shape as it stands; a sample key where the record is
+/// answered. The totals, the hashes and the id, which names the whole
+/// report, stay; `more` says that something was left out.
+pub fn shown_report<'a>(
+    who: &Principal,
+    was: &TypeDecl,
+    m: &Migration,
+    report: &mut MigrationReport,
+    sees: impl Fn(&TypeName) -> Option<&'a TypeDecl>,
+    answered: impl Fn(&TypeName, &RecordKey) -> bool,
+) {
+    // One who may not see the migrated type is answered no name at all:
+    // the totals, the hashes and the id, and that there is more.
+    if sees(&m.to.name).is_none() {
+        (report.ty, report.more) = (TypeName::default(), true);
+        report.fields.clear();
+        report.dropped.clear();
+        report.rekeyed.clear();
+        report.references.clear();
+        report.sample_collisions.clear();
+        return;
+    }
+    let whole = report.clone();
+    let (mut was, mut to) = (was.clone(), m.to.clone());
+    known_fields(who, &mut was);
+    known_fields(who, &mut to);
+    let sourced = |new: &FieldName| {
+        let mut from = m.renames.iter().filter(|(_, n)| n == new);
+        from.all(|(old, _)| holds(&was, old))
+    };
+    let known = |ty: &TypeName, field: &FieldName| {
+        let found = sees(ty).and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == field)?)));
+        found.is_some_and(|(t, f)| field_access(who, t, f) != Access::None)
+    };
+    report
+        .fields
+        .retain(|c| holds(&to, &c.field) && sourced(&c.field));
+    for c in &mut report.fields {
+        // A link field's sample keys are of its link type's records.
+        let of = match c.field.as_str().split_once('.') {
+            Some((r, _)) => crate::links::link_type_name(&m.to.name, &r.into()),
+            None => m.to.name.clone(),
+        };
+        c.sample_keys.retain(|key| answered(&of, key));
+    }
+    report.dropped.retain(|(f, _)| holds(&was, f));
+    report.rekeyed.retain(|r| sees(&r.ty).is_some());
+    report.references.retain(|r| known(&r.ty, &r.field));
+    report.sample_collisions.retain(|c| sees(&c.ty).is_some());
+    report.more = *report != whole;
 }
 
 #[cfg(test)]

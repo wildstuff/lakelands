@@ -334,6 +334,7 @@ interface types {
     }
 
     record migration-report {
+        /// Empty in an answer to a reader who may not see the type.
         %type: type-name,
         from-schema-hash: string,
         to-schema-hash: string,
@@ -345,6 +346,8 @@ interface types {
         sample-collisions: list<record-ref>,
         lossless: bool,
         report-id: string,
+        /// The report holds more than its reader is shown.
+        more: bool,
     }
 
     /// What a re-key does to one type's records.

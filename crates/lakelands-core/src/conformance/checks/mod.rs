@@ -49,6 +49,7 @@ mod reads_kept;
 mod rebuild;
 mod references;
 mod rekey;
+mod report_names;
 mod restriction;
 mod retire;
 mod schema;
@@ -216,6 +217,7 @@ pub const ALL: &[Check] = &[
     readers_view::VALUES_AS_THE_READERS_VIEW,
     proposal_names::NAMES_AS_THE_READERS_VIEW,
     proposal_names::LISTED_AS_SHOWN,
+    report_names::REPORT_AS_ITS_READERS_VIEW,
     schema_proposals::DECLARED_ON_ACCEPT,
     schema_proposals::SCHEMA_TO_ACCEPT,
     schema_proposals::MIGRATION_PREFLIGHTED_AGAIN,

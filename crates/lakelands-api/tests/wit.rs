@@ -442,6 +442,7 @@ fn migration_report() -> MigrationReport {
         }],
         lossless: true,
         report_id: "r".into(),
+        more: true,
     }
 }
 

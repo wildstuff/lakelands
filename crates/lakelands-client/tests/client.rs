@@ -103,6 +103,7 @@ async fn every_error_comes_back_as_the_error_the_server_answered() {
         sample_collisions: Vec::new(),
         lossless: false,
         report_id: "r".into(),
+        more: true,
     };
     let errors = [
         (401, refused(None, Refusal::NotGranted)),
