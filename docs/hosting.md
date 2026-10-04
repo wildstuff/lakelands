@@ -318,7 +318,7 @@ A host that already has a store of its own moves in four steps.
   the writer, and holds them in memory meanwhile; other writes wait. At
   100 000 records of four small fields, measured under some load from
   other processes (`tests/set_migrated.rs` in the SQLite and PostgreSQL
-  engines, by hand), the writer is held 5.5 to 7 s on SQLite and 13 to
+  engines, by hand), the writer is held 4 to 5.5 s on SQLite and 13 to
   19 s on PostgreSQL, with a peak of about 330 MB and 1.1 GB. Both grow with
   the type's records. An object set of the type adds little: its members
   are read once, and 20 000 memberships changed cost one to three seconds
