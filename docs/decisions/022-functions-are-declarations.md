@@ -98,8 +98,12 @@ with the lake beside it.
 - a type is declared again with other functions on its fields: that
   type's live records;
 - a type whose fields are computed outside the lake is declared again,
-  changed or not: that type's live records (see "a redeclaration
+  whatever of it changed: that type's live records (see "a redeclaration
   retries a recorded failure" below).
+
+"Declared again" is a `declared` event in the log. A declaration that is
+the one in force appends none (027, extended, lakelands#565), so it makes
+nothing due.
 
 A due field whose call already has an output recorded in the lake is
 filled from it in the same event, and nothing is called. Otherwise the
@@ -204,10 +208,12 @@ This qualifies "The same call is not made again" and "It is not a way to
 retry" above. A settle forced by a declaration calls again for an input
 whose recorded output is a failure. The declaration is a function
 declared again, or a type whose fields are computed outside the lake,
-declared again whether or not it changed. A recorded value is still
-never asked for twice: the forced settle reads it back, as any settle
-does. So an operator who wants a failed call made again declares the
-function or the type again, and the log shows it did.
+declared again whatever of it changed: a label is enough. One that is
+the declaration in force appends nothing and forces no settle (027,
+extended, lakelands#565). A recorded value is still never asked for
+twice: the forced settle reads it back, as any settle does. So an
+operator who wants a failed call made again declares the function or
+the type again with a change, and the log shows it did.
 
 The log may then hold two outputs for one `seam` + `input`, the failure
 and the later answer. The later one holds: the fold, and an engine's
@@ -240,7 +246,7 @@ field computed by a backed function, and follows every rule above:
   digest of `{"texts": [text]}`. So one text is embedded once per model
   in a lake, whichever record or field asks.
 - A failure is recorded and clears the field with its reason; a
-  redeclaration retries it.
+  redeclaration that differs from the one in force retries it.
 
 `embed` is not shape (007). Which fields feed a vector, and which model
 makes it, say how the value is computed, not what the field is. So a

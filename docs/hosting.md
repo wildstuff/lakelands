@@ -363,9 +363,26 @@ A host that already has a store of its own moves in four steps.
   for each record: 41 s with one set and 74 to 79 s with three on
   PostgreSQL, 9 to 15 s on SQLite. Bringing the migration's own cost
   down further is lakelands#480.
+- **A host may state its declarations at every start.** A declaration
+  that is the one in force is answered `applied` at the head and appends
+  nothing, by `declare` and by `apply`: a type, a value type, a function,
+  a verb, a trigger, an object set. A computed field may be stated with
+  the inputs `describe` shows or without them. A declaration's version
+  counts its changes. See
+  `docs/decisions/027-shape-changes-are-declared-or-migrated.md`.
+- **A write that changes nothing is still a write.** An upsert of the
+  values a record already holds appends an event and raises the version:
+  it says who vouches for the values and when, a trigger reacts to it,
+  and a caller that writes with `expected_version` counts on it. A host
+  that states data again and wants no growth has three ways: an
+  idempotency key, under which the same call appends once; `ingest`,
+  which appends nothing for a record delivered twice; or a read first.
+  Opening a lake for writing appends one `lease_taken`, which carries
+  the token every later event of that writer bears; a reader appends
+  none.
 - **A declaration that recomputes a type is a step for a quiet moment.**
-  A function declared again, or a type declared again with another
-  derived expression, computes the derived fields of every live record
+  A function declared again with a change, or a type declared again with
+  another derived expression, computes the derived fields of every live record
   of the type again in that one append, under the writer, and holds
   them in memory meanwhile; other writes wait. At 100 000 records of
   four small fields, one of them derived (`tests/recomputed.rs` in the

@@ -457,11 +457,15 @@ impl MockCatalog {
         who: &Principal,
         declaration: Declaration,
     ) -> Result<Position> {
-        let (_, st) = self.state_at(log, None)?;
+        let (head, st) = self.state_at(log, None)?;
         let mut declaration = declaration;
         redeclared(&st, who, std::slice::from_mut(&mut declaration))?;
         check_declaration(&st, who, &declaration)?;
         trigger_ceiling(&declaration, self.shared.limits.max_reactive_depth)?;
+        // As the store: the declaration in force appends nothing.
+        if st.in_force(&declaration) {
+            return Ok(head);
+        }
         let (schema_hash, version) = identity_version(&st, &declaration);
         let links = link_drafts(&st, who, &declaration);
         let mut batch = Batch::at(log);
@@ -2069,10 +2073,10 @@ fn check_set(st: &State, who: &Principal, declarations: &[Declaration]) -> Resul
 }
 
 /// The drafts that declare a checked set, each with the link types it
-/// calls for.
+/// calls for; as the store, none for a declaration in force before it.
 fn set_drafts(st: &State, who: &Principal, declarations: Vec<Declaration>) -> Vec<Draft> {
     let mut out = Vec::new();
-    for declaration in declarations {
+    for declaration in declarations.into_iter().filter(|d| !st.in_force(d)) {
         let (schema_hash, version) = identity_version(st, &declaration);
         let links = link_drafts(st, who, &declaration);
         out.push(Draft::new(
@@ -4073,16 +4077,16 @@ impl Catalog for MockCatalog {
             return Err(refused(Refusal::NotGranted));
         }
         let mut log = self.log();
-        let (_, st) = self.state_at(&log, None)?;
+        let (mut position, st) = self.state_at(&log, None)?;
         let mut declarations = declarations;
         redeclared(&st, who, &mut declarations)?;
         check_set(&st, who, &declarations)?;
         for d in &declarations {
             trigger_ceiling(d, self.shared.limits.max_reactive_depth)?;
         }
-        // One append at consecutive positions; the answer names the last.
+        // One append at consecutive positions; the answer names the last,
+        // or the head where the whole set is in force already.
         let mut batch = Batch::at(&log);
-        let mut position = batch.peek();
         for d in set_drafts(&st, who, declarations) {
             position = batch.push(d);
         }

@@ -280,6 +280,23 @@ impl State {
         }
     }
 
+    /// As the store: whether `d` is the declaration in force, a type in its
+    /// completed form. Such a declaration appends nothing.
+    pub(crate) fn in_force(&self, d: &Declaration) -> bool {
+        match d {
+            Declaration::Type(t) => {
+                let mut t = t.clone();
+                self.complete(&mut t);
+                self.types.get(&t.name).is_some_and(|held| held.decl == t)
+            }
+            Declaration::Verb(v) => self.verbs.get(&v.name) == Some(v),
+            Declaration::ValueType(v) => self.value_types.contains(v),
+            Declaration::Trigger(t) => self.triggers.contains(t),
+            Declaration::ObjectSet(s) => self.object_sets.contains(s),
+            Declaration::Function(f) => self.functions.contains(f),
+        }
+    }
+
     /// As the store: a shape with every computed field's `depends_on`
     /// holding each field it is computed from, what its expression reads or
     /// its function's inputs; a field is read no further than those.
