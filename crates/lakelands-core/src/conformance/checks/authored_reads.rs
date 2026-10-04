@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use crate::conformance::Failure;
 use crate::conformance::backing::EMBED_MODEL;
 use crate::conformance::fixture::{
-    Lake, Must, field_access, migration, object_set_on, refused_on, trigger_on, try_upsert,
+    Lake, Must, field_access, migration, object_set_on, reason, refused_on, trigger_on, try_upsert,
     write_verb,
 };
 
@@ -22,6 +22,12 @@ check!(
     AUTHOR_READS = a_declaration_reads_only_what_its_author_may_read,
     "024 and 028, extended (lakelands#538): a declaration whose author may not know of a field it reads is answered as one that reads a field the type does not have, whatever reads it: a set's `where`, a trigger's `when`, a verb's `requires`, what it sets a field from and the field it sets, a derived field, a field computed by a function, an embedding, a view's `where`, grouping and measure, and a derived relation's pair; by `declare`, `apply`, `add_field`, a migration and a proposal alike; a field the author knows of and may not read is refused as not granted on it, and a verb may set it; a field the type's shape names, as a key, a valid time or a relation's `via`, stands as declared for an author who may not know of it; `add_field` adds to its author's view of the type; a write's answer names a trigger or an object set only to one who reads every field its condition names, shown the definition or not, and still says `through`",
     embedding
+);
+
+check!(
+    /// A type its author is not shown is a type that is not declared.
+    HIDDEN_TYPE = a_type_its_author_is_not_shown_is_a_type_that_is_not_declared,
+    "027 and 028, extended (lakelands#538): to a principal that holds `schema` and is not shown a type, the type is one that is not declared: `add_field`, a migration, its apply and its proposal answer that there is no such type, and a trigger, a verb and an object set on it, declared or proposed, that it is not declared, each in the words an undeclared type gets; to declare the type or propose it is not granted and names nothing; none of them writes; a value type's preview and its refused apply show a use and a misfit only in a field their caller is shown and reads, the totals whole"
 );
 
 fn decl(v: Value) -> Declaration {
@@ -319,4 +325,104 @@ async fn a_declaration_reads_only_what_its_author_may_read(
 /// Why an answer is refused, as text.
 fn why<T>(a: lakelands_api::Result<T>) -> Option<String> {
     a.err().map(|e| e.to_string())
+}
+
+async fn a_type_its_author_is_not_shown_is_a_type_that_is_not_declared(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let (s, l) = (store.as_ref(), Lake::of(store.as_ref()));
+    let state = |one_of: &[&str]| json!({"name": "state", "kind": "text", "one_of": one_of});
+    let declared = over(state(&["x", "y"]), json!({"declare": "value_type"}));
+    l.declare_json(declared).await?;
+    let held = json!({"name": "s", "type": {"kind": "text", "value_type": "state"}});
+    let account = json!({"declare": "type", "name": "account", "fields": [text("a"), held]});
+    l.declare_json(account).await?;
+    l.upsert("account", "1", json!({"a": "1", "s": "x"}))
+        .await?;
+    // `blank` holds `schema` and `review` and reads nothing.
+    let mut blank = crate::conformance::fixture::reviewer(s, true);
+    blank.grants.default = Access::None;
+    let (c, before) = (&l.cat, s.head().await.must("reading the head")?);
+
+    // Each door, on `account` and on `ghost`, which is not declared.
+    let mut said = Vec::new();
+    for name in ["account", "ghost"] {
+        let ty = name.into();
+        let shape = |f: &str| json!({"name": name, "fields": [text(f)]});
+        let to = || migration(serde_json::from_value(shape("a")).expect("a type"));
+        let proposed = ProposedWrite::Migrate {
+            migration: Box::new(to()),
+            report: Default::default(),
+        };
+        let on = [
+            trigger_on("t", name, Some("a = 'x'")),
+            trigger_on("u", name, None),
+            write_verb("v", name, "a", "'x'"),
+            object_set_on("o", name, "a = 'x'"),
+        ];
+        let bundle = ProposedWrite::Declare {
+            declarations: on.to_vec(),
+        };
+        let field = |f: &str| serde_json::from_value(text(f)).expect("a field");
+        let mut answers = vec![
+            why(c.add_field(&blank, &ty, field("a")).await),
+            why(c.add_field(&blank, &ty, field("new")).await),
+            why(c.migrate(&blank, to()).await),
+            why(c.migrate_apply(&blank, to(), "an id").await),
+            why(c.propose(&blank, proposed, "why".into()).await),
+            why(c.propose(&blank, bundle, "why".into()).await),
+        ];
+        for d in on {
+            answers.push(why(c.declare(&blank, d).await));
+        }
+        said.push(answers);
+    }
+    let named = |e: &Option<String>| e.as_ref().map(|e| e.replace("ghost", "account"));
+    let undeclared: Vec<_> = said[1].iter().map(named).collect();
+    ensure!(
+        said[0].iter().all(Option::is_some) && said[0] == undeclared,
+        "a type its author is not shown answers as one that is not declared, at `add_field`, \
+         a migration, its apply and its proposal, a proposed bundle, and a trigger, a verb \
+         and an object set on it; on `account` and on `ghost` {said:?}"
+    );
+    // To declare the type, or to propose it, is not granted and names
+    // nothing; and nothing was written.
+    let mut refused = Vec::new();
+    for fields in [json!([]), json!([text("a")]), json!([text("new")])] {
+        let d = decl(json!({"declare": "type", "name": "account", "fields": fields}));
+        let bundle = ProposedWrite::Declare {
+            declarations: vec![d.clone()],
+        };
+        refused.push(c.declare(&blank, d).await);
+        refused.push(c.propose(&blank, bundle, "why".into()).await);
+    }
+    let not_granted = |a: &lakelands_api::Result<Outcome>| {
+        reason(a) == Some(&Refusal::NotGranted) && refused_on(a).is_none()
+    };
+    let head = s.head().await.must("reading the head")?;
+    ensure!(
+        refused.iter().all(not_granted) && head == before,
+        "to declare or propose a type its author is not shown is not granted, names nothing \
+         and writes nothing; answered {refused:?}, the head moved from {before:?} to {head:?}"
+    );
+
+    // A value type's preview, and its refused apply, show a use and a
+    // misfit only where their caller is shown the type and reads the field.
+    let to = || serde_json::from_value(state(&["y"])).expect("a value type");
+    let mut shown = Vec::new();
+    for who in [&blank, &l.own] {
+        let preview = c.migrate_value_type(who, to()).await;
+        let report = preview.must("the preview")?.data;
+        let applied = c.migrate_value_type_apply(who, to(), &report.report_id);
+        let named = why(applied.await).is_some_and(|e| e.contains("account"));
+        let (uses, first) = (report.fields.len(), report.first.len());
+        shown.push((uses, first, report.misfits, named));
+    }
+    ensure!(
+        shown == [(0, 0, 1, false), (1, 1, 1, true)],
+        "a value type's preview and its refused apply name a use and a misfit only to one who \
+         reads the field, the totals whole; `blank`, then the owner, are shown (uses, \
+         misfits named, misfits counted, the refusal names the type) {shown:?}"
+    );
+    Ok(())
 }

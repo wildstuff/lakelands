@@ -411,3 +411,31 @@ This repairs no lake. A `migrated` event lists its moves, and the fold
 applies exactly those: a lake re-keyed before this keeps what that re-key
 left, and a link record whose key is not what its `from` and `to` make
 is how such a lake is found.
+
+## Extended: a type its author is not shown is a type that is not declared (lakelands#538)
+
+A principal with the `schema` grant that is not shown a type could
+still learn of it, and change it. `add_field` told which of its names
+were fields. A migration of it with no field was applied. A trigger, a
+verb and an object set on it were declared, where the same on a name no
+type has were refused. Seven of these doors wrote an event.
+
+To its author such a type is one that is not declared:
+
+- **`add_field`, a migration, its preview, its apply and its proposal**
+  answer that there is no such type, as they do for a name no type has.
+- **A trigger, a verb and an object set on it,** declared, applied in a
+  set or proposed in a bundle, are refused as on a type that is not
+  declared, in the same words. The set is checked against the ontology
+  as its author is shown it, which no longer holds the type
+  (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+  extended).
+- **To declare the type itself is not granted,** and so is to propose
+  it. This is the one door that cannot hide that the name is taken: for
+  a free name it creates the type. The refusal names no field and tells
+  nothing else, and nothing is written.
+
+The test comes before the author's view is completed and before
+anything is appended. An accepter stays as it was: it may accept by its
+id a proposal on a type it is not shown, and the accept's answer names
+it nothing it may not know of.

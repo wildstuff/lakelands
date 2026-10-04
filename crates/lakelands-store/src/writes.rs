@@ -1841,7 +1841,16 @@ impl Call<'_> {
     /// of and may not read is refused as not granted, where what its author
     /// adds or changes reads its value.
     fn reads_as_author(&self, o: &Ontology, sent: &[Declaration], reshapes: bool) -> Result<()> {
+        // A type its author is not shown is a type that is not declared,
+        // for whatever names it; to declare it is not granted, and names
+        // nothing of it.
+        let hidden = |d: &Declaration| {
+            matches!(d, Declaration::Type(t)
+            if o.types.contains_key(&t.name) && self.shown_type(o, &t.name).is_err())
+        };
+        granted(!sent.iter().any(hidden))?;
         let mut seen = o.clone();
+        (seen.types).retain(|name, _| self.shown_type(o, name).is_ok());
         for e in seen.types.values_mut() {
             rights::known_fields(self.who, &mut e.decl);
         }
@@ -1910,8 +1919,35 @@ impl Call<'_> {
         Ok(())
     }
 
+    /// The type `ty` for its author: one `who` is not shown is answered as
+    /// a type that is not declared (027 and 028, extended).
+    fn shown_type<'o>(&self, o: &'o Ontology, ty: &TypeName) -> Result<&'o TypeDecl> {
+        let shown = describe::one_type(ty, &o.declared(), self.who).is_some();
+        let missing = Missing::Type { name: ty.clone() };
+        (o.ty(ty)).and_then(|t| shown.then_some(t).ok_or(Error::NotFound { missing }))
+    }
+
+    /// A value type's report as the caller may know it (024): a use and a
+    /// misfit are shown where it is shown the type and reads the field. The
+    /// totals and the id, which names the whole report, stay.
+    pub fn shown_value_type(&self, o: &Ontology, mut report: ValueTypeReport) -> ValueTypeReport {
+        let read = |ty: &TypeName, field: &FieldName| {
+            let Ok(t) = self.shown_type(o, ty) else {
+                return false;
+            };
+            let f = t.fields.iter().find(|f| &f.name == field);
+            f.is_some_and(|f| rights::field_access(self.who, t, f).reads())
+        };
+        report.fields.retain(|u| read(&u.ty, &u.field));
+        report.first.retain(|m| read(&m.ty, &m.field));
+        report
+    }
+
     /// Reads a migration as its author's view of its type ([`as_author`]).
     fn authored(&self, o: &Ontology, m: &mut Migration) -> Result<()> {
+        if o.types.contains_key(&m.to.name) {
+            self.shown_type(o, &m.to.name)?;
+        }
         self.reads_as_author(o, &[Declaration::Type(m.to.clone())], true)?;
         match o.types.get(&m.to.name) {
             Some(before) => as_author(self.who, &before.decl, &mut m.to, &m.renames),
@@ -2076,7 +2112,7 @@ impl Call<'_> {
     pub fn add_field(&self, ty: &TypeName, field: FieldDecl) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         granted(self.who.grants.schema)?;
-        let mut t = self.lake.writer().ontology.ty(ty)?.clone();
+        let mut t = self.shown_type(&self.lake.writer().ontology, ty)?.clone();
         // The field is added to its author's view of the type (027).
         rights::known_fields(self.who, &mut t);
         if t.fields.iter().any(|f| f.name == field.name) {
@@ -2738,7 +2774,7 @@ impl Call<'_> {
                 "the lake moved since that preflight report; run the preflight again",
             ));
         }
-        fits(report, true)?;
+        fits(self.shown_value_type(&w.ontology, report), true)?;
         let now = self.lake.clock(&mut w);
         let drafts = self.bundle_drafts(&w, vec![Declaration::ValueType(to)], now, 0)?;
         drop(view);

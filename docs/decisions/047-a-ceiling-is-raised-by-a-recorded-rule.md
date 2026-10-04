@@ -41,6 +41,8 @@ The core's budgets are four:
 
 **The ninth raise:** the product code, from 37 000 to 37 500 lines, by slot a's word under the rule, for two fixes that close what was handed to a principal kept from it: a grant that holds a field through its renames (lakelands#527) and a type its author is not shown (lakelands#538). It rides in the first of their pull requests.
 
+**The tenth raise:** the specification, from 45 000 to 45 500 lines, by slot a's word under the rule, for the checks of a type its author is not shown (lakelands#538), which the room of the eighth raise did not hold after the checks it was sized for. It rides in the pull request of the code it is for.
+
 ## Why
 
 The budgets keep the core small enough for one reader to hold. They have done that: four diets took out about 5 000 lines without losing a check.

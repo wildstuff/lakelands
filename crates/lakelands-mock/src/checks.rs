@@ -123,6 +123,7 @@ macro_rules! door_checks {
             only_a_reviewer_decides_proposals,
             sys_types_cannot_be_declared,
             add_field_without_the_schema_grant_tells_nothing_of_the_type,
+            a_type_its_proposer_is_not_shown_is_a_type_that_is_not_declared,
             an_embedding_is_unbound_where_no_backend_is_bound,
             a_link_to_no_live_record_or_over_no_link_relation_is_refused,
             every_door_refuses_a_view_alike,
@@ -1285,6 +1286,68 @@ pub async fn a_grant_holds_a_field_through_its_rename(store: Arc<dyn LakeStore>)
             "the clerk sees `{name}` masked as of {as_of:?}, as it saw `body`: {got:?}"
         );
     }
+}
+
+/// A type its proposer is not shown is a type that is not declared
+/// (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+/// extended): the stranger, who reads `status` of invoices and nothing
+/// else, proposes a trigger on `vault`, a migration of it and the type
+/// itself. The first two answer as for `ghost`, which is not declared; the
+/// third is not granted.
+pub async fn a_type_its_proposer_is_not_shown_is_a_type_that_is_not_declared(
+    store: Arc<dyn LakeStore>,
+) {
+    let f = setup(store).await;
+    let (c, owner, stranger) = (&f.catalog, &f.cast.owner, &f.cast.stranger);
+    let shape = |name: &str| -> TypeDecl {
+        let x = json!({"name": "x", "type": {"kind": "text"}});
+        serde_json::from_value(json!({"name": name, "fields": [x]})).expect("a type")
+    };
+    let declared = c.declare(owner, Declaration::Type(shape("vault"))).await;
+    declared.expect("the owner declares `vault`");
+    let said = |name: &'static str| {
+        let (c, who) = (c.clone(), stranger.clone());
+        let trigger = json!({"declare": "trigger", "name": "t", "on": name});
+        let trigger = serde_json::from_value(trigger).expect("a trigger");
+        let migration = Box::new(lakelands_api::write::Migration {
+            to: shape(name),
+            renames: vec![],
+        });
+        let writes = [
+            ProposedWrite::Declare {
+                declarations: vec![trigger],
+            },
+            ProposedWrite::Migrate {
+                migration,
+                report: Default::default(),
+            },
+        ];
+        async move {
+            let mut said = Vec::new();
+            for write in writes {
+                let e = c.propose(&who, write, "why".into()).await;
+                said.push(
+                    e.expect_err("a proposal on a type that is not there")
+                        .to_string(),
+                );
+            }
+            said
+        }
+    };
+    let (hidden, absent) = (said("vault").await, said("ghost").await);
+    let absent: Vec<String> = absent.iter().map(|e| e.replace("ghost", "vault")).collect();
+    assert_eq!(
+        hidden, absent,
+        "`vault` answers the stranger as `ghost` does"
+    );
+    let bundle = ProposedWrite::Declare {
+        declarations: vec![Declaration::Type(shape("vault"))],
+    };
+    let e = c.propose(stranger, bundle, "why".into()).await.unwrap_err();
+    assert!(
+        matches!(refusal(&e), (None, Refusal::NotGranted)),
+        "to propose a type its proposer is not shown is not granted, and names nothing: {e:?}"
+    );
 }
 
 /// The tools a principal is offered come from the generator over what
