@@ -461,7 +461,8 @@ impl Catalog for Doors {
             let view = c.lake.engine.view(None)?;
             Ok(Reply {
                 position: view.position().unwrap_or(Position::GENESIS),
-                data: c.preflight_value_type(&w, view.as_ref(), &to)?,
+                data: c
+                    .shown_value_type(&w.ontology, c.preflight_value_type(&w, view.as_ref(), &to)?),
             })
         })
         .await

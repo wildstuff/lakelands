@@ -2296,6 +2296,9 @@ fn as_author(
 
 /// A migration read as its author's view of its type.
 fn authored(st: &State, who: &Principal, m: &mut Migration) -> Result<()> {
+    if st.types.contains_key(&m.to.name) && st.visible(who, &m.to.name).is_none() {
+        return Err(no_type(&m.to.name));
+    }
     reads_as_author(st, who, &[Declaration::Type(m.to.clone())], true)?;
     match st.types.get(&m.to.name) {
         Some(before) => as_author(who, &before.decl, &mut m.to, &m.renames),
@@ -2314,7 +2317,18 @@ fn reads_as_author(
     sent: &[Declaration],
     reshapes: bool,
 ) -> Result<()> {
+    // As the store: a type its author is not shown is a type that is not
+    // declared, for whatever names it; to declare it is not granted.
+    let shown = |ty: &TypeName| st.visible(who, ty).is_some();
+    let hidden = |d: &Declaration| {
+        matches!(d, Declaration::Type(t)
+        if st.types.contains_key(&t.name) && !shown(&t.name))
+    };
+    if sent.iter().any(hidden) {
+        return Err(refused(Refusal::NotGranted));
+    }
     let mut seen = st.clone();
+    seen.types.retain(|name, _| shown(name));
     for t in seen.types.values_mut() {
         known_fields(who, &mut t.decl);
     }
@@ -4093,7 +4107,7 @@ impl Catalog for MockCatalog {
         if reserved(ty.as_str(), who) {
             return Err(refused(Refusal::Reserved));
         }
-        let t = st.types.get(ty).ok_or_else(|| no_type(ty))?;
+        let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
         if field(&t.decl, &f.name).is_some() {
             return Err(on(
                 &f.name,
@@ -4170,9 +4184,17 @@ impl Catalog for MockCatalog {
         let log = self.log();
         let (head, st) = self.state_at(&log, None)?;
         check_new_value_type(&st, who, &to)?;
+        // As the store: a use and a misfit are shown where the caller is
+        // shown the type and reads the field; the totals and the id stay.
+        let mut data = crate::valuetypes::preflight(&st, head, &to)?;
+        let read = |ty: &TypeName, f: &FieldName| {
+            (st.visible(who, ty)).is_some_and(|t| readable(&st, who, t, f).is_ok())
+        };
+        data.fields.retain(|u| read(&u.ty, &u.field));
+        data.first.retain(|m| read(&m.ty, &m.field));
         Ok(Reply {
             position: head,
-            data: crate::valuetypes::preflight(&st, head, &to)?,
+            data,
         })
     }
 

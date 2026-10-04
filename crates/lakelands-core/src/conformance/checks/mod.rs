@@ -165,6 +165,7 @@ pub const ALL: &[Check] = &[
     computed_inputs::COMPUTED_AS_ITS_INPUTS,
     authored_reads::AUTHOR_READS,
     renamed_grants::GRANT_FOLLOWS,
+    authored_reads::HIDDEN_TYPE,
     masking::NONE_HIDES,
     masking::VALID_AT_PROBES,
     masking::WRITE_ONLY,

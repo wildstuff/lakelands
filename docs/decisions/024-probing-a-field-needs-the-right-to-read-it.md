@@ -306,3 +306,14 @@ principal may not read is not read under the name a rename gives it, nor
 under the name it had in a read as of before. How a grant holds a field
 through its renames is in `docs/decisions/006-grants-not-roles.md`,
 extended.
+
+## Extended: a value type's report is shown as its listing is (lakelands#538)
+
+The preview of a tightened value type listed every type and field that
+uses it, with its counts, and the refused apply named the first values
+that would not fit, to a caller that was shown neither the type nor the
+field. A proposal's listing was held already: a use says something of a
+field's values. Now the preview and the refused apply are held the same
+way. A use and a misfit are shown where their caller is shown the type
+and reads the field; the totals and the report's id, which names the
+whole report, stay.
