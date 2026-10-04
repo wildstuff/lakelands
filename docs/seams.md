@@ -209,10 +209,33 @@ what reads answer meanwhile, is under `LakeStore::head` below.
   a commit makes all of it visible at once, with its `through`.
 - Before the commit, the store reads a state it put in the transaction
   from what it staged, never through a view. An engine may hold the
-  puts until the commit; whatever it answers about a put itself (the
-  state it supersedes, where it ends, whether it is the head) is
-  answered over what the transaction put and what was committed
-  together, so the commit leaves what committing after each put would.
+  puts until the commit, or write them before it: PostgreSQL holds a
+  page of 1 024 puts and writes each full page inside its open
+  transaction, so it holds a page of a large append, never all of it.
+  Whatever an engine answers about a put itself (the state it
+  supersedes, where it ends, whether it is the head) is answered over
+  what the transaction put and what was committed together, so the
+  commit leaves what committing after each put would.
+- Within a transaction, a type's declaration is put before any record
+  of that type at or after the declaration's position. A record's
+  states come in that record's own order; the states of different
+  records need not come in position order, and a state below a
+  declaration's position may be put after the declaration. An engine
+  that writes a put before the commit (SQLite each one, PostgreSQL a
+  page of them) indexes the record under the declaration in force by
+  then, and depends on that order. A record written before the
+  declaration it lies at or after is not indexed under it: its full-text
+  entries and edges stay those the earlier declaration gave it, and it
+  has no row in the order index, which the declaration empties and the
+  commit fills again only from the records below the declaration's
+  position, so a page ordered by an indexed field reads it as holding no
+  value. It stays so, on SQLite and on PostgreSQL, until it is put again
+  or its type is declared again. The fold puts in the order of the
+  events, which is that order.
+- A put may answer an error the engine met writing a page. The
+  transaction is then rolled back as after any failed put: `rollback`
+  leaves nothing of it, the pages written before the failing one
+  included, and the next `begin` starts clean.
 - `commit(through)` is `Invalid` when `through` is before
   `folded_through`, or when a put in the transaction is valid from a
   position after `through`.
@@ -231,7 +254,7 @@ state again); it never adds a second one.
 |---|---|
 | `begin`, `commit(through)`, `rollback` | One transaction per append. |
 | `folded_through` | The last position the projection reflects. |
-| `put_declaration(declaration, version, schema_hash, at)` | A declaration in force from `at`, replacing, from there on, the earlier declaration with the same `declare` and name; the earlier one is kept. |
+| `put_declaration(declaration, version, schema_hash, at)` | A declaration in force from `at`, replacing, from there on, the earlier declaration with the same `declare` and name; the earlier one is kept. Put before any record of its type at or after `at` in the same transaction (above). |
 | `put_record(record)` | A record's whole state as of `record.position`: values, per-field meta, flags. The state it supersedes is kept. The engine derives its own indexes, full-text entries and edges from it and the declarations in force at that position. |
 | `put_proposal(proposal, at)` | A proposal's state from `at`, the position of its latest event; earlier states kept. A view at a position inside a multi-event append sees each state from its own event, not from the commit. |
 | `put_membership(…, at)` | Whether a record is in an object set from a position on; earlier membership kept. |
@@ -687,6 +710,7 @@ holds it to.
 | `open` of a missing lake is `Unavailable`; `Create` of an existing one opens it | engine: `opening_a_missing_lake_to_read_or_write_is_unavailable_and_create_opens_an_existing_one` |
 | a commit backwards, or with a put past `through`, is `Invalid`; a view does not see an open transaction; a view keeps its position after later commits | engine: `a_commit_backwards_or_with_a_put_past_through_is_invalid`, `a_view_does_not_see_an_open_transaction`, `a_view_keeps_its_position_after_later_commits` |
 | a put of the same thing at the same position replaces it | engine: `a_put_at_the_same_position_replaces_the_state_there` |
+| a transaction of more than a page of puts leaves what putting them one by one leaves: the head indexes, the earlier states, the memberships, an order index and a vector index asked for in it; a view opened in it after a page of its puts reads what was committed; one refused at its commit leaves nothing; on PostgreSQL a page the server refuses leaves nothing of its transaction and a commit after it leaves the session clean, a vector index asked for a page before the commit is built at the commit, and a search reads the committed vectors until then; the states of two records put record by record, below a declaration's position and at it, after the declaration, leave what position order leaves | engine: `a_transaction_of_many_puts_leaves_what_putting_them_one_by_one_leaves`; PostgreSQL: `tests/pages.rs`, `a_setting_written_a_page_before_its_commit_builds_the_index_at_the_commit`, `a_transaction_written_by_pages_is_counted_whole` |
 | `scan`'s order, `after` and `limit`, including a limit of 0 and values of mixed kinds | engine: `mixed_kinds_sort_the_same_on_every_engine`, `a_scan_continues_strictly_after_its_keyset_position` |
 | a key-ordered `scan` read in batches answers as one scan over every state | engine: `a_key_ordered_scan_answers_across_its_batches_as_one_scan` |
 | a `scan` by key that must hold a text exactly, by `equal` or by a term of its filter, reads from `after` and not every record holding the text for each page, past those that do not qualify, an ended key and keys a collation orders otherwise; a `count` under it reads the records holding the text | engine: `a_page_by_key_under_an_exact_text_reads_from_after_not_every_match` |

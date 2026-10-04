@@ -10,7 +10,7 @@
 //! head and keeps what the view's position could see. The vector index is
 //! exact: the true top `k` by cosine, ties by key.
 
-use lakelands_api::engine::{After, LakeEngine, Scan};
+use lakelands_api::engine::{After, LakeEngine, ProjectionStore, ProjectionView, Scan};
 use lakelands_api::event::{Digest, EventId};
 use lakelands_api::id::{Position, RecordKey, TypeName};
 use lakelands_api::read::{Direction, Order, OrderBy};
@@ -1026,6 +1026,238 @@ fn a_changed_record_is_found_by_what_it_holds_now_and_read_no_more(
         page == ["k1", "k2"],
         "`k1` changed its `a` from `x` to `c`, before `k2`'s `m`; the page ordered by `a` \
          answered {page:?}; it must be `k1` then `k2`"
+    );
+    Ok(())
+}
+
+engine_check!(
+    /// A transaction of many puts leaves what putting them one by one leaves.
+    MANY_PUTS = a_transaction_of_many_puts_leaves_what_putting_them_one_by_one_leaves,
+    "seams §ProjectionStore: an engine may write a transaction's puts before its commit, so a type's declaration is put before any record of the type at or after its position; a transaction of more than a page of puts (records below a declaration's position, the declaration, records after it, a record put again, a state put again at its position, a membership put twice, a `sort_index.<type>` setting after its records, a `vector_index.<type>` setting in its first page and one in its last, each with vectors put before and after the page between), over keys a database's collation orders otherwise than their bytes, leaves the head indexes, the earlier states, the memberships and the nearest vectors that putting them one by one leaves; a view opened in it after more than a page of its puts answers what was committed before it; one refused at its commit leaves nothing; and a type that holds an ended key is indexed whole when it is declared again; and the states of two records put record by record, below a declaration's position and at it, after the declaration, leave what position order leaves"
+);
+
+fn a_transaction_of_many_puts_leaves_what_putting_them_one_by_one_leaves(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    const N: u64 = 2_100;
+    let t = |searchable: bool| {
+        let under = json!([{"name": "under", "target": "t", "via": "up"}]);
+        declare(json!({
+            "declare": "type", "name": "t", "language": "en",
+            "fields": [{"name": "body", "type": {"kind": "text"}, "searchable": searchable},
+                       {"name": "v", "type": {"kind": "text"}},
+                       {"name": "up", "type": {"kind": "reference", "target": "t"}}],
+            "relations": if searchable { under } else { json!([]) }
+        }))
+    };
+    // Keys in three runs, which the bytes order `B`, `_`, `a` and a
+    // database's collation otherwise; the first and the last two are each
+    // more than a page, so a pass over the type by pages ends a page inside
+    // a run in either order.
+    let run = |i: u64| ["B", "_", "a"][usize::from(i >= 1_040) + usize::from(i >= 1_070)];
+    let (ty, key) = (TypeName::from("t"), |i: u64| format!("{}{i:04}", run(i)));
+    let state = |i: u64, at: u64| {
+        let fields = json!({"body": "river", "v": format!("{i:04}"), "up": key(0)});
+        record("t", &key(i), fields, at)
+    };
+    let member = |p: &dyn ProjectionStore, is: bool, at: u64| {
+        p.put_membership("s", &ty, &RecordKey::from(key(2)), is, Position(at))
+    };
+    // Two types with a vector field: `d`'s `vector_index` setting goes into
+    // the transaction's first page and `e`'s into its last, each with
+    // vectors put before and after the page between them.
+    let index = vectors(engine)?;
+    let vector = |p: &dyn ProjectionStore, ty: &str, key: &str, v: [f32; 2], at: u64| {
+        p.put_record(&record(ty, key, json!({"emb": v}), at))?;
+        index.put(&ty.into(), &key.into(), "emb", &v)
+    };
+    let asks = |ty: &str, at: u64| {
+        let key = format!("vector_index.{ty}");
+        let fields = json!({"key": key, "value": ["emb"]});
+        record(lakelands_api::seam::SETTING_TYPE, &key, fields, at)
+    };
+    // Folded through 1 with nothing put, so a view opened inside the next
+    // transaction has a position and reads; what it reads is asked there.
+    fold(engine, 1, |_| Ok(()))?;
+    let mut open = None;
+    fold(engine, 3, |p| {
+        for ty in ["d", "e"] {
+            let emb = json!([{"name": "emb", "type": {"kind": "vector", "dimensions": 2}}]);
+            let decl = declare(json!({"declare": "type", "name": ty, "fields": emb}));
+            p.put_declaration(&decl, 1, None, Position(1))?;
+            vector(p, ty, "east", [1.0, 0.0], 1)?;
+            vector(p, ty, "north", [0.0, 1.0], 1)?;
+        }
+        p.put_record(&asks("d", 1))?;
+        p.put_declaration(&t(false), 1, None, Position(1))?;
+        member(p, true, 1)?;
+        (0..N).try_for_each(|i| p.put_record(&state(i, 1)))?;
+        let (during, third) = (engine.view(None)?, RecordKey::from(key(3)));
+        let holds = crate::expr::parse("v = '0003'").expect("the check's filter parses");
+        open = Some((
+            during.get(&ty, &third)?.map(|r| r.key),
+            keys(&during.scan(&ty, &scan_with(|s| s.filter = Some(holds)))?),
+            during.members("s", &ty)?,
+        ));
+        drop(during);
+        // A state put again at its position, a page later, replaces the first.
+        p.put_record(&record("t", &key(1), json!({"body": "again"}), 1))?;
+        p.put_declaration(&t(true), 2, None, Position(2))?;
+        p.put_record(&record(
+            "t",
+            &key(0),
+            json!({"body": "hill", "v": "zzzz"}),
+            3,
+        ))?;
+        (N..N + 10).try_for_each(|i| p.put_record(&state(i, 3)))?;
+        member(p, false, 3)?;
+        vector(p, "d", "north-east", [1.0, 1.0], 3)?;
+        vector(p, "e", "north-east", [1.0, 1.0], 3)?;
+        p.put_record(&asks("e", 3))?;
+        p.put_record(&sort_setting(json!(["v"]), 3))
+    })?;
+    ensure!(
+        open == Some((None, vec![], Default::default())),
+        "a view opened in a transaction after more than a page of its puts read {open:?}: \
+         `{}`, the records holding `v = '0003'` and the members of `s`; nothing of them is \
+         committed, so it must answer none, none and none",
+        key(3)
+    );
+    // What the head answers: the search, a relation's edges, an exact
+    // lookup, a page in the indexed order.
+    let answers = |when: &str, rivers: u64| -> Result<(), Failure> {
+        let head = view(engine, None)?;
+        let found = |text: &str| head.lexical(&ty, text, None, 5_000).map(|h| hit_keys(&h));
+        let (river, hill) = (
+            found("river").must("searching")?,
+            found("hill").must("searching")?,
+        );
+        let from = [RecordKey::from(key(5))];
+        let out = lakelands_api::query::Walk::Out;
+        let edges = head.edges(&ty, &from, None, out).must("reading edges")?;
+        let exact = crate::expr::parse("v = '1099'").expect("the check's filter parses");
+        let exact = head.scan(&ty, &scan_with(|s| s.filter = Some(exact)));
+        let largest = [key(0), key(N + 9), key(N + 8)];
+        let by_v = scan_with(|s| {
+            s.order_by = vec![order("v", OrderBy::Value, Direction::Desc)];
+            s.limit = 3;
+        });
+        let page = keys(&head.scan(&ty, &by_v).must("a page ordered by `v`")?);
+        ensure!(
+            river.len() as u64 == rivers
+                && hill == [key(0)]
+                && edges.first().is_some_and(|e| e.len() == 1)
+                && keys(&exact.must("an exact lookup")?) == [key(1099)]
+                && page == largest,
+            "{when}: `river` is found in {} records ({rivers} hold it), `hill` in {hill:?} \
+             (`{}`); `{}` has {:?} edge(s) (one, to `{}`); the three largest `v` are {page:?} \
+             ({largest:?})",
+            river.len(),
+            key(0),
+            key(5),
+            edges.first().map(Vec::len),
+            key(0)
+        );
+        for vectors in ["d", "e"] {
+            let near = index.nearest(&vectors.into(), "emb", &[2.0, 0.0], 3);
+            let near = hit_keys(&near.must("searching the vectors")?);
+            ensure!(
+                near == ["east", "north-east", "north"],
+                "{when}: the nearest three of `{vectors}` to (2, 0) are {near:?} (`east`, \
+                 `north-east`, `north`)"
+            );
+        }
+        Ok(())
+    };
+    answers("after one transaction of more than a page of puts", N + 8)?;
+    let (at_one, head) = (view(engine, Some(Position(1)))?, view(engine, None)?);
+    let body = |v: &dyn ProjectionView, k: u64| -> Result<Option<Value>, Failure> {
+        let r = v
+            .get(&ty, &RecordKey::from(key(k)))
+            .must("reading a record")?;
+        Ok(r.and_then(|r| r.fields.get("body").cloned()))
+    };
+    let members = |v: &dyn ProjectionView| v.members("s", &ty).map(|m| m.len());
+    ensure!(
+        body(at_one.as_ref(), 0)? == Some(json!("river"))
+            && body(at_one.as_ref(), 1)? == Some(json!("again"))
+            && body(head.as_ref(), 0)? == Some(json!("hill"))
+            && members(at_one.as_ref()).must("reading the members")? == 1
+            && members(head.as_ref()).must("reading the members")? == 0,
+        "as of 1 `{0}` holds `river` and `{1}` the state put again there; at the head `{0}` \
+         holds `hill`; `{2}` is a member as of 1 and none at the head",
+        key(0),
+        key(1),
+        key(2)
+    );
+    drop((at_one, head));
+    // An ended key, then the type declared again: every record is indexed
+    // again, the ended key passed over.
+    fold_one(
+        engine,
+        4,
+        StoredRecord::ended(ty.clone(), key(7).as_str().into(), Position(4)),
+    )?;
+    fold(engine, 5, |p| {
+        p.put_declaration(&t(true), 3, None, Position(5))
+    })?;
+    answers("after an ended key and a redeclaration", N + 7)?;
+    // A transaction refused at its commit leaves nothing of its pages, seen
+    // once the projection is folded past the position they were put at.
+    let p = engine.projection();
+    p.begin().must("beginning a transaction")?;
+    (0..N)
+        .try_for_each(|i| p.put_record(&record("t", &format!("r{i:04}"), json!({}), 9)))
+        .must("putting more than a page of records")?;
+    let late = p.commit(Position(6));
+    fold(engine, 9, |_| Ok(()))?;
+    let left = view(engine, None)?.get(&ty, &RecordKey::from("r0000"));
+    ensure!(
+        crate::conformance::fixture::is_invalid(&late) && left.must("reading")?.is_none(),
+        "a commit through 6 of states valid from 9 answered {late:?}; it must be refused, \
+         and none of its {N} records stay"
+    );
+    // A declaration given first, then the states of two records, record by
+    // record, below its position and at it: what position order leaves.
+    let o = |searchable: bool| {
+        let body = json!({"name": "body", "type": {"kind": "text"}, "searchable": searchable});
+        declare(json!({"declare": "type", "name": "o", "language": "en", "fields": [body]}))
+    };
+    let state = |key: &str, body: &str, at: u64| record("o", key, json!({"body": body}), at);
+    fold(engine, 10, |p| {
+        p.put_declaration(&o(false), 1, None, Position(10))?;
+        p.put_record(&state("a", "river", 10))?;
+        p.put_record(&state("b", "river", 10))
+    })?;
+    fold(engine, 12, |p| {
+        p.put_declaration(&o(true), 2, None, Position(12))?;
+        p.put_record(&state("a", "hill", 11))?;
+        p.put_record(&state("a", "meadow", 12))?;
+        p.put_record(&state("b", "hill", 11))
+    })?;
+    let (head, o) = (view(engine, None)?, TypeName::from("o"));
+    let found = |text: &str| head.lexical(&o, text, None, 10).map(|h| hit_keys(&h));
+    let (meadow, hill, river) = (
+        found("meadow").must("searching")?,
+        found("hill").must("searching")?,
+        found("river").must("searching")?,
+    );
+    let then = |at: u64, key: &str| -> Result<Option<Value>, Failure> {
+        let v = view(engine, Some(Position(at)))?;
+        let r = v.get(&o, &RecordKey::from(key)).must("reading a record")?;
+        Ok(r.and_then(|r| r.fields.get("body").cloned()))
+    };
+    ensure!(
+        meadow == ["a"]
+            && hill == ["b"]
+            && river.is_empty()
+            && then(10, "a")? == Some(json!("river"))
+            && then(11, "a")? == Some(json!("hill"))
+            && then(12, "b")? == Some(json!("hill")),
+        "`o` was declared searchable at 12 before `a` was put at 11 and 12 and `b` at 11, in \
+         that order; `meadow` is found in {meadow:?} (`a`), `hill` in {hill:?} (`b`, whose \
+         head state lies below the declaration), `river` in {river:?} (none); as of 10, 11 \
+         and 12 a record holds the state put there"
     );
     Ok(())
 }

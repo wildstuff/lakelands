@@ -162,6 +162,69 @@ fn a_field_ordered_page_reads_its_page_not_the_type() {
     common::drop_schema(&url, &schema);
 }
 
+/// A setting may be written before the declaration that first declares
+/// its fields: a page or more before it in the same transaction (a
+/// transaction's puts are written a page of 1 024 at a time), or in a
+/// transaction before. The setting's write finds no field to keep and
+/// leaves no mark; the declaration, whose records fill the index, marks
+/// it, so a view reads the index from that commit on, wherever a page
+/// ended.
+#[test]
+fn a_setting_written_before_its_fields_are_declared_is_marked_by_the_declaration() {
+    let Some(url) = common::url_or_skip("the pg order-index test") else {
+        return;
+    };
+    for (apart, how) in [
+        (false, "a page before the declaration, in its transaction"),
+        (true, "in the transaction before the declaration's"),
+    ] {
+        let schema = common::fresh_schema();
+        let engine = PgOpener
+            .open(&common::location(&url, "sorted", &schema), OpenMode::Create)
+            .unwrap();
+        let p = engine.projection();
+        p.begin().unwrap();
+        p.put_record(&setting(json!(["v", "w"]), 1)).unwrap();
+        if apart {
+            p.commit(Position(1)).unwrap();
+            p.begin().unwrap();
+        } else {
+            // More than a page of other puts: the setting's page is written.
+            for i in 0..1_100 {
+                p.put_record(&StoredRecord {
+                    ty: TypeName::from("u"),
+                    key: RecordKey::from(format!("u{i:04}")),
+                    ..setting(json!([]), 1)
+                })
+                .unwrap();
+            }
+        }
+        p.put_declaration(&declaration(), 1, None, Position(1))
+            .unwrap();
+        for r in states() {
+            p.put_record(&r).unwrap();
+        }
+        p.commit(Position(2)).unwrap();
+        let row = exec(
+            &url,
+            format!(
+                "SELECT (SELECT n FROM \"{schema}\".meta WHERE k = 'sorted.t'), \
+                 (SELECT count(*) FROM \"{schema}\".sort_index)"
+            ),
+        );
+        let (sorted, rows): (Option<i64>, i64) = (row[0].get(0), row[0].get(1));
+        assert_eq!(
+            (sorted, rows),
+            (Some(2), holding("v") + holding("w")),
+            "the setting {how}: the declaration marks the index its records fill, kept \
+             through the commit"
+        );
+        walks_as_one_scan(engine.as_ref(), how);
+        drop(engine);
+        common::drop_schema(&url, &schema);
+    }
+}
+
 /// The records the lake holds: a declared `v` of every kind the rulebook
 /// ranks, missing from every seventh, and a declared `w` of three values.
 fn states() -> Vec<StoredRecord> {

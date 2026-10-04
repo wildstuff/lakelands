@@ -1,8 +1,9 @@
 //! What a declaration costs on PostgreSQL when it recomputes a type's
 //! derived fields: the time the `declare` holds the writer and the peak
 //! memory of its append, at 100 000 live records, for a function declared
-//! again and for the type's own derived expression declared again, each on
-//! a fresh lake. By hand, with `LAKELANDS_TEST_PG_URL` set: `cargo test
+//! again, for the type's own derived expression declared again, and for
+//! the type declared again with one more source field, which changes no
+//! record, each on a fresh lake. By hand, with `LAKELANDS_TEST_PG_URL` set: `cargo test
 //! --release -p lakelands-engine-pg --test recomputed -- --ignored
 //! --nocapture`.
 
@@ -27,7 +28,11 @@ use serde_json::json;
 #[global_allocator]
 static HEAP: PeakAlloc = PeakAlloc;
 
-const RECORDS: u64 = 100_000;
+/// How many records a cell loads: 100 000, or `LAKELANDS_TEST_RECORDS`.
+fn records() -> u64 {
+    let asked = std::env::var("LAKELANDS_TEST_RECORDS").ok();
+    asked.and_then(|n| n.parse().ok()).unwrap_or(100_000)
+}
 
 /// Runs `call` and prints how long it held and its peak memory.
 async fn measured<T>(what: &str, call: impl Future<Output = T>) -> T {
@@ -38,7 +43,8 @@ async fn measured<T>(what: &str, call: impl Future<Output = T>) -> T {
     let held = t.elapsed();
     let peak = HEAP.peak_usage().saturating_sub(live);
     println!(
-        "pg: {RECORDS} records, {what}: writer held {held:?}, peak memory {} MB",
+        "pg: {} records, {what}: writer held {held:?}, peak memory {} MB",
+        records(),
         peak / 1_000_000
     );
     answer
@@ -56,11 +62,15 @@ fn scaled(expr: &str) -> Declaration {
 
 /// One cell, on a fresh lake: loads the records of a type with one derived
 /// field, then declares again what computes it, a function the field reads
-/// (`by_function`) or the type's own expression. Prints the cost of that
+/// (`by_function`) or the type's own expression, or (`unchanged`) the type
+/// with one more source field, which computes every record again and
+/// changes none; `plain` leaves the derived field out and declares the type
+/// again with a description only, so that the store computes nothing and
+/// the cost is the engine's alone. Prints the cost of that
 /// declaration.
-async fn cell(store: &dyn LakeStore, by_function: bool) {
+async fn cell(store: &dyn LakeStore, (by_function, unchanged, plain): (bool, bool, bool)) {
     let l = Lake::of(store);
-    let bill = |expr: &str| {
+    let bill = |expr: &str, more: bool| {
         let d = match by_function {
             true => computed_by("d", Decimal, "scaled", &["net"]),
             false => derived("d", Decimal, expr, &["net"]),
@@ -70,28 +80,46 @@ async fn cell(store: &dyn LakeStore, by_function: bool) {
             sourced("net", Decimal),
             sourced("memo", Text),
         ];
-        type_decl("bill", [sources.to_vec(), vec![d]].concat())
+        // One more source field computes the type again; a description
+        // alone, on a type with no derived field, computes nothing.
+        let field = (more && !plain).then(|| sourced("note", Text));
+        let rest = (!plain).then_some(d).into_iter().chain(field).collect();
+        let mut ty = type_decl("bill", [sources.to_vec(), rest].concat());
+        ty.description = (more && plain).then(|| "declared again".into());
+        ty
     };
     l.declare_as(scaled("net * 2"), "the function")
         .await
         .unwrap();
-    l.declare(bill("net * 2")).await.unwrap();
-    let records = (0..RECORDS).map(|i| {
+    l.declare(bill("net * 2", false)).await.unwrap();
+    let records = (0..records()).map(|i| {
         let fields = json!({"n": i, "net": "3", "memo": "a memo of some length"});
         source_record("bill", &format!("b{i:06}"), fields)
     });
     l.ingest("load", records.collect()).await.unwrap();
-    if by_function {
+    if unchanged {
+        let again = l.declare(bill("net * 2", true));
+        let what = match plain {
+            true => "a type with no derived field declared again",
+            false => "the type declared again, no record changes",
+        };
+        measured(what, again).await.unwrap();
+    } else if by_function {
         let again = l.declare_as(scaled("net * 3"), "the function again");
         measured("a function declared again", again).await.unwrap();
     } else {
-        let again = l.declare(bill("net * 3"));
+        let again = l.declare(bill("net * 3", false));
         measured("a derived expression declared again", again)
             .await
             .unwrap();
     }
     let read = l.read("bill", "b000007").await.unwrap();
-    assert_eq!(read.fields.get("d"), Some(&json!("9")));
+    let d = match (plain, unchanged) {
+        (true, _) => None,
+        (false, true) => Some(json!("6")),
+        (false, false) => Some(json!("9")),
+    };
+    assert_eq!(read.fields.get("d"), d.as_ref());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -100,7 +128,17 @@ async fn recomputing_a_hundred_thousand_records() {
     let Some(url) = common::url_or_skip("the pg recomputation measurement") else {
         return;
     };
-    for by_function in [true, false] {
+    let cells = [
+        (true, false, false),
+        (false, false, false),
+        (false, true, false),
+        (false, true, true),
+    ];
+    // All, or the one `LAKELANDS_TEST_CELLS` numbers from 0.
+    let only = std::env::var("LAKELANDS_TEST_CELLS").ok();
+    let only = only.and_then(|i| i.trim().parse::<usize>().ok());
+    let chosen = |(i, c)| only.is_none_or(|o| o == i).then_some(c);
+    for which in cells.into_iter().enumerate().filter_map(chosen) {
         let schema = common::fresh_schema();
         let seams = Seams {
             engines: vec![Arc::new(PgOpener)],
@@ -110,7 +148,7 @@ async fn recomputing_a_hundred_thousand_records() {
         let store: Arc<dyn LakeStore> = lakelands_store::open(location, seams, OpenMode::Create)
             .await
             .unwrap();
-        cell(store.as_ref(), by_function).await;
+        cell(store.as_ref(), which).await;
         store.close().await.unwrap();
         common::drop_schemas(&url);
     }

@@ -345,16 +345,16 @@ A host that already has a store of its own moves in four steps.
   fields the old and the new key of every record; for a re-key its moves,
   in the report's id, the event and the fold, and one membership for each
   moved record and set; the ends of the live links of a relation it
-  narrows; a set's members and its changes up to `max_set_changes`. On
-  PostgreSQL the engine still holds the transaction's records until its
-  commit. At 100 000 records of four small fields, measured under some
+  narrows; a set's members and its changes up to `max_set_changes`.
+  PostgreSQL writes a transaction's puts a page of 1 024 at a time inside
+  its transaction, so its engine holds a page of them too. At 100 000 records of four small fields, measured under some
   load from other processes (`tests/set_migrated.rs` in the SQLite and
   PostgreSQL engines, by hand), the writer is held 4 to 5.5 s on SQLite
   and 10.5 to 14 s on PostgreSQL. On SQLite the peak is a few megabytes
   whatever the type's size, 57 MB with a set that changes 20 000
   memberships, and for a re-key of every record about 160 MB, which grows
-  with the records moved (630 MB at 400 000). On PostgreSQL it is about
-  820 MB and grows with the type (3.3 GB at 400 000). On PostgreSQL the statements that write a migration
+  with the records moved (630 MB at 400 000). On PostgreSQL it is the
+  same, with 8 MB where SQLite holds a few. On PostgreSQL the statements that write a migration
   sort and hash a row for every record; at the server's default `work_mem`
   of 4 MB they do it on disk, so a host that migrates large types gives
   the lake's connections more. An object set of the type adds little: its members
@@ -400,10 +400,13 @@ A host that already has a store of its own moves in four steps.
   four small fields, one of them derived (`tests/recomputed.rs` in the
   SQLite and PostgreSQL engines, by hand), the writer is held 4.3 to 5 s
   on SQLite and 12 to 15.5 s on PostgreSQL, with a peak of about 330 MB
-  and 1.2 GB, whichever of the two is declared again. Both grow with the
-  type's records. A migration's fold holds a page of records at a time;
+  on SQLite and 340 MB on PostgreSQL, whichever of the two is declared
+  again. Both grow with the type's records (1.3 GB at 400 000). A migration's fold holds a page of records at a time;
   a recomputation's does not yet, and lakelands#523 holds what is done
-  about it.
+  about it. A type declared again that computes nothing (its
+  description changed, say) costs one pass of the engine over its
+  records at the commit, a page at a time: 1.3 to 2 s at 100 000
+  records and 3 MB whatever the type holds.
 - **Every answer carries its position.** A host that records what an
   agent saw records the position, and reads `as_of` it later. See
   `docs/decisions/009-every-response-carries-its-position.md`.
