@@ -110,6 +110,40 @@ pub async fn apply(
     aging_rules(out, catalog, who, bundle.aging_rules).await
 }
 
+/// `recompute`: compute again what the named function or type in force
+/// computes (`Catalog::recompute`), and say from which position it holds.
+pub async fn recompute(
+    out: Out<'_>,
+    catalog: &dyn Catalog,
+    who: &Principal,
+    function: Option<String>,
+    ty: Option<String>,
+) -> Result<(), Failure> {
+    use lakelands_api::write::Recompute;
+    let what = match (function, ty) {
+        (Some(name), None) => Recompute::Function(name),
+        (None, Some(name)) => Recompute::Type(name.as_str().into()),
+        _ => {
+            return Err(Failure::new(
+                "recompute needs one of --function and --type",
+                "name the function, or the type with a field computed outside the lake",
+            ));
+        }
+    };
+    let named = match &what {
+        Recompute::Function(name) => format!("function `{name}`"),
+        Recompute::Type(name) => format!("type `{name}`"),
+    };
+    let outcome = catalog.recompute(who, what).await?;
+    put(
+        out,
+        format!(
+            "computed {named} again, from position {}",
+            outcome.position()
+        ),
+    )
+}
+
 /// Write a bundle's aging rules after its declarations, each as its
 /// `sys.aging_rule` record, skipping a rule whose stored fields already
 /// equal the file's. A field the stored rule holds and the file does not

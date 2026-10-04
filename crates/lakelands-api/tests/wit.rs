@@ -1297,6 +1297,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             Missing::Type { .. }
             | Missing::Record { .. }
             | Missing::Verb { .. }
+            | Missing::Function { .. }
             | Missing::Proposal { .. } => {}
         }
     }
@@ -1311,6 +1312,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     key: "k".into(),
                 },
                 Missing::Verb { name: "v".into() },
+                Missing::Function { name: "f".into() },
                 Missing::Proposal { id: "p".into() },
             ],
             Some("kind"),

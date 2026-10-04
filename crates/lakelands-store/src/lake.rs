@@ -815,15 +815,7 @@ impl Lake {
                     Declaration::Type(t) => match w.ontology.types.get(&t.name) {
                         Some(old)
                             if computes(&old.decl) != computes(t)
-                                || t.fields.iter().any(|f| {
-                                    f.embed.is_some()
-                                        || f.function
-                                            .as_deref()
-                                            .and_then(|n| w.ontology.functions.get(n))
-                                            .is_some_and(|func| {
-                                                crate::backed::is_backed(&func.decl)
-                                            })
-                                }) =>
+                                || crate::backed::computed_outside(&w.ontology, t) =>
                         {
                             vec![t.name.clone()]
                         }

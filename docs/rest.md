@@ -87,6 +87,7 @@ key may hold any character.
 | `POST …/schema/declare` | declare anything that does not reshape stored records | body: `declaration` |
 | `POST …/schema/apply` | declare a set together | body: `declarations` |
 | `POST …/schema/add_field` | add a field | body: `type`, `field` |
+| `POST …/schema/recompute` | compute again what a declaration in force computes | body: `function` or `type` |
 | `POST …/schema/migrate` | a migration's preflight | body: `to` and `renames`, or `value_type` |
 | `POST …/schema/migrate/apply` | apply a migration | body: `to` and `renames`, or `value_type`; and `report_id` |
 | `POST …/ingest/<source>` | ingest | body: NDJSON, one record per line |

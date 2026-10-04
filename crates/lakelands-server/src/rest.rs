@@ -629,6 +629,14 @@ fn matched(method: &Method, rest: &[String]) -> Option<Target> {
             BodyAs::Args,
             Writes::No,
         ),
+        (["schema", "recompute"], Method::POST) => r(
+            Door::Recompute,
+            "POST …/schema/recompute",
+            none,
+            &[],
+            BodyAs::Args,
+            Writes::No,
+        ),
         (["schema", "migrate"], Method::POST) => migrate("POST …/schema/migrate", Report::Refused),
         (["schema", "migrate", "apply"], Method::POST) => {
             migrate("POST …/schema/migrate/apply", Report::Required)

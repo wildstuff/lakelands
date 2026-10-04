@@ -47,7 +47,7 @@ use lakelands_api::record::{Origin, StoredRecord};
 use lakelands_api::seam::VerbExecutor;
 use lakelands_api::write::{
     Declaration, Migration, MigrationReport, Misfit, ObjectSetDecl, Outcome, ProposalState,
-    ProposedWrite, ValueTypeReport, ValueTypeUse, WriteOpts,
+    ProposedWrite, Recompute, ValueTypeReport, ValueTypeUse, WriteOpts,
 };
 use lakelands_api::{
     Access, Error, FieldName, IdempotencyKey, Missing, Patch, Position, Principal, ProposalId,
@@ -1830,6 +1830,42 @@ impl Call<'_> {
         if w.ontology.in_force(&declaration) {
             return Ok(applied(head(&w), None));
         }
+        let now = self.lake.clock(&mut w);
+        let drafts = self.bundle_drafts(&w, vec![declaration], now, 0)?;
+        let events = self.lake.append(&mut w, drafts)?;
+        Ok(outcome_of(&events))
+    }
+
+    /// `recompute`: the declaration in force appended again as it was
+    /// declared, at its next version, so that the fold does at this event
+    /// what it does at any `declared` of it (022, extended). A deliberate
+    /// act: nothing is compared, and the log shows it.
+    pub fn recompute(&self, what: &Recompute) -> Result<Outcome> {
+        check_context(self.lake, &self.context)?;
+        granted(self.who.grants.schema)?;
+        let mut w = self.writer()?;
+        let declaration = match what {
+            Recompute::Function(name) => match w.ontology.functions.get(name) {
+                Some(f) => Declaration::Function(f.decl.clone()),
+                None => {
+                    let missing = Missing::Function { name: name.clone() };
+                    return Err(Error::NotFound { missing });
+                }
+            },
+            Recompute::Type(name) => {
+                let t = self.shown_type(&w.ontology, name)?;
+                if t.view.is_some() || !crate::backed::computed_outside(&w.ontology, t) {
+                    return Err(invalid(format!(
+                        "`{name}` has no field computed outside the lake (an embedding, or a \
+                         field of a function with a backing), so nothing of it is computed \
+                         again: a derived field is as of its record's last write, and a \
+                         function is named itself"
+                    )));
+                }
+                Declaration::Type(w.ontology.as_declared(name)?)
+            }
+        };
+        self.check_bound(&declaration)?;
         let now = self.lake.clock(&mut w);
         let drafts = self.bundle_drafts(&w, vec![declaration], now, 0)?;
         let events = self.lake.append(&mut w, drafts)?;

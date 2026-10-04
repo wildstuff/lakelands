@@ -136,6 +136,17 @@ impl Ontology {
             })
     }
 
+    /// A type in force as it was declared: each computed field with the
+    /// `depends_on` its declaration listed, not the completed one.
+    pub fn as_declared(&self, name: &TypeName) -> Result<TypeDecl, Error> {
+        let mut t = self.ty(name)?.clone();
+        let listed = self.listed.get(name).into_iter().flatten();
+        computed(&mut t)
+            .zip(listed)
+            .for_each(|(f, l)| f.depends_on.clone_from(l));
+        Ok(t)
+    }
+
     /// The declaration of a verb, or `NotFound`.
     pub fn verb(&self, name: &VerbName) -> Result<&VerbDecl, Error> {
         self.verbs

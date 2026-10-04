@@ -27,7 +27,7 @@ use lakelands_api::seam::{
 };
 use lakelands_api::write::{
     Committed, Declaration, FieldConversion, FunctionDecl, Migration, MigrationReport, Outcome,
-    Proposal, ProposalFilter, ProposalState, ProposedWrite, WriteOpts,
+    Proposal, ProposalFilter, ProposalState, ProposedWrite, Recompute, WriteOpts,
 };
 use lakelands_api::{Catalog, CommitStream, SourceStream};
 
@@ -4131,6 +4131,54 @@ impl Catalog for MockCatalog {
             output: None,
             set_off: Default::default(),
             renamed: Vec::new(),
+        })
+    }
+
+    /// `recompute`, as the store: the declaration in force appended again
+    /// at its next version. The mock binds no backing and no embedder, so
+    /// no type of its has a field computed outside the lake.
+    async fn recompute(&self, who: &Principal, what: Recompute) -> Result<Outcome> {
+        self.admit_write(who)?;
+        let who = &self.followed(who, None);
+        if !who.grants.schema {
+            return Err(refused(Refusal::NotGranted));
+        }
+        let mut log = self.log();
+        let (_, st) = self.state_at(&log, None)?;
+        let declaration = match what {
+            Recompute::Function(name) => match st.functions.iter().find(|f| f.name == name) {
+                Some(f) => Declaration::Function(f.clone()),
+                None => {
+                    let missing = lakelands_api::Missing::Function { name };
+                    return Err(Error::NotFound { missing });
+                }
+            },
+            Recompute::Type(name) => {
+                st.visible(who, &name).ok_or_else(|| no_type(&name))?;
+                return Err(invalid(format!(
+                    "`{name}` has no field computed outside the lake (an embedding, or a \
+                     field of a function with a backing), so nothing of it is computed \
+                     again: a derived field is as of its record's last write, and a \
+                     function is named itself"
+                )));
+            }
+        };
+        let (schema_hash, version) = identity_version(&st, &declaration);
+        let mut batch = Batch::at(&log);
+        let body = EventBody::Declared {
+            declaration,
+            schema_hash,
+            version,
+        };
+        let position = batch.push(Draft::new(who, Origin::System, body));
+        self.commit(&mut log, batch);
+        let (version, output, set_off, renamed) = Default::default();
+        Ok(Outcome::Applied {
+            position,
+            version,
+            output,
+            set_off,
+            renamed,
         })
     }
 

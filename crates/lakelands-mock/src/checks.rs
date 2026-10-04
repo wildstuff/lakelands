@@ -40,7 +40,7 @@ use lakelands_api::seam::FeedFilter;
 use lakelands_api::tools::{Door, tools};
 use lakelands_api::write::{
     Declaration, FunctionDecl, ObjectSetDecl, Outcome, ProposalFilter, ProposalState,
-    ProposedWrite, WriteOpts,
+    ProposedWrite, Recompute, WriteOpts,
 };
 use lakelands_api::{Catalog, LakeStore, WriteContext};
 use serde_json::json;
@@ -106,6 +106,7 @@ macro_rules! door_checks {
             a_migration_keeps_what_a_view_reads,
             a_declaration_reads_only_what_its_type_has,
             a_duration_by_a_unit_is_a_number_and_what_never_lands_is_refused,
+            recompute_appends_the_function_in_force_again,
             a_migration_keeps_what_a_declaration_reads,
             a_view_is_never_migrated,
             nothing_that_never_acts_is_declared_on_a_view,
@@ -2189,6 +2190,38 @@ pub async fn a_view_reads_only_what_its_source_has(store: Arc<dyn LakeStore>) {
 fn invalid_naming(e: &Error, names: &[&str]) -> bool {
     matches!(e, Error::Refused { reason: Refusal::Invalid { message }, .. }
         if names.iter().all(|n| message.contains(n)))
+}
+
+/// `recompute` appends the function in force again and answers its
+/// position; it refuses what it cannot name and appends nothing then:
+/// without the `schema` grant not granted, a name no function or type has
+/// not found, a type with no field computed outside the lake invalid.
+pub async fn recompute_appends_the_function_in_force_again(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let (owner, clerk) = (&f.cast.owner, &f.cast.clerk);
+    let shout = json!({"declare": "function", "name": "shout", "backing": "expr",
+        "inputs": [{"name": "t", "type": {"kind": "text"}}], "expr": "upper(t)"});
+    let shout: Declaration = serde_json::from_value(shout).expect("a function");
+    f.catalog.declare(owner, shout).await.expect("declaring");
+    let function = |n: &str| Recompute::Function(n.into());
+    let before = f.head().await;
+    let done = f.catalog.recompute(owner, function("shout")).await;
+    let done = done.expect("the door on a function in force");
+    let head = f.head().await;
+    assert!(head > before && done.position() == head, "{done:?}");
+    let e = f.catalog.recompute(clerk, function("ghost")).await;
+    let e = e.expect_err("the door without the `schema` grant");
+    assert_eq!(refusal(&e), (&None, &Refusal::NotGranted));
+    for what in [function("ghost"), Recompute::Type("ghost".into())] {
+        let e = f.catalog.recompute(owner, what).await;
+        assert!(matches!(e, Err(Error::NotFound { .. })), "{e:?}");
+    }
+    let e = f.catalog.recompute(owner, Recompute::Type(INVOICE.into()));
+    let e = e
+        .await
+        .expect_err("a type with nothing computed outside the lake");
+    assert!(invalid_naming(&e, &[INVOICE]), "{e:?}");
+    assert_eq!(f.head().await, head, "a refused call appended");
 }
 
 /// A derived field, an object set's `where`, a trigger's `when` and a

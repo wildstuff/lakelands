@@ -319,6 +319,12 @@ interface types {
         function(function-decl),
     }
 
+    /// What `recompute` names.
+    variant recomputed {
+        function(string),
+        %type(type-name),
+    }
+
     record migration {
         to: type-decl,
         renames: list<tuple<field-name, field-name>>,
@@ -950,6 +956,7 @@ interface types {
         %type(type-name),
         %record(record-ref),
         verb(verb-name),
+        function(string),
         proposal(proposal-id),
     }
 

@@ -449,7 +449,8 @@ changes: one function body declared six times stood at version 6 while
 the records it had computed named version 1.
 
 So a declaration that is the one in force is answered `applied` at the
-lake's head and appends nothing. Its version stays.
+lake's head and appends nothing. Its version stays: a version counts a
+declaration's changes, and the times `recompute` appended it again (022).
 
 - **In force is judged in the form the lake keeps.** A type is compared
   after the store has put back what its author may not see (024) and has
@@ -500,6 +501,7 @@ does.** None of it was a promise of this record:
   was made.
 
 Each of these now follows a declaration that differs from the one in
-force, as the fold decides it from the `declared` event. The log format
+force, or `recompute` (022), as the fold decides it from the `declared`
+event. The log format
 does not change, and a log that holds identical declarations folds as
 it did.

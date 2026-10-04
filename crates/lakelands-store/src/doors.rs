@@ -19,7 +19,7 @@ use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
 use lakelands_api::seam::{ChangeFeed, FeedBatch, FeedFilter, Seams, VerbInvocation};
 use lakelands_api::write::{
     AgeReport, CompactReport, Declaration, Migration, MigrationReport, Outcome, Proposal,
-    ProposalFilter, ProposedWrite, PurgeReport, ValueTypeReport, WriteOpts,
+    ProposalFilter, ProposedWrite, PurgeReport, Recompute, ValueTypeReport, WriteOpts,
 };
 use lakelands_api::{
     Catalog, Error, Find, Found, Get, LakeId, LakeStore, Patch, Position, Principal, ProposalId,
@@ -415,6 +415,10 @@ impl Catalog for Doors {
     async fn apply(&self, who: &Principal, declarations: Vec<Declaration>) -> Result<Outcome> {
         self.write_settled(who, move |c| c.apply(declarations))
             .await
+    }
+
+    async fn recompute(&self, who: &Principal, what: Recompute) -> Result<Outcome> {
+        self.write_settled(who, move |c| c.recompute(&what)).await
     }
 
     async fn add_field(&self, who: &Principal, ty: &TypeName, field: FieldDecl) -> Result<Outcome> {

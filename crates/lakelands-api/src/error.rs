@@ -133,6 +133,11 @@ pub enum Missing {
         /// Its name.
         name: VerbName,
     },
+    /// A function.
+    Function {
+        /// Its name.
+        name: String,
+    },
     /// A proposal.
     Proposal {
         /// Its identifier.
@@ -186,6 +191,7 @@ impl fmt::Display for Error {
                 Missing::Type { name } => write!(f, "there is no type `{name}`"),
                 Missing::Record { ty, key } => write!(f, "there is no `{ty}` with key `{key}`"),
                 Missing::Verb { name } => write!(f, "there is no verb `{name}`"),
+                Missing::Function { name } => write!(f, "there is no function `{name}`"),
                 Missing::Proposal { id } => write!(f, "there is no proposal `{id}`"),
             },
             Error::Conflict { expected, actual } => write!(
