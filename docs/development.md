@@ -18,7 +18,18 @@ adapt it.
 Lakelands has no daemon, bus or profile, so nothing else needs
 separating today. When a test starts a server on a fixed port (the MCP
 HTTP door, a PostgreSQL service), give each slot its own port range,
-derived from its letter.
+derived from its letter. A slot's PostgreSQL is a container of its own:
+
+```sh
+docker run -d --name lakelands-agent-<slot>-pg \
+  -e POSTGRES_USER=lakelands -e POSTGRES_PASSWORD=lakelands \
+  -e POSTGRES_DB=lakelands -p 127.0.0.1:<port>:5432 \
+  pgvector/pgvector:pg16 -c max_connections=300
+```
+
+It takes 300 connections, not the image's 100: the CLI's mirror tests
+hold six connections each, and a wide machine runs sixteen of them at
+once.
 
 The MCP HTTP door speaks plain HTTP in 0.1.0, with no TLS, and API keys
 travel in every request, so bind it to loopback or terminate TLS in

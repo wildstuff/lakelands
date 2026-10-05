@@ -1735,8 +1735,9 @@ fn check_rule(st: &State, who: &Principal, key: &RecordKey, patch: &Patch) -> Re
 
 /// Refuse a setting the store reads itself where the write would leave it
 /// asking for what cannot be: an index of what that index cannot keep, or
-/// a view kept that cannot be, naming the member at fault.
-fn check_setting(st: &State, key: &RecordKey, patch: &Patch) -> Result<()> {
+/// a view kept that cannot be, naming the member at fault as its writer
+/// is shown it. As the store's record plan, after the writer's grants.
+fn check_setting(st: &State, who: &Principal, key: &RecordKey, patch: &Patch) -> Result<()> {
     let value = match patch.get("value") {
         Some(v) => Some(v.clone()),
         None => st
@@ -1744,7 +1745,8 @@ fn check_setting(st: &State, key: &RecordKey, patch: &Patch) -> Result<()> {
             .and_then(|r| r.fields.get("value").cloned()),
     };
     let declared = |t: &TypeName| st.types.get(t).map(|t| &t.decl);
-    lakelands_api::seam::check_setting(key.as_str(), value.as_ref(), &declared)
+    let shown = |t: &TypeName| st.visible(who, t).map(|t| describe_type(st, who, t));
+    lakelands_api::seam::check_setting(key.as_str(), value.as_ref(), &declared, &shown)
         .map_err(|(field, message)| on(&field, Refusal::Invalid { message }))
 }
 
@@ -1816,10 +1818,10 @@ fn plan_upsert(
     if ty.as_str() == crate::aging::RULE_TYPE {
         check_rule(st, who, key, &patch)?;
     }
-    if ty.as_str() == SETTING_TYPE {
-        check_setting(st, key, &patch)?;
-    }
     let t = check_patch(st, who, ty, &patch, Origin::Authored)?;
+    if ty.as_str() == SETTING_TYPE {
+        check_setting(st, who, key, &patch)?;
+    }
     let actual = check_version(st, ty, key, opts)?;
     let mut patch = canonical_patch(t, patch);
     with_key_fields(
@@ -2053,6 +2055,9 @@ fn plan_propose(
             check_patch(st, who, ty, patch, Origin::Authored)?;
             if ty.as_str() == crate::aging::RULE_TYPE {
                 check_rule(st, who, key, patch)?;
+            }
+            if ty.as_str() == SETTING_TYPE {
+                check_setting(st, who, key, patch)?;
             }
         }
         ProposedWrite::Retire { ty, key, .. } => {

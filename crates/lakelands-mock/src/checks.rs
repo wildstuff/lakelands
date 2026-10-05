@@ -176,6 +176,7 @@ macro_rules! door_checks {
             a_sort_index_setting_names_declared_scalar_fields_and_describe_shows_them,
             a_vector_index_setting_names_vector_fields_and_search_says_it_ranked_by_the_index,
             a_view_kept_setting_names_a_view_that_can_be_kept_and_describe_says_whether_it_is,
+            a_setting_is_judged_by_what_its_writer_is_shown,
             an_ingested_upstream_is_answered_per_field,
             a_schema_proposal_is_refused_by_kind_at_propose_and_at_accept,
             a_value_types_tightening_is_proposed_and_accepted_while_it_fits,
@@ -392,6 +393,9 @@ pub struct Cast {
     pub stranger: Principal,
     /// Writes `status`, and writes `secret` without reading it.
     pub keeper: Principal,
+    /// Writes the lake's settings, reads `status` of invoices, and reads a
+    /// `longest`, which a check may declare.
+    pub tuner: Principal,
 }
 
 impl Cast {
@@ -415,6 +419,14 @@ impl Cast {
                 fields: [(FieldName::from("body"), Access::Masked)].into(),
             },
         );
+        let mut tuner = invoice_grants(Access::None, &[("status", Access::Read)]);
+        for (name, access) in [("sys.setting", Access::Write), ("longest", Access::Read)] {
+            let grants = TypeGrants {
+                default: Some(access),
+                fields: Default::default(),
+            };
+            tuner.types.insert(TypeName::from(name), grants);
+        }
         Cast {
             owner: principal(lake, PrincipalKind::Human, "owner", Grants::owner()),
             clerk: principal(lake, PrincipalKind::Agent, "clerk", clerk),
@@ -452,6 +464,7 @@ impl Cast {
                     &[("status", Access::Write), ("secret", Access::WriteOnly)],
                 ),
             ),
+            tuner: principal(lake, PrincipalKind::Agent, "tuner", tuner),
         }
     }
 }
@@ -6535,6 +6548,36 @@ pub async fn a_sort_index_setting_names_declared_scalar_fields_and_describe_show
     );
 }
 
+/// A view of the invoices by `status`, with these measures: each a name,
+/// its kind and its expression.
+fn by_status(name: &str, measures: &[(&str, StorageKind, &str)]) -> Declaration {
+    let named = |(name, _, expr): &(&str, StorageKind, &str)| Measure {
+        name: (*name).into(),
+        expr: (*expr).into(),
+    };
+    let number = |(name, kind, _): &(&str, StorageKind, &str)| FieldDecl {
+        ty: FieldType::kind(*kind),
+        ..text(name)
+    };
+    let mut fields = vec![text("status")];
+    fields.extend(measures.iter().map(number));
+    Declaration::Type(TypeDecl {
+        name: name.into(),
+        key: vec!["status".into()],
+        fields,
+        view: Some(Box::new(ViewDecl {
+            source: INVOICE.into(),
+            params: Vec::new(),
+            r#where: None,
+            group_by: vec!["status".into()],
+            measures: measures.iter().map(named).collect(),
+            merge: Default::default(),
+        })),
+        field_meta: true,
+        ..Default::default()
+    })
+}
+
 /// A `view_kept.<type>` setting asks for a view's records to be kept. It
 /// names a declared view and holds `true` or `false`; under `true`
 /// the view must be one that can be kept, and the refusal names the view,
@@ -6549,33 +6592,7 @@ pub async fn a_view_kept_setting_names_a_view_that_can_be_kept_and_describe_says
 ) {
     let f = setup(store).await;
     let (owner, clerk) = (&f.cast.owner, &f.cast.clerk);
-    let number = |name: &str, kind| FieldDecl {
-        ty: FieldType::kind(kind),
-        ..text(name)
-    };
-    let view = |name: &str, measures: &[(&str, StorageKind, &str)]| {
-        let named = |(name, _, expr): &(&str, StorageKind, &str)| Measure {
-            name: (*name).into(),
-            expr: (*expr).into(),
-        };
-        let mut fields = vec![text("status")];
-        fields.extend(measures.iter().map(|(n, kind, _)| number(n, *kind)));
-        Declaration::Type(TypeDecl {
-            name: name.into(),
-            key: vec!["status".into()],
-            fields,
-            view: Some(Box::new(ViewDecl {
-                source: INVOICE.into(),
-                params: Vec::new(),
-                r#where: None,
-                group_by: vec!["status".into()],
-                measures: measures.iter().map(named).collect(),
-                merge: Default::default(),
-            })),
-            field_meta: true,
-            ..Default::default()
-        })
-    };
+    let view = by_status;
     let (decimal, count) = (StorageKind::Decimal, StorageKind::Number);
     let totals = view(
         "totals",
@@ -6707,6 +6724,169 @@ pub async fn a_view_kept_setting_names_a_view_that_can_be_kept_and_describe_says
             "the refusal names {name}: {message}"
         );
     }
+}
+
+/// A write of `sys.setting` as `who`, leaving `value` under the key `k`.
+async fn set_as(
+    c: &Arc<dyn Catalog>,
+    who: &Principal,
+    k: &str,
+    value: Value,
+) -> Result<Outcome, Error> {
+    let fields = patch(&[("key", json!(k)), ("value", value)]);
+    let (setting, opts) = (ty("sys.setting"), WriteOpts::default());
+    c.upsert(who, &setting, &key(k), fields, opts).await
+}
+
+/// A refusal as text: two writes that differ in one name are answered
+/// alike when these differ in that name alone.
+#[track_caller]
+fn answered<T: std::fmt::Debug>(r: Result<T, Error>) -> String {
+    format!("{:?}", r.expect_err("the write is refused"))
+}
+
+/// A setting the store reads is judged by what its writer is shown, after
+/// the grant on `sys.setting` (024, extended). One who may not write a
+/// setting gets the grant's answer under every key. To one who may, a
+/// type it is not shown is a name that is not declared, under every
+/// value, and a field it is not shown is one the type does not declare; a
+/// view it is shown without its definition cannot be kept, and nothing
+/// says why. `propose` answers as `upsert` does. A standing setting is
+/// written by one shown everything it names, and retired by any who may.
+pub async fn a_setting_is_judged_by_what_its_writer_is_shown(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let (c, owner, tuner) = (&f.catalog, &f.cast.owner, &f.cast.tuner);
+    let (decimal, count) = (StorageKind::Decimal, StorageKind::Number);
+    let vault = Declaration::Type(TypeDecl {
+        name: "vault".into(),
+        key: vec!["code".into()],
+        fields: vec![text("code")],
+        field_meta: true,
+        ..Default::default()
+    });
+    for d in [
+        vault,
+        by_status("totals", &[("total", decimal, "sum(amount)")]),
+        by_status("longest", &[("n", count, "len(max(secret))")]),
+    ] {
+        c.declare(owner, d).await.expect("the owner declares");
+    }
+    // The tuner is shown `longest` and not its definition; `vault` and
+    // `totals` it is not shown at all.
+    let longest = ty("longest");
+    let shown = c.describe_type(tuner, &longest, ReadAt::default()).await;
+    let shown = shown.expect("the tuner is shown the view").data;
+    assert!(shown.view.is_none(), "and not its definition: {shown:?}");
+    for hidden in ["vault", "totals"] {
+        let d = c.describe_type(tuner, &ty(hidden), ReadAt::default()).await;
+        assert!(d.is_err(), "the tuner is not shown `{hidden}`: {d:?}");
+    }
+
+    // (i) The grant first: who may not write a setting is answered so,
+    // whatever the setting names.
+    for who in [&f.cast.stranger, &f.cast.clerk] {
+        let grant = answered(set_as(c, who, "other.thing", json!(1)).await);
+        for (k, value) in [
+            ("sort_index.invoice", json!(["status"])),
+            ("sort_index.vault", json!(["code"])),
+            ("sort_index.nowhere", json!(["code"])),
+            ("vector_index.invoice", json!(["status"])),
+            ("view_kept.totals", json!("yes")),
+            ("view_kept.longest", json!(true)),
+        ] {
+            let answer = answered(set_as(c, who, k, value).await).replace(k, "other.thing");
+            assert_eq!(answer, grant, "`{k}` as {}: the grant answers", who.id);
+        }
+    }
+
+    // (ii) A type that is not shown answers as a name that is none.
+    let values = [
+        ("sort_index.", vec![json!(["code"]), json!([]), json!("x")]),
+        ("vector_index.", vec![json!(["code"]), json!([])]),
+        ("view_kept.", vec![json!(true), json!(false), json!("yes")]),
+    ];
+    for (prefix, values) in &values {
+        for value in values {
+            let none = format!("{prefix}nowhere");
+            let none = answered(set_as(c, tuner, &none, value.clone()).await);
+            assert!(none.contains("nowhere"), "the judge answers: {none}");
+            for hidden in ["vault", "totals"] {
+                let k = format!("{prefix}{hidden}");
+                let answer =
+                    answered(set_as(c, tuner, &k, value.clone()).await).replace(hidden, "nowhere");
+                assert_eq!(answer, none, "`{k}` = {value} answers as `nowhere` does");
+            }
+        }
+    }
+
+    // (iii) A field that is not shown answers as one the type does not
+    // declare; one shown masked is named with its kind, as `describe` has it.
+    for k in ["sort_index.invoice", "vector_index.invoice"] {
+        let none = answered(set_as(c, tuner, k, json!(["nope"])).await);
+        assert!(none.contains("does not declare"), "{none}");
+        let answer =
+            answered(set_as(c, tuner, k, json!(["secret"])).await).replace("secret", "nope");
+        assert_eq!(answer, none, "`{k}`: `secret` answers as `nope` does");
+    }
+    let masked = answered(set_as(c, tuner, "vector_index.invoice", json!(["note"])).await);
+    assert!(masked.contains("of kind"), "`note` is shown: {masked}");
+
+    // (iv) A view shown without its definition: that it cannot be kept,
+    // and nothing of the measure, the call or what it reads.
+    let whole = answered(set_as(c, owner, "view_kept.longest", json!(true)).await);
+    assert!(
+        whole.contains("max(secret)"),
+        "the owner is told why: {whole}"
+    );
+    let e = set_as(c, tuner, "view_kept.longest", json!(true)).await;
+    let e = e.expect_err("it cannot be kept");
+    let (field, reason) = refusal(&e);
+    assert_eq!(field.as_ref().map(FieldName::as_str), Some("key"));
+    let Refusal::Invalid { message } = reason else {
+        panic!("expected invalid, got {reason:?}");
+    };
+    assert!(message.ends_with("and it cannot be"), "{message}");
+    for name in ["`n`", "max", "secret"] {
+        assert!(!message.contains(name), "nothing says {name}: {message}");
+    }
+    let off = set_as(c, tuner, "view_kept.longest", json!(false)).await;
+    off.expect("asking for nothing applies");
+
+    // (v) `propose` answers as `upsert` does.
+    for (k, value) in [
+        ("sort_index.vault", json!(["code"])),
+        ("sort_index.invoice", json!(["secret"])),
+        ("view_kept.longest", json!(true)),
+    ] {
+        let write = ProposedWrite::Upsert {
+            ty: ty("sys.setting"),
+            key: key(k),
+            patch: patch(&[("key", json!(k)), ("value", value.clone())]),
+            opts: WriteOpts::default(),
+        };
+        let proposed = answered(c.propose(tuner, write, "why".into()).await);
+        let written = answered(set_as(c, tuner, k, value).await);
+        assert_eq!(proposed, written, "`{k}` is refused when it is proposed");
+    }
+
+    // (vi) A standing setting that names what the tuner is not shown: the
+    // judge reads the value a write leaves, so the tuner neither extends
+    // it nor patches beside it; it retires it.
+    let k = "sort_index.invoice";
+    let stands = set_as(c, owner, k, json!(["secret"])).await;
+    stands.expect("the owner indexes `secret`");
+    let none = answered(set_as(c, tuner, k, json!(["nope", "status"])).await);
+    let more = set_as(c, tuner, k, json!(["secret", "status"])).await;
+    assert_eq!(answered(more).replace("secret", "nope"), none);
+    let beside = patch(&[("key", json!(k))]);
+    let (setting, opts) = (ty("sys.setting"), WriteOpts::default);
+    let beside = c.upsert(tuner, &setting, &key(k), beside, opts()).await;
+    let beside = answered(beside);
+    assert!(beside.contains("does not declare"), "{beside}");
+    let retired = c.retire(tuner, &setting, &key(k), opts()).await;
+    retired.expect("a retirement is not judged");
+    let own = set_as(c, tuner, k, json!(["status"])).await;
+    own.expect("the tuner indexes what it is shown");
 }
 
 /// A `vector_index.<type>` setting asks for an index on vector fields its

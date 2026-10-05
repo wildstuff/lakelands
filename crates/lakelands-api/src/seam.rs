@@ -253,8 +253,11 @@ pub fn view_kept(value: Option<&Value>) -> bool {
 
 /// Check a write of the setting `key` that leaves `value`, one of the
 /// settings the store reads itself; any other setting passes. `declared`
-/// answers a type's declaration at the head. A refusal names the member
-/// it is about (a named field, else `key` or `value`) and why.
+/// answers a type's declaration at the head, and `shown` the type as
+/// `describe_type` answers it to the writer: the judge tells a writer
+/// nothing its description does not, so a type or a field it is not shown
+/// is answered as one that is not declared. A refusal names the member it
+/// is about (a named field, else `key` or `value`) and why.
 ///
 /// - `sort_index.<type>` and `vector_index.<type>` name a declared stored
 ///   type and hold an array of the names of fields it declares with a
@@ -262,7 +265,8 @@ pub fn view_kept(value: Option<&Value>) -> bool {
 ///   asks for no index.
 /// - `view_kept.<type>` names a declared view and holds `true` or
 ///   `false`; under `true` the view must be one that can be kept
-///   ([`crate::expr::keepable`]), and the refusal says why it is not.
+///   ([`crate::expr::keepable`]), and the refusal says why it is not to a
+///   writer shown the view as declared, and to no other.
 ///
 /// It lives in the contract, not in the core, so that the mock, which
 /// depends on this crate alone, refuses the same settings as the store.
@@ -270,18 +274,22 @@ pub fn check_setting<'a>(
     key: &str,
     value: Option<&Value>,
     declared: &dyn Fn(&crate::TypeName) -> Option<&'a TypeDecl>,
+    shown: &dyn Fn(&crate::TypeName) -> Option<crate::describe::TypeDescription>,
 ) -> std::result::Result<(), (crate::id::FieldName, String)> {
+    let known = |ty: &str| Some((shown(&ty.into())?, declared(&ty.into())?));
     if let Some(ty) = key.strip_prefix(VIEW_KEPT_SETTING) {
         let asks = format!("`{key}` asks for the view `{ty}` to be kept");
-        let Some(view) = declared(&ty.into()).and_then(|d| d.view.as_deref()) else {
+        let Some((seen, view)) = known(ty).and_then(|(s, d)| Some((s, d.view.as_deref()?))) else {
             return Err((
                 "key".into(),
                 format!("{asks}, and `{ty}` is no declared view"),
             ));
         };
         return match value {
-            Some(Value::Bool(true)) => crate::expr::keepable(view, declared)
-                .map_err(|why| ("key".into(), format!("{asks}, and it cannot be: {why}"))),
+            Some(Value::Bool(true)) => crate::expr::keepable(view, declared).map_err(|why| {
+                let why = seen.view.map_or_else(String::new, |_| format!(": {why}"));
+                ("key".into(), format!("{asks}, and it cannot be{why}"))
+            }),
             None | Some(Value::Null | Value::Bool(false)) => Ok(()),
             Some(_) => Err((
                 "value".into(),
@@ -302,7 +310,7 @@ pub fn check_setting<'a>(
         } else {
             return Ok(());
         };
-    let Some(decl) = declared(&ty.into()).filter(|d| d.view.is_none()) else {
+    let Some((seen, _)) = known(ty).filter(|(_, d)| d.view.is_none()) else {
         return Err((
             "key".into(),
             format!("`{key}` asks for {index} of `{ty}`, which is no declared stored type"),
@@ -325,7 +333,7 @@ pub fn check_setting<'a>(
                 format!("`{key}` holds field names, and {name} is not one"),
             ));
         };
-        match decl.fields.iter().find(|f| f.name.as_str() == name) {
+        match seen.fields.iter().find(|f| f.name.as_str() == name) {
             None => {
                 return Err((
                     name.into(),
