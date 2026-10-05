@@ -128,18 +128,40 @@ directory this way (`docs/decisions/030-a-lake-directory-verifies-without-its-en
 
 **What a SQLite handle holds.** A handle does not hold the log's index.
 Per segment it keeps the segment's first position and how many events it
-committed, where their bytes end, its last event's hash, and every
-256th event's place in the index file (`MARK_EVERY`): its memory grows
-by a few bytes per 256 events, not per event, and a handle opened
-read-only in another process holds the same. **The ceiling:** a read by
-position costs one seek to the mark at or before it, then reading fewer
-than 256 event lines, and the commit lines between them, before the
-first event it answers, then one event line per event, in order, with
-the commit lines between. A page of the store's sequential reads costs
-what it did when the index was held, plus that seek and that skip. The log's files stay as `docs/log-format.md` §4
-describes them; an index line that is short, unreadable or not the
-position expected is refused as a damaged index, never read as another
-event.
+committed, where their bytes end, its last event's hash, and where its
+last read ended: its memory does not grow with the lake, and a handle
+opened read-only in another process holds the same. **An open reads the
+end of each segment's index,** the sealed segments' and the active
+one's: its last 64 kB, and in them the event line before the last commit
+line, which names the last committed position, where its bytes end and
+its hash. It reads a block further back only while it has met no commit
+line, which only a group a crash left uncommitted makes it do. What an
+open costs therefore follows the number of segments (a `checkpoint`
+seals one), not the events in them (lakelands#564). Afterwards a handle
+looks for new lines in the last segment's index alone: a segment it has
+read while a later one existed is sealed, and its index is not opened
+again, so a read, a `tip` and an append list the log's directory and do
+not open a file for every segment. **The ceiling of a read:** a read by position
+halves the committed index by byte, one read of 8 kB a step (each event
+line names its position, so the first one after the middle says which
+half holds the line wanted), until the line is within 8 kB; then it
+reads one event line per event, in order, with the commit lines between,
+and checks that each is the position that follows. A read that starts
+where the segment's last one ended begins at that line with no search,
+so a page of the store's sequential reads costs its own lines. The log's
+files stay as `docs/log-format.md` §4 describes them; an index line that
+is short, unreadable or not the position expected is refused as a
+damaged index, never read as another event. **A damaged line is found
+by the read that meets it,** and so by `verify`, which reads the log
+from the first position it is asked for; an open reads the index's end
+alone and does not find it. **The journal:** a writer that gives its
+lease up (`close`) truncates the projection's journal,
+`projection.db-wal`, which otherwise stays as large as it once grew
+until a `compact`. It does not wait for a reader that holds a snapshot
+of the journal, and leaves it then for the next release. The engine's `tests/log_index.rs` holds these: what an open
+answers after each thing a crash leaves, reads from every position and
+across a seal, the bytes an open and a read take from the files, the
+read calls a handle makes beside many sealed segments, and the journal.
 
 **What only PostgreSQL decides.** The PostgreSQL engine
 (`docs/decisions/038-a-lake-in-postgresql.md`) keeps a lake in one schema

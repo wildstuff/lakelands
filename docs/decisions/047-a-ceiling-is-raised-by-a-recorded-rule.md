@@ -76,6 +76,7 @@ The budgets keep the core small enough for one reader to hold. They have done th
 **A ceiling that can never move makes the wrong trade**, though, when the code that needs the room is the code that matters most. A check that pins a rights rule is exactly what a host relies on when it moves its data onto a lake. If the only ways to fit it are to weaken it or to drop a feature a host needs, the budget has stopped protecting the reader and started costing them.
 
 **A raise must cost something to ask for**, so that it is never the easy way out of a diet. That is why it needs a decisive reason, cutting first and a size that is measured. And it must stay visible after the fact. That is why it needs a row a reader finds in one place, and a gate that refuses a number which grew without one.
+**The twenty-fourth raise:** the product code, from 40 000 to 40 500 lines, by slot a's word under the rule, for the open of a SQLite lake (lakelands#564: an open reads the end of each segment's log index and not the index, a read finds its first line by halving the index, and a handle passes by the index of a segment it has read sealed): 120 lines as measured, on a develop that stood 110 under the ceiling, 10 over it.
 
 ## What it is not
 

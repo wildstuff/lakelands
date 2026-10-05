@@ -28,22 +28,32 @@
 //! **What a handle holds.** Not the index: per segment, its first position
 //! and how many events it has committed (positions within a segment follow
 //! each other), where its committed bytes end, how far its index is read,
-//! its last event's hash, and every `MARK_EVERY`th event's place in the
-//! index file. A read seeks to the mark at or before the position it wants,
-//! reads index lines forward, checks that each event line is the position
-//! it expects, and reads the bytes the line names. Before the first event
-//! it answers it passes fewer than `MARK_EVERY` event lines, and the
-//! commit lines between them; then it reads one event line per event it
-//! answers, and the commit lines between. A page of the store's
-//! sequential reads therefore costs what it did when the index was held,
-//! plus one seek and that skip. So a handle's memory does
-//! not grow with the lake beyond a mark per `MARK_EVERY` events, and a
-//! handle opened read-only in another process refreshes and holds the
-//! same. An index line that is short, unreadable or not the position
-//! expected is a damaged index, never another event.
+//! its last event's hash, and where its last read ended. The end of an
+//! index file says the first four: the event line before the last commit
+//! line names the last committed position, where its bytes lie and its
+//! hash. So an open reads the last `BLOCK` bytes of each segment's index,
+//! and a block further back only while it has met no commit line, which a
+//! group a crash left uncommitted alone makes it do: what a lake holds
+//! does not lengthen its open, and a handle's memory does not grow with
+//! the lake. Afterwards a handle reads on from where its index is read,
+//! in the last segment alone: one it has read while a later one existed
+//! is sealed, and its index is not opened again to look for new lines.
+//!
+//! **A read** finds the line of the position it starts at by halving the
+//! committed index by byte: every event line names its position, so the
+//! first one after the middle says which half holds the line wanted. Within
+//! `NEAR` bytes of it the read goes forward a line at a time, checks that
+//! each event line is the position that follows, and reads the bytes the
+//! line names. A read that starts where the segment's last one ended
+//! begins at that line with no search, so a page of the store's sequential
+//! reads costs one event line per event it answers and the commit lines
+//! between. An index line that is short, unreadable or not the position
+//! expected is a damaged index, never another event. It is found by the
+//! read that meets it, and so by a read of the whole log; an open, which
+//! reads the index's end alone, does not find it.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use lakelands_api::engine::CanonicalEvent;
@@ -54,8 +64,17 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{invalid, io_error, unavailable};
 
-/// Every how many events a segment keeps its place in the index file.
-const MARK_EVERY: u64 = 256;
+/// How much of an index file's end is read at once.
+const BLOCK: u64 = 64 * 1024;
+
+/// How much is read at once to find where one line begins.
+const LINE: u64 = 512;
+
+/// How near the line a read starts at the halving of the index ends.
+const NEAR: u64 = 8 * 1024;
+
+/// A commit line, from the line feed of the event line it follows.
+const COMMITTED: &[u8] = b"\n[\"c\"]\n";
 
 /// One event's index line, as read from the file.
 #[derive(Clone, Debug)]
@@ -80,11 +99,11 @@ struct Segment {
     end: u64,
     /// The last committed event's hash.
     last_hash: Option<String>,
-    /// Where in the index file the line of every `MARK_EVERY`th committed
-    /// event begins: `marks[k]` is that of position `first + k * MARK_EVERY`.
-    marks: Vec<u64>,
     /// Bytes of the index file read through its last commit line.
     index_read: u64,
+    /// Where the last read ended: the position that follows, and a byte of
+    /// the index file at or before the one its line begins at.
+    resume: (u64, u64),
     /// The digest, once the segment is sealed and it was computed.
     digest: Option<Digest>,
 }
@@ -165,6 +184,92 @@ fn parse_at(path: &Path, line: &[u8], expected: u64) -> Result<Option<Entry>> {
     }
 }
 
+/// Where `wanted` last begins in the first `end` bytes of `file`, read
+/// `step` bytes at a time from the end and never whole: after a crash the
+/// lines without a commit line can be most of the active segment's index.
+/// What lies across two steps is passed by.
+fn last_of(mut file: &File, mut end: u64, wanted: &[u8], step: u64) -> io::Result<Option<u64>> {
+    loop {
+        let at = end.saturating_sub(step);
+        let mut block = Vec::new();
+        file.seek(SeekFrom::Start(at))?;
+        file.take(end - at).read_to_end(&mut block)?;
+        if let Some(i) = block.windows(wanted.len()).rposition(|w| w == wanted) {
+            return Ok(Some(at + i as u64));
+        }
+        if at == 0 {
+            return Ok(None);
+        }
+        end = at;
+    }
+}
+
+/// What the end of its index says of a segment this handle has not read:
+/// the event line before a commit line names the last position committed
+/// through it, where its bytes end and its hash. The commit line is the
+/// last, or one before it when the last lies across two blocks: the lines
+/// after it are read as a later append's are. An index that holds no
+/// commit line says nothing.
+fn read_end(path: &Path, mut file: &File, segment: &mut Segment) -> Result<()> {
+    let reading = |e| io_error("reading", path, e);
+    let len = file.metadata().map_err(reading)?.len();
+    let Some(feed) = last_of(file, len, COMMITTED, BLOCK).map_err(reading)? else {
+        return Ok(());
+    };
+    let begins = last_of(file, feed, b"\n", LINE).map_err(reading)?;
+    let begins = begins.map_or(0, |at| at + 1);
+    let mut line = vec![0; (feed + 1 - begins) as usize];
+    file.seek(SeekFrom::Start(begins))
+        .and_then(|_| file.read_exact(&mut line))
+        .map_err(reading)?;
+    let last = parse_line(path, &line)?
+        .filter(|e| e.position >= segment.first)
+        .ok_or_else(|| damaged(path, "its last commit line follows no event of its segment"))?;
+    segment.count = last.position - segment.first + 1;
+    segment.end = last.offset + last.len + 1;
+    segment.last_hash = Some(last.hash);
+    segment.index_read = feed + COMMITTED.len() as u64;
+    Ok(())
+}
+
+/// An event line at or before that of position `start` in a segment's
+/// committed index, as its position and the byte it begins at, the line
+/// wanted no more than `NEAR` bytes after it.
+fn line_near(path: &Path, mut file: &File, segment: &Segment, start: u64) -> Result<(u64, u64)> {
+    // The line wanted begins at `found.1` or after it, and at `end` or
+    // before it.
+    let (mut found, mut end) = ((segment.first, 0), segment.index_read - 1);
+    while end - found.1 > NEAR {
+        let middle = found.1 + (end - found.1) / 2;
+        file.seek(SeekFrom::Start(middle))
+            .map_err(|e| io_error("reading", path, e))?;
+        let mut lines = std::io::BufReader::new(file);
+        let (mut at, mut line) = (middle, Vec::new());
+        let landed = loop {
+            let begins = at;
+            line.clear();
+            at += lines
+                .read_until(b'\n', &mut line)
+                .map_err(|e| io_error("reading", path, e))? as u64;
+            if at == begins || begins > end {
+                break None;
+            }
+            // The first line read is the rest of the one `middle` lies
+            // in; a commit line names no position.
+            if begins > middle
+                && let Some(e) = parse_line(path, &line)?
+            {
+                break Some((e.position, begins));
+            }
+        };
+        match landed {
+            Some(line) if line.0 <= start => found = line,
+            _ => end = middle,
+        }
+    }
+    Ok(found)
+}
+
 /// One lake's log, as this handle has read it.
 #[derive(Debug)]
 pub(crate) struct Log {
@@ -242,32 +347,38 @@ impl Log {
 
     /// Read what other handles committed since this one last looked.
     pub(crate) fn refresh(&mut self) -> Result<()> {
+        // A segment read while a later one existed is sealed: its index
+        // does not change, and it is not opened again.
+        let sealed = self.segments.len().saturating_sub(1);
         for first in self.files()? {
             if !self.segments.iter().any(|s| s.first == first) {
                 self.segments.push(Segment {
                     first,
+                    resume: (first, 0),
                     ..Segment::default()
                 });
             }
         }
-        for segment in &mut self.segments {
+        for segment in &mut self.segments[sealed..] {
             let path = index_path(&self.dir, segment.first);
             let mut file = match File::open(&path) {
                 Ok(f) => f,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => return Err(io_error("reading", &path, e)),
             };
+            if segment.index_read == 0 {
+                read_end(&path, &file, segment)?;
+            }
             file.seek(SeekFrom::Start(segment.index_read))
                 .map_err(|e| io_error("reading", &path, e))?;
-            // The tail not indexed yet is read a line at a time, never
-            // whole: after a crash it can be most of the active segment.
+            // What follows is read a line at a time, never whole: after a
+            // crash it can be most of the active segment.
             let mut tail = std::io::BufReader::new(file);
             let mut line = Vec::new();
             // What the lines since the last commit line add, kept until
             // their commit line is read: a group never committed is no
             // event.
             let mut pending = 0u64;
-            let mut marks = Vec::new();
             let mut last: Option<Entry> = None;
             let mut read = 0u64;
             loop {
@@ -278,13 +389,11 @@ impl Log {
                 if n == 0 || line.last() != Some(&b'\n') {
                     break;
                 }
-                let at = segment.index_read + read;
                 read += line.len() as u64;
                 let expected = segment.first + segment.count + pending;
                 match parse_at(&path, &line, expected)? {
                     None => {
                         segment.count += pending;
-                        segment.marks.append(&mut marks);
                         if let Some(e) = last.take() {
                             segment.end = e.offset + e.len + 1;
                             segment.last_hash = Some(e.hash);
@@ -294,9 +403,6 @@ impl Log {
                         read = 0;
                     }
                     Some(e) => {
-                        if (expected - segment.first).is_multiple_of(MARK_EVERY) {
-                            marks.push(at);
-                        }
                         pending += 1;
                         last = Some(e);
                     }
@@ -380,14 +486,10 @@ impl Log {
         let mut offset = active.end;
         let mut lines = Vec::new();
         let mut index = Vec::new();
-        let mut marks = Vec::new();
         for event in events {
             lines.extend_from_slice(&event.bytes);
             lines.push(b'\n');
             let len = event.bytes.len() as u64;
-            if (event.position.0 - active.first).is_multiple_of(MARK_EVERY) {
-                marks.push(active.index_read + index.len() as u64);
-            }
             let line = serde_json::json!([
                 "e",
                 event.position.0,
@@ -402,7 +504,7 @@ impl Log {
             index.push(b'\n');
             offset += len + 1;
         }
-        index.extend_from_slice(b"[\"c\"]\n");
+        index.extend_from_slice(&COMMITTED[1..]);
         for (path, bytes) in [(&segment_path, &lines), (&index_path, &index)] {
             let mut file = OpenOptions::new()
                 .append(true)
@@ -415,12 +517,10 @@ impl Log {
         active.index_read += index.len() as u64;
         active.count += events.len() as u64;
         active.end = offset;
-        active.marks.extend(marks);
         active.last_hash = events.last().map(|e| e.hash.0.clone());
         Ok(())
     }
 
-    /// At most `limit` events from `from` on, as appended.
     /// The fence of the event at `position`.
     fn fence_at(&mut self, position: u64) -> Result<u64> {
         self.read(Position(position), 1)?
@@ -429,10 +529,11 @@ impl Log {
             .ok_or_else(|| unavailable(format!("the log holds no event at position {position}")))
     }
 
+    /// At most `limit` events from `from` on, as appended.
     pub(crate) fn read(&mut self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>> {
         self.refresh()?;
         let mut out = Vec::new();
-        for segment in &self.segments {
+        for segment in &mut self.segments {
             let Some(last) = segment.last() else {
                 continue;
             };
@@ -440,7 +541,8 @@ impl Log {
             if start > last || out.len() >= limit as usize {
                 continue;
             }
-            let wanted = self.entries_of(segment, start, limit as u64 - out.len() as u64)?;
+            let wanted =
+                Self::entries_of(&self.dir, segment, start, limit as u64 - out.len() as u64)?;
             let path = segment_path(&self.dir, segment.first);
             let mut file = File::open(&path).map_err(|e| io_error("reading", &path, e))?;
             for e in wanted {
@@ -473,17 +575,17 @@ impl Log {
     }
 
     /// At most `n` of a segment's committed index lines from position
-    /// `start` on: from the mark at or before it, each line checked to be
-    /// the position that follows the one before.
-    fn entries_of(&self, segment: &Segment, start: u64, n: u64) -> Result<Vec<Entry>> {
-        let path = index_path(&self.dir, segment.first);
+    /// `start` on: from where the segment's last read ended, when that is
+    /// `start`, and else from a line near it, each line checked to be the
+    /// position that follows the one before.
+    fn entries_of(dir: &Path, segment: &mut Segment, start: u64, n: u64) -> Result<Vec<Entry>> {
+        let path = index_path(dir, segment.first);
         let last = segment.last().unwrap_or(segment.first);
-        let k = (start - segment.first) / MARK_EVERY;
-        let (mut expected, at) = match segment.marks.get(k as usize) {
-            Some(at) => (segment.first + k * MARK_EVERY, *at),
-            None => return Err(damaged(&path, format!("no mark for position {start}"))),
-        };
         let mut file = File::open(&path).map_err(|e| io_error("reading", &path, e))?;
+        let (mut expected, mut at) = match segment.resume {
+            resume if resume.0 == start => resume,
+            _ => line_near(&path, &file, segment, start)?,
+        };
         file.seek(SeekFrom::Start(at))
             .map_err(|e| io_error("reading", &path, e))?;
         let mut lines = std::io::BufReader::new(file);
@@ -500,6 +602,7 @@ impl Log {
                     format!("it ends before the committed position {expected}"),
                 ));
             }
+            at += read as u64;
             let Some(e) = parse_at(&path, &line, expected)? else {
                 continue;
             };
@@ -508,6 +611,7 @@ impl Log {
                 out.push(e);
             }
         }
+        segment.resume = (expected, at);
         Ok(out)
     }
 
