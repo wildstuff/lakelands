@@ -1461,7 +1461,7 @@ impl Call<'_> {
         let due = matches!(decl.effect, VerbEffect::External { .. })
             && matches!(drafts[0].body, EventBody::VerbCalled { .. });
         let appended = self.lake.append(&mut w, drafts);
-        let events = appended.map_err(|e| not_handed(e, due && w.behind))?;
+        let events = appended.map_err(|e| not_handed(e, due && w.behind, false))?;
         let outcome = outcome_of(&events);
         let external = match (&decl.effect, decl.risk, &events[0].body) {
             (VerbEffect::External { executor }, Risk::Low, EventBody::VerbCalled { .. }) => {
@@ -1803,7 +1803,7 @@ impl Call<'_> {
         }
         drop(view);
         let appended = self.lake.append(&mut w, drafts);
-        let events = appended.map_err(|e| not_handed(e, external.is_some() && w.behind))?;
+        let events = appended.map_err(|e| not_handed(e, external.is_some() && w.behind, true))?;
         Ok((self.answered(&events, renamed), external))
     }
 
@@ -3294,17 +3294,23 @@ pub fn cardinality_among(
     Ok(())
 }
 
-/// The answer to the call of an external verb whose append is in the log
-/// and not folded (`unfolded`): the store's sentence for it, and that the
-/// verb's executor was not handed the call. Sent again under its key, the
-/// call is answered its position and runs nothing; the host calls the verb
-/// again, which is a new position.
-fn not_handed(e: Error, unfolded: bool) -> Error {
+/// The answer to a call of an external verb, or to its acceptance when
+/// `accepted`, that failed where `not_run` holds: its append is in the
+/// log and not folded, or the drain before its hand-out failed. The
+/// store's sentence for the failure, and that the verb's executor was not
+/// handed the call. Sent again under its key, the call is answered its
+/// position and runs nothing, and a proposal accepted again is decided;
+/// the host calls the verb again, which is a new position.
+pub(crate) fn not_handed(e: Error, not_run: bool, accepted: bool) -> Error {
+    let again = match accepted {
+        true => "the proposal is decided, so accepting it again",
+        false => "sending it again under its key",
+    };
     match e {
-        Error::Unavailable { message } if unfolded => Error::Unavailable {
+        Error::Unavailable { message } if not_run => Error::Unavailable {
             message: format!(
-                "{message}; the verb's executor was not handed this call, and sending it \
-                 again under its key will not run it: call the verb again"
+                "{message}; the verb's executor was not handed this call, and {again} will \
+                 not run it: call the verb again"
             ),
         },
         e => e,

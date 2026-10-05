@@ -123,9 +123,23 @@ impl Doors {
     /// its outcome at the position of the last output recorded, from which
     /// the filled fields are visible. Of what the write set off, it names
     /// only what [`lakelands_core::describe::named_reactions`] leaves `who` (024);
-    /// `through` still covers it all.
-    async fn settled(&self, who: &Principal, mut outcome: Outcome, seen: u64) -> Result<Outcome> {
-        let last = crate::backed::settle_after(&self.lake, seen).await;
+    /// `through` still covers it all. A drain that fails is not the
+    /// write's failure, but an external verb is handed to its executor
+    /// only after a drain that did not fail: after one that did, the
+    /// writer may be behind and the executor's answer could not be
+    /// recorded, so nothing is handed and [`writes::not_handed`] answers.
+    async fn handed(
+        &self,
+        who: &Principal,
+        (mut outcome, external): (Outcome, Option<External>),
+        seen: u64,
+        accepted: bool,
+    ) -> Result<Outcome> {
+        let last = crate::backed::settle(&self.lake, seen).await;
+        let last = match &external {
+            Some(_) => last.map_err(|e| writes::not_handed(e, true, accepted))?,
+            None => last.unwrap_or(None),
+        };
         let named = matches!(&outcome, Outcome::Applied { set_off, .. } if set_off.names_any());
         let lake = if named {
             Some(self.describe(who, ReadAt::default()).await?.data)
@@ -142,17 +156,20 @@ impl Doors {
                 lakelands_core::describe::named_reactions(&lake, set_off);
             }
         }
-        Ok(outcome)
+        match external {
+            Some(ext) => Ok(writes::with_output(outcome, self.execute(ext).await?)),
+            None => Ok(outcome),
+        }
     }
 
-    /// A write whose outcome is [`Doors::settled`].
+    /// A write whose outcome is [`Doors::handed`]'s.
     async fn write_settled<F>(&self, who: &Principal, f: F) -> Result<Outcome>
     where
         F: FnOnce(&Call<'_>) -> Result<Outcome> + Send + 'static,
     {
         let seen = self.seen();
         let outcome = self.write(who, f).await?;
-        self.settled(who, outcome, seen).await
+        self.handed(who, (outcome, None), seen, false).await
     }
 
     /// Hand an external verb to its executor and record the answer; the
@@ -295,14 +312,10 @@ impl Catalog for Doors {
     ) -> Result<Outcome> {
         let (verb, key) = (verb.clone(), key.cloned());
         let seen = self.seen();
-        let (outcome, external) = self
+        let called = self
             .write(who, move |c| c.call(&verb, key.as_ref(), payload, opts))
             .await?;
-        let outcome = self.settled(who, outcome, seen).await?;
-        match external {
-            Some(ext) => Ok(writes::with_output(outcome, self.execute(ext).await?)),
-            None => Ok(outcome),
-        }
+        self.handed(who, called, seen, false).await
     }
 
     async fn query(&self, who: &Principal, pattern: Pattern) -> Result<Reply<QueryResult>> {
@@ -380,12 +393,8 @@ impl Catalog for Doors {
     async fn accept(&self, who: &Principal, proposal: &ProposalId) -> Result<Outcome> {
         let p = proposal.clone();
         let seen = self.seen();
-        let (outcome, external) = self.write(who, move |c| c.accept(&p)).await?;
-        let outcome = self.settled(who, outcome, seen).await?;
-        match external {
-            Some(ext) => Ok(writes::with_output(outcome, self.execute(ext).await?)),
-            None => Ok(outcome),
-        }
+        let accepted = self.write(who, move |c| c.accept(&p)).await?;
+        self.handed(who, accepted, seen, true).await
     }
 
     async fn reject(

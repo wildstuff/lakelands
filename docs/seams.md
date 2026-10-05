@@ -814,9 +814,12 @@ function (`docs/decisions/022-functions-are-declarations.md`, extended):
   backing gave it until it is recorded, so a recording that fails (for
   one call, or for the first text of a batch of embeddings) is made
   again by the next drain without a second call. The hold is the
-  handle's: a process that ends between an answer and its recording, or
-  a `rebuild` meanwhile, loses it, and that input may be called for once
-  more. The one exception is deliberate: declaring the function, or
+  handle's, and is lost with what holds it: by a process that ends
+  between an answer and its recording, by a `rebuild` meanwhile, and by
+  a door's call that is dropped in the middle of its drain, which takes
+  every due it had taken with it, answered or not. A field so left
+  waits until its call is due again (a write to its inputs, or a
+  `recompute`), and that input may be called for once more. The one exception is deliberate: declaring the function, or
   a type whose fields it computes, again calls once more for an input
   whose recorded output is a failure. The later output holds
   (`docs/decisions/022-functions-are-declarations.md`, extended).
@@ -1083,7 +1086,12 @@ store's answer to that call says so in its sentence (the verb's executor
 was not handed this call, and sending it again under its key will not
 run it), the retry is answered the position with no output, and the host
 calls the verb again. An acceptance whose fold failed is answered the
-same sentence, and sent again it is `decided`.
+same in its own words (the proposal is decided, so accepting it again
+will not run it), and sent again it is `decided`. The executor is handed
+nothing either where the drain of due calls before the hand-out failed:
+the writer may be behind then, and the executor's answer could not be
+recorded. The call, folded at its position, is answered that drain's
+failure with the same sentence, and the host calls the verb again.
 
 There is no default: a verb whose executor is not bound is refused as
 `Unbound`, never faked. The store checks it when the verb is called or
@@ -1769,11 +1777,19 @@ drain of due calls reads behind the same catch-up, so an output whose
 recording was appended and not folded is found and its call is not made
 again; and a drain that fails is not its write's failure: an upsert, a
 feed's window, an aging run and a purge are each answered their own
-outcome, the computed fields waiting. The failure is not lost: where a
-recording's fold failed the writer is behind, and the next write catches
-up first or is answered `unavailable` in that fold's words; what was not
-recorded stays due on the handle, with the answer its call was given,
-and the next write's drain records it. Only the lease's holder folds: a
+outcome, the computed fields waiting. A fold's failure is not lost:
+where a recording's fold failed the writer is behind, and the next write
+catches up first or is answered `unavailable` in that fold's words. A
+drain's failure that is no fold's (the recording could not be appended,
+or what the drain decides on could not be read) leaves the writer as it
+was and is answered to no one: what it leaves to see is the field that
+waits, cleared and without `error`, and for an embedding
+`vector_coverage`'s `due`. Either way what was not recorded stays due on
+the handle, with the answer its call was given, and first in line: the
+next write's drain records it, and stops where it fails again, so a due
+that fails each time stands before the dues behind it. One write is
+answered a drain's failure: the call of an external verb and its
+acceptance, whose executor is handed nothing after it (§`VerbExecutor`). Only the lease's holder folds: a
 handle that closed while it was behind folds nothing, clears nothing by
 `rebuild`, and is refused as any handle without the lease. A handle
 opened only to read names the position the writer has folded.

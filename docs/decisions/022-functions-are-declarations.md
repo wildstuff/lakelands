@@ -128,7 +128,11 @@ each call it looks again for an output recorded for the same call, so
 one input is never sent twice, not even by two writes that race. An
 answer is held with its due until it is recorded, so a recording that
 fails is made again by the next drain without a second call; the hold
-is the handle's and ends with it. It
+is the handle's and ends with it, or with a door's call that is dropped
+in the middle of its drain, which loses every due it had taken. A drain
+stops at the due whose recording fails, and that due stays first in
+line: one that fails each time stands before the dues behind it, and
+where no fold failed nothing says so but the fields that wait. It
 records each answer as `output_recorded` naming the field, with `cause`
 the event that made it due and `procedure` the function's name and
 version. The output and everything its fill causes carry the context

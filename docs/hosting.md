@@ -451,13 +451,22 @@ A host that already has a store of its own moves in four steps.
   host calls the verb again. The kind is the same as for a write that never
   reached the log, and a caller cannot tell the two apart by it, over a
   network door least of all: a host that must not write twice gives its
-  writes a key. A write whose own fold succeeded is never answered an
-  error for what came after it: when the calls it made due cannot be
-  recorded, an upsert, a feed's window, an aging run and a purge are
-  each answered their own outcome and the computed fields wait. The
-  next write records what was left, from the answers the calls were
-  already given, or is answered `unavailable` if the lake cannot catch
-  up; `vector_coverage` counts the embeddings that still wait.
+  writes a key. When the calls a write made due cannot be recorded, an
+  upsert, a feed's window, an aging run and a purge whose own fold
+  succeeded are each answered their own outcome and the computed fields
+  wait. The next write records what was left, from the answers the calls
+  were already given, or is answered `unavailable` if the lake cannot
+  catch up; `vector_coverage` counts the embeddings that still wait. Two
+  writes are answered an error although their own fold succeeded. A call
+  of a verb that reaches outside the lake, and its acceptance: where the
+  calls due before the hand-out could not be recorded, the executor is
+  handed nothing and the answer is `unavailable` with the sentence about
+  the executor (an acceptance's says that the proposal is decided, and
+  that accepting it again will not run the verb). And a write that set
+  something off (a trigger fired, a set joined or left), which reads
+  the lake's description to name it to its writer: where that read
+  fails, the write is answered the read's error. Each is in the log and
+  folded, and a write sent again under its key is answered its position.
 - **A declaration that recomputes a type is a step for a quiet moment.**
   A function declared again with a change, or a type declared again with
   another derived expression, computes the derived fields of every live record

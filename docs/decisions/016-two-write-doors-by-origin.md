@@ -113,9 +113,9 @@ one place, and a writer whose fold failed folds from the projection's
 position there, before the door's own checks; where that fold fails the
 write is `unavailable`, whatever kind the fold answered, and appends
 nothing. The store's own writes take the writer there too: the drain of
-due calls reads what it decides on behind the catch-up. An append that
-reaches the log under a writer that is behind was decided some other
-way, and is refused. The write whose fold failed is answered `unavailable` with its
+due calls reads what it decides on behind the catch-up. An append
+decided under a writer that is behind was decided some other way: it is
+refused before it reaches the log, and appends nothing. The write whose fold failed is answered `unavailable` with its
 position in the log: sent again under its idempotency key it is the
 retry, answered the first write's outcome; without a key it is a second
 write. No kind of its own tells it from a write that never landed: a

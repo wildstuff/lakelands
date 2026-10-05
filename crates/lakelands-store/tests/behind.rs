@@ -537,6 +537,11 @@ async fn a_drain_reads_behind_the_catch_up_and_its_failure_is_not_the_writes() {
 async fn payable(l: &Lake, risk: Risk) {
     l.declare(doc("n + 1")).await.unwrap();
     applied(write(l, "a", 1, None).await);
+    pay_verb(l, risk).await;
+}
+
+/// The verb `pay` on `doc`, at `risk`.
+async fn pay_verb(l: &Lake, risk: Risk) {
     let pay = Declaration::Verb(VerbDecl {
         name: "pay".into(),
         on: "doc".into(),
@@ -604,7 +609,11 @@ async fn a_call_of_an_external_verb_whose_fold_failed_says_its_executor_was_not_
     };
     *probe.refuse_commit.lock().unwrap() = Some(1);
     let said = unavailable(l.cat.accept(&l.own, &proposal).await);
-    assert!(said.ends_with(not_handed), "an acceptance: {said}");
+    let accepted = not_handed.replace(
+        "sending it again under its key",
+        "the proposal is decided, so accepting it again",
+    );
+    assert!(said.ends_with(&accepted), "an acceptance: {said}");
     let decided = l.cat.accept(&l.own, &proposal).await;
     let refused = matches!(
         &decided,
@@ -723,6 +732,66 @@ async fn an_answer_whose_recording_failed_is_recorded_without_a_second_call() {
         let got = l.cat.get(&l.own, &"note".into(), get_at(key, None)).await;
         let fields = got.unwrap().data.fields;
         assert_eq!(fields.get("vec"), Some(&json!([1, 0])), "`{key}`");
+    }
+}
+
+/// Row 13. An external verb's executor is handed nothing after a drain
+/// that failed: the call and the acceptance are answered the drain's
+/// failure with the sentence of a verb that was not run, each in its own
+/// words. The call sent again is answered its position with no output,
+/// the acceptance sent again is `decided`, and the one call handed is the
+/// backing's, made due by catching up over a write whose fold failed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_external_verb_is_handed_nothing_after_a_drain_that_failed() {
+    let not_handed = "the verb's executor was not handed this call, and";
+    let not_run = "will not run it: call the verb again";
+    for risk in [Risk::Low, Risk::High] {
+        let counting = Arc::new(Counting::default());
+        let (store, probe, _) = bound(&format!("behind-hand-{risk:?}"), counting.clone()).await;
+        let l = Lake::of(store.as_ref());
+        summed(&l).await;
+        pay_verb(&l, risk).await;
+        applied(write(&l, "a", 1, None).await);
+        let proposed = match risk {
+            Risk::High => Some(pay(&l).await),
+            _ => None,
+        };
+        *probe.refuse_commit.lock().unwrap() = Some(1);
+        unavailable(write(&l, "b", 2, None).await);
+        counting.refuses_its_recording(&probe);
+        let (said, again) = match proposed {
+            None => {
+                let said = unavailable(pay(&l).await);
+                assert_eq!(ran(pay(&l).await).1, None, "sent again: no output");
+                (said, "sending it again under its key")
+            }
+            Some(proposed) => {
+                let Ok(Outcome::Proposed { proposal, .. }) = proposed else {
+                    panic!("a high verb is proposed: {proposed:?}");
+                };
+                let said = unavailable(l.cat.accept(&l.own, &proposal).await);
+                let decided = l.cat.accept(&l.own, &proposal).await;
+                let refused = matches!(
+                    &decided,
+                    Err(Error::Refused {
+                        reason: Refusal::Decided,
+                        ..
+                    })
+                );
+                assert!(refused, "{decided:?}");
+                (said, "the proposal is decided, so accepting it again")
+            }
+        };
+        assert!(
+            said.ends_with(&format!("{not_handed} {again} {not_run}")),
+            "{risk:?}: {said}"
+        );
+        assert_eq!(
+            counting.handed.load(Ordering::SeqCst),
+            2,
+            "{risk:?}: the backing's two calls, and nothing handed to the executor"
+        );
+        assert_eq!(state(&l, "b", None).await[0], json!({"n": 2, "sum": 7}));
     }
 }
 

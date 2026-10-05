@@ -95,6 +95,11 @@ it. The store does not answer that call as if it were: its sentence
 says that the verb's executor was not handed the call and that sending
 it again under its key will not run it, and the retry answers the
 position with no output. The host calls the verb again, a new position.
+An acceptance is answered so in its own words (the proposal is decided,
+and accepting it again will not run it). The same holds where the call's
+own fold succeeded and the drain of due calls before the hand-out
+failed: an executor is handed a call only when its answer can be
+recorded, and after such a drain the writer may be behind.
 Whether a retry may ever hand such a position to an executor is not
 decided here: it would change what an executor is promised (once per
 position), and under which declaration, by whose grant and on which
