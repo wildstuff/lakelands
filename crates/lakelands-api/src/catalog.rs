@@ -336,7 +336,9 @@ pub trait LakeStore: Send + Sync {
     fn feed(&self) -> Arc<dyn ChangeFeed>;
 
     /// Check the hash chain between two positions (all of it when both
-    /// are absent), against the lake's checkpoints.
+    /// are absent), against the lake's checkpoints. It reads the log, so
+    /// it finds what an open does not look for: a damaged line of an
+    /// engine's index of the log.
     async fn verify(
         &self,
         from: Option<Position>,

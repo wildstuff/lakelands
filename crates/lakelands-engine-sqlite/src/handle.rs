@@ -10,6 +10,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use lakelands_api::engine::{
     CanonicalEvent, Declared, LakeEngine, Lease, OpenMode, ProjectionStore, ProjectionView,
@@ -57,6 +58,9 @@ pub struct SqliteLake {
     transaction: Mutex<Option<Transaction>>,
 }
 
+/// How long a statement waits for another connection's lock.
+const BUSY: Duration = Duration::from_secs(10);
+
 /// Open a connection to the projection with the tuning for its role. A
 /// reader's connection is read-only: it never creates the file, never
 /// changes its journal and never writes a page.
@@ -73,9 +77,9 @@ fn connect(path: &std::path::Path, tuning: &SqliteTuning, writer: bool) -> Resul
     } else {
         tuning.reader_cache_kb
     };
+    conn.busy_timeout(BUSY).map_err(sql)?;
     conn.execute_batch(&format!(
-        "PRAGMA busy_timeout = 10000;
-         PRAGMA cache_size = -{cache};
+        "PRAGMA cache_size = -{cache};
          PRAGMA mmap_size = {};",
         u64::from(tuning.mmap_mb) * 1024 * 1024,
     ))
@@ -282,6 +286,16 @@ impl LakeEngine for SqliteLake {
     fn release_lease(&self, lease: &Lease) -> Result<()> {
         let mut held = lock(&self.held);
         if held.as_ref().is_some_and(|h| h.lease == *lease) {
+            // The writer leaves an empty journal behind. It does not wait
+            // for a reader that holds a snapshot of it, and a journal it
+            // could not truncate is no failure of the release: the next
+            // release, or `compact`, truncates it.
+            let _ = self.write(|conn| {
+                conn.busy_timeout(Duration::ZERO).map_err(sql)?;
+                let truncated = truncate_journal(conn);
+                conn.busy_timeout(BUSY).map_err(sql)?;
+                truncated
+            });
             self.lease_file
                 .release(held.take().expect("checked above"))?;
         }

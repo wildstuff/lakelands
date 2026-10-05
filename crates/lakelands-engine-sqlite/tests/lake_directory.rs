@@ -409,13 +409,16 @@ fn an_index_line_naming_another_position_is_a_damaged_index() {
             .map(|e| e.len())
             .map(|_| vec![()]),
     );
-    // A handle opened now reads the index from its first line at open,
-    // checking each line's position as it keeps its marks: the open itself
-    // refuses the damaged line.
-    let opened = SqliteOpener
-        .open(&location, OpenMode::Read)
-        .and_then(|e| e.read(Position(0), 600));
-    refused("a handle opened afterwards", opened.map(|_| vec![()]));
-    drop((reader, engine));
+    // A handle opened now reads the index's end at its open, not the
+    // line: it opens and answers the tip, and its read of the log from the
+    // first position, as `verify` reads it, is refused at the line.
+    let opened = SqliteOpener.open(&location, OpenMode::Read).unwrap();
+    assert_eq!(opened.tip().unwrap().map(|t| t.0.0), Some(599));
+    assert_eq!(opened.read(Position(0), 300).unwrap(), events[..300]);
+    refused(
+        "a handle opened afterwards",
+        opened.read(Position(0), 600).map(|_| vec![()]),
+    );
+    drop((reader, opened, engine));
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -179,6 +179,15 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   an export is the whole log, unmasked, so it is handed over as the
   lake itself would be. An export only reads: it needs no writer, appends
   nothing, and runs beside a `lakelands serve` that holds the lake.
+  Opening a lake on SQLite reads the end of each log segment's index,
+  not the index: what an open costs follows the number of segments, one
+  more for each `checkpoint` that sealed one, not the events the lake
+  holds, so a host may open every lake at its start. A damaged index line
+  is therefore not found at the open; `verify`, which reads the log,
+  finds it, as does the read that meets it. A writer's `close` truncates
+  the projection's journal (`projection.db-wal`); a writer that ends
+  without it leaves the journal as large as it grew, for the next
+  `close` or `compact` (lakelands#564).
   In a quiet hour the host can call `LakeStore::compact()` (`lakelands
   compact`) to give back the storage the projection no longer uses; it
   changes no answer and appends nothing, and writes wait while it runs
