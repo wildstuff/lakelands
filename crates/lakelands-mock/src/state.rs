@@ -363,15 +363,35 @@ impl State {
     }
 
     /// A type the principal may see: declared, and holding at least one
-    /// grant for it. Anything else is absent, not forbidden.
+    /// grant for it. Anything else is absent, not forbidden. As the store
+    /// (006, extended), a type made of another is shown only with it: a
+    /// link type with the type that declares its relation and a view with
+    /// each of its sources, whatever a grant on its own name says.
     pub fn visible(&self, who: &Principal, ty: &TypeName) -> Option<&DeclaredType> {
-        self.types.get(ty).filter(|t| {
-            type_default(who, ty) != Access::None
+        let own = |t: &&DeclaredType| {
+            let name = &t.decl.name;
+            type_default(who, name) != Access::None
                 || t.decl
                     .fields
                     .iter()
-                    .any(|f| who.grants.access(ty, &f.name) != Access::None)
-        })
+                    .any(|f| who.grants.access(name, &f.name) != Access::None)
+        };
+        let shown = self.types.get(ty).filter(own)?;
+        let (mut asked, mut next) = (vec![ty.clone()], vec![shown]);
+        while let Some(t) = next.pop() {
+            let owner = crate::links::parts(&t.decl.name).map(|p| p.0);
+            let sources = (t.decl.view.iter())
+                .flat_map(|v| std::iter::once(&v.source).chain(v.merge.iter().map(|m| &m.source)));
+            for n in owner.iter().chain(sources) {
+                let Some(o) = self.types.get(n).filter(|_| !asked.contains(n)) else {
+                    continue;
+                };
+                own(&o).then_some(())?;
+                asked.push(n.clone());
+                next.push(o);
+            }
+        }
+        Some(shown)
     }
 
     /// A record as one principal may read it.

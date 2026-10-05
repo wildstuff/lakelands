@@ -195,6 +195,14 @@ async fn a_grant_on_a_link_type_follows_its_relations_rename(
             both
         },
     );
+    // A link type is shown with its owner alone (006, extended).
+    let mut permitted = permitted;
+    let amount = [("amount".into(), Access::Read)].into();
+    let of_owner = TypeGrants {
+        default: None,
+        fields: amount,
+    };
+    permitted.grants.types.insert("invoice".into(), of_owner);
     let mut red = Vec::new();
     for (what, who, ty, as_of, want) in [
         (
@@ -381,14 +389,14 @@ async fn a_rename_that_would_change_or_lose_edges_is_refused(
              `{ty}`; it answered {got:?}"
         );
     }
-    // One kept from them, and from the link type of `minute`'s relation, is
-    // told that a declaration refers to it, not which.
+    // One kept from them, and so from the link type of `minute`'s relation
+    // (006, extended), is told that a declaration refers to it, not which.
     let none = TypeGrants {
         default: Some(Access::None),
         ..TypeGrants::default()
     };
     let mut apart = granted(store.as_ref(), "apart", Access::Write, ("memo", None, &[]));
-    let kept = ["memo", "minute", "sys.link.minute.of"];
+    let kept = ["memo", "minute"];
     apart.grants.types = kept.map(|t| (t.into(), none.clone())).into();
     let before = store.head().await.must("reading the head")?;
     let write = ProposedWrite::Migrate {

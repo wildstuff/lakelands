@@ -2030,6 +2030,22 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
+    /// Whether the principal is shown the type that declares a relation, so
+    /// that a step may name the relation from its target's end: one told
+    /// the owner does not exist is not told its relations' names there
+    /// (006, extended). Asked last, of an owner a step would reach.
+    fn owner_shown(&self, owner: &TypeDecl) -> bool {
+        describe::one_type(&owner.name, &self.declared(), self.who).is_some()
+    }
+
+    /// Whether a type the principal is shown declares a relation of this
+    /// name, so that a step over it from elsewhere walks nothing.
+    fn out_any(&self, relation: &RelationName) -> bool {
+        let named = |t: &TypeDecl| t.relations.iter().any(|r| &r.name == relation);
+        let mut types = self.ontology.types.values().map(|e| &e.decl);
+        types.any(|t| named(t) && self.owner_shown(t))
+    }
+
     /// Rewrite a step naming a relation's `inverse` to that relation,
     /// walked the other way: the inverse is the relation's name from its
     /// target, and the step's `walk` counts from the name it gives. A
@@ -2048,17 +2064,17 @@ impl<'a> Reader<'a> {
             Walk::Both => Walk::Both,
         };
         let walked = |t: &TypeDecl, r: &RelationDecl, w: Walk| leaves(t, w) || reaches(r, w);
+        let shown = |t: &TypeDecl| &t.name == here || self.owner_shown(t);
         if types().any(|t| {
-            t.relations
-                .iter()
-                .any(|r| &r.name == name && walked(t, r, walk))
+            let named = |r: &RelationDecl| &r.name == name && walked(t, r, walk);
+            t.relations.iter().any(named) && shown(t)
         }) {
             return;
         }
         let inverse = types().find_map(|t| {
-            t.relations
-                .iter()
-                .find(|r| r.inverse.as_ref() == Some(name) && walked(t, r, flipped))
+            let named =
+                |r: &&RelationDecl| r.inverse.as_ref() == Some(name) && walked(t, r, flipped);
+            t.relations.iter().find(named).filter(|_| shown(t))
         });
         if let Some(r) = inverse {
             step.relation = r.name.clone();
@@ -2083,7 +2099,7 @@ impl<'a> Reader<'a> {
         let reaches = |r: &RelationDecl| &r.name == relation && &r.target == here;
         let mut owners = self.ontology.types.values().map(|e| &e.decl);
         let inn = owners
-            .find(|t| t.relations.iter().any(reaches))
+            .find(|t| t.relations.iter().any(reaches) && self.owner_shown(t))
             .map(|t| t.name.clone());
         let found = match walk {
             Walk::Out => out,
@@ -2092,7 +2108,7 @@ impl<'a> Reader<'a> {
         };
         match found {
             Some(t) => Ok(Some(t)),
-            None if lenient && (out_any(&self.ontology, relation)) => Ok(None),
+            None if lenient && self.out_any(relation) => Ok(None),
             None => Err(invalid(format!(
                 "`{here}` has no relation `{relation}` to walk {}",
                 match walk {
@@ -2189,12 +2205,6 @@ fn ordered_proposals(proposals: Vec<Proposal>, order_by: &[Order]) -> Result<Vec
         .collect();
     keyed.sort_by(|a, b| core_engines::cmp_places(&a.0, &b.0, order_by));
     Ok(keyed.into_iter().map(|(_, p)| p).collect())
-}
-
-fn out_any(o: &Ontology, relation: &RelationName) -> bool {
-    o.types
-        .values()
-        .any(|e| e.decl.relations.iter().any(|r| &r.name == relation))
 }
 
 /// The edges of a derived relation around each of some records of one

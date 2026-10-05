@@ -187,3 +187,64 @@ it (its grant, else its default). A grant that is only a `default` is
 followed too, so a principal is followed whenever its grants name a
 type. Each chain of names reads the grants as they were given, and of
 the chains that end in a name the one that took it last continues.
+
+## Extended: a type made of another is shown with it (lakelands#595)
+
+Two kinds of type have no records of their own making. A link type is
+the edges of one relation: its name spells the type that declares the
+relation and the relation, and its records are that relation's links
+(`docs/decisions/035-a-link-is-a-record.md`). A view is its sources'
+records, computed (`docs/decisions/018-one-pattern-query.md`). Each was
+judged by the grants on its own name alone, and those the grant on the
+other type does not touch: a principal kept from `invoice` by
+`{default: none}` was told that `invoice` does not exist, and was
+described `sys.link.invoice.approved_by`, read its records, wrote and
+retired its links, and read through a view how many invoices there are.
+
+**A type made of another is shown to a principal only where that other
+type is**: a link type where the type that declares its relation is, a
+view where its source and every merged source is. One who is told a type
+does not exist is told the same of what is made of it.
+
+- **One function decides it**, the one that decides whether a type is
+  described at all. So `describe` and the tools built from it,
+  `describe_type`, `find`, `get`, `search`, a pattern's start and each of
+  its steps, a set or a trigger on the type, a proposal's listing and
+  every refusal that names a type only to one `describe` shows it to
+  follow it without a rule of their own. The answer is the one for a
+  type that is not declared, never a refusal: a refusal would tell that
+  something is there.
+- **A grant on its own name does not give it back.** The grants on a
+  link type's name and on a view's name stay, follow a rename as before,
+  and can take more away; they cannot show what the other type's grant
+  withholds.
+- **Shown means what it means for any type**: the principal has some
+  access to the type or to one of its fields. A principal who reads one
+  field of `invoice` is shown its link types and the views over it,
+  each under its own grants, and a view still refuses the reader who
+  does not read a field its definition probes
+  (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+  extended).
+- **It runs down a chain**: a view over a view over a link type is shown
+  where the type that declares the relation is.
+- **`link` and `unlink` ask it before they name a relation.** They reach
+  a link type by its owner's name, so they ask whether the caller is
+  shown the owner, and answer one who is not as for a type that is not
+  there, whether the type has the relation or not. Its retry of a write
+  it made is answered that write first, as every retry is before the
+  grants are asked: it tells the caller its own write.
+- **A relation is named from its target's end only to one shown its
+  owner.** A relation and its inverse are declared on the owner, so a
+  step from the target by the inverse, or by the relation's own name
+  walked in, is answered one who is not shown the owner as a relation
+  the target does not have, for a relation carried by links and by a
+  reference field alike. A step forward from a type the principal is
+  shown to a target it is not is as before: the relation is declared
+  where the principal reads it, and the target is not found.
+- **The other end is not asked.** A link's `to` is a key of the target
+  type, read by a principal kept from the target as it reads a reference
+  field's value in any record.
+
+For a host: a principal that reads or writes a type's links is granted
+something of the type, and a principal that reads a view is granted
+something of each of its sources.

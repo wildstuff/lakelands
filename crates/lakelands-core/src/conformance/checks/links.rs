@@ -22,9 +22,8 @@ use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, all, doors, field, field_writer, head_unmoved, migration, no_such_field, nobody,
-    patch, pattern, reads_all, reason, reference, refused_on, restrict, source_record, step,
-    type_decl,
+    Lake, Must, all, doors, field, field_writer, head_unmoved, migration, no_such_field, patch,
+    pattern, reads_all, reason, reference, refused_on, restrict, source_record, step, type_decl,
 };
 use crate::links::{link_key, link_type_name};
 
@@ -340,12 +339,12 @@ async fn a_link_that_would_break_the_relations_cardinality_is_refused(
         "`approved_by` is many_to_one: i1 already links to p1, so linking it to p2 is \
          refused as a constraint on `to`; it answered {second:?}"
     );
-    let nobody = nobody(store.as_ref());
-    let ungranted = link(cat.as_ref(), &nobody, "i1", "p2", json!({})).await;
+    let reader = reads_all(store.as_ref(), "reader");
+    let ungranted = link(cat.as_ref(), &reader, "i1", "p2", json!({})).await;
     ensure!(
         matches!(reason(&ungranted), Some(Refusal::NotGranted))
             || no_such_field(&ungranted, "from"),
-        "a principal with no grant links i1 to p2: it is refused before the cardinality reads \
+        "a principal that writes nothing links i1 to p2: it is refused before the cardinality reads \
          i1's link to p1, which it must not learn of, as not granted or as for a field it may \
          not know of; it answered {ungranted:?}"
     );

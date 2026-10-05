@@ -1133,6 +1133,9 @@ impl Call<'_> {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
+        if let Some(first) = self.retried_unshown(ty, &opts)? {
+            return Ok(first);
+        }
         let (lt, r) = link_relation(&*self.writer()?, ty, relation)?;
         if r.authority != Authority::Authored {
             return Err(refused(Refusal::WrongDoor));
@@ -1165,8 +1168,25 @@ impl Call<'_> {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
+        if let Some(first) = self.retried_unshown(ty, &opts)? {
+            return Ok(first);
+        }
         let (lt, _) = link_relation(&*self.writer()?, ty, relation)?;
         self.retire_record(&lt, &links::link_key(key, to), opts)
+    }
+
+    /// The link doors' first question (006, extended): a caller not shown
+    /// `ty` is answered as for a type that is not there, before a relation
+    /// is named. Its retry of a write it made is answered that write, as
+    /// every retry is before the grants are asked.
+    fn retried_unshown(&self, ty: &TypeName, opts: &WriteOpts) -> Result<Option<Outcome>> {
+        let w = self.writer()?;
+        let Err(gone) = self.shown_type(&w.ontology, ty) else {
+            return Ok(None);
+        };
+        let view = self.lake.engine.view(None)?;
+        let first = self.replay(&w, &opts.idempotency_key, view.as_ref())?;
+        first.map(Some).ok_or(gone)
     }
 
     /// A retirement of one record, as `retire` and `unlink` make it, their
