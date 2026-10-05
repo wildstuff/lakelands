@@ -120,6 +120,8 @@ macro_rules! door_checks {
             nothing_that_never_acts_is_declared_on_a_view,
             a_view_over_a_hidden_field_names_nothing,
             a_set_may_hold_a_link_types_records,
+            #[own_principals]
+            a_type_made_of_another_is_shown_only_with_it,
             a_relation_on_a_view_is_derived,
             a_tools_key_says_what_to_pass,
             propose_shows_each_writes_shape,
@@ -1903,6 +1905,153 @@ pub async fn a_set_may_hold_a_link_types_records(store: Arc<dyn LakeStore>) {
     assert!(
         sets.iter().any(|s| s.name.as_str() == "seen_ok"),
         "{sets:?}"
+    );
+}
+
+/// A type made of another is shown only with it (006, extended): one kept
+/// from `memo` is told of neither the link type of its relation nor a view
+/// over that or over `memo`, whatever it is granted on their own names;
+/// `describe_type`, `find`, `link` and `unlink` answer it as for a type
+/// that is not there, and a step from `partner` by the inverse of a
+/// relation of `memo` as a relation that is not there. One who reads a
+/// field of `memo` is shown all three, links and walks. On the mock as on
+/// the store.
+pub async fn a_type_made_of_another_is_shown_only_with_it(store: Arc<dyn LakeStore>) {
+    const LINKS: &str = "sys.link.memo.cites";
+    let f = setup(store).await;
+    let (owner, c) = (&f.cast.owner, &f.catalog);
+    let n = json!({"name": "n", "type": {"kind": "number"}});
+    for d in [
+        json!({"declare": "type", "name": "memo",
+               "fields": [{"name": "t", "type": {"kind": "text"}}],
+               "relations": [{"name": "cites", "target": "memo"},
+                             {"name": "seen_by", "target": PARTNER, "inverse": "saw"}]}),
+        json!({"declare": "type", "name": "cited", "key": ["to"],
+               "fields": [{"name": "to", "type": {"kind": "reference", "target": "memo"}}, n],
+               "view": {"source": LINKS, "group_by": ["to"],
+                        "measures": [{"name": "n", "expr": "count()"}]}}),
+        json!({"declare": "type", "name": "memos", "fields": [n],
+               "view": {"source": "memo", "measures": [{"name": "n", "expr": "count()"}]}}),
+    ] {
+        let d: Declaration = serde_json::from_value(d).expect("a declaration");
+        c.declare(owner, d).await.expect("the owner declares it");
+    }
+    let (memo, cites) = (ty("memo"), "cites".into());
+    for k in ["a", "b"] {
+        let (k, t) = (key(k), patch(&[("t", json!(k))]));
+        let wrote = c.upsert(owner, &memo, &k, t, WriteOpts::default());
+        wrote.await.expect("writing a memo");
+    }
+    let made = [LINKS, "cited", "memos"];
+    let grants = |of_memo: &[(&str, Access)]| {
+        let whole = |a| TypeGrants {
+            default: Some(a),
+            ..TypeGrants::default()
+        };
+        let mut g = invoice_grants(Access::None, &[]);
+        g.types = (made.iter().map(|t| (ty(t), whole(Access::Write)))).collect();
+        g.types.insert(ty(PARTNER), whole(Access::Read));
+        let fields = of_memo.iter().map(|(f, a)| (FieldName::from(*f), *a));
+        let fields = fields.collect();
+        (g.types).insert(
+            memo.clone(),
+            TypeGrants {
+                default: None,
+                fields,
+            },
+        );
+        g
+    };
+    let lake = f.store.lake();
+    let apart = principal(lake, PrincipalKind::Agent, "apart", grants(&[]));
+    let reads = principal(
+        lake,
+        PrincipalKind::Agent,
+        "reads",
+        grants(&[("t", Access::Read)]),
+    );
+    let gone = |e: &Error| {
+        matches!(
+            e,
+            Error::NotFound {
+                missing: Missing::Type { .. }
+            }
+        )
+    };
+    let link = |who: &Principal, by: &str| {
+        let (c, who, memo, by) = (c.clone(), who.clone(), memo.clone(), by.into());
+        async move {
+            let (a, b, opts) = (key("a"), key("b"), WriteOpts::default());
+            c.link(&who, &memo, &a, &by, &b, Patch::new(), opts).await
+        }
+    };
+    let described = c.describe(&apart, ReadAt::default()).await;
+    let described = described.expect("describing the lake").data;
+    let named = |t: &&str| described.types.iter().any(|d| d.name.as_str() == *t);
+    assert!(
+        !made.iter().any(named),
+        "one kept from `memo` is described {described:?}"
+    );
+    for t in made {
+        let said = c.describe_type(&apart, &ty(t), ReadAt::default()).await;
+        assert!(
+            said.as_ref().is_err_and(gone),
+            "describe_type {t}: {said:?}"
+        );
+        let found = c.find(&apart, &ty(t), Find::default()).await;
+        assert!(found.as_ref().is_err_and(gone), "find {t}: {found:?}");
+        let shown = c.describe_type(&reads, &ty(t), ReadAt::default()).await;
+        assert!(
+            shown.is_ok(),
+            "one who reads a field of `memo` is shown {t}: {shown:?}"
+        );
+    }
+    for by in ["cites", "nothing"] {
+        let linked = link(&apart, by).await;
+        assert!(
+            linked.as_ref().is_err_and(gone),
+            "link over `{by}`: {linked:?}"
+        );
+    }
+    let (a, b) = (key("a"), key("b"));
+    let unlinked = c
+        .unlink(&apart, &memo, &a, &cites, &b, WriteOpts::default())
+        .await;
+    assert!(unlinked.as_ref().is_err_and(gone), "unlink: {unlinked:?}");
+    link(&reads, "cites").await.expect("one shown `memo` links");
+    let walk = |who: &Principal, by: &str| {
+        let step = Step {
+            relation: by.into(),
+            walk: Walk::Out,
+            ty: None,
+            filter: None,
+            depth: Default::default(),
+        };
+        let (c, who) = (c.clone(), who.clone());
+        async move {
+            let p = Pattern::traverse(ty(PARTNER), key("P-1"), vec![step]);
+            c.query(&who, p).await.map_err(|e| e.to_string())
+        }
+    };
+    let (saw, ghost) = (walk(&apart, "saw").await, walk(&apart, "ghost").await);
+    let saw = saw.expect_err("the inverse of a relation of `memo`");
+    assert_eq!(
+        Err(saw.replace("saw", "ghost")),
+        ghost.map(|_| ()),
+        "`saw` answers one kept from `memo` as `ghost` does"
+    );
+    let walked = walk(&reads, "saw").await;
+    assert!(walked.is_ok(), "one shown `memo` walks `saw`: {walked:?}");
+    let invalid = link(&reads, "nothing").await;
+    assert!(
+        matches!(
+            &invalid,
+            Err(Error::Refused {
+                reason: Refusal::Invalid { .. },
+                ..
+            })
+        ),
+        "a relation `memo` has not, to one shown `memo`: {invalid:?}"
     );
 }
 
@@ -5346,8 +5495,8 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
         ),
         "{proposed:?}"
     );
-    // Who may not write the link type is refused: not granted, or, for a
-    // link field it may not know of, as for an undeclared field.
+    // Who is not shown the type that declares the relation is answered as
+    // for a type that is not there (006, extended).
     let stranger = c
         .link(
             &cast.stranger,
@@ -5362,16 +5511,16 @@ pub async fn links_are_written_walked_and_held_to_their_relation(store: Arc<dyn 
     assert!(
         matches!(
             &stranger,
-            Err(Error::Refused {
-                reason: Refusal::NotGranted,
-                ..
+            Err(Error::NotFound {
+                missing: Missing::Type { .. }
             })
-        ) || stranger.as_ref().is_err_and(|e| no_field(e, "from")),
+        ),
         "{stranger:?}"
     );
-    // So is one that would break the cardinality, by a principal that
-    // reads the links but may not write them: the write's grants come
-    // before the links are read for the cardinality (024, extended).
+    // Who may not write the link type is refused as not granted, and so is
+    // a link that would break the cardinality, by a principal that reads
+    // the links but may not write them: the write's grants come before
+    // the links are read for the cardinality (024, extended).
     let past = c
         .link(
             &cast.auditor,

@@ -110,7 +110,10 @@ through the doors that check the relation's authority and cardinality.
 - **`unlink`** removes a link whatever the relation's authority, as
   `retire` removes a record whatever its fields' authority. It is
   governed by the principal's grants on the link type. Ingest writes a
-  source relation's links, but cannot retire one.
+  source relation's links, but cannot retire one. A principal who is not
+  shown the type that declares the relation is shown nothing of its link
+  type, at these doors and at every other
+  (`docs/decisions/006-grants-not-roles.md`, extended).
 - **Retiring an end** keeps its links, as retiring a referenced record
   keeps the references (032). The walk does not reach the retired record.
 - **A restricted link** is walked only by a principal holding the

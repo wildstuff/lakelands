@@ -37,6 +37,7 @@ mod keys;
 mod latest;
 mod link_triggers;
 mod links;
+mod made_of;
 mod masking;
 mod migrate;
 mod paging;
@@ -189,6 +190,7 @@ pub const ALL: &[Check] = &[
     migrate::APPLY_NEEDS_ITS_REPORT,
     migrate::LOSSY_REFUSED,
     migrate::CONVERSIONS_AND_RENAMES,
+    made_of::SHOWN_WITH_WHAT_IT_IS_MADE_OF,
     links::WRITTEN_AND_WALKED,
     links::ONE_PER_PAIR,
     links::UNLINK_KEEPS_HISTORY,

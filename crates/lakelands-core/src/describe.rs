@@ -430,12 +430,49 @@ fn find_type<'a>(declared: &'a [Declared], ty: &TypeName) -> Option<&'a TypeDecl
     })
 }
 
+/// Whether `who` is shown every type that `t` is made of
+/// (`docs/decisions/006-grants-not-roles.md`, extended): a link type is
+/// its owner's edges and a view is its sources' records computed, so one
+/// who is told the other does not exist is told the same of what is made
+/// of it, whatever a grant on its own name says. Each type is asked once,
+/// so views an imported log holds in a cycle are judged by their grants
+/// and the read that refuses the cycle is reached.
+fn made_of_shown(t: &TypeDecl, declared: &[Declared], who: &Principal) -> bool {
+    let (mut asked, mut next) = (vec![&t.name], vec![t]);
+    while let Some(t) = next.pop() {
+        let owner = crate::links::link_type_parts(&t.name).map(|p| p.0);
+        let sources = (t.view.iter())
+            .flat_map(|v| std::iter::once(&v.source).chain(v.merge.iter().map(|m| &m.source)));
+        for o in owner
+            .iter()
+            .chain(sources)
+            .filter_map(|n| find_type(declared, n))
+        {
+            if asked.contains(&&o.name) {
+                continue;
+            }
+            let fields = &mut o.fields.iter();
+            if type_access(who, &o.name) == Access::None
+                && fields.all(|f| field_access(who, o, f) == Access::None)
+            {
+                return false;
+            }
+            asked.push(&o.name);
+            next.push(o);
+        }
+    }
+    true
+}
+
 fn type_description(
     t: &TypeDecl,
     d: &Declared,
     declared: &[Declared],
     who: &Principal,
 ) -> Option<TypeDescription> {
+    if !made_of_shown(t, declared, who) {
+        return None;
+    }
     let fields: Vec<FieldDescription> = t
         .fields
         .iter()

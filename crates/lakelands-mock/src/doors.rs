@@ -533,10 +533,10 @@ fn link_relation(
     ty: &TypeName,
     relation: &RelationName,
 ) -> Result<lakelands_api::ontology::RelationDecl> {
-    // As the store: an undeclared type is not found; a relation it does
-    // not carry by link records is invalid; one the principal may not
-    // write the links of is not granted.
-    let t = st.types.get(ty).ok_or_else(|| no_type(ty))?;
+    // As the store: an undeclared type, or one the principal is not shown,
+    // is not found; a relation it does not carry by link records is
+    // invalid; one the principal may not write the links of is not granted.
+    let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
     not_a_view(&t.decl)?;
     let r = t
         .decl
@@ -3733,6 +3733,9 @@ impl Catalog for MockCatalog {
                         .relations
                         .iter()
                         .find(|r| r.target == scope_ty.decl.name && named(r))?;
+                    // As the store: named from its target's end only to
+                    // one shown the type that declares it (006, extended).
+                    st.visible(who, &o.decl.name)?;
                     let link = links::name(&o.decl.name, &r.name);
                     Some((
                         o.decl.name.clone(),
