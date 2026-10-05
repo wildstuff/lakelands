@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use lakelands_api::describe::{
-    ExecutorDescription, FieldDescription, LakeDescription, LakeRights, TypeAccess,
+    ExecutorDescription, FieldDescription, Kept, LakeDescription, LakeRights, TypeAccess,
     TypeDescription, TypeLifecycle, TypeLineage, TypeRights, VerbDescription,
 };
 use lakelands_api::error::{Error, Missing, Refusal, Result};
@@ -23,7 +23,7 @@ use lakelands_api::query::{Hit, Hits, Pattern, Projection, QueryResult, Search, 
 use lakelands_api::read::{After, Direction, Find, Found, Get, Order, OrderBy, ReadAt, Reply};
 use lakelands_api::record::{Origin, Patch, Record, SourceRecord, StoredRecord, Value};
 use lakelands_api::seam::{
-    SETTING_TYPE, SORT_INDEX_SETTING, VECTOR_INDEX_SETTING, indexable, sortable,
+    SETTING_TYPE, SORT_INDEX_SETTING, VECTOR_INDEX_SETTING, VIEW_KEPT_SETTING, indexable, sortable,
 };
 use lakelands_api::write::{
     Committed, Declaration, FieldConversion, FunctionDecl, Migration, MigrationReport,
@@ -1055,6 +1055,17 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
     };
     let sorted = visible(index_fields(st, d, SORT_INDEX_SETTING, sortable));
     let indexed = visible(index_fields(st, d, VECTOR_INDEX_SETTING, indexable));
+    // The mock keeps no view: one that is asked for and could be kept is
+    // not kept here.
+    let kept = d.view.as_deref().map(|v| {
+        let key = RecordKey::from(format!("{VIEW_KEPT_SETTING}{}", d.name));
+        let setting = st.live(&TypeName::from(SETTING_TYPE), &key);
+        let (value, shown) = (
+            setting.and_then(|r| r.fields.get("value")),
+            view_visible(st, who, v),
+        );
+        Kept::by_declaration(v, value, shown, |t| st.types.get(t).map(|t| &t.decl))
+    });
     TypeDescription {
         annotations: d.annotations.clone(),
         name: d.name.clone(),
@@ -1138,6 +1149,7 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
             schema_hash: t.schema_hash.clone(),
             sorted,
             indexed,
+            kept,
         },
     }
 }
@@ -1721,20 +1733,18 @@ fn check_rule(st: &State, who: &Principal, key: &RecordKey, patch: &Patch) -> Re
     Ok(())
 }
 
-/// Refuse a `sort_index.<type>` or `vector_index.<type>` setting the write
-/// would leave naming what that index cannot keep, naming the field at
-/// fault.
-fn check_index_setting(st: &State, key: &RecordKey, patch: &Patch) -> Result<()> {
+/// Refuse a setting the store reads itself where the write would leave it
+/// asking for what cannot be: an index of what that index cannot keep, or
+/// a view kept that cannot be, naming the member at fault.
+fn check_setting(st: &State, key: &RecordKey, patch: &Patch) -> Result<()> {
     let value = match patch.get("value") {
         Some(v) => Some(v.clone()),
         None => st
             .live(&TypeName::from(SETTING_TYPE), key)
             .and_then(|r| r.fields.get("value").cloned()),
     };
-    let decl = lakelands_api::seam::index_setting_type(key.as_str())
-        .and_then(|t| st.types.get(&TypeName::from(t)))
-        .map(|t| &t.decl);
-    lakelands_api::seam::check_index_setting(key.as_str(), value.as_ref(), decl)
+    let declared = |t: &TypeName| st.types.get(t).map(|t| &t.decl);
+    lakelands_api::seam::check_setting(key.as_str(), value.as_ref(), &declared)
         .map_err(|(field, message)| on(&field, Refusal::Invalid { message }))
 }
 
@@ -1807,7 +1817,7 @@ fn plan_upsert(
         check_rule(st, who, key, &patch)?;
     }
     if ty.as_str() == SETTING_TYPE {
-        check_index_setting(st, key, &patch)?;
+        check_setting(st, key, &patch)?;
     }
     let t = check_patch(st, who, ty, &patch, Origin::Authored)?;
     let actual = check_version(st, ty, key, opts)?;

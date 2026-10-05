@@ -519,6 +519,7 @@ fn type_description(
             schema_hash: d.schema_hash.clone().unwrap_or_default(),
             sorted: vec![],
             indexed: vec![],
+            kept: None,
         },
         fields,
     })

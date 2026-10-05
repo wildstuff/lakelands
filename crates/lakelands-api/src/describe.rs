@@ -253,6 +253,75 @@ pub struct TypeLifecycle {
     /// no such index that set is the exact ranking.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub indexed: Vec<FieldName>,
+    /// For a view: whether its records are kept, by its `view_kept.<type>`
+    /// setting, or computed at each read, and why. Like `sorted` and
+    /// `indexed` it describes the projection, not the log: which groups of
+    /// a kept view wait to be read again may differ after a rebuild, the
+    /// view's answers never.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept: Option<Kept>,
+}
+
+/// Whether a view's records are kept as its sources are written, or
+/// computed at each read.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum Kept {
+    /// The view's records are kept and answer its reads.
+    Kept,
+    /// The view is computed at each read.
+    Computed {
+        /// Why it is not kept.
+        why: NotKept,
+    },
+}
+
+/// Why a view is computed at each read.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "because", rename_all = "snake_case")]
+pub enum NotKept {
+    /// No `view_kept.<type>` setting holds.
+    NotAsked,
+    /// The view cannot be kept.
+    CannotBeKept {
+        /// Which measure, which call and why: the sentence the setting's
+        /// refusal says. It names what the view reads, so it is given to
+        /// a principal who is shown the view as declared, and to no other.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    /// Its records are not whole.
+    NotWhole {
+        /// The groups whose kept record is not exact.
+        not_exact: u64,
+        /// The groups that wait to be read again.
+        waiting: u64,
+    },
+    /// Its records are not kept at this position, or by this lake.
+    NotKeptHere,
+}
+
+impl Kept {
+    /// What a view's lifecycle says by its declaration and its
+    /// `view_kept.<type>` setting alone, where nothing keeps it: not asked
+    /// for, unable to be kept and why, or not kept here. `shown` is
+    /// whether the principal is shown the view as declared; `declared`
+    /// answers a type's declaration.
+    pub fn by_declaration<'a>(
+        view: &ViewDecl,
+        setting: Option<&serde_json::Value>,
+        shown: bool,
+        declared: impl Fn(&TypeName) -> Option<&'a crate::ontology::TypeDecl>,
+    ) -> Kept {
+        let why = match crate::expr::keepable(view, declared) {
+            _ if !crate::seam::view_kept(setting) => NotKept::NotAsked,
+            Err(reason) => NotKept::CannotBeKept {
+                reason: shown.then_some(reason),
+            },
+            Ok(()) => NotKept::NotKeptHere,
+        };
+        Kept::Computed { why }
+    }
 }
 
 /// One verb, as a caller sees it.

@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use lakelands_api::describe::{
-    ExecutorDescription, FieldDescription, LakeDescription, LakeRights, TypeAccess,
+    ExecutorDescription, FieldDescription, Kept, LakeDescription, LakeRights, NotKept, TypeAccess,
     TypeDescription, TypeLifecycle, TypeLineage, TypeRights, VerbDescription,
 };
 use lakelands_api::expr::Condition;
@@ -538,6 +538,7 @@ fn type_description() -> TypeDescription {
             schema_hash: "h".into(),
             sorted: vec!["amount".into()],
             indexed: vec!["embedding".into()],
+            kept: Some(Kept::Kept),
         },
     }
 }
@@ -1207,6 +1208,31 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
     units!("write_origin", WriteOrigin, [Direct, Reactive, Scheduled]);
     units!("walk", Walk, [Out, In, Both]);
     units!("carrier", Carrier, [Via, Links, Derived]);
+
+    fn kept(k: &Kept) -> [NotKept; 4] {
+        match k {
+            Kept::Kept | Kept::Computed { .. } => {}
+        }
+        let (reason, not_exact, waiting) = (None, 0, 0);
+        let all = [
+            NotKept::NotAsked,
+            NotKept::CannotBeKept { reason },
+            NotKept::NotWhole { not_exact, waiting },
+            NotKept::NotKeptHere,
+        ];
+        for why in &all {
+            match why {
+                NotKept::NotAsked | NotKept::CannotBeKept { .. } => {}
+                NotKept::NotWhole { .. } | NotKept::NotKeptHere => {}
+            }
+        }
+        all
+    }
+    let why = kept(&Kept::Kept);
+    checks.push(("not_kept", case_names(&why, Some("because"))));
+    let [why, ..] = why;
+    let states = [Kept::Kept, Kept::Computed { why }];
+    checks.push(("kept", case_names(&states, Some("state"))));
 
     fn outcomes(o: &Outcome) {
         match o {

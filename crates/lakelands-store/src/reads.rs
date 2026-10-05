@@ -48,7 +48,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use lakelands_api::describe::{LakeDescription, TypeDescription};
+use lakelands_api::describe::{Kept, LakeDescription, TypeDescription};
 use lakelands_api::engine::{After, ProjectionView, Scan};
 use lakelands_api::expr::{Expr, Func, Literal};
 use lakelands_api::ontology::{
@@ -499,7 +499,8 @@ impl<'a> Reader<'a> {
     /// Name in a type's lifecycle the fields the lake keeps an order index
     /// for and the vector fields it asks an index for, as its
     /// `sort_index.<type>` and `vector_index.<type>` settings ask, of those
-    /// the principal sees.
+    /// the principal sees; and for a view whether it is kept, as its
+    /// `view_kept.<type>` setting asks.
     fn name_sorted(&self, t: &mut TypeDescription) {
         let Ok(decl) = self.ontology.ty(&t.name) else {
             return;
@@ -511,6 +512,12 @@ impl<'a> Reader<'a> {
         let setting = self.settings.get(&core_engines::vector_index_key(&t.name));
         t.lifecycle.indexed = core_engines::indexed_fields(decl, setting);
         t.lifecycle.indexed.retain(seen);
+        if let Some(view) = decl.view.as_deref() {
+            let key = format!("{}{}", lakelands_api::seam::VIEW_KEPT_SETTING, t.name);
+            let (setting, shown) = (self.settings.get(&key), t.view.is_some());
+            let declared = |ty: &TypeName| self.ontology.ty(ty).ok();
+            t.lifecycle.kept = Some(Kept::by_declaration(view, setting, shown, declared));
+        }
     }
 
     fn holds(

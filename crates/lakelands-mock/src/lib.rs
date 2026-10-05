@@ -53,7 +53,9 @@
 //! members are filled with stable stand-ins, and `verify` checks
 //! nothing), hashes a view's conditions as written rather than typed, computes no
 //! derived fields, views, triggers or object sets (a view's parameters are
-//! checked by name only, none unknown and none missing), reads no system
+//! checked by name only, none unknown and none missing), keeps no view (a
+//! `view_kept.` setting is judged as the store judges it, and a view that
+//! is asked for and can be kept is described as `not_kept_here`), reads no system
 //! vocabulary (a host's `sys.` types never reach a mock lake; the store
 //! declares them at every writer's open), re-keys no type (a migration
 //! that changes a type's key fields is refused as invalid), binds no verb executor

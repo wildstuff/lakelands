@@ -850,6 +850,28 @@ interface types {
         /// `vector_index.<type>` setting): a search over one of them
         /// answers the index's set and says `ranked_by: index`.
         indexed: list<field-name>,
+        /// For a view: whether its records are kept (its
+        /// `view_kept.<type>` setting) or computed at each read, and why.
+        kept: option<kept>,
+    }
+
+    /// Whether a view's records are kept as its sources are written, or
+    /// computed at each read.
+    variant kept {
+        kept,
+        computed(not-kept),
+    }
+
+    /// Why a view is computed at each read: no setting asks for it; it
+    /// cannot be kept (the reason, to a principal shown the view as
+    /// declared); its records are not whole (the groups that are not
+    /// exact, and those that wait to be read again); or its records are
+    /// not kept at this position, or by this lake.
+    variant not-kept {
+        not-asked,
+        cannot-be-kept(option<string>),
+        not-whole(tuple<u64, u64>),
+        not-kept-here,
     }
 
     record field-description {

@@ -27,8 +27,9 @@
 //! - **10**: a `write_proposed` event whose write tightens a value type.
 //! - **11**: what [`ELEVENTH`] lists: a declaration that calls `floor`,
 //!   `date_bucket` by a width or `in_set` in any expression it keeps, in
-//!   the places 5 names; and a migration that renames a relation
-//!   (`relation_renames`), in a `migrated` event or a proposed `migrate`.
+//!   the places 5 names; a migration that renames a relation
+//!   (`relation_renames`), in a `migrated` event or a proposed `migrate`;
+//!   and a write of a `view_kept.<type>` setting, made or proposed.
 //!
 //! The store writes every event of one append at the greatest of the
 //! lake's version and what [`needed`] answers for each event of the
@@ -102,7 +103,27 @@ pub const ELEVENTH: &[Added] = &[
         "declares a call of `in_set`",
     ),
     (renames_a_relation, "renames a relation"),
+    (writes_a_kept_setting, "writes a `view_kept.` setting"),
 ];
+
+/// Whether the event writes a `view_kept.<type>` setting: an upsert or an
+/// ingest of that `sys.setting`, or a proposed upsert of it. A store that
+/// keeps no view would append beside records it never moves, so it must
+/// refuse the log and not read past the setting.
+fn writes_a_kept_setting(body: &EventBody) -> bool {
+    use lakelands_api::seam::{SETTING_TYPE, VIEW_KEPT_SETTING};
+    let (ty, key) = match body {
+        EventBody::RecordUpserted { ty, key, .. } | EventBody::RecordIngested { ty, key, .. } => {
+            (ty, key)
+        }
+        EventBody::WriteProposed {
+            write: ProposedWrite::Upsert { ty, key, .. },
+            ..
+        } => (ty, key),
+        _ => return false,
+    };
+    ty.as_str() == SETTING_TYPE && key.as_str().starts_with(VIEW_KEPT_SETTING)
+}
 
 /// Whether a migration the event carries, applied or proposed, renames a
 /// relation.
