@@ -1023,13 +1023,11 @@ async fn every_door_that_writes_or_holds_a_record_refuses_a_view_alike(
     must("upsert", "pt", upsert.map(drop));
     let retired = cat.retire(own, &pt, &p1, opts()).await;
     must("retire", "pt", retired.map(drop));
-    // Before the grants: a principal with none is told it is a view.
-    let nobody = lakelands_api::Principal {
-        grants: Default::default(),
-        ..own.clone()
-    };
-    let bare = cat.retire(&nobody, &pt, &p1, opts()).await;
-    must("retire with no grant", "pt", bare.map(drop));
+    // Before the grants: one who reads it and writes nothing is told it
+    // is a view.
+    let reader = crate::conformance::fixture::reads_all(store.as_ref(), "reader");
+    let bare = cat.retire(&reader, &pt, &p1, opts()).await;
+    must("retire by one who only reads", "pt", bare.map(drop));
     let r = "r".into();
     let link = cat.link(own, &pt, &p1, &r, &p1, fields(), opts()).await;
     must("link", "pt", link.map(drop));

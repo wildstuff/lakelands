@@ -233,6 +233,11 @@ does not exist is told the same of what is made of it.
   there, whether the type has the relation or not. Its retry of a write
   it made is answered that write first, as every retry is before the
   grants are asked: it tells the caller its own write.
+- **Every door that writes a record asks it first (lakelands#607)**:
+  `upsert`, `retire`, `propose` of either, `ingest`, and a verb's call
+  for the type the verb is on
+  (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+  extended).
 - **A relation is named from its target's end only to one shown its
   owner.** A relation and its inverse are declared on the owner, so a
   step from the target by the inverse, or by the relation's own name

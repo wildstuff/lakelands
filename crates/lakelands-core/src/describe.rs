@@ -430,38 +430,43 @@ fn find_type<'a>(declared: &'a [Declared], ty: &TypeName) -> Option<&'a TypeDecl
     })
 }
 
-/// Whether `who` is shown every type that `t` is made of
+/// Whether `who` is shown `t`: it has some access to the type or to one
+/// of its fields, and is shown every type that `t` is made of
 /// (`docs/decisions/006-grants-not-roles.md`, extended): a link type is
 /// its owner's edges and a view is its sources' records computed, so one
 /// who is told the other does not exist is told the same of what is made
 /// of it, whatever a grant on its own name says. Each type is asked once,
 /// so views an imported log holds in a cycle are judged by their grants
-/// and the read that refuses the cycle is reached.
-fn made_of_shown(t: &TypeDecl, declared: &[Declared], who: &Principal) -> bool {
+/// and the read that refuses the cycle is reached. `find` answers a type
+/// by its name; the description and every door that asks before it names
+/// a type ask this one function.
+pub fn type_shown<'a>(
+    t: &'a TypeDecl,
+    find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
+    who: &Principal,
+) -> bool {
+    let own = |t: &TypeDecl| {
+        let fields = &mut t.fields.iter();
+        type_access(who, &t.name) != Access::None
+            || fields.any(|f| field_access(who, t, f) != Access::None)
+    };
     let (mut asked, mut next) = (vec![&t.name], vec![t]);
     while let Some(t) = next.pop() {
         let owner = crate::links::link_type_parts(&t.name).map(|p| p.0);
         let sources = (t.view.iter())
             .flat_map(|v| std::iter::once(&v.source).chain(v.merge.iter().map(|m| &m.source)));
-        for o in owner
-            .iter()
-            .chain(sources)
-            .filter_map(|n| find_type(declared, n))
-        {
+        for o in owner.iter().chain(sources).filter_map(find) {
             if asked.contains(&&o.name) {
                 continue;
             }
-            let fields = &mut o.fields.iter();
-            if type_access(who, &o.name) == Access::None
-                && fields.all(|f| field_access(who, o, f) == Access::None)
-            {
+            if !own(o) {
                 return false;
             }
             asked.push(&o.name);
             next.push(o);
         }
     }
-    true
+    own(t)
 }
 
 fn type_description(
@@ -470,7 +475,7 @@ fn type_description(
     declared: &[Declared],
     who: &Principal,
 ) -> Option<TypeDescription> {
-    if !made_of_shown(t, declared, who) {
+    if !type_shown(t, &|n| find_type(declared, n), who) {
         return None;
     }
     let fields: Vec<FieldDescription> = t
@@ -481,9 +486,6 @@ fn type_description(
         .map(|(f, a)| FieldDescription::of(f, a))
         .collect();
     let whole = type_access(who, &t.name);
-    if fields.is_empty() && whole == Access::None {
-        return None;
-    }
     let reads = fields.iter().any(|f| f.access.reads()) || whole.reads();
     let is_view = t.view.is_some();
     // A link type's records are written through its relation's link

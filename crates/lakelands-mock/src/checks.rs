@@ -136,6 +136,9 @@ macro_rules! door_checks {
             sys_types_cannot_be_declared,
             add_field_without_the_schema_grant_tells_nothing_of_the_type,
             a_type_its_proposer_is_not_shown_is_a_type_that_is_not_declared,
+            a_type_its_writer_is_not_shown_is_a_type_that_is_not_declared,
+            #[own_principals]
+            a_retry_is_answered_before_its_writer_is_asked_what_it_is_shown,
             an_embedding_is_unbound_where_no_backend_is_bound,
             a_link_to_no_live_record_or_over_no_link_relation_is_refused,
             every_door_refuses_a_view_alike,
@@ -1532,8 +1535,9 @@ pub async fn a_verb_on_its_type_has_a_tool_without_a_key(store: Arc<dyn LakeStor
 /// A call's key is held to the verb's scope before anything else is read:
 /// a key, or a record version to compare, given to a verb on its type is
 /// `invalid`, and so is no key to a verb on a record, each naming the
-/// verb. Without a key, a principal who may not write the type is
-/// `not_granted`, and with no executor bound the call is `unbound`.
+/// verb. Without a key, a principal who is shown the type and may not
+/// write it is `not_granted`, and with no executor bound the call is
+/// `unbound`.
 /// Nothing is appended.
 pub async fn a_verb_on_its_type_is_called_without_a_key(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
@@ -1577,13 +1581,13 @@ pub async fn a_verb_on_its_type_is_called_without_a_key(store: Arc<dyn LakeStore
         assert!(message.contains(verb), "{what}: {message:?} names `{verb}`");
     }
     let e = call(
-        f.cast.stranger.clone(),
+        f.cast.auditor.clone(),
         "register",
         None,
         WriteOpts::default(),
     )
     .await
-    .expect_err("the stranger may not write partners");
+    .expect_err("the auditor reads partners and may not write them");
     assert_eq!(refusal(&e).1, &Refusal::NotGranted, "{e:?}");
     let e = call(owner.clone(), "register", None, WriteOpts::default())
         .await
@@ -6887,6 +6891,276 @@ pub async fn a_setting_is_judged_by_what_its_writer_is_shown(store: Arc<dyn Lake
     retired.expect("a retirement is not judged");
     let own = set_as(c, tuner, k, json!(["status"])).await;
     own.expect("the tuner indexes what it is shown");
+}
+
+/// `vault` with a record `v1` and a retired `v0`, the verbs `seal` on a
+/// record of it and `open` on the type, and the view `longest` over it.
+async fn declare_vault(f: &Fixture) {
+    let (c, owner) = (&f.catalog, &f.cast.owner);
+    let number = |name: &str| FieldDecl {
+        ty: FieldType::kind(StorageKind::Number),
+        ..text(name)
+    };
+    let vault = TypeDecl {
+        name: "vault".into(),
+        key: vec!["code".into()],
+        fields: vec![text("code"), text("state"), number("depth")],
+        field_meta: true,
+        ..Default::default()
+    };
+    let longest = TypeDecl {
+        name: "longest".into(),
+        key: vec!["state".into()],
+        fields: vec![text("state"), number("n")],
+        view: Some(Box::new(ViewDecl {
+            source: "vault".into(),
+            params: Vec::new(),
+            r#where: None,
+            group_by: vec!["state".into()],
+            measures: vec![Measure {
+                name: "n".into(),
+                expr: "count()".into(),
+            }],
+            merge: Default::default(),
+        })),
+        field_meta: true,
+        ..Default::default()
+    };
+    let sealed = Assignment {
+        field: "state".into(),
+        value: Condition::from("'sealed'"),
+    };
+    let seal = VerbDecl {
+        name: "seal".into(),
+        on: "vault".into(),
+        scope: Default::default(),
+        payload: Vec::new(),
+        risk: Risk::Low,
+        requires: None,
+        effect: VerbEffect::Write { set: vec![sealed] },
+        description: None,
+    };
+    let open = VerbDecl {
+        name: "open".into(),
+        scope: VerbScope::Type,
+        payload: vec![text("why")],
+        effect: VerbEffect::External {
+            executor: "crm".into(),
+        },
+        ..seal.clone()
+    };
+    for d in [
+        Declaration::Type(vault),
+        Declaration::Type(longest),
+        Declaration::Verb(seal),
+        Declaration::Verb(open),
+    ] {
+        c.declare(owner, d).await.expect("the owner declares");
+    }
+    let (vault, opts) = (ty("vault"), WriteOpts::default);
+    for k in ["v0", "v1"] {
+        let p = patch(&[("code", json!(k)), ("depth", json!(1))]);
+        let written = c.upsert(owner, &vault, &key(k), p, opts()).await;
+        written.expect("the owner writes a vault");
+    }
+    let retired = c.retire(owner, &vault, &key("v0"), opts()).await;
+    retired.expect("the owner retires one");
+}
+
+/// Every door that writes a record, called by `who` on the type `t`, on a
+/// verb `on_record` of its records and on a verb `on_type` of the type:
+/// each row's name and what it was answered.
+async fn write_doors(
+    c: &Arc<dyn Catalog>,
+    who: &Principal,
+    t: &str,
+    on_record: &str,
+    on_type: &str,
+) -> Vec<(&'static str, String)> {
+    let said = |r: Result<Outcome, Error>| format!("{r:?}");
+    let (t, o) = (&ty(t), WriteOpts::default);
+    let pinned = WriteOpts {
+        expected_version: Some(Version(9)),
+        ..o()
+    };
+    let code = || patch(&[("code", json!("v2"))]);
+    let depth = || patch(&[("depth", json!(2))]);
+    let why = || patch(&[("why", json!("x"))]);
+    let mut out = Vec::new();
+    for (row, k, p, opts) in [
+        ("upsert a new key", "v2", code(), o()),
+        ("upsert a live key", "v1", depth(), o()),
+        ("upsert a retired key", "v0", depth(), o()),
+        (
+            "upsert a field that is none",
+            "v2",
+            patch(&[("nope", json!(1))]),
+            o(),
+        ),
+        ("upsert an empty patch", "v2", patch(&[]), o()),
+        ("upsert at a stale version", "v1", depth(), pinned),
+        ("upsert an empty key", "", code(), o()),
+    ] {
+        out.push((row, said(c.upsert(who, t, &key(k), p, opts).await)));
+    }
+    for (row, k) in [("retire a live key", "v1"), ("retire no record", "v9")] {
+        out.push((row, said(c.retire(who, t, &key(k), o()).await)));
+    }
+    let calls = [
+        ("the record's verb", on_record, Some("v1"), patch(&[])),
+        (
+            "the record's verb without a key",
+            on_record,
+            None,
+            patch(&[]),
+        ),
+        ("the type's verb", on_type, None, why()),
+        ("the type's verb with a key", on_type, Some("v1"), why()),
+    ];
+    for (row, verb, k, payload) in calls.clone() {
+        let k = k.map(key);
+        let called = c.call(who, &verb.into(), k.as_ref(), payload, o()).await;
+        out.push((row, said(called)));
+    }
+    let mut proposed = vec![
+        ProposedWrite::Upsert {
+            ty: t.clone(),
+            key: key("v2"),
+            patch: code(),
+            opts: o(),
+        },
+        ProposedWrite::Retire {
+            ty: t.clone(),
+            key: key("v1"),
+            opts: o(),
+        },
+    ];
+    proposed.extend(calls.map(|(_, verb, k, payload)| ProposedWrite::Call {
+        verb: verb.into(),
+        key: k.map(key),
+        payload,
+        opts: o(),
+    }));
+    for write in proposed {
+        let p = c.propose(who, write, "probing".into()).await;
+        out.push(("the same, proposed", said(p)));
+    }
+    // The source door is its grant's first: only one who holds it is
+    // answered about the type.
+    for fields in [code(), patch(&[])] {
+        if !who.grants.ingest {
+            break;
+        }
+        let rec = SourceRecord {
+            upstream: None,
+            ty: t.clone(),
+            key: key("v3"),
+            fields,
+            seen_at: None,
+        };
+        let acks = c.ingest(who, &"bank".into(), stream::of(vec![rec])).await;
+        let mut acks = acks.expect("one with the grant feeds");
+        let acks = stream::collect(&mut acks).await;
+        out.push(("ingest", format!("{acks:?}")));
+    }
+    out
+}
+
+/// A type its writer is not shown is a type that is not declared
+/// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+/// extended): at every door that writes a record, the stranger and the
+/// importer, who are shown nothing of `vault`, and the tuner, who holds a
+/// grant on the view `longest` and none on its source, are answered as on
+/// `ghost`, which is not declared, whatever the patch, the key, the
+/// version or the verb's scope would be told otherwise. A verb on such a
+/// type is a verb that is not declared. Nothing is written.
+pub async fn a_type_its_writer_is_not_shown_is_a_type_that_is_not_declared(
+    store: Arc<dyn LakeStore>,
+) {
+    let f = setup(store).await;
+    declare_vault(&f).await;
+    let (c, cast) = (&f.catalog, &f.cast);
+    let head = f.head().await;
+    for (who, hidden) in [
+        (&cast.stranger, "vault"),
+        (&cast.importer, "vault"),
+        (&cast.tuner, "vault"),
+        (&cast.tuner, "longest"),
+        (&cast.importer, "longest"),
+    ] {
+        let plain =
+            |a: &str, names: [&str; 3]| names.iter().fold(a.to_string(), |a, n| a.replace(n, "_"));
+        let there = write_doors(c, who, hidden, "seal", "open").await;
+        let none = write_doors(c, who, "ghost", "haunt", "howl").await;
+        for ((row, a), (_, b)) in there.iter().zip(&none) {
+            let (a, b) = (
+                plain(a, [hidden, "seal", "open"]),
+                plain(b, ["ghost", "haunt", "howl"]),
+            );
+            // A network door refuses an empty key itself, for any type.
+            let found = b.contains("NotFound") || *row == "upsert an empty key";
+            assert!(found, "{row} on `ghost`: {b}");
+            let who = &who.id;
+            assert_eq!(a, b, "{row} as {who} on `{hidden}` answers as on `ghost`");
+        }
+    }
+    assert_eq!(f.head().await, head, "nothing was written");
+}
+
+/// A retry of a write is answered that write before its writer is asked
+/// what it is shown: a writer upserts, calls, proposes and retires under
+/// an idempotency key, loses its grant, and repeats each. Under a key it
+/// never used it is answered as on a type that is not declared.
+pub async fn a_retry_is_answered_before_its_writer_is_asked_what_it_is_shown(
+    store: Arc<dyn LakeStore>,
+) {
+    let f = setup(store).await;
+    declare_vault(&f).await;
+    let (c, lake) = (&f.catalog, f.store.lake());
+    let write = TypeGrants {
+        default: Some(Access::Write),
+        fields: Default::default(),
+    };
+    let granted = Grants {
+        types: [(ty("vault"), write)].into(),
+        ..Grants::default()
+    };
+    let granted = principal(lake, PrincipalKind::Agent, "warden", granted);
+    let gone = principal(lake, PrincipalKind::Agent, "warden", Grants::default());
+    let keyed = |k: &str| WriteOpts {
+        expected_version: None,
+        idempotency_key: Some(k.into()),
+    };
+    let (vault, r1, seal) = (ty("vault"), key("r1"), "seal".into());
+    let code = || patch(&[("code", json!("r1"))]);
+    let mut first = Vec::new();
+    for who in [&granted, &gone] {
+        let proposed = ProposedWrite::Upsert {
+            ty: vault.clone(),
+            key: key("r2"),
+            patch: patch(&[("code", json!("r2"))]),
+            opts: keyed("retry-p"),
+        };
+        let answers = [
+            c.upsert(who, &vault, &r1, code(), keyed("retry-u")).await,
+            c.call(who, &seal, Some(&r1), patch(&[]), keyed("retry-c"))
+                .await,
+            c.propose(who, proposed, "probing".into()).await,
+            c.retire(who, &vault, &r1, keyed("retry-r")).await,
+        ];
+        let answers = answers.map(|a| a.expect("the write, and its retry, are answered"));
+        if first.is_empty() {
+            first.extend(answers);
+        } else {
+            assert_eq!(first, answers, "each retry is answered its first write");
+        }
+    }
+    let unused = c.upsert(&gone, &vault, &r1, code(), keyed("never")).await;
+    let ghost = c
+        .upsert(&gone, &ty("ghost"), &r1, code(), keyed("never"))
+        .await;
+    let (unused, ghost) = (answered(unused), answered(ghost));
+    assert_eq!(unused.replace("vault", "ghost"), ghost);
 }
 
 /// A `vector_index.<type>` setting asks for an index on vector fields its
