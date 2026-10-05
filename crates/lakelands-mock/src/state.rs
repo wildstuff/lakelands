@@ -364,19 +364,18 @@ impl State {
             .map_or(Version(0), |r| r.version)
     }
 
-    /// A type the principal may see: declared, and holding at least one
-    /// grant for it. Anything else is absent, not forbidden. As the store
-    /// (006, extended), a type made of another is shown only with it: a
-    /// link type with the type that declares its relation and a view with
-    /// each of its sources, whatever a grant on its own name says.
+    /// A type the principal may see: declared, and its grants giving it
+    /// some access to the type or to one of its fields, a `sensitive`
+    /// field's raise not among them. Anything else is absent, not
+    /// forbidden. As the store (006, extended), a type made of another is
+    /// shown only with it: a link type with the type that declares its
+    /// relation and a view with each of its sources, whatever a grant on
+    /// its own name says.
     pub fn visible(&self, who: &Principal, ty: &TypeName) -> Option<&DeclaredType> {
         let own = |t: &&DeclaredType| {
-            let name = &t.decl.name;
-            type_default(who, name) != Access::None
-                || t.decl
-                    .fields
-                    .iter()
-                    .any(|f| who.grants.access(name, &f.name) != Access::None)
+            let d = &t.decl;
+            let given = |f| built_from(who, d, f, &mut Vec::new()).0 != Access::None;
+            type_default(who, &d.name) != Access::None || d.fields.iter().any(given)
         };
         let shown = self.types.get(ty).filter(own)?;
         let (mut asked, mut next) = (vec![ty.clone()], vec![shown]);
@@ -462,6 +461,25 @@ fn access_seen<'d>(
     f: &'d FieldDecl,
     seen: &mut Vec<&'d FieldName>,
 ) -> Access {
+    let (a, from_source) = built_from(who, decl, f, seen);
+    // `sensitive` shows a field nobody granted or denied by name as masked;
+    // a `none` given by name, or handed down by a source, hides it.
+    let named = (who.grants.types.get(&decl.name)).is_some_and(|t| t.fields.contains_key(&f.name));
+    match a {
+        Access::None if f.sensitive && !named && !from_source => Access::Masked,
+        a => a,
+    }
+}
+
+/// A field's grant, lowered by each field it is built from that the
+/// principal may not read, and whether a source hid it: what a type is
+/// shown by, before `sensitive` raises anything.
+fn built_from<'d>(
+    who: &Principal,
+    decl: &'d TypeDecl,
+    f: &'d FieldDecl,
+    seen: &mut Vec<&'d FieldName>,
+) -> (Access, bool) {
     let mut a = who.grants.access(&decl.name, &f.name);
     let mut from_source = false;
     seen.push(&f.name);
@@ -476,6 +494,8 @@ fn access_seen<'d>(
         if let Some(source) = decl.fields.iter().find(|s| &s.name == name) {
             a = match access_seen(who, decl, source, seen) {
                 s if s.reads() => a,
+                // Its value stays hidden; its write stays the principal's.
+                _ if a.writes() => Access::WriteOnly,
                 Access::Masked if a.reads() => Access::Masked,
                 Access::Masked => a,
                 _ => {
@@ -486,13 +506,7 @@ fn access_seen<'d>(
         }
     }
     seen.pop();
-    // `sensitive` shows a field nobody granted or denied by name as masked;
-    // a `none` given by name, or handed down by a source, hides it.
-    let named = (who.grants.types.get(&decl.name)).is_some_and(|t| t.fields.contains_key(&f.name));
-    match a {
-        Access::None if f.sensitive && !named && !from_source => Access::Masked,
-        a => a,
-    }
+    (a, from_source)
 }
 
 /// The access a principal has to a type as a whole.

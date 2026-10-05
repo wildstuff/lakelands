@@ -253,3 +253,39 @@ does not exist is told the same of what is made of it.
 For a host: a principal that reads or writes a type's links is granted
 something of the type, and a principal that reads a view is granted
 something of each of its sources.
+
+## Extended: `sensitive` shows a field, never a type (lakelands#608)
+
+`sensitive` raises a field nobody named from an inherited `none` to
+`masked` (lakelands#394). That sentence was written for a field in a
+record its reader holds, and the function that decides whether a type
+is shown counted the raised field as access to the type. So a principal
+its host gave nothing of `invoice`, by `{default: none}` or by a lake
+default of `none`, was described `invoice` with `note` masked, read
+every invoice's key and version, was answered its writes field by field
+instead of as on a type that is not declared, and through a grant on a
+link type or a view read every link and every count. Marking a field
+`sensitive` made its type more visible than leaving it unmarked, and a
+host could hide the type only by naming every sensitive field `none`
+for every principal.
+
+**A type is shown to a principal by what its grants give it: some
+access to the type, or to one of its fields. `sensitive` raises a field
+to `masked` only for one who is shown the type; it never shows a
+type.**
+
+- **The one function asks the access before the raise.** Everything
+  that asks whether a type is shown asks it, so the description, the
+  reads, the doors that write a record, the link doors, the settings'
+  judge and what is made of the type follow without a rule of their own.
+- **What stays.** Inside a type its principal is shown, a sensitive
+  field nobody named is listed as masked, and a filter on it is refused
+  as not granted.
+- **A field is counted as it is read.** A field built from another is
+  read as that field (024), so a grant to read a field, or to see it
+  masked, whose source is `none` gives nothing and shows no type. A
+  grant to write it leaves it write-only (lakelands#393), and that
+  shows the type.
+
+For a host: a principal that is to see that a field is withheld is
+granted something of the type, or the field as `masked` by name.

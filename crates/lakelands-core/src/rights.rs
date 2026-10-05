@@ -54,6 +54,13 @@ pub fn field_access(who: &Principal, decl: &TypeDecl, field: &FieldDecl) -> Acce
     access_of(who, decl, field, &mut Vec::new())
 }
 
+/// What the grants give a field, before `sensitive` raises it: a type
+/// is shown by this, and `sensitive` shows a field of a type that is
+/// shown, never the type.
+pub fn granted_access(who: &Principal, decl: &TypeDecl, field: &FieldDecl) -> Access {
+    built_from(who, decl, field, &mut Vec::new()).0
+}
+
 fn access_of<'d>(
     who: &Principal,
     decl: &'d TypeDecl,

@@ -25,7 +25,7 @@ use lakelands_api::ontology::{Authority, RelationDecl, TypeDecl, VerbDecl, VerbE
 use lakelands_api::write::{Declaration, FunctionDecl};
 use lakelands_api::{Access, FieldName, LakeId, Principal, TypeName};
 
-use crate::rights::{field_access, type_access};
+use crate::rights::{field_access, granted_access, type_access};
 
 /// The lake as `who` may see it.
 pub fn lake(lake: &LakeId, declared: &[Declared], who: &Principal) -> LakeDescription {
@@ -430,8 +430,9 @@ fn find_type<'a>(declared: &'a [Declared], ty: &TypeName) -> Option<&'a TypeDecl
     })
 }
 
-/// Whether `who` is shown `t`: it has some access to the type or to one
-/// of its fields, and is shown every type that `t` is made of
+/// Whether `who` is shown `t`: its grants give it some access to the type
+/// or to one of its fields, a `sensitive` field's raise not among them,
+/// and it is shown every type that `t` is made of
 /// (`docs/decisions/006-grants-not-roles.md`, extended): a link type is
 /// its owner's edges and a view is its sources' records computed, so one
 /// who is told the other does not exist is told the same of what is made
@@ -448,7 +449,7 @@ pub fn type_shown<'a>(
     let own = |t: &TypeDecl| {
         let fields = &mut t.fields.iter();
         type_access(who, &t.name) != Access::None
-            || fields.any(|f| field_access(who, t, f) != Access::None)
+            || fields.any(|f| granted_access(who, t, f) != Access::None)
     };
     let (mut asked, mut next) = (vec![&t.name], vec![t]);
     while let Some(t) = next.pop() {

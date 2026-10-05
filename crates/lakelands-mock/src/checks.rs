@@ -138,6 +138,8 @@ macro_rules! door_checks {
             a_type_its_proposer_is_not_shown_is_a_type_that_is_not_declared,
             a_type_its_writer_is_not_shown_is_a_type_that_is_not_declared,
             #[own_principals]
+            a_sensitive_field_shows_a_field_and_never_a_type,
+            #[own_principals]
             a_retry_is_answered_before_its_writer_is_asked_what_it_is_shown,
             a_record_event_says_whether_it_made_the_record,
             an_embedding_is_unbound_where_no_backend_is_bound,
@@ -7106,6 +7108,216 @@ pub async fn a_type_its_writer_is_not_shown_is_a_type_that_is_not_declared(
         }
     }
     assert_eq!(f.head().await, head, "nothing was written");
+}
+
+/// Every door that reads a type's records, called by `who` on the type
+/// `t`: each row's name and what it was answered.
+async fn read_doors(c: &Arc<dyn Catalog>, who: &Principal, t: &str) -> Vec<(&'static str, String)> {
+    fn said<T: std::fmt::Debug>(r: Result<T, Error>) -> String {
+        format!("{r:?}")
+    }
+    let (t, at) = (&ty(t), ReadAt::default);
+    let noted = Find {
+        filter: Some("note = 'x'".into()),
+        ..Find::default()
+    };
+    let words = Search {
+        ty: t.clone(),
+        mode: SearchMode::Lexical {
+            text: "open".into(),
+            fields: None,
+        },
+        k: 5,
+        cursor: None,
+        filter: None,
+        with_meta: false,
+        at: at(),
+    };
+    let from = Pattern::traverse(t.clone(), key("v1"), Vec::new());
+    vec![
+        ("describe_type", said(c.describe_type(who, t, at()).await)),
+        ("get", said(c.get(who, t, get("v1")).await)),
+        ("find", said(c.find(who, t, Find::default()).await)),
+        ("find by a field", said(c.find(who, t, noted).await)),
+        ("search", said(c.search(who, words).await)),
+        ("a pattern", said(c.query(who, from).await)),
+    ]
+}
+
+/// `sensitive` shows a field, never a type
+/// (`docs/decisions/006-grants-not-roles.md`, extended): one whose grants
+/// give it nothing of `invoice`, which declares the sensitive `note`, by
+/// no entry or by `{default: none}`, is answered at every door that reads
+/// and every door that writes a record as on `ghost`, which is not
+/// declared; so it is on the link type of a relation of `invoice` and on
+/// a view over it, whatever it is granted on their names, and neither
+/// `describe` nor the tools name one of the three. The same of `wage` to
+/// one whose only grant is to read `band`, or to see it masked, which is
+/// built from `salary`: a field is read as what it is built from (024),
+/// and one that is none shows no type. One granted to write `band` is
+/// shown `wage` with `band` write-only, and writes it. And on the border:
+/// one granted to read `tip` of `hint`, which is built from the sensitive
+/// `code` nobody named, is shown `hint` by the grant, with both masked.
+pub async fn a_sensitive_field_shows_a_field_and_never_a_type(store: Arc<dyn LakeStore>) {
+    const LINKS: &str = "sys.link.invoice.cites";
+    let f = setup(store).await;
+    let (owner, c, opts) = (&f.cast.owner, &f.catalog, WriteOpts::default);
+    let mut declared = fixture();
+    declared.retain_mut(|d| match d {
+        Declaration::Type(t) if t.name.as_str() == INVOICE => {
+            t.relations.push(RelationDecl {
+                name: "cites".into(),
+                target: INVOICE.into(),
+                inverse: None,
+                via: None,
+                ..t.relations[0].clone()
+            });
+            true
+        }
+        _ => false,
+    });
+    for d in [
+        json!({"declare": "type", "name": "invoices",
+               "fields": [{"name": "n", "type": {"kind": "number"}}],
+               "view": {"source": INVOICE, "measures": [{"name": "n", "expr": "count()"}]}}),
+        json!({"declare": "type", "name": "wage",
+               "fields": [{"name": "salary", "type": {"kind": "text"}},
+                          {"name": "band", "type": {"kind": "text"},
+                           "depends_on": ["salary"], "on_input_change": "clear"}]}),
+        json!({"declare": "type", "name": "hint",
+               "fields": [{"name": "code", "type": {"kind": "text"}, "sensitive": true},
+                          {"name": "tip", "type": {"kind": "text"},
+                           "depends_on": ["code"], "on_input_change": "clear"}]}),
+    ] {
+        declared.push(serde_json::from_value(d).expect("a declaration"));
+    }
+    for d in declared {
+        c.declare(owner, d).await.expect("the owner declares it");
+    }
+    let (invoice, wage) = (ty(INVOICE), ty("wage"));
+    for k in ["v0", "v1", "v4"] {
+        let p = patch(&[("status", json!("open")), ("note", json!("x"))]);
+        let written = c.upsert(owner, &invoice, &key(k), p, opts()).await;
+        written.expect("the owner writes an invoice");
+    }
+    let retired = c.retire(owner, &invoice, &key("v0"), opts()).await;
+    retired.expect("the owner retires one");
+    let (v1, v4, cites) = (key("v1"), key("v4"), "cites".into());
+    let linked = c.link(owner, &invoice, &v1, &cites, &v4, Patch::new(), opts());
+    linked.await.expect("the owner links two");
+    let p = patch(&[("salary", json!("1")), ("band", json!("2"))]);
+    let written = c.upsert(owner, &wage, &key("v1"), p, opts()).await;
+    written.expect("the owner writes a wage");
+
+    let lake = f.store.lake();
+    let whole = |a| TypeGrants {
+        default: Some(a),
+        ..TypeGrants::default()
+    };
+    let one = |f: &str, a| TypeGrants {
+        default: None,
+        fields: [(f.into(), a)].into(),
+    };
+    let band = |a| one("band", a);
+    let of = |id: &str, default, types: &[(&str, TypeGrants)]| {
+        let types = types.iter().map(|(t, g)| (ty(t), g.clone())).collect();
+        let grants = Grants {
+            default,
+            types,
+            ..Grants::default()
+        };
+        principal(lake, PrincipalKind::Agent, id, grants)
+    };
+    let (read, made) = (whole(Access::Read), [INVOICE, LINKS, "invoices"]);
+    let beside = [(LINKS, read.clone()), ("invoices", read)];
+    let cast = [
+        (of("no entry", Access::None, &[]), &made[..1]),
+        (
+            of("none", Access::Read, &[(INVOICE, whole(Access::None))]),
+            &made[..],
+        ),
+        (of("beside", Access::None, &beside), &made[..]),
+        (
+            of("reads", Access::None, &[("wage", band(Access::Read))]),
+            &["wage"][..],
+        ),
+        (
+            of("masked", Access::None, &[("wage", band(Access::Masked))]),
+            &["wage"][..],
+        ),
+    ];
+    // Every row that is answered otherwise than on `ghost`, with both
+    // answers: one assertion, so a fault names each row it turns.
+    let (head, mut apart) = (f.head().await, Vec::new());
+    for (who, hidden) in &cast {
+        let id = &who.id;
+        for &hidden in *hidden {
+            // A link type's records are written at its owner's link doors,
+            // and its name is refused at a record's doors by its form.
+            let ghost = match hidden {
+                LINKS => "sys.link.ghost.cites",
+                _ => "ghost",
+            };
+            let doors = async |t: &str, on_record: &str, on_type: &str| {
+                let mut rows = read_doors(c, who, t).await;
+                if hidden != LINKS {
+                    rows.extend(write_doors(c, who, t, on_record, on_type).await);
+                    let (t, by) = (ty(t), "cites".into());
+                    let linked = c.link(who, &t, &v4, &by, &v1, Patch::new(), opts());
+                    rows.push(("link", format!("{:?}", linked.await)));
+                    let unlinked = c.unlink(who, &t, &v1, &by, &v4, opts()).await;
+                    rows.push(("unlink", format!("{unlinked:?}")));
+                }
+                rows
+            };
+            let there = doors(hidden, "approve", "pay").await;
+            let none = doors(ghost, "haunt", "howl").await;
+            for ((row, a), (_, b)) in there.into_iter().zip(none) {
+                // A network door refuses an empty key itself, for any type.
+                let found = b.contains("NotFound") || row == "upsert an empty key";
+                assert!(found, "{row} on `{ghost}`: {b}");
+                let b = b.replace(ghost, hidden).replace("haunt", "approve");
+                let b = b.replace("howl", "pay");
+                if a != b {
+                    apart.push((format!("{row} as `{id}` on `{hidden}`"), a, b));
+                }
+            }
+        }
+        let described = c.describe(who, ReadAt::default()).await;
+        let described = described.expect("describing the lake").data;
+        let said = format!("{described:?} {:?}", tools(&described).expect("the tools"));
+        if hidden.iter().any(|t| said.contains(&format!("\"{t}"))) {
+            apart.push((format!("describe and the tools as `{id}`"), said, "".into()));
+        }
+    }
+    let rows: Vec<&str> = apart.iter().map(|r| r.0.as_str()).collect();
+    assert!(
+        rows.is_empty(),
+        "not as on `ghost`: {rows:#?}, answered {apart:?}"
+    );
+    assert_eq!(f.head().await, head, "nothing was written");
+
+    // Who is shown a type by a grant, and each field as it is described.
+    let writes = of("writes", Access::None, &[("wage", band(Access::Write))]);
+    let tip = [("hint", one("tip", Access::Read))];
+    let tips = of("tips", Access::None, &tip);
+    let masked = [("code", Access::Masked), ("tip", Access::Masked)];
+    for (who, t, want) in [
+        (&writes, "wage", &[("band", Access::WriteOnly)][..]),
+        // The grant names `tip`: that shows `hint`, and `code`, which
+        // nobody named and `tip` is built from, is masked, and so `tip`.
+        (&tips, "hint", &masked[..]),
+    ] {
+        let shown = c.describe_type(who, &ty(t), ReadAt::default()).await;
+        let shown = shown.unwrap_or_else(|e| panic!("`{}` is shown `{t}`: {e:?}", who.id));
+        let fields: Vec<_> = (shown.data.fields.iter())
+            .map(|f| (f.name.as_str(), f.access))
+            .collect();
+        assert_eq!(fields, want, "`{t}` as `{}` is described", who.id);
+    }
+    let p = patch(&[("band", json!("3"))]);
+    let wrote = c.upsert(&writes, &wage, &key("v1"), p, opts()).await;
+    assert!(matches!(wrote, Ok(Outcome::Applied { .. })), "{wrote:?}");
 }
 
 /// A record event says `made` where its write found no live record under
