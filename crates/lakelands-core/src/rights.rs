@@ -350,7 +350,7 @@ fn no_field(decl: &TypeDecl, name: &FieldName) -> Error {
 }
 
 /// A migration that is not in force as `who` may know it: the shape it
-/// leaves without a field `who` may not know of, judged with its grants
+/// leaves as [`described_fields`] shows it, judged with its grants
 /// held through the migration's own renames, of fields and of the link
 /// types its renamed relations move; and a rename only where
 /// `who` may know of the field under both names, the old one in `was`,
@@ -363,12 +363,50 @@ pub fn known_migration(who: &Principal, was: &TypeDecl, m: &mut Migration, since
     let (mut then, mut was) = (who.clone(), was.clone());
     (then.grants).follow(&list, None);
     known_fields(who, &mut was);
-    known_fields(&then, &mut m.to);
+    described_fields(&then, &mut m.to);
     (m.renames).retain(|(old, new)| holds(&was, old) && holds(&m.to, new));
 }
 
+/// `t` as `describe` would show its fields to `who`, a relation's link
+/// fields too (024): without those it may not know of, and one it may not
+/// read left with its shape alone. A listing hands a declaration out so;
+/// an author's view of a type is made by [`known_fields`], and holds a
+/// field as declared.
+pub fn described_fields(who: &Principal, t: &mut TypeDecl) {
+    let whole = t.clone();
+    let shown = |of: &TypeDecl, fields: &mut Vec<FieldDecl>| {
+        fields.retain(|f| field_access(who, of, f) != Access::None);
+        let unread = fields
+            .iter_mut()
+            .filter(|f| !field_access(who, of, f).reads());
+        unread.for_each(FieldDecl::shape_alone);
+    };
+    shown(&whole, &mut t.fields);
+    for r in &mut t.relations {
+        shown(&crate::links::link_type(&whole.name, r), &mut r.fields);
+    }
+}
+
+/// Whether `t` declares `name`, a field or a link field
+/// (`relation.field`), as one `who` may not read.
+fn unread(who: &Principal, t: &TypeDecl, name: &FieldName) -> bool {
+    let link = |(r, f): (&str, _)| {
+        let r = t.relations.iter().find(|x| x.name.as_str() == r)?;
+        Some((crate::links::link_type(&t.name, r), f))
+    };
+    let (of, field) = match name.as_str().split_once('.') {
+        Some(named) => match link(named) {
+            Some((of, field)) => (std::borrow::Cow::Owned(of), field),
+            None => return false,
+        },
+        None => (std::borrow::Cow::Borrowed(t), name.as_str()),
+    };
+    let field = of.fields.iter().find(|f| f.name.as_str() == field);
+    field.is_some_and(|f| !field_access(who, &of, f).reads())
+}
+
 /// `t` without the fields `who` may not know of, a relation's link fields
-/// too: a shape as `describe` would show it.
+/// too.
 pub fn known_fields(who: &Principal, t: &mut TypeDecl) {
     let whole = t.clone();
     t.fields
@@ -397,8 +435,14 @@ pub fn holds(t: &TypeDecl, name: &FieldName) -> bool {
 /// answered a record. An entry is shown where the reader may see the type
 /// and know of the field: a conversion in the shape the migration leaves,
 /// and by the name it took its values from where it was renamed, as is a
-/// rewritten reference of the migrated type itself; a dropped field in
-/// the shape as it stands, and a renamed relation likewise; a sample key
+/// rewritten reference of the migrated type itself, and a member restated,
+/// with what was declared and what `to` states, as `describe` shows a
+/// field member by member: one of [`FieldDecl::UNREAD`] only where the
+/// reader reads the field in `to` and as the type stands, under the name
+/// it had, since a field's access is built from what it is computed from
+/// and a migration may change that with no rename (a link field bears
+/// the name it had: a relation renamed keeps its link fields); a dropped
+/// field in the shape as it stands, and a renamed relation likewise; a sample key
 /// where the record is answered; a declaration the migration carries
 /// where `described`, the lake as `describe` shows it to the reader,
 /// names it, asked only for a report that carries one. The totals, the
@@ -424,10 +468,11 @@ pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDesc
         report.rekeyed.clear();
         report.references.clear();
         report.sample_collisions.clear();
+        report.restated.clear();
         return;
     }
     let whole = report.clone();
-    let (mut was, mut to) = (was.clone(), m.to.clone());
+    let (stands, mut was, mut to) = (was, was.clone(), m.to.clone());
     known_fields(who, &mut was);
     known_fields(who, &mut to);
     let sourced = |new: &FieldName| {
@@ -449,6 +494,17 @@ pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDesc
         };
         c.sample_keys.retain(|key| answered(&of, key));
     }
+    // A member restated is the type's, or shown as its field's conversion
+    // is, and one beyond the shape where the field is read in both shapes.
+    let read = |f: &FieldName| {
+        let had = m.renames.iter().find(|(_, new)| new == f);
+        !unread(who, &m.to, f) && !unread(who, stands, had.map_or(f, |(old, _)| old))
+    };
+    report.restated.retain(|r| {
+        let shape = !FieldDecl::UNREAD.contains(&r.member.as_str());
+        let shown = |f| holds(&to, f) && sourced(f) && (shape || read(f));
+        r.field.as_ref().is_none_or(shown)
+    });
     report.dropped.retain(|(f, _)| holds(&was, f));
     // A renamed relation is shown as a dropped one is: by the name it had.
     let named = |r: &lakelands_api::write::RelationRename| holds(&was, &r.from.as_str().into());

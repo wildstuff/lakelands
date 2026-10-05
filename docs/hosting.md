@@ -371,6 +371,23 @@ A host that already has a store of its own moves in four steps.
   type is handed the `migrated` event. The old link type stays declared,
   for the reads as of before: it holds no record and takes none, so a
   source that still sends links under the old name is refused, naming it.
+- **A migration's `to` is the type's whole declaration; read `restated`
+  before you apply.** A `to` built from a reduced view (a field's name
+  and type, nothing else) takes away every mark it does not restate:
+  `sensitive`, `searchable`, a label, annotations, an expression. The
+  migration is lossless, since no stored value changes, and its
+  preflight lists each such member in `restated` with what was declared
+  and what `to` states; `dropped` names every removed relation, with 0
+  where it holds no live link. Build `to` from `describe`'s answer for
+  the type and change what you mean to change; a report whose `restated`
+  is not what you meant is the signal. A field you may not read is
+  described and reported by its shape alone: your preview says `more`
+  where it leaves a member out, and a reviewer who reads the field sees
+  the rest. A proposed migration is refused
+  at its accept ("propose it again") where the type gained or lost a
+  member since that the proposal's report does not restate
+  (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+  extended).
 - **A grant on a link type follows the relation's rename, as a grant on
   a field follows the field's.** A field of the link type is as closed
   as the lowest of what a principal's grants say under every name the

@@ -345,6 +345,15 @@ interface types {
         name: string,
     }
 
+    /// One member a migration's `to` states otherwise than the declaration
+    /// in force: of the type, a field, a relation or a link field.
+    record restated {
+        field: option<field-name>,
+        member: string,
+        was: json,
+        to: json,
+    }
+
     /// One relation a migration renames, in its preflight's report.
     record relation-rename {
         %from: relation-name,
@@ -375,6 +384,7 @@ interface types {
         rekeyed: list<rekeyed>,
         references: list<reference-rewrite>,
         sample-collisions: list<record-ref>,
+        restated: list<restated>,
         lossless: bool,
         report-id: string,
         /// The report holds more than its reader is shown.

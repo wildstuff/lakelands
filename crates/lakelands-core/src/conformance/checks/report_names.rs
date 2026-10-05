@@ -55,12 +55,16 @@ fn text(n: &str) -> Value {
 }
 
 /// The preview of `m` as `who` is answered it.
-async fn preview(l: &Lake, who: &Principal, m: Migration) -> Result<MigrationReport, Failure> {
+pub(super) async fn preview(
+    l: &Lake,
+    who: &Principal,
+    m: Migration,
+) -> Result<MigrationReport, Failure> {
     Ok(l.cat.migrate(who, m).await.must("previewing")?.data)
 }
 
 /// The report a refusal carries, as JSON.
-fn refused(answer: lakelands_api::Result<Outcome>) -> Result<String, Failure> {
+pub(super) fn refused(answer: lakelands_api::Result<Outcome>) -> Result<String, Failure> {
     match answer.map_err(|e| (reason(&e).cloned(), e)) {
         Err((Some(Refusal::Migration { report }), _)) => Ok(json!(report).to_string()),
         other => Err(Failure::new(format!(

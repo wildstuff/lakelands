@@ -391,3 +391,29 @@ fn a_write_of_a_view_kept_setting_needs_format_11_and_says_so_below_it() {
     other["type"] = json!("note");
     assert_eq!(need(other), 1);
 }
+
+#[test]
+fn a_proposed_migration_whose_report_restates_needs_format_11_and_says_so_below_it() {
+    let proposed = |restated: Option<serde_json::Value>| {
+        let mut report = json!({"type": "t", "from_schema_hash": "a", "to_schema_hash": "a",
+            "records_scanned": 0, "fields": [], "lossless": true, "report_id": "r"});
+        report["restated"] = restated.unwrap_or(json!([]));
+        let migration = json!({"to": {"name": "t", "fields": []}});
+        let write = json!({"write": "migrate", "migration": migration, "report": report});
+        json!({"kind": "write_proposed", "proposal": "p", "why": "w", "write": write})
+    };
+    let mark = json!([{"field": "f", "member": "sensitive", "was": true, "to": false}]);
+    let restates = event_json(11, proposed(Some(mark.clone())));
+    assert_eq!(needed(&restates.body, false), 11);
+    assert_eq!(
+        below(&event_json(10, proposed(Some(mark)))).as_deref(),
+        Some(
+            "a format 10 event proposes a migration whose report holds `restated`, which format \
+             11 added"
+        )
+    );
+    // One that restates nothing needs what it did, and is written without it.
+    let plain = event_json(4, proposed(None));
+    let written = serde_json::to_string(&plain).unwrap();
+    assert!(needed(&plain.body, false) == 4 && !written.contains("restated"));
+}

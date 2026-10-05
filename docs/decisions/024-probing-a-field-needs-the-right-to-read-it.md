@@ -399,3 +399,34 @@ read them.
 To a reader kept from a field, a set whose filter reads it is a set that
 is not declared, by its name as in `describe`: the refusal is the one a
 name no set has gets, and names nothing of the field.
+
+## Extended: a field's declaration is shown by one list, wherever it is answered (lakelands#554)
+
+`describe` showed a field its reader may know of and not read by its
+shape alone, and a migration's report, a proposed migration's `to` and a
+proposed declaration's types did not: a reader with a field masked was
+handed its label, its description, its annotations, whether it is
+searchable and the expression it is computed by, in the listing of a
+proposal and in a report's `restated`. The `to` of a listing stood so
+before `restated` existed.
+
+**One list, in the contract.** The members a field shows only to one
+who reads it (`derived`, `function`, `depends_on`, `searchable`,
+`description`, `label`, `embed`, `annotations`) are named once beside
+the field's declaration, with the step that clears them. `describe`, a
+relation's link fields, a report's `restated` and both listings go by
+it, so a member added to the list is hidden everywhere at once.
+
+**In both shapes.** A field's access is built from what it is computed
+from, and a migration may change that with no rename: a derived field
+read from `secret` and in `to` from `name`. So an entry of a member on
+the list is shown only where its reader reads the field in `to` and in
+the type as it stands, under the name it had; its shape (`sensitive`
+among it) is shown where the reader may know of the field.
+
+**An author's view is not a listing.** The view an author declares or
+migrates from holds every field it may know of as declared, so that a
+field it does not read stays as it is; the list clears a declaration
+only where one is handed out. An author with a field masked is
+therefore answered of its own migration the shape and `more`, not the
+members it never saw.

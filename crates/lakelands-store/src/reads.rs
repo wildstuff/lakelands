@@ -1433,7 +1433,7 @@ impl<'a> Reader<'a> {
                 declarations.retain(|d| describe::listed(d, &declared, self.who));
                 for d in declarations.iter_mut() {
                     if let Declaration::Type(t) = d {
-                        rights::known_fields(self.who, t);
+                        rights::described_fields(self.who, t);
                     }
                 }
                 !declarations.is_empty()

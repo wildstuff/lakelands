@@ -1770,12 +1770,19 @@ impl Call<'_> {
                 // (013, extended).
                 let ty = &migration.to.name;
                 let head = shape::schema_hash(w.ontology.ty(ty)?).ok();
+                let changed = || {
+                    let since = "changed since this migration was proposed; propose it again";
+                    invalid(format!("`{ty}` {since}"))
+                };
                 if head.as_ref() != Some(&report.from_schema_hash) {
-                    return Err(invalid(format!(
-                        "`{ty}` changed since this migration was proposed; propose it again"
-                    )));
+                    return Err(changed());
                 }
                 let plan = self.preflight_plan(&w, view.as_ref(), migration, Some(now))?;
+                // So would it take away a mark set since, which the hash
+                // does not cover: it restates what its report said, no more.
+                if plan.report.restated != report.restated {
+                    return Err(changed());
+                }
                 renamed = self.known_renames(&w.ontology, migration);
                 let first = drafts.len();
                 let own = self.migration_drafts(&w, (**migration).clone(), plan, now, first)?;
@@ -2677,25 +2684,31 @@ impl Call<'_> {
                 .dropped
                 .extend(lr.dropped.into_iter().map(|(f, n)| (named(&f), n)));
         }
-        // A relation carried by link records that the migration removes
-        // takes its live links from the head, as a removed field takes its
-        // values: it is listed with their number. A relation of another
-        // name is another relation; a rename is not inferred.
+        // A relation the migration removes is listed as a removed field
+        // is: one carried by link records takes its live links from the
+        // head, and is listed with their number, another with none. A
+        // relation of another name is another relation; a rename is not
+        // inferred.
         let pairs = m.renamed_relations(&before).map_err(invalid)?;
         let removed = |r: &&RelationDecl| {
-            links::carried_by_links(r)
-                && !m.to.relations.iter().any(|n| n.name == r.name)
+            !m.to.relations.iter().any(|n| n.name == r.name)
                 && !pairs.iter().any(|(was, _)| was.name == r.name)
         };
         for r in before.relations.iter().filter(removed) {
             let lt = links::link_type_name(&m.to.name, &r.name);
-            let live = view.count(&lt, &every(false))?;
-            if live > 0 {
-                report
-                    .dropped
-                    .push((FieldName::from(r.name.as_str()), live));
-            }
+            let live = match links::carried_by_links(r) {
+                true => view.count(&lt, &every(false))?,
+                false => 0,
+            };
+            let name = FieldName::from(r.name.as_str());
+            report.dropped.push((name, live));
         }
+        // What `to` states otherwise besides, each shape completed as one
+        // in force is, so a `depends_on` left to the store restates nothing.
+        let (mut was, mut is) = (before.clone(), m.clone());
+        w.ontology.complete(&mut was);
+        after.complete(&mut is.to);
+        report.restated = is.restated(&was);
         // A renamed relation keeps its edges. One carried by link records
         // moves them to the link type of its new name, which must hold none
         // of an earlier relation's, and not in the migration that re-keys.

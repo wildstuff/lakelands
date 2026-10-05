@@ -680,6 +680,81 @@ impl Migration {
     }
 }
 
+impl Migration {
+    /// What `to` states otherwise than `before`, the declaration in force,
+    /// for [`MigrationReport::restated`]: the two compared member by member
+    /// as they serialise, a field with the one it takes its values from, a
+    /// relation with the one it is renamed from, a link field as
+    /// `relation.field`. It lives in the contract so that the mock reports
+    /// the same.
+    pub fn restated(&self, before: &TypeDecl) -> Vec<Restated> {
+        let mut out = Vec::new();
+        let own = ["name", "fields", "relations"];
+        differing(None, Some(before), &self.to, &own, &mut out);
+        differing_fields("", &before.fields, &self.to.fields, &self.renames, &mut out);
+        for r in &self.to.relations {
+            let renamed = self.relation_renames.iter().find(|(_, new)| new == &r.name);
+            let name = renamed.map_or(&r.name, |(old, _)| old);
+            let was = before.relations.iter().find(|w| &w.name == name);
+            // A rename is said by the report's `relations`, a link field below.
+            let (of, said) = (format!("{}.", r.name), ["name", "fields"]);
+            differing(Some(r.name.to_string()), was, r, &said, &mut out);
+            let held = was.map_or(&[][..], |w| &w.fields);
+            differing_fields(&of, held, &r.fields, &[], &mut out);
+        }
+        out
+    }
+}
+
+/// Each field of `to` against the one of `was` it takes its values from,
+/// by `renames` or by its name, named after `of`. A type that changes and
+/// a `required` that tightens are a conversion, said by a report's `fields`.
+fn differing_fields(
+    of: &str,
+    was: &[FieldDecl],
+    to: &[FieldDecl],
+    renames: &[(FieldName, FieldName)],
+    out: &mut Vec<Restated>,
+) {
+    for f in to {
+        let from = match renames.iter().find(|(_, new)| new == &f.name) {
+            Some((old, _)) => Some(old),
+            None => Some(&f.name).filter(|n| !renames.iter().any(|(old, _)| &old == n)),
+        };
+        let from = from.and_then(|n| was.iter().find(|w| &w.name == n));
+        let retyped = from.is_some_and(|w| w.ty != f.ty).then_some("type");
+        let tightened = (f.required && !from.is_some_and(|w| w.required)).then_some("required");
+        let said: Vec<&str> = retyped.into_iter().chain(tightened).collect();
+        differing(Some(format!("{of}{}", f.name)), from, f, &said, out);
+    }
+}
+
+/// The members of `to` that differ from those of `was`, as the two
+/// serialise, but those `said` elsewhere; of a declaration with no `was`,
+/// each member it states otherwise than a bare one, from null.
+fn differing<T: Serialize + Default>(
+    field: Option<String>,
+    was: Option<&T>,
+    to: &T,
+    said: &[&str],
+    out: &mut Vec<Restated>,
+) {
+    let members = |d: &T| serde_json::to_value(d).unwrap_or_default();
+    let (before, to) = (members(was.unwrap_or(&T::default())), members(to));
+    let both = [&before, &to].into_iter().filter_map(|d| d.as_object());
+    let names: std::collections::BTreeSet<&String> = both.flat_map(|d| d.keys()).collect();
+    for member in names.into_iter().filter(|n| !said.contains(&n.as_str())) {
+        if before[member] != to[member] {
+            out.push(Restated {
+                field: field.as_deref().map(FieldName::from),
+                member: member.clone(),
+                was: was.map_or(serde_json::Value::Null, |_| before[member].clone()),
+                to: to[member].clone(),
+            });
+        }
+    }
+}
+
 /// How a relation's edges are carried.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -727,8 +802,27 @@ pub struct RelationRename {
     pub links: u64,
 }
 
-/// The preflight of a migration: what it would do to the stored records,
-/// computed before anything changes. A migration is applied only when its
+/// One member of a declaration that a migration's `to` states otherwise
+/// than the declaration in force, where the report's other lists do not
+/// say it: a mark, a label, an expression, a relation's target.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Restated {
+    /// What the member is of: a field, a relation by its name, a link
+    /// field as `relation.field`. Left out for the type itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<FieldName>,
+    /// The member, as a declaration serialises it.
+    pub member: String,
+    /// What the declaration in force states, null where it leaves the
+    /// member out or declares no such field or relation.
+    pub was: serde_json::Value,
+    /// What `to` states, null where it leaves the member out.
+    pub to: serde_json::Value,
+}
+
+/// The preflight of a migration: what it would do to the stored records
+/// and to the declaration, computed before anything changes. Every
+/// difference between the declaration in force and `to` is in it. A migration is applied only when its
 /// report is lossless, and only by a call that names the report it was
 /// shown. The empty report (`Default`) is what a proposer sends with a
 /// proposed migration, which the store replaces with the preflight's.
@@ -747,10 +841,11 @@ pub struct MigrationReport {
     /// Per field whose type changes: how many values convert.
     pub fields: Vec<FieldConversion>,
     /// Fields the migration removes, and how many records hold a value
-    /// that removing them discards; and each relation carried by link
-    /// records it removes, by the relation's name, with the number of its
-    /// live links. Removal is the migration's intent, named here before
-    /// anything is applied; it does not make the report lossy.
+    /// that removing them discards; and each relation it removes, by the
+    /// relation's name, with the number of its live links, none for one
+    /// not carried by link records. Removal is the migration's intent,
+    /// named here before anything is applied; it does not make the report
+    /// lossy.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dropped: Vec<(FieldName, u64)>,
     /// The relations the migration renames, each with how its edges are
@@ -772,8 +867,16 @@ pub struct MigrationReport {
     /// The first new keys more than one record would take, at most ten.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sample_collisions: Vec<RecordRef>,
+    /// What `to` states otherwise than the declaration in force, beside
+    /// the lists above: each member as the two declarations serialise it,
+    /// but a field's type that changes and a `required` that tightens,
+    /// which `fields` says. A field or a relation `to` adds is restated
+    /// member by member, from null.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub restated: Vec<Restated>,
     /// True when every stored value converts without loss, and every
-    /// record a re-key moves takes a new key of its own.
+    /// record a re-key moves takes a new key of its own. It speaks of
+    /// stored values: a migration that only restates is lossless.
     pub lossless: bool,
     /// Names this report; `migrate_apply` must repeat it. It is the id of
     /// the whole report, whatever its reader is shown of it.

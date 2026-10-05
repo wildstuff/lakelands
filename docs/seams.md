@@ -2036,6 +2036,42 @@ filled from it and is a new record at version 1. A migration that takes
 every key field away, names a key field that is not required or of a
 kind no key is made of, or would re-key a view is refused.
 
+A migration's `to` is the type's whole declaration, and its report says
+every difference between the declaration in force and `to`
+(`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+extended). A field's type that changes and a `required` that tightens
+are in `fields`; a field removed, and a relation removed, with the
+number of its live links, are in `dropped`; a relation renamed is in
+`relations`. Every other member `to` states otherwise is in `restated`,
+one entry a member, as the two declarations serialise: `field` (left out
+for the type's own members; a relation's name; `relation.field` for a
+link field), `member`, `was` and `to`, null where a declaration leaves
+the member out. So a `to` that names a field without its `sensitive`,
+`searchable`, label or annotations takes them away, and the report reads
+`{"field": "secret", "member": "sensitive", "was": true, "to": false}`
+before anything is applied; a field or a relation `to` adds is restated
+from null in each member it states otherwise than a bare declaration,
+its name among them; a `depends_on` the store completes restates nothing.
+`lossless` speaks of stored values: a migration that only restates is
+lossless, and `restated` is where it says what it changes. An entry is
+answered where its reader may know of the field, as a conversion is, and
+member by member as `describe` shows that field: to one who knows of it
+and does not read it, in `to` or as the type stands, the members of its
+shape alone (name, type, `required`, `authority`, `on_input_change`,
+`sensitive`), never an expression, a label, a description, annotations,
+`searchable` or an embedding, and `more` says that something was left
+out. So an author with `secret` masked, whose `to` drops a label it was
+never shown, is answered `sensitive` and `more`, and the report whole is
+in the log and before a reviewer who reads the field. A listing hands
+out a proposed migration's `to` and a proposed declaration's types the
+same way
+(`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+extended). A proposed migration is logged with its report, and an accept of it is
+refused ("changed since this migration was proposed; propose it again")
+where the type, as it then stands, would have the migration restate
+anything else: a mark set while the proposal waited is not taken away
+unseen.
+
 A migration keeps the fields the lake's declarations read
 (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
 extended). Its preflight refuses, as invalid, a migration that drops or
