@@ -30,6 +30,12 @@ engine_check!(
 );
 
 engine_check!(
+    /// A kept name answers as a stored type holding the same states.
+    KEPT_NAME = a_kept_name_answers_as_a_stored_type_holding_the_same_states,
+    "seams §ProjectionStore and lakelands#575: the same states put under a view's kept name, `sys:kept.<view>`, and under an ordinary one answer alike through `get`, `get_many`, a walk by key from `after` across batches, a page under a filter, in a field's order and under `equal`, and a count under each flag and under a filter, at the head and at an earlier position, over a key put thousands of times, keys first put after that position between older ones, and an ended, a retired and a restricted key; an output recorded as often is read at both"
+);
+
+engine_check!(
     /// Mixed kinds sort the same on every engine.
     MIXED_KINDS = mixed_kinds_sort_the_same_on_every_engine,
     "029: a scan orders numbers, then instants, then text, then booleans, then JSON, a missing value last in either direction, ties by key, so every engine puts the same records in the same places"
@@ -2298,6 +2304,116 @@ fn a_scan_with_equal_answers_exactly_the_identical_values(
                  {expected:?}"
             );
         }
+    }
+    Ok(())
+}
+
+fn a_kept_name_answers_as_a_stored_type_holding_the_same_states(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    // Under each name `a` is put at every position, the even keys of
+    // 2 600 at position 1 and the odd ones, which lie between them, after
+    // `then`; one key ends before `then` and one after it; some keys are
+    // retired and some restricted. The output is recorded at every
+    // position.
+    const STATES: u64 = 3_000;
+    const KEYS: u64 = 2_600;
+    let (then, seam, input) = (STATES / 2, "sys:kept", Digest::zero());
+    let names = [
+        lakelands_api::seam::kept_name(&TypeName::from("v")),
+        TypeName::from("t"),
+    ];
+    let key = |i: u64| format!("k{i:04}");
+    let puts = |ty: &TypeName, at: u64| {
+        let mut all = vec![record(ty.as_str(), "a", json!({"n": at, "g": "x"}), at)];
+        let born = |i: &u64| at == if i.is_multiple_of(2) { 1 } else { then + 1 };
+        all.extend((0..KEYS).filter(born).map(|i| {
+            let g = if i.is_multiple_of(3) { "x" } else { "y" };
+            let mut r = record(ty.as_str(), &key(i), json!({"n": i, "g": g}), at);
+            (r.retired, r.restricted) = (i % 11 == 5, i % 13 == 6);
+            r
+        }));
+        let ended = |i| StoredRecord::ended(ty.clone(), RecordKey::from(key(i)), Position(at));
+        all.extend((at == 2).then(|| ended(200)));
+        all.extend((at == then + 2).then(|| ended(100)));
+        all
+    };
+    for first in (1..=STATES).step_by(200) {
+        fold(engine, first + 199, |p| {
+            for at in first..first + 200 {
+                for r in names.iter().flat_map(|ty| puts(ty, at)) {
+                    p.put_record(&r)?;
+                }
+                p.put_output(seam, &input, &json!(at), Position(at))?;
+            }
+            Ok(())
+        })?;
+    }
+    let some: Vec<RecordKey> = ["a", "k0000", "k0001", "k0100", "k0200", "none"]
+        .map(RecordKey::from)
+        .to_vec();
+    let filter = crate::expr::parse("n >= 1000").expect("the check's filter parses");
+    for (as_of, at, held) in [(None, STATES, KEYS + 1), (Some(then), then, KEYS / 2 + 1)] {
+        let v = view(engine, as_of.map(Position))?;
+        let recorded = v.output(seam, &input).must("reading the output")?;
+        ensure!(
+            recorded == Some(json!(at)),
+            "an output recorded at every position through {STATES} read {recorded:?} as of \
+             {as_of:?}"
+        );
+        // Every answer under a name, each record as the other name's.
+        let read = |ty: &TypeName| -> Result<(Vec<Vec<StoredRecord>>, Vec<u64>), Failure> {
+            let mut one = Vec::new();
+            for key in &some {
+                one.extend(v.get(ty, key).must("reading one record")?);
+            }
+            let mut pages = vec![one, v.get_many(ty, &some).must("reading by keys")?];
+            // The walk ends at a page that is not full, and after ten whatever
+            // an engine answers.
+            let mut walk = scan_with(|s| (s.limit, s.retired, s.restricted) = (1024, true, true));
+            for _ in 0..10 {
+                let page = v.scan(ty, &walk).must("walking by key")?;
+                let last = page.last().filter(|_| page.len() == 1024);
+                walk.after = last.map(|r| After {
+                    values: vec![],
+                    key: r.key.clone(),
+                });
+                pages.push(page);
+                if walk.after.is_none() {
+                    break;
+                }
+            }
+            let mut counts = vec![pages[2..].iter().map(Vec::len).sum::<usize>() as u64];
+            for scan in [
+                scan_all(),
+                scan_with(|s| s.retired = true),
+                scan_with(|s| s.restricted = true),
+                scan_with(|s| s.filter = Some(filter.clone())),
+                scan_with(|s| s.equal = vec![("g".into(), json!("x"))]),
+                scan_with(|s| (s.order_by, s.limit) = (vec![by("n", Direction::Desc)], 50)),
+            ] {
+                counts.push(v.count(ty, &scan).must("counting")?);
+                pages.push(v.scan(ty, &scan).must("scanning")?);
+            }
+            for r in pages.iter_mut().flatten() {
+                r.ty = names[1].clone();
+            }
+            Ok((pages, counts))
+        };
+        let (kept, stored) = (read(&names[0])?, read(&names[1])?);
+        let sizes = |(pages, counts): &(Vec<Vec<StoredRecord>>, Vec<u64>)| {
+            let rows: Vec<usize> = pages.iter().map(Vec::len).collect();
+            format!("{rows:?} records and the counts {counts:?}")
+        };
+        ensure!(
+            kept == stored && kept.1[0] == held,
+            "as of {as_of:?}, a `get` of six keys, a `get_many` of them, a walk by key of \
+             every state, {held} of them, 1 024 a page, and a scan under no flag, each flag, \
+             a filter, an exact text and a field's order answered, under the kept name, \
+             {}, the walk's states first; under an ordinary name, {}",
+            sizes(&kept),
+            sizes(&stored)
+        );
     }
     Ok(())
 }

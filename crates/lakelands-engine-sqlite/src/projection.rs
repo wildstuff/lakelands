@@ -23,7 +23,7 @@
 //! position folded through in the same transaction. A crash or a rollback
 //! leaves the projection at a whole append.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::engine::Declared;
 use lakelands_api::error::Result;
@@ -572,35 +572,34 @@ pub(crate) fn fts_term(token: &str) -> String {
     lakelands_core::canonical::hex(token.as_bytes())
 }
 
-/// A type as a record of it is indexed: its declaration at the head and
-/// the fields its order index keeps.
-pub(crate) type Kept = (TypeName, Option<TypeDecl>, Vec<FieldName>);
+/// The types a transaction's records are indexed under, each as its
+/// records are: its declaration at the head and the fields its order
+/// index keeps.
+pub(crate) type Kept = BTreeMap<TypeName, (Option<TypeDecl>, Vec<FieldName>)>;
 
 /// Put a record's state and, when it is the latest, its head indexes. Its
-/// type is read into `kept` and not again for the next record of the same
-/// type. A record of another type replaces what is kept; a
-/// `sort_index.<type>` setting forgets it, since the type it names may be
-/// the settings' own; the caller forgets it at a declaration.
-pub(crate) fn put_record(
-    conn: &Connection,
-    kept: &mut Option<Kept>,
-    r: &StoredRecord,
-) -> Result<()> {
+/// type is read into `kept` and not again for another record of that type
+/// in the transaction, whatever is put between them: a source's record
+/// and a view's kept record follow each other at every event
+/// (lakelands#575). A `sort_index.<type>` setting forgets them all, since
+/// the type it names may be the settings' own; the caller forgets them at
+/// a declaration.
+pub(crate) fn put_record(conn: &Connection, kept: &mut Kept, r: &StoredRecord) -> Result<()> {
     let state = serde_json::to_string(r).expect("a record serialises");
     RECORDS.put(conn, &[&r.ty.as_str(), &r.key.as_str()], r.position, &state)?;
     if is_head(conn, &r.ty, &r.key, r.position)? {
-        if kept.as_ref().is_none_or(|k| k.0 != r.ty) {
+        if !kept.contains_key(&r.ty) {
             let decl = type_at(conn, &r.ty, None)?;
             let sorted = sorted_fields(conn, &r.ty, decl.as_ref())?;
-            *kept = Some((r.ty.clone(), decl, sorted));
+            kept.insert(r.ty.clone(), (decl, sorted));
         }
-        let (_, decl, sorted) = kept.as_ref().expect("kept above");
+        let (decl, sorted) = &kept[&r.ty];
         index_record(conn, decl.as_ref(), sorted, r)?;
         // The setting's write rebuilds the index it asks for, so the index
         // describes the head from the next read on.
         if let Some(ty) = engines::sort_index_type(r) {
             rebuild_sorted(conn, &ty, r.position)?;
-            *kept = None;
+            kept.clear();
         }
     }
     Ok(())
@@ -658,3 +657,6 @@ pub(crate) fn index_older(conn: &Connection, ty: &TypeName, at: Position) -> Res
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

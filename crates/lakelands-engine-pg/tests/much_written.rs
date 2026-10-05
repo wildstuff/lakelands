@@ -7,8 +7,6 @@
 
 mod common;
 
-use std::time::{Duration, Instant};
-
 use lakelands_api::engine::{EngineOpener, OpenMode};
 use lakelands_api::id::{Position, RecordKey, TypeName, Version};
 use lakelands_api::record::StoredRecord;
@@ -33,35 +31,6 @@ fn state(key: &str, at: u64) -> StoredRecord {
         retired: false,
         restricted: false,
     }
-}
-
-/// The tuples of the lake's `records` the server has fetched, by an index
-/// or in sequence, once the count stands still: a backend that ended
-/// reports at its end.
-fn fetched(url: &str, schema: &str) -> i64 {
-    let (url, schema) = (url.to_owned(), schema.to_owned());
-    let read = move || {
-        let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-        let row = client.query_one(
-            "SELECT COALESCE(idx_tup_fetch, 0) + seq_tup_read FROM pg_stat_user_tables \
-             WHERE schemaname = $1 AND relname = 'records'",
-            &[&schema],
-        );
-        row.unwrap().get::<_, i64>(0)
-    };
-    std::thread::spawn(move || {
-        let (asked, mut last) = (Instant::now(), -1);
-        loop {
-            std::thread::sleep(Duration::from_millis(700));
-            let now = read();
-            if now == last || asked.elapsed() > Duration::from_secs(20) {
-                return now;
-            }
-            last = now;
-        }
-    })
-    .join()
-    .unwrap()
 }
 
 #[test]
@@ -90,7 +59,7 @@ fn a_put_and_a_read_of_a_much_written_key_fetch_a_few_tuples() {
         p.commit(Position(first + 199)).unwrap();
     }
     drop(engine);
-    let before = fetched(&url, &schema);
+    let before = common::fetched(&url, &schema, "records");
     // A hundred puts, a transaction each, and after each a read of the
     // record at the head and at an earlier position.
     let engine = open(OpenMode::Write);
@@ -107,7 +76,7 @@ fn a_put_and_a_read_of_a_much_written_key_fetch_a_few_tuples() {
         }
     }
     drop(engine);
-    let each = (fetched(&url, &schema) - before) / 100;
+    let each = (common::fetched(&url, &schema, "records") - before) / 100;
     common::drop_schema(&url, &schema);
     assert!(
         each < 50,

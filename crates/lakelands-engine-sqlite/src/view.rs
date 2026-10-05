@@ -18,6 +18,7 @@ use lakelands_api::ontology::TypeDecl;
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::read::{Direction, Order};
 use lakelands_api::record::{StoredRecord, Value};
+use lakelands_api::seam::is_kept_name;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter};
 use lakelands_core::engines::{self, decode};
 use rusqlite::{Connection, ToSql, params};
@@ -53,12 +54,73 @@ fn key_from(column: &str, after: Option<usize>) -> String {
     }
 }
 
-/// The statement of [`Read::records_after`].
-fn records_after_sql(after: bool) -> String {
+/// The statement that reads a kept name (`lakelands_api::seam::KEPT_PREFIX`):
+/// `select` of its states in force at the position `?2`, from the key
+/// that `after` numbers, with `tail` after them. A kept record is put at
+/// every write to its group, so a key may hold thousands of states, and a
+/// stored type's statements read every state of the keys they pass. At
+/// the head this reads the states with no end, in key order through
+/// `records_at`. At an earlier position it steps from key to key through
+/// the primary key and seeks each key's latest state at or before the
+/// position: the steps come in key order, which the statement answers in
+/// with no `ORDER BY`, and `step` is joined first, so a limit in `tail`
+/// counts the states answered and not the keys stepped over.
+fn kept_sql(head: bool, select: &str, after: Option<usize>, tail: &str) -> String {
+    if head {
+        let from = key_from("r.key", after);
+        return format!(
+            "SELECT {select} FROM records r WHERE r.ty = ?1 AND r.until IS NULL {from} {tail}"
+        );
+    }
+    format!(
+        "WITH RECURSIVE step(key) AS (\
+         SELECT (SELECT key FROM records WHERE ty = ?1 {} ORDER BY key LIMIT 1) \
+         UNION ALL \
+         SELECT (SELECT key FROM records WHERE ty = ?1 AND key > step.key ORDER BY key LIMIT 1) \
+         FROM step WHERE step.key IS NOT NULL) \
+         SELECT {select} FROM step CROSS JOIN records r \
+         WHERE r.rowid = (SELECT rowid FROM records WHERE ty = ?1 AND key = step.key \
+         AND since <= ?2 ORDER BY since DESC LIMIT 1) AND (r.until IS NULL OR r.until > ?2) {tail}",
+        key_from("key", after)
+    )
+}
+
+/// The statement of [`Read::records_after`]: for a kept name
+/// [`kept_sql`]'s states, at most `?3` and every one when that is
+/// negative, the view at the head or not.
+fn records_after_sql(ty: &TypeName, head: bool, after: bool) -> String {
+    if is_kept_name(ty) {
+        let tail = if head { "ORDER BY r.key " } else { "" };
+        return kept_sql(
+            head,
+            "r.state",
+            after.then_some(4),
+            &format!("{tail}LIMIT ?3"),
+        );
+    }
     format!(
         "SELECT state FROM records WHERE ty = ?1 AND {} {} ORDER BY key LIMIT ?3",
         holds_at(2),
         key_from("key", after.then_some(4))
+    )
+}
+
+/// The statement of [`Read::count_in_force`]: the states in force of a
+/// stored type, or [`kept_sql`]'s of a kept name, under the two flags.
+fn count_in_force_sql(ty: &TypeName, head: bool) -> String {
+    let flags = |state: &str| {
+        format!(
+            "AND (?3 OR json_extract({state}, '$.retired') = 0) \
+             AND (?4 OR json_extract({state}, '$.restricted') = 0)"
+        )
+    };
+    if is_kept_name(ty) {
+        return kept_sql(head, "COUNT(*)", None, &flags("r.state"));
+    }
+    let holds = holds_at(2);
+    format!(
+        "SELECT COUNT(*) FROM records WHERE ty = ?1 AND {holds} {}",
+        flags("state")
     )
 }
 
@@ -115,6 +177,13 @@ fn sorted_after_sql(dir: Direction, from: bool) -> String {
 const RECORD_AT: &str = "SELECT state FROM (SELECT state, until FROM records WHERE ty = ?1 \
      AND key = ?2 AND since <= ?3 ORDER BY since DESC LIMIT 1) WHERE until IS NULL OR until > ?3";
 
+/// The statement of a recorded output's read: the latest state of the
+/// seam and input at or before the position, and whether it still holds
+/// there. A view's state is recorded again at every change of its
+/// counters; none of its other states is read (lakelands#575).
+const OUTPUT_AT: &str = "SELECT state FROM (SELECT state, until FROM outputs WHERE seam = ?1 \
+     AND input = ?2 AND since <= ?3 ORDER BY since DESC LIMIT 1) WHERE until IS NULL OR until > ?3";
+
 /// The statements that seek one record's state, as the engine runs them:
 /// the read of a record at a position and the end a put gives the state
 /// before it, each with the parameters type, key and position, for the
@@ -130,11 +199,28 @@ pub fn seek_statements() -> [String; 2] {
 pub fn first_page_statements() -> Vec<String> {
     vec![
         RECORD_AT.to_owned(),
-        records_after_sql(false),
+        records_after_sql(&TypeName::from("t"), true, false),
         holding_after_sql(false),
         unsorted_after_sql(false),
         sorted_after_sql(Direction::Asc, false),
         sorted_after_sql(Direction::Desc, false),
+    ]
+}
+
+/// The statements the view reads the records of `ty` by, as it runs them
+/// at the head (`head`) or at an earlier position: a first page by key, a
+/// later page and the count under the flags alone; and the read of a
+/// recorded output. For the engine's own tests of their plans and of the
+/// steps they take for a kept name (lakelands#575). A page takes the
+/// name, the position, the limit and the key it continues after; the
+/// count the name, the position and the two flags; the output its seam,
+/// input and position.
+pub fn read_statements(ty: &TypeName, head: bool) -> [String; 4] {
+    [
+        records_after_sql(ty, head, false),
+        records_after_sql(ty, head, true),
+        count_in_force_sql(ty, head),
+        OUTPUT_AT.to_owned(),
     ]
 }
 
@@ -180,6 +266,10 @@ impl Read<'_> {
 
     /// Every record of a type at the view's position, in key order.
     fn records(&self, ty: &TypeName) -> Result<Vec<StoredRecord>> {
+        if is_kept_name(ty) {
+            let statement = records_after_sql(ty, self.head, false);
+            return self.page(&statement, &[&ty.as_str(), &self.at(), &-1], None);
+        }
         column(
             self.conn,
             &format!(
@@ -203,7 +293,7 @@ impl Read<'_> {
         n: u32,
     ) -> Result<Vec<StoredRecord>> {
         self.page(
-            &records_after_sql(after.is_some()),
+            &records_after_sql(ty, self.head, after.is_some()),
             &[&ty.as_str(), &self.at(), &n],
             after,
         )
@@ -237,12 +327,7 @@ impl Read<'_> {
     fn count_in_force(&self, ty: &TypeName, retired: bool, restricted: bool) -> Result<u64> {
         let counted: Vec<i64> = column(
             self.conn,
-            &format!(
-                "SELECT COUNT(*) FROM records WHERE ty = ?1 AND {} \
-                 AND (?3 OR json_extract(state, '$.retired') = 0) \
-                 AND (?4 OR json_extract(state, '$.restricted') = 0)",
-                holds_at(2)
-            ),
+            &count_in_force_sql(ty, self.head),
             params![ty.as_str(), self.at(), retired, restricted],
             Ok,
         )?;
@@ -451,9 +536,12 @@ impl ProjectionView for SqliteView<'_> {
 
     fn count(&self, ty: &TypeName, scan: &Scan) -> Result<u64> {
         self.read(0, |r| {
-            // At the head, a count that selects by the flags alone is the
-            // projection's `COUNT(*)`; any other is counted batch by batch.
-            if r.head && scan.filter.is_none() && scan.equal.is_empty() && scan.valid_at.is_none() {
+            // At the head, and of a kept name at any position, a count that
+            // selects by the flags alone is the projection's `COUNT(*)`; any
+            // other is counted batch by batch.
+            let counted = r.head || is_kept_name(ty);
+            if counted && scan.filter.is_none() && scan.equal.is_empty() && scan.valid_at.is_none()
+            {
                 return r.count_in_force(ty, scan.retired, scan.restricted);
             }
             // At the head, a count that must hold a text reads the records
@@ -699,14 +787,7 @@ impl ProjectionView for SqliteView<'_> {
 
     fn output(&self, seam: &str, input: &Digest) -> Result<Option<Value>> {
         self.read(None, |r| {
-            let state: Option<String> = one(
-                r.conn,
-                &format!(
-                    "SELECT state FROM outputs WHERE seam = ?1 AND input = ?2 AND {}",
-                    holds_at(3)
-                ),
-                params![seam, input.0, r.at()],
-            )?;
+            let state: Option<String> = one(r.conn, OUTPUT_AT, params![seam, input.0, r.at()])?;
             state.as_deref().map(|s| decode(s, "a state")).transpose()
         })
     }

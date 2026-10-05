@@ -50,6 +50,30 @@ fn type_names_may_be_dotted() {
 }
 
 #[test]
+fn no_type_name_is_a_kept_name() {
+    use lakelands_api::seam::{is_kept_name, kept_name};
+    for view in ["debtor_totals", "sys.setting", "kept.v", "a.b.c"] {
+        let kept = kept_name(&view.into());
+        assert_eq!(kept.as_str(), format!("sys:kept.{view}"));
+        assert!(is_kept_name(&kept) && !is_type_name(kept.as_str()));
+    }
+    // Whatever a type is named, its name is not of the kept form, and a
+    // name the store keeps for itself otherwise is not one either.
+    for name in ["sys.kept.v", "sys.kept", "kept.v", "sys_kept.v", "sys"] {
+        assert!(is_type_name(name) && !is_kept_name(&name.into()), "{name}");
+    }
+    for other in [
+        "sys:kept",
+        "sys:renames",
+        "sys:folds",
+        "sys:keptv",
+        "x.sys:kept.v",
+    ] {
+        assert!(!is_kept_name(&other.into()), "{other}");
+    }
+}
+
+#[test]
 fn on_ascii_names_code_point_and_utf16_order_agree() {
     let mut names = vec!["zeta", "Alpha", "_x", "a1", "a_b", "B"];
     let mut by_utf16 = names.clone();
