@@ -850,6 +850,17 @@ impl Scope for VerbScope<'_> {
     }
 }
 
+/// The type `ty` for `who`: one it is not shown is answered as a type that
+/// is not declared, at every door that writes a record or authors a type
+/// (024, 027 and 028, extended). A refusal would tell that the type is
+/// there, so this is asked before anything else is judged.
+pub fn shown_type<'o>(o: &'o Ontology, ty: &TypeName, who: &Principal) -> Result<&'o TypeDecl> {
+    let t = o.ty(ty)?;
+    let missing = Missing::Type { name: ty.clone() };
+    (describe::type_shown(t, &|n| o.ty(n).ok(), who).then_some(t))
+        .ok_or(Error::NotFound { missing })
+}
+
 impl Call<'_> {
     /// Decide one record write: authored (`upsert`, a verb, aging) or from
     /// a source (`ingest`). `n` drafts precede it in the append. `stamp`
@@ -1073,6 +1084,9 @@ impl Call<'_> {
     ) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         ordinary_door(ty)?;
+        if let Some(first) = self.retried_unshown(ty, &opts)? {
+            return Ok(first);
+        }
         self.write_record(ty, key, patch, opts, |_, _| Ok(()))
     }
 
@@ -1122,6 +1136,9 @@ impl Call<'_> {
     pub fn retire(&self, ty: &TypeName, key: &RecordKey, opts: WriteOpts) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         ordinary_door(ty)?;
+        if let Some(first) = self.retried_unshown(ty, &opts)? {
+            return Ok(first);
+        }
         self.retire_record(ty, key, opts)
     }
 
@@ -1179,13 +1196,14 @@ impl Call<'_> {
         self.retire_record(&lt, &links::link_key(key, to), opts)
     }
 
-    /// The link doors' first question (006, extended): a caller not shown
-    /// `ty` is answered as for a type that is not there, before a relation
-    /// is named. Its retry of a write it made is answered that write, as
+    /// The first question of `upsert`, `retire`, `link` and `unlink` (006
+    /// and 024, extended): a caller not shown `ty` is answered as for a
+    /// type that is not there, before a relation is named or the write is
+    /// judged. Its retry of a write it made is answered that write, as
     /// every retry is before the grants are asked.
     fn retried_unshown(&self, ty: &TypeName, opts: &WriteOpts) -> Result<Option<Outcome>> {
         let w = self.writer()?;
-        let Err(gone) = self.shown_type(&w.ontology, ty) else {
+        let Err(gone) = shown_type(&w.ontology, ty, self.who) else {
             return Ok(None);
         };
         let view = self.lake.engine.view(None)?;
@@ -1215,6 +1233,15 @@ impl Call<'_> {
         drop(view);
         let events = self.lake.append(&mut w, drafts)?;
         Ok(outcome_of(&events))
+    }
+
+    /// The verb `verb` for its caller: one on a type the caller is not
+    /// shown is answered as a verb that is not declared, before its scope
+    /// is judged in a sentence that names the type.
+    fn shown_verb<'o>(&self, o: &'o Ontology, verb: &VerbName) -> Result<&'o VerbDecl> {
+        let v = o.verb(verb)?;
+        let missing = Missing::Verb { name: verb.clone() };
+        (shown_type(o, &v.on, self.who).map(|_| v)).map_err(|_| Error::NotFound { missing })
     }
 
     fn verb_callable(&self, verb: &VerbDecl) -> bool {
@@ -1366,7 +1393,7 @@ impl Call<'_> {
         if let Some(o) = self.replay(&w, &opts.idempotency_key, view.as_ref())? {
             return Ok((o, None));
         }
-        let decl = w.ontology.verb(verb)?.clone();
+        let decl = self.shown_verb(&w.ontology, verb)?.clone();
         let key = scoped(&decl, key, opts.expected_version)?;
         if key.is_some() {
             rights::not_a_view(w.ontology.ty(&decl.on)?)?;
@@ -1468,6 +1495,7 @@ impl Call<'_> {
         }
         if let ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } = &write {
             ordinary_door(ty)?;
+            shown_type(&w.ontology, ty, self.who)?;
         }
         match &mut write {
             ProposedWrite::Upsert {
@@ -1508,7 +1536,7 @@ impl Call<'_> {
                 payload,
                 opts,
             } => {
-                let decl = w.ontology.verb(verb)?.clone();
+                let decl = self.shown_verb(&w.ontology, verb)?.clone();
                 if scoped(&decl, key.as_ref(), opts.expected_version)?.is_some() {
                     rights::not_a_view(w.ontology.ty(&decl.on)?)?;
                 }
@@ -1935,7 +1963,7 @@ impl Call<'_> {
                 }
             },
             Recompute::Type(name) => {
-                let t = self.shown_type(&w.ontology, name)?;
+                let t = shown_type(&w.ontology, name, self.who)?;
                 if t.view.is_some() || !crate::backed::computed_outside(&w.ontology, t) {
                     return Err(invalid(format!(
                         "`{name}` has no field computed outside the lake (an embedding, or a \
@@ -2065,14 +2093,6 @@ impl Call<'_> {
         Ok(())
     }
 
-    /// The type `ty` for its author: one `who` is not shown is answered as
-    /// a type that is not declared (027 and 028, extended).
-    fn shown_type<'o>(&self, o: &'o Ontology, ty: &TypeName) -> Result<&'o TypeDecl> {
-        let shown = describe::one_type(ty, &o.declared(), self.who).is_some();
-        let missing = Missing::Type { name: ty.clone() };
-        (o.ty(ty)).and_then(|t| shown.then_some(t).ok_or(Error::NotFound { missing }))
-    }
-
     /// A value type's report as the caller may know it (024): a use and a
     /// misfit are shown where it is shown the type and reads the field. The
     /// totals and the id, which names the whole report, stay.
@@ -2093,7 +2113,7 @@ impl Call<'_> {
     /// Reads a migration as its author's view of its type ([`as_author`]).
     fn authored(&self, o: &Ontology, m: &mut Migration) -> Result<()> {
         if o.types.contains_key(&m.to.name) {
-            self.shown_type(o, &m.to.name)?;
+            shown_type(o, &m.to.name, self.who)?;
         }
         self.reads_as_author(o, &[Declaration::Type(m.to.clone())], true)?;
         match o.types.get(&m.to.name) {
@@ -2277,7 +2297,7 @@ impl Call<'_> {
     pub fn add_field(&self, ty: &TypeName, field: FieldDecl) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         granted(self.who.grants.schema)?;
-        let mut t = self.shown_type(&self.lake.writer().ontology, ty)?.clone();
+        let mut t = shown_type(&self.lake.writer().ontology, ty, self.who)?.clone();
         // The field is added to its author's view of the type (027).
         rights::known_fields(self.who, &mut t);
         if t.fields.iter().any(|f| f.name == field.name) {

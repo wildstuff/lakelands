@@ -1810,6 +1810,9 @@ fn plan_upsert(
     opts: &WriteOpts,
 ) -> Result<Version> {
     let By { st, who, cause } = *by;
+    // The type first, as the store's record plan asks it: one not shown
+    // it is told nothing of the write.
+    st.visible(who, ty).ok_or_else(|| no_type(ty))?;
     if patch.is_empty() {
         return Err(invalid("nothing to write: the patch carries no field"));
     }
@@ -1894,9 +1897,15 @@ fn check_call<'a>(
     payload: &Patch,
     opts: &WriteOpts,
 ) -> Result<&'a VerbDecl> {
-    let v = st.verbs.get(verb).ok_or_else(|| Error::NotFound {
-        missing: Missing::Verb { name: verb.clone() },
-    })?;
+    // A verb on a type its caller is not shown is one that is not declared.
+    let shown = |v: &&VerbDecl| st.visible(who, &v.on).is_some();
+    let v = st
+        .verbs
+        .get(verb)
+        .filter(shown)
+        .ok_or_else(|| Error::NotFound {
+            missing: Missing::Verb { name: verb.clone() },
+        })?;
     // The key against the scope comes before anything else is read.
     let key = scoped(v, key, opts)?;
     // A record of a view is computed, never written or acted on.
@@ -4072,8 +4081,19 @@ impl Catalog for MockCatalog {
         }
         let mut log = self.log();
         let (_, st) = self.state_at(&log, None)?;
+        // A retry of a proposal is answered the proposal it made.
+        let opts = match &write {
+            ProposedWrite::Upsert { opts, .. }
+            | ProposedWrite::Retire { opts, .. }
+            | ProposedWrite::Call { opts, .. } => opts.clone(),
+            _ => WriteOpts::default(),
+        };
+        if let Some(o) = remembered(&st, who, &opts) {
+            return Ok(o);
+        }
+        let key = opts.idempotency_key;
         let mut batch = Batch::at(&log);
-        let (position, proposal) = plan_propose(&st, &mut batch, who, write, why.clone(), None)?;
+        let (position, proposal) = plan_propose(&st, &mut batch, who, write, why.clone(), key)?;
         log.proposers.insert(proposal.clone(), who.clone());
         self.commit(&mut log, batch);
         Ok(Outcome::Proposed {
@@ -4763,6 +4783,7 @@ fn plan_window(
         duplicates: 0,
     };
     for r in chunk {
+        st.visible(who, &r.ty).ok_or_else(|| no_type(&r.ty))?;
         if r.fields.is_empty() {
             return Err(invalid("nothing to write: the patch carries no field"));
         }

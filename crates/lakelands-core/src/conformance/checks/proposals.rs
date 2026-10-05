@@ -251,14 +251,11 @@ async fn an_external_verb_without_an_executor_is_unbound(
         opts: WriteOpts::default(),
     };
     let propose = |verb: &str, payload| cat.propose(own, proposed(verb, payload), "later".into());
-    let nobody = lakelands_api::Principal {
-        grants: Default::default(),
-        ..own.clone()
-    };
-    let ungranted = call(store.as_ref(), &nobody, "remind", json!({})).await;
+    let reader = crate::conformance::fixture::reads_all(store.as_ref(), "reader");
+    let ungranted = call(store.as_ref(), &reader, "remind", json!({})).await;
     ensure!(
         matches!(reason(&ungranted), Some(Refusal::NotGranted)),
-        "the grant comes before the executor: `remind` called with no grant answered \
+        "the grant comes before the executor: `remind` called by one who only reads answered \
          {ungranted:?}"
     );
     for (what, answer) in [

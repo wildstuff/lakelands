@@ -20,8 +20,8 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, events_after, field, head_unmoved, ingest, limits, migration, no_such_field,
-    nobody, patch, reactive, reason, refused_on, source_record, sourced, trigger_on, try_upsert,
+    Lake, Must, events_after, field, head_unmoved, ingest, limits, migration, nobody, patch,
+    reactive, reads_all, reason, refused_on, source_record, sourced, trigger_on, try_upsert,
     type_decl, upsert, value_type, write_verb,
 };
 
@@ -224,7 +224,7 @@ async fn a_cause_past_the_head_is_refused_and_appends_nothing(
         1,
         Some(store.head().await.must("the head")?.next()),
     ));
-    let nobody = nobody(store.as_ref());
+    let nobody = reads_all(store.as_ref(), "reader");
     let job = TypeName::from("job");
     let ungranted = late
         .upsert(
@@ -244,7 +244,7 @@ async fn a_cause_past_the_head_is_refused_and_appends_nothing(
         matches!(refused_on(&ungranted), Some(("status", _)))
             && matches!(conflict, Err(lakelands_api::Error::Conflict { .. })),
         "a cause past the head is judged after the door's own checks: a write of a field \
-         nobody may know of answered {ungranted:?}, and a retire at a stale version \
+         its writer only reads answered {ungranted:?}, and a retire at a stale version \
          {conflict:?}"
     );
     Ok(())
@@ -520,7 +520,7 @@ async fn a_triggers_ceiling_is_read_with_the_cause_at_the_append(
     cat.declare(own, Declaration::Trigger(once))
         .await
         .must("declaring `once` with max_depth 0")?;
-    let nobody = nobody(store.as_ref());
+    let reader = reads_all(store.as_ref(), "reader");
     let write = |who: lakelands_api::Principal, ctx: WriteContext, key: &'static str| {
         let store = store.clone();
         async move {
@@ -554,7 +554,10 @@ async fn a_triggers_ceiling_is_read_with_the_cause_at_the_append(
         fired.position()
     );
     let mut red = Vec::new();
-    for (what, who, too_deep) in [("the owner", own.clone(), true), ("nobody", nobody, false)] {
+    for (what, who, too_deep) in [
+        ("the owner", own.clone(), true),
+        ("a reader", reader, false),
+    ] {
         let late = write(who, reactive(1, Some(firing)), "r2").await;
         let ok = if too_deep {
             matches!(
@@ -562,9 +565,9 @@ async fn a_triggers_ceiling_is_read_with_the_cause_at_the_append(
                 Some(("once", Refusal::TooDeep { max: 0 }))
             )
         } else {
-            // Nobody may know of `n`, so its write is answered as for a
-            // field the type does not declare (006).
-            no_such_field(&late, "n")
+            // One who reads `n` and may not write it is refused by its
+            // grant, on the field.
+            matches!(refused_on(&late), Some(("n", Refusal::NotGranted)))
         };
         if !ok {
             red.push(format!("{what} answered {late:?}"));

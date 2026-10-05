@@ -72,7 +72,7 @@ pub fn window(
     let mut window_links = Vec::new();
     let mut duplicates = 0u32;
     for r in records {
-        let decl = w.ontology.ty(&r.ty)?;
+        let decl = crate::writes::shown_type(&w.ontology, &r.ty, who)?;
         // The key's form before the door, as `upsert` checks it.
         crate::writes::check_key(&r.key)?;
         // Then the door: a patch that carries a field the source is not

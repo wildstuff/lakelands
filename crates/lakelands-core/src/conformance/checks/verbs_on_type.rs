@@ -24,8 +24,8 @@ use serde_json::{Value, json};
 use crate::conformance::Failure;
 use crate::conformance::backing::{EXECUTOR, executed};
 use crate::conformance::fixture::{
-    Lake, Must, events_from, field, head_unmoved, invalid_naming, nobody, owner, patch, principal,
-    reason, reviewer, type_decl,
+    Lake, Must, events_from, field, head_unmoved, invalid_naming, owner, patch, principal,
+    reads_all, reason, reviewer, type_decl,
 };
 
 check!(
@@ -331,9 +331,9 @@ async fn a_key_that_does_not_fit_the_verbs_scope_is_refused_naming_the_verb(
 ) -> Result<(), Failure> {
     let l = ledger(store.as_ref(), "issue_payment", "low").await?;
     l.upsert("partner", "p1", json!({"name": "Acme"})).await?;
-    // A principal with no grant at all: the key is checked before the
-    // grants are, so the refusal is `invalid`, not `not_granted`.
-    let nobody = nobody(store.as_ref());
+    // A principal that reads and writes nothing: the key is checked before
+    // the grants are, so the refusal is `invalid`, not `not_granted`.
+    let reader = reads_all(store.as_ref(), "reader");
     let at_version = WriteOpts {
         expected_version: Some(Version(1)),
         ..WriteOpts::default()
@@ -363,7 +363,7 @@ async fn a_key_that_does_not_fit_the_verbs_scope_is_refused_naming_the_verb(
         invalid_naming(
             what,
             l.cat
-                .call(&nobody, &verb.into(), key.as_ref(), patch(json!({})), opts)
+                .call(&reader, &verb.into(), key.as_ref(), patch(json!({})), opts)
                 .await,
             &[verb],
         )?;

@@ -123,6 +123,45 @@ The rule was weighed against letting a standing name pass unjudged: that
 keeps one write, and costs a second path through the judge and an answer
 that depends on who wrote the setting first.
 
+**A write asks first whether its writer is shown the type
+(lakelands#607).** A principal shown nothing of a type was told by its
+writes what `describe` kept from it: an `upsert` was refused field by
+field (`` `vault` has no field `code` ``), a `retire` and a verb's call
+were refused as not granted, a write to a view was told it is a view,
+and each of these is another answer than the one a name that is not
+declared gets. So every door that writes a record asks the question the
+link doors ask (`docs/decisions/006-grants-not-roles.md`, extended)
+before anything else is judged:
+
+- **`upsert`, `retire`, `propose` of either and `ingest`** answer one
+  not shown the type as for a type that is not declared, before the
+  patch, the key's form, the view's refusal, the grants and the version
+  are looked at. `ingest` asks its own grant first, as before: one
+  without it is refused whatever it names.
+- **A verb on a type its caller is not shown is a verb that is not
+  declared**, for `call` and for `propose`, before its scope is judged
+  in a sentence that names the type. A caller that is shown the type is
+  told what it may not do there: a verb it may not call stays refused
+  as not granted.
+- **A retry is answered first**, as at the link doors: a write made
+  under an idempotency key is answered that write to the principal that
+  made it, whatever it is shown since.
+- **It is asked of the type the caller names.** `link` and `unlink`
+  name the owner and are asked of it; the link record they write is then
+  judged by its grants, so a caller shown the owner and kept from the
+  link type by its own grant is refused by that grant, as before. A verb
+  is asked of its type once, at the call; the record it writes is not
+  asked again.
+- **A proposal was asked when it was made**: accepting it applies what
+  was checked then, and aging writes as the store.
+
+The question is the two tests that decide whether a type is described,
+some access to the type or to one of its fields and the same of every
+type it is made of, as one function that the description calls first.
+Asking the description itself was measured and refused: it copies the
+lake's declarations, 209 µs a write in a lake of two hundred types
+against a write of 75 µs, where the two tests take nanoseconds.
+
 ## Extended: a field built from another is read as that field (lakelands#387)
 
 A derived field hands out what it is computed from: `g = salary * 2`
