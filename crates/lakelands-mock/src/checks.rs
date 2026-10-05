@@ -67,6 +67,10 @@ use crate::stream;
 /// runs unchanged. A check that calls a host operation without the mark
 /// fails there as `Unbound`, never silently.
 ///
+/// A check marked `#[own_principals]` makes principals beside the cast,
+/// which the resolver behind a network door does not know: it is ignored
+/// there too, saying why, and runs on every lake reached in process.
+///
 /// A check marked `#[views]` reads a view's computed records, which the
 /// mock does not compute. Given `mock` after `$block_on`, as the mock's
 /// own tests give it, each marked check is ignored, saying why; every
@@ -109,6 +113,8 @@ macro_rules! door_checks {
             recompute_appends_the_function_in_force_again,
             a_set_names_a_set_and_tells_no_more_than_its_filter,
             a_renamed_relation_keeps_its_edges,
+            #[own_principals]
+            a_proposal_that_waited_hides_by_the_names_in_force,
             a_migration_keeps_what_a_declaration_reads,
             a_view_is_never_migrated,
             nothing_that_never_acts_is_declared_on_a_view,
@@ -190,6 +196,13 @@ macro_rules! door_checks {
     (@one remote, $new:expr, $block_on:path, [host_ops] $name:ident) => {
         #[test]
         #[ignore = "calls a host operation, which no network door offers"]
+        fn $name() {
+            $block_on($crate::checks::$name(($new)()));
+        }
+    };
+    (@one remote, $new:expr, $block_on:path, [own_principals] $name:ident) => {
+        #[test]
+        #[ignore = "makes principals of its own, which a network door's resolver does not know"]
         fn $name() {
             $block_on($crate::checks::$name(($new)()));
         }
@@ -2317,6 +2330,75 @@ pub async fn a_renamed_relation_keeps_its_edges(store: Arc<dyn LakeStore>) {
     let e = f.catalog.migrate(owner, back).await;
     let e = e.expect_err("a rename of a relation whose link type is referred to");
     assert!(invalid_naming(&e, &["quotes", "`gloss` refers"]), "{e:?}");
+}
+
+/// A proposed migration that renames a field and a relation waits while
+/// the owner renames both otherwise. Listed to a reviewer kept from the
+/// field, or from the relation's link field, by a grant on the name in
+/// force, its shape holds neither (lakelands#594), on the mock as on the
+/// store.
+pub async fn a_proposal_that_waited_hides_by_the_names_in_force(store: Arc<dyn LakeStore>) {
+    use lakelands_api::write::Migration;
+    let f = setup(store).await;
+    let owner = &f.cast.owner;
+    let pad = |field: &str, relation: &str| -> lakelands_api::ontology::TypeDecl {
+        let text = |n: &str| json!({"name": n, "type": {"kind": "text"}});
+        let cites = json!({"name": relation, "target": "pad", "cardinality": "many_to_many",
+            "fields": [text("why")]});
+        serde_json::from_value(
+            json!({"name": "pad", "fields": [text(field)], "relations": [cites]}),
+        )
+        .expect("a type")
+    };
+    let declared = f
+        .catalog
+        .declare(owner, Declaration::Type(pad("memo", "cites")));
+    declared.await.expect("declaring `pad`");
+    let renames = |field: &str, relation: &str| Migration {
+        to: pad(field, relation),
+        renames: vec![("memo".into(), field.into())],
+        relation_renames: vec![("cites".into(), relation.into())],
+    };
+    let write = ProposedWrite::Migrate {
+        migration: Box::new(renames("note", "quotes")),
+        report: Default::default(),
+    };
+    let waits = f.catalog.propose(owner, write, "other names".into()).await;
+    let waits = match waits.expect("proposing the renames") {
+        Outcome::Proposed { proposal, .. } => proposal,
+        other => panic!("a proposed migration is answered {other:?}"),
+    };
+    let now = renames("remark", "refers");
+    let report = f.catalog.migrate(owner, now.clone()).await;
+    let id = report.expect("the preflight").data.report_id;
+    let applied = f.catalog.migrate_apply(owner, now, &id).await;
+    applied.expect("the owner renames both otherwise");
+    let none = |fields: &[&str], default: Option<Access>| TypeGrants {
+        default,
+        fields: fields.iter().map(|f| ((*f).into(), Access::None)).collect(),
+    };
+    for (on, kept, hidden) in [
+        ("pad", none(&["remark"], None), "note"),
+        ("sys.link.pad.refers", none(&["why"], None), "why"),
+        ("sys.link.pad.refers", none(&[], Some(Access::None)), "why"),
+    ] {
+        let mut grants = Grants {
+            default: Access::Read,
+            review: true,
+            ..Grants::default()
+        };
+        grants.types.insert(on.into(), kept);
+        let who = principal(f.store.lake(), PrincipalKind::Human, "narrow", grants);
+        let listed = f.catalog.proposals(&who, ProposalFilter::default()).await;
+        let listed = listed.expect("listing the proposals").data;
+        let write = listed.into_iter().find(|p| p.id == waits);
+        let write = json!(write.and_then(|p| p.write)).to_string();
+        let named = format!("\"{hidden}\"");
+        assert!(
+            !write.contains(&named),
+            "kept by `{on}`, it is listed {write}"
+        );
+    }
 }
 
 /// `recompute` appends the function in force again and answers its

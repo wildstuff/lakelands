@@ -54,6 +54,7 @@ use lakelands_api::expr::{Expr, Func, Literal};
 use lakelands_api::ontology::{
     FieldType, MatchPair, RelationDecl, StorageKind, TypeDecl, VerbEffect,
 };
+use lakelands_api::principal::Renamed;
 use lakelands_api::query::{
     Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Step, Walk,
 };
@@ -1298,14 +1299,26 @@ impl<'a> Reader<'a> {
             .filter(|p| self.who.grants.review || p.proposer == me)
             .collect();
         let verb_on = |v: &VerbName| self.ontology.verb(v).ok().map(|d| d.on.clone());
-        // The lake as its reader is described it, once for the listing.
-        let lake = OnceCell::new();
+        // The lake as its reader is described it, and its list of renames,
+        // each read once for the listing and only where a proposal asks.
+        let (lake, renames) = (OnceCell::new(), OnceCell::new());
         for p in &mut mine {
             // `more` is what the trim left out, not what the completion added.
             let mut logged = p.write.take();
             logged.iter_mut().for_each(|w| self.completed(w));
             let shown = logged.clone();
-            p.write = shown.and_then(|mut w| self.known_shape(&mut w, &lake).then_some(w));
+            // What the lake renamed while a proposed migration waited.
+            let mut since = Vec::new();
+            if let Some(ProposedWrite::Migrate { .. }) = &shown {
+                if renames.get().is_none() {
+                    let all = self.lake.renames(Some(self.view.as_ref()))?;
+                    let _ = renames.set(all);
+                }
+                let all: &[Renamed] = renames.get().map_or(&[], Vec::as_slice);
+                since.extend(all.iter().filter(|r| r.at > p.position).cloned());
+            }
+            let listing = (&lake, &since[..]);
+            p.write = shown.and_then(|mut w| self.known_shape(&mut w, listing).then_some(w));
             p.more = p.write != logged;
         }
         mine.retain(|p| core_engines::matches(p, filter, verb_on));
@@ -1341,7 +1354,11 @@ impl<'a> Reader<'a> {
     /// write to a type it may not see, or to a record it is not answered.
     /// The store logs a migration and a redeclaration completed with the
     /// fields hidden from their author, who reads its own proposal here.
-    fn known_shape(&self, write: &mut ProposedWrite, lake: &OnceCell<LakeDescription>) -> bool {
+    fn known_shape(
+        &self,
+        write: &mut ProposedWrite,
+        (lake, since): (&OnceCell<LakeDescription>, &[Renamed]),
+    ) -> bool {
         let read = |ty: &TypeName, field: &FieldName| {
             let t = self.visible_type(ty).ok();
             let f = t.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == field)?)));
@@ -1395,7 +1412,7 @@ impl<'a> Reader<'a> {
                 let all = || describe::lake(&self.who.lake, &self.declared(), self.who);
                 let described = || lake.get_or_init(all);
                 rights::shown_report(self.who, was, migration, report, described, sees, answered);
-                rights::known_migration(self.who, was, migration);
+                rights::known_migration(self.who, was, migration, since);
                 true
             }
             // Each declaration as `describe` would show it once the bundle

@@ -1768,7 +1768,7 @@ impl Call<'_> {
     fn known_renames(&self, o: &Ontology, m: &Migration) -> Vec<(FieldName, FieldName)> {
         let mut m = m.clone();
         if let Ok(was) = o.ty(&m.to.name) {
-            rights::known_migration(self.who, was, &mut m);
+            rights::known_migration(self.who, was, &mut m, &[]);
         }
         m.renames
     }

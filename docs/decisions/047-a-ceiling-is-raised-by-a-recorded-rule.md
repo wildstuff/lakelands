@@ -59,6 +59,8 @@ The core's budgets are four:
 
 **The eighteenth raise:** the specification, from 48 000 to 48 500 lines, by slot a's word under the rule, for the checks of the same pull request: that a kept state answers the computation's bytes, what can be kept, and the sum's rule, 657 lines as measured, 497 over the ceiling.
 
+**The nineteenth raise:** the specification, from 48 500 to 49 000 lines, by slot a's word under the rule, for the rows of a rule of rights (lakelands#594: a proposal that waited is listed by the grants on the names in force): 50 lines as measured, on a develop that stood 3 under the ceiling, 47 over it.
+
 ## Why
 
 The budgets keep the core small enough for one reader to hold. They have done that: four diets took out about 5 000 lines without losing a check.

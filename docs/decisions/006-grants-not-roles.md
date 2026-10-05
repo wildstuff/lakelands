@@ -130,7 +130,11 @@ position before the rename.
   the last of the list: a proposed rename is listed to a reader kept
   from the old name with neither the pair nor the new name, and a
   migration's answer names in `renamed` each rename the one answered may
-  know of.
+  know of. A proposal that waited while the lake renamed the same field,
+  or the same relation, otherwise is judged from the names its old ones
+  bear now: each of its renames begins at the name in force, so a reader
+  kept from the field or from the relation's link type under that name
+  is listed neither the pair nor the proposed name (lakelands#594).
 
 **Two costs, taken with the rule.**
 
