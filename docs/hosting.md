@@ -362,6 +362,14 @@ A host that already has a store of its own moves in four steps.
   with its name: a host that wants the links read under the new name
   names the new link type. A mirror's mapping that names the old link
   type stops applying at the rename and is stated again.
+- **A key is shown to whoever is shown the record.** A principal that
+  is shown a type finds and gets its records, also where it reads no
+  field of them: each with its key, its version and the names of the
+  fields it sees masked. A key made of fields holds their values,
+  whatever is granted on those fields, so a host does not key a type by
+  a field it hides; and a principal that is not to list a type's records
+  is granted nothing of the type. See
+  `docs/decisions/006-grants-not-roles.md`, extended.
 - **One writer per lake.** A lake has one writing process at a time,
   held by a lease; one process may write many lakes. See
   `docs/decisions/008-one-writer-per-lake.md`.

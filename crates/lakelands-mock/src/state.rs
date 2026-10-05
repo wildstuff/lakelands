@@ -428,6 +428,9 @@ impl State {
             out.fields.retain(|f, _| declared(f));
             out.meta.retain(|f, _| declared(f));
             out.masked.retain(|f| declared(f));
+            // In the declaration's order, as the store lists them.
+            out.masked
+                .sort_by_key(|f| decl.fields.iter().position(|d| &d.name == f));
         }
         out
     }

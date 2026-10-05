@@ -140,6 +140,8 @@ macro_rules! door_checks {
             #[own_principals]
             a_sensitive_field_shows_a_field_and_never_a_type,
             #[own_principals]
+            a_type_its_principal_is_shown_is_one_it_may_find_and_get,
+            #[own_principals]
             a_retry_is_answered_before_its_writer_is_asked_what_it_is_shown,
             a_record_event_says_whether_it_made_the_record,
             an_embedding_is_unbound_where_no_backend_is_bound,
@@ -7142,6 +7144,97 @@ async fn read_doors(c: &Arc<dyn Catalog>, who: &Principal, t: &str) -> Vec<(&'st
         ("search", said(c.search(who, words).await)),
         ("a pattern", said(c.query(who, from).await)),
     ]
+}
+
+/// A type its principal is shown is one it may find and get
+/// (`docs/decisions/006-grants-not-roles.md`, extended): one who reads no
+/// field of `invoice`, with every field masked, with one masked by name
+/// or with one write-only, is described `may.find` and `may.get`, is
+/// answered the record by `get` and by `find` with its key, no value and
+/// the masked fields in the declaration's order (the sensitive `note`
+/// nobody named among them), and is offered the two reads and the type
+/// in the lake's three read tools.
+pub async fn a_type_its_principal_is_shown_is_one_it_may_find_and_get(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let (owner, c, invoice) = (&f.cast.owner, &f.catalog, ty(INVOICE));
+    let p = [
+        ("note", json!("x")),
+        ("status", json!("open")),
+        ("verdict", json!("ok")),
+    ];
+    let (v1, opts) = (key("v1"), WriteOpts::default());
+    let written = c.upsert(owner, &invoice, &v1, patch(&p), opts).await;
+    written.expect("the owner writes an invoice");
+    let one = |f: &str, a| TypeGrants {
+        default: None,
+        fields: [(f.into(), a)].into(),
+    };
+    let whole = TypeGrants {
+        default: Some(Access::Masked),
+        ..TypeGrants::default()
+    };
+    let cast = [
+        ("all masked", whole, &["status", "verdict", "note"][..]),
+        (
+            "one masked",
+            one("verdict", Access::Masked),
+            &["verdict", "note"],
+        ),
+        ("write-only", one("status", Access::WriteOnly), &["note"]),
+    ];
+    // Every row that is not as the sentence says: one assertion, so a
+    // fault names each row it turns.
+    let mut differ = Vec::new();
+    for (id, grant, masked) in cast {
+        let grants = Grants {
+            types: [(invoice.clone(), grant)].into(),
+            ..Grants::default()
+        };
+        let who = &principal(f.store.lake(), PrincipalKind::Agent, id, grants);
+        let d = c.describe_type(who, &invoice, ReadAt::default()).await;
+        let may = d.expect("one shown the type is described it").data.may;
+        let got = c.get(who, &invoice, get("v1")).await.map(|r| r.data);
+        let found = c.find(who, &invoice, Find::default()).await.map(|r| r.data);
+        let lake = c
+            .describe(who, ReadAt::default())
+            .await
+            .expect("the lake is described");
+        let offered = tools(&lake.data).expect("the tools are built");
+        let offered = offered.iter().filter(|t| match &t.door {
+            Door::Find { ty } | Door::Get { ty } => ty == &invoice,
+            Door::Query | Door::Search | Door::Subscribe => {
+                t.input_schema.to_string().contains("\"invoice\"")
+            }
+            _ => false,
+        });
+        let masked: Vec<FieldName> = masked.iter().map(|m| (*m).into()).collect();
+        let as_said = |r: &Record| r.fields.is_empty() && r.masked == masked;
+        for (row, holds, said) in [
+            ("may", may.find && may.get, format!("{may:?}")),
+            ("get", got.as_ref().is_ok_and(as_said), format!("{got:?}")),
+            (
+                "find",
+                matches!(&found, Ok(Found::Records { rows, .. }) if rows.len() == 1 && as_said(&rows[0])),
+                format!("{found:?}"),
+            ),
+            (
+                "tools",
+                offered.clone().count() == 5,
+                format!("{}", offered.count()),
+            ),
+        ] {
+            if !holds {
+                differ.push(format!("{id}, {row}: {said}"));
+            }
+        }
+    }
+    assert!(
+        differ.is_empty(),
+        "one who is shown `invoice` and reads no field of it may find and get it, is answered \
+         its record with the masked fields in the declaration's order, and is offered the \
+         reads; these rows differ:\n{}",
+        differ.join("\n")
+    );
 }
 
 /// `sensitive` shows a field, never a type

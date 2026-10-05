@@ -19,16 +19,20 @@ use lakelands_api::ontology::{
 use lakelands_api::write::{Declaration, FunctionDecl, ObjectSetDecl};
 use std::sync::Arc;
 
-use lakelands_api::{Access, Catalog, LakeStore, Principal, ReadAt};
+use lakelands_api::{Access, Catalog, Grants, LakeStore, Principal, PrincipalKind, ReadAt};
+use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::backing::EMBED_MODEL;
-use crate::conformance::fixture::{Must, doors, field, field_access, owner, type_decl, view_of};
+use crate::conformance::fixture::{
+    Must, all, describe_type, doors, field, field_access, owner, principal, type_decl, upsert,
+    view_of,
+};
 
 check!(
     /// `describe` answers the declaration whole.
     DESCRIBE_IS_THE_DECLARATION = describe_answers_the_declaration_whole,
-    "014 and 024: for the owner, a described type projects back onto its declaration byte for byte — every field's function, embedding, searchable, sensitive, label and description, and the type's label, language and view; a masked field shows its shape only; functions, triggers, object sets and views are answered as declared, to a principal who reads every field they name or holds the schema grant, as in force at the read position",
+    "014 and 024: for the owner, a described type projects back onto its declaration byte for byte — every field's function, embedding, searchable, sensitive, label and description, and the type's label, language and view; a masked field shows its shape only; functions, triggers, object sets and views are answered as declared, to a principal who reads every field they name or holds the schema grant, as in force at the read position; a type that is shown is one its principal may find and get, also where every field is masked",
     embedding
 );
 
@@ -348,5 +352,23 @@ async fn describe_answers_the_declaration_whole(store: Arc<dyn LakeStore>) -> Re
         &one_type(&c, "pay_by_title")?.view,
         &None,
     )?;
+
+    // One shown the ledger who reads no field of it may find and get it:
+    // a record is its key, its version and what is withheld.
+    upsert(cat, &own, "ledger", "a", json!({"title": "rent", "net": 1})).await?;
+    let masked = Grants {
+        default: Access::Masked,
+        ..Grants::default()
+    };
+    let who = principal(store, PrincipalKind::Agent, "auditor", masked);
+    let may = describe_type(cat, &who, "ledger").await?.may;
+    let found = all(cat, &who, "ledger").await?;
+    let withheld = matches!(&found[..], [r] if r.fields.is_empty() && !r.masked.is_empty());
+    ensure!(
+        may.find && may.get && withheld,
+        "one shown the ledger with every field masked is answered its record with the \
+         masked list, so describe says it may find and get it; it says {may:?} and find \
+         answers {found:?}"
+    );
     Ok(())
 }

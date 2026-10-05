@@ -486,15 +486,13 @@ fn type_description(
         .filter(|(_, a)| *a != Access::None)
         .map(|(f, a)| FieldDescription::of(f, a))
         .collect();
-    let whole = type_access(who, &t.name);
-    let reads = fields.iter().any(|f| f.access.reads()) || whole.reads();
     let is_view = t.view.is_some();
     // A link type's records are written through its relation's link
     // doors, never through `upsert` or `retire`.
     let is_link = crate::links::is_link_type(&t.name);
     let may = TypeRights {
-        find: reads,
-        get: reads,
+        find: true,
+        get: true,
         upsert: !is_view && !is_link && fields.iter().any(FieldDescription::authored_writable),
         retire: !is_link && crate::rights::may_retire(who, t),
         link: t
