@@ -106,6 +106,7 @@ pub const ALL: &[Check] = &[
     decimals::AS_WRITTEN,
     decimals::EXACT_SUM,
     decimals::SCALE_KEPT,
+    decimals::SUM_SCALE,
     derived_fields::COMPUTED_BY_THE_FOLD,
     derived_fields::NO_DOOR_WRITES_IT,
     derived_fields::ADDED_LATER,

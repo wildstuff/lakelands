@@ -200,3 +200,37 @@ fn a_group_folded_a_record_at_a_time_answers_what_folding_it_at_once_did() {
     }
     assert_eq!(measured(&[], "min(x)"), Ok(Value::Null));
 }
+
+#[test]
+fn a_sum_reads_at_the_largest_scale_among_its_values_in_any_order() {
+    let cases: [(&[&str], &str, &str); 11] = [
+        // A zero hands the other number back as it stands when the two
+        // are added; the sum reads the zero's places all the same.
+        (&["5", "0.00"], "sum(x)", "5.00"),
+        (&["0.00", "5"], "sum(x)", "5.00"),
+        (&["1.10", "-1.10", "6"], "sum(x)", "6.00"),
+        (&["6", "1.10", "-1.10"], "sum(x)", "6.00"),
+        (&["1.10", "-1.10", "6"], "avg(x)", "2.00"),
+        (&["6", "-1.10", "1.10"], "avg(x)", "2.00"),
+        (&["6", "-1.10", "1.10"], "sum(x) * 2", "12.00"),
+        // A zero is positive, at the scale its values carried.
+        (&["-0.00"], "sum(x)", "0.00"),
+        (&["1.5", "-1.50"], "sum(x)", "0.00"),
+        // Past what is exact the sum is what adding in order gives: the
+        // 38 digits these two need are rounded to the 28 a decimal holds.
+        (
+            &["10000000000000000000", "0.0000000000000000001"],
+            "sum(x)",
+            "10000000000000000000.000000000",
+        ),
+        (
+            &["0.0000000000000000001", "10000000000000000000"],
+            "sum(x)",
+            "10000000000000000000.000000000",
+        ),
+    ];
+    for (xs, expr, want) in cases {
+        let rows: Vec<Value> = xs.iter().map(|x| json!({"x": x})).collect();
+        assert_eq!(measured(&rows, expr), Ok(json!(want)), "{expr} over {xs:?}");
+    }
+}

@@ -56,3 +56,22 @@ live and after a rebuild from the log. A sum, minimum or maximum over a
 decimal field whose value type declares a scale answers at that scale, a
 sum over no values included (`0.00`, not `0`); without a declared scale
 it keeps the largest scale of its inputs.
+
+## Extended: a sum is a function of its values
+
+"The largest scale of its inputs" is meant of the values, not of the order
+they are added in. Adding one number to the next does not give it: a zero
+hands the other number back as it stands, so `5` and `0.00` summed to `5`,
+and `1.10`, `-1.10` and `5` to `5` or to `5.00` by the order of their
+keys. A sum therefore reads off its values: at the largest scale among
+them, a zero's included, and a zero sum is positive. `5` and `0.00` are
+`5.00`; an average divides that sum, and whatever a measure computes from
+it starts from it.
+
+This holds wherever the sum is exact, which is wherever the magnitudes of
+its values, written at that largest scale, stay below 2^96: there no
+order of additions rounds and none fails. Past it (values that need more
+than the 28 digits a decimal holds between them) the sum is what adding in
+key order gives, rounded or refused as before. The rule is the
+evaluator's (`lakelands_core::expr::aggregate`), so `find`'s aggregate, a
+pattern's rows and a view's measures read the same.

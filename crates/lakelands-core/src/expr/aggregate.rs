@@ -10,7 +10,8 @@
 //!   not null.
 //! - `sum(x)` adds exactly, as decimals; it skips nulls, and a value that
 //!   is not a number is an error, never silently skipped. The sum of no
-//!   values is 0.
+//!   values is 0. A sum reads at the largest scale among its values, a
+//!   zero's included, whatever order they are added in ([`Scales`]).
 //! - `min(x)` and `max(x)` order values as a comparison does
 //!   (`crate::expr::eval`); nulls are skipped, no values give null.
 //! - `avg(x)` is `sum(x) / count(x)`, exactly, and null when nothing is
@@ -76,6 +77,7 @@ impl Scope for GroupScope<'_> {
 struct Fold {
     count: usize,
     sum: Decimal,
+    scales: Scales,
     best: Option<Val>,
     failed: Option<EvalError>,
     wrong: Option<EvalError>,
@@ -103,7 +105,7 @@ impl Fold {
             return;
         }
         let folded = match func {
-            Func::Sum | Func::Avg => exact_add(self.sum, &v).map(|sum| self.sum = sum),
+            Func::Sum | Func::Avg => self.exact_add(&v),
             Func::Min | Func::Max => {
                 let want = if func == Func::Min {
                     CmpOp::Lt
@@ -132,30 +134,67 @@ impl Fold {
             return Err(e.clone());
         }
         let count = Decimal::from(self.count);
+        // Where the sum is exact it is read off its values; where it is
+        // not, it is what adding them in the order they came gave.
+        let sum = self.scales.exact().unwrap_or(self.sum);
         match func {
             Func::Count => Ok(Val::Num(count)),
-            Func::Sum => Ok(Val::Num(self.sum)),
+            Func::Sum => Ok(Val::Num(sum)),
             Func::Avg if self.count == 0 => Ok(Val::Null),
-            Func::Avg => (self.sum.checked_div(count).map(Val::Num))
+            Func::Avg => (sum.checked_div(count).map(Val::Num))
                 .ok_or_else(|| EvalError("the average is too large for exact arithmetic".into())),
             Func::Min | Func::Max => Ok(self.best.clone().unwrap_or(Val::Null)),
             _ => err(format!("{}() is not an aggregate", super::func_name(func))),
         }
     }
+
+    /// The sum plus one value, exactly: a value that is not a number is an
+    /// error, never skipped.
+    fn exact_add(&mut self, v: &Val) -> Result<()> {
+        let n = match v {
+            Val::Num(d) => *d,
+            Val::Text(s) => s.parse::<Decimal>().map_err(|_| {
+                EvalError(format!("sum() met the text '{s}', which is not a number"))
+            })?,
+            other => return err(format!("sum() met {other:?}, which is not a number")),
+        };
+        self.scales.add(n);
+        let sum = self.sum.checked_add(n);
+        self.sum =
+            sum.ok_or_else(|| EvalError("the sum is too large for exact arithmetic".into()))?;
+        Ok(())
+    }
 }
 
-/// `sum` plus one value, exactly: a value that is not a number is an
-/// error, never skipped.
-fn exact_add(sum: Decimal, v: &Val) -> Result<Decimal> {
-    let n = match v {
-        Val::Num(d) => *d,
-        Val::Text(s) => s
-            .parse::<Decimal>()
-            .map_err(|_| EvalError(format!("sum() met the text '{s}', which is not a number")))?,
-        other => return err(format!("sum() met {other:?}, which is not a number")),
-    };
-    sum.checked_add(n)
-        .ok_or_else(|| EvalError("the sum is too large for exact arithmetic".into()))
+/// The numbers of a sum by the scale they carry: for each scale their sum
+/// and the sum of their magnitudes, as integers. Where the magnitudes,
+/// written at the largest scale among the values, stay below 2^96, no
+/// order of additions rounds or fails, and the sum is exact at that scale:
+/// a function of its values, whatever order they came in. Adding them one
+/// to the next is not: a zero hands the other number back as it stands, so
+/// `1.10 - 1.10 + 5` read `5` or `5.00` by the order of the keys.
+#[derive(Clone, Debug, Default)]
+struct Scales(BTreeMap<u32, (i128, i128)>);
+
+impl Scales {
+    fn add(&mut self, n: Decimal) {
+        let (sum, size) = self.0.entry(n.scale()).or_default();
+        *sum = sum.saturating_add(n.mantissa());
+        *size = size.saturating_add(n.mantissa().abs());
+    }
+
+    /// The sum at the largest scale among the values, a zero's included
+    /// and the zero positive, where it is exact; no values sum to `0`.
+    fn exact(&self) -> Option<Decimal> {
+        let top = self.0.keys().next_back().copied().unwrap_or(0);
+        let (mut sum, mut size) = (0i128, 0i128);
+        for (scale, (s, m)) in &self.0 {
+            let up = 10i128.checked_pow(top - scale)?;
+            sum = sum.checked_add(s.checked_mul(up)?)?;
+            size = size.checked_add(m.checked_mul(up)?)?;
+        }
+        (size < 1 << 96).then(|| Decimal::from_i128_with_scale(sum, top))
+    }
 }
 
 /// The aggregate calls a group's measures make, each once, folded over

@@ -517,7 +517,10 @@ A view does not aggregate. Aggregates — over `find`, over a pattern's
 rows and in a view type's measures — are the store's: it computes them
 over the records it reads, decimal-exact and grouped in the one sort
 order, so every engine answers them identically
-(`docs/decisions/029-every-answer-has-one-order.md`). An engine may keep
+(`docs/decisions/029-every-answer-has-one-order.md`). A sum reads at the
+largest scale among its values, a zero's included, whatever order they
+are added in (`docs/decisions/011-storage-kind-and-value-type.md`,
+extended): `5` and `0.00` are `5.00`. An engine may keep
 indexes that make the scans behind them faster; it never computes a
 group.
 
