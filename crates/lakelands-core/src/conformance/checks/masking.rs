@@ -15,8 +15,8 @@ use crate::conformance::Failure;
 use crate::conformance::backing::EMBED_MODEL;
 use crate::conformance::fixture::{
     Lake, Must, agg, aggregate, all_found, derived, describe_type, embedding, field, field_access,
-    field_writer, find_where, get_at, ingest, no_such_field, order, pattern, read, reads_all,
-    refused_on, searchable, source_record, sourced, try_upsert, type_decl,
+    field_writer, find_where, get_at, ingest, no_such_field, nobody, order, pattern, read,
+    reads_all, refused_on, searchable, source_record, sourced, try_upsert, type_decl,
 };
 
 check!(
@@ -158,7 +158,7 @@ async fn a_field_built_from_one_the_principal_may_not_read_is_read_as_that_field
 check!(
     /// A field the principal may not know of is answered as one never declared.
     NONE_HIDES = a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared,
-    "006 and 024: a field whose grant is none by name, sensitive or not, does not exist for that principal: it is absent from get, find, describe (a relation's link field too) and the tools, a search that names no fields never searches it, and a filter, an order, a pattern's `where`, a search's `fields`, an upsert and an ingest that name it are answered as for a field the type does not declare; a sensitive field whose none is inherited is listed as masked, and a filter on it is refused as not granted"
+    "006 and 024: a field whose grant is none by name, sensitive or not, does not exist for that principal: it is absent from get, find, describe (a relation's link field too) and the tools, a search that names no fields never searches it, and a filter, an order, a pattern's `where`, a search's `fields`, an upsert and an ingest that name it are answered as for a field the type does not declare; a sensitive field whose none is inherited is listed as masked, and a filter on it is refused as not granted, to one who is shown the type: one whose grants give it nothing of the type is answered by describe, get, find and upsert as on a type that is not declared, a sensitive field or none"
 );
 
 async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared(
@@ -324,6 +324,42 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
          granted; get listed {:?} masked, the filter answered {secret:?}",
         got.masked
     );
+    // `sensitive` shows a field, never a type: one given nothing of
+    // `staff`, by `{default: none}` or by no entry, is answered as on
+    // `ghost`, which is not declared.
+    let mut kept = reads_all(store.as_ref(), "z");
+    let none = lakelands_api::principal::TypeGrants {
+        default: Some(Access::None),
+        fields: Default::default(),
+    };
+    kept.grants.types.insert(staff.clone(), none);
+    for who in [&kept, &nobody(store.as_ref())] {
+        let mut said = Vec::new();
+        for name in ["staff", "ghost"] {
+            let (t, secret) = (TypeName::from(name), json!({"secret": "x"}));
+            let answers = [
+                (cat.describe_type(who, &t, ReadAt::default()).await).map(drop),
+                cat.get(who, &t, get_at("s1", None)).await.map(drop),
+                cat.find(who, &t, Find::default()).await.map(drop),
+                (try_upsert(cat.as_ref(), who, name, "s1", secret).await).map(drop),
+            ];
+            let why = |a: lakelands_api::Result<()>| a.err().map(|e| e.to_string());
+            said.push(answers.map(why));
+        }
+        let lake = cat.describe(who, ReadAt::default()).await;
+        let lake = lake.must("describing the lake")?.data;
+        let ghost = said[1]
+            .clone()
+            .map(|e| e.map(|e| e.replace("ghost", "staff")));
+        ensure!(
+            said[0].iter().all(Option::is_some)
+                && said[0] == ghost
+                && !lake.types.iter().any(|t| t.name == staff),
+            "one whose grants give it nothing of `staff` is answered as on a type that is \
+             not declared, whatever `secret` is declared; `{}` was answered {said:?}",
+            who.id
+        );
+    }
     Ok(())
 }
 
