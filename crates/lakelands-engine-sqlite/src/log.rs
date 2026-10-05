@@ -22,6 +22,19 @@
 //! an append is durable and whole when it returns, and after a crash it
 //! is either all there or not at all.
 //!
+//! **Nothing is written behind bytes that are no event.** A write can
+//! fail after it wrote, as on a full disk, and the handle goes on under
+//! its lease. So an append that fails cuts both files back to their
+//! committed lengths before it answers its error, and every append and
+//! every seal first reads what is committed and cuts what lies past it,
+//! whoever left it there: an offset the index names is the byte its event
+//! begins at, and a sealed file holds its events' lines and nothing else.
+//! A failed append changes nothing of what the handle holds, which is
+//! written once the commit line is synced. One outcome is not known: when
+//! the sync after the commit line fails and the cut fails too, the group
+//! is committed for whoever reads the index, though its append answered
+//! an error.
+//!
 //! Every handle reads the files, so a reader opened beside the writer
 //! sees each append once it is committed.
 //!
@@ -418,10 +431,16 @@ impl Log {
         Ok(())
     }
 
-    /// Cut off what the last append left uncommitted in the active
-    /// segment. Only the writer does this, holding the lease.
+    /// Read what is committed, then cut off what lies past it in the
+    /// active segment. Only the writer does this, holding the lease.
     pub(crate) fn recover(&mut self) -> Result<()> {
         self.refresh()?;
+        self.cut()
+    }
+
+    /// Cut the active segment's two files back to their committed lengths,
+    /// as this handle has read them.
+    fn cut(&self) -> Result<()> {
         let Some(active) = self.segments.last() else {
             return Ok(());
         };
@@ -462,7 +481,7 @@ impl Log {
     /// `fence`, the lease's, or, with none, as an import does, each keeping
     /// its own fence, never below the one before it.
     pub(crate) fn append(&mut self, fence: Option<u64>, events: &[CanonicalEvent]) -> Result<()> {
-        self.refresh()?;
+        self.recover()?;
         let first = self.tip().map_or(0, |(p, _)| p.0 + 1);
         let prev = self.tip().map_or_else(Digest::zero, |(_, h)| h);
         let floor = match (fence, first) {
@@ -473,7 +492,7 @@ impl Log {
         if events.is_empty() {
             return Ok(());
         }
-        let active = self.segments.last_mut().ok_or_else(|| {
+        let active = self.segments.last().ok_or_else(|| {
             unavailable("the lake's log has no segment; it was not created by this engine")
         })?;
         let (segment_path, index_path) = (
@@ -511,15 +530,31 @@ impl Log {
             offset += len + 1;
         }
         index.extend_from_slice(&COMMITTED[1..]);
-        for (path, bytes) in [(&segment_path, &lines), (&index_path, &index)] {
-            let mut file = OpenOptions::new()
-                .append(true)
-                .open(path)
-                .map_err(|e| io_error("opening", path, e))?;
-            file.write_all(bytes)
-                .and_then(|()| file.sync_data())
-                .map_err(|e| io_error("appending to", path, e))?;
+        let written = [(&segment_path, &lines), (&index_path, &index)]
+            .into_iter()
+            .try_for_each(|(path, bytes)| {
+                OpenOptions::new()
+                    .append(true)
+                    .open(path)
+                    .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_data()))
+                    .map_err(|e| (path, e))
+            });
+        // What a write that failed left is cut back before its error is
+        // answered. Where that fails as well, the next append or seal cuts
+        // it before it writes, or is refused.
+        if let Err((path, e)) = written {
+            let uncut = self.cut().err().map_or_else(String::new, |cut| {
+                format!(
+                    "; what it wrote could not be cut back, and nothing is appended until it \
+                     is ({cut})"
+                )
+            });
+            let path = path.display();
+            return Err(unavailable(format!(
+                "appending to {path} failed: {e}{uncut}"
+            )));
         }
+        let active = self.segments.last_mut().expect("checked above");
         active.index_read += index.len() as u64;
         active.count += events.len() as u64;
         active.end = offset;
@@ -623,7 +658,7 @@ impl Log {
 
     /// Close the active segment, if it holds any event, and start the next.
     pub(crate) fn seal(&mut self) -> Result<Option<SegmentDigest>> {
-        self.refresh()?;
+        self.recover()?;
         let Some(active) = self.segments.last() else {
             return Ok(None);
         };

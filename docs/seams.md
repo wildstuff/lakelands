@@ -105,7 +105,7 @@ no check yet.
 | `take_lease(holder)` | Take the writer lease with a fencing token greater than every token this lake ever handed out. **Fails at once** while the lease is held — by another process, another handle, or this one — with `Unavailable` whose message names the holder; never waits. `Unavailable` on a handle opened read-only. |
 | `release_lease(lease)` | Give the lease up; the next taker gets a greater token. The lease is always released; an engine that also records the holder in storage reports a failure to clear that record as `Unavailable`, after releasing. Releasing a lease that is no longer the current one does nothing, so a writer that lost the lease cannot release its successor's. A handle that is dropped releases the lease it took and still holds, so a writer that ends without closing does not keep the lake from every later writer. |
 | `tip` | The last event's position and hash, or none for an empty lake. |
-| `append(lease, events)` | Append a group of `CanonicalEvent`s, all or none, **durably before returning**: once it returns, the events survive a crash of the process and of the machine. `Unavailable` when `lease` is not the current lease or the handle is read-only. `Invalid` when an event's fence differs from the lease's — except the event at position 0, which carries fence 0 — when the positions do not continue the tip without a gap, or when a `prev` is not the hash before it; nothing of a refused append is kept. An empty group appends nothing. Stores each event's bytes unchanged and never parses them. |
+| `append(lease, events)` | Append a group of `CanonicalEvent`s, all or none, **durably before returning**: once it returns, the events survive a crash of the process and of the machine. `Unavailable` when `lease` is not the current lease or the handle is read-only. `Invalid` when an event's fence differs from the lease's — except the event at position 0, which carries fence 0 — when the positions do not continue the tip without a gap, or when a `prev` is not the hash before it; nothing of a refused append is kept. An append that answers `Unavailable` because a write failed keeps nothing either: the handle goes on under its lease, and its next append is not written behind what the failed one left. An empty group appends nothing. Stores each event's bytes unchanged and never parses them. |
 | `read(from, limit)` | At most `limit` `CanonicalEvent`s from `from` on, in position order, exactly as appended: the same members, the same bytes. Empty when `from` is past the tip or `limit` is 0. |
 | `import(lease, events)` | Append events carried over from another lake's log, as an import does (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`): as `append`, all or none and durably, except that each event keeps the fence it was written under, 0 at position 0 and never below the fence of the event before it, instead of carrying the lease's. `Invalid` unless the log holds nothing but imported events (it is empty, or every event in it came through `import`), so a lake that was ever appended to is never imported into. Afterwards the next `take_lease` answers a token greater than every fence imported. The store checks, before it imports, that every fence is its writer's (log format §4.1). |
 | `seal_segment(lease)` | Close the active segment at its last event and start a new one at the next position appended; none, and nothing changes, if the active segment is empty. Refused as `append` is for a stale lease or a read-only handle. The store then appends the `checkpoint` as the new segment's first event. |
@@ -158,7 +158,18 @@ is short, unreadable or not the position expected is refused as a
 damaged index, never read as another event. **A damaged line is found
 by the read that meets it,** and so by `verify`, which reads the log
 from the first position it is asked for; an open reads the index's end
-alone and does not find it. **The journal:** a writer that gives its
+alone and does not find it. **An append that fails after it wrote,**
+as on a disk that fills, cuts the segment and its index back to their
+committed lengths before it answers its error, and every append and
+every seal first reads what is committed and cuts what lies past it,
+whoever left it there: no event is written behind bytes that are none,
+and a sealed file holds its events' lines and nothing else
+(lakelands#618). The cut is the writer's: the lease's check and what
+follows it are one step under the handle's own lock, and the lease
+file's lock lets no other handle take the lease meanwhile. One outcome
+is not known: where the sync after the commit line fails and the cut
+fails too, the group is in the log for whoever reads it, though its
+append answered an error. **The journal:** a writer that gives its
 lease up (`close`) truncates the projection's journal,
 `projection.db-wal`, which otherwise stays as large as it once grew
 until a `compact`. It does not wait for a reader that holds a snapshot

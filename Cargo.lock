@@ -1052,6 +1052,7 @@ dependencies = [
  "lakelands-store",
  "peak_alloc",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "sha2 0.10.9",

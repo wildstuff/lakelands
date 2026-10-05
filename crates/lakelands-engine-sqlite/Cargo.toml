@@ -20,7 +20,8 @@ sha2.workspace = true
 [dev-dependencies]
 lakelands-store.workspace = true
 peak_alloc.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+rustix.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 
 [lints]
 workspace = true

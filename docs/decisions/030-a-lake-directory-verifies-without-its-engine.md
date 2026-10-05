@@ -14,7 +14,11 @@ The SQLite engine keeps a lake as a directory whose log anyone can read:
   append writes and syncs its segment lines, then its index lines and
   the commit line. Only events before the last commit line exist, so an
   append is whole after a crash or not there at all. The next writer
-  cuts off what an interrupted append left.
+  cuts off what an interrupted append left. A writer that goes on after
+  an append that failed cuts off what that one left before it answers
+  the error, and again before every append and every seal: an offset in
+  the index is the byte its event begins at, and a sealed segment holds
+  its events' lines and nothing else (lakelands#618).
 - `lease` holds the last fencing token handed out and its holder, under
   an operating-system lock. The lock makes a second writer fail at once
   and dies with its process; the token, read from the file on every
