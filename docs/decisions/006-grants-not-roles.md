@@ -289,3 +289,35 @@ type.**
 
 For a host: a principal that is to see that a field is withheld is
 granted something of the type, or the field as `masked` by name.
+
+## Extended: a type that is shown is one its principal may find and get (lakelands#620)
+
+`describe` said `may.find` and `may.get` only of a type its principal
+reads a field of. The read doors never asked that: a principal shown
+`invoice` with every field masked, with one field masked by name, or
+with a field it may only write, was answered every invoice by `get` and
+`find`, counted them and walked from them, while the description said
+it may not, and the tools built from the description offered it neither
+read nor named the type in the pattern, search and subscribe tools.
+
+**A principal that is shown a type may find and get its records, and
+`may.find` and `may.get` say so of every type `describe` answers.**
+
+- **A record is its key, its version and what the grants show of each
+  field**: the value of one that is read, the name of one that is masked,
+  in the declaration's order, and nothing of one that is hidden or only
+  written. One who reads no field is still answered the record; that is
+  how it sees what is withheld, and what a writer writes against.
+- **The probe is refused as before.** A filter, an order, an aggregate
+  or a search over a field the principal does not read is not granted
+  (024), so `may.find` promises the door, not every question.
+- **A key is shown to whoever is shown the record.** A key made of
+  fields holds their values, whatever is granted on those fields. A host
+  does not key a type by a field it hides.
+- **A step walks a relation by its owner.** A relation is declared on
+  the type the principal is shown, so a step over it is answered the
+  other end's key also where the principal's grants keep it from the
+  relation's link type; it is then shown no link field.
+
+For a host: a principal that is not to list a type's records is granted
+nothing of the type.

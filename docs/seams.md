@@ -1739,6 +1739,12 @@ position, as the principal may see it, each declaration whole (suite:
   (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
   Until 0.4.0 a masked field also showed `derived`, `depends_on`,
   `description` and `embed`.
+- A type's `may.find` and `may.get` are true of every type described:
+  one who is shown a type is answered its records, each with its key,
+  its version and the fields it reads or sees masked
+  (`docs/decisions/006-grants-not-roles.md`, extended; door check
+  `a_type_its_principal_is_shown_is_one_it_may_find_and_get`). A filter
+  or a search is still held to the fields it probes.
 - The lake lists its value types and verbs, and its `functions`,
   `triggers` and `object_sets` as declared; `triggers` were names until
   0.4.0. A function, a trigger, an object set and a type's `view` are

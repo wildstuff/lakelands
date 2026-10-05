@@ -208,9 +208,9 @@ pub struct TypeAccess {
 /// The doors one principal may use on one type.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeRights {
-    /// `find` and `search`.
+    /// `find` and `search`: true of every type described.
     pub find: bool,
-    /// `get`.
+    /// `get`: as `find`.
     pub get: bool,
     /// `upsert`: at least one authored field is writable.
     pub upsert: bool,

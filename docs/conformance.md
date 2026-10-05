@@ -769,7 +769,7 @@ belongs in the suite, not beside one engine:
 
 **describe**
 
-- `describe_answers_the_declaration_whole` — 014 and 024: for the owner, a described type projects back onto its declaration byte for byte — every field's function, embedding, searchable, sensitive, label and description, and the type's label, language and view; a masked field shows its shape only; functions, triggers, object sets and views are answered as declared, to a principal who reads every field they name or holds the schema grant, as in force at the read position
+- `describe_answers_the_declaration_whole` — 014 and 024: for the owner, a described type projects back onto its declaration byte for byte — every field's function, embedding, searchable, sensitive, label and description, and the type's label, language and view; a masked field shows its shape only; functions, triggers, object sets and views are answered as declared, to a principal who reads every field they name or holds the schema grant, as in force at the read position; a type that is shown is one its principal may find and get, also where every field is masked
 
 ### Through the engine seam
 
