@@ -74,6 +74,7 @@ mod values;
 mod vector_index;
 mod verbs_on_type;
 mod versions;
+mod view_kept;
 mod view_merge;
 mod view_params;
 mod view_rights;
@@ -260,6 +261,10 @@ pub const ALL: &[Check] = &[
     ingest::REVERT_IS_A_CHANGE,
     views::VIEW_KEY_IS_ITS_GROUP,
     view_rights::VIEW_OVER_A_HIDDEN_FIELD,
+    view_kept::KEPT_SHAPES,
+    view_kept::KEPT_VALUES,
+    view_kept::KEPT_POSITIONS,
+    view_kept::KEPT_RUNS,
     keys::KEY_AND_KEY_FIELDS_AGREE,
     keys::KEY_FIELDS_FROM_THE_KEY,
     restriction::HOLD_WITHHOLDS_AND_KEEPS,
