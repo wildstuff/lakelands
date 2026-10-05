@@ -390,8 +390,10 @@ pub fn holds(t: &TypeDecl, name: &FieldName) -> bool {
 /// rewritten reference of the migrated type itself; a dropped field in
 /// the shape as it stands, and a renamed relation likewise; a sample key
 /// where the record is answered; a declaration the migration carries
-/// where `describe` names it, over `declared`, the declarations in force. The totals, the hashes and the id, which names the whole
-/// report, stay; `more` says that something was left out.
+/// where `described`, the lake as `describe` shows it to the reader,
+/// names it, asked only for a report that carries one. The totals, the
+/// hashes and the id, which names the whole report, stay; `more` says
+/// that something was left out.
 pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDescription>>(
     who: &Principal,
     was: &TypeDecl,

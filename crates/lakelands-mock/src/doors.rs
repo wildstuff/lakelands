@@ -2152,7 +2152,7 @@ fn check_set(st: &State, who: &Principal, declarations: &[Declaration]) -> Resul
 /// As the store: the link types a migration's renamed relations move
 /// their records between, old name to new. A rename keeps the carrier, so
 /// it is read off the relation as the new shape declares it.
-fn moved(m: &Migration) -> Vec<(TypeName, TypeName)> {
+pub(crate) fn moved(m: &Migration) -> Vec<(TypeName, TypeName)> {
     let by_links = |new: &RelationName| {
         let is = m.to.relations.iter().find(|r| &r.name == new);
         is.is_some_and(|r| {
