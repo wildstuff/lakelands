@@ -473,7 +473,8 @@ def main():
     eleventh = [lambda e: any("floor(" in d for d in derived(e)),
                 lambda e: any(by_a_width.search(d) for d in derived(e)),
                 lambda e: "in_set(" in e["body"].get("declaration", {}).get("where", ""),
-                lambda e: bool(e["body"].get("migration", {}).get("relation_renames"))]
+                lambda e: bool(e["body"].get("migration", {}).get("relation_renames")),
+                lambda e: e["body"].get("type") == "sys.setting" and e["body"].get("key", "").startswith("view_kept.")]
     for line, want in zip(v11["lines"], v11["hashes"]):
         event = json.loads(line)
         check(canonical(event) == line.encode("utf-8"), f"v11.json: position {event['position']} is canonical")

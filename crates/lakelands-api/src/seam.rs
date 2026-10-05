@@ -241,28 +241,54 @@ pub fn indexable(kind: &crate::ontology::StorageKind) -> bool {
     matches!(kind, crate::ontology::StorageKind::Vector)
 }
 
-/// The type an index setting's key names, and which index it asks for:
-/// `sort_index.<type>` or `vector_index.<type>`; `None` for any other key.
-pub fn index_setting_type(key: &str) -> Option<&str> {
-    key.strip_prefix(SORT_INDEX_SETTING)
-        .or_else(|| key.strip_prefix(VECTOR_INDEX_SETTING))
+/// The key prefix of the setting that asks for a view's records to be
+/// kept as its sources are written: the setting `view_kept.<type>`, which
+/// holds when its value is `true`.
+pub const VIEW_KEPT_SETTING: &str = "view_kept.";
+
+/// Whether a `view_kept.<type>` setting of this value holds.
+pub fn view_kept(value: Option<&Value>) -> bool {
+    value == Some(&Value::Bool(true))
 }
 
-/// Check a write of the setting `key` that leaves `value` (`None` or
-/// `null` asks for no index): a `sort_index.<type>` or
-/// `vector_index.<type>` setting must name a declared type (`decl`, its
-/// declaration at the head) and hold an array of the names of fields it
-/// declares with a kind that index keeps ([`sortable`], [`indexable`]). A
-/// refusal names the field it is about (the named field, else `key` or
-/// `value`) and why. Any other setting passes.
+/// Check a write of the setting `key` that leaves `value`, one of the
+/// settings the store reads itself; any other setting passes. `declared`
+/// answers a type's declaration at the head. A refusal names the member
+/// it is about (a named field, else `key` or `value`) and why.
+///
+/// - `sort_index.<type>` and `vector_index.<type>` name a declared stored
+///   type and hold an array of the names of fields it declares with a
+///   kind that index keeps ([`sortable`], [`indexable`]); `None` or `null`
+///   asks for no index.
+/// - `view_kept.<type>` names a declared view and holds `true` or
+///   `false`; under `true` the view must be one that can be kept
+///   ([`crate::expr::keepable`]), and the refusal says why it is not.
 ///
 /// It lives in the contract, not in the core, so that the mock, which
 /// depends on this crate alone, refuses the same settings as the store.
-pub fn check_index_setting(
+pub fn check_setting<'a>(
     key: &str,
     value: Option<&Value>,
-    decl: Option<&TypeDecl>,
+    declared: &dyn Fn(&crate::TypeName) -> Option<&'a TypeDecl>,
 ) -> std::result::Result<(), (crate::id::FieldName, String)> {
+    if let Some(ty) = key.strip_prefix(VIEW_KEPT_SETTING) {
+        let asks = format!("`{key}` asks for the view `{ty}` to be kept");
+        let Some(view) = declared(&ty.into()).and_then(|d| d.view.as_deref()) else {
+            return Err((
+                "key".into(),
+                format!("{asks}, and `{ty}` is no declared view"),
+            ));
+        };
+        return match value {
+            Some(Value::Bool(true)) => crate::expr::keepable(view, declared)
+                .map_err(|why| ("key".into(), format!("{asks}, and it cannot be: {why}"))),
+            None | Some(Value::Null | Value::Bool(false)) => Ok(()),
+            Some(_) => Err((
+                "value".into(),
+                format!("`{key}` holds `true` for a view that is kept, or `false`"),
+            )),
+        };
+    }
     let (ty, index, keeps, kinds): (_, _, fn(&crate::ontology::StorageKind) -> bool, _) =
         if let Some(ty) = key.strip_prefix(SORT_INDEX_SETTING) {
             (
@@ -276,7 +302,7 @@ pub fn check_index_setting(
         } else {
             return Ok(());
         };
-    let Some(decl) = decl.filter(|d| d.view.is_none()) else {
+    let Some(decl) = declared(&ty.into()).filter(|d| d.view.is_none()) else {
         return Err((
             "key".into(),
             format!("`{key}` asks for {index} of `{ty}`, which is no declared stored type"),

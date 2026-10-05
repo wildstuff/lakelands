@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use lakelands_api::describe::ExecutorDescription;
+use lakelands_api::describe::{ExecutorDescription, Kept, NotKept};
 use lakelands_api::error::{Error, Missing, Refusal};
 use lakelands_api::event::EventBody;
 use lakelands_api::expr::Condition;
@@ -173,6 +173,7 @@ macro_rules! door_checks {
             a_value_type_is_loosened_by_declare_and_tightened_by_its_preflight,
             a_sort_index_setting_names_declared_scalar_fields_and_describe_shows_them,
             a_vector_index_setting_names_vector_fields_and_search_says_it_ranked_by_the_index,
+            a_view_kept_setting_names_a_view_that_can_be_kept_and_describe_says_whether_it_is,
             an_ingested_upstream_is_answered_per_field,
             a_schema_proposal_is_refused_by_kind_at_propose_and_at_accept,
             a_value_types_tightening_is_proposed_and_accepted_while_it_fits,
@@ -6383,6 +6384,180 @@ pub async fn a_sort_index_setting_names_declared_scalar_fields_and_describe_show
         sorted(owner).await.is_empty(),
         "the setting retired, nothing indexed"
     );
+}
+
+/// A `view_kept.<type>` setting asks for a view's records to be kept. It
+/// names a declared view and holds `true` or `false`; under `true`
+/// the view must be one that can be kept, and the refusal names the view,
+/// the measure and the call. `describe_type` says of a view, and of no
+/// other type, whether it is kept or computed and why. A view declared
+/// again so that it can no longer be kept is not refused under a standing
+/// setting: `describe_type` then says why it computes, and names the
+/// measure and what it reads to a principal who is shown the view as
+/// declared, and to no other.
+pub async fn a_view_kept_setting_names_a_view_that_can_be_kept_and_describe_says_whether_it_is(
+    store: Arc<dyn LakeStore>,
+) {
+    let f = setup(store).await;
+    let (owner, clerk) = (&f.cast.owner, &f.cast.clerk);
+    let number = |name: &str, kind| FieldDecl {
+        ty: FieldType::kind(kind),
+        ..text(name)
+    };
+    let view = |name: &str, measures: &[(&str, StorageKind, &str)]| {
+        let named = |(name, _, expr): &(&str, StorageKind, &str)| Measure {
+            name: (*name).into(),
+            expr: (*expr).into(),
+        };
+        let mut fields = vec![text("status")];
+        fields.extend(measures.iter().map(|(n, kind, _)| number(n, *kind)));
+        Declaration::Type(TypeDecl {
+            name: name.into(),
+            key: vec!["status".into()],
+            fields,
+            view: Some(Box::new(ViewDecl {
+                source: INVOICE.into(),
+                params: Vec::new(),
+                r#where: None,
+                group_by: vec!["status".into()],
+                measures: measures.iter().map(named).collect(),
+                merge: Default::default(),
+            })),
+            field_meta: true,
+            ..Default::default()
+        })
+    };
+    let (decimal, count) = (StorageKind::Decimal, StorageKind::Number);
+    let totals = view(
+        "totals",
+        &[("total", decimal, "sum(amount)"), ("n", count, "count()")],
+    );
+    for d in [totals, view("secrets", &[("n", count, "count()")])] {
+        f.catalog
+            .declare(owner, d)
+            .await
+            .expect("the owner declares a view");
+    }
+    let set = |k: &'static str, value: Value| {
+        let catalog = f.catalog.clone();
+        async move {
+            let fields = patch(&[("key", json!(k)), ("value", value)]);
+            let (setting, opts) = (ty("sys.setting"), WriteOpts::default());
+            catalog.upsert(owner, &setting, &key(k), fields, opts).await
+        }
+    };
+    let kept = |who: &Principal, of: &'static str| {
+        let (catalog, who) = (f.catalog.clone(), who.clone());
+        async move {
+            let described = catalog
+                .describe_type(&who, &ty(of), ReadAt::default())
+                .await;
+            described
+                .expect("the type is described")
+                .data
+                .lifecycle
+                .kept
+        }
+    };
+    let not_asked = Some(Kept::Computed {
+        why: NotKept::NotAsked,
+    });
+
+    // The refusals, by the member at fault.
+    for (k, value, at_fault) in [
+        ("view_kept.invoice", json!(true), "key"),
+        ("view_kept.nowhere", json!(true), "key"),
+        ("view_kept.totals", json!("yes"), "value"),
+        ("view_kept.totals", json!(1), "value"),
+    ] {
+        let e = set(k, value.clone())
+            .await
+            .expect_err("the setting is refused");
+        let (field, reason) = refusal(&e);
+        assert!(
+            matches!(reason, Refusal::Invalid { .. }),
+            "`{k}` = {value}: expected invalid, got {reason:?}"
+        );
+        assert_eq!(
+            field.as_ref().map(FieldName::as_str),
+            Some(at_fault),
+            "`{k}` = {value}: the refusal names the member at fault"
+        );
+    }
+
+    // A stored type says nothing of it; a view nobody asked for says so.
+    assert_eq!(kept(owner, INVOICE).await, None);
+    assert_eq!(kept(owner, "totals").await, not_asked);
+    // Asked for, a view that can be kept is kept, or says why the lake
+    // does not keep it here; it is neither refused nor "not asked".
+    set("view_kept.totals", json!(true))
+        .await
+        .expect("the view can be kept");
+    for who in [owner, clerk] {
+        let asked = kept(who, "totals").await;
+        let here = |why: &NotKept| !matches!(why, NotKept::NotAsked | NotKept::CannotBeKept { .. });
+        assert!(
+            matches!(&asked, Some(Kept::Kept))
+                || matches!(&asked, Some(Kept::Computed { why }) if here(why)),
+            "`totals` is asked for and can be kept, and says {asked:?}"
+        );
+    }
+    let off = set("view_kept.totals", json!(false)).await;
+    off.expect("asking for nothing applies");
+    assert_eq!(kept(owner, "totals").await, not_asked);
+    set("view_kept.totals", json!(true))
+        .await
+        .expect("asked for again");
+    let (setting, gone) = (ty("sys.setting"), key("view_kept.totals"));
+    let retired = f
+        .catalog
+        .retire(owner, &setting, &gone, WriteOpts::default());
+    retired.await.expect("the setting retires");
+    assert_eq!(kept(owner, "totals").await, not_asked);
+
+    // A view declared again so that it cannot be kept keeps its setting.
+    set("view_kept.secrets", json!(true))
+        .await
+        .expect("the view can be kept");
+    let unkeepable = view("secrets", &[("n", count, "len(max(secret))")]);
+    let again = f.catalog.declare(owner, unkeepable).await;
+    again.expect("a declaration under a standing setting is not refused");
+    let Some(Kept::Computed {
+        why: NotKept::CannotBeKept { reason },
+    }) = kept(owner, "secrets").await
+    else {
+        panic!("`secrets` takes an extreme of a text and cannot be kept");
+    };
+    let reason = reason.expect("the owner is shown the view, and is told why");
+    assert!(
+        reason.contains("`n`") && reason.contains("max(secret)"),
+        "the reason names the measure and the call: {reason}"
+    );
+    // The clerk is kept from `secret`: it is told that, and not why.
+    assert_eq!(
+        kept(clerk, "secrets").await,
+        Some(Kept::Computed {
+            why: NotKept::CannotBeKept { reason: None },
+        }),
+    );
+    // Asking for it again is refused, naming the view, measure and call.
+    set("view_kept.secrets", json!(false))
+        .await
+        .expect("asking for nothing applies");
+    let e = set("view_kept.secrets", json!(true))
+        .await
+        .expect_err("it cannot be kept");
+    let (field, reason) = refusal(&e);
+    assert_eq!(field.as_ref().map(FieldName::as_str), Some("key"));
+    let Refusal::Invalid { message } = reason else {
+        panic!("expected invalid, got {reason:?}");
+    };
+    for name in ["secrets", "`n`", "max(secret)"] {
+        assert!(
+            message.contains(name),
+            "the refusal names {name}: {message}"
+        );
+    }
 }
 
 /// A `vector_index.<type>` setting asks for an index on vector fields its

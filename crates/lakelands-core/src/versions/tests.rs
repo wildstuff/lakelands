@@ -337,3 +337,34 @@ fn a_declared_call_of_floor_needs_format_11_and_says_so_below_it() {
         Some("a format 10 event declares a call of `in_set`, which format 11 added")
     );
 }
+
+#[test]
+fn a_write_of_a_view_kept_setting_needs_format_11_and_says_so_below_it() {
+    let record = |kind: &str, key: &str| {
+        let patch = json!({"key": key, "value": true});
+        json!({"kind": kind, "type": "sys.setting", "key": key, "version": 1, "patch": patch})
+    };
+    let proposed = |ty: &str, key: &str| {
+        let write = json!({"write": "upsert", "type": ty, "key": key, "patch": {"value": true}});
+        json!({"kind": "write_proposed", "proposal": "p", "write": write, "why": "w"})
+    };
+    let need = |body: serde_json::Value| needed(&event_json(11, body).body, false);
+    let kept = "view_kept.totals";
+    for body in [
+        record("record_upserted", kept),
+        record("record_ingested", kept),
+        proposed("sys.setting", kept),
+    ] {
+        assert_eq!(need(body.clone()), 11, "{body}");
+        assert_eq!(
+            below(&event_json(10, body)).as_deref(),
+            Some("a format 10 event writes a `view_kept.` setting, which format 11 added")
+        );
+    }
+    // Any other setting, and a record of another type under that key.
+    assert_eq!(need(record("record_upserted", "sort_index.totals")), 1);
+    assert_eq!(need(proposed("note", kept)), 1);
+    let mut other = record("record_upserted", kept);
+    other["type"] = json!("note");
+    assert_eq!(need(other), 1);
+}

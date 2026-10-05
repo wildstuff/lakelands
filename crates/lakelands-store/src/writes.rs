@@ -929,9 +929,8 @@ impl Call<'_> {
             crate::aging::check_authority(who, &w.ontology, &rule)?;
         }
         if ty.as_str() == SETTING_TYPE {
-            let decl = lakelands_api::seam::index_setting_type(key.as_str())
-                .and_then(|t| w.ontology.ty(&TypeName::from(t)).ok());
-            lakelands_api::seam::check_index_setting(key.as_str(), after.fields.get("value"), decl)
+            let declared = |t: &TypeName| w.ontology.ty(t).ok();
+            lakelands_api::seam::check_setting(key.as_str(), after.fields.get("value"), &declared)
                 .map_err(|(field, message)| invalid_field(&field, message))?;
         }
         Ok(RecordPlan {

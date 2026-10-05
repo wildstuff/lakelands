@@ -1448,6 +1448,41 @@ type's index in the same transaction; retiring it, or an empty array,
 drops the index. It changes no answer, only the price of an ordered
 page.
 
+Another is **`view_kept.<type>`**: it holds `true` and asks for the
+records of the view `<type>` to be kept as its sources are written, so
+that a read of the view reads its records where it would compute them.
+A write of it is refused as invalid when `<type>` is no declared view
+(the member named is `key`), when its value is neither `true` nor
+`false` (`value`), and when its value is `true` and the view cannot be
+kept (`key`), saying which measure, which call and why. A view can be
+kept where it declares no parameter and reads no clock, and every
+aggregate of its measures and of its merged sources' is a function of
+its values, whatever order they are folded in: any `count`; a `sum` or
+an `avg` of what is certainly a number; a `min` or a `max` of what is
+certainly a number or an instant, under group fields that are all text
+or references, of which there is one at least. A fold skips nulls, so
+an `if` with `null` for one branch stands for its other branch
+(`lakelands_api::expr::keepable`). `false` and a retired setting ask for
+nothing. A view declared again so that it can no longer be kept is not
+refused under a standing setting: the setting stays, and `describe_type`
+says why the view computes. The judge of all three settings is the
+contract's (`lakelands_api::seam::check_setting`), so the mock refuses
+what the store refuses. It changes no answer, only where a read of the
+view gets it.
+
+`describe_type` says in a view's lifecycle (`kept`), and in no other
+type's, whether its records are kept, or computed at each read and why:
+`not_asked`; `cannot_be_kept`, with the sentence the setting's refusal
+says, to a principal who is shown the view as declared and to no other,
+since it names what the view reads; `not_whole`, with the number of
+groups whose kept record is not exact and of those that wait to be read
+again; or `not_kept_here`, which is also what a lake that keeps no view
+(the mock) answers for a view that is asked for and can be kept. Like
+`sorted` and `indexed`, `kept` describes the projection and not the log,
+and is not among the answers a rebuild must repeat: which groups wait at
+a position may differ between a live fold and a rebuilt one, and no
+answer of the view does, since a read computes where a group waits.
+
 A `sys.aging_rule` record is one **aging rule**: on a date, move a field
 of every record of a type from one value to another when a condition
 holds (`docs/decisions/036-aging-runs-by-date-once.md`). The store declares
