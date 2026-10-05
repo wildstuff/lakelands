@@ -38,10 +38,10 @@ struct Transaction {
     /// The types declared in it, each with the position of its latest
     /// declaration: the commit indexes their older records under it.
     redeclared: BTreeMap<TypeName, Position>,
-    /// The type `put_record` last indexed a record under: read once for a
-    /// run of records of one type, and forgotten when a declaration or a
-    /// `sort_index.<type>` setting is put, which may change it.
-    kept: Option<projection::Kept>,
+    /// The types `put_record` indexed a record under: each read once in
+    /// the transaction, and all forgotten when a declaration or a
+    /// `sort_index.<type>` setting is put, which may change one.
+    kept: projection::Kept,
 }
 
 /// One handle onto a lake kept by the SQLite engine.
@@ -409,7 +409,7 @@ impl ProjectionStore for SqliteLake {
             since: at,
         };
         self.stage(at, |conn, t| {
-            t.kept = None;
+            t.kept.clear();
             let redeclared = projection::put_declaration(conn, &d)?;
             t.redeclared.extend(redeclared.map(|ty| (ty, at)));
             Ok(())

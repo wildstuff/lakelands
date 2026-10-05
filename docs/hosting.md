@@ -456,6 +456,22 @@ A host that already has a store of its own moves in four steps.
   embedding or a field of a function computed outside the lake is never
   such a type: the store walks its records at every declaration of it,
   whatever changed.
+- **A kept view is made to be read at the head.** The records of a
+  view kept as its sources are written (the setting `view_kept.<view>`)
+  are put again at every write to their group, and SQLite and
+  PostgreSQL read them by statements of their own. At the head a page
+  or a count reads the states in force and none before them, however
+  often a group was written: with 10 000 writes to each of 20 groups, a
+  page in 0.05 ms on SQLite and about 1 ms on PostgreSQL, where a stored
+  type's statements take 120 ms and 45 to 60 ms. As of an earlier
+  position such a read steps from group to group and seeks each one's
+  state there. That pays where groups are written often (the same view
+  in 0.1 ms and 1 to 2 ms, against 80 ms and 33 to 39 ms) and costs on
+  PostgreSQL where they are written seldom: at about 20 writes a group a
+  page of 1 000 takes 14 to 15 ms where a stored type's statement takes
+  8, and a count 67 to 78 ms against 39 to 43; SQLite is faster at both
+  positions. A read `as_of` an earlier position is the rare one of a
+  kept view.
 - **Every answer carries its position.** A host that records what an
   agent saw records the position, and reads `as_of` it later. See
   `docs/decisions/009-every-response-carries-its-position.md`.

@@ -67,6 +67,8 @@ The core's budgets are four:
 
 **The twenty-second raise:** the specification, from 49 500 to 50 000 lines, by slot a's word under the rule, for the twin of a kept view (lakelands#575: four checks in which every view is declared twice, kept and computed, and the two answer alike): 903 lines as measured, on a develop that stood 436 under the ceiling, 467 over it; run on the store's build of the kept view it found a difference before that build merged.
 
+**The twenty-third raise:** the specification, from 50 000 to 50 500 lines, by slot a's word under the rule, for the engines of the kept view (lakelands#575: SQLite and PostgreSQL read a view's kept name by statements of its own, and one engine row holds that the same states answer alike under a kept name and under an ordinary one): 183 lines as measured, on a develop that stood 33 under the ceiling, 150 over it.
+
 ## Why
 
 The budgets keep the core small enough for one reader to hold. They have done that: four diets took out about 5 000 lines without losing a check.

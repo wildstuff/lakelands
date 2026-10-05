@@ -40,7 +40,7 @@ use lakelands_api::error::Result;
 use lakelands_api::id::{FieldName, Position, RecordKey, TypeName};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::record::StoredRecord;
-use lakelands_api::seam::{SETTING_TYPE, SORT_INDEX_SETTING};
+use lakelands_api::seam::{KEPT_PREFIX, SETTING_TYPE, SORT_INDEX_SETTING};
 use lakelands_api::write::Declaration;
 use lakelands_core::engines::{self, decode};
 use postgres::types::ToSql;
@@ -71,8 +71,14 @@ impl Names {
     /// in byte order, so the records holding a text are read from it in
     /// key order (`in_key_order` in `view.rs`). A lake made with a primary
     /// key there keeps it and gains the index.
+    ///
+    /// `records_head` holds the states with no end of the kept names
+    /// ([`kept_range`]) in the order keys are read in, bytewise:
+    /// `records_at` holds the key in the database's collation and
+    /// `records_key_c` every state. A kept name's page and count at the
+    /// head read from it (`kept_sql` in `view.rs`).
     pub(crate) fn schema_sql(&self) -> String {
-        let s = &self.schema;
+        let (s, kept) = (&self.schema, kept_range());
         format!(
             "
 CREATE SCHEMA IF NOT EXISTS {s};
@@ -103,6 +109,8 @@ CREATE TABLE IF NOT EXISTS {s}.records (
 CREATE INDEX IF NOT EXISTS records_at ON {s}.records (ty, until, key);
 CREATE INDEX IF NOT EXISTS records_since ON {s}.records (ty, since);
 CREATE INDEX IF NOT EXISTS records_key_c ON {s}.records (ty, key COLLATE \"C\", since);
+CREATE INDEX IF NOT EXISTS records_head ON {s}.records (ty, key COLLATE \"C\")
+    WHERE until IS NULL AND {kept};
 CREATE TABLE IF NOT EXISTS {s}.proposals (
     id TEXT NOT NULL, since BIGINT NOT NULL, until BIGINT, state TEXT NOT NULL,
     PRIMARY KEY (id, since)
@@ -151,6 +159,18 @@ CREATE TABLE IF NOT EXISTS {s}.vectors (
 "
         )
     }
+}
+
+/// The condition that the column `ty` holds a kept name
+/// (`lakelands_api::seam::KEPT_PREFIX`): the range, bytewise, that the
+/// names with that prefix fill. `records_head` is over these rows alone,
+/// so a stored type's put does not maintain it, and a kept name's
+/// statements at the head repeat the condition word for word, by which
+/// the planner knows the index holds their rows.
+pub(crate) fn kept_range() -> String {
+    let (last, rest) = KEPT_PREFIX.as_bytes().split_last().expect("a prefix");
+    let end = format!("{}{}", String::from_utf8_lossy(rest), char::from(last + 1));
+    format!("ty COLLATE \"C\" >= '{KEPT_PREFIX}' AND ty COLLATE \"C\" < '{end}'")
 }
 
 /// Every table of a lake's schema: the log's and the lease's, then the

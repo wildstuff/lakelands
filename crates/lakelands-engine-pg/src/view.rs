@@ -21,6 +21,7 @@ use lakelands_api::ontology::TypeDecl;
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::read::{Direction, Order};
 use lakelands_api::record::{StoredRecord, Value};
+use lakelands_api::seam::is_kept_name;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter};
 use lakelands_core::engines::{self, decode};
 use postgres::types::ToSql;
@@ -43,6 +44,134 @@ struct Read<'c> {
     at: i64,
     folded: Option<i64>,
     head: bool,
+}
+
+/// The statement that reads a kept name (`lakelands_api::seam::KEPT_PREFIX`)
+/// from the table `records`: `select` of its states in force at the
+/// position `$2`, after the key `$4` when `after`, with `tail` after
+/// them. A kept record is put at every write to its group, so a key may
+/// hold thousands of states, and a stored type's statements read every
+/// state of the keys they pass. At the head this reads the states with no
+/// end, every one put at or before the position, in key order through
+/// `records_head`, whose condition it repeats. At an earlier position it
+/// steps from key to key through `records_key_c` and seeks each key's
+/// latest state at or before the position: the steps come in key order,
+/// which the statement answers in with no `ORDER BY`, and each step is
+/// joined to its state, so a limit in `tail` counts the states answered
+/// and not the keys stepped over.
+fn kept_sql(records: &str, head: bool, select: &str, after: bool, tail: &str) -> String {
+    let from = |key: &str| match after {
+        true => format!("AND {key} COLLATE \"C\" > $4"),
+        false => String::new(),
+    };
+    if head {
+        return format!(
+            "SELECT {select} FROM {records} r \
+             WHERE r.ty = $1 AND {} AND r.until IS NULL AND r.since <= $2 {} {tail}",
+            projection::kept_range(),
+            from("r.key")
+        );
+    }
+    format!(
+        "WITH RECURSIVE step(key) AS (\
+         (SELECT key FROM {records} WHERE ty = $1 {} ORDER BY key COLLATE \"C\" LIMIT 1) \
+         UNION ALL \
+         SELECT (SELECT n.key FROM {records} n WHERE n.ty = $1 AND n.key COLLATE \"C\" > step.key \
+         ORDER BY n.key COLLATE \"C\" LIMIT 1) FROM step WHERE step.key IS NOT NULL) \
+         SELECT {select} FROM step CROSS JOIN LATERAL (\
+         SELECT h.state, h.until FROM {records} h WHERE h.ty = $1 \
+         AND h.key COLLATE \"C\" = step.key AND h.since <= $2 ORDER BY h.since DESC LIMIT 1) r \
+         WHERE (r.until IS NULL OR r.until > $2) {tail}",
+        from("key")
+    )
+}
+
+/// The statement of [`Read::records_after`]: for a kept name
+/// [`kept_sql`]'s states, the view at the head or not. At most `$3`
+/// records, and every one when that is null.
+fn records_after_sql(records: &str, ty: &TypeName, head: bool, after: bool) -> String {
+    if is_kept_name(ty) {
+        let tail = if head {
+            "ORDER BY r.key COLLATE \"C\" "
+        } else {
+            ""
+        };
+        return kept_sql(records, head, "r.state", after, &format!("{tail}LIMIT $3"));
+    }
+    let from = if after {
+        "AND key COLLATE \"C\" > $4"
+    } else {
+        ""
+    };
+    format!(
+        "SELECT state FROM {records} WHERE ty = $1 AND {} {from} \
+         ORDER BY key COLLATE \"C\" LIMIT $3",
+        holds_at(2)
+    )
+}
+
+/// The statement of [`Read::count_in_force`]: the states in force of a
+/// stored type, or [`kept_sql`]'s of a kept name, under the two flags.
+fn count_in_force_sql(records: &str, ty: &TypeName, head: bool) -> String {
+    let flags = |state: &str| {
+        format!(
+            "AND ($3 OR NOT ({state}::jsonb ->> 'retired')::boolean) \
+             AND ($4 OR NOT ({state}::jsonb ->> 'restricted')::boolean)"
+        )
+    };
+    if is_kept_name(ty) {
+        return kept_sql(records, head, "COUNT(*)", false, &flags("r.state"));
+    }
+    let holds = holds_at(2);
+    format!(
+        "SELECT COUNT(*) FROM {records} WHERE ty = $1 AND {holds} {}",
+        flags("state")
+    )
+}
+
+/// The statement of a recorded output's read from the table `outputs`:
+/// the latest state of the seam and input at or before the position, and
+/// whether it still holds there. A view's state is recorded again at
+/// every change of its counters; none of its other states is read
+/// (lakelands#575).
+fn output_sql(outputs: &str) -> String {
+    format!(
+        "SELECT state FROM (SELECT state, until FROM {outputs} WHERE seam = $1 AND input = $2 \
+         AND since <= $3 ORDER BY since DESC LIMIT 1) s WHERE until IS NULL OR until > $3"
+    )
+}
+
+/// The statement of [`Read::records_by_key`]: for each key `$2` names,
+/// the latest state at or before the position, and whether it still
+/// holds there. No other state of a key is read, where a range over the
+/// keys read every state of each up to the position (lakelands#575).
+fn records_by_key_sql(records: &str) -> String {
+    format!(
+        "SELECT r.state FROM unnest($2::text[]) k(key) CROSS JOIN LATERAL (\
+         SELECT h.state, h.until FROM {records} h WHERE h.ty = $1 AND h.key = k.key \
+         AND h.since <= $3 ORDER BY h.since DESC LIMIT 1) r \
+         WHERE r.until IS NULL OR r.until > $3 ORDER BY k.key COLLATE \"C\""
+    )
+}
+
+/// The statements the view reads the records of `ty` by in the lake's
+/// `schema`, as it runs them at the head (`head`) or at an earlier
+/// position: a first page by key, a later page and the count under the
+/// flags alone; then the read of records by their keys and of a recorded
+/// output. For the engine's own test of their plans for a kept name
+/// (lakelands#575). A page takes the name, the position, the limit and
+/// the key it continues after; the count the name, the position and the
+/// two flags; the read by keys the name, the keys and the position; the
+/// output its seam, input and position.
+pub fn read_statements(schema: &str, ty: &TypeName, head: bool) -> [String; 5] {
+    let records = format!("{schema}.records");
+    [
+        records_after_sql(&records, ty, head, false),
+        records_after_sql(&records, ty, head, true),
+        count_in_force_sql(&records, ty, head),
+        records_by_key_sql(&records),
+        output_sql(&format!("{schema}.outputs")),
+    ]
 }
 
 impl PgView<'_> {
@@ -115,6 +244,9 @@ impl Read<'_> {
 
     /// Every record of a type at the view's position, in key order.
     fn records(&mut self, ty: &TypeName) -> Result<Vec<StoredRecord>> {
+        if is_kept_name(ty) {
+            return self.records_after(ty, None, None);
+        }
         self.db.records(
             &format!(
                 "SELECT state FROM {} WHERE ty = $1 AND {} ORDER BY key COLLATE \"C\"",
@@ -129,13 +261,7 @@ impl Read<'_> {
     /// retired and the restricted ones only when asked, their flags read
     /// from the stored state.
     fn count_in_force(&mut self, ty: &TypeName, retired: bool, restricted: bool) -> Result<u64> {
-        let query = format!(
-            "SELECT COUNT(*) FROM {} WHERE ty = $1 AND {} \
-             AND ($3 OR NOT (state::jsonb ->> 'retired')::boolean) \
-             AND ($4 OR NOT (state::jsonb ->> 'restricted')::boolean)",
-            self.names.t("records"),
-            holds_at(2)
-        );
+        let query = count_in_force_sql(&self.names.t("records"), ty, self.head);
         let counted: Vec<i64> = self
             .db
             .column(&query, &[&ty.as_str(), &self.at, &retired, &restricted])?;
@@ -146,20 +272,15 @@ impl Read<'_> {
     /// `after` (from the first when `None`), in key order, bytewise: a walk
     /// of the index `records_key_c`. The first page and a later one are two
     /// statements, so that neither hides the index condition behind an
-    /// `OR`.
+    /// `OR`. With no `n`, every record: a kept name's are read so.
     fn records_after(
         &mut self,
         ty: &TypeName,
         after: Option<&str>,
-        n: u32,
+        n: Option<u32>,
     ) -> Result<Vec<StoredRecord>> {
-        let limit = i64::from(n);
-        let from = after.map_or("", |_| "AND key COLLATE \"C\" > $4");
-        let query = format!(
-            "SELECT state FROM {} WHERE ty = $1 AND {} {from} ORDER BY key COLLATE \"C\" LIMIT $3",
-            self.names.t("records"),
-            holds_at(2)
-        );
+        let limit = n.map(i64::from);
+        let query = records_after_sql(&self.names.t("records"), ty, self.head, after.is_some());
         // `$4` is bound only when the statement names it.
         let args: [&(dyn ToSql + Sync); 4] = [&ty.as_str(), &self.at, &limit, &after];
         self.db
@@ -180,7 +301,7 @@ impl Read<'_> {
         n: u32,
     ) -> Result<Vec<StoredRecord>> {
         let Some((field, text)) = lookup else {
-            return self.records_after(ty, after, n);
+            return self.records_after(ty, after, Some(n));
         };
         let limit = i64::from(n);
         let from = after.map_or("", |_| "AND t.key COLLATE \"C\" > $5");
@@ -342,7 +463,7 @@ impl Read<'_> {
     }
 
     /// Records of a type by their keys, at the view's position, in key
-    /// order: one statement, however many keys.
+    /// order: one statement, however many keys, a seek for each.
     fn records_by_key(
         &mut self,
         ty: &TypeName,
@@ -353,12 +474,7 @@ impl Read<'_> {
         }
         let keys: Vec<String> = keys.into_iter().collect();
         self.db.records(
-            &format!(
-                "SELECT state FROM {} WHERE ty = $1 AND key = ANY($2::text[]) AND {} \
-                 ORDER BY key COLLATE \"C\"",
-                self.names.t("records"),
-                holds_at(3)
-            ),
+            &records_by_key_sql(&self.names.t("records")),
             &[&ty.as_str(), &keys, &self.at],
         )
     }
@@ -457,9 +573,12 @@ impl ProjectionView for PgView<'_> {
 
     fn count(&self, ty: &TypeName, scan: &Scan) -> Result<u64> {
         self.read(0, |r| {
-            // At the head, a count that selects by the flags alone is the
-            // projection's `COUNT(*)`; any other is counted batch by batch.
-            if r.head && scan.filter.is_none() && scan.equal.is_empty() && scan.valid_at.is_none() {
+            // At the head, and of a kept name at any position, a count that
+            // selects by the flags alone is the projection's `COUNT(*)`; any
+            // other is counted batch by batch.
+            let counted = r.head || is_kept_name(ty);
+            if counted && scan.filter.is_none() && scan.equal.is_empty() && scan.valid_at.is_none()
+            {
                 return r.count_in_force(ty, scan.retired, scan.restricted);
             }
             // At the head, a count that must hold a text reads the records
@@ -760,11 +879,7 @@ impl ProjectionView for PgView<'_> {
     fn output(&self, seam: &str, input: &Digest) -> Result<Option<Value>> {
         self.single(None, |r| {
             r.db.query_opt(
-                &format!(
-                    "SELECT state FROM {} WHERE seam = $1 AND input = $2 AND {}",
-                    r.names.t("outputs"),
-                    holds_at(3)
-                ),
+                &output_sql(&r.names.t("outputs")),
                 &[&seam, &input.0, &r.at],
             )?
             .map(|row| decode(&row.get::<_, String>(0), "an output"))

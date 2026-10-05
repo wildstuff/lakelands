@@ -138,6 +138,7 @@ pub const ENGINE_CHECKS: &[EngineCheck] = &[
     reads::MIXED_KINDS,
     reads::AFTER_AND_LIMIT,
     reads::KEY_BATCHES,
+    reads::KEPT_NAME,
     reads::TEXT_PAGE,
     reads::FIELD_ORDER_WALK,
     reads::SETTINGS_ORDERED,

@@ -191,6 +191,24 @@ pub trait SystemVocabulary: Send + Sync {
 /// `value` of the live record keyed `key`.
 pub const SETTING_TYPE: &str = "sys.setting";
 
+/// The prefix of the name a view's kept records bear in an engine's
+/// projection, `sys:kept.<view>`. It holds `:`, which no type name may,
+/// so no declared type bears such a name. A kept record is put again at
+/// every write to its group, so its key may hold thousands of states, and
+/// an engine reads such a name by statements of its own: it tells one by
+/// this prefix and by nothing looser (`docs/seams.md` §`ProjectionStore`).
+pub const KEPT_PREFIX: &str = "sys:kept.";
+
+/// The name the kept records of the view `view` are put and read under.
+pub fn kept_name(view: &TypeName) -> TypeName {
+    format!("{KEPT_PREFIX}{view}").into()
+}
+
+/// Whether records of this name are a view's kept records.
+pub fn is_kept_name(ty: &TypeName) -> bool {
+    ty.as_str().starts_with(KEPT_PREFIX)
+}
+
 /// The declaration of [`SETTING_TYPE`], which every lake holds from its
 /// creation (`docs/seams.md` §`SystemVocabulary`). One definition, so every
 /// implementation of the contract creates a lake the same way.
