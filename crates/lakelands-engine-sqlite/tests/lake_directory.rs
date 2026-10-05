@@ -282,7 +282,7 @@ fn a_fence_raised_in_the_lease_file_refuses_the_holders_next_append_and_seal() {
         "{refused:?}"
     );
     assert!(matches!(
-        engine.seal_segment(&lease),
+        lakelands_core::conformance::engine::seal(engine.as_ref(), &lease, &more),
         Err(lakelands_api::Error::Unavailable { .. })
     ));
     assert_eq!(engine.tip().unwrap().map(|t| t.0.0), Some(1));
@@ -297,22 +297,18 @@ fn a_segment_whose_index_was_never_created_is_recovered_by_the_next_writer() {
 
     let dir = scratch("missing-index");
     let location = Location::sqlite("indexless", &dir);
-    let engine = SqliteOpener.open(&location, OpenMode::Create).unwrap();
-    let lease = engine.take_lease("first").unwrap();
-    let events = chain(0, 2, &lakelands_api::event::Digest::zero(), &lease);
-    engine.append(&lease, &events).unwrap();
-    engine.seal_segment(&lease).unwrap();
-    engine.release_lease(&lease).unwrap();
-    drop(engine);
-    // A crash between creating the new segment and its index.
-    std::fs::remove_file(dir.join("index").join(format!("{:020}.idx", 2))).unwrap();
+    drop(SqliteOpener.open(&location, OpenMode::Create).unwrap());
+    // A crash between creating a new lake's first segment and its index:
+    // the one segment that is created empty.
+    let index = dir.join("index").join(format!("{:020}.idx", 0));
+    std::fs::remove_file(&index).unwrap();
 
     let writer = SqliteOpener.open(&location, OpenMode::Write).unwrap();
-    let lease = writer.take_lease("second").unwrap();
-    assert!(dir.join("index").join(format!("{:020}.idx", 2)).is_file());
-    let more = chain(2, 1, &events[1].hash, &lease);
-    writer.append(&lease, &more).unwrap();
-    assert_eq!(writer.tip().unwrap().map(|t| t.0.0), Some(2));
+    let lease = writer.take_lease("first").unwrap();
+    assert!(index.is_file());
+    let events = chain(0, 2, &lakelands_api::event::Digest::zero(), &lease);
+    writer.append(&lease, &events).unwrap();
+    assert_eq!(writer.tip().unwrap().map(|t| t.0.0), Some(1));
     drop(writer);
     let _ = std::fs::remove_dir_all(&dir);
 }

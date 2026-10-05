@@ -212,6 +212,37 @@ impl SqliteLake {
         }))
     }
 
+    /// Run `write`, which adds imported events to the log and answers the
+    /// last one's position and fence: refused unless the log holds nothing
+    /// but imported events, and what it added is recorded in the lease
+    /// file.
+    fn importing<R>(
+        &self,
+        lease: &Lease,
+        write: impl FnOnce(&mut Log) -> Result<(R, Option<(u64, u64)>)>,
+    ) -> Result<R> {
+        let mut held = self.check_lease(lease)?;
+        let held = held
+            .as_mut()
+            .ok_or_else(|| unavailable("the lease is not held by this handle"))?;
+        let mut log = lock(&self.log);
+        log.refresh()?;
+        if let Some((tip, _)) = log.tip()
+            && self.lease_file.imported(held)? != Some(tip.0)
+        {
+            return Err(invalid(format!(
+                "the lake's log holds events up to position {tip} that were not imported; an \
+                 import goes only into a lake that holds nothing else, and nothing was \
+                 appended"
+            )));
+        }
+        let (answer, last) = write(&mut log)?;
+        if let Some((position, fence)) = last {
+            self.lease_file.record_import(held, position, fence)?;
+        }
+        Ok(answer)
+    }
+
     /// The projection's storage in bytes: `projection.db` and its
     /// write-ahead journal.
     fn size(&self) -> Result<u64> {
@@ -284,7 +315,9 @@ impl LakeEngine for SqliteLake {
         let taken = self.lease_file.take(holder)?;
         // What a writer that ended mid-append left uncommitted is cut off
         // before this one appends.
-        lock(&self.log).recover()?;
+        let mut log = lock(&self.log);
+        log.recover()?;
+        log.sweep()?;
         let lease = taken.lease.clone();
         *held = Some(taken);
         Ok(lease)
@@ -321,37 +354,35 @@ impl LakeEngine for SqliteLake {
     }
 
     fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        let mut held = self.check_lease(lease)?;
-        let held = held
-            .as_mut()
-            .ok_or_else(|| unavailable("the lease is not held by this handle"))?;
-        let mut log = lock(&self.log);
-        log.refresh()?;
-        if let Some((tip, _)) = log.tip()
-            && self.lease_file.imported(held)? != Some(tip.0)
-        {
-            return Err(invalid(format!(
-                "the lake's log holds events up to position {tip} that were not imported; an \
-                 import goes only into a lake that holds nothing else, and nothing was \
-                 appended"
-            )));
-        }
-        log.append(None, events)?;
-        match events.last() {
-            Some(last) => self
-                .lease_file
-                .record_import(held, last.position.0, last.fence),
-            None => Ok(()),
-        }
+        self.importing(lease, |log| {
+            log.append(None, events)?;
+            Ok(((), events.last().map(|e| (e.position.0, e.fence))))
+        })
     }
 
     fn read(&self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>> {
         lock(&self.log).read(from, limit)
     }
 
-    fn seal_segment(&self, lease: &Lease) -> Result<Option<SegmentDigest>> {
-        let _held = self.check_lease(lease)?;
-        lock(&self.log).seal()
+    fn seal_segment(
+        &self,
+        lease: &Lease,
+        imported: bool,
+        first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
+    ) -> Result<Option<SegmentDigest>> {
+        if !imported {
+            let _held = self.check_lease(lease)?;
+            return lock(&self.log).seal(Some(lease.fence), first);
+        }
+        self.importing(lease, |log| {
+            let mut last = None;
+            let sealed = log.seal(None, &mut |sealed| {
+                let events = first(sealed)?;
+                last = events.last().map(|e| (e.position.0, e.fence));
+                Ok(events)
+            })?;
+            Ok((sealed, last))
+        })
     }
 
     fn segments(&self) -> Result<Vec<SegmentDigest>> {

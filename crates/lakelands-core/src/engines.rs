@@ -35,8 +35,9 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
-use lakelands_api::engine::{After, Scan};
+use lakelands_api::engine::{After, CanonicalEvent, Scan};
 use lakelands_api::error::{Error, Refusal, Result};
+use lakelands_api::event::SegmentDigest;
 use lakelands_api::expr::Expr;
 use lakelands_api::id::{FieldName, Position, RecordKey, RelationName, TypeName, VerbName};
 use lakelands_api::ontology::TypeDecl;
@@ -1089,6 +1090,24 @@ pub fn append_fault(
         prev = event.hash.clone();
     }
     Ok(())
+}
+
+/// The events that begin the next segment as a seal's `first` answered
+/// them for `sealed`: at least one, or the seal is refused and nothing is
+/// sealed.
+pub fn first_of_next(
+    first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
+    sealed: &SegmentDigest,
+) -> Result<Vec<CanonicalEvent>> {
+    let events = first(sealed)?;
+    if events.is_empty() {
+        return Err(invalid(format!(
+            "a seal begins the next segment with its first event, and none was handed for the \
+             one after position {}; nothing was sealed",
+            sealed.last
+        )));
+    }
+    Ok(events)
 }
 
 /// The refusal of the writer lease to a taker while `holder` holds it

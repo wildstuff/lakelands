@@ -21,6 +21,25 @@ The SQLite engine keeps a lake as a directory whose log anyone can read:
   its events' lines and nothing else. The cut takes the index before
   the segment and never a commit line that is whole; a segment shorter
   than its index commits is refused as damaged (lakelands#618).
+- **A segment after the first comes to exist with its checkpoint in
+  it.** The format says every later segment begins with a `checkpoint`,
+  and a verifier of the directory holds it to that at whatever instant
+  it reads: an empty later file, or one that begins with another event,
+  is a directory it refuses. So closing a segment and writing the first
+  event of the next are one step of the engine, which holds whole or
+  leaves the log as it was, after a failure and after a crash. Two steps
+  (close, then append the checkpoint) left a lake whose next write
+  headed the new segment, and after its next checkpoint no export of it
+  verified or could be imported, on every engine. Here the next
+  segment's index is written whole and synced, then its lines under a
+  name nobody lists (`log/<first>.jsonl.partial`), and the rename to
+  `log/<first>.jsonl` is the step; what a crash before it left is read
+  by nobody, written over by a seal at that position and removed by the
+  next writer. PostgreSQL does it in the seal's one transaction. The
+  store's `verify` refuses a segment after the first whose first event
+  is no checkpoint, so the rule is held against any writer; a lake
+  written before this that holds such a segment is named by it and not
+  mended (lakelands#623).
 - `lease` holds the last fencing token handed out and its holder, under
   an operating-system lock. The lock makes a second writer fail at once
   and dies with its process; the token, read from the file on every
@@ -108,8 +127,10 @@ only an import needs: every event belongs to the lake it makes, and
 every fence is the one its writer held. Nothing is written before both
 pass. It then appends every event unchanged, position for position,
 through the engine's `import`, which keeps each event's own fence. It
-seals a segment before each checkpoint and compares the digest with the
-file's. Last it folds the projection as a rebuild does, and appends
+seals a segment with the first events of each file after the first, in
+the engine's one step, and compares the digest the engine takes with
+the file's inside that step: one that differs stops the import before
+anything is sealed. Last it folds the projection as a rebuild does, and appends
 nothing. The lake's head is the export's, and an export of it writes the
 same files. The host then opens it as any other lake, and that writer's
 lease is greater than every fence in the log. An import goes only into

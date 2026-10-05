@@ -7,10 +7,12 @@
 //!
 //! **Segments.** The last segment is the active one and takes appends;
 //! every other is sealed and never changes. Sealing starts the next
-//! segment, named by the position its first event will take, and keeps the
-//! sealed one's digest: the SHA-256 of its events' bytes, each followed by
-//! one line feed, which is the digest of the file `docs/log-format.md`
-//! §4.2 describes. [`export`] writes the segments as those files.
+//! segment, named by the position of its first event, and inserts that
+//! segment's first events in the same transaction, so no later segment is
+//! ever empty; it keeps the sealed one's digest: the SHA-256 of its
+//! events' bytes, each followed by one line feed, which is the digest of
+//! the file `docs/log-format.md` §4.2 describes. [`export`] writes the
+//! segments as those files.
 //!
 //! **All or none.** An append is one transaction on the lease connection:
 //! it checks the fence against the lease row, checks that the events
@@ -113,65 +115,78 @@ pub(crate) fn append(
     }
     db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED", |db| {
         fenced(db, names, lease, "appended")?;
-        let tip = tip(db, names)?;
-        let first = tip.as_ref().map_or(0, |(p, _)| p.0 + 1);
-        let mut floor = 0;
-        if imported && let Some((at, _)) = &tip {
-            let row = db.query_one(
-                &format!(
-                    "SELECT (SELECT n FROM {m} WHERE k = 'imported'), \
-                     (SELECT fence FROM {l} WHERE position = $1)",
-                    m = names.t("meta"),
-                    l = names.t("log"),
-                ),
-                &[&(at.0 as i64)],
-            )?;
-            if row.get::<_, Option<i64>>(0) != Some(at.0 as i64) {
-                return Err(invalid(format!(
-                    "the lake's log holds events up to position {at} that were not imported; \
-                     an import goes only into a lake that holds nothing else, and nothing was \
-                     appended"
-                )));
-            }
-            floor = row.get::<_, Option<i64>>(1).unwrap_or(0) as u64;
+        add(db, names, lease, events, imported)
+    })
+}
+
+/// What an append does inside its transaction, the lease row checked:
+/// `events` are checked to continue the log and inserted into the active
+/// segment.
+fn add(
+    db: &mut Db,
+    names: &Names,
+    lease: &Lease,
+    events: &[CanonicalEvent],
+    imported: bool,
+) -> Result<()> {
+    let tip = tip(db, names)?;
+    let first = tip.as_ref().map_or(0, |(p, _)| p.0 + 1);
+    let mut floor = 0;
+    if imported && let Some((at, _)) = &tip {
+        let row = db.query_one(
+            &format!(
+                "SELECT (SELECT n FROM {m} WHERE k = 'imported'), \
+                 (SELECT fence FROM {l} WHERE position = $1)",
+                m = names.t("meta"),
+                l = names.t("log"),
+            ),
+            &[&(at.0 as i64)],
+        )?;
+        if row.get::<_, Option<i64>>(0) != Some(at.0 as i64) {
+            return Err(invalid(format!(
+                "the lake's log holds events up to position {at} that were not imported; \
+                 an import goes only into a lake that holds nothing else, and nothing was \
+                 appended"
+            )));
         }
-        let fence = (!imported).then_some(lease.fence);
-        let prev = tip.map_or_else(Digest::zero, |(_, h)| h);
-        lakelands_core::engines::append_fault(events, first, prev, fence, floor)?;
-        let segment = active(db, names)?;
-        // The window's events in one statement, from arrays.
-        let (mut positions, mut fences) = (Vec::new(), Vec::new());
-        let (mut ids, mut prevs, mut hashes, mut bytes) =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        for e in events {
-            positions.push(e.position.0 as i64);
-            fences.push(e.fence as i64);
-            ids.push(e.id.0.as_str());
-            prevs.push(e.prev.0.as_str());
-            hashes.push(e.hash.0.as_str());
-            bytes.push(e.bytes.as_slice());
-        }
+        floor = row.get::<_, Option<i64>>(1).unwrap_or(0) as u64;
+    }
+    let fence = (!imported).then_some(lease.fence);
+    let prev = tip.map_or_else(Digest::zero, |(_, h)| h);
+    lakelands_core::engines::append_fault(events, first, prev, fence, floor)?;
+    let segment = active(db, names)?;
+    // The window's events in one statement, from arrays.
+    let (mut positions, mut fences) = (Vec::new(), Vec::new());
+    let (mut ids, mut prevs, mut hashes, mut bytes) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for e in events {
+        positions.push(e.position.0 as i64);
+        fences.push(e.fence as i64);
+        ids.push(e.id.0.as_str());
+        prevs.push(e.prev.0.as_str());
+        hashes.push(e.hash.0.as_str());
+        bytes.push(e.bytes.as_slice());
+    }
+    db.execute(
+        &format!(
+            "INSERT INTO {} (position, segment, fence, id, prev, hash, bytes) \
+             SELECT p, $2, f, i, v, h, b FROM unnest($1::int8[], $3::int8[], $4::text[], \
+             $5::text[], $6::text[], $7::bytea[]) AS e(p, f, i, v, h, b)",
+            names.t("log")
+        ),
+        &[&positions, &segment, &fences, &ids, &prevs, &hashes, &bytes],
+    )?;
+    if imported && let Some(last) = events.last() {
         db.execute(
             &format!(
-                "INSERT INTO {} (position, segment, fence, id, prev, hash, bytes) \
-                 SELECT p, $2, f, i, v, h, b FROM unnest($1::int8[], $3::int8[], $4::text[], \
-                 $5::text[], $6::text[], $7::bytea[]) AS e(p, f, i, v, h, b)",
-                names.t("log")
+                "INSERT INTO {m} (k, n) VALUES ('imported', $1), ('import_fence', $2) \
+                 ON CONFLICT (k) DO UPDATE SET n = greatest({m}.n, EXCLUDED.n)",
+                m = names.t("meta")
             ),
-            &[&positions, &segment, &fences, &ids, &prevs, &hashes, &bytes],
+            &[&(last.position.0 as i64), &(last.fence as i64)],
         )?;
-        if imported && let Some(last) = events.last() {
-            db.execute(
-                &format!(
-                    "INSERT INTO {m} (k, n) VALUES ('imported', $1), ('import_fence', $2) \
-                     ON CONFLICT (k) DO UPDATE SET n = greatest({m}.n, EXCLUDED.n)",
-                    m = names.t("meta")
-                ),
-                &[&(last.position.0 as i64), &(last.fence as i64)],
-            )?;
-        }
-        Ok(())
-    })
+    }
+    Ok(())
 }
 
 /// At most `limit` events from `from` on, as appended.
@@ -257,32 +272,43 @@ fn span(db: &mut Db, names: &Names, first: i64) -> Result<Option<(Position, Posi
     )
 }
 
-/// Close the active segment, if it holds any event, and start the next,
-/// in one transaction that checks the lease row holds the lease's fence.
-pub(crate) fn seal(db: &mut Db, names: &Names, lease: &Lease) -> Result<Option<SegmentDigest>> {
+/// Close the active segment, if it holds any event, and begin the next
+/// with the events `first` answers for it, appended as [`append`] does
+/// with `imported`: one transaction that checks the lease row holds the
+/// lease's fence, so the seal and those events are both there or neither.
+pub(crate) fn seal(
+    db: &mut Db,
+    names: &Names,
+    lease: &Lease,
+    imported: bool,
+    first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
+) -> Result<Option<SegmentDigest>> {
     db.transaction("BEGIN ISOLATION LEVEL READ COMMITTED", |db| {
         fenced(db, names, lease, "sealed")?;
-        let first = active(db, names)?;
-        let Some((from, to)) = span(db, names, first)? else {
+        let active = active(db, names)?;
+        let Some((from, to)) = span(db, names, active)? else {
             return Ok(None);
         };
-        let digest = digest_of(db, names, first)?;
+        let digest = digest_of(db, names, active)?;
+        let sealed = SegmentDigest {
+            first: from,
+            last: to,
+            digest,
+        };
+        let events = lakelands_core::engines::first_of_next(first, &sealed)?;
         db.execute(
             &format!(
                 "UPDATE {} SET digest = $2 WHERE first = $1",
                 names.t("segments")
             ),
-            &[&first, &digest.0],
+            &[&active, &sealed.digest.0],
         )?;
         db.execute(
             &format!("INSERT INTO {} (first) VALUES ($1)", names.t("segments")),
             &[&((to.0 + 1) as i64)],
         )?;
-        Ok(Some(SegmentDigest {
-            first: from,
-            last: to,
-            digest,
-        }))
+        add(db, names, lease, &events, imported)?;
+        Ok(Some(sealed))
     })
 }
 
@@ -316,8 +342,8 @@ pub(crate) fn segments(db: &mut Db, names: &Names) -> Result<Vec<SegmentDigest>>
 
 /// Write every segment that holds an event as
 /// `<dir>/log/<first position in 20 digits>.jsonl`, the files
-/// `docs/log-format.md` §4.2 describes; an active segment still empty
-/// after a seal has no file.
+/// `docs/log-format.md` §4.2 describes; a new lake's first segment,
+/// still empty, has no file.
 pub(crate) fn export(db: &mut Db, names: &Names, dir: &Path) -> Result<()> {
     let log = dir.join("log");
     std::fs::create_dir_all(&log)

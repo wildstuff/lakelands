@@ -195,7 +195,7 @@ fn a_fence_raised_in_the_lease_row_refuses_the_holders_next_append_and_seal() {
         matches!(&refused, Err(Error::Unavailable { message }) if message.contains("stale")),
         "{refused:?}"
     );
-    let sealed = engine.seal_segment(&lease);
+    let sealed = lakelands_core::conformance::engine::seal(engine.as_ref(), &lease, &more);
     assert!(
         matches!(&sealed, Err(Error::Unavailable { message }) if message.contains("another")),
         "{sealed:?}"

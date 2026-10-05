@@ -13,9 +13,10 @@
 //! than any before, so a writer that lost the lease and comes back is
 //! refused by its stale token rather than forking the chain.
 //!
-//! Segments are ranges of the log. Sealing closes the active one and
-//! digests it as a segment file would hold it: each event's bytes
-//! followed by a line feed (`docs/log-format.md` §4.2).
+//! Segments are ranges of the log. Sealing closes the active one,
+//! digests it as a segment file would hold it (each event's bytes
+//! followed by a line feed, `docs/log-format.md` §4.2), and begins the
+//! next with its first events, in one change.
 
 use lakelands_api::engine::{CanonicalEvent, Lease};
 use lakelands_api::error::Result;
@@ -163,11 +164,18 @@ impl Log {
             .collect()
     }
 
-    /// Closes the active segment, if it holds any event.
-    pub(crate) fn seal(&mut self, lease: &Lease) -> Result<Option<SegmentDigest>> {
+    /// Closes the active segment, if it holds any event, and begins the
+    /// next with the events `first` answers for it, added as `append` adds
+    /// them or, when `imported`, as `import` does: both, or nothing.
+    pub(crate) fn seal(
+        &mut self,
+        lease: &Lease,
+        imported: bool,
+        first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
+    ) -> Result<Option<SegmentDigest>> {
         self.check_lease(lease)?;
-        let first = self.sealed.last().map_or(0, |s| s.last.0 + 1);
-        let active = &self.events[usize::try_from(first)
+        let from = self.sealed.last().map_or(0, |s| s.last.0 + 1);
+        let active = &self.events[usize::try_from(from)
             .unwrap_or(usize::MAX)
             .min(self.events.len())..];
         let Some(last) = active.last() else {
@@ -179,10 +187,16 @@ impl Log {
             hasher.update(b"\n");
         }
         let segment = SegmentDigest {
-            first: Position(first),
+            first: Position(from),
             last: last.position,
             digest: Digest(lakelands_core::canonical::hex(&hasher.finalize())),
         };
+        let events = lakelands_core::engines::first_of_next(first, &segment)?;
+        if imported {
+            self.import(lease, &events)?;
+        } else {
+            self.append(lease, &events)?;
+        }
         self.sealed.push(segment.clone());
         Ok(Some(segment))
     }
@@ -254,7 +268,7 @@ mod tests {
         assert!(is_unavailable(
             &log.append(&a, &chain(0, 1, a.fence, Digest::zero()))
         ));
-        assert!(is_unavailable(&log.seal(&a)));
+        assert!(is_unavailable(&log.seal(&a, false, &mut |_| Ok(vec![]))));
         assert!(
             log.append(&b, &chain(0, 1, b.fence, Digest::zero()))
                 .is_ok()
@@ -323,14 +337,16 @@ mod tests {
     fn sealing_digests_the_active_segment_as_lines() {
         let mut log = Log::default();
         let l = log.take_lease("a").unwrap();
+        let events = chain(0, 2, l.fence, Digest::zero());
         assert_eq!(
-            log.seal(&l).unwrap(),
+            log.seal(&l, false, &mut |_| Ok(events.clone())).unwrap(),
             None,
             "an empty segment is not sealed"
         );
-        let events = chain(0, 2, l.fence, Digest::zero());
         log.append(&l, &events).unwrap();
-        let sealed = log.seal(&l).unwrap().unwrap();
+        let more = chain(2, 1, l.fence, events[1].hash.clone());
+        let sealed = log.seal(&l, false, &mut |_| Ok(more.clone()));
+        let sealed = sealed.unwrap().unwrap();
         let mut file = Vec::new();
         for e in &events {
             file.extend_from_slice(&e.bytes);
@@ -345,11 +361,12 @@ mod tests {
                 digest: Digest(digest)
             }
         );
-        assert_eq!(log.seal(&l).unwrap(), None);
+        assert!(log.seal(&l, false, &mut |_| Ok(vec![])).is_err());
+        assert_eq!(log.segments(), vec![sealed.clone()], "sealed with no event");
 
-        let more = chain(2, 1, l.fence, events[1].hash.clone());
-        log.append(&l, &more).unwrap();
-        let second = log.seal(&l).unwrap().unwrap();
+        let last = chain(3, 1, l.fence, more[0].hash.clone());
+        let second = log.seal(&l, false, &mut |_| Ok(last.clone()));
+        let second = second.unwrap().unwrap();
         assert_eq!((second.first, second.last), (Position(2), Position(2)));
         assert_eq!(log.segments(), vec![sealed, second]);
     }
