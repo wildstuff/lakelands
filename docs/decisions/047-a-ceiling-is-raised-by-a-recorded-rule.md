@@ -65,6 +65,8 @@ The core's budgets are four:
 
 **The twenty-first raise:** the specification, from 49 000 to 49 500 lines, by slot a's word under the rule, for the rows of a recomputation folded as a step (lakelands#523) and the row its review asked for (a derived field that reads a setting is as of its record's last write): 256 lines as measured, 48 834 on a develop that stood 422 under the ceiling; behind the 230 lines of lakelands#595, which merges first, 49 064, 64 over it.
 
+**The twenty-second raise:** the specification, from 49 500 to 50 000 lines, by slot a's word under the rule, for the twin of a kept view (lakelands#575: four checks in which every view is declared twice, kept and computed, and the two answer alike): 903 lines as measured, on a develop that stood 436 under the ceiling, 467 over it; run on the store's build of the kept view it found a difference before that build merged.
+
 ## Why
 
 The budgets keep the core small enough for one reader to hold. They have done that: four diets took out about 5 000 lines without losing a check.
