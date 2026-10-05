@@ -25,7 +25,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::ontology::{Authority, FieldDecl, TypeDecl};
-use lakelands_api::principal::Renamed;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::{Migration, MigrationReport};
 use lakelands_api::{
@@ -344,13 +343,15 @@ fn no_field(decl: &TypeDecl, name: &FieldName) -> Error {
 
 /// A migration that is not in force as `who` may know it: the shape it
 /// leaves without a field `who` may not know of, judged with its grants
-/// held through the migration's own renames; and a rename only where
+/// held through the migration's own renames, of fields and of the link
+/// types its renamed relations move; and a rename only where
 /// `who` may know of the field under both names, the old one in `was`,
 /// the type as it stands.
 pub fn known_migration(who: &Principal, was: &TypeDecl, m: &mut Migration) {
-    let (at, ty, renames) = (Position(u64::MAX), m.to.name.clone(), m.renames.clone());
+    // The migration's own renames, as the fold would record them.
+    let list = crate::links::renamed(m, Position(u64::MAX));
     let (mut then, mut was) = (who.clone(), was.clone());
-    (then.grants).follow(&[Renamed { at, ty, renames }], None);
+    (then.grants).follow(&list, None);
     known_fields(who, &mut was);
     known_fields(&then, &mut m.to);
     (m.renames).retain(|(old, new)| holds(&was, old) && holds(&m.to, new));
@@ -387,14 +388,16 @@ pub fn holds(t: &TypeDecl, name: &FieldName) -> bool {
 /// and know of the field: a conversion in the shape the migration leaves,
 /// and by the name it took its values from where it was renamed, as is a
 /// rewritten reference of the migrated type itself; a dropped field in
-/// the shape as it stands; a sample key where the record is
-/// answered. The totals, the hashes and the id, which names the whole
+/// the shape as it stands, and a renamed relation likewise; a sample key
+/// where the record is answered; a declaration the migration carries
+/// where `describe` names it, over `declared`, the declarations in force. The totals, the hashes and the id, which names the whole
 /// report, stay; `more` says that something was left out.
-pub fn shown_report<'a>(
+pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDescription>>(
     who: &Principal,
     was: &TypeDecl,
     m: &Migration,
     report: &mut MigrationReport,
+    described: impl FnOnce() -> D,
     sees: impl Fn(&TypeName) -> Option<&'a TypeDecl>,
     answered: impl Fn(&TypeName, &RecordKey) -> bool,
 ) {
@@ -404,6 +407,8 @@ pub fn shown_report<'a>(
         (report.ty, report.more) = (TypeName::default(), true);
         report.fields.clear();
         report.dropped.clear();
+        report.relations.clear();
+        report.carried.clear();
         report.rekeyed.clear();
         report.references.clear();
         report.sample_collisions.clear();
@@ -433,6 +438,23 @@ pub fn shown_report<'a>(
         c.sample_keys.retain(|key| answered(&of, key));
     }
     report.dropped.retain(|(f, _)| holds(&was, f));
+    // A renamed relation is shown as a dropped one is: by the name it had.
+    let named = |r: &lakelands_api::write::RelationRename| holds(&was, &r.from.as_str().into());
+    report.relations.retain(named);
+    // A declaration the migration carries is named as `describe` names it:
+    // a trigger, a verb or a set to one who is described it, a view to one
+    // who is described the view. The lake is described only for a report
+    // that carries something.
+    if !report.carried.is_empty() {
+        let shown = described();
+        let shown = shown.borrow();
+        report.carried.retain(|c| match c.kind.as_str() {
+            "trigger" => shown.triggers.iter().any(|t| t.name.as_str() == c.name),
+            "verb" => shown.verbs.iter().any(|v| v.name.as_str() == c.name),
+            "object_set" => shown.object_sets.iter().any(|s| s.name == c.name),
+            _ => shown.types.iter().any(|t| t.name.as_str() == c.name),
+        });
+    }
     report.rekeyed.retain(|r| sees(&r.ty).is_some());
     report.references.retain(|r| match r.ty == m.to.name {
         true => holds(&to, &r.field) && sourced(&r.field),

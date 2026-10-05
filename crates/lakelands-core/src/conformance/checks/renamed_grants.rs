@@ -62,6 +62,7 @@ async fn migrate_to(l: &Lake, to: Value, renames: &[(&str, &str)]) -> Result<Out
         renames: (renames.iter())
             .map(|(a, b)| ((*a).into(), (*b).into()))
             .collect(),
+        relation_renames: Vec::new(),
     };
     let report = l
         .cat
@@ -279,6 +280,7 @@ async fn a_grant_holds_a_field_under_every_name_it_has_borne(
             {"name": "a", "type": {"kind": "text"}}, {"name": "b", "type": {"kind": "text"}}]}))
         .expect("a type"),
         renames: vec![("a".into(), "b".into()), ("b".into(), "a".into())],
+        relation_renames: Vec::new(),
     };
     let report = l
         .cat
@@ -359,6 +361,7 @@ async fn a_grant_holds_a_field_under_every_name_it_has_borne(
         migration: Box::new(Migration {
             to,
             renames: vec![("c".into(), "d".into())],
+            relation_renames: Vec::new(),
         }),
         report: Default::default(),
     };

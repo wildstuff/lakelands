@@ -87,6 +87,7 @@ async fn verify_py_verifies_an_export_with_a_checkpoint_and_a_rekey() {
     let to = Migration {
         to: serde_json::from_value(account("iban")).unwrap(),
         renames: vec![],
+        relation_renames: Vec::new(),
     };
     let report = cat.migrate(&who, to.clone()).await.unwrap().data;
     assert!(report.lossless, "{report:?}");

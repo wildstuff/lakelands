@@ -112,6 +112,20 @@ impl State {
                         }
                     }
                 }
+                // As the store: a renamed relation's link records move to
+                // the link type of its new name, as they are.
+                for (old, new) in &migration.relation_renames {
+                    let (from, to) = (crate::links::name(ty, old), crate::links::name(ty, new));
+                    let moved: Vec<_> = (self.records.keys().filter(|k| k.0 == from))
+                        .cloned()
+                        .collect();
+                    for at in moved {
+                        if let Some(mut r) = self.records.remove(&at) {
+                            (r.ty, r.position) = (to.clone(), e.position);
+                            self.records.insert((to.clone(), at.1), r);
+                        }
+                    }
+                }
                 let to = Declaration::Type(migration.to.clone());
                 self.declare(&to, Some(schema_hash.clone()), *version);
             }

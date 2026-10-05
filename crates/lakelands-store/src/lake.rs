@@ -382,15 +382,8 @@ impl Lake {
         for mut d in types.clone() {
             while d.version > 1 && d.since > Position::GENESIS {
                 let event = self.read_events(d.since, 1)?.pop();
-                if let Some(EventBody::Migrated { migration, .. }) = event.map(|e| e.body)
-                    && !migration.renames.is_empty()
-                {
-                    let (ty, renames) = (migration.to.name, migration.renames);
-                    list.push(Renamed {
-                        at: d.since,
-                        ty,
-                        renames,
-                    });
+                if let Some(EventBody::Migrated { migration, .. }) = event.map(|e| e.body) {
+                    list.extend(lakelands_core::links::renamed(&migration, d.since));
                 }
                 let before = self.engine.view(Some(Position(d.since.0 - 1)))?;
                 let was = before
@@ -421,14 +414,15 @@ impl Lake {
     /// A principal with its grants held through the lake's renames
     /// (`Grants::follow`), for a read at `at` or a write at the head, and
     /// how many entries of the list it was followed through. The list is
-    /// asked only for one whose grants name a field.
+    /// asked only for one whose grants name a type: a grant that is only
+    /// a default follows a link type's rename too.
     pub(crate) fn followed(
         &self,
         mut who: Principal,
         at: Option<Position>,
         head: Option<&dyn ProjectionView>,
     ) -> Result<(Principal, Option<usize>)> {
-        if !who.grants.types.values().any(|t| !t.fields.is_empty()) {
+        if who.grants.types.is_empty() {
             return Ok((who, None));
         }
         let list = self.renames(head)?;
@@ -623,8 +617,11 @@ impl Lake {
     }
 
     /// Fold one `migrated` event's step over every record it reaches: the
-    /// migrated type's, and for a re-key those of every type with moves and
-    /// of every type that references one. Each type is walked once, a page
+    /// migrated type's, for a re-key those of every type with moves and of
+    /// every type that references one, and for a renamed relation carried
+    /// by link records those of its link type, which move to the link type
+    /// of its new name and leave their old keys ended. Each type is walked
+    /// once, under the name the view knows it by, a page
     /// of the view at a time, and nothing of the walk is kept: a record
     /// this transaction wrote is stepped where it is kept, and a later read
     /// of any other goes through the step ([`Staged::record`]). An old key
@@ -640,12 +637,20 @@ impl Lake {
         step: Step,
     ) -> Result<()> {
         let migrated = &step.migration.to.name;
-        let reached: BTreeSet<&TypeName> = step.decls.keys().chain([migrated]).collect();
+        let moved = step.decls.keys().chain(step.types.keys());
+        let reached: BTreeSet<&TypeName> = moved.chain([migrated]).collect();
         // The old keys whose records moved.
         let mut applied = BTreeSet::new();
         let mut put = |pre: &StoredRecord, post: &StoredRecord| -> Result<()> {
             if post.ty == *migrated || post != pre {
                 projection.put_record(post)?;
+            }
+            if post.ty != pre.ty {
+                // A link type's records moved to another: its keys end.
+                let ended = StoredRecord::ended(pre.ty.clone(), pre.key.clone(), step.at);
+                projection.put_record(&ended)?;
+                self.index_vectors(&w.ontology, &ended)?;
+                self.index_vectors_as(&w.ontology, &pre.ty, post)?;
             }
             if post.key != pre.key {
                 if !step.arrives(&pre.ty, &pre.key) {
@@ -657,6 +662,9 @@ impl Lake {
             Ok(())
         };
         for ty in &reached {
+            // The view holds a record under the type it had before the
+            // transaction: an earlier step of it may have moved the type.
+            let ty = staged.steps.iter().rev().fold(*ty, |t, s| s.origin(t));
             walk(view, ty, true, |row| {
                 // A record this transaction wrote is its own, under the
                 // key the earlier steps left it: tested before anything
@@ -712,6 +720,29 @@ impl Lake {
             staged.member(projection, set, ty, to, member, step.at)?;
             if member && !step.arrives(ty, from) {
                 staged.member(projection, set, ty, from, false, step.at)?;
+            }
+        }
+        // A set of a link type whose records moved holds them under the
+        // type they moved to: read under the type the view knows them by,
+        // with what the transaction put laid over.
+        for s in w.ontology.object_sets.values().map(|s| &s.decl) {
+            let Some(to) = step.types.get(&s.of) else {
+                continue;
+            };
+            let known = staged.steps.iter().rev().fold(&s.of, |t, s| s.origin(t));
+            let mut keys = view.members(&s.name, known)?;
+            for ty in [known, &s.of] {
+                let put = staged.members.iter();
+                for ((_, _, key), member) in put.filter(|((n, t, _), _)| n == &s.name && t == ty) {
+                    match member {
+                        true => keys.insert(key.clone()),
+                        false => keys.remove(key),
+                    };
+                }
+            }
+            for key in keys {
+                staged.member(projection, &s.name, to, &key, true, step.at)?;
+                staged.member(projection, &s.name, &s.of, &key, false, step.at)?;
             }
         }
         staged.steps.push(step);
@@ -862,18 +893,16 @@ impl Lake {
                 w.ontology
                     .put(decl.clone(), *version, Some(schema_hash.clone()));
                 projection.put_declaration(&decl, *version, Some(schema_hash), e.position)?;
-                if !migration.renames.is_empty() {
+                // The lake's list of renames takes the fields this migration
+                // renames, and each link type a renamed relation moves.
+                let renamed = lakelands_core::links::renamed(migration, e.position);
+                if !renamed.is_empty() {
                     let key = (RENAMES.to_owned(), Digest::zero());
                     let mut list = match staged.outputs.get(&key) {
                         Some(list) => renames_in(Some(list.clone()))?,
                         None => renames_in(view.output(RENAMES, &key.1)?)?,
                     };
-                    let (ty, renames) = (migration.to.name.clone(), migration.renames.clone());
-                    list.push(Renamed {
-                        at: e.position,
-                        ty,
-                        renames,
-                    });
+                    list.extend(renamed);
                     let list = serde_json::json!(list);
                     projection.put_output(RENAMES, &key.1, &list, e.position)?;
                     staged.outputs.insert(key, list);
@@ -992,7 +1021,19 @@ impl Lake {
     /// fields: a live record's vectors are indexed, a retired or cleared
     /// one's removed.
     fn index_vectors(&self, ontology: &Ontology, r: &StoredRecord) -> Result<()> {
-        let (Some(index), Ok(decl)) = (self.engine.vectors(), ontology.ty(&r.ty)) else {
+        self.index_vectors_as(ontology, &r.ty, r)
+    }
+
+    /// [`Self::index_vectors`] for a record whose vector fields are those
+    /// `declared` declares: a link moved to a link type that is declared
+    /// only by the next event has the fields of the one it came from.
+    fn index_vectors_as(
+        &self,
+        ontology: &Ontology,
+        declared: &TypeName,
+        r: &StoredRecord,
+    ) -> Result<()> {
+        let (Some(index), Ok(decl)) = (self.engine.vectors(), ontology.ty(declared)) else {
             return Ok(());
         };
         for f in decl
@@ -1488,10 +1529,15 @@ fn staged_scan(
     ty: &TypeName,
 ) -> Result<Vec<StoredRecord>> {
     let mut all = BTreeMap::new();
-    walk(view, ty, false, |row| {
-        if !staged.wrote(ty, &row.key) {
+    // The view holds a record under the type it had before the
+    // transaction: a step of it may have moved the type's records here.
+    let known = staged.steps.iter().rev().fold(ty, |t, s| s.origin(t));
+    walk(view, known, false, |row| {
+        if !staged.wrote(known, &row.key) {
             let r = staged.stepped(row)?;
-            all.insert(r.key.clone(), r);
+            if &r.ty == ty {
+                all.insert(r.key.clone(), r);
+            }
         }
         Ok(())
     })?;
@@ -1513,6 +1559,9 @@ pub(crate) struct Step {
     moves: crate::rekey::Moves,
     /// The same, new key to old.
     back: crate::rekey::Moves,
+    /// The link types a renamed relation's records move between, old name
+    /// to new: the type's whole, every key as it is (035, extended).
+    types: BTreeMap<TypeName, TypeName>,
     /// For a step with moves, as declared once the migration is in force:
     /// every type with moves, and every type, not a view, that has a
     /// reference field to one.
@@ -1545,12 +1594,14 @@ impl Step {
         let decls = (ontology.types.values().map(|t| &t.decl).filter(reaches))
             .map(|d| (d.name.clone(), d.clone()))
             .collect();
+        let types = lakelands_core::links::moved(migration);
         Step {
             at,
             before,
             migration: migration.clone(),
             moves,
             back,
+            types,
             decls,
         }
     }
@@ -1592,6 +1643,9 @@ impl Step {
             r.key = to.cloned().unwrap_or(r.key);
             r.fields = fields;
         }
+        if let Some(to) = self.types.get(&r.ty) {
+            (r.ty, r.position) = (to.clone(), self.at);
+        }
         Ok(r)
     }
 
@@ -1600,15 +1654,29 @@ impl Step {
         self.back.get(ty).is_some_and(|m| m.contains_key(key))
     }
 
-    /// Where the record at `key` after the step was before it: the old key
-    /// of the move that arrives there, else the key itself; `None` for a
-    /// key that ended at the step, which a record moved away from and none
-    /// arrived at.
-    fn source<'a>(&'a self, ty: &TypeName, key: &'a RecordKey) -> Option<&'a RecordKey> {
-        match self.back.get(ty).and_then(|m| m.get(key)) {
-            Some(old) => Some(old),
-            None => (self.moved(ty, key) == key).then_some(key),
+    /// Where the record of `ty` at `key` after the step was before it: the
+    /// old key of the move that arrives there, else the key itself, under
+    /// the type its records moved from, if they did; `None` for a key that
+    /// ended at the step, which a record moved away from and none arrived
+    /// at, as every key of a type whose records moved to another.
+    fn source<'a>(
+        &'a self,
+        ty: &'a TypeName,
+        key: &'a RecordKey,
+    ) -> Option<(&'a TypeName, &'a RecordKey)> {
+        if self.types.contains_key(ty) {
+            return None;
         }
+        match self.back.get(ty).and_then(|m| m.get(key)) {
+            Some(old) => Some((ty, old)),
+            None => (self.moved(ty, key) == key).then_some((self.origin(ty), key)),
+        }
+    }
+
+    /// The type whose records the step moved to `ty`, else `ty` itself.
+    fn origin<'a>(&'a self, ty: &'a TypeName) -> &'a TypeName {
+        let from = self.types.iter().find(|(_, to)| *to == ty);
+        from.map_or(ty, |(from, _)| from)
     }
 
     /// The key a record at `key` before the step has after it.
@@ -1651,14 +1719,14 @@ impl Staged {
         if let Some(r) = self.records.get(&(ty.clone(), key.clone())) {
             return Ok(Some(r.clone()));
         }
-        let mut before = key;
+        let (mut from, mut before) = (ty, key);
         for s in self.steps.iter().rev() {
-            match s.source(ty, before) {
-                Some(old) => before = old,
+            match s.source(from, before) {
+                Some(old) => (from, before) = old,
                 None => return Ok(Some(StoredRecord::ended(ty.clone(), key.clone(), s.at))),
             }
         }
-        match self.reads.get(view, ty, before)? {
+        match self.reads.get(view, from, before)? {
             Some(r) if !r.is_ended() => self.stepped(r).map(Some),
             held => Ok(held),
         }
@@ -1672,8 +1740,11 @@ impl Staged {
     /// Whether the append wrote the record the view holds at `key`: it is
     /// kept under the key the steps moved it to.
     fn wrote(&self, ty: &TypeName, key: &RecordKey) -> bool {
-        let now = self.steps.iter().fold(key, |k, s| s.moved(ty, k));
-        self.records.contains_key(&(ty.clone(), now.clone()))
+        let (mut ty, mut key) = (ty, key);
+        for s in &self.steps {
+            (ty, key) = (s.types.get(ty).unwrap_or(ty), s.moved(ty, key));
+        }
+        self.records.contains_key(&(ty.clone(), key.clone()))
     }
 
     /// The records of one type written in this append.

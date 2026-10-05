@@ -52,6 +52,7 @@ mod reads_kept;
 mod rebuild;
 mod references;
 mod rekey;
+mod relation_renamed;
 mod renamed_grants;
 mod report_names;
 mod restriction;
@@ -290,6 +291,18 @@ pub const ALL: &[Check] = &[
     schema::IN_FORCE_APPENDS_NOTHING,
     schema::MIGRATION_IN_FORCE,
     schema::RECOMPUTED,
+    relation_renamed::RENAMED_KEEPS_EDGES,
+    relation_renamed::RENAMED_GRANT_FOLLOWS,
+    relation_renamed::RENAME_REFUSED,
+    relation_renamed::RENAME_CARRIES,
+    relation_renamed::RENAMED_EVERY_CARRIER,
+    relation_renamed::RENAMED_NEWEST_CHAIN,
+    relation_renamed::RENAME_PROPOSED,
+    relation_renamed::RENAMED_NAME_BORNE_TWICE,
+    relation_renamed::RENAME_ONTO_A_STANDING_TYPE,
+    relation_renamed::RENAMED_VECTORS_FOLLOW,
+    relation_renamed::RENAMED_LINKS_RECOMPUTED,
+    relation_renamed::RENAMED_OLD_TYPE_CLOSED,
     aggregates::EMPTY_AGGREGATE,
     aggregates::COUNT_IS_THE_WALK,
     date_bucket::GROUPS,

@@ -657,6 +657,7 @@ pub fn migration(to: TypeDecl) -> lakelands_api::write::Migration {
     lakelands_api::write::Migration {
         to,
         renames: Vec::new(),
+        relation_renames: Vec::new(),
     }
 }
 

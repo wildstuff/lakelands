@@ -85,7 +85,15 @@ pub fn window(
         // earlier in this window.
         if links::is_link_type(&r.ty) {
             let types = w.ontology.types.values().map(|e| &e.decl);
-            if let Some((t, relation)) = links::relation_of(types, &r.ty) {
+            // A link type no relation carries, its relation renamed or
+            // removed, stays declared for its history and takes no link.
+            let Some((t, relation)) = links::relation_of(types, &r.ty) else {
+                return Err(lakelands_core::invalid(format!(
+                    "`{}` is the link type of no relation: its relation was renamed or removed",
+                    r.ty
+                )));
+            };
+            {
                 // The ends from the patch, or from the key's components
                 // when the patch leaves them out: the key rule fills them.
                 let parts = lakelands_core::log::key_components(&r.key);

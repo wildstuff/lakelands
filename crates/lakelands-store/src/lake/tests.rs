@@ -42,6 +42,7 @@ fn step(at: u64, before: TypeDecl, to: TypeDecl, moves: &[(&str, &str)]) -> Step
     let migration = Migration {
         to,
         renames: (titled.then(|| ("title".into(), "name".into())).into_iter()).collect(),
+        relation_renames: Vec::new(),
     };
     let rekeyed: Vec<Rekey> = (moves.iter())
         .map(|(from, to)| Rekey {
@@ -98,7 +99,7 @@ fn a_key_is_traced_back_through_the_steps() {
     let same = || doc("name", "text");
     let chain = step(2, same(), same(), &[("a", "b"), ("b", "c")]);
     let (doc, k) = (TypeName::from("doc"), |key: &str| RecordKey::from(key));
-    let source = |key: &str| chain.source(&doc, &k(key)).map(|k| k.to_string());
+    let source = |key: &str| chain.source(&doc, &k(key)).map(|(_, k)| k.to_string());
     assert_eq!(
         [source("c"), source("b"), source("a"), source("u")],
         [Some("b".into()), Some("a".into()), None, Some("u".into())],

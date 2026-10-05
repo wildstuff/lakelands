@@ -43,7 +43,7 @@
 //! engine's optimisation, and it could never change an answer. A walk reads a view's records from that
 //! computation too, once per read, never from the engine.
 
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
@@ -1298,12 +1298,14 @@ impl<'a> Reader<'a> {
             .filter(|p| self.who.grants.review || p.proposer == me)
             .collect();
         let verb_on = |v: &VerbName| self.ontology.verb(v).ok().map(|d| d.on.clone());
+        // The lake as its reader is described it, once for the listing.
+        let lake = OnceCell::new();
         for p in &mut mine {
             // `more` is what the trim left out, not what the completion added.
             let mut logged = p.write.take();
             logged.iter_mut().for_each(|w| self.completed(w));
             let shown = logged.clone();
-            p.write = shown.and_then(|mut w| self.known_shape(&mut w).then_some(w));
+            p.write = shown.and_then(|mut w| self.known_shape(&mut w, &lake).then_some(w));
             p.more = p.write != logged;
         }
         mine.retain(|p| core_engines::matches(p, filter, verb_on));
@@ -1339,7 +1341,7 @@ impl<'a> Reader<'a> {
     /// write to a type it may not see, or to a record it is not answered.
     /// The store logs a migration and a redeclaration completed with the
     /// fields hidden from their author, who reads its own proposal here.
-    fn known_shape(&self, write: &mut ProposedWrite) -> bool {
+    fn known_shape(&self, write: &mut ProposedWrite, lake: &OnceCell<LakeDescription>) -> bool {
         let read = |ty: &TypeName, field: &FieldName| {
             let t = self.visible_type(ty).ok();
             let f = t.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == field)?)));
@@ -1390,7 +1392,9 @@ impl<'a> Reader<'a> {
                     return false;
                 };
                 let sees = |ty: &TypeName| self.visible_type(ty).ok();
-                rights::shown_report(self.who, was, migration, report, sees, answered);
+                let all = || describe::lake(&self.who.lake, &self.declared(), self.who);
+                let described = || lake.get_or_init(all);
+                rights::shown_report(self.who, was, migration, report, described, sees, answered);
                 rights::known_migration(self.who, was, migration);
                 true
             }

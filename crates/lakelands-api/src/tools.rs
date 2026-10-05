@@ -1209,6 +1209,9 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             output_schema: outcome_schema(),
             door: Door::Recompute,
         });
+        // Old name and new name, for a field or a relation.
+        let pairs = json!({"type": "array", "items": {
+            "type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 2}});
         out.push(ToolSpec {
             name: MIGRATE.into(),
             description: "Change a type's shape (`to`) or tighten a value type (`value_type`), one of the two. Without `report_id` it only reports what would convert or no longer fit; with the id of that report it applies the migration.".into(),
@@ -1216,12 +1219,8 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
                 props([
                     ("to", json!({"type": "object"})),
                     ("value_type", json!({"type": "object"})),
-                    (
-                        "renames",
-                        json!({"type": "array", "items": {
-                        "type": "array", "items": {"type": "string"},
-                        "minItems": 2, "maxItems": 2}}),
-                    ),
+                    ("renames", pairs.clone()),
+                    ("relation_renames", pairs),
                     ("report_id", json!({"type": "string"})),
                 ]),
                 &[],

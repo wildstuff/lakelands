@@ -640,6 +640,7 @@ async fn a_migration_covers_retired_records_and_keeps_the_key() {
     let retyped = Migration {
         to,
         renames: vec![],
+        relation_renames: Vec::new(),
     };
     let report = cat.migrate(&o, retyped.clone()).await.unwrap().data;
     assert!(
@@ -669,6 +670,7 @@ async fn a_migration_covers_retired_records_and_keeps_the_key() {
             Migration {
                 to: rekeyed,
                 renames: vec![],
+                relation_renames: Vec::new(),
             },
         )
         .await;

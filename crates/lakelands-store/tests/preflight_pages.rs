@@ -212,6 +212,7 @@ fn migration(to: serde_json::Value, renames: &[(&str, &str)]) -> Migration {
         renames: (renames.iter())
             .map(|(from, to)| ((*from).into(), (*to).into()))
             .collect(),
+        relation_renames: Vec::new(),
     }
 }
 

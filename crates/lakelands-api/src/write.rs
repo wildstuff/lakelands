@@ -10,7 +10,7 @@ use crate::id::{
 };
 use crate::ontology::{
     ANNOTATION_KEY_MAX_BYTES, ANNOTATIONS_MAX_BYTES, Annotations, FieldDecl, FieldType,
-    RESERVED_ANNOTATION_NAMESPACES, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl,
+    RESERVED_ANNOTATION_NAMESPACES, RelationDecl, TriggerDecl, TypeDecl, ValueTypeDecl, VerbDecl,
 };
 
 use crate::record::Patch;
@@ -627,6 +627,104 @@ pub struct Migration {
     /// Fields renamed: old name to new name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub renames: Vec<(FieldName, FieldName)>,
+    /// Relations renamed: old name to new name. A renamed relation keeps
+    /// its edges, however it is carried (log format version 11).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relation_renames: Vec<(RelationName, RelationName)>,
+}
+
+impl Migration {
+    /// The relations the migration renames, each as it stood on `before`
+    /// and as it stands. A pair names a relation of the type before and
+    /// one of `to`, each once, and frees the old name. A rename moves edges
+    /// and changes none: the carrier, the target, the cardinality and, for
+    /// a relation carried by link records, its fields and who writes them
+    /// stay. Otherwise the sentence that says why, naming the relation. It
+    /// lives in the contract so that the mock refuses the same.
+    pub fn renamed_relations<'a>(
+        &'a self,
+        before: &'a TypeDecl,
+    ) -> std::result::Result<Vec<(&'a RelationDecl, &'a RelationDecl)>, String> {
+        let mut out = Vec::new();
+        for (i, (old, new)) in self.relation_renames.iter().enumerate() {
+            let wrong = |why: &str| format!("renaming relation `{old}` to `{new}`: {why}");
+            let of = |t: &'a TypeDecl, n| t.relations.iter().find(|r| &r.name == n);
+            let (Some(was), Some(is)) = (of(before, old), of(&self.to, new)) else {
+                return Err(wrong(
+                    "the first names a relation the type has, the second one the new shape has",
+                ));
+            };
+            let again = |(o, n): &(RelationName, RelationName)| o == old || n == new;
+            if self.relation_renames[..i].iter().any(again)
+                || of(before, new).is_some()
+                || of(&self.to, old).is_some()
+            {
+                return Err(wrong(
+                    "a relation is renamed once, to a name no relation of the type bears, and \
+                     leaves its old name free",
+                ));
+            }
+            let kept = |r: &'a RelationDecl| {
+                let carried = (&r.via, &r.derived, &r.target, r.cardinality);
+                (carried, &r.fields, r.authority)
+            };
+            if kept(was) != kept(is) {
+                return Err(wrong(
+                    "a rename keeps the relation's carrier, target, cardinality, link fields \
+                     and authority; change them in a migration of their own",
+                ));
+            }
+            out.push((was, is));
+        }
+        Ok(out)
+    }
+}
+
+/// How a relation's edges are carried.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Carrier {
+    /// By a reference field of the record, the relation's `via`.
+    Via,
+    /// By link records, of the relation's link type.
+    Links,
+    /// By matching values: a derived relation.
+    Derived,
+}
+
+impl Carrier {
+    /// How `r`'s edges are carried.
+    pub fn of(r: &RelationDecl) -> Carrier {
+        match (&r.via, &r.derived) {
+            (Some(_), _) => Carrier::Via,
+            (None, Some(_)) => Carrier::Derived,
+            (None, None) => Carrier::Links,
+        }
+    }
+}
+
+/// A declaration a migration carries along: one that names a link type
+/// whose records move, which the lake declares again under the new name.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Carried {
+    /// What is declared: `trigger`, `object_set`, `verb` or `type`.
+    pub kind: String,
+    /// Its name.
+    pub name: String,
+}
+
+/// One relation a migration renames, in its preflight's report.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelationRename {
+    /// The relation's name before.
+    pub from: RelationName,
+    /// Its name after.
+    pub to: RelationName,
+    /// How its edges are carried.
+    pub carrier: Carrier,
+    /// The link records that move to the new name's link type: none
+    /// unless the relation is carried by links.
+    pub links: u64,
 }
 
 /// The preflight of a migration: what it would do to the stored records,
@@ -655,6 +753,15 @@ pub struct MigrationReport {
     /// anything is applied; it does not make the report lossy.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dropped: Vec<(FieldName, u64)>,
+    /// The relations the migration renames, each with how its edges are
+    /// carried and the link records that move with it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relations: Vec<RelationRename>,
+    /// The declarations that name a link type a renamed relation's
+    /// records move from: the lake declares each again under the new name,
+    /// in the same append.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub carried: Vec<Carried>,
     /// Per type a re-key moves: its records, and the new keys that
     /// collide or cannot be made.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

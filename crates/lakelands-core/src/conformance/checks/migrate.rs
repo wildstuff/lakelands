@@ -179,6 +179,7 @@ async fn migrated_values_follow_the_conversion_table_and_renames_keep_them(
     let m = Migration {
         to,
         renames: vec![("title".into(), "heading".into())],
+        relation_renames: Vec::new(),
     };
     let report = preflight(store.as_ref(), &m).await?;
     cat.migrate_apply(own, m, &report.report_id)
@@ -356,6 +357,7 @@ async fn a_migration_taking_a_field_a_view_reads_is_refused(
         Migration {
             to: t,
             renames: vec![(from.into(), to.into())],
+            relation_renames: Vec::new(),
         }
     };
     let dropped = |t: &TypeDecl, name: &str| {

@@ -25,9 +25,10 @@
 //! - **9**: an event whose declaration is a view that `merge`s sources, in
 //!   the places 5 names.
 //! - **10**: a `write_proposed` event whose write tightens a value type.
-//! - **11**: what [`ELEVENTH`] lists, each in the places 5 names: a
-//!   declaration that calls `floor`, `date_bucket` by a width or `in_set`
-//!   in any expression it keeps.
+//! - **11**: what [`ELEVENTH`] lists: a declaration that calls `floor`,
+//!   `date_bucket` by a width or `in_set` in any expression it keeps, in
+//!   the places 5 names; and a migration that renames a relation
+//!   (`relation_renames`), in a `migrated` event or a proposed `migrate`.
 //!
 //! The store writes every event of one append at the greatest of the
 //! lake's version and what [`needed`] answers for each event of the
@@ -100,7 +101,22 @@ pub const ELEVENTH: &[Added] = &[
         |body| any_declaration(body, |d| declares_call(d, Func::InSet)),
         "declares a call of `in_set`",
     ),
+    (renames_a_relation, "renames a relation"),
 ];
+
+/// Whether a migration the event carries, applied or proposed, renames a
+/// relation.
+fn renames_a_relation(body: &EventBody) -> bool {
+    let migration = match body {
+        EventBody::Migrated { migration, .. } => migration,
+        EventBody::WriteProposed {
+            write: ProposedWrite::Migrate { migration, .. },
+            ..
+        } => &**migration,
+        _ => return false,
+    };
+    !migration.relation_renames.is_empty()
+}
 
 /// Whether a node is `date_bucket` with its third argument, the origin a
 /// width is counted from.

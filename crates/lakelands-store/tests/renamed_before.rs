@@ -76,6 +76,7 @@ async fn a_lake_made_before_renames_were_recorded_holds_a_grant_through_them() {
         migration: Migration {
             to,
             renames: vec![(from.into(), new.into())],
+            relation_renames: Vec::new(),
         },
         version,
         report_id: "r".into(),

@@ -317,6 +317,34 @@ A host that already has a store of its own moves in four steps.
   from the declarations it keeps, not from its log; until a writer has
   opened it once, each read-only open finds them again. See
   `docs/decisions/006-grants-not-roles.md`, extended.
+- **A migration may rename a relation, and the relation keeps its
+  edges.** `relation_renames` pairs an old name with a new one. A
+  relation carried by a `via` field or derived from matching values is
+  only named anew. One carried by link records moves them: its links
+  become records of `sys.link.<type>.<new>`, with their versions, fields
+  and provenance, and a read as of before answers them under the old
+  name. The preflight's report lists each renamed relation with the
+  links that move (`relations`), and what the lake declares again
+  because it names the old link type (`carried`): a trigger or a verb on
+  it, an object set of it, a view that reads it. A rename changes no
+  link field and re-keys nothing; those are migrations of their own, and
+  a rename is refused while a reference field or a relation of another
+  type names the link type, or while a set, a trigger or a verb reads a
+  field of the new name's standing link type that the relation lacks. A
+  consumer of the feed that follows the old or the new link
+  type is handed the `migrated` event. The old link type stays declared,
+  for the reads as of before: it holds no record and takes none, so a
+  source that still sends links under the old name is refused, naming it.
+- **A grant on a link type follows the relation's rename, as a grant on
+  a field follows the field's.** A field of the link type is as closed
+  as the lowest of what a principal's grants say under every name the
+  link type has borne: its grant, else its default. So
+  `sys.link.invoice.signed_by: {default: none}` holds for
+  `sys.link.invoice.approved_by` after the rename, and a grant on the new
+  name holds for the old one in a read as of before. A permission stays
+  with its name: a host that wants the links read under the new name
+  names the new link type. A mirror's mapping that names the old link
+  type stops applying at the rename and is stated again.
 - **One writer per lake.** A lake has one writing process at a time,
   held by a lease; one process may write many lakes. See
   `docs/decisions/008-one-writer-per-lake.md`.

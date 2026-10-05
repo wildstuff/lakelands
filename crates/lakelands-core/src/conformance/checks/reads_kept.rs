@@ -70,6 +70,7 @@ async fn a_migration_keeps_the_fields_a_declaration_reads(
     let renamed = Migration {
         to: item(&["a", "b2", "c", "d", "e", "f", "g", "payload", "free"]),
         renames: vec![("b".into(), "b2".into())],
+        relation_renames: Vec::new(),
     };
     invalid_naming(
         "a migration renaming `b`",

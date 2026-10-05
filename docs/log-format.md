@@ -163,7 +163,7 @@ the writer chose.
 | Kind | Payload | Fold |
 |---|---|---|
 | `declared` | `declaration`, `version` (integer), `schema_hash` (string, types only) | A declaration enters the ontology, or replaces its earlier version, from this position on. `declaration.declare` is `type`, `value_type`, `verb`, `trigger`, `object_set` or `function`, with the declaration's members beside it. `version` is 1 for the first declaration of that `declare` and `name`, one more for each later one. A new version here never reshapes stored records. |
-| `migrated` | `migration` (`to`, `renames`), `schema_hash`, `version`, `report_id`, `rekeyed` (version 2; `[]`) | A type's shape changes and every stored record of it is converted by the fold, by the lossless conversions the preflight report `report_id` checked. When `rekeyed` lists keys, the fold also moves those records to their new keys (§2.3). |
+| `migrated` | `migration` (`to`, `renames`; `relation_renames`, version 11, left out when empty), `schema_hash`, `version`, `report_id`, `rekeyed` (version 2; `[]`) | A type's shape changes and every stored record of it is converted by the fold, by the lossless conversions the preflight report `report_id` checked. When `rekeyed` lists keys, the fold also moves those records to their new keys (§2.3). When `relation_renames` lists pairs of an old and a new name, each renamed relation keeps its edges, and the fold moves the link records of one carried by them to the link type of its new name (§2.3, "Link records"). |
 
 The schema hash covers shape only (`docs/decisions/007-schema-hash-covers-shape.md`).
 It is the SHA-256, as 64 lower-case hex digits, of the canonical bytes of
@@ -271,6 +271,20 @@ is added for links, so this is format version 1 unchanged
   It is declared by the store, as a system declaration in the same
   append as the declaration of `t` that holds the relation, and again
   whenever that declaration changes the relation.
+- **A relation renamed by a migration** (`relation_renames`, version 11)
+  moves its link records, with no event for a link: at the `migrated`
+  event the fold takes every record of `sys.link.t.<old>`, retired and
+  restricted ones too, to `sys.link.t.<new>` under the same key, with its
+  version, its fields, their provenance and its flags; each key of the
+  old link type ends at that position, as a re-keyed record's old key
+  does, and an object set's membership moves with the record. A read as
+  of an earlier position answers the links under the old name. The
+  `declared` of the new link type follows the `migrated` in the same
+  append, and after it the system's declaration, under the new name, of
+  every trigger and verb on the old link type, every object set of it and
+  every view that reads it. The old link type stays declared and holds no
+  record. A migration that renames a relation carried by link records
+  re-keys nothing and changes none of the relation's fields.
 - Its key fields are `from` (a `reference` to `t`) and `to` (a
   `reference` to the relation's `target`), both required, so a link's
   key is `<from key>:<to key>` by the key rule above; one relation holds
@@ -596,7 +610,7 @@ event raises it; "that append" is the append that holds it.
 | 8 | A view's `params` and a call of `param` in a declaration's expressions (Appendix A, Appendix B): a view may declare parameters, which a read binds and its `where` and measures read with `param('name')`. A lake writes the version it had until the append that holds its first event whose declaration is a view with a non-empty `params`, or calls `param` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`); that append carries `v` 8, as does every event after it; a version-7 (or older) event that carries either is refused, naming it. A version-7 reader refuses the version-8 events rather than computing a view whose parameters it cannot bind. `params` is part of the schema hash only when it is not empty (§2.2). The same version adds a verb called on its type (`docs/decisions/013-verbs-run-by-declared-risk.md`, extended): a verb declaration's `scope: type` (in a `declared` event or a proposed `declare`); a `verb_called` without `key`; and a proposed `call` without `key`. A lake writes the version it had until the append that holds its first such event; that append carries `v` 8, as does every event after it, and a version-7 (or older) event that carries one is refused, naming it. Version 8 took both while it was untagged. |
 | 9 | A view's `merge` (Appendix A): further sources a view merges on its key, each with its own `where`, `group_by` lined up with the view's by position, and aggregate measures the view's measures read by name. A lake writes the version it had until its first event whose declaration is a view with a non-empty `merge` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`), which carries `v` 9, as does every event after it; a version-8 (or older) event that carries one is refused, naming it. A version-8 reader refuses the version-9 events rather than computing a view from its main source alone. `merge` is part of the schema hash only when it is not empty (§2.2). |
 | 10 | A proposal of a value type's tightening: `write_proposed` whose `write` is `migrate_value_type` (§2.4, Appendix A). A lake writes the version it had until the append that holds its first such proposal; that append carries `v` 10, as does every event after it; a version-9 (or older) event that carries one is refused, naming it. A version-9 reader refuses the version-10 events rather than failing on a write it does not know. A lake that never holds such a proposal stays at the version it had. |
-| 11 | What one release added to what the log keeps, each of which needs the version by itself: a call of `floor` in a declaration's expressions, a call of `date_bucket` by a width, with its third argument, and a call of `in_set` (Appendix B). A lake writes the version it had until the append that holds its first event that carries one of them (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`); that append carries `v` 11, as does every event after it; a version-10 (or older) event that carries one is refused, naming it. A version-10 reader refuses the version-11 events rather than folding a declaration it cannot evaluate. A lake that carries none of them stays at the version it had. |
+| 11 | What one release added to what the log keeps, each of which needs the version by itself: a call of `floor` in a declaration's expressions, a call of `date_bucket` by a width, with its third argument, and a call of `in_set` (Appendix B); a migration's `relation_renames`, in a `migrated` event or a proposed `migrate` (§2.2, §2.3). A lake writes the version it had until the append that holds its first event that carries one of them (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`); that append carries `v` 11, as does every event after it; a version-10 (or older) event that carries one is refused, naming it. A version-10 reader refuses the version-11 events rather than folding a declaration it cannot evaluate. A lake that carries none of them stays at the version it had. |
 
 ## Appendix A. Encodings
 

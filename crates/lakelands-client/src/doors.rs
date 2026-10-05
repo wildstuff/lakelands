@@ -305,8 +305,7 @@ impl Catalog for RemoteCatalog {
         who: &Principal,
         migration: Migration,
     ) -> Result<Reply<MigrationReport>> {
-        let call = Call::new(Method::POST, "schema/migrate".into())
-            .json(&json!({ "to": migration.to, "renames": migration.renames }));
+        let call = Call::new(Method::POST, "schema/migrate".into()).json(&json!(migration));
         self.go(who, call).await
     }
 
@@ -316,11 +315,9 @@ impl Catalog for RemoteCatalog {
         migration: Migration,
         report_id: &str,
     ) -> Result<Outcome> {
-        let call = Call::new(Method::POST, "schema/migrate/apply".into()).json(&json!({
-            "to": migration.to,
-            "renames": migration.renames,
-            "report_id": report_id,
-        }));
+        let mut body = json!(migration);
+        body["report_id"] = json!(report_id);
+        let call = Call::new(Method::POST, "schema/migrate/apply".into()).json(&body);
         self.go(who, call).await
     }
 

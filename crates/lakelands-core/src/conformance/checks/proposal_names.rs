@@ -49,7 +49,11 @@ async fn proposed(store: &dyn LakeStore) -> Result<Lake, Failure> {
         to.as_object_mut().map(|o| o.remove("declare"));
         let to = serde_json::from_value(to).expect("a type");
         let renames = (renames.iter().map(|(a, b)| ((*a).into(), (*b).into()))).collect();
-        let migration = Box::new(Migration { to, renames });
+        let migration = Box::new(Migration {
+            to,
+            renames,
+            relation_renames: Vec::new(),
+        });
         ProposedWrite::Migrate {
             migration,
             report: Default::default(),

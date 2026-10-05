@@ -175,3 +175,47 @@ type is no view, so the steps from the type to the relation answer
 `not_found`, then `invalid` naming the type, and are stated, not
 checked, between themselves.
 
+
+## Extended: a renamed relation keeps its edges (lakelands#429)
+
+A relation's name is part of a type's shape, and names change. A relation
+that disappeared under one name and appeared under another was a removed
+relation and a new one: its links stayed behind under the old link type.
+
+A migration now names the rename, `relation_renames`, old name to new:
+
+- **The edges are the same edges.** A relation carried by a `via` field
+  or derived from matching values has no record of its own, and is named
+  anew. One carried by link records moves them: at the `migrated` event
+  the fold takes every record of the old link type to the link type of
+  the new name, under the same key, with its version, fields, provenance
+  and flags, retired and restricted ones too. No event is written for a
+  link. The old link type's keys end there, so a read as of before
+  answers the links under the old name, and a set's memberships move
+  with the records.
+- **What names the old link type is carried.** A trigger or a verb on
+  it, an object set of it and a view that reads it are declared again by
+  the lake under the new link type, in the migration's append, after the
+  new link type's declaration, and the preflight's report lists them. A
+  relation's `inverse` is its own member and is stated in the new shape.
+- **A rename moves and changes nothing.** The carrier, the target, the
+  cardinality, the link fields and who writes them stay; a migration
+  that also re-keys records is refused, as is one that changes the link
+  fields, each naming the relation. A rename onto a name whose link type
+  still holds the links of an earlier, removed relation is refused, and
+  so is one whose link type a reference field or a relation of another
+  type names: that type is named to an author who is shown it, and
+  another is told that a declaration refers to it.
+- **A link type no relation carries takes no link.** The old link type
+  stays declared, for the reads as of before, and so does a removed
+  relation's. An ingest into one is refused, naming it. Where a renamed
+  relation takes a name whose link type stands, empty, in another shape,
+  that link type is declared again in the shape of the links it takes;
+  a declaration that reads a field of it which the renamed relation
+  lacks refuses the rename, as it refuses a migration that takes a field
+  away.
+- **Grants follow the link type** as they follow a field
+  (`docs/decisions/006-grants-not-roles.md`, extended): a restriction in
+  both directions of time, a permission never.
+- **The log's format** takes `relation_renames` as a member of version
+  11; a migration that renames no relation is written as before.

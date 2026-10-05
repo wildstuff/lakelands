@@ -304,6 +304,7 @@ fn retype() -> Migration {
     Migration {
         to: invoice(StorageKind::Decimal),
         renames: vec![],
+        relation_renames: Vec::new(),
     }
 }
 
@@ -389,6 +390,7 @@ fn renames_move_values_to_the_new_name() {
     let migration = Migration {
         to,
         renames: vec![("amount".into(), "total".into())],
+        relation_renames: Vec::new(),
     };
     let records = vec![record("a", json!("42")), record("b", json!("x"))];
     let report = preflight(&before, &migration, records.clone()).unwrap();
@@ -414,6 +416,7 @@ fn a_rename_without_a_retype_is_not_reported_but_still_moves() {
     let migration = Migration {
         to,
         renames: vec![("note".into(), "remark".into())],
+        relation_renames: Vec::new(),
     };
     let report = preflight(&before, &migration, vec![record("a", json!("1"))]).unwrap();
     assert!(report.fields.is_empty());
@@ -433,6 +436,7 @@ fn two_fields_may_swap_names() {
             ("amount".into(), "note".into()),
             ("note".into(), "amount".into()),
         ],
+        relation_renames: Vec::new(),
     };
     let out = migrate_record(&before, &migration, &record("a", json!("1")).1)
         .unwrap()
@@ -449,6 +453,7 @@ fn a_field_that_becomes_required_counts_records_without_it() {
     let migration = Migration {
         to,
         renames: vec![],
+        relation_renames: Vec::new(),
     };
     let records = vec![record("a", json!(1)), record("b", Value::Null)];
     let report = preflight(&before, &migration, records).unwrap();
@@ -468,6 +473,7 @@ fn a_removed_field_is_dropped_from_the_record() {
     let migration = Migration {
         to,
         renames: vec![],
+        relation_renames: Vec::new(),
     };
     let out = migrate_record(&before, &migration, &record("a", json!(1)).1)
         .unwrap()
@@ -484,6 +490,7 @@ fn a_malformed_migration_is_refused() {
         Migration {
             to: decl,
             renames: vec![(from.into(), to.into())],
+            relation_renames: Vec::new(),
         }
     };
     let err = |m: Migration| preflight(&before, &m, vec![]).unwrap_err();

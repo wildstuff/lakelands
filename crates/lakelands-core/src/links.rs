@@ -19,8 +19,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use lakelands_api::Position;
 use lakelands_api::id::{RecordKey, RelationName, TypeName};
 use lakelands_api::ontology::{Authority, FieldDecl, RelationDecl, StorageKind, TypeDecl};
+use lakelands_api::principal::Renamed;
 use lakelands_api::query::{Edge, Walk};
 use lakelands_api::record::{StoredRecord, Value};
 
@@ -44,6 +46,43 @@ pub fn is_link_type(name: &TypeName) -> bool {
 pub fn link_type_parts(name: &TypeName) -> Option<(TypeName, RelationName)> {
     let (t, r) = name.as_str().strip_prefix(PREFIX)?.rsplit_once('.')?;
     (!t.is_empty() && !r.is_empty()).then(|| (TypeName::from(t), RelationName::from(r)))
+}
+
+/// The link types a migration's renamed relations move their records
+/// between, old name to new: those of the relations carried by link
+/// records. A rename keeps the carrier, so it is read off the relation as
+/// the migration's own shape declares it, whatever the type has become
+/// since the migration was written (035, extended).
+pub fn moved(
+    m: &lakelands_api::write::Migration,
+) -> std::collections::BTreeMap<TypeName, TypeName> {
+    let carried = |(_, new): &&(RelationName, RelationName)| {
+        (m.to.relations.iter()).any(|r| &r.name == new && carried_by_links(r))
+    };
+    let link = |r| link_type_name(&m.to.name, r);
+    (m.relation_renames.iter().filter(carried))
+        .map(|(old, new)| (link(old), link(new)))
+        .collect()
+}
+
+/// The entries a migration adds to the lake's list of renames at `at`, as
+/// the fold records them: its renamed fields, if it renames any, and each
+/// link type a renamed relation moves.
+pub fn renamed(m: &lakelands_api::write::Migration, at: Position) -> Vec<Renamed> {
+    let fields = Renamed {
+        at,
+        ty: m.to.name.clone(),
+        renames: m.renames.clone(),
+        to: None,
+    };
+    let types = moved(m).into_iter().map(|(ty, to)| Renamed {
+        at,
+        ty,
+        to: Some(to),
+        ..Renamed::default()
+    });
+    let fields = (!m.renames.is_empty()).then_some(fields);
+    fields.into_iter().chain(types).collect()
 }
 
 /// Whether a relation is carried by link records.
