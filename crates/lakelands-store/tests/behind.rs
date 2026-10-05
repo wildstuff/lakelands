@@ -670,7 +670,7 @@ async fn a_feed_an_aging_run_and_a_purge_are_answered_their_own_when_the_drain_f
             "age" => drop(store.age(Timestamp(0)).await.expect("the aging run's own")),
             _ => drop(
                 store
-                    .purge_source(&"feed".into(), None)
+                    .purge_source(&"feed".into(), None, None)
                     .await
                     .expect("the purge's own"),
             ),

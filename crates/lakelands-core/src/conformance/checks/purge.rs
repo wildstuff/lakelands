@@ -12,7 +12,7 @@ use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{Authority, Cardinality, RelationDecl, StorageKind};
 use lakelands_api::query::{Projection, QueryResult, Walk};
 use lakelands_api::seam::AGING_RULE_TYPE;
-use lakelands_api::write::{Declaration, ObjectSetDecl, PurgeReport};
+use lakelands_api::write::{Declaration, ObjectSetDecl, PurgeReference, PurgeReport};
 use lakelands_api::{
     Error, LakeStore, Origin, Position, Refusal, SourceId, Timestamp, TypeName, WriteOrigin,
 };
@@ -20,8 +20,8 @@ use serde_json::{Value, json};
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, computed_by, derived, events_after, field, get_at, head_unmoved, ingest, pattern,
-    reason, source_record, sourced, step, trigger_on, type_decl,
+    Lake, Must, computed_by, count_view, derived, events_after, field, get_at, head_unmoved,
+    ingest, invalid_naming, pattern, reason, source_record, sourced, step, trigger_on, type_decl,
 };
 use crate::links::{link_key, link_type_name};
 
@@ -157,9 +157,34 @@ async fn feed_one(
     feed(l, source, vec![source_record(ty, key, fields)]).await
 }
 
+/// A purge of `source` from `ty` alone.
+async fn purge_from(
+    store: &dyn LakeStore,
+    source: &str,
+    ty: &str,
+) -> lakelands_api::Result<PurgeReport> {
+    let (source, ty) = (SourceId::from(source), TypeName::from(ty));
+    store.purge_source(&source, Some(&ty), None).await
+}
+
+/// A report's `references` as plain values: the type, the relation, how
+/// many records, and the first of them as `<type> <key>`.
+fn referring(report: &PurgeReport) -> Vec<(&str, &str, u64, Vec<String>)> {
+    let of = |r: &PurgeReference| (r.first.iter().map(|f| format!("{} {}", f.ty, f.key))).collect();
+    let all = report.references.iter();
+    all.map(|r| (r.ty.as_str(), r.relation.as_str(), r.records, of(r)))
+        .collect()
+}
+
+/// A report's `types` as plain values, in the report's order.
+fn per(report: &PurgeReport) -> Vec<(&str, u32)> {
+    let all = report.types.iter();
+    all.map(|t| (t.ty.as_str(), t.retired)).collect()
+}
+
 async fn purge(store: &dyn LakeStore, source: &str) -> Result<PurgeReport, Failure> {
     store
-        .purge_source(&SourceId::from(source), None)
+        .purge_source(&SourceId::from(source), None, None)
         .await
         .must(&format!("purging `{source}`"))
 }
@@ -290,7 +315,7 @@ async fn a_record_another_hand_also_wrote_refuses_the_whole_purge(
     feed_one(&l, "erp", "invoice", "c1", json!({"status": "paid"})).await?;
     let before = store.head().await.must("reading the head")?;
     let e = store
-        .purge_source(&SourceId::from("crm"), None)
+        .purge_source(&SourceId::from("crm"), None, None)
         .await
         .must_fail("purging `crm` while two of its records are co-owned")?;
     let named = |m: &str| m.contains("p1") && m.contains("c1") && !m.contains("p2");
@@ -568,7 +593,7 @@ async fn a_co_owned_purge_names_the_count_and_the_first_ten(
         l.upsert("partner", k, json!({"note": "kept"})).await?;
     }
     let e = store
-        .purge_source(&SourceId::from("bulk"), None)
+        .purge_source(&SourceId::from("bulk"), None, None)
         .await
         .must_fail("purging `bulk`, all twelve of whose records a person also wrote")?;
     let Some(Refusal::Invalid { message }) = reason(&e) else {
@@ -646,9 +671,11 @@ async fn a_preflight_appends_nothing_and_a_purge_that_repeats_its_id_is_stale_on
     let l = Lake::of(store.as_ref());
     let (crm, erp) = (SourceId::from("crm"), SourceId::from("erp"));
     let before = store.head().await.must("reading the head")?;
-    let seen = store.purge_preflight(&crm).await.must("the preflight")?;
+    let seen = store.purge_preflight(&crm, None).await;
+    let seen = seen.must("the preflight")?;
     head_unmoved(store.as_ref(), before, "a preflight").await?;
-    let other = store.purge_preflight(&erp).await.must("the preflight")?;
+    let other = store.purge_preflight(&erp, None).await;
+    let other = other.must("the preflight")?;
     ensure!(
         seen.retired == 3 && seen.position == before && seen.report_id != other.report_id,
         "the preflight of `crm` must say the three records it would retire, at the head it \
@@ -661,18 +688,19 @@ async fn a_preflight_appends_nothing_and_a_purge_that_repeats_its_id_is_stale_on
         (&other.report_id, "another source's"),
         (&seen.report_id, "stale"),
     ] {
-        let e = store.purge_source(&crm, Some(id.as_str())).await;
+        let e = store.purge_source(&crm, None, Some(id.as_str())).await;
         let e = e.must_fail(&format!("a purge under a {why} id"))?;
         ensure!(
-            matches!(reason(&e), Some(Refusal::Invalid { message }) if message.contains("moved")),
-            "a purge under a {why} preflight id must be refused as invalid, saying the lake \
-             moved; it was refused as {e:?}"
+            matches!(reason(&e), Some(Refusal::Invalid { message }) if message.contains("not of this purge at this head")),
+            "a purge under a {why} preflight id must be refused as invalid, saying the report \
+             is not of this purge at this head; it was refused as {e:?}"
         );
         head_unmoved(store.as_ref(), moved, "a purge under a stale id").await?;
     }
-    let again = store.purge_preflight(&crm).await.must("the preflight")?;
+    let again = store.purge_preflight(&crm, None).await;
+    let again = again.must("the preflight")?;
     let done = store
-        .purge_source(&crm, Some(again.report_id.as_str()))
+        .purge_source(&crm, None, Some(again.report_id.as_str()))
         .await;
     let done = done.must("a purge under its preflight's id")?;
     ensure!(
@@ -683,7 +711,7 @@ async fn a_preflight_appends_nothing_and_a_purge_that_repeats_its_id_is_stale_on
     );
     // A co-owned record refuses the preflight as it refuses the purge.
     l.upsert("invoice", "i1", json!({"status": "paid"})).await?;
-    let e = store.purge_preflight(&erp).await;
+    let e = store.purge_preflight(&erp, None).await;
     let e = e.must_fail("a preflight of `erp`, whose invoice a principal also wrote,")?;
     ensure!(
         matches!(reason(&e), Some(Refusal::Invalid { message }) if message.contains("i1")),
@@ -757,39 +785,18 @@ async fn a_purge_names_the_records_outside_it_that_refer_into_it(
             "bill",
             "billed_to",
             2,
-            vec![
-                ("bill".to_owned(), "b1".to_owned()),
-                ("bill".to_owned(), "b3".to_owned()),
-            ],
+            vec!["bill b1".to_owned(), "bill b3".to_owned()],
         ),
-        (
-            "invoice",
-            "approved_by",
-            1,
-            vec![(lt.to_string(), theirs.to_string())],
-        ),
+        ("invoice", "approved_by", 1, vec![format!("{lt} {theirs}")]),
     ];
     let crm = SourceId::from("crm");
     let seen = store
-        .purge_preflight(&crm)
+        .purge_preflight(&crm, None)
         .await
         .must("the preflight of `crm`")?;
     let done = purge(store.as_ref(), "crm").await?;
     for (what, report) in [("preflight", &seen), ("purge", &done)] {
-        let got: Vec<_> = (report.references.iter())
-            .map(|r| {
-                let first = r
-                    .first
-                    .iter()
-                    .map(|f| (f.ty.to_string(), f.key.to_string()));
-                (
-                    r.ty.as_str(),
-                    r.relation.as_str(),
-                    r.records,
-                    first.collect::<Vec<_>>(),
-                )
-            })
-            .collect();
+        let got = referring(report);
         ensure!(
             got == want && report.retired == 4,
             "the {what} of `crm` must take its four records and name, per relation, the \
@@ -799,4 +806,216 @@ async fn a_purge_names_the_records_outside_it_that_refer_into_it(
         );
     }
     Ok(())
+}
+
+check!(
+    /// A purge that names a type takes the source's records of that type alone.
+    ONE_TYPE = a_purge_that_names_a_type_retires_what_the_source_brought_into_it_alone,
+    "039, extended: a purge that names a type retires, in one append, the live records the source brought into that type, and leaves the source's records of its other types and other sources' records of that type; the report names the type, counts it alone and names no type unsearched"
+);
+
+check!(
+    /// Co-ownership is judged in the named type alone.
+    CO_OWNED_IN_TYPE = a_co_owned_record_refuses_a_typed_purge_only_in_the_named_type,
+    "039, extended: a record of another type of the source that another hand also wrote does not refuse a purge that names a type; one in the named type refuses it whole as invalid, naming it and the type, and nothing is appended"
+);
+
+check!(
+    /// What the source keeps in its other types is named when it refers in.
+    OWN_REFERENCES = a_typed_purge_names_the_sources_own_records_that_still_refer_into_it,
+    "039, extended: a typed purge leaves the source's records of its other types, and its report names those that refer to a record it takes, by a `via` field, as it names any other record outside the purge"
+);
+
+check!(
+    /// The named type's own links go; another type's stay and are named.
+    TYPED_LINKS = a_typed_purge_takes_the_links_of_the_named_types_relations_and_no_other,
+    "039, extended, and 035: a typed purge takes the source's link records of the relations the named type declares with its records; the source's link records of another type's relation that end at a purged record stay and are named in the report"
+);
+
+check!(
+    /// A preflight's id is of the source, the type and the head.
+    TYPED_ID = a_preflight_of_a_type_and_one_of_the_source_whole_answer_ids_of_their_own,
+    "039, extended: at one head the preflight of a source whole and the preflight of the source from one type answer different ids; each is refused as invalid by the other's purge, appending nothing, and taken by its own"
+);
+
+check!(
+    /// A type a purge cannot take from is refused, not passed over.
+    TYPE_REFUSED = a_purge_from_a_type_it_cannot_take_from_is_refused,
+    "039, extended, and 010: a purge and a preflight that name a type that is not declared are not found; ones that name a view, or a type that keeps no per-field provenance, are refused as invalid saying why; nothing is appended"
+);
+
+async fn a_purge_that_names_a_type_retires_what_the_source_brought_into_it_alone(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    lake(store.as_ref()).await?;
+    let l = Lake::of(store.as_ref());
+    let before = store.head().await.must("reading the head")?;
+    let report = purge_from(store.as_ref(), "crm", "invoice").await;
+    let report = report.must("purging `crm` from `invoice`")?;
+    for (ty, key, want) in [
+        ("invoice", "c1", false),
+        ("invoice", "i1", true),
+        ("partner", "p1", true),
+        ("partner", "p2", true),
+    ] {
+        ensure!(
+            live(&l, ty, key).await? == want,
+            "after purging `crm` from `invoice`, `{ty}` `{key}` is not {}: {report:?}",
+            if want { "live" } else { "retired" }
+        );
+    }
+    let retired = events_after(store.as_ref(), before).await?;
+    let retired = (retired.iter()).filter(|e| matches!(e.body, EventBody::RecordRetired { .. }));
+    ensure!(
+        report.ty.as_ref().map(TypeName::as_str) == Some("invoice")
+            && (report.retired, per(&report)) == (1, vec![("invoice", 1)])
+            && report.unsearched.is_empty()
+            && retired.count() == 1,
+        "the report of `crm` from `invoice` says {report:?}; it must name the type, one \
+         invoice retired by one event, and no type unsearched"
+    );
+    Ok(())
+}
+
+async fn a_co_owned_record_refuses_a_typed_purge_only_in_the_named_type(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    lake(store.as_ref()).await?;
+    let l = Lake::of(store.as_ref());
+    l.upsert("partner", "p1", json!({"note": "kept"})).await?;
+    let before = store.head().await.must("reading the head")?;
+    invalid_naming(
+        "a purge of `crm` from `partner`, whose `p1` a person also wrote,",
+        purge_from(store.as_ref(), "crm", "partner").await,
+        &["`p1`", "from `partner`"],
+    )?;
+    head_unmoved(store.as_ref(), before, "a purge from the co-owned type").await?;
+    let report = purge_from(store.as_ref(), "crm", "invoice").await;
+    let report = report.must("purging `crm` from `invoice` while its partner `p1` is co-owned")?;
+    ensure!(
+        report.retired == 1
+            && !live(&l, "invoice", "c1").await?
+            && live(&l, "partner", "p1").await?,
+        "a co-owned partner must not hold a purge of `crm` from `invoice`: {report:?}"
+    );
+    Ok(())
+}
+
+async fn a_typed_purge_names_the_sources_own_records_that_still_refer_into_it(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    lake(store.as_ref()).await?;
+    let l = Lake::of(store.as_ref());
+    // `crm` also feeds a `bill` that names its partner `p1` in a field.
+    let mut bill = type_decl("bill", vec![sourced("partner_id", StorageKind::Text)]);
+    bill.relations = vec![RelationDecl {
+        via: Some("partner_id".into()),
+        ..RelationDecl::to("billed_to", "partner")
+    }];
+    l.declare(bill).await?;
+    feed_one(&l, "crm", "bill", "b1", json!({"partner_id": "p1"})).await?;
+    let report = purge_from(store.as_ref(), "crm", "partner").await;
+    let report = report.must("purging `crm` from `partner`")?;
+    let want = vec![("bill", "billed_to", 1, vec!["bill b1".to_owned()])];
+    ensure!(
+        report.retired == 2 && referring(&report) == want && live(&l, "bill", "b1").await?,
+        "a purge of `crm` from `partner` takes its two partners, leaves its bill `b1` and \
+         names it as referring into the purge: {want:?}; the report says {report:?}"
+    );
+    Ok(())
+}
+
+async fn a_typed_purge_takes_the_links_of_the_named_types_relations_and_no_other(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    lake(store.as_ref()).await?;
+    let l = Lake::of(store.as_ref());
+    // `crm` brought in the link from its invoice `c1` to its partner `p2`:
+    // a record of the link type of `invoice`'s relation.
+    let lt = link_type_name(&"invoice".into(), &"approved_by".into());
+    let link = link_key(&"c1".into(), &"p2".into());
+    let ends = json!({"from": "c1", "to": "p2"});
+    feed_one(&l, "crm", lt.as_str(), link.as_str(), ends).await?;
+    let report = purge_from(store.as_ref(), "crm", "partner").await;
+    let report = report.must("purging `crm` from `partner`")?;
+    let want = vec![("invoice", "approved_by", 1, vec![format!("{lt} {link}")])];
+    ensure!(
+        live(&l, lt.as_str(), link.as_str()).await? && referring(&report) == want,
+        "a purge of `crm` from `partner` leaves the link of `invoice`'s relation that ends \
+         at `p2` and names it: {want:?}; the report says {report:?}"
+    );
+    let report = purge_from(store.as_ref(), "crm", "invoice").await;
+    let report = report.must("purging `crm` from `invoice`")?;
+    let both = vec![("invoice", 1), (lt.as_str(), 1)];
+    ensure!(
+        !live(&l, lt.as_str(), link.as_str()).await? && per(&report) == both,
+        "a purge of `crm` from `invoice` takes `c1` and the link its relation carries: \
+         {both:?}; the report says {report:?}"
+    );
+    Ok(())
+}
+
+async fn a_preflight_of_a_type_and_one_of_the_source_whole_answer_ids_of_their_own(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    lake(store.as_ref()).await?;
+    let (crm, invoice) = (SourceId::from("crm"), TypeName::from("invoice"));
+    let before = store.head().await.must("reading the head")?;
+    let whole = store.purge_preflight(&crm, None).await;
+    let whole = whole.must("the preflight of `crm`")?;
+    let typed = store.purge_preflight(&crm, Some(&invoice)).await;
+    let typed = typed.must("the preflight of `crm` from `invoice`")?;
+    ensure!(
+        whole.report_id != typed.report_id && (whole.retired, typed.retired) == (3, 1),
+        "at one head the preflight of `crm` and the one from `invoice` must answer ids of \
+         their own, for three records and for one: {whole:?} and {typed:?}"
+    );
+    for (ty, id) in [(None, &typed), (Some(&invoice), &whole)] {
+        let what = format!("a purge of `crm` from {ty:?} under the other preflight's id");
+        let id = Some(id.report_id.as_str());
+        let answer = store.purge_source(&crm, ty, id).await;
+        invalid_naming(&what, answer, &["not of this purge at this head"])?;
+        head_unmoved(store.as_ref(), before, &what).await?;
+    }
+    let done = store
+        .purge_source(&crm, Some(&invoice), Some(typed.report_id.as_str()))
+        .await;
+    let done = done.must("the purge from `invoice` under its own preflight's id")?;
+    ensure!(
+        done.retired == 1 && done.ty.as_ref() == Some(&invoice),
+        "the purge from `invoice` under its preflight's id answered {done:?}"
+    );
+    Ok(())
+}
+
+async fn a_purge_from_a_type_it_cannot_take_from_is_refused(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    lake(store.as_ref()).await?;
+    let l = Lake::of(store.as_ref());
+    let mut lines = type_decl("log_line", vec![sourced("text", StorageKind::Text)]);
+    lines.field_meta = false;
+    l.declare(lines).await?;
+    feed_one(&l, "crm", "log_line", "l1", json!({"text": "hello"})).await?;
+    l.declare(count_view("by_name", "partner", "name")).await?;
+    let before = store.head().await.must("reading the head")?;
+    let crm = SourceId::from("crm");
+    for (ty, why) in [
+        ("log_line", "keeps no per-field provenance"),
+        ("by_name", "is a view"),
+    ] {
+        let name = TypeName::from(ty);
+        let what = format!("a purge of `crm` from `{ty}`");
+        let done = purge_from(store.as_ref(), "crm", ty).await;
+        invalid_naming(&what, done, &[ty, why])?;
+        let seen = store.purge_preflight(&crm, Some(&name)).await;
+        invalid_naming(&format!("the preflight of {what}"), seen, &[ty, why])?;
+    }
+    let none = purge_from(store.as_ref(), "crm", "nothing").await;
+    ensure!(
+        matches!(none, Err(Error::NotFound { .. })),
+        "a purge from a type that is not declared must be not found; it answered {none:?}"
+    );
+    let what = "a purge from a type it cannot take from";
+    head_unmoved(store.as_ref(), before, what).await
 }

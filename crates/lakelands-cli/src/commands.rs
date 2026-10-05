@@ -531,7 +531,8 @@ pub async fn feed(
     }
 }
 
-/// `purge`: retire every live record one source brought in, as one append
+/// `purge`: retire every live record one source brought in, into the one
+/// type of `--type` where it is given, as one append
 /// (`LakeStore::purge_source`), and print what went, per type, and what
 /// outside it still refers to it. `report` is the purge's `--report`;
 /// without one at all (`None`), this is `--preflight`, which prints the
@@ -539,13 +540,24 @@ pub async fn feed(
 pub async fn purge(
     out: Out<'_>,
     store: &Arc<dyn LakeStore>,
-    source: &str,
+    (source, ty): (&str, Option<&str>),
     report: Option<Option<&str>>,
 ) -> Result<(), Failure> {
-    let id = SourceId::from(source);
+    let (id, ty) = (SourceId::from(source), ty.map(TypeName::from));
     let (report, did) = match report {
-        Some(given) => (store.purge_source(&id, given).await?, "retired"),
-        None => (store.purge_preflight(&id).await?, "would retire"),
+        Some(given) => (
+            store.purge_source(&id, ty.as_ref(), given).await?,
+            "retired",
+        ),
+        None => (
+            store.purge_preflight(&id, ty.as_ref()).await?,
+            "would retire",
+        ),
+    };
+    let named = |word: &str| {
+        ty.as_ref()
+            .map(|t| format!(" {word} {t}"))
+            .unwrap_or_default()
     };
     for t in &report.types {
         put(out, format!("{}: {did} {}", t.ty, t.retired))?;
@@ -572,15 +584,22 @@ pub async fn purge(
         let (head, id) = (report.position, &report.report_id);
         return put(
             out,
-            format!("{source}: preflight at position {head}; purge with --report {id}"),
+            format!(
+                "{source}{}: preflight at position {head}; purge with --report {id}",
+                named("in")
+            ),
         );
     }
     if report.retired == 0 {
-        return put(out, format!("nothing to retire for {source}"));
+        return put(
+            out,
+            format!("nothing to retire for {source}{}", named("in")),
+        );
     }
+    let (from, head) = (named("from"), report.position);
     put(
         out,
-        format!("purged {source} through position {}", report.position),
+        format!("purged {source}{from} through position {head}"),
     )
 }
 

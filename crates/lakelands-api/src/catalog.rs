@@ -386,19 +386,27 @@ pub trait LakeStore: Send + Sync {
     /// another hand also wrote refuses the whole purge as invalid, naming
     /// it, and nothing is appended; a type that keeps no per-field
     /// provenance is not searched and is named in the report
-    /// (`docs/decisions/039-a-source-is-retracted-as-one.md`). With the
-    /// `report_id` of a preflight, it is refused as invalid if the lake
-    /// moved since.
+    /// (`docs/decisions/039-a-source-is-retracted-as-one.md`). With `ty`,
+    /// the purge is of what the source brought into that type and the
+    /// link types of its relations, and all of this is said of that
+    /// selection alone; a type that cannot be purged from is refused.
+    /// With the `report_id` of a preflight, it is refused as invalid
+    /// unless that report is of this purge at this head.
     async fn purge_source(
         &self,
         source: &SourceId,
+        ty: Option<&TypeName>,
         report_id: Option<&str>,
     ) -> Result<crate::write::PurgeReport>;
 
     /// What [`Self::purge_source`] would do, appending nothing: the same
     /// report, refused as the purge would be, under an id the purge may
     /// repeat.
-    async fn purge_preflight(&self, source: &SourceId) -> Result<crate::write::PurgeReport>;
+    async fn purge_preflight(
+        &self,
+        source: &SourceId,
+        ty: Option<&TypeName>,
+    ) -> Result<crate::write::PurgeReport>;
 
     /// Give back the storage the projection no longer uses. It appends
     /// nothing and changes no answer, no event and no byte of an export;

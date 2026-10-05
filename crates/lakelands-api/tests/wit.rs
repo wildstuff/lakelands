@@ -1071,6 +1071,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             "purge_report",
             members(&PurgeReport {
                 source: "erp".into(),
+                ty: Some("ord".into()),
                 retired: 1,
                 types: vec![],
                 unsearched: vec![],

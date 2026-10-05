@@ -48,12 +48,13 @@ interface store {
         /// Run every aging rule once for `today`, a date at UTC midnight,
         /// and answer what it moved.
         age: func(today: timestamp) -> result<age-report, error>;
-        /// Retire, in one append, every live record the source brought in;
-        /// a co-owned record refuses the whole purge. With a preflight's
-        /// id, refused if the lake moved since.
-        purge-source: func(source: source-id, report-id: option<string>) -> result<purge-report, error>;
+        /// Retire, in one append, every live record the source brought in,
+        /// into the one type named where one is; a co-owned record refuses
+        /// the whole purge. With a preflight's id, refused unless that
+        /// report is of this purge at this head.
+        purge-source: func(source: source-id, %type: option<type-name>, report-id: option<string>) -> result<purge-report, error>;
         /// What `purge-source` would do, appending nothing.
-        purge-preflight: func(source: source-id) -> result<purge-report, error>;
+        purge-preflight: func(source: source-id, %type: option<type-name>) -> result<purge-report, error>;
         /// Give back the storage the projection no longer uses; appends
         /// nothing and changes no answer.
         compact: func() -> result<compact-report, error>;

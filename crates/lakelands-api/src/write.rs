@@ -858,13 +858,18 @@ pub struct RuleRun {
 pub struct PurgeReport {
     /// The source purged.
     pub source: SourceId,
+    /// The one type the purge was of; absent for a purge of the source
+    /// whole.
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub ty: Option<TypeName>,
     /// The records retired, over every type.
     pub retired: u32,
     /// Per type, in name order, the records retired in it; types with
     /// none are left out.
     pub types: Vec<TypeRetired>,
     /// The types that keep no per-field provenance, which a purge cannot
-    /// read and does not search, in name order.
+    /// read and does not search, in name order; empty for a purge of one
+    /// type, which is refused instead.
     pub unsearched: Vec<TypeName>,
     /// The head after the append, or the head as it stood when nothing
     /// was appended.

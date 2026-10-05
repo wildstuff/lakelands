@@ -1069,11 +1069,13 @@ interface types {
         skipped: option<string>,
     }
 
-    /// What one purge retired, or its preflight says it would: per type,
-    /// the types it could not search, the position, what outside it refers
-    /// into it, and a preflight's id.
+    /// What one purge retired, or its preflight says it would: the one
+    /// type it was of where it named one, per type, the types it could
+    /// not search, the position, what outside it refers into it, and a
+    /// preflight's id.
     record purge-report {
         source: source-id,
+        %type: option<type-name>,
         retired: u32,
         types: list<type-retired>,
         unsearched: list<type-name>,

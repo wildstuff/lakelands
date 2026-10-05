@@ -162,17 +162,23 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   `aging` section: the date at its `utc_offset`, once at start and at each
   rollover (`docs/seams.md` §aging).
   A source that should be taken back is purged with
-  `LakeStore::purge_source(source)` (`lakelands purge --source <id>`):
+  `LakeStore::purge_source(source, None, None)`
+  (`lakelands purge --source <id>`):
   every record it brought in is retired in one append, and a record
   another hand also wrote refuses the purge
   (`docs/decisions/039-a-source-is-retracted-as-one.md`). The report
   names, per relation, the live records outside the purge that still
   refer to a record it took. A host that must know that before it acts
-  asks first: `LakeStore::purge_preflight(source)`
+  asks first: `LakeStore::purge_preflight(source, None)`
   (`lakelands purge --source <id> --preflight`) appends nothing and
-  answers the same report under an id, and `purge_source(source,
+  answers the same report under an id, and `purge_source(source, None,
   Some(id))` (`--report <id>`) purges only if the lake has not moved
-  since.
+  since. Both take one type in place of `None` (`--type <type>`): the
+  purge is then of what the source brought into that type and the links
+  of its relations, a co-owned record elsewhere does not hold it, the
+  report names the source's records in other types that still refer
+  into what went, and the id is of that purge alone. A view, and a type
+  that keeps no per-field provenance, are refused there.
   A lake's log is exported with `lakelands_store::export::write(store,
   dir)` (`lakelands export --to <dir>`) as files that verify without
   Lakelands (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`);
