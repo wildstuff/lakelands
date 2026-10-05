@@ -1,10 +1,14 @@
 //! What a declaration costs on SQLite when it recomputes a type's derived
 //! fields: the time the `declare` holds the writer and the peak memory of
-//! its append, at 100 000 live records, for a function declared again, for
-//! the type's own derived expression declared again, and for the type
-//! declared again with one more source field, which changes no record, each
-//! on a fresh lake. By hand: `cargo test --release -p lakelands-engine-sqlite --test
-//! recomputed -- --ignored --nocapture`.
+//! its append, at 100 000 live records, each on a fresh lake. For one
+//! declaration: a function declared again, the type's own derived
+//! expression declared again, the same with an expression that changes no
+//! record, and a type with no derived field declared again. For several
+//! (lakelands#523): a bundle of 50 changed functions of one type, a bundle
+//! of two, a bundle of a function and the type that uses it, and a rebuild
+//! of ten appends that each change a function. By hand: `cargo test
+//! --release -p lakelands-engine-sqlite --test recomputed -- --ignored
+//! --nocapture`.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -47,24 +51,37 @@ async fn measured<T>(what: &str, call: impl Future<Output = T>) -> T {
     answer
 }
 
-/// The function `scaled`, computing `expr` from `net`.
-fn scaled(expr: &str) -> Declaration {
+/// The function `name`, computing `expr` from `net`.
+fn function(name: &str, expr: &str) -> Declaration {
     serde_json::from_value(json!({
-        "declare": "function", "name": "scaled", "backing": "expr",
+        "declare": "function", "name": name, "backing": "expr",
         "inputs": [{"name": "net", "type": {"kind": "decimal"}}],
         "expr": expr
     }))
     .unwrap()
 }
 
+/// The function `scaled`, computing `expr` from `net`.
+fn scaled(expr: &str) -> Declaration {
+    function("scaled", expr)
+}
+
+/// Loads the records of `bill`.
+async fn load(l: &Lake) {
+    let records = (0..records()).map(|i| {
+        let fields = json!({"n": i, "net": "3", "memo": "a memo of some length"});
+        source_record("bill", &format!("b{i:06}"), fields)
+    });
+    l.ingest("load", records.collect()).await.unwrap();
+}
+
 /// One cell, on a fresh lake: loads the records of a type with one derived
 /// field, then declares again what computes it, a function the field reads
 /// (`by_function`) or the type's own expression, or (`unchanged`) the type
-/// with one more source field, which computes every record again and
-/// changes none; `plain` leaves the derived field out and declares the type
-/// again with a description only, so that the store computes nothing and
-/// the cost is the engine's alone. Prints the cost of that
-/// declaration.
+/// with an expression that computes every record again and changes none;
+/// `plain` leaves the derived field out and declares the type again with a
+/// description only, so that the store computes nothing and the cost is
+/// the engine's alone. Prints the cost of that declaration.
 async fn cell(store: &dyn LakeStore, (by_function, unchanged, plain): (bool, bool, bool)) {
     let l = Lake::of(store);
     let bill = |expr: &str, more: bool| {
@@ -77,10 +94,9 @@ async fn cell(store: &dyn LakeStore, (by_function, unchanged, plain): (bool, boo
             sourced("net", Decimal),
             sourced("memo", Text),
         ];
-        // One more source field computes the type again; a description
-        // alone, on a type with no derived field, computes nothing.
-        let field = (more && !plain).then(|| sourced("note", Text));
-        let rest = (!plain).then_some(d).into_iter().chain(field).collect();
+        // A description alone, on a type with no derived field, computes
+        // nothing.
+        let rest = (!plain).then_some(d).into_iter().collect();
         let mut ty = type_decl("bill", [sources.to_vec(), rest].concat());
         ty.description = (more && plain).then(|| "declared again".into());
         ty
@@ -89,13 +105,11 @@ async fn cell(store: &dyn LakeStore, (by_function, unchanged, plain): (bool, boo
         .await
         .unwrap();
     l.declare(bill("net * 2", false)).await.unwrap();
-    let records = (0..records()).map(|i| {
-        let fields = json!({"n": i, "net": "3", "memo": "a memo of some length"});
-        source_record("bill", &format!("b{i:06}"), fields)
-    });
-    l.ingest("load", records.collect()).await.unwrap();
+    load(&l).await;
     if unchanged {
-        let again = l.declare(bill("net * 2", true));
+        // Another expression of the same value: every record is computed
+        // again and none is put.
+        let again = l.declare(bill("net + net", true));
         let what = match plain {
             true => "a type with no derived field declared again",
             false => "the type declared again, no record changes",
@@ -119,14 +133,103 @@ async fn cell(store: &dyn LakeStore, (by_function, unchanged, plain): (bool, boo
     assert_eq!(read.fields.get("d"), d.as_ref());
 }
 
+/// A cell of several declarations.
+#[derive(Clone, Copy)]
+enum Several {
+    /// One bundle that declares this many functions of one type again,
+    /// each with a change.
+    Functions(usize),
+    /// One bundle that declares a function and the type that uses it
+    /// again, both with a change.
+    FunctionAndType,
+    /// Ten appends, each the function declared again with a change, and
+    /// then a rebuild, which is what is measured.
+    Rebuilt,
+}
+
+/// One cell of several declarations, on a fresh lake: loads the records of
+/// a type with a field for each function, `d0` by `f0` and so on, and `e`,
+/// derived by the type's own expression; then the declarations, and their
+/// cost.
+async fn several(store: &dyn LakeStore, which: Several) {
+    let l = Lake::of(store);
+    let k = match which {
+        Several::Functions(k) => k,
+        _ => 1,
+    };
+    let bill = |e: &str| {
+        let by = (0..k).map(|i| computed_by(&format!("d{i}"), Decimal, &format!("f{i}"), &["net"]));
+        let sources = [
+            sourced("n", Number),
+            sourced("net", Decimal),
+            sourced("memo", Text),
+        ];
+        let e = derived("e", Decimal, e, &["net"]);
+        type_decl("bill", sources.into_iter().chain(by).chain([e]).collect())
+    };
+    let functions = |expr: &str| -> Vec<Declaration> {
+        (0..k).map(|i| function(&format!("f{i}"), expr)).collect()
+    };
+    for f in functions("net * 2") {
+        l.declare_as(f, "a function").await.unwrap();
+    }
+    l.declare(bill("net * 2")).await.unwrap();
+    load(&l).await;
+    let (d, e) = match which {
+        Several::Functions(_) => {
+            let bundle = l.cat.apply(&l.own, functions("net * 3"));
+            let what = format!("a bundle of {k} changed functions of one type");
+            measured(&what, bundle).await.unwrap();
+            ("9", "6")
+        }
+        Several::FunctionAndType => {
+            let mut both = functions("net * 3");
+            both.push(Declaration::Type(bill("net * 3")));
+            let bundle = l.cat.apply(&l.own, both);
+            measured("a bundle of a function and its type, both changed", bundle)
+                .await
+                .unwrap();
+            ("9", "9")
+        }
+        Several::Rebuilt => {
+            for by in 3..=12 {
+                let again = function("f0", &format!("net * {by}"));
+                l.declare_as(again, "the function again").await.unwrap();
+            }
+            let rebuilt = store.rebuild();
+            measured("a rebuild of ten appends, each a changed function", rebuilt)
+                .await
+                .unwrap();
+            ("36", "6")
+        }
+    };
+    let read = l.read("bill", "b000007").await.unwrap();
+    let last = format!("d{}", k - 1);
+    assert_eq!(
+        (read.fields.get(last.as_str()), read.fields.get("e")),
+        (Some(&json!(d)), Some(&json!(e)))
+    );
+}
+
+/// A cell: one declaration, or several.
+#[derive(Clone, Copy)]
+enum Cell {
+    One((bool, bool, bool)),
+    Several(Several),
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "measures recomputations over 100 000 records; run by hand with --release"]
 async fn recomputing_a_hundred_thousand_records() {
     let cells = [
-        (true, false, false),
-        (false, false, false),
-        (false, true, false),
-        (false, true, true),
+        Cell::One((true, false, false)),
+        Cell::One((false, false, false)),
+        Cell::One((false, true, false)),
+        Cell::One((false, true, true)),
+        Cell::Several(Several::Functions(50)),
+        Cell::Several(Several::Functions(2)),
+        Cell::Several(Several::FunctionAndType),
+        Cell::Several(Several::Rebuilt),
     ];
     // All, or the one `LAKELANDS_TEST_CELLS` numbers from 0.
     let only = std::env::var("LAKELANDS_TEST_CELLS").ok();
@@ -144,7 +247,10 @@ async fn recomputing_a_hundred_thousand_records() {
         let store: Arc<dyn LakeStore> = lakelands_store::open(location, seams, OpenMode::Create)
             .await
             .unwrap();
-        cell(store.as_ref(), which).await;
+        match which {
+            Cell::One(one) => cell(store.as_ref(), one).await,
+            Cell::Several(more) => several(store.as_ref(), more).await,
+        }
         store.close().await.unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -197,10 +197,16 @@ An engine is found by name and opened through `EngineOpener`:
 
 The fold calls the projection inside one transaction per chunk: an
 append for a write, a page of the log (1 024 events) for a rebuild or an
-open's catch-up. `commit(through)` records the position folded through
+open's catch-up. A page is folded in more than one transaction when it
+computes a type's derived fields again: once those records are put, the
+fold commits through the last event folded and begins another
+transaction for the page's remaining events, which then read the
+records from the projection
+(`docs/decisions/048-the-fold-keeps-the-event-not-the-records-it-changed.md`).
+`commit(through)` records the position folded through
 in the same transaction, so a crash leaves the projection at a whole
 chunk, and opening a lake folds the log from `folded_through` on. A
-page's boundary may fall inside an append; a view inside an append
+chunk's boundary may fall inside an append; a view inside an append
 already answers each event's states. What a fold that stops leaves, and
 what reads answer meanwhile, is under `LakeStore::head` below.
 
@@ -208,7 +214,11 @@ what reads answer meanwhile, is under `LakeStore::head` below.
 - Nothing put in a transaction is visible to any view until it commits;
   a commit makes all of it visible at once, with its `through`.
 - Before the commit, the store reads a state it put in the transaction
-  from what it staged, never through a view. An engine may hold the
+  from what it staged, never through a view: a record, a membership, a
+  recorded output. A view it reads between its puts answers the output
+  recorded before the transaction, and the store depends on that: a
+  declaration that computes fields again reads the outputs recorded
+  before its own event, the view's among them (048). An engine may hold the
   puts until the commit, or write them before it: PostgreSQL holds a
   page of 1 024 puts and writes each full page inside its open
   transaction, so it holds a page of a large append, never all of it.
@@ -231,7 +241,12 @@ what reads answer meanwhile, is under `LakeStore::head` below.
   position, so a page ordered by an indexed field reads it as holding no
   value. It stays so, on SQLite and on PostgreSQL, until it is put again
   or its type is declared again. The fold puts in the order of the
-  events, which is that order.
+  events, which is that order, but for the records a `declared` computes
+  again: those it puts later, before the next event that reads a record
+  and before the commit, a record at a time, each at the position of
+  every such `declared` that changed it (048). Their type's declaration
+  is put by then; what later events that read no record put may be too:
+  their applied marks, declarations, memberships, proposals and outputs.
 - A put may answer an error the engine met writing a page. The
   transaction is then rolled back as after any failed put: `rollback`
   leaves nothing of it, the pages written before the failing one
@@ -1681,11 +1696,15 @@ opened only to read names the position the writer has folded.
 `rebuild`, `verify` and the fold at open read the log in pages of 1 024
 events and hold no more than one. A rebuild and an open's catch-up fold
 page by page, each page in its own transaction that commits
-`folded_through` at its last event. A fold that stops, by an error or a
-crash, leaves the projection folded through the last page it committed:
+`folded_through` at its last event, or in several, each committing at
+the last event it folded (a page that computes derived fields again:
+048). A fold that stops, by an error or a
+crash, leaves the projection folded through its last commit:
 `head()` names that position, a read at or before it answers the lake as
 of there, a read past it is refused as `OutOfRange` naming it, as for a
-failed append, and never answers from half a page. The next fold (an
+failed append, and never answers from half a transaction: what a commit
+inside a page holds is every event through its position, whole, and a
+commit the engine refuses leaves the one before it. The next fold (an
 append's, a `rebuild`, or the next open) continues from there. While a
 rebuild runs, the writer's lock holds every write back and `head()`
 still names the head from before it: a read at that head is out of range

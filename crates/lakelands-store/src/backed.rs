@@ -115,21 +115,31 @@ pub struct Outputs<'a> {
     /// The projection before the append.
     pub view: &'a dyn ProjectionView,
     /// Outputs recorded earlier in the same fold, not in the view yet.
-    pub staged: Option<&'a BTreeMap<(String, Digest), Value>>,
+    pub staged: Option<&'a Recorded>,
+    /// The position the reader reads before: a recomputation kept as a
+    /// step reads what was recorded before its own event, whenever it is
+    /// asked. `None` for every other reader, which reads the last.
+    pub before: Option<Position>,
     /// The calls made due, when the caller keeps them.
     pub due: Option<&'a mut Vec<Due>>,
 }
 
+/// The outputs one transaction recorded, by seam and input: every
+/// recording with its position, in the order of the log.
+pub type Recorded = BTreeMap<(String, Digest), Vec<(Position, Value)>>;
+
 impl Outputs<'_> {
-    /// What the lake recorded for a call, if anything.
+    /// What the lake recorded for a call, if anything: the transaction's
+    /// last recording the reader may read, else the view's.
     fn recorded(&self, seam: &str, input: &Digest) -> Result<Option<Value>> {
-        if let Some(v) = self
+        let staged = self
             .staged
-            .and_then(|s| s.get(&(seam.to_owned(), input.clone())))
-        {
-            return Ok(Some(v.clone()));
+            .and_then(|s| s.get(&(seam.to_owned(), input.clone())));
+        let read = |(at, _): &&(Position, Value)| self.before.is_none_or(|before| *at < before);
+        match staged.and_then(|all| all.iter().rev().find(read)) {
+            Some((_, v)) => Ok(Some(v.clone())),
+            None => self.view.output(seam, input),
         }
-        self.view.output(seam, input)
     }
 }
 
@@ -873,8 +883,11 @@ fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Posi
     let mut fills = false;
     if let Some(before) = view.get(&d.ty, &d.key)? {
         let event = crate::writes::provisional(lake, at, &draft);
-        let staged: BTreeMap<(String, Digest), Value> =
-            [((d.seam.clone(), d.input.clone()), output.clone())].into();
+        let staged: Recorded = [(
+            (d.seam.clone(), d.input.clone()),
+            vec![(at, output.clone())],
+        )]
+        .into();
         let after = crate::record::fill(
             &w.ontology,
             &before,
@@ -887,6 +900,7 @@ fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Posi
             &mut Outputs {
                 view: view.as_ref(),
                 staged: Some(&staged),
+                before: None,
                 due: None,
             },
         )?;

@@ -265,6 +265,79 @@ async fn a_rebuild_folds_a_page_over_the_records_the_pages_before_wrote(
     Ok(())
 }
 
+check!(
+    /// A rebuild computes again, in one page, what the live lake's appends did.
+    REBUILD_RECOMPUTES_IN_A_PAGE = a_rebuild_folds_a_page_that_computes_fields_again,
+    "001, 022 and the engine seam (lakelands#523): a rebuild folds a page of 1 024 events that holds a function declared again with a change, the outputs recorded for it, a write, and a `recompute`, over records an earlier page wrote; it leaves what the live lake's appends left, at the head and as of every event of the page, and calls no backing"
+);
+
+async fn a_rebuild_folds_a_page_that_computes_fields_again(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use crate::conformance::backing::{made, plug, unplug};
+    let token = "rebuild_recomputes_in_a_page";
+    let config = |round: u32| json!({"token": token, "echo": "code", "round": round});
+    let l = super::backings::places(store.as_ref(), config(1)).await?;
+    for (key, code) in [("p1", "AT"), ("p2", "DE")] {
+        l.upsert("place", key, json!({ "code": code })).await?;
+    }
+    // Enough events to end a rebuild's first page: what follows is folded
+    // over a projection that holds the two places, each with its name.
+    l.declare(type_decl("filler", vec![sourced("n", StorageKind::Number)]))
+        .await?;
+    let filler = (0..1_100).map(|i| source_record("filler", &format!("f{i:04}"), json!({"n": i})));
+    l.ingest("load", filler.collect())
+        .await
+        .must("loading the filler")?;
+    // The function changes the call it makes while its backing refuses:
+    // every name is cleared and a failure recorded for each call. A write
+    // reads the failure back. Then `recompute` calls again, and the outputs
+    // fill all three.
+    let from = store.head().await.must("reading the head")?.next();
+    unplug(token);
+    let lookup = json!({"declare": "function", "name": "lookup", "backing": crate::conformance::backing::KIND,
+        "inputs": [{"name": "code", "type": {"kind": "text"}}], "config": config(2)});
+    l.declare_json(lookup).await?;
+    l.upsert("place", "p3", json!({"code": "AT"})).await?;
+    plug(token);
+    let again = lakelands_api::write::Recompute::Function("lookup".into());
+    let recomputed = l.cat.recompute(&l.own, again).await;
+    let head = recomputed.must("the `recompute` door")?.position();
+    let p1 = l.read("place", "p1").await?;
+    ensure!(
+        from.0 >= 1_024
+            && head.0 < 2_048
+            && crate::conformance::fixture::value(&p1, "name") == Some(&json!("AT")),
+        "the check's appends stand in the second page of 1 024 events, from {from} to {head}, \
+         and leave `p1` its name again: {p1:?}"
+    );
+    let read = || async {
+        let mut out = Vec::new();
+        for at in (from.0..=head.0).map(Position) {
+            let places = l.all_found("place", find_at(Some(at))).await?;
+            out.push((format!("place as of {at}"), places));
+        }
+        Ok::<_, Failure>(out)
+    };
+    let (live, calls) = (read().await?, made(token));
+    unplug(token);
+    store.rebuild().await.must("rebuilding the projection")?;
+    for ((label, before), (_, after)) in live.iter().zip(&read().await?) {
+        ensure!(
+            before == after,
+            "after the rebuild, `{label}` reads differently.\n  before: {before:?}\n  \
+             after:  {after:?}\nA page that computes fields again must leave what the live \
+             lake's appends left"
+        );
+    }
+    ensure!(
+        made(token) == calls,
+        "the rebuild reads the recorded outputs back: {calls} calls before it, {} after",
+        made(token)
+    );
+    Ok(())
+}
+
 async fn a_rebuild_reproduces_the_chain(store: Arc<dyn LakeStore>) -> Result<(), Failure> {
     let l = Lake::of(store.as_ref());
     l.declare(type_decl("memo", vec![field("text", StorageKind::Text)]))

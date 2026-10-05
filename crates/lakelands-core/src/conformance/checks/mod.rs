@@ -157,6 +157,7 @@ pub const ALL: &[Check] = &[
     rebuild::REBUILD_ANSWERS_AS_BEFORE,
     rebuild::REBUILD_REPRODUCES_THE_CHAIN,
     rebuild::REBUILD_FOLDS_OVER_RECORDS,
+    rebuild::REBUILD_RECOMPUTES_IN_A_PAGE,
     filters::ABSENT_NEVER_MATCHES,
     filters::NUMBERS_COMPARE_AS_NUMBERS,
     filters::KINDS_THAT_DO_NOT_COMPARE,

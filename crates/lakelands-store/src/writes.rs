@@ -918,6 +918,7 @@ impl Call<'_> {
             &mut Outputs {
                 view,
                 staged: None,
+                before: None,
                 due: None,
             },
         )?
@@ -1033,6 +1034,7 @@ impl Call<'_> {
         let outputs = &mut Outputs {
             view,
             staged: None,
+            before: None,
             due: None,
         };
         let after = record::apply(&w.ontology, Some(before), &event, &w.settings, outputs)?
@@ -1972,7 +1974,7 @@ impl Call<'_> {
         granted(!sent.iter().any(hidden))?;
         let mut seen = o.clone();
         (seen.types).retain(|name, _| shown(name));
-        for e in seen.types.values_mut() {
+        for e in seen.types.values_mut().map(Arc::make_mut) {
             rights::known_fields(self.who, &mut e.decl);
         }
         // What a type's shape names stands as declared, known to its author
@@ -1981,7 +1983,7 @@ impl Call<'_> {
         let mut shaped = sent.to_vec();
         for d in &mut shaped {
             let Declaration::Type(t) = d else { continue };
-            let Some(e) = seen.types.get_mut(&t.name) else {
+            let Some(e) = seen.types.get_mut(&t.name).map(Arc::make_mut) else {
                 continue;
             };
             let via = t.relations.iter().filter_map(|r| r.via.as_ref());

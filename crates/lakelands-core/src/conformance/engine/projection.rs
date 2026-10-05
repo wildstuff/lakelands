@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 
 use lakelands_api::Refusal;
 use lakelands_api::engine::{LakeEngine, ProjectionStore, ProjectionView};
+use lakelands_api::event::Digest;
 use lakelands_api::id::{Position, RecordKey, RelationName, TypeName, Version};
 use lakelands_api::query::Walk;
 use lakelands_api::record::StoredRecord;
@@ -455,10 +456,12 @@ fn a_view_does_not_see_an_open_transaction(engine: &dyn LakeEngine) -> Result<()
         declared(json!([]))?,
         declared(json!([{"name": "n", "type": {"kind": "number"}}]))?,
     );
+    let (held, new) = (Digest("1".repeat(64)), Digest("2".repeat(64)));
     fold(engine, 1, |p| {
         p.put_declaration(&one, 1, None, Position(1))?;
         p.put_record(&record("t", "a", json!({"n": 1}), 1))?;
         p.put_record(&record("t", "c", json!({"n": 1}), 1))?;
+        p.put_output("seam", &held, &json!("one"), Position(1))?;
         p.put_membership("s", &t, &RecordKey::from("a"), true, Position(1))
     })?;
     let p = engine.projection();
@@ -486,6 +489,16 @@ fn a_view_does_not_see_an_open_transaction(engine: &dyn LakeEngine) -> Result<()
     p.put_record(&record("t", "a", json!({"n": 2}), 2))
         .must("putting a record")?;
     let first = page(None)?;
+    // A fold reads the outputs recorded before its transaction through its
+    // view, and what the transaction recorded from what it staged.
+    for (input, output) in [(&held, "two"), (&new, "new")] {
+        p.put_output("seam", input, &json!(output), Position(2))
+            .must("putting an output")?;
+    }
+    let outputs = (
+        before.output("seam", &held).must("reading an output")?,
+        before.output("seam", &new).must("reading an output")?,
+    );
     p.put_record(&record("t", "b", json!({}), 2))
         .must("putting a record")?;
     for (key, member) in [("b", true), ("a", false)] {
@@ -506,11 +519,13 @@ fn a_view_does_not_see_an_open_transaction(engine: &dyn LakeEngine) -> Result<()
         first == [("a".to_owned(), json!({"n": 1}))]
             && next == [("c".to_owned(), json!({"n": 1}))]
             && members.iter().map(RecordKey::as_str).eq(["a"])
-            && versions == [1],
+            && versions == [1]
+            && outputs == (Some(json!("one")), None),
         "a view opened before a transaction's puts and read between them answered the page \
-         {first:?}, after `a` the page {next:?}, the members {members:?} and `t` at versions \
-         {versions:?}; it must answer what was committed: `a` with n = 1, then `c`, the \
-         member `a`, version 1"
+         {first:?}, after `a` the page {next:?}, the members {members:?}, `t` at versions \
+         {versions:?} and the outputs {outputs:?}; it must answer what was committed: `a` \
+         with n = 1, then `c`, the member `a`, version 1, and the output recorded before \
+         the transaction, none for the input it recorded first"
     );
     let during = view(engine, None)?;
     let (a, b, at) = (
@@ -535,9 +550,11 @@ fn a_view_does_not_see_an_open_transaction(engine: &dyn LakeEngine) -> Result<()
         .get(&TypeName::from("t"), &RecordKey::from("a"))
         .must("reading after the commit")?
         .and_then(|r| r.fields.get("n").cloned());
+    let output = after.output("seam", &held).must("reading an output")?;
     ensure!(
-        n == Some(json!(2)),
-        "after the commit `a` reads n = {n:?}; it must be 2"
+        n == Some(json!(2)) && output == Some(json!("two")),
+        "after the commit `a` reads n = {n:?} and the output {output:?}; they must be 2 and \
+         the output the transaction recorded"
     );
     Ok(())
 }

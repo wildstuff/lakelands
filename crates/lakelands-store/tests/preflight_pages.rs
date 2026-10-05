@@ -3,174 +3,27 @@
 //! and every refusal are what they were when it read the type whole.
 //!
 //! The checks run through the doors on the memory engine, behind a wrapper
-//! that remembers the most rows one `scan` handed out and can fail the
-//! n-th scan of a type. The types have more records than two pages hold,
+//! (`probed`) that remembers the most rows one `scan` handed out and can
+//! fail the n-th scan of a type. The types have more records than two pages hold,
 //! with what a page boundary could lose placed on both sides of one.
 
-use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+mod probed;
 
-use lakelands_api::engine::{
-    CanonicalEvent, Declared, EngineOpener, LakeEngine, Lease, OpenMode, ProjectionStore,
-    ProjectionView, Scan, VectorIndex,
-};
-use lakelands_api::event::{Digest, EventBody, EventId, SegmentDigest};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+
+use lakelands_api::engine::OpenMode;
+use lakelands_api::event::EventBody;
 use lakelands_api::location::Limits;
-use lakelands_api::query::{Edge, Walk};
-use lakelands_api::record::{StoredRecord, Value};
 use lakelands_api::seam::{FeedFilter, Seams};
-use lakelands_api::write::{Migration, Proposal, ProposalFilter};
+use lakelands_api::write::Migration;
 use lakelands_api::{
-    Error, LakeId, LakeStore, Location, Position, RecordKey, Refusal, RelationName, Result,
-    TypeName, WriteOpts,
+    Error, LakeStore, Location, Position, Refusal, RelationName, TypeName, WriteOpts,
 };
 use lakelands_core::conformance::fixture::{Lake, object_set_on, patch};
 use lakelands_engine_mem::MemoryOpener;
+use probed::{Probe, ProbedOpener};
 use serde_json::json;
-
-/// What the views did: the most rows one `scan` handed out, and a scan to
-/// fail (the n-th of a type from now, counted from 1).
-#[derive(Default)]
-struct Probe {
-    most: AtomicUsize,
-    fail: Mutex<Option<(TypeName, usize)>>,
-}
-
-struct Probed {
-    inner: Box<dyn LakeEngine>,
-    probe: Arc<Probe>,
-}
-
-struct ProbedView<'a> {
-    inner: Box<dyn ProjectionView + 'a>,
-    probe: Arc<Probe>,
-}
-
-impl ProjectionView for ProbedView<'_> {
-    fn position(&self) -> Option<Position> {
-        self.inner.position()
-    }
-    fn declarations(&self) -> Result<Vec<Declared>> {
-        self.inner.declarations()
-    }
-    fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
-        self.inner.get(ty, key)
-    }
-    fn get_many(&self, ty: &TypeName, keys: &[RecordKey]) -> Result<Vec<StoredRecord>> {
-        self.inner.get_many(ty, keys)
-    }
-    fn scan(&self, ty: &TypeName, scan: &Scan) -> Result<Vec<StoredRecord>> {
-        let mut fail = self.probe.fail.lock().unwrap();
-        if let Some((failing, left)) = fail.as_mut().filter(|(failing, _)| failing == ty) {
-            *left -= 1;
-            if *left == 0 {
-                let message = format!("the scan of `{failing}` failed (planted)");
-                *fail = None;
-                return Err(Error::Unavailable { message });
-            }
-        }
-        drop(fail);
-        let rows = self.inner.scan(ty, scan)?;
-        self.probe.most.fetch_max(rows.len(), Ordering::SeqCst);
-        Ok(rows)
-    }
-    fn count(&self, ty: &TypeName, scan: &Scan) -> Result<u64> {
-        self.inner.count(ty, scan)
-    }
-    fn edges(
-        &self,
-        ty: &TypeName,
-        keys: &[RecordKey],
-        relation: Option<&RelationName>,
-        walk: Walk,
-    ) -> Result<Vec<Vec<Edge>>> {
-        self.inner.edges(ty, keys, relation, walk)
-    }
-    fn lexical(
-        &self,
-        ty: &TypeName,
-        text: &str,
-        fields: Option<&[lakelands_api::id::FieldName]>,
-        k: u32,
-    ) -> Result<Vec<(RecordKey, f64)>> {
-        self.inner.lexical(ty, text, fields, k)
-    }
-    fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
-        self.inner.proposals(filter)
-    }
-    fn is_member(&self, set: &str, ty: &TypeName, key: &RecordKey) -> Result<bool> {
-        self.inner.is_member(set, ty, key)
-    }
-    fn members(&self, set: &str, ty: &TypeName) -> Result<BTreeSet<RecordKey>> {
-        self.inner.members(set, ty)
-    }
-    fn applied(&self, id: &EventId) -> Result<Option<Position>> {
-        self.inner.applied(id)
-    }
-    fn output(&self, seam: &str, input: &Digest) -> Result<Option<Value>> {
-        self.inner.output(seam, input)
-    }
-}
-
-impl LakeEngine for Probed {
-    fn name(&self) -> &str {
-        self.inner.name()
-    }
-    fn lake(&self) -> &LakeId {
-        self.inner.lake()
-    }
-    fn take_lease(&self, holder: &str) -> Result<Lease> {
-        self.inner.take_lease(holder)
-    }
-    fn release_lease(&self, lease: &Lease) -> Result<()> {
-        self.inner.release_lease(lease)
-    }
-    fn tip(&self) -> Result<Option<(Position, Digest)>> {
-        self.inner.tip()
-    }
-    fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        self.inner.append(lease, events)
-    }
-    fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        self.inner.import(lease, events)
-    }
-    fn read(&self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>> {
-        self.inner.read(from, limit)
-    }
-    fn seal_segment(&self, lease: &Lease) -> Result<Option<SegmentDigest>> {
-        self.inner.seal_segment(lease)
-    }
-    fn segments(&self) -> Result<Vec<SegmentDigest>> {
-        self.inner.segments()
-    }
-    fn projection(&self) -> &dyn ProjectionStore {
-        self.inner.projection()
-    }
-    fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>> {
-        Ok(Box::new(ProbedView {
-            inner: self.inner.view(as_of)?,
-            probe: self.probe.clone(),
-        }))
-    }
-    fn vectors(&self) -> Option<&dyn VectorIndex> {
-        self.inner.vectors()
-    }
-}
-
-struct ProbedOpener(MemoryOpener, Arc<Probe>);
-
-impl EngineOpener for ProbedOpener {
-    fn name(&self) -> &str {
-        self.0.name()
-    }
-    fn open(&self, location: &Location, mode: OpenMode) -> Result<Box<dyn LakeEngine>> {
-        Ok(Box::new(Probed {
-            inner: self.0.open(location, mode)?,
-            probe: self.1.clone(),
-        }))
-    }
-}
 
 /// A new lake on the probed memory engine, with `max_set_changes`.
 async fn lake(name: &str, max_set_changes: u32) -> (Arc<dyn LakeStore>, Arc<Probe>) {
