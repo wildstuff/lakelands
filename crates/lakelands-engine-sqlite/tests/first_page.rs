@@ -24,7 +24,7 @@ fn a_first_page_is_planned_without_a_sort() {
     );
     let db = rusqlite::Connection::open(dir.join("projection.db")).unwrap();
     let statements = first_page_statements();
-    assert!(statements.len() >= 4, "the engine names {statements:?}");
+    assert!(statements.len() >= 6, "the engine names {statements:?}");
     for statement in statements {
         let mut explain = db
             .prepare(&format!("EXPLAIN QUERY PLAN {statement}"))
