@@ -55,6 +55,10 @@ The core's budgets are four:
 
 **The sixteenth raise:** the product code, from 38 500 to 39 000 lines, by slot a's word under the rule, for SQLite's order index marked by the declaration that first declares its field (lakelands#591: 12 lines as measured, 5 over the ceiling) and for a recomputation folded as a step, which follows under the same row (lakelands#523: 241 lines as its build measures).
 
+**The seventeenth raise:** the product code, from 39 000 to 39 500 lines, by slot a's word under the rule, for the evaluator's part of a view kept as its sources are written (lakelands#575): a group's folds as a state a member is put into and taken out of, and whether a view can be kept, 599 lines as measured with the sum's rule, 136 over the ceiling.
+
+**The eighteenth raise:** the specification, from 48 000 to 48 500 lines, by slot a's word under the rule, for the checks of the same pull request: that a kept state answers the computation's bytes, what can be kept, and the sum's rule, 657 lines as measured, 497 over the ceiling.
+
 ## Why
 
 The budgets keep the core small enough for one reader to hold. They have done that: four diets took out about 5 000 lines without losing a check.

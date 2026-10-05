@@ -192,6 +192,7 @@ belongs in the suite, not beside one engine:
 - `a_decimal_reads_back_exactly_as_it_was_written` — the log format: a decimal is a string of digits kept as written, trailing zeros and all, beyond any float's precision
 - `a_sum_over_decimals_is_exact` — the engine seam: sum is exact for decimals, so 0.10 + 0.20 + 0.30 is 0.60 and not a float's approximation
 - `a_scaled_decimal_keeps_its_scale_when_derived_and_summed` — 011: a value is kept at its value type's scale, so a derived decimal is rounded to it before it is stored, and a sum over a scaled field answers at that scale
+- `a_sum_reads_at_the_largest_scale_among_its_values` — 011: a sum over a field with no declared scale reads at the largest scale among its values, a zero's included, whatever order their keys give them: 5 and 0.00 are 5.00, and 1.10, -1.10 and 6 are 6.00 with an average of 2.00, through `find`'s aggregate and through a view
 
 **derived fields**
 

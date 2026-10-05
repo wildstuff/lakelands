@@ -10,12 +10,14 @@
 use std::sync::Arc;
 
 use lakelands_api::ontology::StorageKind;
-use lakelands_api::read::{AggFunc, Aggregate, Group};
+use lakelands_api::read::{AggFunc, Aggregate, Group, GroupKey};
 use lakelands_api::{Find, Found, LakeStore, TypeName};
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, agg, all, dec, decimal, field, type_decl, value};
+use crate::conformance::fixture::{
+    Lake, Must, agg, all, dec, decimal, field, type_decl, value, view_of,
+};
 
 check!(
     /// A decimal reads back as it was written.
@@ -33,6 +35,12 @@ check!(
     /// A scaled decimal keeps its scale when derived and summed.
     SCALE_KEPT = a_scaled_decimal_keeps_its_scale_when_derived_and_summed,
     "011: a value is kept at its value type's scale, so a derived decimal is rounded to it before it is stored, and a sum over a scaled field answers at that scale"
+);
+
+check!(
+    /// A sum reads at the largest scale among its values.
+    SUM_SCALE = a_sum_reads_at_the_largest_scale_among_its_values,
+    "011: a sum over a field with no declared scale reads at the largest scale among its values, a zero's included, whatever order their keys give them: 5 and 0.00 are 5.00, and 1.10, -1.10 and 6 are 6.00 with an average of 2.00, through `find`'s aggregate and through a view"
 );
 
 /// The groups of a sum of `field` over every `ty` record, with no
@@ -175,6 +183,85 @@ async fn a_scaled_decimal_keeps_its_scale_when_derived_and_summed(
         total == Some(&json!("10710.06")),
         "the sum of `gross` in `money` (scale 2) is {total:?}; it must be \"10710.06\", at the \
          field's scale"
+    );
+    Ok(())
+}
+
+async fn a_sum_reads_at_the_largest_scale_among_its_values(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    let (text, decimal) = (StorageKind::Text, StorageKind::Decimal);
+    let entry = vec![field("book", text), field("amount", decimal)];
+    l.declare(type_decl("entry", entry)).await?;
+    let measured = vec![
+        field("book", text),
+        field("total", decimal),
+        field("mean", decimal),
+    ];
+    let measures = [("total", "sum(amount)"), ("mean", "avg(amount)")];
+    let view = view_of("book_total", "entry", &["book"], measured, &measures);
+    l.declare(view).await?;
+    // Each pair of books holds the same amounts, their keys in two orders.
+    let books: [(&str, &[&str]); 4] = [
+        ("b1", &["5", "0.00"]),
+        ("b2", &["0.00", "5"]),
+        ("b3", &["1.10", "-1.10", "6"]),
+        ("b4", &["6", "1.10", "-1.10"]),
+    ];
+    for (book, amounts) in books {
+        for (i, amount) in amounts.iter().enumerate() {
+            let fields = json!({"book": book, "amount": amount});
+            l.upsert("entry", &format!("{book}-{i}"), fields).await?;
+        }
+    }
+    let want = [
+        "b1 5.00 2.50",
+        "b2 5.00 2.50",
+        "b3 6.00 2.00",
+        "b4 6.00 2.00",
+    ];
+    fn line(book: Option<&serde_json::Value>, values: [Option<&serde_json::Value>; 2]) -> String {
+        let text = |v: Option<&serde_json::Value>| v.map_or("-".into(), |v| v.to_string());
+        [book, values[0], values[1]]
+            .map(text)
+            .join(" ")
+            .replace('"', "")
+    }
+
+    let find = Find {
+        aggregate: Some(Aggregate {
+            measures: vec![
+                agg("total", AggFunc::Sum, Some("amount")),
+                agg("mean", AggFunc::Avg, Some("amount")),
+            ],
+            group_by: vec![GroupKey::Field("book".into())],
+        }),
+        ..Find::default()
+    };
+    let reply = cat.find(own, &TypeName::from("entry"), find).await;
+    let Found::Groups { rows } = reply.must("summing `amount` by `book`")?.data else {
+        return Err(Failure::new("`find` with an aggregate must answer groups"));
+    };
+    let got: Vec<String> = (rows.iter())
+        .map(|g| line(g.by.get("book"), ["total", "mean"].map(|m| g.values.get(m))))
+        .collect();
+    ensure!(
+        got == want,
+        "`find`'s sum and average of `amount` by `book` answered {got:?}; a sum reads at the \
+         largest scale among its values, a zero's included, whatever order their keys give \
+         them, and the average divides that sum: {want:?}"
+    );
+
+    let rows = all(cat.as_ref(), own, "book_total").await?;
+    let got: Vec<String> = (rows.iter())
+        .map(|r| line(value(r, "book"), ["total", "mean"].map(|m| value(r, m))))
+        .collect();
+    ensure!(
+        got == want,
+        "the view's `sum(amount)` and `avg(amount)` by `book` hold {got:?}; a view's sum reads \
+         as `find`'s does: {want:?}"
     );
     Ok(())
 }
