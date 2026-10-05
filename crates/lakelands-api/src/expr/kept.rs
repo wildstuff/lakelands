@@ -1,0 +1,158 @@
+//! Whether a view can be kept: its records held as its sources are
+//! written, and read as stored records are, where they would otherwise be
+//! computed at every read.
+//!
+//! A kept record is the computation's, exactly. A kept group folds its
+//! members as they arrive and leave, in whatever order that is, so a view
+//! can be kept only where each aggregate's answer is a function of its
+//! values, whatever order they are folded in, and where nothing but its
+//! sources' records decides them. That is read off the declaration alone,
+//! with the kinds its expressions certainly compute ([`super::kind`]).
+
+use super::kind::{self, Kind};
+use super::{Condition, Expr, Func, Literal, children, parse, print, rewrite};
+use crate::ontology::{FieldDecl, StorageKind, TypeDecl, ViewDecl};
+use crate::{FieldName, TypeName};
+
+/// Whether `view` can be kept, by its declaration alone: it declares no
+/// parameter and reads no clock, and every aggregate call of its measures
+/// and of its merged sources' is a function of its values: any `count`, a
+/// `sum` or `avg` of what is certainly a number, a `min` or `max` of what
+/// is certainly a number or an instant, and that only under group fields
+/// that are all text or references, of which there is one at least, so
+/// that a group whose extreme left is found again by its fields' values.
+/// Otherwise why not: which measure, which call, and what of it. Whether
+/// a source that is itself a view is kept is not said here.
+pub fn keepable<'a>(
+    view: &ViewDecl,
+    declared: impl Fn(&TypeName) -> Option<&'a TypeDecl>,
+) -> Result<(), String> {
+    if let Some(p) = view.params.first() {
+        return Err(format!(
+            "it declares the parameter `{}`, and a kept record is the same for every read",
+            p.name
+        ));
+    }
+    let own = (&view.source, &view.r#where, &view.group_by, &view.measures);
+    let merged = (view.merge.iter()).map(|s| (&s.source, &s.r#where, &s.group_by, &s.measures));
+    for (source, filter, group_by, measures) in std::iter::once(own).chain(merged) {
+        let fields = declared(source).map_or(&[][..], |t| &t.fields);
+        let clock = "reads the clock, and a kept record is computed when its source is written";
+        if filter
+            .iter()
+            .any(|c| typed(c).is_ok_and(|e| reads_clock(&e)))
+        {
+            return Err(format!("its `where` over `{source}` {clock}"));
+        }
+        for m in measures {
+            let named = |why: String| format!("measure `{}`: {why}", m.name);
+            let e = typed(&m.expr).map_err(named)?;
+            if reads_clock(&e) {
+                return Err(named(format!("it {clock}")));
+            }
+            let mut made = Vec::new();
+            calls(&e, &mut made);
+            for call in made {
+                let Expr::Call { func, args } = call else {
+                    continue;
+                };
+                let said = |why: String| named(format!("`{}` {why}", print(call)));
+                folds(*func, args.first(), fields, group_by).map_err(said)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn typed(c: &Condition) -> Result<Expr, String> {
+    match c {
+        Condition::Expr(e) => Ok(e.clone()),
+        Condition::Text(t) => parse(t).map_err(|e| format!("`{t}` does not parse: {e}")),
+    }
+}
+
+fn reads_clock(e: &Expr) -> bool {
+    let here = matches!(e, Expr::Call { func, .. } if matches!(func, Func::Now | Func::Today));
+    here || children(e).any(reads_clock)
+}
+
+/// The aggregate calls in `e`.
+fn calls<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
+    match e {
+        Expr::Call { func, .. } if func.is_aggregate() => out.push(e),
+        e => children(e).for_each(|c| calls(c, out)),
+    }
+}
+
+/// Whether one aggregate call is a function of its values, over a source
+/// with these fields grouped by `group_by`; or what of it is not.
+fn folds(
+    func: Func,
+    arg: Option<&Expr>,
+    fields: &[FieldDecl],
+    group_by: &[FieldName],
+) -> Result<(), String> {
+    let declared = |f: &FieldName| fields.iter().find(|d| d.name == *f).map(|d| d.ty.kind);
+    let certain = match (func, arg) {
+        (Func::Count, _) => return Ok(()),
+        (_, None) => return Err("has no argument".into()),
+        (_, Some(arg)) => folded_kind(arg, &declared),
+    };
+    let extreme = matches!(func, Func::Min | Func::Max);
+    match certain {
+        Some(Kind::Number) => {}
+        Some(Kind::Instant) if extreme => {}
+        other => {
+            let met = other.map_or("what is of no certain kind", Kind::name);
+            let (does, needs) = match extreme {
+                true => ("orders", "a number or an instant"),
+                false => ("adds", "a number"),
+            };
+            return Err(format!(
+                "{does} {met}; it is kept where its argument is certainly {needs}"
+            ));
+        }
+    }
+    if !extreme {
+        return Ok(());
+    }
+    let by = "is kept only in a view grouped by text or reference fields";
+    let other = |f: &&FieldName| {
+        !matches!(
+            declared(f),
+            Some(StorageKind::Text | StorageKind::Reference)
+        )
+    };
+    match group_by.iter().find(other) {
+        Some(f) => Err(format!("{by}, and `{f}` is neither")),
+        None if group_by.is_empty() => Err(format!("{by}, and this one has no group field")),
+        None => Ok(()),
+    }
+}
+
+/// The kind a fold's argument certainly is among the values it folds. A
+/// fold skips nulls, and arithmetic over a null is null, so an `if` with
+/// `null` for one branch stands for its other branch here, wherever it
+/// stands in the argument: `sum(if(open, amount, null) * qty)` adds
+/// numbers.
+fn folded_kind(e: &Expr, field: &dyn Fn(&FieldName) -> Option<StorageKind>) -> Option<Kind> {
+    fn filtered(e: &Expr) -> Option<Expr> {
+        let value = Literal::Null;
+        let null = Expr::Lit { value };
+        let Expr::Call {
+            func: Func::If,
+            args,
+        } = e
+        else {
+            return None;
+        };
+        match args.as_slice() {
+            [_, x, none] | [_, none, x] if *none == null => Some(rewrite(x, &filtered)),
+            _ => None,
+        }
+    }
+    kind::of(&rewrite(e, &filtered), field).ok().flatten()
+}
+
+#[cfg(test)]
+mod tests;

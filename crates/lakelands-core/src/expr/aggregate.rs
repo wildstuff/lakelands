@@ -27,6 +27,7 @@ use lakelands_api::expr::{CmpOp, Condition, Expr, Func};
 use lakelands_api::read::{AggFunc, AggMeasure, Aggregate, Group, GroupKey};
 use lakelands_api::{FieldName, Timestamp, Value};
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 
 use super::eval::{EvalError, RecordScope, Result, Scope, Val, compare, err, eval};
 
@@ -158,7 +159,7 @@ impl Fold {
             })?,
             other => return err(format!("sum() met {other:?}, which is not a number")),
         };
-        self.scales.add(n);
+        self.scales.fold(n, true);
         let sum = self.sum.checked_add(n);
         self.sum =
             sum.ok_or_else(|| EvalError("the sum is too large for exact arithmetic".into()))?;
@@ -166,21 +167,61 @@ impl Fold {
     }
 }
 
-/// The numbers of a sum by the scale they carry: for each scale their sum
-/// and the sum of their magnitudes, as integers. Where the magnitudes,
-/// written at the largest scale among the values, stay below 2^96, no
-/// order of additions rounds or fails, and the sum is exact at that scale:
-/// a function of its values, whatever order they came in. Adding them one
-/// to the next is not: a zero hands the other number back as it stands, so
+/// The numbers of a sum by the scale they carry: for each scale how many,
+/// their sum and the sum of their magnitudes, as integers. Where the
+/// magnitudes, written at the largest scale among the values, stay below
+/// 2^96, no order of additions rounds or fails, and the sum is exact at
+/// that scale: a function of its values, whatever order they came in, and
+/// one a number can be taken out of again. Adding them one to the next is
+/// not: a zero hands the other number back as it stands, so
 /// `1.10 - 1.10 + 5` read `5` or `5.00` by the order of the keys.
-#[derive(Clone, Debug, Default)]
-struct Scales(BTreeMap<u32, (i128, i128)>);
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+struct Scales(BTreeMap<u32, (u64, Wide, Wide)>);
+
+/// An integer wider than a JSON number, written as its decimal text.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Wide(i128);
+
+impl Serialize for Wide {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        s.collect_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for Wide {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Wide, D::Error> {
+        let text = String::deserialize(d)?;
+        text.parse().map(Wide).map_err(serde::de::Error::custom)
+    }
+}
 
 impl Scales {
-    fn add(&mut self, n: Decimal) {
-        let (sum, size) = self.0.entry(n.scale()).or_default();
-        *sum = sum.saturating_add(n.mantissa());
-        *size = size.saturating_add(n.mantissa().abs());
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Put a number in, or take one out. A scale no number carries has no
+    /// entry, so the numbers held say the same whatever was put and taken
+    /// on the way. Magnitudes past an integer's width, and a number taken
+    /// that was not put, leave the scale's magnitude at the width's end:
+    /// the sum is then not exact, and stays so.
+    fn fold(&mut self, n: Decimal, put: bool) {
+        let (scale, m) = (n.scale(), n.mantissa());
+        let (count, sum, size) = self.0.entry(scale).or_default();
+        if put {
+            *count = count.saturating_add(1);
+            sum.0 = sum.0.saturating_add(m);
+            size.0 = size.0.saturating_add(m.abs());
+        } else if *count == 0 || size.0 == i128::MAX || size.0 < m.abs() {
+            size.0 = i128::MAX;
+        } else {
+            (*count, sum.0, size.0) = (*count - 1, sum.0 - m, size.0 - m.abs());
+            match (*count, size.0) {
+                (0, 0) => drop(self.0.remove(&scale)),
+                (0, _) => size.0 = i128::MAX,
+                _ => {}
+            }
+        }
     }
 
     /// The sum at the largest scale among the values, a zero's included
@@ -188,12 +229,14 @@ impl Scales {
     fn exact(&self) -> Option<Decimal> {
         let top = self.0.keys().next_back().copied().unwrap_or(0);
         let (mut sum, mut size) = (0i128, 0i128);
-        for (scale, (s, m)) in &self.0 {
+        for (scale, (_, s, m)) in &self.0 {
             let up = 10i128.checked_pow(top - scale)?;
-            sum = sum.checked_add(s.checked_mul(up)?)?;
-            size = size.checked_add(m.checked_mul(up)?)?;
+            sum = sum.checked_add(s.0.checked_mul(up)?)?;
+            size = size.checked_add(m.0.checked_mul(up)?)?;
         }
-        (size < 1 << 96).then(|| Decimal::from_i128_with_scale(sum, top))
+        // A scale read back from a written state may be one no decimal has.
+        let read = Decimal::try_from_i128_with_scale(sum, top).ok();
+        read.filter(|_| size < 1 << 96)
     }
 }
 
@@ -417,6 +460,9 @@ pub fn measures(
     }
     Ok(earlier)
 }
+
+mod kept;
+pub use kept::{Keeping, KeptFolds};
 
 #[cfg(test)]
 mod tests;
