@@ -31,7 +31,7 @@ fn record(ty: &str, key: &str, fields: serde_json::Value, at: u64) -> StoredReco
 /// A step at `at` that migrates `doc` from `before` to `to`, renaming a
 /// `title` to `name`, and moves `moves` of its keys, in a lake that also
 /// holds `note`, which refers to a `doc`.
-fn step(at: u64, before: TypeDecl, to: TypeDecl, moves: &[(&str, &str)]) -> Step {
+fn step(at: u64, before: TypeDecl, to: TypeDecl, moves: &[(&str, &str)]) -> Migrated {
     let note = ty(json!({"name": "note", "fields": [
         {"name": "about", "type": {"kind": "reference", "target": "doc"}}]}));
     let mut ontology = Ontology::default();
@@ -51,7 +51,7 @@ fn step(at: u64, before: TypeDecl, to: TypeDecl, moves: &[(&str, &str)]) -> Step
             to: (*to).into(),
         })
         .collect();
-    Step::new(&ontology, Position(at), before, &migration, &rekeyed)
+    Migrated::new(&ontology, Position(at), before, &migration, &rekeyed)
 }
 
 #[test]
@@ -126,8 +126,8 @@ fn a_key_is_traced_back_through_the_steps() {
     let view = engine.view(None).unwrap();
     let staged = Staged {
         steps: vec![
-            step(2, same(), same(), &[("a", "b")]),
-            step(3, same(), same(), &[("b", "c"), ("v", "b")]),
+            Step::Migrated(Box::new(step(2, same(), same(), &[("a", "b")]))),
+            Step::Migrated(Box::new(step(3, same(), same(), &[("b", "c"), ("v", "b")]))),
         ],
         ..Staged::default()
     };
@@ -182,4 +182,128 @@ fn a_walk_reads_page_by_page_and_passes_over_ended_keys() {
         );
         assert_eq!(walked(n, false), live(n), "{n} records, the live ones");
     }
+}
+
+fn declaration(d: serde_json::Value) -> Declaration {
+    serde_json::from_value(d).unwrap()
+}
+
+/// An ontology that holds `doc`, whose `twice` is computed by `f` and
+/// rounded as `money`, whose `ghost` names a function that is not declared
+/// and whose `odd` a value type that is not; and a type, a function and a
+/// value type that `doc` does not name.
+fn computing_doc() -> Ontology {
+    let f = |name: &str, expr: &str| {
+        json!({"declare": "function", "name": name, "backing": "expr", "expr": expr,
+               "inputs": [{"name": "n", "type": {"kind": "decimal"}}]})
+    };
+    let by = |name: &str, function: &str, value_type: &str| {
+        json!({"name": name, "type": {"kind": "decimal", "value_type": value_type},
+               "authority": "derived", "function": function})
+    };
+    let money =
+        |name: &str| json!({"declare": "value_type", "name": name, "kind": "decimal", "scale": 1});
+    let doc = json!({"declare": "type", "name": "doc", "field_meta": true, "fields": [
+        {"name": "n", "type": {"kind": "decimal"}},
+        by("twice", "f", "money"), by("ghost", "g", "money"), by("odd", "f", "absent")]});
+    let memo = json!({"declare": "type", "name": "memo", "fields": [by("m", "h", "other")]});
+    let mut o = Ontology::default();
+    let all = [
+        f("f", "n * 2"),
+        f("h", "n"),
+        money("money"),
+        money("other"),
+        doc,
+        memo,
+    ];
+    for d in all {
+        o.put(declaration(d), 1, None);
+    }
+    o
+}
+
+/// A `declared` event at `at`, as the store seals one.
+fn declared_at(at: u64) -> Event {
+    let body = EventBody::Declared {
+        declaration: declaration(json!({"declare": "function", "name": "f", "backing": "expr"})),
+        schema_hash: None,
+        version: 2,
+    };
+    let draft = Draft::system(Timestamp(5), body);
+    log::seal_at(1, &"l".into(), Position(at), &Digest::zero(), 1, draft).0
+}
+
+#[test]
+fn the_entries_of_a_recomputation_mirror_the_writers_ontology() {
+    let mut o = computing_doc();
+    let entries = o.computing(&["doc".into(), "gone".into()]);
+    let names = |e: &Ontology| {
+        let types: Vec<_> = e.types.keys().map(TypeName::to_string).collect();
+        let functions: Vec<_> = e.functions.keys().cloned().collect();
+        (
+            types,
+            functions,
+            e.value_types.keys().cloned().collect::<Vec<_>>(),
+        )
+    };
+    assert_eq!(
+        names(&entries),
+        (
+            vec!["doc".to_owned()],
+            vec!["f".to_owned()],
+            vec!["money".to_owned()]
+        ),
+        "what `doc`'s fields name and the ontology holds, and no name it does not hold"
+    );
+    // A field whose function is not declared is not computed, under the
+    // entries as under the ontology they were taken from.
+    let engine = lakelands_engine_mem::MemoryOpener::new()
+        .open(&Location::memory("entries"), OpenMode::Create)
+        .unwrap();
+    let view = engine.view(None).unwrap();
+    let event = declared_at(7);
+    let r = record("doc", "a", json!({"n": "1.26"}), 2);
+    let under = |o: &Ontology| {
+        let mut outputs = Outputs {
+            view: view.as_ref(),
+            staged: None,
+            before: None,
+            due: None,
+        };
+        record::rederive(o, &r, &event, &BTreeMap::new(), &mut outputs).unwrap()
+    };
+    let computed = under(&entries).expect("the record changes");
+    assert_eq!(Some(&computed), under(&o).as_ref());
+    assert_eq!(
+        (json!(computed.fields), computed.position),
+        (
+            json!({"n": "1.26", "twice": "2.5", "odd": "2.52"}),
+            Position(7)
+        ),
+        "`twice` at its value type's scale, `odd` at none, `ghost` not computed"
+    );
+    // Each entry is the ontology's own, not a copy; a function declared
+    // again leaves the step its version, and a type it does not change its
+    // entry.
+    let shared = |o: &Ontology| {
+        let f = Arc::ptr_eq(&o.functions["f"], &entries.functions["f"]);
+        let doc = Arc::ptr_eq(
+            &o.types[&TypeName::from("doc")],
+            &entries.types[&TypeName::from("doc")],
+        );
+        (
+            f,
+            doc,
+            Arc::ptr_eq(&o.value_types["money"], &entries.value_types["money"]),
+        )
+    };
+    assert_eq!(shared(&o), (true, true, true));
+    let again = json!({"declare": "function", "name": "f", "backing": "expr", "expr": "n * 3",
+                       "inputs": [{"name": "n", "type": {"kind": "decimal"}}]});
+    o.put(declaration(again), 2, None);
+    assert_eq!(shared(&o), (false, true, true));
+    assert_eq!(
+        (entries.functions["f"].version, o.functions["f"].version),
+        (1, 2)
+    );
 }

@@ -410,7 +410,8 @@ A host that already has a store of its own moves in four steps.
   walk of the type, as a recomputation does (below). A derived expression
   of a type that reads a setting or the clock is not its business: such
   a field is as of its record's last write, and a write of the record
-  brings it up to date. From a shell: `lakelands recompute --function
+  brings it up to date; the type declared again with a field more that
+  is not computed does not, since it computes nothing. From a shell: `lakelands recompute --function
   <name>` or `--type <name>`. See
   `docs/decisions/022-functions-are-declarations.md`.
 - **A write that changes nothing is still a write.** An upsert of the
@@ -426,18 +427,35 @@ A host that already has a store of its own moves in four steps.
 - **A declaration that recomputes a type is a step for a quiet moment.**
   A function declared again with a change, or a type declared again with
   another derived expression, computes the derived fields of every live record
-  of the type again in that one append, under the writer, and holds
-  them in memory meanwhile; other writes wait. At 100 000 records of
-  four small fields, one of them derived (`tests/recomputed.rs` in the
-  SQLite and PostgreSQL engines, by hand), the writer is held 4.3 to 5.2 s
-  on SQLite and 12 to 15.5 s on PostgreSQL, with a peak of about 330 MB
-  on SQLite and 340 MB on PostgreSQL, whichever of the two is declared
-  again. Both grow with the type's records (1.3 GB at 400 000). A migration's fold holds a page of records at a time;
-  a recomputation's does not yet, and lakelands#523 holds what is done
-  about it. A type declared again that computes nothing (its
-  description changed, say) costs one pass of the engine over its
-  records at the commit, a page at a time: 1.3 to 2.1 s at 100 000
-  records and 3 MB whatever the type holds.
+  of the type again in that one append, under the writer; other writes
+  wait. The store reads the type a page of records at a time, puts each
+  record it changes and keeps none: it holds the declaration, not the
+  records, so what it holds does not grow with the type
+  (`docs/decisions/048-the-fold-keeps-the-event-not-the-records-it-changed.md`).
+  A bundle that declares several functions of one type again reads the
+  type once and computes each record once for each of them. At 100 000
+  records of four small fields, one of them derived
+  (`tests/recomputed.rs` in the SQLite and PostgreSQL engines, by
+  hand), the writer is held 4.1 to 4.5 s on SQLite and 13.3 to 14 s on
+  PostgreSQL, whichever of the two is declared again, and about 20 s
+  and 51 to 56 s at 400 000; the peak of the append is 3 MB on SQLite
+  and 9 MB on PostgreSQL at both sizes. A bundle of two changed
+  functions holds the writer 12 s on SQLite and 21 s on PostgreSQL at
+  100 000 records (50 s and 99 s at 400 000), at 4 MB and 11 MB. The
+  time grows with the type's records; the peak does not. Two things
+  still grow with them: the calls an embedding or a function computed outside the lake
+  makes due, one for every record whose output is not recorded, held
+  until they are made; and what the engine holds of an open transaction, which on the
+  memory engine is every put. A rebuild, or an open that catches up,
+  commits inside a page of the log after such a declaration, so there
+  too each record is computed once for each declaration. A type
+  declared again that computes nothing (its description changed, say,
+  or a field that is not computed was added) costs one pass of the
+  engine over its records at the commit, a page at a time: 1.3 to 2.1 s
+  at 100 000 records and 3 MB whatever the type holds. A type with an
+  embedding or a field of a function computed outside the lake is never
+  such a type: the store walks its records at every declaration of it,
+  whatever changed.
 - **Every answer carries its position.** A host that records what an
   agent saw records the position, and reads `as_of` it later. See
   `docs/decisions/009-every-response-carries-its-position.md`.

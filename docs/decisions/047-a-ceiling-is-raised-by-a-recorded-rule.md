@@ -61,6 +61,10 @@ The core's budgets are four:
 
 **The nineteenth raise:** the specification, from 48 500 to 49 000 lines, by slot a's word under the rule, for the rows of a rule of rights (lakelands#594: a proposal that waited is listed by the grants on the names in force): 50 lines as measured, on a develop that stood 3 under the ceiling, 47 over it.
 
+**The twentieth raise:** the product code, from 39 500 to 40 000 lines, by slot a's word under the rule, for a recomputation folded as a step (lakelands#523): a declaration that computes a type's derived fields again no longer holds the type in memory under the writer. 248 lines as measured, on a develop that stood 195 under the ceiling, 53 over it; the sixteenth raise had named it, and the evaluator's part of a kept view took that room first.
+
+**The twenty-first raise:** the specification, from 49 000 to 49 500 lines, by slot a's word under the rule, for the rows of a recomputation folded as a step (lakelands#523) and the row its review asked for (a derived field that reads a setting is as of its record's last write): 256 lines as measured, 48 834 on a develop that stood 422 under the ceiling; behind the 230 lines of lakelands#595, which merges first, 49 064, 64 over it.
+
 ## Why
 
 The budgets keep the core small enough for one reader to hold. They have done that: four diets took out about 5 000 lines without losing a check.
