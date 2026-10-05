@@ -151,6 +151,21 @@ impl History {
             .join(" AND ")
     }
 
+    /// The statement that ends the state in force before a put: only the
+    /// latest earlier state can be the one, so it is sought and the
+    /// thing's other states are not read (lakelands#596). Its parameters
+    /// are the thing's columns and then the put's position.
+    pub(crate) fn ends_latest(&self) -> String {
+        format!(
+            "UPDATE {t} SET until = ?{n1} WHERE {w} AND since = \
+             (SELECT max(since) FROM {t} WHERE {w} AND since < ?{n1}) \
+             AND (until IS NULL OR until > ?{n1})",
+            t = self.table,
+            w = self.ident_where(1),
+            n1 = self.ident.len() + 1
+        )
+    }
+
     /// Put a state of one thing valid from `since`, keeping every other
     /// state: the one it supersedes ends at `since`, and it ends where the
     /// next one, if any, begins.
@@ -191,15 +206,9 @@ impl History {
             ))
             .and_then(|mut s| s.query_row(args.as_slice(), |r| r.get(0)))
             .map_err(sql)?;
-        conn.prepare_cached(&format!(
-            "UPDATE {} SET until = ?{n1} WHERE {} AND since < ?{n1} \
-             AND (until IS NULL OR until > ?{n1})",
-            self.table,
-            self.ident_where(1),
-            n1 = n + 1
-        ))
-        .and_then(|mut s| s.execute(args.as_slice()))
-        .map_err(sql)?;
+        conn.prepare_cached(&self.ends_latest())
+            .and_then(|mut s| s.execute(args.as_slice()))
+            .map_err(sql)?;
         let columns = self.ident.join(", ");
         let marks: Vec<String> = (1..=n + 3).map(|i| format!("?{i}")).collect();
         conn.prepare_cached(&format!(

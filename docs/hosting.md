@@ -429,14 +429,14 @@ A host that already has a store of its own moves in four steps.
   of the type again in that one append, under the writer, and holds
   them in memory meanwhile; other writes wait. At 100 000 records of
   four small fields, one of them derived (`tests/recomputed.rs` in the
-  SQLite and PostgreSQL engines, by hand), the writer is held 4.3 to 5 s
+  SQLite and PostgreSQL engines, by hand), the writer is held 4.3 to 5.2 s
   on SQLite and 12 to 15.5 s on PostgreSQL, with a peak of about 330 MB
   on SQLite and 340 MB on PostgreSQL, whichever of the two is declared
   again. Both grow with the type's records (1.3 GB at 400 000). A migration's fold holds a page of records at a time;
   a recomputation's does not yet, and lakelands#523 holds what is done
   about it. A type declared again that computes nothing (its
   description changed, say) costs one pass of the engine over its
-  records at the commit, a page at a time: 1.3 to 2 s at 100 000
+  records at the commit, a page at a time: 1.3 to 2.1 s at 100 000
   records and 3 MB whatever the type holds.
 - **Every answer carries its position.** A host that records what an
   agent saw records the position, and reads `as_of` it later. See

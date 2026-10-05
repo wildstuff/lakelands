@@ -109,11 +109,27 @@ fn sorted_after_sql(dir: Direction, from: bool) -> String {
     )
 }
 
+/// The statement of [`Read::record`]: the latest state of the key at or
+/// before the position, and whether it still holds there. No other state
+/// of the key is read (lakelands#596).
+const RECORD_AT: &str = "SELECT state FROM (SELECT state, until FROM records WHERE ty = ?1 \
+     AND key = ?2 AND since <= ?3 ORDER BY since DESC LIMIT 1) WHERE until IS NULL OR until > ?3";
+
+/// The statements that seek one record's state, as the engine runs them:
+/// the read of a record at a position and the end a put gives the state
+/// before it, each with the parameters type, key and position, for the
+/// engine's own test of what they cost. Neither reads the key's other
+/// states (lakelands#596).
+pub fn seek_statements() -> [String; 2] {
+    [RECORD_AT.to_owned(), projection::RECORDS.ends_latest()]
+}
+
 /// The statement of each first page the view reads from an index in the
-/// page's order, as the view runs it, for the engine's own test of their
-/// plans: none may sort (lakelands#580).
+/// page's order, and of the read of one record, as the view runs it, for
+/// the engine's own test of their plans: none may sort (lakelands#580).
 pub fn first_page_statements() -> Vec<String> {
     vec![
+        RECORD_AT.to_owned(),
         records_after_sql(false),
         holding_after_sql(false),
         unsorted_after_sql(false),
@@ -156,10 +172,7 @@ impl Read<'_> {
     fn record(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
         let state: Option<String> = one(
             self.conn,
-            &format!(
-                "SELECT state FROM records WHERE ty = ?1 AND key = ?2 AND {}",
-                holds_at(3)
-            ),
+            RECORD_AT,
             params![ty.as_str(), key.as_str(), self.at()],
         )?;
         state.as_deref().map(decode_record).transpose()

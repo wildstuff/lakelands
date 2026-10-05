@@ -2208,7 +2208,9 @@ fn invalid_naming(e: &Error, names: &[&str]) -> bool {
 
 /// A migration that names a relation's rename keeps its edges: the report
 /// lists the relation with the links that move, and the links are records
-/// of the new name's link type and of the old no more; a rename of a
+/// of the new name's link type and of the old no more; the feed hands
+/// the `migrated` to one who follows either link type, and that of a
+/// relation carried by `via` to no follower of a link type; a rename of a
 /// relation whose link type another type refers to is refused, naming
 /// that type, on the mock as on the store.
 pub async fn a_renamed_relation_keeps_its_edges(store: Arc<dyn LakeStore>) {
@@ -2247,8 +2249,49 @@ pub async fn a_renamed_relation_keeps_its_edges(store: Arc<dyn LakeStore>) {
     let report = report.expect("the preflight").data;
     let moved: Vec<_> = (report.relations.iter().map(|r| (r.carrier, r.links))).collect();
     assert_eq!(moved, [(Carrier::Links, 1)], "{report:?}");
+    let before = f.head().await;
     let applied = f.catalog.migrate_apply(owner, m, &report.report_id).await;
     applied.expect("applying the rename");
+    // The feed: one who follows the old or the new link type is handed the
+    // `migrated`. A relation carried by `via` has no link type, so its
+    // rename is about its own type and no other.
+    let shelf = |relation: &str| -> lakelands_api::ontology::TypeDecl {
+        let owner = json!({"name": "owner", "type": {"kind": "reference", "target": "memo"}});
+        let by = json!({"name": relation, "target": "memo", "cardinality": "many_to_one",
+            "via": "owner"});
+        serde_json::from_value(json!({"name": "shelf", "fields": [owner], "relations": [by]}))
+            .expect("a type")
+    };
+    let declared = f
+        .catalog
+        .declare(owner, Declaration::Type(shelf("held_by")));
+    declared.await.expect("declaring `shelf`");
+    let via = Migration {
+        to: shelf("kept_by"),
+        renames: Vec::new(),
+        relation_renames: vec![("held_by".into(), "kept_by".into())],
+    };
+    let report = f.catalog.migrate(owner, via.clone()).await;
+    let id = report.expect("the preflight").data.report_id;
+    let applied = f.catalog.migrate_apply(owner, via, &id).await;
+    applied.expect("renaming a relation carried by `via`");
+    let mut handed = Vec::new();
+    for ty in [
+        "sys.link.memo.cites",
+        "sys.link.memo.quotes",
+        "shelf",
+        "sys.link.shelf.held_by",
+        "sys.link.shelf.kept_by",
+    ] {
+        let filter = FeedFilter {
+            kinds: vec!["migrated".into()],
+            types: vec![ty.into()],
+            keys: Vec::new(),
+        };
+        let batch = f.store.feed().poll(before, &filter, 10).await;
+        handed.push(batch.expect("polling the feed").events.len());
+    }
+    assert_eq!(handed, [1, 1, 1, 0, 0], "the `migrated` events handed");
     let mut held = Vec::new();
     for lt in ["sys.link.memo.quotes", "sys.link.memo.cites"] {
         let found = f.catalog.find(owner, &lt.into(), Default::default()).await;

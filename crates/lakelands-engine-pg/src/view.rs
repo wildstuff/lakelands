@@ -99,10 +99,13 @@ impl Read<'_> {
     fn record(&mut self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
         self.db
             .query_opt(
+                // The latest state at or before the position, and whether
+                // it still holds there: no other state of the key is read.
                 &format!(
-                    "SELECT state FROM {} WHERE ty = $1 AND key = $2 AND {}",
-                    self.names.t("records"),
-                    holds_at(3)
+                    "SELECT state FROM (SELECT state, until FROM {} WHERE ty = $1 AND key = $2 \
+                     AND since <= $3 ORDER BY since DESC LIMIT 1) s \
+                     WHERE until IS NULL OR until > $3",
+                    self.names.t("records")
                 ),
                 &[&ty.as_str(), &key.as_str(), &self.at],
             )?

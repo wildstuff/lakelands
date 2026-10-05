@@ -108,6 +108,12 @@ engine_check!(
 );
 
 engine_check!(
+    /// A key written often is put and read as a key written twice.
+    MUCH_WRITTEN_KEY = a_much_written_key_is_put_and_read_as_one_written_twice,
+    "seams §Engine (lakelands#596): a key put forty thousand times answers at the head, at an earlier position, in a page and in a count as a key put twice; what its puts and reads cost is counted in each disk engine's own tests"
+);
+
+engine_check!(
     /// `clear` empties the projection and the vector index.
     CLEAR = clear_empties_the_projection_and_the_vector_index,
     "seams §ProjectionStore: clear deletes every state, kept history and the vector index included, and leaves nothing folded, for a rebuild from the log"
@@ -893,5 +899,44 @@ fn get_many_answers_what_get_answers_key_by_key(engine: &dyn LakeEngine) -> Resu
              once, get answers {want:?}"
         );
     }
+    Ok(())
+}
+
+fn a_much_written_key_is_put_and_read_as_one_written_twice(
+    engine: &dyn LakeEngine,
+) -> Result<(), Failure> {
+    // `b` is put twice and `a` forty thousand times.
+    const STATES: u64 = 40_000;
+    let put = |key: &str, at: u64| record("t", key, json!({"n": at}), at);
+    fold_one(engine, 1, put("b", 1))?;
+    fold_one(engine, 2, put("b", 2))?;
+    for first in (3..3 + STATES).step_by(200) {
+        fold(engine, first + 199, |p| {
+            (first..first + 200).try_for_each(|at| p.put_record(&put("a", at)))
+        })?;
+    }
+    let (ty, head, then) = (TypeName::from("t"), 2 + STATES, 1_000);
+    let n = |r: Option<StoredRecord>| r.and_then(|r| r.fields.get("n").cloned());
+    let mut answers = Vec::new();
+    for as_of in [None, Some(then)] {
+        let v = view(engine, as_of.map(Position))?;
+        for key in ["a", "b"] {
+            let read = v.get(&ty, &RecordKey::from(key));
+            answers.push(n(read.must("reading one record")?));
+        }
+        let scan = lakelands_api::engine::Scan {
+            limit: 10,
+            ..Default::default()
+        };
+        let page = v.scan(&ty, &scan).must("reading a page")?;
+        let page: Vec<Value> = page.into_iter().filter_map(|r| n(Some(r))).collect();
+        answers.push(Some(json!([page, v.count(&ty, &scan).must("counting")?])));
+    }
+    let want = |a: u64| [Some(json!(a)), Some(json!(2)), Some(json!([[a, 2], 2]))];
+    ensure!(
+        answers == [want(head), want(then)].concat(),
+        "`a` was put at every position from 3 to {head} and `b` at 1 and 2; a `get` of each, a \
+         page and a count answered {answers:?} at the head and as of {then}"
+    );
     Ok(())
 }

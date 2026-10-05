@@ -235,7 +235,8 @@ impl History {
         db.execute(
             &format!(
                 "WITH superseded AS (\
-                   UPDATE {table} SET until = ${s} WHERE {w} AND since < ${s} \
+                   UPDATE {table} SET until = ${s} WHERE {w} AND since = \
+                   (SELECT max(since) FROM {table} WHERE {w} AND since < ${s}) \
                    AND (until IS NULL OR until > ${s})\
                  ) \
                  INSERT INTO {table} ({columns}, since, until, state) VALUES ({marks}, \
@@ -297,8 +298,13 @@ impl History {
                    SELECT {columns}, min(since) AS first FROM b GROUP BY {columns}\
                  ), u AS (\
                    SELECT {columns}, since, bool_or(fresh) AS fresh FROM (\
-                     SELECT {tcolumns}, t.since, false AS fresh FROM {table} t JOIN f ON {tf} \
-                     WHERE t.until IS NULL OR t.until > f.first \
+                     SELECT {scolumns}, s.since, false AS fresh FROM f CROSS JOIN LATERAL (\
+                       (SELECT {pcolumns}, p.since, p.until FROM {table} p \
+                        WHERE {pf} AND p.since <= f.first ORDER BY p.since DESC LIMIT 1) \
+                       UNION ALL \
+                       (SELECT {pcolumns}, p.since, p.until FROM {table} p \
+                        WHERE {pf} AND p.since > f.first)\
+                     ) s WHERE s.until IS NULL OR s.until > f.first \
                      UNION ALL SELECT {columns}, since, true FROM b\
                    ) x GROUP BY {columns}, since\
                  ), n AS (\
@@ -321,10 +327,11 @@ impl History {
                 s = n + 1,
                 v = n + 2,
                 ty = self.state,
-                tcolumns = self.each(", ", |_, c| format!("t.{c}")),
+                scolumns = self.each(", ", |_, c| format!("s.{c}")),
+                pcolumns = self.each(", ", |_, c| format!("p.{c}")),
                 bcolumns = self.each(", ", |_, c| format!("b.{c}")),
                 ncolumns = self.each(", ", |_, c| format!("n.{c}")),
-                tf = self.each(" AND ", |_, c| format!("t.{c} = f.{c}")),
+                pf = self.each(" AND ", |_, c| format!("p.{c} = f.{c}")),
                 tn = self.each(" AND ", |_, c| format!("t.{c} = n.{c}")),
                 bn = self.each(" AND ", |_, c| format!("b.{c} = n.{c}")),
             ),

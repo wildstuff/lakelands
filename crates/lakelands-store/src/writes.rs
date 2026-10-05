@@ -2673,12 +2673,12 @@ impl Call<'_> {
                     let field = |f: &FieldDecl| f.ty.target.as_ref() == Some(&old);
                     t.fields.iter().any(field) || t.relations.iter().any(|r| r.target == old)
                 };
-                // The type is named only to an author `describe` shows it to.
-                let declared = w.ontology.declared();
-                let shown = |t: &&TypeDecl| describe::one_type(&t.name, &declared, self.who);
                 let types = w.ontology.types.values().map(|e| &e.decl);
                 let mut referring = types.filter(|t| t.name != old && refers(t)).peekable();
                 if referring.peek().is_some() {
+                    // The type is named only to an author `describe` shows it to.
+                    let declared = w.ontology.declared();
+                    let shown = |t: &&TypeDecl| describe::one_type(&t.name, &declared, self.who);
                     let named = referring.find(|t| shown(t).is_some());
                     let who = named.map_or("a declaration".into(), |t| format!("`{}`", t.name));
                     return Err(wrong(&format!(

@@ -488,12 +488,12 @@ impl ChangeFeed for Feed {
                 filter.kinds.is_empty() || filter.kinds.iter().any(|k| k == e.body.kind());
             let body = serde_json::to_value(&e.body).unwrap_or_default();
             // As the store: a `migrated` is also about the link types its
-            // renamed relations move records between.
+            // renamed relations move records between, and about none for a
+            // relation that is not carried by link records.
             let moved = |t: &lakelands_api::TypeName| match &e.body {
                 lakelands_api::event::EventBody::Migrated { migration, .. } => {
-                    let link = |r| &links::name(&migration.to.name, r) == t;
-                    let mut pairs = migration.relation_renames.iter();
-                    &migration.to.name == t || pairs.any(|(old, new)| link(old) || link(new))
+                    let mut pairs = doors::moved(migration).into_iter();
+                    &migration.to.name == t || pairs.any(|(old, new)| &old == t || &new == t)
                 }
                 _ => false,
             };
