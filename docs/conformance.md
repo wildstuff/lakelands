@@ -689,6 +689,7 @@ belongs in the suite, not beside one engine:
 **settings**
 
 - `a_setting_is_read_as_it_stood_at_the_position_read` — seams, SystemVocabulary: setting('key') in an expression reads the sys.setting record with that key as of the position being read
+- `a_restricted_setting_stays_what_the_lake_computes_with` — seams, SystemVocabulary (lakelands#583): restricting a setting hides its record and never its value from the lake's computations or from an expression: a derived field written while the writer stays open, after the lake is opened again and after a rebuild reads it, a read's `where` and a view's `where` and measure read it, and a reader without the `restricted` grant is not listed the record and is answered by `setting('key')` in its own `where` what the lake computes with
 
 **fusion**
 

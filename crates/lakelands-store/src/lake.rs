@@ -149,12 +149,10 @@ pub(crate) fn every(retired: bool) -> lakelands_api::engine::Scan {
 }
 
 /// The settings a view holds: the `value` of every live `sys.setting`
-/// record, by key.
+/// record, by key, a restricted one too. A restriction hides the record
+/// from a reader; the value stays what the lake computes with, as the
+/// fold keeps it, so a read, a writer opened again and a rebuild agree.
 pub fn settings_in(view: &dyn ProjectionView) -> Result<BTreeMap<String, Value>> {
-    let scan = lakelands_api::engine::Scan {
-        limit: u32::MAX,
-        ..Default::default()
-    };
     let ty = TypeName::from(SETTING_TYPE);
     if !view
         .declarations()?
@@ -164,7 +162,7 @@ pub fn settings_in(view: &dyn ProjectionView) -> Result<BTreeMap<String, Value>>
         return Ok(BTreeMap::new());
     }
     Ok(view
-        .scan(&ty, &scan)?
+        .scan(&ty, &every(false))?
         .into_iter()
         .filter_map(|r| Some((r.key.to_string(), r.fields.get("value")?.clone())))
         .collect())

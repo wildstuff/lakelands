@@ -152,6 +152,9 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   Lakelands reserves only the types its own fold reads; today those are
   `sys.setting` and `sys.aging_rule`, and the other two are reserved
   ahead of their readers. See `docs/decisions/003-reservation-by-namespace.md`.
+  A value that must be kept from a reader is not put into a setting:
+  any reader's expression reads `setting('<key>')`, whatever its grant
+  on `sys.setting` and whether or not the setting is restricted.
   The aging rules run when the host calls `LakeStore::age(today)`, once
   a day, with the date (`docs/decisions/036-aging-runs-by-date-once.md`);
   `lakelands age --today <YYYY-MM-DD>` is the same call from the CLI, and
