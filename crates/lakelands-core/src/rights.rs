@@ -25,6 +25,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::ontology::{Authority, FieldDecl, TypeDecl};
+use lakelands_api::principal::Renamed;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::{Migration, MigrationReport};
 use lakelands_api::{
@@ -346,10 +347,12 @@ fn no_field(decl: &TypeDecl, name: &FieldName) -> Error {
 /// held through the migration's own renames, of fields and of the link
 /// types its renamed relations move; and a rename only where
 /// `who` may know of the field under both names, the old one in `was`,
-/// the type as it stands.
-pub fn known_migration(who: &Principal, was: &TypeDecl, m: &mut Migration) {
+/// the type as it stands. `since` is what the lake's list of renames
+/// gained after the migration was written: a proposal that waited is
+/// judged from the names its old ones bear now.
+pub fn known_migration(who: &Principal, was: &TypeDecl, m: &mut Migration, since: &[Renamed]) {
     // The migration's own renames, as the fold would record them.
-    let list = crate::links::renamed(m, Position(u64::MAX));
+    let list = Renamed::at_head(since, crate::links::renamed(m, Position(u64::MAX)));
     let (mut then, mut was) = (who.clone(), was.clone());
     (then.grants).follow(&list, None);
     known_fields(who, &mut was);

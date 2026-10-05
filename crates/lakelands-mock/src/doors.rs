@@ -368,8 +368,14 @@ impl MockCatalog {
     /// The list is every `migrated` event's renames, in the log's order.
     fn followed(&self, who: &Principal, at: Option<Position>) -> Principal {
         let mut who = who.clone();
-        // As the store: a migration's field renames, then each link type a
-        // renamed relation moves.
+        who.grants.follow(&self.renames(), at);
+        who
+    }
+
+    /// As the store: the lake's list of renames, every `migrated` event's
+    /// in the log's order: its field renames, then each link type a
+    /// renamed relation moves.
+    fn renames(&self) -> Vec<Renamed> {
         let renamed = |e: &Event| {
             let EventBody::Migrated { migration, .. } = &e.body else {
                 return Vec::new();
@@ -389,9 +395,7 @@ impl MockCatalog {
             });
             fields.into_iter().chain(names).collect()
         };
-        let list: Vec<Renamed> = self.log().events.iter().flat_map(renamed).collect();
-        who.grants.follow(&list, at);
-        who
+        self.log().events.iter().flat_map(renamed).collect()
     }
 
     /// Admit a write: also refuse a write deeper in a chain of reactions
@@ -2738,7 +2742,7 @@ fn completed(st: &State, write: &mut ProposedWrite) {
 /// a read of the record would show it and a name where `describe` would.
 /// False when the reader may see nothing of it. The proposal holds the
 /// completed shape, so a relation's link fields are trimmed too.
-fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite) -> bool {
+fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite, since: &[Renamed]) -> bool {
     let seen = |ty: &TypeName| st.visible(who, ty).is_some();
     let read = |ty: &TypeName, f: &FieldName| {
         (st.visible(who, ty)).is_some_and(|t| readable(st, who, t, f).is_ok())
@@ -2771,7 +2775,7 @@ fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite) -> bool {
                 return false;
             }
             shown_report(st, who, migration, report);
-            known_migration(st, who, migration);
+            known_migration(st, who, migration, since);
             true
         }
         // Each declaration as `describe` would show it once the bundle is
@@ -2802,7 +2806,7 @@ fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite) -> bool {
 /// As the store: a migration that is not in force as `who` may know it,
 /// its shape judged with the grants held through its own renames, and a
 /// rename only where `who` may know of the field under both names.
-fn known_migration(st: &State, who: &Principal, m: &mut Migration) {
+fn known_migration(st: &State, who: &Principal, m: &mut Migration, since: &[Renamed]) {
     let (at, ty, renames) = (Position(u64::MAX), m.to.name.clone(), m.renames.clone());
     let mut list = vec![Renamed {
         at,
@@ -2816,6 +2820,9 @@ fn known_migration(st: &State, who: &Principal, m: &mut Migration) {
         to: Some(to),
         ..Renamed::default()
     }));
+    // As the store: a proposal that waited is judged from the names its
+    // old ones bear now.
+    let list = Renamed::at_head(since, list);
     let mut then = who.clone();
     (then.grants).follow(&list, None);
     let mut was = st.types.get(&m.to.name).map(|t| t.decl.clone());
@@ -4155,7 +4162,7 @@ impl Catalog for MockCatalog {
                     return Err(lossy(&st, who, &migration, report));
                 }
                 let mut known = (*migration).clone();
-                known_migration(&st, who, &mut known);
+                known_migration(&st, who, &mut known, &[]);
                 renamed = known.renames;
                 let version = st
                     .types
@@ -4295,12 +4302,16 @@ impl Catalog for MockCatalog {
         }
         // As the store: the entry as its reader is shown it, and the kind
         // and the type asked of that.
+        let renames = self.renames();
         for p in &mut rows {
             // `more` is what the trim left out, not what the completion added.
             let mut logged = p.write.take();
             logged.iter_mut().for_each(|w| completed(&st, w));
             let shown = logged.clone();
-            p.write = shown.and_then(|mut w| known_shape(&st, who, &mut w).then_some(w));
+            let since: Vec<Renamed> = (renames.iter().filter(|r| r.at > p.position))
+                .cloned()
+                .collect();
+            p.write = shown.and_then(|mut w| known_shape(&st, who, &mut w, &since).then_some(w));
             p.more = p.write != logged;
         }
         rows.retain(|p| {
@@ -4608,7 +4619,7 @@ impl Catalog for MockCatalog {
         let report_id = report.report_id;
         // The answer names each rename as the one answered may know it.
         let mut known = migration.clone();
-        known_migration(&st, who, &mut known);
+        known_migration(&st, who, &mut known, &[]);
         let position = batch.push(Draft::new(
             who,
             Origin::System,

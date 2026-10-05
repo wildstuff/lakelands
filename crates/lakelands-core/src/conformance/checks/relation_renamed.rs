@@ -789,10 +789,60 @@ async fn a_proposed_rename_is_listed_logged_and_accepted(
         ),
     )
     .await?;
+    // Kept by a grant on the old name, on the name in force by a field, or
+    // on it by a default alone (lakelands#594).
+    let head = "sys.link.invoice.countersigned_by";
+    let mut told = Vec::new();
+    for on in [
+        (NEW, None, since),
+        (head, None, since),
+        (head, Some(Access::None), &[]),
+    ] {
+        if lists_since(&l, store.as_ref(), on, &stale).await? {
+            told.push(format!("{on:?}"));
+        }
+    }
     ensure!(
-        !lists_since(&l, store.as_ref(), (NEW, None, since), &stale).await?,
+        told.is_empty(),
         "a proposal that renames a relation renamed since is listed without the link field \
-         its reviewer is kept from; it is listed `since`"
+         its reviewer is kept from, under the old name or the name in force; it is listed \
+         `since` to one kept by {told:?}"
+    );
+    // The same for a field: `memo` is renamed to `note` by a proposal that
+    // waits, and to `remark` by the owner; a reviewer kept from `remark`
+    // is not listed `note`.
+    let slip = |name: &str| type_decl("slip", vec![field(name, StorageKind::Text)]);
+    l.declare(slip("memo")).await?;
+    let renames = |to: &str| Migration {
+        to: slip(to),
+        renames: vec![("memo".into(), to.into())],
+        relation_renames: Vec::new(),
+    };
+    let write = ProposedWrite::Migrate {
+        migration: Box::new(renames("note")),
+        report: Default::default(),
+    };
+    let waits = l.cat.propose(&l.own, write, "a field's name".into()).await;
+    let Outcome::Proposed {
+        proposal: waits, ..
+    } = waits.must("proposing a field's rename")?
+    else {
+        return Err(Failure::new(
+            "a proposed migration is not answered as proposed",
+        ));
+    };
+    apply(&l, renames("remark")).await?;
+    let kept: &[(&str, Access)] = &[("remark", Access::None)];
+    let mut who = granted(store.as_ref(), "narrow", Access::Read, ("slip", None, kept));
+    who.grants.review = true;
+    let listed = l.cat.proposals(&who, Default::default()).await;
+    let listed = listed.must("listing the proposals")?.data;
+    let write = listed.into_iter().find(|p| p.id == waits);
+    let write = json!(write.and_then(|p| p.write)).to_string();
+    ensure!(
+        !write.contains("note"),
+        "a proposal that renames a field renamed since is listed without the field its \
+         reviewer is kept from under the name in force; it is listed {write}"
     );
     Ok(())
 }
