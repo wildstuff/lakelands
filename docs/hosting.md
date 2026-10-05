@@ -91,11 +91,7 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   as events. A verb that writes authored fields runs in the store; a
   verb that reaches outside the lake runs through the executor the host
   bound for it, with the lake and the position that made it due as the
-  dedup key. **An executor must be idempotent by that key:** a call
-  sent again under its idempotency key, or an accept sent again, hands
-  it the same position a second time when no answer for it is in the log
-  (the store's fold failed before the executor was handed the call, or
-  the process ended before its answer was recorded). The executor gets the record unmasked; a host that wants it
+  dedup key. The executor gets the record unmasked; a host that wants it
   to see only what the caller may see applies the caller's grants there. The executor's answer is recorded in the log; a failure is
   recorded as `{"error": …}`, the write that made the verb due stands,
   and the caller gets the recorded answer either way. Without a bound
@@ -448,15 +444,20 @@ A host that already has a store of its own moves in four steps.
   folds what was left before it is decided, or is answered `unavailable`
   (the projection could not catch up) and appends nothing. A caller that
   sends the write again under its key is answered the first write's
-  outcome, and for a verb that reaches outside the lake the executor is
-  then handed the call, since nothing answered it (by the handle that
-  holds the writer lease; no other runs a verb); one without a key
-  writes a second time. The kind is the same as for a write that never
+  outcome; one without a key writes a second time. For a verb that
+  reaches outside the lake the answer says one thing more: its executor
+  was not handed the call, and sending it again under its key will not
+  run it (the retry is answered the call's position with no output). The
+  host calls the verb again. The kind is the same as for a write that never
   reached the log, and a caller cannot tell the two apart by it, over a
   network door least of all: a host that must not write twice gives its
   writes a key. A write whose own fold succeeded is never answered an
   error for what came after it: when the calls it made due cannot be
-  recorded, it is answered `applied` and its computed fields wait.
+  recorded, an upsert, a feed's window, an aging run and a purge are
+  each answered their own outcome and the computed fields wait. The
+  next write records what was left, from the answers the calls were
+  already given, or is answered `unavailable` if the lake cannot catch
+  up; `vector_coverage` counts the embeddings that still wait.
 - **A declaration that recomputes a type is a step for a quiet moment.**
   A function declared again with a change, or a type declared again with
   another derived expression, computes the derived fields of every live record

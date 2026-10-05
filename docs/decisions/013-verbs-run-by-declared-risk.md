@@ -76,15 +76,10 @@ error text>"}` in the `output_recorded` event that position causes — and
 the caller's outcome is applied at that position with the recorded
 output in it, the error form included: an error reply would say nothing
 was written when the position is real, and a caller should not have to
-read the log back for the answer. The verb is not run again for a
-position that has an answer; a retry is a new call and a new position.
-So the log holds, for every external verb, either what the outside world
-answered or that it did not. A position whose answer never reached the
-log (the fold of its call failed, or the process ended first) is handed
-to the executor again by the call sent again under its key, or by the
-accept sent again, on the handle that holds the writer lease: `applied`
-is not answered for an effect no executor was handed, and an executor is
-idempotent by the lake and the position.
+read the log back for the answer. The verb is not run again for that
+position; a retry is a new call and a new position. So the log holds, for
+every external verb, either what the outside world answered or that it
+did not.
 
 A retry with the call's idempotency key is not a new call. It answers
 the first outcome: the verb's position and its recorded output, or the
@@ -94,6 +89,16 @@ verb as its procedure. It is never told by a later write that names the
 call as its cause, as a host's write of the effect's result does
 (`docs/decisions/021-the-write-context-belongs-to-the-host.md`,
 lakelands#305).
+
+A call whose own fold failed is in the log, and no executor was handed
+it. The store does not answer that call as if it were: its sentence
+says that the verb's executor was not handed the call and that sending
+it again under its key will not run it, and the retry answers the
+position with no output. The host calls the verb again, a new position.
+Whether a retry may ever hand such a position to an executor is not
+decided here: it would change what an executor is promised (once per
+position), and under which declaration, by whose grant and on which
+handle it would run are questions of their own (lakelands#616).
 
 ## Extended: who sees which proposals
 
@@ -256,8 +261,7 @@ called with no key.
 - **The log.** `verb_called` carries no key. The executor is handed no
   record, and its answer is recorded as for any external verb, caused by
   the event that made it due. A retry with the same idempotency key
-  answers the first outcome and runs nothing again where an answer is
-  recorded.
+  answers the first outcome and runs nothing again.
 - **Only an external effect.** A verb on its type reaches outside the
   lake. A `write` effect sets fields of a record, and `requires` reads
   one, so a declaration with either is refused as invalid, naming the

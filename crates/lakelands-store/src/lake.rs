@@ -99,9 +99,6 @@ pub struct Lake {
     /// How many times due calls were drained: a writer that reads it
     /// before its write knows, after, whether a neighbour made its calls.
     pub drains: AtomicU64,
-    /// The positions whose external verb this handle's executor is running:
-    /// a retry that finds one of them answers without running it again.
-    pub running: Arc<Mutex<BTreeSet<Position>>>,
     writer: Mutex<Writer>,
     /// The tip's position and whether the lease is held, as of the last
     /// change the writer made: read without the writer's lock, which an
@@ -272,7 +269,6 @@ impl Lake {
             limits: location.limits,
             calls: tokio::sync::Mutex::new(()),
             drains: AtomicU64::new(0),
-            running: Arc::default(),
             writer: Mutex::new(Writer {
                 lease,
                 tip: None,
@@ -1210,9 +1206,13 @@ impl Lake {
         Ok(())
     }
 
-    /// Clear the projection and fold the whole log again.
+    /// Clear the projection and fold the whole log again. Only the lease's
+    /// holder does: a handle without it would clear under the holder's fold.
     pub fn rebuild(&self) -> Result<Position> {
         let mut w = self.writer();
+        if w.lease.is_none() {
+            return Err(unavailable(NO_LEASE));
+        }
         self.engine.projection().clear()?;
         w.ontology = Ontology::default();
         w.settings = BTreeMap::new();

@@ -122,11 +122,7 @@ pub trait VerbExecutor: Send + Sync {
     /// The executor name verbs declare (`effect: external, executor: …`).
     fn name(&self) -> &str;
 
-    /// Carry out one invocation. A position reaches the executor once,
-    /// unless its answer never reached the log (the store's fold failed, or
-    /// the process ended, before it was recorded): the call sent again
-    /// under its key hands it the same position again. An executor is
-    /// idempotent by the lake and the position.
+    /// Carry out one invocation. Called at most once per position.
     async fn execute(&self, invocation: &VerbInvocation) -> Result<Value>;
 }
 

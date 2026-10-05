@@ -810,7 +810,13 @@ function (`docs/decisions/022-functions-are-declarations.md`, extended):
   `{ "function", "inputs", "config" }` (`docs/log-format.md` §2.5).
 - It never sends one input to a backing twice: a recorded output is
   read back for every later call with the same input, failures
-  included. The one exception is deliberate: declaring the function, or
+  included, and an answer is held with its due from the moment the
+  backing gave it until it is recorded, so a recording that fails (for
+  one call, or for the first text of a batch of embeddings) is made
+  again by the next drain without a second call. The hold is the
+  handle's: a process that ends between an answer and its recording, or
+  a `rebuild` meanwhile, loses it, and that input may be called for once
+  more. The one exception is deliberate: declaring the function, or
   a type whose fields it computes, again calls once more for an input
   whose recorded output is a failure. The later output holds
   (`docs/decisions/022-functions-are-declarations.md`, extended).
@@ -1044,9 +1050,7 @@ append that made the verb due and the function calls that append made
 due, whole and **unmasked** (none for a verb called on its type, which
 has no record), the payload, and
 the position of the event that made it due. The lake and that position
-are the executor's dedup key, and **an executor is idempotent by them**:
-a position reaches it once, unless its answer never reached the log (see
-the retry below). The executor is the host's code, bound by
+are the executor's dedup key. The executor is the host's code, bound by
 the host, and decides what it returns; the caller sees only the outcome
 and the recorded output, never the record the executor was given. A host
 that wants an executor to see only what the caller may see applies the
@@ -1063,30 +1067,23 @@ agent that called an external verb has the answer in the reply. Its
 `through` member is the position the output was recorded at
 (`docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`,
 extended). The verb
-is not run again for a position that has an answer. A host that wants a retry calls the verb again, which is a new
+is not run again for that position. A host that wants a retry calls the verb again, which is a new
 position.
 
-A call retried with the same idempotency key answers the first outcome:
-the position that made the verb due, the recorded output and its
-position, and where an output is recorded it runs nothing. The output's
-`input` digest holds the record as the executor was given it, which a
-retry cannot rebuild, so the retry finds the output as the
-`output_recorded` caused by that position, in the log after it. How far
-it reads depends on who may run the verb. Only the handle that holds the
-writer lease may, and not while it is running that position itself (the
-first call has not answered yet). Such a handle reads the log on to its
-head, a page of 1 024 events at a time, and answers the output where one
-is recorded; where none is, **the retry hands the invocation to the
-executor again, at the same position**, records its answer and answers
-with it. That is the call whose fold failed before its executor was
-handed it, or whose process ended before the answer was recorded;
-`applied` is never answered for an external verb no executor was handed.
-Any other retry (on a handle without the lease, whose holder may be
-running the call, or while this handle runs it) reads the 4,096 events
-after the call, answers the output found there or the position with no
-output, and runs nothing. The same holds for `accept` sent again for an
-accepted call of an external verb with no answer in the log; with one,
-it is `decided` as before.
+A call retried with the same idempotency key runs nothing and answers
+the first outcome: the position that made the verb due, the recorded
+output and its position. The output's `input` digest holds the record as the executor was
+given it, which a retry cannot rebuild, so the retry finds the output as
+the `output_recorded` caused by that position, among the 4,096 events
+after it. An output not among them (not recorded yet, or recorded after
+the lake took that many other events while the executor ran) is answered
+as none; the position stands, and nothing runs again. That holds also
+for a call whose own fold failed, which no executor was handed: the
+store's answer to that call says so in its sentence (the verb's executor
+was not handed this call, and sending it again under its key will not
+run it), the retry is answered the position with no output, and the host
+calls the verb again. An acceptance whose fold failed is answered the
+same sentence, and sent again it is `decided`.
 
 There is no default: a verb whose executor is not bound is refused as
 `Unbound`, never faked. The store checks it when the verb is called or
@@ -1770,10 +1767,15 @@ answered `unavailable` (the projection is behind its log and could not
 catch up; nothing was appended), whatever kind that fold answered. The
 drain of due calls reads behind the same catch-up, so an output whose
 recording was appended and not folded is found and its call is not made
-again; and a drain that fails is not its write's failure: the write is
-answered its own outcome, its computed fields waiting. Only the lease's
-holder folds: a handle that closed while it was behind folds nothing and
-is refused as any handle without the lease. A handle
+again; and a drain that fails is not its write's failure: an upsert, a
+feed's window, an aging run and a purge are each answered their own
+outcome, the computed fields waiting. The failure is not lost: where a
+recording's fold failed the writer is behind, and the next write catches
+up first or is answered `unavailable` in that fold's words; what was not
+recorded stays due on the handle, with the answer its call was given,
+and the next write's drain records it. Only the lease's holder folds: a
+handle that closed while it was behind folds nothing, clears nothing by
+`rebuild`, and is refused as any handle without the lease. A handle
 opened only to read names the position the writer has folded.
 
 `rebuild`, `verify` and the fold at open read the log in pages of 1 024

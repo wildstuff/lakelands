@@ -46,8 +46,7 @@ pub enum Outcome {
         /// For a verb whose effect reaches outside the lake: its executor's
         /// recorded output, `{"error": "<text>"}` when the executor failed.
         /// The position is real either way; the verb is not run again for
-        /// a position that has an answer. `None` for every other write, and
-        /// for a retry that arrives while the executor still runs.
+        /// it. `None` for every other write.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output: Option<serde_json::Value>,
         /// What the write set off beyond the event it is visible from.

@@ -105,6 +105,10 @@ pub struct Due {
     pub cause: Position,
     /// That event's context, which the output and what it causes carry.
     pub context: lakelands_api::WriteContext,
+    /// The answer its call was given, from the answer until it is
+    /// recorded: a due whose recording failed is recorded from it by the
+    /// next drain, and its call is not made again.
+    pub held: Option<Value>,
 }
 
 /// Where the fold looks for recorded outputs, and where it hands out the
@@ -540,6 +544,7 @@ pub fn settle_fields(
                 retry,
                 cause: event.position,
                 context: event.context,
+                held: None,
             });
         }
     }
@@ -624,7 +629,8 @@ impl Drain {
 /// A call is skipped when its record has moved on to other inputs since it
 /// was made due, or when the same field of the same record is due twice
 /// for the same input. Before each call the outputs already recorded are
-/// consulted again, so no input is sent to a backing twice. A call whose
+/// consulted again, and an answer stays with its due until it is recorded,
+/// so no input is sent to a backing twice by one handle. A call whose
 /// backing kind is not bound here is not made. The calls a fill makes due
 /// are made in the same drain; they end, since a type's computed fields
 /// read one another without a cycle (refused at declare).
@@ -659,7 +665,7 @@ pub async fn settle(lake: &Arc<Lake>, seen: u64) -> Result<Option<Position>> {
         while let Some(d) = due.pop_front() {
             // An embedding goes with the other due texts of its model and
             // dimensions, up to one batch.
-            let batch = match &d.call {
+            let mut batch = match &d.call {
                 Call::Embed {
                     model, dimensions, ..
                 } => {
@@ -686,12 +692,13 @@ pub async fn settle(lake: &Arc<Lake>, seen: u64) -> Result<Option<Position>> {
                 Call::Function { .. } => vec![d],
             };
             let settled = match batch[0].call {
-                Call::Embed { .. } => settle_embeddings(lake, &mut drain, &batch).await,
-                Call::Function { .. } => settle_one(lake, &mut drain, &batch[0]).await,
+                Call::Embed { .. } => settle_embeddings(lake, &mut drain, &mut batch).await,
+                Call::Function { .. } => settle_one(lake, &mut drain, &mut batch[0]).await,
             };
             if let Err(e) = settled {
                 // The lake failed under the drain: what was not recorded
-                // stays due, for the next drain.
+                // stays due, with the answer it was given, for the next
+                // drain.
                 let mut w = lake.writer();
                 let rest: Vec<Due> = batch.into_iter().chain(due).collect();
                 w.due.splice(0..0, rest);
@@ -701,6 +708,16 @@ pub async fn settle(lake: &Arc<Lake>, seen: u64) -> Result<Option<Position>> {
     }
     let answered = drained || lake.drains.load(Ordering::Acquire) != seen;
     Ok(answered.then(|| lake.head()))
+}
+
+/// [`settle`] after a write that is folded: a drain that fails is not that
+/// write's failure. The write is answered as itself, its computed fields
+/// waiting. The failure is not lost: where a recording's fold failed the
+/// writer is behind, and the next write catches up first or is answered
+/// `unavailable` in that fold's words; what was not recorded stays due on
+/// this handle, with its answer, and the next write's drain records it.
+pub async fn settle_after(lake: &Arc<Lake>, seen: u64) -> Option<Position> {
+    settle(lake, seen).await.unwrap_or(None)
 }
 
 /// Whether a due's record still makes its call, and the output recorded
@@ -726,7 +743,7 @@ async fn record_async(lake: &Arc<Lake>, d: &Due, output: Value, known: bool) -> 
 
 /// Make one due function call, unless it is a repeat in this drain, its
 /// kind is not bound, or its record moved on; and record the answer.
-async fn settle_one(lake: &Arc<Lake>, drain: &mut Drain, d: &Due) -> Result<()> {
+async fn settle_one(lake: &Arc<Lake>, drain: &mut Drain, d: &mut Due) -> Result<()> {
     let Call::Function { kind, call } = &d.call else {
         return Ok(());
     };
@@ -748,13 +765,15 @@ async fn settle_one(lake: &Arc<Lake>, drain: &mut Drain, d: &Due) -> Result<()> 
     if !wanted {
         return Ok(());
     }
-    let (output, known) = match recorded {
-        Some(o) if drain.answers(d, &o) => (o, true),
+    let (output, known) = match (recorded, d.held.take()) {
+        (r, Some(held)) => (held.clone(), r == Some(held)),
+        (Some(o), None) if drain.answers(d, &o) => (o, true),
         _ => match backing.call(call).await {
             Ok(v) => (v, false),
             Err(e) => (json!({ "error": why(&e) }), false),
         },
     };
+    d.held = Some(output.clone());
     record_async(lake, d, output, known).await
 }
 
@@ -763,14 +782,15 @@ async fn settle_one(lake: &Arc<Lake>, drain: &mut Drain, d: &Due) -> Result<()> 
 /// output is recorded meanwhile is filled from it; one whose record moved
 /// on is dropped. Nothing is called when the bound backend is gone or names
 /// another model or other dimensions: the fields wait. A request that
-/// fails records the failure for each text it carried.
-async fn settle_embeddings(lake: &Arc<Lake>, drain: &mut Drain, batch: &[Due]) -> Result<()> {
-    let mut asked: Vec<&Due> = Vec::new();
+/// fails records the failure for each text it carried. Every due the
+/// request answered holds its answer before the first is recorded.
+async fn settle_embeddings(lake: &Arc<Lake>, drain: &mut Drain, batch: &mut [Due]) -> Result<()> {
+    let mut asked: Vec<usize> = Vec::new();
     // The calls this batch makes: every due of one of them waits for its
     // answer, never for the output recorded before it, which for a retry
     // is the failure being retried.
     let mut asking: BTreeSet<Digest> = BTreeSet::new();
-    for d in batch {
+    for (i, d) in batch.iter().enumerate() {
         if !drain.take(d) {
             continue;
         }
@@ -778,19 +798,23 @@ async fn settle_embeddings(lake: &Arc<Lake>, drain: &mut Drain, batch: &[Due]) -
         if !wanted {
             continue;
         }
-        match recorded {
-            Some(o) if !asking.contains(&d.input) && drain.answers(d, &o) => {
+        match (recorded, d.held.clone()) {
+            (r, Some(held)) => {
+                let known = r.as_ref() == Some(&held);
+                record_async(lake, d, held, known).await?
+            }
+            (Some(o), None) if !asking.contains(&d.input) && drain.answers(d, &o) => {
                 record_async(lake, d, o, true).await?
             }
             _ => {
                 asking.insert(d.input.clone());
-                asked.push(d);
+                asked.push(i);
             }
         }
     }
     let Some(Call::Embed {
         model, dimensions, ..
-    }) = asked.first().map(|d| &d.call)
+    }) = asked.first().map(|i| &batch[*i].call)
     else {
         return Ok(());
     };
@@ -806,7 +830,7 @@ async fn settle_embeddings(lake: &Arc<Lake>, drain: &mut Drain, batch: &[Due]) -
     // One text per digest, in the order they fell due.
     let mut texts: Vec<String> = Vec::new();
     let mut at: BTreeMap<Digest, usize> = BTreeMap::new();
-    for d in &asked {
+    for d in asked.iter().map(|i| &batch[*i]) {
         if let Call::Embed { text, .. } = &d.call
             && !at.contains_key(&d.input)
         {
@@ -831,11 +855,13 @@ async fn settle_embeddings(lake: &Arc<Lake>, drain: &mut Drain, batch: &[Due]) -
     };
     // The first due of a text records its output; a later due of the same
     // text in the batch records it again only if it fills something.
+    for i in &asked {
+        batch[*i].held = Some(outputs[at[&batch[*i].input]].clone());
+    }
     let mut recorded: BTreeSet<Digest> = BTreeSet::new();
-    for d in asked {
-        let output = outputs[at[&d.input]].clone();
+    for d in asked.into_iter().map(|i| &batch[i]) {
         let known = !recorded.insert(d.input.clone());
-        record_async(lake, d, output, known).await?;
+        record_async(lake, d, outputs[at[&d.input]].clone(), known).await?;
     }
     Ok(())
 }

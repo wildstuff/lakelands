@@ -125,11 +125,7 @@ impl Doors {
     /// only what [`lakelands_core::describe::named_reactions`] leaves `who` (024);
     /// `through` still covers it all.
     async fn settled(&self, who: &Principal, mut outcome: Outcome, seen: u64) -> Result<Outcome> {
-        // A drain that fails is not the write's failure: the write is
-        // folded and answered as itself, its computed fields waiting, and
-        // its calls stay due to the next write, which catches up first.
-        let drained = crate::backed::settle(&self.lake, seen).await;
-        let last = drained.unwrap_or(None);
+        let last = crate::backed::settle_after(&self.lake, seen).await;
         let named = matches!(&outcome, Outcome::Applied { set_off, .. } if set_off.names_any());
         let lake = if named {
             Some(self.describe(who, ReadAt::default()).await?.data)
@@ -593,7 +589,7 @@ impl LakeStore for Store {
         let mut report = exec::run(move || crate::aging::run(&lake, today)).await?;
         // The moves' backed fields settle like any write's; the report
         // names the position from which what they filled is visible.
-        if let Some(last) = crate::backed::settle(&self.lake, seen).await? {
+        if let Some(last) = crate::backed::settle_after(&self.lake, seen).await {
             report.position = report.position.max(last);
         }
         Ok(report)
@@ -610,7 +606,7 @@ impl LakeStore for Store {
         let mut report =
             exec::run(move || crate::purge::run(&lake, &source, id.as_deref())).await?;
         // The retirements' backed fields settle like any write's.
-        if let Some(last) = crate::backed::settle(&self.lake, seen).await? {
+        if let Some(last) = crate::backed::settle_after(&self.lake, seen).await {
             report.position = report.position.max(last);
         }
         Ok(report)

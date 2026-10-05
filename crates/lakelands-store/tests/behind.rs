@@ -17,34 +17,40 @@ use async_trait::async_trait;
 
 use lakelands_api::engine::OpenMode;
 use lakelands_api::event::EventBody;
-use lakelands_api::ontology::StorageKind::Number;
+use lakelands_api::ontology::StorageKind::{Number, Text};
 use lakelands_api::ontology::{Authority, Risk, TypeDecl, VerbDecl, VerbEffect};
 use lakelands_api::seam::{
-    FeedFilter, FunctionBacking, FunctionCall, Seams, VerbExecutor, VerbInvocation,
+    EmbedBackend, FeedFilter, FunctionBacking, FunctionCall, Seams, VerbExecutor, VerbInvocation,
 };
 use lakelands_api::write::{Declaration, Outcome, WriteOpts};
-use lakelands_api::{Error, LakeStore, Location, Position, Refusal, Version};
+use lakelands_api::{Error, LakeStore, Location, Position, Refusal, Timestamp, Version};
 use lakelands_core::conformance::fixture::{
-    Lake, computed_by, derived, field, get_at, patch, source_record, type_decl,
+    Lake, computed_by, derived, embedding, field, get_at, patch, source_record, type_decl,
 };
 use lakelands_engine_mem::MemoryOpener;
 use lakelands_store::log::Draft;
 use probed::{Probe, ProbedOpener};
 use serde_json::{Value, json};
 
-/// A backing and an executor that count what they are handed; when it is
-/// gated, the first is held until the gate is opened.
+/// A backing, an embedding backend and an executor that count what they
+/// are handed; when it is gated, the first is held until the gate is
+/// opened.
 #[derive(Default)]
 struct Counting {
     handed: AtomicUsize,
-    /// The positions the executor was handed.
-    at: Mutex<Vec<u64>>,
+    /// The texts of each embedding request.
+    texts: Mutex<Vec<Vec<String>>>,
+    /// What the next call does to the engine when it is handed, once.
+    arm: Mutex<Option<Box<dyn Fn() + Send>>>,
     gate: Option<tokio::sync::Notify>,
 }
 
 impl Counting {
     async fn hand(&self) -> usize {
         let n = self.handed.fetch_add(1, Ordering::SeqCst);
+        if let Some(plant) = self.arm.lock().unwrap().take() {
+            plant();
+        }
         if let (0, Some(gate)) = (n, &self.gate) {
             gate.notified().await;
         }
@@ -61,6 +67,30 @@ impl Counting {
     /// Wait until the first is handed and held at the gate.
     async fn held(&self) {
         until(|| self.handed.load(Ordering::SeqCst) == 1).await;
+    }
+
+    /// The next call refuses the engine's next commit: its recording's.
+    fn refuses_its_recording(&self, probe: &Arc<Probe>) {
+        let probe = probe.clone();
+        let plant = move || *probe.refuse_commit.lock().unwrap() = Some(1);
+        *self.arm.lock().unwrap() = Some(Box::new(plant));
+    }
+}
+
+#[async_trait]
+impl EmbedBackend for Counting {
+    fn model(&self) -> &str {
+        "m"
+    }
+
+    fn dimensions(&self) -> u32 {
+        2
+    }
+
+    async fn embed(&self, texts: &[String]) -> lakelands_api::Result<Vec<Vec<f32>>> {
+        self.texts.lock().unwrap().push(texts.to_vec());
+        self.hand().await;
+        Ok(vec![vec![1.0, 0.0]; texts.len()])
     }
 }
 
@@ -82,8 +112,7 @@ impl VerbExecutor for Counting {
         "bank"
     }
 
-    async fn execute(&self, called: &VerbInvocation) -> lakelands_api::Result<Value> {
-        self.at.lock().unwrap().push(called.position.0);
+    async fn execute(&self, _: &VerbInvocation) -> lakelands_api::Result<Value> {
         Ok(json!({"ran": self.hand().await}))
     }
 }
@@ -116,6 +145,7 @@ async fn bound(
     let seams = Seams {
         engines: vec![Arc::new(ProbedOpener(opener.clone(), probe.clone()))],
         backings: vec![counting.clone()],
+        embed: Some(counting.clone()),
         executors: vec![counting],
         ..Seams::default()
     };
@@ -346,8 +376,9 @@ async fn a_writer_that_could_not_read_its_state_back_reads_it_before_it_folds() 
 }
 
 /// Row 6. A handle that gave its lease up while it was behind folds
-/// nothing: every door on it and `checkpoint` are refused as on any handle
-/// without the lease, and the engine is asked for no transaction. The
+/// nothing: every door on it, `checkpoint` and `rebuild` are refused as on
+/// any handle without the lease, and the engine is asked for no
+/// transaction. The
 /// handle that holds the lease folds what was left when it opens.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_handle_that_closed_behind_folds_nothing() {
@@ -376,6 +407,7 @@ async fn a_handle_that_closed_behind_folds_nothing() {
         no_lease,
         "a checkpoint"
     );
+    assert_eq!(unavailable(store.rebuild().await), no_lease, "a rebuild");
     assert_eq!(
         probe.begins.load(Ordering::SeqCst),
         before,
@@ -542,49 +574,28 @@ fn ran(outcome: lakelands_api::Result<Outcome>) -> (u64, Option<Value>) {
     }
 }
 
-/// Row 10. A retry runs what has no answer: the call of an external verb
-/// whose fold failed is in the log and its executor was never handed it;
-/// sent again under its key, the executor is handed it at the first
-/// call's position and the answer carries its output. A third send runs
-/// nothing.
+/// Row 10. The call of an external verb whose fold failed is in the log
+/// and its executor was not handed it: the store's sentence says so, and
+/// that the call sent again under its key will not run it. Sent again it
+/// is answered its position with no output, and the executor is handed
+/// nothing. The same sentence for an acceptance, which sent again is
+/// `decided`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_retried_external_verb_runs_when_nothing_answered_it() {
+async fn a_call_of_an_external_verb_whose_fold_failed_says_its_executor_was_not_handed_it() {
+    let not_handed = "the verb's executor was not handed this call, and sending it again under \
+                      its key will not run it: call the verb again";
     let counting = Arc::new(Counting::default());
     let (store, probe, _) = bound("behind-verb", counting.clone()).await;
     let l = Lake::of(store.as_ref());
     payable(&l, Risk::Low).await;
     *probe.refuse_commit.lock().unwrap() = Some(1);
-    unavailable(pay(&l).await);
-    assert_eq!(
-        counting.handed.load(Ordering::SeqCst),
-        0,
-        "the executor was not handed it"
-    );
+    let said = unavailable(pay(&l).await);
+    assert!(said.contains("is not folded yet"), "{said}");
+    assert!(said.ends_with(not_handed), "a call: {said}");
     let (at, output) = ran(pay(&l).await);
-    assert_eq!(
-        output,
-        Some(json!({"ran": 1})),
-        "the retry's answer is the executor's"
-    );
-    assert_eq!(
-        *counting.at.lock().unwrap(),
-        [at],
-        "at the first call's position"
-    );
-    assert_eq!(
-        ran(pay(&l).await),
-        (at, Some(json!({"ran": 1}))),
-        "a third send"
-    );
-    assert_eq!(counting.handed.load(Ordering::SeqCst), 1, "handed once");
-}
+    assert_eq!(output, None, "the call sent again has no output");
+    assert!(said.contains(&format!("from position {at} ")), "{said}");
 
-/// Row 11. The same for an acceptance: the accepted call of an external
-/// verb whose fold failed is run by the accept sent again, at the
-/// acceptance's position; after that the proposal is decided, as before.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_accept_sent_again_runs_the_external_verb_nothing_answered() {
-    let counting = Arc::new(Counting::default());
     let (store, probe, _) = bound("behind-accept", counting.clone()).await;
     let l = Lake::of(store.as_ref());
     payable(&l, Risk::High).await;
@@ -592,20 +603,8 @@ async fn an_accept_sent_again_runs_the_external_verb_nothing_answered() {
         panic!("a high verb is proposed");
     };
     *probe.refuse_commit.lock().unwrap() = Some(1);
-    unavailable(l.cat.accept(&l.own, &proposal).await);
-    let (_, output) = ran(l.cat.accept(&l.own, &proposal).await);
-    assert_eq!(output, Some(json!({"ran": 1})));
-    let all = FeedFilter::default();
-    let polled = store.feed().poll(Position(0), &all, 100).await.unwrap();
-    let accepted = |e: &lakelands_api::event::Event| {
-        matches!(e.body, EventBody::WriteAccepted { .. }).then_some(e.position.0)
-    };
-    let accepted: Vec<u64> = polled.events.iter().filter_map(accepted).collect();
-    assert_eq!(
-        *counting.at.lock().unwrap(),
-        accepted,
-        "at the acceptance's position"
-    );
+    let said = unavailable(l.cat.accept(&l.own, &proposal).await);
+    assert!(said.ends_with(not_handed), "an acceptance: {said}");
     let decided = l.cat.accept(&l.own, &proposal).await;
     let refused = matches!(
         &decided,
@@ -615,70 +614,116 @@ async fn an_accept_sent_again_runs_the_external_verb_nothing_answered() {
         })
     );
     assert!(refused, "{decided:?}");
-    assert_eq!(counting.handed.load(Ordering::SeqCst), 1, "handed once");
-}
-
-/// Row 12. A retry that arrives while the executor is running the call on
-/// this handle is answered the call's position with no output, and hands
-/// the executor nothing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_retry_while_the_executor_runs_hands_it_nothing() {
-    let counting = Counting::gated();
-    let (store, _, _) = bound("behind-running", counting.clone()).await;
-    let l = Lake::of(store.as_ref());
-    payable(&l, Risk::Low).await;
-    let first = {
-        let l = Lake::of(store.as_ref());
-        tokio::spawn(async move { pay(&l).await })
-    };
-    counting.held().await;
-    let (at, output) = ran(pay(&l).await);
-    assert_eq!(output, None, "no answer yet");
     assert_eq!(
         counting.handed.load(Ordering::SeqCst),
-        1,
-        "the retry handed it nothing"
-    );
-    counting.gate.as_ref().unwrap().notify_one();
-    assert_eq!(ran(first.await.unwrap()), (at, Some(json!({"ran": 1}))));
-    assert_eq!(
-        ran(pay(&l).await),
-        (at, Some(json!({"ran": 1}))),
-        "the answer, recorded"
+        0,
+        "the executor was handed nothing"
     );
 }
 
-/// Row 13. A retry on a handle that does not hold the lease hands the
-/// executor nothing, whatever the log holds: the lease's holder may be
-/// running the call. It is answered the call's position with no output.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_retry_on_a_handle_without_the_lease_hands_the_executor_nothing() {
-    let counting = Counting::gated();
-    let (store, _, opener) = bound("behind-reader", counting.clone()).await;
+/// `f`, which the backing `counting` computes, and `doc` with `n`, which
+/// either door writes, and `sum`, computed by `f` from it.
+async fn summed(l: &Lake) {
+    let f = json!({"declare": "function", "name": "f", "backing": "counting",
+                   "inputs": [{"name": "n", "type": {"kind": "number"}}]});
+    l.declare_json(f).await.unwrap();
+    let mut n = field("n", Number);
+    n.authority = Authority::Shared;
+    let sum = computed_by("sum", Number, "f", &["n"]);
+    l.declare(type_decl("doc", vec![n, sum])).await.unwrap();
+}
+
+/// Row 11. A feed, an aging run and a purge are answered their own
+/// outcome when the drain behind them fails, as an upsert is (row 9). The
+/// feed's own record makes the call due; the aging run and the purge make
+/// it due by catching up over a write whose fold failed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_feed_an_aging_run_and_a_purge_are_answered_their_own_when_the_drain_fails() {
+    let counting = Arc::new(Counting::default());
+    let (store, probe, _) = bound("behind-feed", counting.clone()).await;
     let l = Lake::of(store.as_ref());
-    payable(&l, Risk::Low).await;
-    let first = {
+    summed(&l).await;
+    counting.refuses_its_recording(&probe);
+    let fed = l.ingest("feed", vec![source_record("doc", "d", json!({"n": 4}))]);
+    let fed = fed.await.expect("the window is answered its own outcome");
+    assert_eq!(fed.len(), 1, "one window");
+    assert_eq!(counting.handed.load(Ordering::SeqCst), 1, "the feed's call");
+
+    for door in ["age", "purge"] {
+        let counting = Arc::new(Counting::default());
+        let (store, probe, _) = bound(&format!("behind-{door}"), counting.clone()).await;
         let l = Lake::of(store.as_ref());
-        tokio::spawn(async move { pay(&l).await })
-    };
-    counting.held().await;
-    let seams = Seams {
-        engines: vec![Arc::new(opener)],
-        executors: vec![counting.clone()],
-        ..Seams::default()
-    };
-    let location = Location::memory("behind-reader");
-    let other = lakelands_store::open(location, seams, OpenMode::Read).await;
-    let other = other.expect("a second handle");
-    let (at, output) = ran(pay(&Lake::of(other.as_ref())).await);
-    assert_eq!(output, None, "no answer yet");
+        summed(&l).await;
+        *probe.refuse_commit.lock().unwrap() = Some(1);
+        unavailable(write(&l, "a", 1, None).await);
+        counting.refuses_its_recording(&probe);
+        match door {
+            "age" => drop(store.age(Timestamp(0)).await.expect("the aging run's own")),
+            _ => drop(
+                store
+                    .purge_source(&"feed".into(), None)
+                    .await
+                    .expect("the purge's own"),
+            ),
+        }
+        assert_eq!(counting.handed.load(Ordering::SeqCst), 1, "`{door}`'s call");
+    }
+}
+
+/// Row 12. An answer is held with its due until it is recorded: where the
+/// recording fails, the next drain records the answer and does not call
+/// again. For a function, the recording fails before anything is
+/// appended; for a batch of embeddings, at the first of two.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_answer_whose_recording_failed_is_recorded_without_a_second_call() {
+    let counting = Arc::new(Counting::default());
+    let (store, probe, _) = bound("behind-held", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    summed(&l).await;
+    let view = probe.clone();
+    let plant = move || *view.refuse_view.lock().unwrap() = Some(1);
+    *counting.arm.lock().unwrap() = Some(Box::new(plant));
+    applied(write(&l, "a", 1, None).await);
+    assert_eq!(
+        state(&l, "a", None).await[0],
+        json!({"n": 1}),
+        "not recorded"
+    );
+    applied(write(&l, "b", 2, None).await);
     assert_eq!(
         counting.handed.load(Ordering::SeqCst),
-        1,
-        "the retry handed it nothing"
+        2,
+        "one call for each record"
     );
-    counting.gate.as_ref().unwrap().notify_one();
-    assert_eq!(ran(first.await.unwrap()), (at, Some(json!({"ran": 1}))));
+    assert_eq!(state(&l, "a", None).await[0], json!({"n": 1, "sum": 7}));
+
+    let counting = Arc::new(Counting::default());
+    let (store, probe, _) = bound("behind-batch", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    let mut text = field("text", Text);
+    text.authority = Authority::Shared;
+    let embedded = embedding("vec", 2, &["text"], "m");
+    l.declare(type_decl("note", vec![text, embedded]))
+        .await
+        .unwrap();
+    let note = |key: &str, text: &str| source_record("note", key, json!({"text": text}));
+    counting.refuses_its_recording(&probe);
+    let two = l.ingest("feed", vec![note("x", "one"), note("y", "two")]);
+    two.await.expect("the window's own outcome");
+    l.ingest("feed", vec![note("z", "three")]).await.unwrap();
+    assert_eq!(
+        *counting.texts.lock().unwrap(),
+        [
+            vec!["one".to_owned(), "two".to_owned()],
+            vec!["three".to_owned()]
+        ],
+        "no text is sent twice"
+    );
+    for key in ["x", "y", "z"] {
+        let got = l.cat.get(&l.own, &"note".into(), get_at(key, None)).await;
+        let fields = got.unwrap().data.fields;
+        assert_eq!(fields.get("vec"), Some(&json!([1, 0])), "`{key}`");
+    }
 }
 
 /// Row 5. An append decided under a writer that is behind and was not
