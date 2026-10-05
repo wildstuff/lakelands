@@ -329,3 +329,69 @@ fn what_a_crash_before_the_rename_left_is_read_by_nobody() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// An error after the rename says that the seal stands. Here the handle
+/// cannot read on: while the seal runs, the index of the segment it
+/// closes gains a line that is no index line. The seal answers that the
+/// segment is sealed and the next one in the log's files, and it is: the
+/// directory lists it, with its event's line. Once the index reads again
+/// the handle reads the sealed segment and the event that begins the next.
+#[test]
+fn an_error_after_the_rename_says_that_the_seal_stands() {
+    let _alone = lakelands_core::lock(&ONE_AT_A_TIME);
+    let (dir, writer, lease) = six("stands");
+    let events = writer.read(Position(0), 10).unwrap();
+    let index = dir.join("index").join(file(0, "idx"));
+    let whole = std::fs::read(&index).unwrap();
+    let next = chain(6, 1, &events[5].hash, &lease);
+    let failed = writer.seal_segment(&lease, false, &mut |_| {
+        std::fs::write(&index, [&whole[..], b"no index line\n"].concat()).unwrap();
+        Ok(next.clone())
+    });
+    let failed = failed.unwrap_err().to_string();
+    assert!(
+        failed.contains("the segment through position 5 is sealed") && failed.contains("damaged"),
+        "{failed}"
+    );
+    assert_eq!(names(&dir, "log"), [file(0, "jsonl"), file(6, "jsonl")]);
+    let segment = std::fs::read(dir.join("log").join(file(6, "jsonl"))).unwrap();
+    assert_eq!(segment, [&next[0].bytes[..], b"\n"].concat());
+
+    std::fs::write(&index, &whole).unwrap();
+    assert_eq!(writer.tip().unwrap().unwrap().0, Position(6), "{failed}");
+    let sealed = writer.segments().unwrap();
+    assert_eq!((sealed.len(), sealed[0].last.0), (1, 5), "{failed}");
+    let all = [events, next].concat();
+    assert_eq!(writer.read(Position(0), 10).unwrap(), all, "{failed}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A leftover the next writer cannot remove does not refuse its lease: it
+/// is read by nobody and is passed over. Here a directory stands under
+/// each of the two names a crashed seal leaves, and a directory is not
+/// removed as a file is, for any user. The lease is taken, both stay, and
+/// the writer appends.
+#[test]
+fn a_leftover_that_cannot_be_removed_refuses_no_lease() {
+    let _alone = lakelands_core::lock(&ONE_AT_A_TIME);
+    let (dir, writer, lease) = six("kept");
+    let events = writer.read(Position(0), 10).unwrap();
+    writer.release_lease(&lease).unwrap();
+    drop(writer);
+    let left = [
+        dir.join("index").join(file(6, "idx")),
+        dir.join("log").join(file(6, "jsonl.partial")),
+    ];
+    left.iter().for_each(|l| std::fs::create_dir(l).unwrap());
+    let location = Location::sqlite("lake", &dir);
+    let later = SqliteOpener.open(&location, OpenMode::Write).unwrap();
+    let lease = later.take_lease("later").unwrap();
+    assert!(left.iter().all(|l| l.is_dir()), "a directory was removed");
+    let next = chain(6, 1, &events[5].hash, &lease);
+    later.append(&lease, &next).unwrap();
+    assert_eq!(
+        later.read(Position(0), 10).unwrap(),
+        [events, next].concat()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

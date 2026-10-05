@@ -17,7 +17,11 @@
 //! committed, so no later segment is ever empty. A seal that fails before
 //! the rename takes its two files away and answers its error. A crash
 //! there leaves them, read by nobody: a seal at that position writes over
-//! both, and the next writer removes them as it takes the lease.
+//! both, and the next writer removes them as it takes the lease. After
+//! the rename the seal stands, and an error says so: where the sync of
+//! the segment's name fails the outcome is not known, as below for an
+//! append; where the process ends before that sync nothing syncs the name
+//! again, and a crash of the machine may still take the segment with it.
 //!
 //! **The index.** An append also hands the engine each event's position,
 //! id, `prev`, `hash` and fence beside its bytes, and a read must give
@@ -329,6 +333,15 @@ fn index_path(dir: &Path, first: u64) -> PathBuf {
     dir.join("index").join(format!("{first:020}.idx"))
 }
 
+/// The names in `dir`. An entry that cannot be read fails the listing: a
+/// segment passed over would be read as absent, and its index removed.
+fn names(dir: &Path) -> Result<Vec<String>> {
+    let read = fs::read_dir(dir).and_then(Iterator::collect::<io::Result<Vec<_>>>);
+    let entries = read.map_err(|e| io_error("reading", dir, e))?;
+    let names = entries.iter().map(|e| e.file_name().into_string().ok());
+    Ok(names.flatten().collect())
+}
+
 /// Sync a directory, so a file created in it survives a crash.
 fn sync_dir(dir: &Path) -> io::Result<()> {
     #[cfg(unix)]
@@ -403,11 +416,9 @@ impl Log {
 
     /// The first positions of the segment files, in order.
     fn files(&self) -> Result<Vec<u64>> {
-        let dir = self.dir.join("log");
-        let mut firsts: Vec<u64> = fs::read_dir(&dir)
-            .map_err(|e| io_error("reading", &dir, e))?
-            .filter_map(|entry| {
-                let name = entry.ok()?.file_name().into_string().ok()?;
+        let mut firsts: Vec<u64> = names(&self.dir.join("log"))?
+            .iter()
+            .filter_map(|name| {
                 let stem = name.strip_suffix(".jsonl")?;
                 (stem.len() == 20).then(|| stem.parse().ok())?
             })
@@ -713,7 +724,7 @@ impl Log {
     /// with the events `first` answers for it, under `fence` as
     /// [`Self::append`] takes it, in one step: the rename that gives the
     /// next segment its name (module doc). An error before it leaves the
-    /// log as it was.
+    /// log as it was; an error after it says that the seal stands.
     pub(crate) fn seal(
         &mut self,
         fence: Option<u64>,
@@ -760,7 +771,7 @@ impl Log {
             return Err(e);
         }
         self.segments.last_mut().expect("checked above").digest = Some(digest);
-        self.refresh()?;
+        // The rename was the step: an error from here on says so.
         sync_dir(&log).map_err(|e| {
             unavailable(format!(
                 "syncing {} failed: {e}; the next segment is in the log's files and its name's \
@@ -768,26 +779,28 @@ impl Log {
                 log.display()
             ))
         })?;
+        self.refresh().map_err(|e| {
+            unavailable(format!(
+                "the segment through position {last} is sealed and the next one is in the \
+                 log's files, synced; this handle then failed to read on: {e}"
+            ))
+        })?;
         Ok(Some(sealed))
     }
 
     /// Take away what a seal that never reached its rename left behind a
     /// crash: a segment's lines under their other name, and an index whose
-    /// segment does not exist. No handle reads either. Only the writer
+    /// segment does not exist. No handle reads either, so one that cannot
+    /// be removed is passed over and refuses no lease. Only the writer
     /// does this, as it takes the lease.
     pub(crate) fn sweep(&self) -> Result<()> {
         let firsts = self.files()?;
         for sub in ["log", "index"] {
             let dir = self.dir.join(sub);
-            let listed = fs::read_dir(&dir).map_err(|e| io_error("reading", &dir, e))?;
-            for path in listed.filter_map(|entry| Some(entry.ok()?.path())) {
-                let name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or_default();
+            for name in names(&dir)? {
                 let of_no_segment = |first: &str| first.parse().is_ok_and(|f| !firsts.contains(&f));
                 if name.ends_with(PARTIAL) || name.strip_suffix(".idx").is_some_and(of_no_segment) {
-                    fs::remove_file(&path).map_err(|e| io_error("removing", &path, e))?;
+                    let _ = fs::remove_file(dir.join(&name));
                 }
             }
         }

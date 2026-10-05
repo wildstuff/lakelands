@@ -21,14 +21,16 @@
 //! lease taken; a log that holds anything refuses the import, naming its
 //! head: an import is a lake's birth, not a merge.
 //!
-//! **Then the files, as they are.** Each file's events go to
-//! `LakeEngine::import` [`BATCH`] at a time; before each file after the
-//! first, which starts with its `checkpoint`, the engine seals the segment
-//! before it, and the digest it answers must be the file's. The
-//! projection is folded under the import's lease as a rebuild folds it,
-//! and nothing is appended: the head is the export's. The lease is given
-//! up, and the host opens the lake as always; that open takes a lease
-//! greater than every fence in the log and continues it.
+//! **Then the files, as they are.** The first file's events go to
+//! `LakeEngine::import` [`BATCH`] at a time. Each later file starts with
+//! its `checkpoint`: its first batch is handed to
+//! `LakeEngine::seal_segment`, which closes the segment before it and
+//! begins the next with that batch in one step, once the digest the engine
+//! takes of that segment is the file's; the rest follows through `import`.
+//! The projection is folded under the import's lease as a rebuild folds
+//! it, and nothing is appended: the head is the export's. The lease is
+//! given up, and the host opens the lake as always; that open takes a
+//! lease greater than every fence in the log and continues it.
 //!
 //! **A failure is loud.** Once the first event is written, what can still
 //! fail is the target's storage. The error names the position the import

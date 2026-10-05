@@ -60,8 +60,6 @@ pub struct Probe {
     pub before_commit: Mutex<Option<Look>>,
     /// Whether a seal hands its `first` another digest than the engine's.
     pub another_digest: std::sync::atomic::AtomicBool,
-    /// Whether a seal asks its `first` twice, as one that tries again does.
-    pub ask_twice: std::sync::atomic::AtomicBool,
 }
 
 impl Probe {
@@ -201,9 +199,6 @@ impl LakeEngine for Probed {
             let mut sealed = sealed.clone();
             if other {
                 sealed.digest = Digest("0".repeat(64));
-            }
-            if self.probe.ask_twice.load(Ordering::SeqCst) {
-                first(&sealed)?;
             }
             first(&sealed)
         })

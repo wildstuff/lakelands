@@ -1428,8 +1428,8 @@ impl Lake {
         let before = self.engine.segments()?;
         let now = self.clock(&mut w);
         // The engine closes the segment and begins the next with the
-        // checkpoint in one step: a checkpoint that fails has sealed
-        // nothing, and is sent again. An engine may ask `first` again.
+        // checkpoint in one step: one refused before it has sealed
+        // nothing, and is sent again.
         let mut stamped = None;
         self.engine.seal_segment(&lease, false, &mut |sealed| {
             let segments = before.iter().chain([sealed]).cloned().collect();

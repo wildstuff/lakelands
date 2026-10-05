@@ -98,7 +98,7 @@ engine_check!(
 engine_check!(
     /// A seal that cannot begin the next segment seals nothing.
     SEAL_OR_NOTHING = a_seal_that_cannot_begin_the_next_segment_leaves_the_log_as_it_was,
-    "log format §4.2: a seal closes the active segment and begins the next with its first event in one step; one whose events do not continue the log, that is handed none, or whose `first` answers an error is refused and seals nothing, and the next append lands in the segment that was active"
+    "log format §4.2: a seal closes the active segment and begins the next with its first event in one step; one whose events do not continue the log by hash or by position, that is handed none, or whose events are imported behind appended ones is refused as invalid, one whose `first` answers an error answers that error, and one under a lease no longer current is unavailable before `first` is asked; each seals nothing and leaves the tip, with no segment sealed and behind a sealed one, and the next append lands in the segment that was active"
 );
 
 engine_check!(
@@ -554,47 +554,64 @@ fn sealing_under_a_stale_lease_is_refused_and_two_seals_list_contiguous_ranges(
 fn a_seal_that_cannot_begin_the_next_segment_leaves_the_log_as_it_was(
     engine: &dyn LakeEngine,
 ) -> Result<(), Failure> {
+    let old = engine.take_lease("first writer").must("taking the lease")?;
+    engine.release_lease(&old).must("releasing the lease")?;
     let lease = engine.take_lease("conformance").must("taking the lease")?;
-    let events = chain(0, 2, &Digest::zero(), &lease);
-    engine
-        .append(&lease, &events)
-        .must("appending two events")?;
-    let refused = Error::Unavailable {
+    let mut log = chain(0, 2, &Digest::zero(), &lease);
+    engine.append(&lease, &log).must("appending two events")?;
+    let fails = Error::Unavailable {
         message: "the check's `first` answers an error".to_owned(),
     };
-    for (what, answer) in [
-        (
-            "an event that does not continue the log",
-            Ok(chain(2, 1, &events[0].hash, &lease)),
-        ),
-        ("no event", Ok(vec![])),
-        ("an error from `first`", Err(refused)),
-    ] {
-        let mut answer = Some(answer);
-        let sealed = engine.seal_segment(&lease, false, &mut |_| {
-            answer.take().unwrap_or_else(|| Ok(vec![]))
-        });
-        let segments = engine.segments().must("listing the segments")?;
-        let tip = engine.tip().must("reading the tip")?.map(|t| t.0);
-        ensure!(
-            sealed.is_err() && segments.is_empty() && tip == Some(Position(1)),
-            "a seal handed {what} answered {sealed:?} and left the segments {segments:?} and \
-             the tip {tip:?}; it must be refused with nothing sealed and the tip at 1"
-        );
+    // With nothing sealed, and again behind a sealed segment.
+    for sealed in [vec![], vec![(0, 2)]] {
+        let (at, last) = (log.len() as u64, log.len() - 1);
+        let next = |at, prev: usize| Ok(chain(at, 1, &log[prev].hash, &lease));
+        let (own, import, stale) = ((&lease, false), (&lease, true), (&old, false));
+        for (what, (held, imported), answer) in [
+            ("a `prev` other than the tip's hash", own, next(at, 0)),
+            ("a position past the next", own, next(at + 1, last)),
+            ("no event", own, Ok(vec![])),
+            ("an error from `first`", own, Err(fails.clone())),
+            ("an import behind appended events", import, next(at, last)),
+            ("its events under a stale lease", stale, next(at, last)),
+        ] {
+            let (mut asked, invalid) = (false, answer.is_ok() && held == &lease);
+            let mut answer = Some(answer);
+            let refused = engine.seal_segment(held, imported, &mut |_| {
+                asked = true;
+                answer.take().unwrap_or_else(|| Ok(vec![]))
+            });
+            let as_it_must = match &refused {
+                Err(e) if invalid => is_invalid(e),
+                Err(e) => matches!(e, Error::Unavailable { .. }) && asked == (held == &lease),
+                Ok(_) => false,
+            };
+            let segments = engine.segments().must("listing the segments")?;
+            let ranges: Vec<_> = segments.iter().map(|s| (s.first.0, s.last.0)).collect();
+            let tip = engine.tip().must("reading the tip")?;
+            let want = Some((Position(at - 1), log[last].hash.clone()));
+            ensure!(
+                as_it_must && ranges == sealed && tip == want,
+                "a seal handed {what} answered {refused:?} (`first` asked: {asked}) and left the \
+                 segments {ranges:?} and the tip {tip:?}; it must be refused (invalid for \
+                 events that cannot enter and for none, `first`'s own error, unavailable under \
+                 a stale lease before `first` is asked) and leave {sealed:?} and {want:?}"
+            );
+        }
+        if sealed.is_empty() {
+            let more = chain(2, 1, &log[1].hash, &lease);
+            engine.append(&lease, &more).must("appending behind them")?;
+            let next = chain(3, 1, &more[0].hash, &lease);
+            let closed = seal(engine, &lease, &next).must("sealing after them")?;
+            log = [log, more, next].concat();
+            let read = engine.read(Position(0), 10).must("reading the log")?;
+            ensure!(
+                closed.as_ref().map(|s| (s.first.0, s.last.0)) == Some((0, 2)) && read == log,
+                "after the refused seals the next one closed {closed:?} and the log reads \
+                 {read:?}; the append between landed in the first segment, closed as one, 0 to 2"
+            );
+        }
     }
-    let more = chain(2, 1, &events[1].hash, &lease);
-    engine
-        .append(&lease, &more)
-        .must("appending after the refused seals")?;
-    let next = chain(3, 1, &more[0].hash, &lease);
-    let sealed = seal(engine, &lease, &next).must("sealing after them")?;
-    let log = engine.read(Position(0), 10).must("reading the log")?;
-    ensure!(
-        sealed.as_ref().map(|s| (s.first.0, s.last.0)) == Some((0, 2))
-            && log == [events, more, next].concat(),
-        "after three refused seals the next one closed {sealed:?} and the log reads {log:?}; \
-         the append between landed in the first segment, which is closed as one, 0 to 2"
-    );
     Ok(())
 }
 

@@ -196,10 +196,16 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   the store's writer does not, so the next write on that handle is
   refused as not continuing the log, and each one after it: the host
   opens the lake again, and the handle opened then reads them and writes
-  on. A `checkpoint` that fails has sealed nothing, on every engine: the
-  segment is closed and the next one begun with its checkpoint in one
-  step, so the host sends it again when the cause is gone, and the lake
-  directory verifies meanwhile as before it (lakelands#623).
+  on. A `checkpoint` closes the segment and begins the next one with its
+  checkpoint in one step, on every engine: one refused before that step
+  has sealed nothing, the lake directory verifies meanwhile as before it,
+  and the host sends it again when the cause is gone. An error can also
+  come behind the step, with the seal standing: the SQLite engine's says
+  so (the new segment's name could not be synced and the outcome is not
+  known, or the handle could not read on), and a fold that fails behind
+  the seal answers its own. Then the host opens the lake again and sends
+  nothing again: the handle opened then reads the checkpoint where it is
+  in the log (lakelands#623).
   In a quiet hour the host can call `LakeStore::compact()` (`lakelands
   compact`) to give back the storage the projection no longer uses; it
   changes no answer and appends nothing, and writes wait while it runs

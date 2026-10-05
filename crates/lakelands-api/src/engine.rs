@@ -134,10 +134,12 @@ pub trait LakeEngine: Send + Sync {
     /// hold, or the log is as it was, so a segment after the first never
     /// exists without its first event (`docs/log-format.md` §4.2). The
     /// events enter as [`append`](Self::append)'s do, or as
-    /// [`import`](Self::import)'s when `imported`; none, or an error from
-    /// `first`, refuses the seal. `None`, and `first` is not asked, if the
-    /// active segment holds no event. An engine that tries its step again
-    /// may ask `first` again.
+    /// [`import`](Self::import)'s when `imported`, and are refused as
+    /// invalid where those would be; so is none, and an error from `first`
+    /// is the seal's own. `first` is asked once, after the lease is found
+    /// current, and runs inside the step: it calls nothing of the engine.
+    /// `None`, and `first` is not asked, if the active segment holds no
+    /// event.
     fn seal_segment(
         &self,
         lease: &Lease,
