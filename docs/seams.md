@@ -1423,7 +1423,12 @@ the setting's key, and it has two fields: `key` (text, the same key) and
 `value` (json, the setting's value). `setting('vat_rate')` in any
 expression reads the `value` of the `sys.setting` record with key
 `vat_rate` as of the position being read or folded, so a replay reads the
-setting as it then stood.
+setting as it then stood. A setting is the lake's configuration: every
+live setting, restricted or not, is what the lake computes with and what
+an expression reads, in the fold, in a read, by a writer opened again
+and in a rebuild. Restricting a setting hides its record, as a grant on
+`sys.setting` does, and never its value from an expression; only
+retiring it takes it from the lake's computations.
 
 One setting is read by the store itself: **`sort_index.<type>`** holds a
 JSON array of field names of `<type>` and asks every engine to keep an
