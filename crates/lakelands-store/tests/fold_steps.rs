@@ -42,7 +42,7 @@ impl Folded {
 
     /// One append, folded in one transaction; the events' positions.
     fn try_append(&self, bodies: Vec<EventBody>) -> Result<Vec<Position>> {
-        let mut w = self.0.writer();
+        let mut w = self.0.for_write()?;
         let now = self.0.clock(&mut w);
         let drafts = bodies.into_iter().map(|b| Draft::system(now, b)).collect();
         let events = self.0.append(&mut w, drafts)?;

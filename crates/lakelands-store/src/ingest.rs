@@ -53,7 +53,7 @@ pub fn window(
     records: Vec<SourceRecord>,
 ) -> Result<Committed> {
     crate::writes::check_context(lake, &context)?;
-    let mut w = lake.writer();
+    let mut w = lake.for_write()?;
     // Under the writer, so through every rename the lake has folded.
     let (who, _) = lake.followed(who.clone(), None, None)?;
     let (who, followed) = (&who, None);
@@ -214,12 +214,10 @@ pub fn run(
             let mut answer = exec::run(move || window(&l, &w, context, &s, batch)).await;
             // The calls the window made due are made before it answers, so
             // its position is one the filled fields are visible from.
-            if let Ok(c) = &mut answer {
-                match crate::backed::settle(&lake, seen).await {
-                    Ok(Some(last)) => c.position = c.position.max(last),
-                    Ok(None) => {}
-                    Err(e) => answer = Err(e),
-                }
+            if let Ok(c) = &mut answer
+                && let Some(last) = crate::backed::settle_after(&lake, seen).await
+            {
+                c.position = c.position.max(last);
             }
             let failed = answer.is_err();
             if tx.send(answer).await.is_err() || failed {

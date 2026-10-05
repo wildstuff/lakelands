@@ -433,6 +433,40 @@ A host that already has a store of its own moves in four steps.
   Opening a lake for writing appends one `lease_taken`, which carries
   the token every later event of that writer bears; a reader appends
   none.
+- **A write answered `unavailable` may be in the log.** The store
+  appends a write durably, then folds it. When the fold fails (the
+  projection's transaction cannot begin or commit: a busy SQLite file, a
+  lost connection, a full disk), the write is answered `unavailable` and
+  its sentence says so: what was appended is in the log from the
+  position named, it is not folded yet, the next write folds it, and a
+  write is sent again only under its idempotency key. Reads answer at
+  the last folded position meanwhile. The next write through any door
+  folds what was left before it is decided, or is answered `unavailable`
+  (the projection could not catch up) and appends nothing. A caller that
+  sends the write again under its key is answered the first write's
+  outcome; one without a key writes a second time. For a verb that
+  reaches outside the lake the answer says one thing more: its executor
+  was not handed the call, and sending it again under its key will not
+  run it (the retry is answered the call's position with no output). The
+  host calls the verb again. The kind is the same as for a write that never
+  reached the log, and a caller cannot tell the two apart by it, over a
+  network door least of all: a host that must not write twice gives its
+  writes a key. When the calls a write made due cannot be recorded, an
+  upsert, a feed's window, an aging run and a purge whose own fold
+  succeeded are each answered their own outcome and the computed fields
+  wait. The next write records what was left, from the answers the calls
+  were already given, or is answered `unavailable` if the lake cannot
+  catch up; `vector_coverage` counts the embeddings that still wait. Two
+  writes are answered an error although their own fold succeeded. A call
+  of a verb that reaches outside the lake, and its acceptance: where the
+  calls due before the hand-out could not be recorded, the executor is
+  handed nothing and the answer is `unavailable` with the sentence about
+  the executor (an acceptance's says that the proposal is decided, and
+  that accepting it again will not run the verb). And a write that set
+  something off (a trigger fired, a set joined or left), which reads
+  the lake's description to name it to its writer: where that read
+  fails, the write is answered the read's error. Each is in the log and
+  folded, and a write sent again under its key is answered its position.
 - **A declaration that recomputes a type is a step for a quiet moment.**
   A function declared again with a change, or a type declared again with
   another derived expression, computes the derived fields of every live record

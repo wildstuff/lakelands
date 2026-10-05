@@ -1458,7 +1458,10 @@ impl Call<'_> {
         };
         self.keyed(&mut drafts[0], &opts.idempotency_key);
         drop(view);
-        let events = self.lake.append(&mut w, drafts)?;
+        let due = matches!(decl.effect, VerbEffect::External { .. })
+            && matches!(drafts[0].body, EventBody::VerbCalled { .. });
+        let appended = self.lake.append(&mut w, drafts);
+        let events = appended.map_err(|e| not_handed(e, due && w.behind, false))?;
         let outcome = outcome_of(&events);
         let external = match (&decl.effect, decl.risk, &events[0].body) {
             (VerbEffect::External { executor }, Risk::Low, EventBody::VerbCalled { .. }) => {
@@ -1799,7 +1802,8 @@ impl Call<'_> {
             }
         }
         drop(view);
-        let events = self.lake.append(&mut w, drafts)?;
+        let appended = self.lake.append(&mut w, drafts);
+        let events = appended.map_err(|e| not_handed(e, external.is_some() && w.behind, true))?;
         Ok((self.answered(&events, renamed), external))
     }
 
@@ -1809,7 +1813,7 @@ impl Call<'_> {
     /// call is refused to be sent again, in words that name no migration
     /// (006, extended).
     pub(crate) fn writer(&self) -> Result<std::sync::MutexGuard<'_, crate::lake::Writer>> {
-        let w = self.lake.writer();
+        let w = self.lake.for_write()?;
         match self.followed {
             Some(n) if self.lake.renames(None)?.len() != n => Err(lakelands_core::unavailable(
                 "the lake's names moved while this write waited; send it again",
@@ -2301,7 +2305,7 @@ impl Call<'_> {
     pub fn add_field(&self, ty: &TypeName, field: FieldDecl) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         granted(self.who.grants.schema)?;
-        let mut t = shown_type(&self.lake.writer().ontology, ty, self.who)?.clone();
+        let mut t = shown_type(&self.writer()?.ontology, ty, self.who)?.clone();
         // The field is added to its author's view of the type (027).
         rights::known_fields(self.who, &mut t);
         if t.fields.iter().any(|f| f.name == field.name) {
@@ -3290,6 +3294,29 @@ pub fn cardinality_among(
     Ok(())
 }
 
+/// The answer to a call of an external verb, or to its acceptance when
+/// `accepted`, that failed where `not_run` holds: its append is in the
+/// log and not folded, or the drain before its hand-out failed. The
+/// store's sentence for the failure, and that the verb's executor was not
+/// handed the call. Sent again under its key, the call is answered its
+/// position and runs nothing, and a proposal accepted again is decided;
+/// the host calls the verb again, which is a new position.
+pub(crate) fn not_handed(e: Error, not_run: bool, accepted: bool) -> Error {
+    let again = match accepted {
+        true => "the proposal is decided, so accepting it again",
+        false => "sending it again under its key",
+    };
+    match e {
+        Error::Unavailable { message } if not_run => Error::Unavailable {
+            message: format!(
+                "{message}; the verb's executor was not handed this call, and {again} will \
+                 not run it: call the verb again"
+            ),
+        },
+        e => e,
+    }
+}
+
 /// An external verb that ran, to be handed to its executor; the store
 /// records the executor's answer.
 #[derive(Clone, Debug)]
@@ -3315,7 +3342,7 @@ pub fn record_output(
     input: &Value,
     output: Value,
 ) -> Result<Position> {
-    let mut w = lake.writer();
+    let mut w = lake.for_write()?;
     let now = lake.clock(&mut w);
     let d = Draft {
         cause: Some(ext.position),
@@ -3340,7 +3367,7 @@ pub fn restrict(
     key: &RecordKey,
     reason: Option<String>,
 ) -> Result<Position> {
-    let mut w = lake.writer();
+    let mut w = lake.for_write()?;
     rights::not_a_view(w.ontology.ty(ty)?)?;
     let view = lake.engine.view(None)?;
     let before = live_record(view.as_ref(), ty, key)?;

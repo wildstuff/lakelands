@@ -175,7 +175,7 @@ pub fn run(lake: &Lake, today: Timestamp) -> Result<AgeReport> {
         followed: None,
     };
     let all = every(false);
-    let mut w = lake.writer();
+    let mut w = lake.for_write()?;
     let mut rules = lake
         .engine
         .view(None)?

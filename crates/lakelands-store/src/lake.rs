@@ -308,6 +308,31 @@ impl Lake {
         lakelands_core::lock(&self.writer)
     }
 
+    /// The writer for a write, locked and caught up. A writer whose fold
+    /// failed is behind its log: it folds from the projection's mark before
+    /// anything is decided over the projection, or the write is answered
+    /// `unavailable`, with that fold's words, and appends nothing.
+    /// Everything that decides a write takes the writer here;
+    /// [`Self::append_after`] refuses one that is behind. Only the lease's
+    /// holder folds: a handle that gave its lease up while it was behind
+    /// folds nothing and is refused here, as its append would be.
+    pub fn for_write(&self) -> Result<MutexGuard<'_, Writer>> {
+        let mut w = self.writer();
+        if w.behind {
+            if w.lease.is_none() {
+                return Err(unavailable(NO_LEASE));
+            }
+            self.refold(&mut w).map_err(|e| {
+                unavailable(format!(
+                    "the lake's projection is behind its log and could not catch up; nothing \
+                     was appended ({})",
+                    crate::backed::why(&e)
+                ))
+            })?;
+        }
+        Ok(w)
+    }
+
     /// The next `known_at`: the wall clock, never before the last event's.
     pub fn clock(&self, w: &mut Writer) -> Timestamp {
         let now = wall_clock().max(w.last_known_at);
@@ -481,15 +506,15 @@ impl Lake {
         reads: Reads,
     ) -> Result<Vec<Event>> {
         let Some(lease) = w.lease.clone() else {
-            return Err(unavailable(
-                "this lake is open read-only here; another process holds its writer lease",
-            ));
+            return Err(unavailable(NO_LEASE));
         };
-        // Nothing is appended while the projection is behind the log: a
-        // fold that failed after its events were durable is done again
-        // first, or the append answers its error and appends nothing.
+        // Nothing is appended while the projection is behind the log, and
+        // nothing is folded this late: the drafts were decided already.
         if w.behind {
-            self.refold(w)?;
+            return Err(unavailable(
+                "this write was decided while the lake's projection was behind its log; \
+                 nothing was appended",
+            ));
         }
         // A host's cause names an event the log holds: at or below the
         // head (021). What it names is the host's business.
@@ -541,7 +566,17 @@ impl Lake {
         if let Some(last) = events.last() {
             w.last_known_at = w.last_known_at.max(last.known_at);
         }
-        self.fold_all(w, &events, reads, false)?;
+        // The events are durable whatever the fold answers: its failure is
+        // told as that, so that it is not read as a write that did not land.
+        self.fold_all(w, &events, reads, false).map_err(|e| {
+            let at = events.first().map_or(0, |e| e.position.0);
+            unavailable(format!(
+                "what was appended is in the log from position {at} and is not folded yet; the \
+                 next write folds it, and a write is sent again only under its idempotency key \
+                 ({})",
+                crate::backed::why(&e)
+            ))
+        })?;
         // Published only once the fold has committed: a position `head()`
         // answers is one a read can be answered at, on every engine.
         self.publish(w);
@@ -592,13 +627,15 @@ impl Lake {
             return Ok(());
         };
         let projection = self.engine.projection();
-        projection.begin()?;
         let mut due = w.due.len();
         let mut staged = Staged {
             reads,
             ..Staged::default()
         };
         let result = (|| {
+            // A `begin` that is refused leaves the writer behind like any
+            // other failure of the fold: the events are in the log.
+            projection.begin()?;
             let mut view = self.engine.view(None)?;
             for (i, e) in events.iter().enumerate() {
                 if reads_a_record(&e.body) && self.flush(w, view.as_ref(), &mut staged)? && of_log {
@@ -849,8 +886,8 @@ impl Lake {
     /// page of the log fails, or folding it does, and the open transaction
     /// rolls back. Either way the projection is folded through the last
     /// commit, the writer is `behind`, and the head names that position;
-    /// nothing is appended until the next fold (an append's `refold`, a
-    /// `rebuild`, or the next open's catch-up) has continued from there.
+    /// nothing is appended until the next fold (the catch-up before a
+    /// write, a `rebuild`, or the next open's) has continued from there.
     /// Every read is answered at or before `folded_through`, so no read
     /// sees half a transaction.
     fn fold_from(&self, w: &mut Writer, from: Position) -> Result<()> {
@@ -875,8 +912,17 @@ impl Lake {
 
     /// Fold the events the log holds past the projection, a page at a
     /// time, and publish the head once they are folded.
+    ///
+    /// The writer's ontology and settings are read at the mark first: what
+    /// it holds may be what a failed fold left, and a fold compares a
+    /// declaration with the one the writer holds. A writer that cannot
+    /// read them stays behind.
     fn refold(&self, w: &mut Writer) -> Result<()> {
         let folded = self.engine.projection().folded_through()?;
+        {
+            let view = self.engine.view(None)?;
+            (w.ontology, w.settings) = (Ontology::at(view.as_ref())?, settings_in(view.as_ref())?);
+        }
         let from = folded.map_or(Position::GENESIS, Position::next);
         self.fold_from(w, from)?;
         w.behind = false;
@@ -1160,9 +1206,13 @@ impl Lake {
         Ok(())
     }
 
-    /// Clear the projection and fold the whole log again.
+    /// Clear the projection and fold the whole log again. Only the lease's
+    /// holder does: a handle without it would clear under the holder's fold.
     pub fn rebuild(&self) -> Result<Position> {
         let mut w = self.writer();
+        if w.lease.is_none() {
+            return Err(unavailable(NO_LEASE));
+        }
         self.engine.projection().clear()?;
         w.ontology = Ontology::default();
         w.settings = BTreeMap::new();
@@ -1332,15 +1382,12 @@ impl Lake {
 
     /// Seal the active segment and write the checkpoint that opens the next.
     pub fn checkpoint(&self) -> Result<Position> {
-        let mut w = self.writer();
+        // A segment is sealed only over events the projection has folded.
+        let mut w = self.for_write()?;
         let lease = w
             .lease
             .clone()
             .ok_or_else(|| unavailable("this lake is open read-only here"))?;
-        // A segment is sealed only over events the projection has folded.
-        if w.behind {
-            self.refold(&mut w)?;
-        }
         let Some((through, hash)) = w.tip.clone() else {
             return Ok(Position::GENESIS);
         };
@@ -1485,6 +1532,9 @@ pub fn find_proposal(view: &dyn ProjectionView, id: &ProposalId) -> Result<Propo
 
 /// How many events a page of the log holds at most.
 const PAGE: u32 = 1024;
+
+/// What a write is answered on a handle that does not hold the lease.
+const NO_LEASE: &str = "this lake is open read-only here; another process holds its writer lease";
 
 /// The log read a page at a time (`Lake::pages`): each item is up to
 /// `PAGE` events, opened and checked; the iteration ends after the tip, or

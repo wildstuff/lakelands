@@ -1,8 +1,8 @@
 //! The memory engine behind a wrapper that remembers what was asked of
 //! it and can fail a call: the most rows one `scan` handed out, a scan of a
 //! type to fail, the scans, the puts of records and the commits in the
-//! order they came, a commit or a `begin` to refuse, and a look at the
-//! lake before each commit, while its transaction is open.
+//! order they came, a commit, a `begin` or a view to refuse, and a look at
+//! the lake before each commit, while its transaction is open.
 
 #![allow(dead_code)]
 
@@ -48,6 +48,12 @@ pub struct Probe {
     pub refuse_commit: Mutex<Option<usize>>,
     /// A `begin` to refuse: the n-th from now, counted from 1.
     pub refuse_begin: Mutex<Option<usize>>,
+    /// Whether a refused `begin` is answered as invalid, not unavailable.
+    pub refuse_as_invalid: std::sync::atomic::AtomicBool,
+    /// How many times `begin` was asked.
+    pub begins: AtomicUsize,
+    /// A view to refuse: the n-th asked for from now, counted from 1.
+    pub refuse_view: Mutex<Option<usize>>,
     /// Called before each commit reaches the engine, with the position it
     /// commits through: its transaction is still open.
     pub before_commit: Mutex<Option<Look>>,
@@ -189,6 +195,10 @@ impl LakeEngine for Probed {
         self
     }
     fn view(&self, as_of: Option<Position>) -> Result<Box<dyn ProjectionView + '_>> {
+        if Probe::refused(&self.probe.refuse_view) {
+            let message = "the view was refused (planted)".to_owned();
+            return Err(Error::Unavailable { message });
+        }
         Ok(Box::new(ProbedView {
             inner: self.inner.view(as_of)?,
             probe: self.probe.clone(),
@@ -204,8 +214,16 @@ pub struct ProbedOpener(pub MemoryOpener, pub Arc<Probe>);
 
 impl ProjectionStore for Probed {
     fn begin(&self) -> Result<()> {
+        self.probe.begins.fetch_add(1, Ordering::SeqCst);
         if Probe::refused(&self.probe.refuse_begin) {
             let message = "the `begin` was refused (planted)".to_owned();
+            if self.probe.refuse_as_invalid.load(Ordering::SeqCst) {
+                let reason = lakelands_api::Refusal::Invalid { message };
+                return Err(Error::Refused {
+                    field: None,
+                    reason,
+                });
+            }
             return Err(Error::Unavailable { message });
         }
         self.inner.projection().begin()
