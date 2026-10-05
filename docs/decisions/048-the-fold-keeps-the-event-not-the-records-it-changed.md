@@ -44,7 +44,9 @@ keeps the event, as a **step**: what the event does to one record.
   1 024 events; such a page commits through the last event folded and
   begins again, so the events after it read the recomputed records in
   the projection. Every commit holds every event through its position,
-  whole. An append is one transaction, always.
+  whole. An append's own fold is one transaction, always; an append
+  whose fold failed is folded again as a fold of the log, which may
+  commit inside it.
 
 ## Why
 
@@ -82,5 +84,14 @@ the log never stack: the next walk reads the records as put.
 - Not a split of an append. An append that held events reading records
   between two runs of declarations would apply the first run's kept
   steps again in its second flush; no door drafts one.
+- Not a way to bring a field that reads a setting or the clock up to
+  date. Only computed fields decide what a `declared` computes again: a
+  type declared again with a field more that is not computed walks no
+  record, and a derived expression that reads a setting stays as of its
+  record's last write (`docs/hosting.md`). A host that counted on such a
+  declaration to refresh it writes the records; a field of a function is
+  computed again by a `recompute` of the function. A type with an
+  embedding or a field of a function computed outside the lake is walked
+  at every declaration of it, whatever changed (022, extended).
 - Not a second computation. The walk, the records the transaction wrote
   and a later read all take a record through the same step.

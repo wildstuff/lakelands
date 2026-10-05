@@ -413,6 +413,7 @@ pub const ALL: &[Check] = &[
     compact::WRITES_DURING,
     settings::SETTING_AS_OF,
     settings::SETTING_RESTRICTED,
+    settings::SETTING_AS_OF_THE_WRITE,
     feed::LIMIT_ZERO_IS_ONE,
     feed::BY_KEY,
     feed::BY_OLD_KEY,

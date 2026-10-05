@@ -142,3 +142,43 @@ async fn readings(store: &dyn LakeStore) -> Result<String, Failure> {
         listed.len()
     ))
 }
+
+check!(
+    /// A derived field that reads a setting is as of its record's last write.
+    SETTING_AS_OF_THE_WRITE = a_field_that_reads_a_setting_is_as_of_its_records_last_write,
+    "seams, SystemVocabulary and 048 (lakelands#523): a derived field whose expression reads a setting is computed with the setting of its record's last write; the setting changed and the type declared again with one more field that is not computed leave it as it was, live and after a rebuild, and a write of the record brings it up to date"
+);
+
+async fn a_field_that_reads_a_setting_is_as_of_its_records_last_write(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let fields = || {
+        let d = derived("d", StorageKind::Number, "x * setting('rate')", &["x"]);
+        vec![field("x", StorageKind::Number), d]
+    };
+    l.declare(type_decl("priced", fields())).await?;
+    l.set("rate", json!(2)).await?;
+    l.upsert("priced", "a", json!({"x": 1})).await?;
+    l.set("rate", json!(3)).await?;
+    let mut wider = fields();
+    wider.push(field("note", StorageKind::Text));
+    l.declare(type_decl("priced", wider)).await?;
+    let d = || async {
+        let a = l.read("priced", "a").await?;
+        Ok::<_, Failure>(a.fields.get("d").and_then(|v| v.as_f64()))
+    };
+    let live = d().await?;
+    store.rebuild().await.must("rebuilding the projection")?;
+    let rebuilt = d().await?;
+    l.upsert("priced", "a", json!({"x": 1})).await?;
+    let written = d().await?;
+    ensure!(
+        (live, rebuilt, written) == (Some(2.0), Some(2.0), Some(3.0)),
+        "`a` was written while `rate` was 2; `rate` is 3 and the type was declared again \
+         with a plain field more: `d` reads {live:?} live, {rebuilt:?} after a rebuild and \
+         {written:?} after a write of the record. It is 2 until the record is written, \
+         then 3"
+    );
+    Ok(())
+}

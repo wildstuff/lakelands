@@ -410,7 +410,8 @@ A host that already has a store of its own moves in four steps.
   walk of the type, as a recomputation does (below). A derived expression
   of a type that reads a setting or the clock is not its business: such
   a field is as of its record's last write, and a write of the record
-  brings it up to date. From a shell: `lakelands recompute --function
+  brings it up to date; the type declared again with a field more that
+  is not computed does not, since it computes nothing. From a shell: `lakelands recompute --function
   <name>` or `--type <name>`. See
   `docs/decisions/022-functions-are-declarations.md`.
 - **A write that changes nothing is still a write.** An upsert of the
@@ -442,16 +443,19 @@ A host that already has a store of its own moves in four steps.
   functions holds the writer 12 s on SQLite and 21 s on PostgreSQL at
   100 000 records (50 s and 99 s at 400 000), at 4 MB and 11 MB. The
   time grows with the type's records; the peak does not. Two things
-  still grow with them: the calls a function computed outside the lake makes due, one
-  for every record whose output is not recorded, held until they are
-  made; and what the engine holds of an open transaction, which on the
+  still grow with them: the calls an embedding or a function computed outside the lake
+  makes due, one for every record whose output is not recorded, held
+  until they are made; and what the engine holds of an open transaction, which on the
   memory engine is every put. A rebuild, or an open that catches up,
   commits inside a page of the log after such a declaration, so there
   too each record is computed once for each declaration. A type
   declared again that computes nothing (its description changed, say,
   or a field that is not computed was added) costs one pass of the
   engine over its records at the commit, a page at a time: 1.3 to 2.1 s
-  at 100 000 records and 3 MB whatever the type holds.
+  at 100 000 records and 3 MB whatever the type holds. A type with an
+  embedding or a field of a function computed outside the lake is never
+  such a type: the store walks its records at every declaration of it,
+  whatever changed.
 - **Every answer carries its position.** A host that records what an
   agent saw records the position, and reads `as_of` it later. See
   `docs/decisions/009-every-response-carries-its-position.md`.
