@@ -860,7 +860,7 @@ pub(crate) fn why(e: &lakelands_api::Error) -> String {
 /// An output the lake already holds (`known`) is recorded again only when
 /// it fills something: a due issued twice appends nothing the second time.
 fn record(lake: &Lake, d: Due, output: Value, known: bool) -> Result<Option<Position>> {
-    let mut w = lake.writer();
+    let mut w = lake.for_write()?;
     let now = lake.clock(&mut w);
     let view = lake.engine.view(None)?;
     let at = Position(w.tip.as_ref().map_or(0, |t| t.0.0 + 1));

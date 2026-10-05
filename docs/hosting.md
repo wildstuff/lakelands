@@ -433,6 +433,20 @@ A host that already has a store of its own moves in four steps.
   Opening a lake for writing appends one `lease_taken`, which carries
   the token every later event of that writer bears; a reader appends
   none.
+- **A write answered `unavailable` may be in the log.** The store
+  appends a write durably, then folds it. When the fold fails (the
+  projection's transaction cannot begin or commit: a busy SQLite file, a
+  lost connection, a full disk), the write is answered `unavailable` and
+  its sentence says so: it is in the log at the position named, it is
+  not folded yet, the next write folds it, and it is sent again only
+  under its idempotency key. Reads answer at the last folded position
+  meanwhile. The next write through any door folds what was left before
+  it is decided, or is answered that fold's error and appends nothing.
+  A caller that sends the write again under its key is answered the
+  first write's outcome; one without a key writes a second time. The
+  kind is the same as for a write that never reached the log, and a
+  caller cannot tell the two apart by it, over a network door least of
+  all: a host that must not write twice gives its writes a key.
 - **A declaration that recomputes a type is a step for a quiet moment.**
   A function declared again with a change, or a type declared again with
   another derived expression, computes the derived fields of every live record

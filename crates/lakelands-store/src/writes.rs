@@ -1809,7 +1809,7 @@ impl Call<'_> {
     /// call is refused to be sent again, in words that name no migration
     /// (006, extended).
     pub(crate) fn writer(&self) -> Result<std::sync::MutexGuard<'_, crate::lake::Writer>> {
-        let w = self.lake.writer();
+        let w = self.lake.for_write()?;
         match self.followed {
             Some(n) if self.lake.renames(None)?.len() != n => Err(lakelands_core::unavailable(
                 "the lake's names moved while this write waited; send it again",
@@ -3315,7 +3315,7 @@ pub fn record_output(
     input: &Value,
     output: Value,
 ) -> Result<Position> {
-    let mut w = lake.writer();
+    let mut w = lake.for_write()?;
     let now = lake.clock(&mut w);
     let d = Draft {
         cause: Some(ext.position),
@@ -3340,7 +3340,7 @@ pub fn restrict(
     key: &RecordKey,
     reason: Option<String>,
 ) -> Result<Position> {
-    let mut w = lake.writer();
+    let mut w = lake.for_write()?;
     rights::not_a_view(w.ontology.ty(ty)?)?;
     let view = lake.engine.view(None)?;
     let before = live_record(view.as_ref(), ty, key)?;

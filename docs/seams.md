@@ -1741,10 +1741,17 @@ trigger (suite: `a_reaction_past_its_triggers_max_depth_is_refused_naming_it`).
 a position a read can be answered at at once, on every engine. An
 append is durable before it is folded; the store publishes its head
 only once the fold has committed. When a fold fails after its events are
-in the log, the append answers the fold's error, the head stays at the
-last folded position, and nothing more is appended until the projection
-has caught up: the next append first folds what the log holds past the
-projection, or answers that fold's error and appends nothing. A handle
+in the log, a fold whose transaction cannot begin included, the append
+is answered `unavailable` in the store's own sentence, with the fold's
+after it: the write is in the log at position N and is not folded yet,
+the next write folds it, and it is sent again only under its idempotency
+key. The head stays at the last folded position, and the writer is
+behind: before the next write is decided it reads its ontology and
+settings at that position and folds what the log holds past the
+projection, so the write is decided over every event in the log (a retry
+under its key is answered the first write's outcome, and a record's next
+version follows the one not folded before), or it is answered that
+fold's error and appends nothing. A handle
 opened only to read names the position the writer has folded.
 
 `rebuild`, `verify` and the fold at open read the log in pages of 1 024

@@ -224,7 +224,7 @@ pub fn run(lake: &Lake, source: &SourceId, report_id: Option<&str>) -> Result<Pu
         context: WriteContext::default(),
         followed: None,
     };
-    let mut w = lake.writer();
+    let mut w = lake.for_write()?;
     let view = lake.engine.view(None)?;
     if report_id.is_some_and(|given| given != id(source, view.position())) {
         return Err(invalid(

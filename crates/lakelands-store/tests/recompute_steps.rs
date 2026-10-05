@@ -66,7 +66,7 @@ impl Folded {
 
     /// One append, folded in one transaction; the events' positions.
     fn try_append(&self, drafts: Vec<Draft>) -> lakelands_api::Result<Vec<Position>> {
-        let mut w = self.lake.writer();
+        let mut w = self.lake.for_write()?;
         let events = self.lake.append(&mut w, drafts)?;
         Ok(events.iter().map(|e| e.position).collect())
     }
