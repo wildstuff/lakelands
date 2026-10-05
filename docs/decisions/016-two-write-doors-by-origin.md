@@ -111,9 +111,11 @@ write decided there would answer a retry as a new write and give a
 record a version it already has. So the writer is taken for a write in
 one place, and a writer whose fold failed folds from the projection's
 position there, before the door's own checks; where that fold fails the
-write is `unavailable` and appends nothing. An append that reaches the
-log under a writer that is behind was decided some other way, and is
-refused. The write whose fold failed is answered `unavailable` with its
+write is `unavailable`, whatever kind the fold answered, and appends
+nothing. The store's own writes take the writer there too: the drain of
+due calls reads what it decides on behind the catch-up. An append that
+reaches the log under a writer that is behind was decided some other
+way, and is refused. The write whose fold failed is answered `unavailable` with its
 position in the log: sent again under its idempotency key it is the
 retry, answered the first write's outcome; without a key it is a second
 write. No kind of its own tells it from a write that never landed: a

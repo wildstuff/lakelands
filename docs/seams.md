@@ -1044,7 +1044,9 @@ append that made the verb due and the function calls that append made
 due, whole and **unmasked** (none for a verb called on its type, which
 has no record), the payload, and
 the position of the event that made it due. The lake and that position
-are the executor's dedup key. The executor is the host's code, bound by
+are the executor's dedup key, and **an executor is idempotent by them**:
+a position reaches it once, unless its answer never reached the log (see
+the retry below). The executor is the host's code, bound by
 the host, and decides what it returns; the caller sees only the outcome
 and the recorded output, never the record the executor was given. A host
 that wants an executor to see only what the caller may see applies the
@@ -1061,17 +1063,30 @@ agent that called an external verb has the answer in the reply. Its
 `through` member is the position the output was recorded at
 (`docs/decisions/015-errors-are-a-closed-set-writes-answer-an-outcome.md`,
 extended). The verb
-is not run again for that position. A host that wants a retry calls the verb again, which is a new
+is not run again for a position that has an answer. A host that wants a retry calls the verb again, which is a new
 position.
 
-A call retried with the same idempotency key runs nothing and answers
-the first outcome: the position that made the verb due, the recorded
-output and its position. The output's `input` digest holds the record as the executor was
-given it, which a retry cannot rebuild, so the retry finds the output as
-the `output_recorded` caused by that position, among the 4,096 events
-after it. An output not among them (not recorded yet, or recorded after
-the lake took that many other events while the executor ran) is answered
-as none; the position stands, and nothing runs again.
+A call retried with the same idempotency key answers the first outcome:
+the position that made the verb due, the recorded output and its
+position, and where an output is recorded it runs nothing. The output's
+`input` digest holds the record as the executor was given it, which a
+retry cannot rebuild, so the retry finds the output as the
+`output_recorded` caused by that position, in the log after it. How far
+it reads depends on who may run the verb. Only the handle that holds the
+writer lease may, and not while it is running that position itself (the
+first call has not answered yet). Such a handle reads the log on to its
+head, a page of 1 024 events at a time, and answers the output where one
+is recorded; where none is, **the retry hands the invocation to the
+executor again, at the same position**, records its answer and answers
+with it. That is the call whose fold failed before its executor was
+handed it, or whose process ended before the answer was recorded;
+`applied` is never answered for an external verb no executor was handed.
+Any other retry (on a handle without the lease, whose holder may be
+running the call, or while this handle runs it) reads the 4,096 events
+after the call, answers the output found there or the position with no
+output, and runs nothing. The same holds for `accept` sent again for an
+accepted call of an external verb with no answer in the log; with one,
+it is `decided` as before.
 
 There is no default: a verb whose executor is not bound is refused as
 `Unbound`, never faked. The store checks it when the verb is called or
@@ -1743,15 +1758,22 @@ append is durable before it is folded; the store publishes its head
 only once the fold has committed. When a fold fails after its events are
 in the log, a fold whose transaction cannot begin included, the append
 is answered `unavailable` in the store's own sentence, with the fold's
-after it: the write is in the log at position N and is not folded yet,
-the next write folds it, and it is sent again only under its idempotency
-key. The head stays at the last folded position, and the writer is
-behind: before the next write is decided it reads its ontology and
-settings at that position and folds what the log holds past the
-projection, so the write is decided over every event in the log (a retry
-under its key is answered the first write's outcome, and a record's next
-version follows the one not folded before), or it is answered that
-fold's error and appends nothing. A handle
+after it: what was appended is in the log from position N and is not
+folded yet, the next write folds it, and a write is sent again only
+under its idempotency key. The head stays at the last folded position,
+and the writer is behind: before the next write is decided it reads its
+ontology and settings at that position and folds what the log holds past
+the projection, so the write is decided over every event in the log (a
+retry under its key is answered the first write's outcome, and a
+record's next version follows the one not folded before), or it is
+answered `unavailable` (the projection is behind its log and could not
+catch up; nothing was appended), whatever kind that fold answered. The
+drain of due calls reads behind the same catch-up, so an output whose
+recording was appended and not folded is found and its call is not made
+again; and a drain that fails is not its write's failure: the write is
+answered its own outcome, its computed fields waiting. Only the lease's
+holder folds: a handle that closed while it was behind folds nothing and
+is refused as any handle without the lease. A handle
 opened only to read names the position the writer has folded.
 
 `rebuild`, `verify` and the fold at open read the log in pages of 1 024

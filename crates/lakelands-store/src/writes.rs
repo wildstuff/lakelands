@@ -35,7 +35,7 @@
 //! stays allowed.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use lakelands_api::engine::ProjectionView;
 use lakelands_api::event::{Digest, Event, EventBody, Procedure};
@@ -48,8 +48,8 @@ use lakelands_api::record::{Origin, StoredRecord};
 use lakelands_api::seam::VerbExecutor;
 use lakelands_api::write::{
     Carried, Carrier, Declaration, Migration, MigrationReport, Misfit, ObjectSetDecl, Outcome,
-    ProposalState, ProposedWrite, Recompute, RelationRename, ValueTypeReport, ValueTypeUse,
-    WriteOpts,
+    Proposal, ProposalState, ProposedWrite, Recompute, RelationRename, ValueTypeReport,
+    ValueTypeUse, WriteOpts,
 };
 use lakelands_api::{
     Access, Error, FieldName, IdempotencyKey, Missing, Patch, Position, Principal, ProposalId,
@@ -290,35 +290,96 @@ impl Call<'_> {
         if events.is_empty() {
             return Ok(None);
         }
-        let mut outcome = outcome_of(&events);
-        // An external verb answered with its executor's output, recorded in
-        // a later append that other writes may precede: a retry answers
-        // that output too, at the verb's own position.
-        let external = events.iter().any(|e| {
-            e.position == outcome.position() && matches!(e.body, EventBody::VerbCalled { .. })
-        });
-        if external && let Some(found) = self.recorded_output(outcome.position())? {
-            outcome = with_output(outcome, found);
-        }
-        Ok(Some(outcome))
+        Ok(Some(outcome_of(&events)))
     }
 
-    /// The output recorded for the external verb called at `called`, and
-    /// its position: the `output_recorded` that event caused, among the
-    /// [`RETRY_REACH`] events after it. Its `input` digest holds the record
-    /// as the executor was given it, which a retry cannot rebuild to look
-    /// it up by digest; the read is bounded so that a retry never reads to
-    /// the head of a large lake (`docs/seams.md` §`VerbExecutor`).
-    fn recorded_output(&self, called: Position) -> Result<Option<(Position, Value)>> {
-        let events = self.lake.read_events(called.next(), RETRY_REACH)?;
-        Ok(events.into_iter().find_map(|e| match e.body {
-            EventBody::OutputRecorded { seam, output, .. }
-                if e.cause == Some(called) && seam.starts_with("verb:") =>
-            {
-                Some((e.position, output))
+    /// The output recorded for the external verb called at `call`, and its
+    /// position: the `output_recorded` that event caused, among the
+    /// [`RETRY_REACH`] events after it, or as far as the head. Its `input`
+    /// digest holds the record as the executor was given it, which a retry
+    /// cannot rebuild to look it up by digest.
+    fn recorded_output(&self, call: Position, to_head: bool) -> Result<Option<(Position, Value)>> {
+        let mut read = 0;
+        for page in self.lake.pages(call.next()) {
+            for e in page? {
+                read += 1;
+                if let EventBody::OutputRecorded { seam, output, .. } = e.body
+                    && e.cause == Some(call)
+                    && seam.starts_with("verb:")
+                {
+                    return Ok(Some((e.position, output)));
+                }
             }
-            _ => None,
-        }))
+            if !to_head && read >= RETRY_REACH {
+                break;
+            }
+        }
+        Ok(None)
+    }
+
+    /// What a call sent again finds of the external verb the event at `at`
+    /// made due: its recorded output, put into `o`, in a later append that
+    /// other writes may precede; or, where the log holds none up to its
+    /// head, the verb to hand to its executor again. A retry runs what has
+    /// no answer. Only the lease's holder hands it out, and not while this
+    /// handle runs it: such a retry reads no further than the reach, so
+    /// never to the head of a large lake, and is answered no output. An
+    /// executor may so be handed a position twice (after a failed fold,
+    /// after a restart): the lake and the position are its dedup key
+    /// (`docs/seams.md` §`VerbExecutor`).
+    fn unanswered(
+        &self,
+        w: &Writer,
+        view: &dyn ProjectionView,
+        at: Position,
+        o: &mut Outcome,
+    ) -> Result<Option<External>> {
+        let (verb, key, payload) = match self.lake.read_events(at, 1)?.pop().map(|e| e.body) {
+            Some(EventBody::VerbCalled { verb, key, payload }) => (verb, key, payload),
+            Some(EventBody::WriteAccepted { proposal }) => {
+                match find_proposal(view, &proposal)?.write {
+                    Some(ProposedWrite::Call {
+                        verb, key, payload, ..
+                    }) => (verb, key, payload),
+                    _ => return Ok(None),
+                }
+            }
+            _ => return Ok(None),
+        };
+        let free = w.lease.is_some() && !lakelands_core::lock(&self.lake.running).contains(&at);
+        if let Some(found) = self.recorded_output(at, free)? {
+            *o = with_output(o.clone(), found);
+            return Ok(None);
+        }
+        let decl = w.ontology.verb(&verb)?;
+        Ok(free.then(|| self.run(decl, key, payload, at)).flatten())
+    }
+
+    /// The call of `decl` the event at `position` made due, as its executor
+    /// is handed it, if the verb is external. The handle is marked as
+    /// running it for as long as this is held: until its answer is
+    /// recorded, or its call ended without one.
+    fn run(
+        &self,
+        decl: &VerbDecl,
+        key: Option<RecordKey>,
+        payload: Patch,
+        position: Position,
+    ) -> Option<External> {
+        let VerbEffect::External { executor } = &decl.effect else {
+            return None;
+        };
+        let running = self.lake.running.clone();
+        lakelands_core::lock(&running).insert(position);
+        Some(External {
+            executor: executor.clone(),
+            verb: decl.name.clone(),
+            ty: decl.on.clone(),
+            key,
+            payload,
+            position,
+            running,
+        })
     }
 }
 
@@ -1394,8 +1455,9 @@ impl Call<'_> {
         check_context(self.lake, &self.context)?;
         let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
-        if let Some(o) = self.replay(&w, &opts.idempotency_key, view.as_ref())? {
-            return Ok((o, None));
+        if let Some(mut o) = self.replay(&w, &opts.idempotency_key, view.as_ref())? {
+            let again = self.unanswered(&w, view.as_ref(), o.position(), &mut o)?;
+            return Ok((o, again));
         }
         let decl = self.shown_verb(&w.ontology, verb)?.clone();
         let key = scoped(&decl, key, opts.expected_version)?;
@@ -1460,17 +1522,8 @@ impl Call<'_> {
         drop(view);
         let events = self.lake.append(&mut w, drafts)?;
         let outcome = outcome_of(&events);
-        let external = match (&decl.effect, decl.risk, &events[0].body) {
-            (VerbEffect::External { executor }, Risk::Low, EventBody::VerbCalled { .. }) => {
-                Some(External {
-                    executor: executor.clone(),
-                    verb: verb.clone(),
-                    ty: decl.on.clone(),
-                    key: key.cloned(),
-                    payload,
-                    position: events[0].position,
-                })
-            }
+        let external = match decl.risk {
+            Risk::Low => self.run(&decl, key.cloned(), payload, events[0].position),
             _ => None,
         };
         Ok((outcome, external))
@@ -1618,6 +1671,15 @@ impl Call<'_> {
         let view = self.lake.engine.view(None)?;
         let p = find_proposal(view.as_ref(), proposal)?;
         if p.state != ProposalState::Pending {
+            // The accepted call of an external verb that nothing answered
+            // is run by the accept sent again, as a call's retry runs it.
+            if let Some(at) = self.accepted_at(&w, &p)? {
+                let reach = 3 + w.ontology.triggers.len() + w.ontology.object_sets.len();
+                let mut o = outcome_of(&self.lake.read_events(at, reach as u32)?);
+                if let Some(ext) = self.unanswered(&w, view.as_ref(), at, &mut o)? {
+                    return Ok((o, Some(ext)));
+                }
+            }
             return Err(refused(Refusal::Decided));
         }
         // A change of the ontology is the lake's `schema` grant's to make:
@@ -1726,14 +1788,7 @@ impl Call<'_> {
                 }
                 if let VerbEffect::External { executor } = &decl.effect {
                     bound_executor(self.lake, executor)?;
-                    external = Some(External {
-                        executor: executor.clone(),
-                        verb: verb.clone(),
-                        ty: decl.on.clone(),
-                        key: key.cloned(),
-                        payload: payload.clone(),
-                        position: accepted_at,
-                    });
+                    external = self.run(&decl, key.cloned(), payload.clone(), accepted_at);
                 }
                 let (own, reactions) = self.run_verb(
                     &w,
@@ -1801,6 +1856,27 @@ impl Call<'_> {
         drop(view);
         let events = self.lake.append(&mut w, drafts)?;
         Ok((self.answered(&events, renamed), external))
+    }
+
+    /// Where the log holds the acceptance of `p`, an accepted call of an
+    /// external verb: read from the proposal on, for an accept sent again.
+    fn accepted_at(&self, w: &Writer, p: &Proposal) -> Result<Option<Position>> {
+        let (ProposalState::Accepted, Some(ProposedWrite::Call { verb, .. })) =
+            (&p.state, &p.write)
+        else {
+            return Ok(None);
+        };
+        if !matches!(w.ontology.verb(verb)?.effect, VerbEffect::External { .. }) {
+            return Ok(None);
+        }
+        for page in self.lake.pages(p.position.next()) {
+            for e in page? {
+                if matches!(&e.body, EventBody::WriteAccepted { proposal } if *proposal == p.id) {
+                    return Ok(Some(e.position));
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// The writer, held by this call. Its grants were followed through the
@@ -2301,7 +2377,7 @@ impl Call<'_> {
     pub fn add_field(&self, ty: &TypeName, field: FieldDecl) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         granted(self.who.grants.schema)?;
-        let mut t = shown_type(&self.lake.writer().ontology, ty, self.who)?.clone();
+        let mut t = shown_type(&self.writer()?.ontology, ty, self.who)?.clone();
         // The field is added to its author's view of the type (027).
         rights::known_fields(self.who, &mut t);
         if t.fields.iter().any(|f| f.name == field.name) {
@@ -3292,7 +3368,7 @@ pub fn cardinality_among(
 
 /// An external verb that ran, to be handed to its executor; the store
 /// records the executor's answer.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct External {
     /// The executor's name.
     pub executor: String,
@@ -3306,6 +3382,14 @@ pub struct External {
     pub payload: Patch,
     /// The position of the event that made it due.
     pub position: Position,
+    /// The handle's positions under way: this one's is among them.
+    running: Arc<Mutex<BTreeSet<Position>>>,
+}
+
+impl Drop for External {
+    fn drop(&mut self) {
+        lakelands_core::lock(&self.running).remove(&self.position);
+    }
 }
 
 /// Record an executor's answer, as `output_recorded`.

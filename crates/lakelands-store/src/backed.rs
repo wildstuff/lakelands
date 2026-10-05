@@ -703,17 +703,17 @@ pub async fn settle(lake: &Arc<Lake>, seen: u64) -> Result<Option<Position>> {
     Ok(answered.then(|| lake.head()))
 }
 
-/// The record a due names and the output recorded for its call, as the
-/// lake holds them now.
-async fn current(
-    lake: &Arc<Lake>,
-    d: &Due,
-) -> Result<(Option<lakelands_api::record::StoredRecord>, Option<Value>)> {
-    let l = lake.clone();
-    let (seam, input, ty, key) = (d.seam.clone(), d.input.clone(), d.ty.clone(), d.key.clone());
+/// Whether a due's record still makes its call, and the output recorded
+/// for that call, as the lake holds them now: read under the writer taken
+/// for a write, so over every event in the log. An output whose recording
+/// was appended and not folded is found, and its call is not made again.
+async fn current(lake: &Arc<Lake>, d: &Due) -> Result<(bool, Option<Value>)> {
+    let (l, d) = (lake.clone(), d.clone());
     exec::run(move || {
+        let w = l.for_write()?;
         let view = l.engine.view(None)?;
-        Ok((view.get(&ty, &key)?, view.output(&seam, &input)?))
+        let wanted = still_wanted(&w, view.get(&d.ty, &d.key)?.as_ref(), &d);
+        Ok((wanted, view.output(&d.seam, &d.input)?))
     })
     .await
 }
@@ -742,10 +742,10 @@ async fn settle_one(lake: &Arc<Lake>, drain: &mut Drain, d: &Due) -> Result<()> 
     else {
         return Ok(());
     };
-    let (record, recorded) = current(lake, d).await?;
+    let (wanted, recorded) = current(lake, d).await?;
     // The record moved on (or went) while the call waited: its fields are
     // due under other inputs, or not at all.
-    if !still_wanted(&lake.writer(), record.as_ref(), d) {
+    if !wanted {
         return Ok(());
     }
     let (output, known) = match recorded {
@@ -774,8 +774,8 @@ async fn settle_embeddings(lake: &Arc<Lake>, drain: &mut Drain, batch: &[Due]) -
         if !drain.take(d) {
             continue;
         }
-        let (record, recorded) = current(lake, d).await?;
-        if !still_wanted(&lake.writer(), record.as_ref(), d) {
+        let (wanted, recorded) = current(lake, d).await?;
+        if !wanted {
             continue;
         }
         match recorded {

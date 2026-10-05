@@ -2361,15 +2361,16 @@ impl lakelands_api::seam::VerbExecutor for Gate {
     }
 }
 
-/// A retry looks for the call's output among the 4,096 events after the
-/// call; an output recorded further on is answered as none, the position
-/// stands, and nothing runs again (`docs/seams.md`, `VerbExecutor`). The
-/// reach is the store's constant (`RETRY_REACH` in `writes.rs`), the same
-/// on every engine, which is why this is a store test on the memory
-/// engine. A store that blocks fails the test at the time limit instead of
-/// hanging it.
+/// A retry on the handle that holds the lease, where the executor is not
+/// running the call, reads the log from the call on to its head before
+/// it would run the executor again, and an output recorded further on
+/// than the 4,096 events any other retry reads is answered: nothing runs
+/// again (`docs/seams.md`, `VerbExecutor`). The reach is the store's constant
+/// (`RETRY_REACH` in `writes.rs`), the same on every engine, which is why
+/// this is a store test on the memory engine. A store that blocks fails
+/// the test at the time limit instead of hanging it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_retry_past_the_reach_answers_the_position_without_the_output() {
+async fn a_retry_past_the_reach_reads_on_and_answers_the_output() {
     tokio::time::timeout(std::time::Duration::from_secs(120), retry_past_the_reach())
         .await
         .expect("the retry past the reach finishes within two minutes");
@@ -2452,8 +2453,8 @@ async fn retry_past_the_reach() {
         .await
         .unwrap();
     assert!(
-        matches!(&again, Outcome::Applied { position: p, output: None, .. } if p == position),
-        "past the reach, a retry answers the call's position {position} with no output: \
+        matches!(&again, Outcome::Applied { position: p, output: o, .. } if p == position && o == output),
+        "past the reach, a retry answers the call's position {position} with its output: \
          {again:?}"
     );
     assert_eq!(

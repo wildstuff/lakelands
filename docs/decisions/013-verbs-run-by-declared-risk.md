@@ -76,10 +76,15 @@ error text>"}` in the `output_recorded` event that position causes — and
 the caller's outcome is applied at that position with the recorded
 output in it, the error form included: an error reply would say nothing
 was written when the position is real, and a caller should not have to
-read the log back for the answer. The verb is not run again for that
-position; a retry is a new call and a new position. So the log holds, for
-every external verb, either what the outside world answered or that it
-did not.
+read the log back for the answer. The verb is not run again for a
+position that has an answer; a retry is a new call and a new position.
+So the log holds, for every external verb, either what the outside world
+answered or that it did not. A position whose answer never reached the
+log (the fold of its call failed, or the process ended first) is handed
+to the executor again by the call sent again under its key, or by the
+accept sent again, on the handle that holds the writer lease: `applied`
+is not answered for an effect no executor was handed, and an executor is
+idempotent by the lake and the position.
 
 A retry with the call's idempotency key is not a new call. It answers
 the first outcome: the verb's position and its recorded output, or the
@@ -251,7 +256,8 @@ called with no key.
 - **The log.** `verb_called` carries no key. The executor is handed no
   record, and its answer is recorded as for any external verb, caused by
   the event that made it due. A retry with the same idempotency key
-  answers the first outcome and runs nothing again.
+  answers the first outcome and runs nothing again where an answer is
+  recorded.
 - **Only an external effect.** A verb on its type reaches outside the
   lake. A `write` effect sets fields of a record, and `requires` reads
   one, so a declaration with either is refused as invalid, naming the

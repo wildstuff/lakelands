@@ -48,6 +48,10 @@ pub struct Probe {
     pub refuse_commit: Mutex<Option<usize>>,
     /// A `begin` to refuse: the n-th from now, counted from 1.
     pub refuse_begin: Mutex<Option<usize>>,
+    /// Whether a refused `begin` is answered as invalid, not unavailable.
+    pub refuse_as_invalid: std::sync::atomic::AtomicBool,
+    /// How many times `begin` was asked.
+    pub begins: AtomicUsize,
     /// A view to refuse: the n-th asked for from now, counted from 1.
     pub refuse_view: Mutex<Option<usize>>,
     /// Called before each commit reaches the engine, with the position it
@@ -210,8 +214,16 @@ pub struct ProbedOpener(pub MemoryOpener, pub Arc<Probe>);
 
 impl ProjectionStore for Probed {
     fn begin(&self) -> Result<()> {
+        self.probe.begins.fetch_add(1, Ordering::SeqCst);
         if Probe::refused(&self.probe.refuse_begin) {
             let message = "the `begin` was refused (planted)".to_owned();
+            if self.probe.refuse_as_invalid.load(Ordering::SeqCst) {
+                let reason = lakelands_api::Refusal::Invalid { message };
+                return Err(Error::Refused {
+                    field: None,
+                    reason,
+                });
+            }
             return Err(Error::Unavailable { message });
         }
         self.inner.projection().begin()

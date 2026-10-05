@@ -50,7 +50,7 @@ async fn a_fold_whose_begin_is_busy_is_folded_before_the_next_write() {
     };
     let b = Position(c.0 - 1);
     let told = format!(
-        "the write is in the log at position {} and is not folded yet",
+        "what was appended is in the log from position {} and is not folded yet",
         b.0
     );
     assert!(message.starts_with(&told), "{message}");

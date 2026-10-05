@@ -125,7 +125,11 @@ impl Doors {
     /// only what [`lakelands_core::describe::named_reactions`] leaves `who` (024);
     /// `through` still covers it all.
     async fn settled(&self, who: &Principal, mut outcome: Outcome, seen: u64) -> Result<Outcome> {
-        let last = crate::backed::settle(&self.lake, seen).await?;
+        // A drain that fails is not the write's failure: the write is
+        // folded and answered as itself, its computed fields waiting, and
+        // its calls stay due to the next write, which catches up first.
+        let drained = crate::backed::settle(&self.lake, seen).await;
+        let last = drained.unwrap_or(None);
         let named = matches!(&outcome, Outcome::Applied { set_off, .. } if set_off.names_any());
         let lake = if named {
             Some(self.describe(who, ReadAt::default()).await?.data)
