@@ -434,6 +434,79 @@ fn an_open_and_a_read_read_blocks_of_the_index_not_the_index() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A handle passes a segment by only after a refresh that read it to its
+/// end, with a later one listed, and did not fail: one that fails after
+/// the later segment was listed leaves the earlier one to be read again.
+#[test]
+fn a_refresh_that_fails_once_leaves_no_segment_passed_by_unread() {
+    let dir = scratch("failed-refresh");
+    let writer = open(&dir, OpenMode::Create);
+    let lease = writer.take_lease("writer").unwrap();
+    let events = chain(0, 13, &Digest::zero(), &lease);
+    writer.append(&lease, &events[..10]).unwrap();
+    let reader = open(&dir, OpenMode::Read);
+    assert_eq!(reader.read(Position(0), 100).unwrap(), events[..10]);
+    // The first segment gains two events and is sealed, and the next one
+    // takes an event, before the reader looks again.
+    writer.append(&lease, &events[10..12]).unwrap();
+    let sealed = writer.seal_segment(&lease).unwrap().unwrap();
+    writer.append(&lease, &events[12..]).unwrap();
+    // The reader's next look lists the new segment and cannot read the
+    // first one's index: a directory stands in its place.
+    let (index, aside) = (index(&dir, 0), dir.join("aside.idx"));
+    std::fs::rename(&index, &aside).unwrap();
+    std::fs::create_dir(&index).unwrap();
+    assert!(reader.read(Position(10), 100).is_err());
+    std::fs::remove_dir(&index).unwrap();
+    std::fs::rename(&aside, &index).unwrap();
+    for _ in 0..2 {
+        assert_eq!(reader.read(Position(10), 100).unwrap(), events[10..]);
+        assert_eq!(tip(reader.as_ref()), Some(12));
+        assert_eq!(reader.segments().unwrap(), vec![sealed.clone()]);
+    }
+    drop((reader, writer));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A line that names another position is refused when it alone is read:
+/// the line a read starts at is reached from a line before it, checked to
+/// be the position that follows, wherever the halving lands. Every line
+/// in turn names the position after its own, and that position is read by
+/// a fresh handle.
+#[test]
+fn a_line_that_names_another_position_is_refused_when_it_alone_is_read() {
+    let dir = scratch("misnamed-line");
+    let events = lake_of(&dir, 600, 50);
+    let index = index(&dir, 0);
+    let text = std::fs::read_to_string(&index).unwrap();
+    // Reads that answered the misnamed line's event as the one asked for,
+    // and reads that answered the one asked for without meeting the line.
+    let (mut wrong, mut unmet) = (Vec::new(), Vec::new());
+    for q in 0..599u64 {
+        let damaged = text.replacen(&format!("[\"e\",{q},"), &format!("[\"e\",{},", q + 1), 1);
+        assert_ne!(text, damaged, "the index holds position {q}'s line");
+        std::fs::write(&index, damaged).unwrap();
+        let reader = open(&dir, OpenMode::Read);
+        match reader.read(Position(q + 1), 1) {
+            Err(Error::Unavailable { message }) => {
+                assert!(message.contains("damaged"), "{q}: {message}")
+            }
+            Ok(page) if page[0].bytes == events[q as usize].bytes => wrong.push(q + 1),
+            Ok(_) => unmet.push(q + 1),
+            Err(other) => panic!("{q}: {other:?}"),
+        }
+    }
+    assert!(
+        wrong.is_empty() && unmet.is_empty(),
+        "a read of a position whose line follows one that names it is refused; answered with \
+         the event before: {wrong:?}; answered without meeting the line: {unmet:?}"
+    );
+    std::fs::write(&index, text).unwrap();
+    let reader = open(&dir, OpenMode::Read);
+    assert_eq!(reader.read(Position(0), 600).unwrap(), events);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn copy(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap().map(|e| e.unwrap()) {

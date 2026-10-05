@@ -36,8 +36,9 @@
 //! group a crash left uncommitted alone makes it do: what a lake holds
 //! does not lengthen its open, and a handle's memory does not grow with
 //! the lake. Afterwards a handle reads on from where its index is read,
-//! in the last segment alone: one it has read while a later one existed
-//! is sealed, and its index is not opened again to look for new lines.
+//! in the last segment alone: one it has read to its end while a later
+//! one existed is sealed, and its index is not opened again to look for
+//! new lines.
 //!
 //! **A read** finds the line of the position it starts at by halving the
 //! committed index by byte: every event line names its position, so the
@@ -232,12 +233,14 @@ fn read_end(path: &Path, mut file: &File, segment: &mut Segment) -> Result<()> {
     Ok(())
 }
 
-/// An event line at or before that of position `start` in a segment's
-/// committed index, as its position and the byte it begins at, the line
-/// wanted no more than `NEAR` bytes after it.
+/// An event line before that of position `start` in a segment's committed
+/// index, or the segment's first, as the position it names and the byte
+/// it begins at, the line before the one wanted no more than `NEAR` bytes
+/// after it. A line that names `start` itself is not taken: the line a
+/// read starts at is reached from one before it and checked to follow it.
 fn line_near(path: &Path, mut file: &File, segment: &Segment, start: u64) -> Result<(u64, u64)> {
-    // The line wanted begins at `found.1` or after it, and at `end` or
-    // before it.
+    // The line before the one wanted begins at `found.1` or after it, and
+    // at `end` or before it.
     let (mut found, mut end) = ((segment.first, 0), segment.index_read - 1);
     while end - found.1 > NEAR {
         let middle = found.1 + (end - found.1) / 2;
@@ -263,7 +266,7 @@ fn line_near(path: &Path, mut file: &File, segment: &Segment, start: u64) -> Res
             }
         };
         match landed {
-            Some(line) if line.0 <= start => found = line,
+            Some(line) if line.0 < start => found = line,
             _ => end = middle,
         }
     }
@@ -275,6 +278,10 @@ fn line_near(path: &Path, mut file: &File, segment: &Segment, start: u64) -> Res
 pub(crate) struct Log {
     dir: PathBuf,
     segments: Vec<Segment>,
+    /// How many segments a refresh that did not fail has read to their end
+    /// while a later one was listed: they are sealed, their indexes do not
+    /// change, and they are not opened again to look for new lines.
+    sealed: usize,
 }
 
 fn segment_path(dir: &Path, first: u64) -> PathBuf {
@@ -302,6 +309,7 @@ impl Log {
         let mut log = Log {
             dir: dir.to_owned(),
             segments: Vec::new(),
+            sealed: 0,
         };
         if create {
             for sub in ["log", "index"] {
@@ -347,9 +355,6 @@ impl Log {
 
     /// Read what other handles committed since this one last looked.
     pub(crate) fn refresh(&mut self) -> Result<()> {
-        // A segment read while a later one existed is sealed: its index
-        // does not change, and it is not opened again.
-        let sealed = self.segments.len().saturating_sub(1);
         for first in self.files()? {
             if !self.segments.iter().any(|s| s.first == first) {
                 self.segments.push(Segment {
@@ -359,7 +364,7 @@ impl Log {
                 });
             }
         }
-        for segment in &mut self.segments[sealed..] {
+        for segment in &mut self.segments[self.sealed..] {
             let path = index_path(&self.dir, segment.first);
             let mut file = match File::open(&path) {
                 Ok(f) => f,
@@ -409,6 +414,7 @@ impl Log {
                 }
             }
         }
+        self.sealed = self.segments.len().saturating_sub(1);
         Ok(())
     }
 

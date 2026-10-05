@@ -139,14 +139,18 @@ line, which only a group a crash left uncommitted makes it do. What an
 open costs therefore follows the number of segments (a `checkpoint`
 seals one), not the events in them (lakelands#564). Afterwards a handle
 looks for new lines in the last segment's index alone: a segment it has
-read while a later one existed is sealed, and its index is not opened
-again, so a read, a `tip` and an append list the log's directory and do
-not open a file for every segment. **The ceiling of a read:** a read by position
+read to its end while a later one existed, in a refresh that did not
+fail, is sealed, and its index is not opened again, so a read, a `tip`
+and an append list the log's directory and do not open a file for every
+segment. **The ceiling of a read:** a read by position
 halves the committed index by byte, one read of 8 kB a step (each event
 line names its position, so the first one after the middle says which
-half holds the line wanted), until the line is within 8 kB; then it
-reads one event line per event, in order, with the commit lines between,
-and checks that each is the position that follows. A read that starts
+half holds the line wanted), until the line before the one wanted is
+within 8 kB; then it reads one event line per event, in order, with the
+commit lines between, and checks that each is the position that follows.
+The line a read starts at is always reached so, from a line before it
+(or it is the segment's first, named by the file): a line that names
+another position is never taken for the one a read asks for. A read that starts
 where the segment's last one ended begins at that line with no search,
 so a page of the store's sequential reads costs its own lines. The log's
 files stay as `docs/log-format.md` §4 describes them; an index line that
