@@ -94,6 +94,35 @@ field. So the line this record draws for reads holds for writes:
 
 What a write checks is unchanged; only which refusal comes first.
 
+**A setting the store reads is judged the same way (lakelands#601).**
+`sort_index.<type>`, `vector_index.<type>` and `view_kept.<type>` name
+a type, its fields and, for a view, what its measures read, and the
+judge's sentences say whether each is declared, of which kind, and why
+a view cannot be kept. An applied write tells as much as a sentence
+does, and it acts: an index is built, a view is kept. So the judge
+comes after the writer's grant on `sys.setting`, and it is handed the
+type as `describe_type` answers it to the writer, the one function
+that already decides what a principal is shown:
+
+- A type that is not shown is a name that is not declared, under every
+  value: `null` and `false` change nothing, and would otherwise tell a
+  declared type from none.
+- A field the description does not name is one the type does not
+  declare. A field it names masked or write-only is judged by its kind:
+  the description says the kind already, and an index changes no answer.
+- A view shown without its definition cannot be kept, and the refusal
+  says no more: the reason names a measure, a call and a field of the
+  source, and is said to one shown the view as declared, as `kept` says
+  it.
+- The judge reads the value the write leaves, with no exception for a
+  name that stood before. A principal extends or patches a setting only
+  while it is shown everything the setting names; otherwise the setting
+  is left to one who sees more. Retiring a setting is not judged.
+
+The rule was weighed against letting a standing name pass unjudged: that
+keeps one write, and costs a second path through the judge and an answer
+that depends on who wrote the setting first.
+
 ## Extended: a field built from another is read as that field (lakelands#387)
 
 A derived field hands out what it is computed from: `g = salary * 2`

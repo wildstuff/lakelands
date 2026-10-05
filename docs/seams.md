@@ -1485,6 +1485,21 @@ contract's (`lakelands_api::seam::check_setting`), so the mock refuses
 what the store refuses. It changes no answer, only where a read of the
 view gets it.
 
+**A setting the store reads is judged by what its writer is shown,**
+after the writer's grant on `sys.setting`
+(`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+extended). The judge is handed `<type>` as `describe_type` answers it to
+the writer. A type the writer is not shown is refused as a name that is
+not declared, under every value, `null` and `false` too. A field the
+description does not name is one the type does not declare; a field it
+names masked or write-only is judged by its kind, which the description
+says. A view that cannot be kept is refused with its reason to a writer
+shown the view as declared, and with no more than that it cannot be to
+one shown the view without its definition. The judge reads the value the
+write leaves, so a principal writes a setting only while it is shown
+everything the setting names, whoever wrote it first; retiring a setting
+is not judged. `propose` is judged as `upsert` is, as its proposer.
+
 `describe_type` says in a view's lifecycle (`kept`), and in no other
 type's, whether its records are kept, or computed at each read and why:
 `not_asked`; `cannot_be_kept`, with the sentence the setting's refusal

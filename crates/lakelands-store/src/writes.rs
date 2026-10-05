@@ -931,7 +931,9 @@ impl Call<'_> {
         }
         if ty.as_str() == SETTING_TYPE {
             let declared = |t: &TypeName| w.ontology.ty(t).ok();
-            lakelands_api::seam::check_setting(key.as_str(), after.fields.get("value"), &declared)
+            let shown = |t: &TypeName| describe::one_type(t, &w.ontology.declared(), who);
+            let value = after.fields.get("value");
+            lakelands_api::seam::check_setting(key.as_str(), value, &declared, &shown)
                 .map_err(|(field, message)| invalid_field(&field, message))?;
         }
         Ok(RecordPlan {
