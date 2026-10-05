@@ -159,18 +159,21 @@ damaged index, never read as another event. **A damaged line is found
 by the read that meets it,** and so by `verify`, which reads the log
 from the first position it is asked for; an open reads the index's end
 alone and does not find it. **An append that fails after it wrote,**
-as on a disk that fills, cuts the segment and its index back to their
-committed lengths before it answers its error, and every append and
-every seal first reads what is committed and cuts what lies past it,
-whoever left it there: no event is written behind bytes that are none,
-and a sealed file holds its events' lines and nothing else
-(lakelands#618). The cut is the writer's: the lease's check and what
-follows it are one step under the handle's own lock, and the lease
-file's lock lets no other handle take the lease meanwhile. One outcome
-is not known: where the sync after the commit line fails and the cut
-fails too, the group is in the log for whoever reads it, though its
-append answered an error. **The journal:** a writer that gives its
-lease up (`close`) truncates the projection's journal,
+as on a disk that fills, reads what is committed and cuts the index and
+then the segment back to it before it answers its error, and every
+append and every seal begins the same way, whoever left bytes there: no
+event is written behind bytes that are none, and a sealed file holds
+its events' lines and nothing else (lakelands#618). The cut is the
+writer's: the lease's check and what follows it are one step under the
+handle's own lock, and the lease file's lock lets no other handle take
+the lease meanwhile. It never takes a commit line that is whole, which
+another handle may have read, so one outcome is not known: where the
+sync after the commit line fails, the group is in the log for every
+handle, the writer's too, and may not outlast a crash; its append
+answers `unavailable` and says so. A segment that ends before what its
+index commits is damage no cut mends: the append, the seal and the next
+writer's lease are refused, naming the file. **The journal:** a writer
+that gives its lease up (`close`) truncates the projection's journal,
 `projection.db-wal`, which otherwise stays as large as it once grew
 until a `compact`. It does not wait for a reader that holds a snapshot
 of the journal, and leaves it then for the next release. The engine's `tests/log_index.rs` holds these: what an open

@@ -261,3 +261,53 @@ fn a_handle_whose_lease_is_no_longer_the_lakes_cuts_nothing() {
         assert_eq!(s.lengths(), in_flight, "{lost}: the stale handle cut");
     }
 }
+
+/// A segment that ends before what its index commits is damage, which no
+/// cut mends: an append, a seal and the next writer's lease are refused,
+/// and nothing is written behind the short file.
+#[test]
+fn a_segment_shorter_than_its_index_commits_is_refused_as_damaged() {
+    let s = Scene::new("short");
+    let file = std::fs::OpenOptions::new().write(true).open(s.segment());
+    file.unwrap().set_len(s.lengths().0 - 3).unwrap();
+    let short = s.lengths();
+    for (what, answer) in [
+        ("an append", s.writer.append(&s.lease, &s.next(1, "behind"))),
+        ("a seal", s.writer.seal_segment(&s.lease).map(|_| ())),
+        ("a release", s.writer.release_lease(&s.lease)),
+        ("the next lease", {
+            let next = open(&s.dir, OpenMode::Write);
+            next.take_lease("next").map(|_| ())
+        }),
+    ] {
+        let refused = what != "a release";
+        assert_eq!(answer.is_err(), refused, "{what}: {answer:?}");
+        if let Err(e) = answer {
+            assert!(e.to_string().contains("damaged"), "{what}: {e}");
+        }
+    }
+    assert_eq!(s.lengths(), short, "something was written or cut");
+}
+
+/// The cut takes the index first: where the segment cannot be cut, the
+/// index is, so it never commits bytes the segment has lost. Once the
+/// segment can be opened again the next append cuts it and goes on.
+#[test]
+fn the_cut_takes_the_index_before_the_segment() {
+    let s = Scene::new("order");
+    let committed = s.lengths();
+    add(&s.segment(), "{\"left\":6}\n");
+    add(&s.index(), &uncommitted(6, 1));
+    let aside = s.dir.join("aside");
+    std::fs::rename(s.segment(), &aside).unwrap();
+    std::fs::create_dir(s.segment()).unwrap();
+    let refused = s.writer.append(&s.lease, &s.next(1, "refused"));
+    assert!(refused.is_err(), "it appended into a directory");
+    let index = std::fs::metadata(s.index()).unwrap().len();
+    assert_eq!(index, committed.1, "the index was not cut first");
+    std::fs::remove_dir(s.segment()).unwrap();
+    std::fs::rename(&aside, s.segment()).unwrap();
+    let more = s.next(2, "appended");
+    s.writer.append(&s.lease, &more).unwrap();
+    s.holds(&[&s.committed[..], &more].concat(), "the segment is back");
+}

@@ -24,16 +24,20 @@
 //!
 //! **Nothing is written behind bytes that are no event.** A write can
 //! fail after it wrote, as on a full disk, and the handle goes on under
-//! its lease. So an append that fails cuts both files back to their
-//! committed lengths before it answers its error, and every append and
-//! every seal first reads what is committed and cuts what lies past it,
-//! whoever left it there: an offset the index names is the byte its event
-//! begins at, and a sealed file holds its events' lines and nothing else.
-//! A failed append changes nothing of what the handle holds, which is
-//! written once the commit line is synced. One outcome is not known: when
-//! the sync after the commit line fails and the cut fails too, the group
-//! is committed for whoever reads the index, though its append answered
-//! an error.
+//! its lease. So an append that fails reads what is committed and cuts
+//! both files back to it before it answers its error, and every append
+//! and every seal begins the same way, whoever left bytes there: an
+//! offset the index names is the byte its event begins at, and a sealed
+//! file holds its events' lines and nothing else. The cut takes the
+//! index first, so the index never commits bytes the segment has lost,
+//! and a file that ends before what is committed in it is damage: it is
+//! refused, and nothing is written behind it.
+//!
+//! **A commit line that is whole is never cut.** Another handle may have
+//! read its group. One append's outcome is therefore not known: when the
+//! sync after the commit line fails, the group is in the files for every
+//! handle, this one too, and may not outlast a crash; its append answers
+//! the error and says so.
 //!
 //! Every handle reads the files, so a reader opened beside the writer
 //! sees each append once it is committed.
@@ -176,12 +180,17 @@ fn digest_of(dir: &Path, segment: &Segment) -> Result<Digest> {
     let read = std::io::copy(&mut file.take(segment.end), &mut hash)
         .map_err(|e| io_error("reading", &path, e))?;
     if read != segment.end {
-        return Err(unavailable(format!(
-            "{} ends before its committed events do; the log is damaged",
-            path.display()
-        )));
+        return Err(short(&path));
     }
     Ok(Digest(lakelands_core::canonical::hex(&hash.finalize())))
+}
+
+/// A file of the log that ends before what is committed in it.
+fn short(path: &Path) -> lakelands_api::Error {
+    unavailable(format!(
+        "{} ends before its committed events do; the log is damaged",
+        path.display()
+    ))
 }
 
 /// One index line, an event line checked to name `expected`.
@@ -439,14 +448,16 @@ impl Log {
     }
 
     /// Cut the active segment's two files back to their committed lengths,
-    /// as this handle has read them.
+    /// as this handle has read them: the index first, which commits
+    /// nothing the segment then loses. A file shorter than that is
+    /// refused as damaged.
     fn cut(&self) -> Result<()> {
         let Some(active) = self.segments.last() else {
             return Ok(());
         };
         for (path, len) in [
-            (segment_path(&self.dir, active.first), active.end),
             (index_path(&self.dir, active.first), active.index_read),
+            (segment_path(&self.dir, active.first), active.end),
         ] {
             // A crash between creating a segment and its index leaves no
             // index; the writer creates it empty.
@@ -460,6 +471,9 @@ impl Log {
                 .metadata()
                 .map_err(|e| io_error("reading", &path, e))?
                 .len();
+            if now < len {
+                return Err(short(&path));
+            }
             if now > len {
                 file.set_len(len)
                     .and_then(|()| file.sync_all())
@@ -539,20 +553,8 @@ impl Log {
                     .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_data()))
                     .map_err(|e| (path, e))
             });
-        // What a write that failed left is cut back before its error is
-        // answered. Where that fails as well, the next append or seal cuts
-        // it before it writes, or is refused.
         if let Err((path, e)) = written {
-            let uncut = self.cut().err().map_or_else(String::new, |cut| {
-                format!(
-                    "; what it wrote could not be cut back, and nothing is appended until it \
-                     is ({cut})"
-                )
-            });
-            let path = path.display();
-            return Err(unavailable(format!(
-                "appending to {path} failed: {e}{uncut}"
-            )));
+            return Err(self.failed(events, path, &e));
         }
         let active = self.segments.last_mut().expect("checked above");
         active.index_read += index.len() as u64;
@@ -560,6 +562,31 @@ impl Log {
         active.end = offset;
         active.last_hash = events.last().map(|e| e.hash.0.clone());
         Ok(())
+    }
+
+    /// The error of an append of `events` whose write to `path` failed
+    /// with `e`. What it left is read, then cut, before the error is
+    /// answered: a group whose commit line is whole stays, and its outcome
+    /// is not known. Where the cut fails, the next append or seal cuts
+    /// before it writes, or is refused.
+    fn failed(
+        &mut self,
+        events: &[CanonicalEvent],
+        path: &Path,
+        e: &io::Error,
+    ) -> lakelands_api::Error {
+        let last = events.last().map(|e| (e.position, e.hash.clone()));
+        let more = match self.recover() {
+            Ok(()) if self.tip() == last => "; its events are in the log's files and their \
+                 sync failed: every handle reads them, and the outcome is not known"
+                .to_owned(),
+            Ok(()) => String::new(),
+            Err(cut) => format!(
+                "; what it wrote may still lie past the committed end, and the next append or \
+                 seal cuts it before it writes, or is refused ({cut})"
+            ),
+        };
+        unavailable(format!("appending to {} failed: {e}{more}", path.display()))
     }
 
     /// The fence of the event at `position`.
@@ -701,3 +728,6 @@ impl Log {
         Ok(out)
     }
 }
+
+#[cfg(test)]
+mod tests;

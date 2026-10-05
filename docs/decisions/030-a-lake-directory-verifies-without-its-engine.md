@@ -18,7 +18,9 @@ The SQLite engine keeps a lake as a directory whose log anyone can read:
   an append that failed cuts off what that one left before it answers
   the error, and again before every append and every seal: an offset in
   the index is the byte its event begins at, and a sealed segment holds
-  its events' lines and nothing else (lakelands#618).
+  its events' lines and nothing else. The cut takes the index before
+  the segment and never a commit line that is whole; a segment shorter
+  than its index commits is refused as damaged (lakelands#618).
 - `lease` holds the last fencing token handed out and its holder, under
   an operating-system lock. The lock makes a second writer fail at once
   and dies with its process; the token, read from the file on every
