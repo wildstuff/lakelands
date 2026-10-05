@@ -418,9 +418,10 @@ async fn an_ingested_record_carries_its_upstream_per_field(
         &patch_first,
     );
     ensure!(
-        ingested.v == 3 && ingested.upstream.as_ref() == Some(&from) && ingested.id == id,
-        "the ingest with an upstream must be a format 3 event carrying it, with the id its \
-         source, type, key, version and patch make, which leaves `upstream` out; it is format \
+        ingested.v >= 3 && ingested.upstream.as_ref() == Some(&from) && ingested.id == id,
+        "the ingest with an upstream must be an event of format 3 or newer carrying it, with \
+         the id its source, type, key, version and patch make, which leaves `upstream` out; it \
+         is format \
          {} carrying {:?} with id {}, and the id without the member is {}",
         ingested.v,
         ingested.upstream,

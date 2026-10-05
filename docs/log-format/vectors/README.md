@@ -26,8 +26,10 @@ The files:
   line each: a `declared` type whose derived field calls `floor`, one
   whose derived field calls `date_bucket` by a width, an object set
   whose `where` names a set with `in_set`, a `migrated` whose
-  migration renames a relation (`relation_renames`), and a
-  `record_upserted` of a `view_kept.` setting; and `negatives`,
+  migration renames a relation (`relation_renames`), a
+  `record_upserted` of a `view_kept.` setting, which is its first
+  version and so carries `made`, and a `record_upserted` at version 4
+  that carries `made`, a record made again; and `negatives`,
   each line written as version 10, which a reader refuses.
 - `v10.json`: two events after `v9.json`'s position 20: a `declared`
   value type `slip_state`, still version 9, and a version-10

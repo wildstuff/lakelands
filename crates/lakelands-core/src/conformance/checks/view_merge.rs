@@ -356,7 +356,10 @@ async fn a_merged_sources_fields_are_probed_as_a_read_of_it(
 async fn a_view_that_merges_is_written_in_log_format_9(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
-    let l = lake(store.as_ref()).await?;
+    // No record yet: the first one made takes the lake to format 11.
+    let l = Lake::of(store.as_ref());
+    l.declare(log("food_log", "day")).await?;
+    l.declare(log("workout_log", "date")).await?;
     let mut plain = energy_balance("food_only", Vec::new(), None, None);
     if let Some(v) = plain.view.as_mut() {
         v.merge.clear();
@@ -381,10 +384,15 @@ async fn a_view_that_merges_is_written_in_log_format_9(
     )
     .await?;
     for e in log_events(store.as_ref()).await? {
+        let want = match e.position.cmp(&declared) {
+            std::cmp::Ordering::Less => e.v.min(8),
+            std::cmp::Ordering::Equal => 9,
+            std::cmp::Ordering::Greater => 11,
+        };
         ensure!(
-            (e.position >= declared) == (e.v == 9),
+            e.v == want,
             "the event at {} is written in format {}; the one declaring a view that merges \
-             and every one after it must be 9, and none before it",
+             must be 9 and none before it, and the record made after it 11",
             e.position,
             e.v
         );

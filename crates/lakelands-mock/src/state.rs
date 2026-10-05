@@ -134,12 +134,14 @@ impl State {
                 key,
                 version,
                 patch,
+                ..
             }
             | EventBody::RecordIngested {
                 ty,
                 key,
                 version,
                 patch,
+                ..
             } => {
                 if matches!(e.body, EventBody::RecordIngested { .. }) {
                     self.ingested.insert(e.id.clone());

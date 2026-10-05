@@ -145,9 +145,9 @@ async fn a_set_names_a_set_and_follows_it(store: Arc<dyn LakeStore>) -> Result<(
     let events = events_from(s, Position(0)).await?;
     let formats: Vec<_> = events.iter().map(|e| (e.position, e.v)).collect();
     ensure!(
-        formats.iter().all(|(p, v)| (*v == 11) == (*p >= first)),
-        "the lake writes format 11 from the first declaration that names a set, at {first}, and \
-         not before; its events carry {formats:?}"
+        formats.iter().all(|(p, v)| *p < first || *v == 11),
+        "the lake writes format 11 from the first declaration that names a set, at {first}, as \
+         it does from its first record made; its events carry {formats:?}"
     );
     // `open` declared again takes `i4`: the sets built on it follow in the
     // same append, two levels up, and a read as of before reads as before.

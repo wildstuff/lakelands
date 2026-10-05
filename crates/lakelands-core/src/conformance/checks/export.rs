@@ -41,8 +41,8 @@ check!(
 
 check!(
     /// Both format versions, as they were written.
-    MIXED_VERSIONS = a_rekeyed_lake_exports_both_format_versions_as_written,
-    "030 and log-format §6: a lake that re-keyed exports its version-1 events and its version-2 events as they were written, and the export verifies",
+    MIXED_VERSIONS = a_lake_exports_both_format_versions_as_written,
+    "030 and log-format §6: a lake exports its version-1 events, written before its first record was made, and its version-11 events as they were written, a re-key among them, and the export verifies",
     scratch
 );
 
@@ -285,7 +285,7 @@ async fn an_export_verifies_to_the_through_and_hash_the_lake_answers(
     Ok(())
 }
 
-async fn a_rekeyed_lake_exports_both_format_versions_as_written(
+async fn a_lake_exports_both_format_versions_as_written(
     store: Arc<dyn LakeStore>,
     scratch: PathBuf,
 ) -> Result<(), Failure> {
@@ -305,12 +305,12 @@ async fn a_rekeyed_lake_exports_both_format_versions_as_written(
     }
     ensure!(
         lines == want,
-        "the export holds every event's line as the lake holds it, version 1 before the re-key at \
-         {at} and version 2 from it, and it does not"
+        "the export holds every event's line as the lake holds it, version 1 before its first \
+         record made and version 11 from it, the re-key at {at} among them, and it does not"
     );
     ensure!(
-        manifest.versions == [1, 2],
-        "the manifest of a lake that re-keyed names versions [1, 2], and it names {:?}",
+        manifest.versions == [1, 11],
+        "the manifest of a lake that made a record names versions [1, 11], and it names {:?}",
         manifest.versions
     );
     export::verify(&dir).must("verifying an export of both format versions")?;

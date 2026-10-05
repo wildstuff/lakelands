@@ -41,7 +41,7 @@
 //! - `ingest` is content-addressed (source, type, key, the version before
 //!   and the values, never when a record was seen), a record that would
 //!   change nothing is a duplicate, within a window too; and the change
-//!   feed is the log.
+//!   feed is the log, whose record events say `made` as the store's do.
 //!
 //! It names what the log format names as the store does: a type's schema
 //! hash is SHA-256 over its shape's canonical bytes, and a proposal's id
@@ -51,7 +51,8 @@
 //! What it does not do, because no door test needs it: it persists
 //! nothing, hashes no event's canonical bytes (the `prev` and `hash`
 //! members are filled with stable stand-ins, and `verify` checks
-//! nothing), hashes a view's conditions as written rather than typed, computes no
+//! nothing), holds no format rule (every event carries the base version,
+//! one that says `made` too), hashes a view's conditions as written rather than typed, computes no
 //! derived fields, views, triggers or object sets (a view's parameters are
 //! checked by name only, none unknown and none missing), keeps no view (a
 //! `view_kept.` setting is judged as the store judges it, and a view that

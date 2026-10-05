@@ -12,7 +12,10 @@ use lakelands_api::{Access, LakeStore, Outcome, Position, RecordKey, SetOff, Typ
 use serde_json::json;
 
 use crate::conformance::Failure;
-use crate::conformance::fixture::{Lake, Must, field_access, log_events, patch, type_of, upsert};
+use crate::conformance::fixture::{
+    Lake, Must, field_access, log_events, patch, source_record, sourced, type_of, upsert,
+    write_verb,
+};
 
 /// What a write's answer says it set off.
 fn set_off(o: &Outcome) -> SetOff {
@@ -88,6 +91,12 @@ async fn all_events(store: &dyn LakeStore, from: Position) -> Result<Vec<Event>,
 }
 
 check!(
+    /// A record event says whether it made the record.
+    MADE = a_record_event_says_whether_it_made_the_record,
+    "004 and lakelands#572: `record_upserted` and `record_ingested` carry `made` where the write found no live record under the key and leave it out otherwise, so a consumer of the feed tells a record made from one changed without a read: a first creation with `version` 1, a record made again after its retirement with the version its history gives it, a change and a verb's write without; it is said where the event is made, of what the writer then holds: of two records of one ingest that name one key the first made it, and a proposal is judged when it is accepted, not when it was proposed"
+);
+
+check!(
     /// Paging with `next` loses and repeats nothing.
     PAGED_FROM_NEXT = polling_from_next_in_small_pages_sees_every_matching_event_once_in_order,
     "004: a consumer that polls from the `next` each answer gives, in pages of one or two events and with writes landing between polls, sees every matching event once, in log order; this is the position a deliverer keeps"
@@ -98,6 +107,84 @@ check!(
     LIMIT_ZERO_IS_ONE = a_poll_with_a_limit_of_zero_answers_one_event,
     "seams, ChangeFeed: a limit of 0 is read as 1, so a consumer that passes 0 still moves forward instead of polling the same position for ever"
 );
+
+async fn a_record_event_says_whether_it_made_the_record(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let Lake { cat, own } = &l;
+    let mut bill = type_of("bill", &[("amount", Number)]);
+    bill.fields.push(sourced("paid", Number));
+    l.declare(bill).await?;
+    let zero = write_verb("zero", "bill", "amount", "0");
+    l.declare_as(zero, "the verb `zero`").await?;
+    let n = |n: u32| json!({ "amount": n });
+    let propose = |key: &str| {
+        let (ty, key, opts) = ("bill".into(), key.into(), WriteOpts::default());
+        let patch = patch(n(5));
+        cat.propose(
+            own,
+            ProposedWrite::Upsert {
+                ty,
+                key,
+                patch,
+                opts,
+            },
+            "later".into(),
+        )
+    };
+    let accept = async |o: Outcome| match o {
+        Outcome::Proposed { proposal, .. } => cat.accept(own, &proposal).await.must("accepting"),
+        o => Err(Failure::new(format!("an upsert proposed answered {o:?}"))),
+    };
+    let from = store.head().await.must("reading the head")?.next();
+    // `9` is made, changed, changed by a verb, retired and, by a proposal
+    // made while it was live, made again; `8` is proposed before it is
+    // there and accepted after; `7` comes twice in one ingest.
+    l.upsert("bill", "9", n(1)).await?;
+    l.upsert("bill", "9", n(2)).await?;
+    let (verb, key) = ("zero".into(), "9".into());
+    let called = cat.call(
+        own,
+        &verb,
+        Some(&key),
+        patch(json!({})),
+        WriteOpts::default(),
+    );
+    called.await.must("calling `zero`")?;
+    let live = propose("9").await.must("proposing over a live record")?;
+    let absent = propose("8").await.must("proposing a record not there")?;
+    l.retire("bill", "9").await?;
+    l.upsert("bill", "8", n(1)).await?;
+    accept(live).await?;
+    accept(absent).await?;
+    let twice = [1, 2].map(|p| source_record("bill", "7", json!({ "paid": p })));
+    l.ingest("meter", twice.into()).await.must("ingesting")?;
+    let said: Vec<String> = (all_events(store.as_ref(), from).await?.iter())
+        .filter_map(|e| match &e.body {
+            EventBody::RecordUpserted {
+                key, version, made, ..
+            }
+            | EventBody::RecordIngested {
+                key, version, made, ..
+            } => Some(format!(
+                "{key}:{}{}",
+                version.0,
+                if *made { " made" } else { "" }
+            )),
+            _ => None,
+        })
+        .collect();
+    let want = [
+        "9:1 made", "9:2", "9:3", "8:1 made", "9:5 made", "8:2", "7:1 made", "7:2",
+    ];
+    ensure!(
+        said == want,
+        "the record events, each as key, version and whether it says it made the record, are \
+         {want:?}; the feed answers {said:?}"
+    );
+    Ok(())
+}
 
 async fn a_poll_with_a_limit_of_zero_answers_one_event(
     store: Arc<dyn LakeStore>,

@@ -1100,6 +1100,18 @@ once, possibly empty, never waiting for new events:
   record's history asked for from position 0 reads the whole log.
   `lakelands-client` refuses a filter with keys as invalid, naming
   `keys`, until the REST feed takes them.
+
+  A consumer tells a record made from one changed by the event alone: a
+  `record_upserted` or `record_ingested` event carries `made: true`
+  where its write found no live record under the key, and leaves the
+  member out where it changed one. With `version` 1 the record is made
+  for the first time; above 1 it was retired before and is made again,
+  which a consumer that filters by kind would otherwise miss, since it
+  never sees the `record_retired` between (`docs/log-format.md` §2.3;
+  suite: `a_record_event_says_whether_it_made_the_record`). An event
+  below format 11 carries no such member, and its absence says nothing
+  there: for those a consumer takes `version` 1 as the first creation or
+  reads the record as of the position before.
 - `next`: the position after the last event examined, matched or not,
   which is where the next poll starts.
 - `head`: the lake's last position when the poll began.

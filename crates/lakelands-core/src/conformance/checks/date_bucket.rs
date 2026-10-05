@@ -288,11 +288,16 @@ async fn a_declaration_may_call_date_bucket_and_from_it_the_lake_writes_format_3
         .must("applying a view and an object set calling date_bucket")?;
     let events = log_events(store.as_ref()).await?;
     for e in &events {
-        let want_v3 = e.position >= declared_at;
+        let want = if e.position > declared_at { 11 } else { 3 };
         ensure!(
-            (e.v == 3) == want_v3 && (want_v3 || e.position <= before),
+            if e.position >= declared_at {
+                e.v == want
+            } else {
+                e.v < 3 && e.position <= before
+            },
             "the event at {} carries format {}; the declaration at {declared_at} first calls \
-             date_bucket, so it and every event after it carry 3, and none before it does",
+             date_bucket, so it carries 3 and none before it does, and the lake writes 11 from \
+             the first record made after it",
             e.position,
             e.v
         );
@@ -334,7 +339,8 @@ async fn find_groups_records_by_windows_of_a_width_from_an_origin(
             "`{bucket}` is refused as invalid, naming \"{names}\"; find answered {refused:?}"
         );
     }
-    // A declaration may call it: the lake writes format 11 from it on.
+    // A declaration may call it, written in format 11 as the lake's
+    // records are; that it needs 11 is held by `versions`' rows.
     let declared = l
         .declare_json(json!({
             "declare": "type", "name": "shift",
@@ -353,12 +359,10 @@ async fn find_groups_records_by_windows_of_a_width_from_an_origin(
     ensure!(
         crate::conformance::fixture::value(&week, "week")
             == Some(&json!("2028-01-03T00:00:00.000000Z"))
-            && events
-                .iter()
-                .all(|e| (e.v == 11) == (e.position >= declared)),
+            && events.iter().all(|e| e.position < declared || e.v == 11),
         "a derived window of seven days from Monday 2027-12-27 holds 2028-01-03 for 2028-01-05, \
-         and the lake writes format 11 from that declaration on; the record holds {:?}, the \
-         events carry {:?}",
+         and its declaration and every event after it are written in format 11; the record \
+         holds {:?}, the events carry {:?}",
         week.fields,
         events.iter().map(|e| (e.position, e.v)).collect::<Vec<_>>()
     );

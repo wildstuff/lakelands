@@ -139,6 +139,7 @@ macro_rules! door_checks {
             a_type_its_writer_is_not_shown_is_a_type_that_is_not_declared,
             #[own_principals]
             a_retry_is_answered_before_its_writer_is_asked_what_it_is_shown,
+            a_record_event_says_whether_it_made_the_record,
             an_embedding_is_unbound_where_no_backend_is_bound,
             a_link_to_no_live_record_or_over_no_link_relation_is_refused,
             every_door_refuses_a_view_alike,
@@ -7105,6 +7106,78 @@ pub async fn a_type_its_writer_is_not_shown_is_a_type_that_is_not_declared(
         }
     }
     assert_eq!(f.head().await, head, "nothing was written");
+}
+
+/// A record event says `made` where its write found no live record under
+/// the key and leaves it out otherwise (lakelands#572): made, changed,
+/// retired and made again by a proposal made while it was live; a record
+/// proposed before it is there and accepted after; one key twice in one
+/// ingest. Each row is the key, the version and what the event says.
+pub async fn a_record_event_says_whether_it_made_the_record(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let (c, clerk) = (&f.catalog, &f.cast.clerk);
+    let from = f.head().await.next();
+    let status = |s: &str| [("status", json!(s))];
+    let propose = async |k: &str| {
+        let (ty, key, opts) = (ty(INVOICE), key(k), WriteOpts::default());
+        let patch = patch(&status("approved"));
+        let write = ProposedWrite::Upsert {
+            ty,
+            key,
+            patch,
+            opts,
+        };
+        match c.propose(clerk, write, "later".into()).await {
+            Ok(Outcome::Proposed { proposal, .. }) => proposal,
+            other => panic!("expected a proposal, got {other:?}"),
+        }
+    };
+    f.write(clerk, "INV-1", &status("open")).await;
+    f.write(clerk, "INV-1", &status("approved")).await;
+    let (live, absent) = (propose("INV-1").await, propose("INV-2").await);
+    let (invoice, k1, bank) = (ty(INVOICE), key("INV-1"), "bank".into());
+    let retired = c.retire(&f.cast.owner, &invoice, &k1, WriteOpts::default());
+    retired.await.expect("the owner retires");
+    f.write(clerk, "INV-2", &status("open")).await;
+    for proposal in [live, absent] {
+        let accepted = c.accept(&f.cast.reviewer, &proposal).await;
+        accepted.expect("the reviewer accepts");
+    }
+    let twice = ["1.00", "2.00"].map(|amount| SourceRecord {
+        upstream: None,
+        ty: ty(INVOICE),
+        key: key("INV-3"),
+        fields: patch(&[("amount", json!(amount))]),
+        seen_at: None,
+    });
+    let fed = c.ingest(&f.cast.importer, &bank, stream::of(twice.into()));
+    let acks = stream::collect(&mut fed.await.unwrap()).await;
+    assert!(acks.iter().all(Result::is_ok), "{acks:?}");
+    let feed = f.store.feed();
+    let b = feed.poll(from, &FeedFilter::default(), 100).await.unwrap();
+    let said: Vec<String> = (b.events.iter())
+        .filter_map(|e| match &e.body {
+            EventBody::RecordUpserted {
+                key, version, made, ..
+            }
+            | EventBody::RecordIngested {
+                key, version, made, ..
+            } => Some(format!(
+                "{key}:{}{}",
+                version.0,
+                if *made { " made" } else { "" }
+            )),
+            _ => None,
+        })
+        .collect();
+    let want = [
+        "INV-1:1 made",
+        "INV-1:2",
+        "INV-2:1 made",
+        "INV-1:4 made",
+        "INV-2:2",
+    ];
+    assert_eq!(said, [&want[..], &["INV-3:1 made", "INV-3:2"]].concat());
 }
 
 /// A retry of a write is answered that write before its writer is asked

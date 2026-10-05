@@ -29,7 +29,8 @@
 //!   `date_bucket` by a width or `in_set` in any expression it keeps, in
 //!   the places 5 names; a migration that renames a relation
 //!   (`relation_renames`), in a `migrated` event or a proposed `migrate`;
-//!   and a write of a `view_kept.<type>` setting, made or proposed.
+//!   a write of a `view_kept.<type>` setting, made or proposed; and a
+//!   `record_upserted` or `record_ingested` event that carries `made`.
 //!
 //! The store writes every event of one append at the greatest of the
 //! lake's version and what [`needed`] answers for each event of the
@@ -104,7 +105,18 @@ pub const ELEVENTH: &[Added] = &[
     ),
     (renames_a_relation, "renames a relation"),
     (writes_a_kept_setting, "writes a `view_kept.` setting"),
+    (says_it_made, "carries `made`"),
 ];
+
+/// Whether a record event says its write found no live record under the
+/// key. Below 11 no event says so, and absence tells nothing there.
+fn says_it_made(body: &EventBody) -> bool {
+    use EventBody::{RecordIngested, RecordUpserted};
+    matches!(
+        body,
+        RecordUpserted { made: true, .. } | RecordIngested { made: true, .. }
+    )
+}
 
 /// Whether the event writes a `view_kept.<type>` setting: an upsert or an
 /// ingest of that `sys.setting`, or a proposed upsert of it. A store that
