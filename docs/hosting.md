@@ -187,7 +187,12 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   finds it, as does the read that meets it. A writer's `close` truncates
   the projection's journal (`projection.db-wal`); a writer that ends
   without it leaves the journal as large as it grew, for the next
-  `close` or `compact` (lakelands#564).
+  `close` or `compact` (lakelands#564). A write the disk refuses, as when
+  it is full, is answered `unavailable` and leaves the log's files as
+  they were before it: the host makes room and the lake's next write goes
+  on, on the same handle. One such answer says that its outcome is not
+  known: the disk took the write and did not confirm it, and its events
+  are in the log (lakelands#618).
   In a quiet hour the host can call `LakeStore::compact()` (`lakelands
   compact`) to give back the storage the projection no longer uses; it
   changes no answer and appends nothing, and writes wait while it runs

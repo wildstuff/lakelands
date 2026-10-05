@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use lakelands_api::engine::{
@@ -185,11 +185,18 @@ impl SqliteLake {
     /// this handle holds, or whose fencing token the lease file no longer
     /// records: the lock can be lost without the process knowing, and the
     /// token is what says so.
-    fn check_lease(&self, lease: &Lease) -> Result<()> {
+    ///
+    /// The answer is the lease this handle holds, locked: while the caller
+    /// keeps it, this handle cannot give the lease up, so the check and
+    /// what the caller then cuts and writes are one step. The lease
+    /// file's lock, which the lease held keeps from `take_lease` to its
+    /// release, lets no other handle take the lease meanwhile.
+    fn check_lease(&self, lease: &Lease) -> Result<MutexGuard<'_, Option<Held>>> {
         self.writable()?;
+        let held = lock(&self.held);
         let (fence, holder) = self.lease_file.current()?;
-        if lock(&self.held).as_ref().is_some_and(|h| h.lease == *lease) && fence == lease.fence {
-            return Ok(());
+        if held.as_ref().is_some_and(|h| h.lease == *lease) && fence == lease.fence {
+            return Ok(held);
         }
         Err(unavailable(if holder.is_empty() {
             format!(
@@ -309,13 +316,12 @@ impl LakeEngine for SqliteLake {
     }
 
     fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        self.check_lease(lease)?;
+        let _held = self.check_lease(lease)?;
         lock(&self.log).append(Some(lease.fence), events)
     }
 
     fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        self.check_lease(lease)?;
-        let mut held = lock(&self.held);
+        let mut held = self.check_lease(lease)?;
         let held = held
             .as_mut()
             .ok_or_else(|| unavailable("the lease is not held by this handle"))?;
@@ -344,7 +350,7 @@ impl LakeEngine for SqliteLake {
     }
 
     fn seal_segment(&self, lease: &Lease) -> Result<Option<SegmentDigest>> {
-        self.check_lease(lease)?;
+        let _held = self.check_lease(lease)?;
         lock(&self.log).seal()
     }
 
