@@ -301,8 +301,7 @@ pub(crate) fn rebuild_sorted(conn: &Connection, ty: &TypeName, through: Position
     let decl = type_at(conn, ty, None)?;
     let fields = sorted_fields(conn, ty, decl.as_ref())?;
     if fields.is_empty() {
-        run(conn, "DELETE FROM meta WHERE k = ?1", [sorted_mark(ty)])?;
-        return Ok(());
+        return set_sorted(conn, ty, None);
     }
     // A page of the type at a time, so the pass holds a page, not the type.
     let mut after = String::new();
@@ -329,10 +328,19 @@ pub(crate) fn rebuild_sorted(conn: &Connection, ty: &TypeName, through: Position
             break;
         }
     }
+    set_sorted(conn, ty, Some(through))
+}
+
+/// Mark `ty`'s order index kept through `through`; with none, drop its
+/// mark: the index keeps no field.
+fn set_sorted(conn: &Connection, ty: &TypeName, through: Option<Position>) -> Result<()> {
+    let Some(at) = through else {
+        return run(conn, "DELETE FROM meta WHERE k = ?1", [sorted_mark(ty)]);
+    };
     run(
         conn,
         "INSERT INTO meta (k, v) VALUES (?1, ?2) ON CONFLICT (k) DO UPDATE SET v = ?2",
-        params![sorted_mark(ty), through.0 as i64],
+        params![sorted_mark(ty), at.0 as i64],
     )
 }
 
@@ -604,10 +612,14 @@ pub(crate) fn put_declaration(conn: &Connection, d: &Declared) -> Result<Option<
         return Ok(None);
     }
     // The rows go whole: the declaration may have dropped a field the index
-    // kept.
+    // kept. The mark follows the fields it leaves the index, which the
+    // records put after it and the commit fill: a setting put before the
+    // declaration that first declares its fields found none to mark.
     conn.prepare_cached("DELETE FROM sort_index WHERE ty = ?1")
         .and_then(|mut s| s.execute([t.name.as_str()]))
         .map_err(sql)?;
+    let kept = !sorted_fields(conn, &t.name, Some(t))?.is_empty();
+    set_sorted(conn, &t.name, kept.then_some(d.since))?;
     Ok(Some(t.name.clone()))
 }
 

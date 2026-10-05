@@ -53,6 +53,8 @@ The core's budgets are four:
 
 **The fifteenth raise:** the specification, from 46 500 to 48 000 lines, by slot a's word under the rule, for the checks of the same pull request: rules of rights and the integrity of the log's answers, 1 275 lines as measured with the review's rows, on a develop that stood 71 under the ceiling: 1 204 over it; three steps of 500, since two do not hold them. Both ride in the pull request of the code they are for.
 
+**The sixteenth raise:** the product code, from 38 500 to 39 000 lines, by slot a's word under the rule, for SQLite's order index marked by the declaration that first declares its field (lakelands#591: 12 lines as measured, 5 over the ceiling) and for a recomputation folded as a step, which follows under the same row (lakelands#523: 241 lines as its build measures).
+
 ## Why
 
 The budgets keep the core small enough for one reader to hold. They have done that: four diets took out about 5 000 lines without losing a check.
