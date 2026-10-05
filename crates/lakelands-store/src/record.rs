@@ -78,12 +78,14 @@ pub fn apply(
             key,
             version,
             patch,
+            ..
         } => (ty, key, *version, patch, Door::Authored),
         EventBody::RecordIngested {
             ty,
             key,
             version,
             patch,
+            ..
         } => (ty, key, *version, patch, Door::Source),
         EventBody::RecordRetired { ty, key, version }
         | EventBody::RecordRestricted {

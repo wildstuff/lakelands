@@ -898,6 +898,8 @@ impl Call<'_> {
         check_references(view, pending, decl, ty, key, &patch)?;
         cas(expected, before.as_ref())?;
         let version = Version(before.as_ref().map_or(0, |b| b.version.0) + 1);
+        // Said once, here, of what this writer holds, its own drafts too.
+        let made = live.is_none();
         let (origin, body) = match door {
             Door::Authored => (
                 Origin::Authored,
@@ -906,6 +908,7 @@ impl Call<'_> {
                     key: key.clone(),
                     version,
                     patch,
+                    made,
                 },
             ),
             Door::Source => (
@@ -915,6 +918,7 @@ impl Call<'_> {
                     key: key.clone(),
                     version,
                     patch,
+                    made,
                 },
             ),
         };

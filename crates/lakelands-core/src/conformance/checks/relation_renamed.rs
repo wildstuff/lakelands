@@ -627,12 +627,10 @@ async fn every_carrier_keeps_its_edges_through_renames_and_a_rebuild(
             (Carrier::Links, 1),
             (Carrier::Via, 0),
             (Carrier::Derived, 0)
-        ] && formats.len() == 2
-            && formats[0] < 11
-            && formats[1] == 11
+        ] && formats == [11, 11]
             && answers == [want.clone(), want.clone()],
         "the report says {how:?}; the migration before and the renaming one are written in \
-         formats {formats:?}; live and rebuilt answer {answers:?}, each must be {want}"
+         the lake's format, 11, and carry {formats:?}; live and rebuilt answer {answers:?}, each must be {want}"
     );
     Ok(())
 }

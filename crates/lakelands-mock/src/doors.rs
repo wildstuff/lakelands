@@ -1848,6 +1848,7 @@ fn plan_upsert(
             key: key.clone(),
             version,
             patch,
+            made: st.live(ty, key).is_none(),
         },
     );
     d.cause = cause;
@@ -4885,6 +4886,8 @@ fn plan_window(
         // A record earlier in this window counts as there.
         check_references(st, t, &fields, &w.versions)?;
         check_required(t, st.live(&r.ty, &r.key), &fields, Origin::Source)?;
+        // As the store: a record this window made is there for its next one.
+        let made = now.is_none();
         let mut after = now.unwrap_or_default();
         for (f, v) in &fields {
             if v.is_null() {
@@ -4904,6 +4907,7 @@ fn plan_window(
                 key: r.key.clone(),
                 version,
                 patch: fields,
+                made,
             },
         );
         d.source = Some(source.clone());

@@ -422,6 +422,7 @@ pub const ALL: &[Check] = &[
     settings::SETTING_RESTRICTED,
     settings::SETTING_AS_OF_THE_WRITE,
     feed::LIMIT_ZERO_IS_ONE,
+    feed::MADE,
     feed::BY_KEY,
     feed::BY_OLD_KEY,
     retire::SOURCE_ONLY_HAS_NO_UPSERT,

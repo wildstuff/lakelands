@@ -339,6 +339,29 @@ fn a_declared_call_of_floor_needs_format_11_and_says_so_below_it() {
 }
 
 #[test]
+fn a_record_event_that_carries_made_needs_format_11_and_says_so_below_it() {
+    let record = |kind: &str, made: bool| {
+        let mut body = json!({"kind": kind, "type": "note", "key": "k", "version": 4});
+        body["patch"] = json!({"f": 1});
+        if made {
+            body["made"] = json!(true);
+        }
+        body
+    };
+    for kind in ["record_upserted", "record_ingested"] {
+        assert_eq!(needed(&event_json(11, record(kind, true)).body, false), 11);
+        assert_eq!(
+            below(&event_json(10, record(kind, true))).as_deref(),
+            Some("a format 10 event carries `made`, which format 11 added")
+        );
+        // A change says nothing, needs nothing, and is written without it.
+        let changed = event_json(1, record(kind, false));
+        let written = serde_json::to_string(&changed).unwrap();
+        assert!(needed(&changed.body, false) == 1 && !written.contains("made"));
+    }
+}
+
+#[test]
 fn a_write_of_a_view_kept_setting_needs_format_11_and_says_so_below_it() {
     let record = |kind: &str, key: &str| {
         let patch = json!({"key": key, "value": true});

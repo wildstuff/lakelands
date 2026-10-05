@@ -172,6 +172,10 @@ pub enum EventBody {
         version: Version,
         /// The sparse patch.
         patch: Patch,
+        /// Whether the write found no live record under the key (format
+        /// version 11): with `version` 1 the first, above it made again.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        made: bool,
     },
     /// A write from a source, through `ingest`.
     RecordIngested {
@@ -184,6 +188,10 @@ pub enum EventBody {
         version: Version,
         /// The sparse patch.
         patch: Patch,
+        /// Whether the write found no live record under the key (format
+        /// version 11): with `version` 1 the first, above it made again.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        made: bool,
     },
     /// A record was retired.
     RecordRetired {

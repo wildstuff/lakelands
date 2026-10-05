@@ -69,19 +69,19 @@ check!(
 check!(
     /// The old key is ended.
     OLD_KEY_ENDED = an_old_key_is_ended_and_a_new_write_follows_the_new_rule,
-    "027 and log-format §2.3: after a re-key a write at an old key whose key fields make another key is refused as invalid, naming it; a write at a new key continues its version; and a write of the bare old key string, its key field filled from it, is a new record at version 1"
+    "027 and log-format §2.3: after a re-key a write at an old key whose key fields make another key is refused as invalid, naming it; a write at a new key continues its version; and a write of the bare old key string, its key field filled from it, is a new record at version 1, by an event that says it made it (lakelands#572)"
 );
 
 check!(
-    /// A re-key is format version 2.
-    FORMAT_TWO = a_rekey_and_every_event_after_it_are_format_version_2,
-    "log-format §6: the re-keying `migrated` event and every event after it carry `v` 2; the log verifies, and a rebuild answers every read as before"
+    /// A re-key is written at the lake's format.
+    FORMAT_TWO = a_rekey_is_written_at_the_lakes_format_and_the_log_verifies,
+    "log-format §6: the re-keying `migrated` event and every event after it carry the lake's `v`, 11 since the records it moves were made; the log verifies, and a rebuild answers every read as before"
 );
 
 check!(
-    /// A lake without a re-key stays at version 1.
-    FORMAT_ONE = a_lake_that_never_rekeys_writes_format_version_1,
-    "log-format §6: a lake in which nothing is re-keyed carries `v` 1 on every event, a migration that keeps the key included"
+    /// A lake is at version 1 until its first record is made.
+    FORMAT_ONE = a_lake_writes_format_version_1_until_its_first_record_is_made,
+    "log-format §6 (lakelands#572): a lake carries `v` 1 on every event before the first that says it made a record and 11 on it and every later one, a migration that keeps the key included"
 );
 
 check!(
@@ -545,24 +545,23 @@ async fn an_old_key_is_ended_and_a_new_write_follows_the_new_rule(
     );
     // The bare old key string, with no key field in the patch: the key
     // field is filled from the key, and it is a new record at version 1.
-    l.upsert(
-        "account",
-        "1",
-        json!({"number": "9", "meta": {}, "holder": "new"}),
-    )
-    .await?;
+    let again = json!({"number": "9", "meta": {}, "holder": "new"});
+    let at = l.upsert("account", "1", again).await?.position();
     let fresh = found(&l, "account", "1", None).await?;
+    let all = log_events(store.as_ref()).await?;
+    let says = all.iter().find(|e| e.position == at).map(|e| &e.body);
     ensure!(
         fresh
             .as_ref()
-            .is_some_and(|r| r.version.0 == 1 && r.fields.get("iban") == Some(&json!("1"))),
-        "a write at the ended key `1` without a key field made {fresh:?}; a new record at \
-         version 1 with `iban` 1 was expected"
+            .is_some_and(|r| r.version.0 == 1 && r.fields.get("iban") == Some(&json!("1")))
+            && matches!(says, Some(EventBody::RecordUpserted { made: true, .. })),
+        "a write at the ended key `1` without a key field made {fresh:?}, by {says:?}; a new \
+         record at version 1 with `iban` 1 was expected, by an event that says it made it"
     );
     Ok(())
 }
 
-async fn a_rekey_and_every_event_after_it_are_format_version_2(
+async fn a_rekey_is_written_at_the_lakes_format_and_the_log_verifies(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref(), IBANS).await?;
@@ -573,20 +572,20 @@ async fn a_rekey_and_every_event_after_it_are_format_version_2(
     let all = log_events(store.as_ref()).await?;
     let wrong: Vec<(u64, u32)> = all
         .iter()
-        .filter(|e| (e.position >= at) != (e.v == 2))
+        .filter(|e| e.position >= at && e.v != 11)
         .map(|e| (e.position.0, e.v))
         .collect();
     ensure!(
         wrong.is_empty()
             && all.iter().any(|e| e.position == at
                 && matches!(&e.body, EventBody::Migrated { rekeyed, .. } if !rekeyed.is_empty())),
-        "events before the re-key at {at} carry `v` 1 and it and every later one `v` 2; these do \
-         not: {wrong:?}"
+        "the re-key at {at} and every later event carry the lake's `v`, 11; these do not: \
+         {wrong:?}"
     );
     store
         .verify(None, None)
         .await
-        .must("verifying a log that turns to format 2")?;
+        .must("verifying a log that holds a re-key")?;
     let before = (read("account", "DE1").await?, read("entry", "DE1:1").await?);
     store.rebuild().await.must("rebuilding")?;
     let after = (read("account", "DE1").await?, read("entry", "DE1:1").await?);
@@ -597,7 +596,7 @@ async fn a_rekey_and_every_event_after_it_are_format_version_2(
     Ok(())
 }
 
-async fn a_lake_that_never_rekeys_writes_format_version_1(
+async fn a_lake_writes_format_version_1_until_its_first_record_is_made(
     store: Arc<dyn LakeStore>,
 ) -> Result<(), Failure> {
     let l = lake(store.as_ref(), IBANS).await?;
@@ -612,15 +611,23 @@ async fn a_lake_that_never_rekeys_writes_format_version_1(
         .push(json!({"name": "note", "type": {"kind": "text"}}));
     l.migrate(serde_json::from_value(Value::Object(to)).expect("a type"))
         .await?;
-    let newer: Vec<(u64, u32)> = log_events(store.as_ref())
-        .await?
-        .iter()
-        .filter(|e| e.v != 1)
+    let all = log_events(store.as_ref()).await?;
+    let made = |e: &&Event| {
+        use EventBody::{RecordIngested, RecordUpserted};
+        matches!(
+            e.body,
+            RecordUpserted { made: true, .. } | RecordIngested { made: true, .. }
+        )
+    };
+    let first = all.iter().find(made).map(|e| e.position);
+    let wrong: Vec<(u64, u32)> = (all.iter())
+        .filter(|e| e.v != if Some(e.position) < first { 1 } else { 11 })
         .map(|e| (e.position.0, e.v))
         .collect();
     ensure!(
-        newer.is_empty(),
-        "a lake that never re-keyed wrote these events in another format: {newer:?}"
+        first.is_some() && wrong.is_empty(),
+        "a lake that never re-keyed writes format 1 before its first record made, at {first:?}, \
+         and 11 from it on; these events carry another: {wrong:?}"
     );
     Ok(())
 }

@@ -13,8 +13,9 @@ Version 7 adds a call of `retired` in a declaration. Version 8 adds a
 view's `params` and a call of `param`, and a verb called on its type.
 Version 9 adds a view's `merge`. Version 10 adds the proposal of a value
 type's tightening. Version 11 adds a call of `floor` in a declaration, of `date_bucket` by a
-width, and of `in_set`, a migration's `relation_renames`, and a write of
-a `view_kept.` setting.
+width, and of `in_set`, a migration's `relation_renames`, a write of
+a `view_kept.` setting, and the member `made` of a record's write, which
+every lake carries from its first record made on.
 §6 says
 which event needs which version.
 
@@ -225,11 +226,33 @@ this object:
 
 | Kind | Payload | Fold |
 |---|---|---|
-| `record_upserted` | `type`, `key`, `version`, `patch` | An authored write. `patch` is sparse: each member sets a field, `null` clears it, an absent field is unchanged (`docs/decisions/012-writes-touch-only-their-fields.md`). |
-| `record_ingested` | `type`, `key`, `version`, `patch` | A write from a source; `source` is set in the envelope. Only `source` and `shared` fields may appear in the patch. |
+| `record_upserted` | `type`, `key`, `version`, `patch`, `made` | An authored write. `patch` is sparse: each member sets a field, `null` clears it, an absent field is unchanged (`docs/decisions/012-writes-touch-only-their-fields.md`). `made` is described below the table. |
+| `record_ingested` | `type`, `key`, `version`, `patch`, `made` | A write from a source; `source` is set in the envelope. Only `source` and `shared` fields may appear in the patch. `made` as on `record_upserted`. |
 | `record_retired` | `type`, `key`, `version` | The record is retired: invisible to reads at or after this position, its history kept. |
 | `record_restricted` | `type`, `key`, `version`, `reason` | The record is withheld from principals without the `restricted` grant (a retention hold); `reason` is the host's. Written by the host through the store facade, never by a caller's door. |
 | `record_unrestricted` | `type`, `key`, `version` | The hold is lifted. |
+
+**`made`** (version 11) is `true` where the write found no live record
+under the key, and is left out otherwise; `false` is never written. A
+record's `version` counts through a retirement (made 1, changed 2,
+retired 3, made again 4), so the two members together tell what
+happened without a read:
+
+| `made` | `version` | The write |
+|---|---|---|
+| `true` | 1 | made the record for the first time |
+| `true` | above 1 | made it again after its retirement |
+| left out | any | changed a live record |
+
+The writer says it once, where the event is made, of what it then holds,
+its own earlier events of the same append included: of two records of
+one ingest that name one key, the first carries it. An accepted
+proposal's write is judged when it is accepted. A key that a re-key
+moved away is no record (§2.3), so a write at it carries `made` with
+`version` 1. Nothing reads the member back: the fold, a rebuild, an
+import and a mirror carry the event as it is. An event below version 11
+carries none, and there its absence says nothing: a reader tells a
+first creation by `version` 1 and nothing more.
 
 `version` is the record's version after the event: 1 for the first event
 that writes a key, one more for every later event that changes it. A
@@ -599,6 +622,16 @@ N, and every event after it carries at least N. An event of that append
 that needs nothing newer still carries N. Each row below says which
 event raises it; "that append" is the append that holds it.
 
+**A lake a version-11 writer makes a record in is at version 11 from
+that record on.** `made` is a member of every write that makes a record,
+so the first one raises the lake to 11, whatever else it holds: a
+version-10 reader refuses that lake. Before its first record a lake
+still steps as the rows say (a declaration that needs 8 is written at 8).
+The rows for versions 2 to 10 are what a reader needs for a log an older
+build wrote, and what an event is refused by when it carries below its
+version what that version added; a lake written today passes through
+them only before its first record.
+
 | Version | Adds |
 |---|---|
 | 1 | Everything above except what later versions add. |
@@ -611,7 +644,7 @@ event raises it; "that append" is the append that holds it.
 | 8 | A view's `params` and a call of `param` in a declaration's expressions (Appendix A, Appendix B): a view may declare parameters, which a read binds and its `where` and measures read with `param('name')`. A lake writes the version it had until the append that holds its first event whose declaration is a view with a non-empty `params`, or calls `param` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`); that append carries `v` 8, as does every event after it; a version-7 (or older) event that carries either is refused, naming it. A version-7 reader refuses the version-8 events rather than computing a view whose parameters it cannot bind. `params` is part of the schema hash only when it is not empty (§2.2). The same version adds a verb called on its type (`docs/decisions/013-verbs-run-by-declared-risk.md`, extended): a verb declaration's `scope: type` (in a `declared` event or a proposed `declare`); a `verb_called` without `key`; and a proposed `call` without `key`. A lake writes the version it had until the append that holds its first such event; that append carries `v` 8, as does every event after it, and a version-7 (or older) event that carries one is refused, naming it. Version 8 took both while it was untagged. |
 | 9 | A view's `merge` (Appendix A): further sources a view merges on its key, each with its own `where`, `group_by` lined up with the view's by position, and aggregate measures the view's measures read by name. A lake writes the version it had until its first event whose declaration is a view with a non-empty `merge` (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`), which carries `v` 9, as does every event after it; a version-8 (or older) event that carries one is refused, naming it. A version-8 reader refuses the version-9 events rather than computing a view from its main source alone. `merge` is part of the schema hash only when it is not empty (§2.2). |
 | 10 | A proposal of a value type's tightening: `write_proposed` whose `write` is `migrate_value_type` (§2.4, Appendix A). A lake writes the version it had until the append that holds its first such proposal; that append carries `v` 10, as does every event after it; a version-9 (or older) event that carries one is refused, naming it. A version-9 reader refuses the version-10 events rather than failing on a write it does not know. A lake that never holds such a proposal stays at the version it had. |
-| 11 | What one release added to what the log keeps, each of which needs the version by itself: a call of `floor` in a declaration's expressions, a call of `date_bucket` by a width, with its third argument, and a call of `in_set` (Appendix B); a migration's `relation_renames`, in a `migrated` event or a proposed `migrate` (§2.2, §2.3); and a write of a `sys.setting` whose key begins `view_kept.`, in a `record_upserted` or `record_ingested` event or a proposed `upsert`: the setting asks for a view's records to be kept as its sources are written, and a store that keeps no view would append beside records it never moves, so it refuses the log and does not read past the setting. A lake writes the version it had until the append that holds its first event that carries one of them (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`); that append carries `v` 11, as does every event after it; a version-10 (or older) event that carries one is refused, naming it. A version-10 reader refuses the version-11 events rather than folding a declaration it cannot evaluate. A lake that carries none of them stays at the version it had. |
+| 11 | What one release added to what the log keeps, each of which needs the version by itself: a call of `floor` in a declaration's expressions, a call of `date_bucket` by a width, with its third argument, and a call of `in_set` (Appendix B); a migration's `relation_renames`, in a `migrated` event or a proposed `migrate` (§2.2, §2.3); and a write of a `sys.setting` whose key begins `view_kept.`, in a `record_upserted` or `record_ingested` event or a proposed `upsert`: the setting asks for a view's records to be kept as its sources are written, and a store that keeps no view would append beside records it never moves, so it refuses the log and does not read past the setting. A lake writes the version it had until the append that holds its first event that carries one of them (a `declared` event, a `migrated` event's `to`, a proposed `declare` or `migrate`); that append carries `v` 11, as does every event after it; a version-10 (or older) event that carries one is refused, naming it. A version-10 reader refuses the version-11 events rather than folding a declaration it cannot evaluate. And the member `made` on a `record_upserted` or `record_ingested` event (§2.3), which the write of a record that is not live carries: so every lake reaches 11 with its first record made, and only a lake that holds no record stays at the version it had. |
 
 ## Appendix A. Encodings
 

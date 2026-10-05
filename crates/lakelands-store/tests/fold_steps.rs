@@ -90,6 +90,7 @@ fn wrote(ty: &str, key: &str, version: u64, fields: Value) -> EventBody {
         key: key.into(),
         version: Version(version),
         patch: patch(fields),
+        made: false,
     }
 }
 

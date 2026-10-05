@@ -15,7 +15,7 @@ the hash chain from 64 zeros, every checkpoint against the position,
 the hash and the files before it, format versions from 1 to 11 that
 never go down, a verb on its type (declared with `scope: type`, called or
 proposed with no `key`) only from version 8 on, a derived relation only from version 6 on, a declaration's `annotations` only from version 5 on, a proposed declaration or migration only from version 4 on, `upstream` only from version 3 on and only on a
-`record_ingested` event, and every `known_at` in its one form and never before
+`record_ingested` event, `made` only from version 11 on, and every `known_at` in its one form and never before
 the `known_at` before it (log-format §1.3). It prints one line
 per file and the last position and hash, or the position where the
 files stop being the log, and exits non-zero there.
@@ -227,6 +227,7 @@ def verify_dir(root):
             need(v >= version, f"format {v} is not below the {version} before it")
             version = v
             need("upstream" not in event or v >= 3, f"a format {v} event carries `upstream`, which format 3 added")
+            need("made" not in event["body"] or v >= 11, f"a format {v} event carries `made`, which format 11 added")
             proposed = event["body"].get("write", {}).get("write") if event["body"].get("kind") == "write_proposed" else None
             need(proposed not in ("declare", "migrate") or v >= 4,
                  f"a format {v} event proposes a declaration or a migration, which format 4 added")
@@ -474,7 +475,8 @@ def main():
                 lambda e: any(by_a_width.search(d) for d in derived(e)),
                 lambda e: "in_set(" in e["body"].get("declaration", {}).get("where", ""),
                 lambda e: bool(e["body"].get("migration", {}).get("relation_renames")),
-                lambda e: e["body"].get("type") == "sys.setting" and e["body"].get("key", "").startswith("view_kept.")]
+                lambda e: e["body"].get("type") == "sys.setting" and e["body"].get("key", "").startswith("view_kept."),
+                lambda e: e["body"].get("kind") in ("record_upserted", "record_ingested") and e["body"].get("made") is True]
     for line, want in zip(v11["lines"], v11["hashes"]):
         event = json.loads(line)
         check(canonical(event) == line.encode("utf-8"), f"v11.json: position {event['position']} is canonical")

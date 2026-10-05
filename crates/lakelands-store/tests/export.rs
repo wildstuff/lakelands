@@ -102,7 +102,7 @@ async fn verify_py_verifies_an_export_with_a_checkpoint_and_a_rekey() {
         .await
         .unwrap();
     assert_eq!(manifest.segments.len(), 2, "{manifest:?}");
-    assert_eq!(manifest.versions, [1, 2], "{manifest:?}");
+    assert_eq!(manifest.versions, [1, 11], "{manifest:?}");
 
     let script =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/log-format/vectors/verify.py");

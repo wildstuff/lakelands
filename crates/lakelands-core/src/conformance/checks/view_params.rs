@@ -503,15 +503,15 @@ async fn a_view_with_parameters_is_written_in_log_format_8(
     let p1 = json!({"account": "a", "date": "2026-06-30", "amount": "1.00"});
     l.upsert("payment", "p1", p1).await?;
     for e in log_events(store.as_ref()).await? {
-        let want = if e.position >= declared {
-            8
-        } else {
-            e.v.min(7)
+        let want = match e.position.cmp(&declared) {
+            std::cmp::Ordering::Less => e.v.min(7),
+            std::cmp::Ordering::Equal => 8,
+            std::cmp::Ordering::Greater => 11,
         };
         ensure!(
             e.v == want,
             "the event at {} is written in format {}; the one declaring a view with \
-             parameters and every one after it must be 8, and none before it",
+             parameters must be 8 and none before it, and the record made after it 11",
             e.position,
             e.v
         );

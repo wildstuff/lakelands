@@ -107,6 +107,7 @@ fn every_hash_id_digest_and_schema_hash_recomputes() {
                     key,
                     version,
                     patch,
+                    ..
                 },
             ) => {
                 let source = event

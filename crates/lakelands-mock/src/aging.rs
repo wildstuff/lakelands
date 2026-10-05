@@ -216,6 +216,7 @@ pub(crate) fn run(shared: &Shared, log: &mut Log, today: Timestamp) -> Result<Ag
                 key: rec.key.clone(),
                 version: Version(rec.version.0 + 1),
                 patch: [(rule.field.clone(), rule.to.clone())].into(),
+                made: false,
             });
             d.procedure = Some(Procedure {
                 name: format!("aging:{}", ran.rule),
