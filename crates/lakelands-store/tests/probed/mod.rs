@@ -1,8 +1,9 @@
 //! The memory engine behind a wrapper that remembers what was asked of
 //! it and can fail a call: the most rows one `scan` handed out, a scan of a
 //! type to fail, the scans, the puts of records and the commits in the
-//! order they came, a commit, a `begin` or a view to refuse, and a look at
-//! the lake before each commit, while its transaction is open.
+//! order they came, a commit, a `begin` or a view to refuse, a look at
+//! the lake before each commit, while its transaction is open, and a seal
+//! that hands another digest than the engine took or asks twice.
 
 #![allow(dead_code)]
 
@@ -57,6 +58,10 @@ pub struct Probe {
     /// Called before each commit reaches the engine, with the position it
     /// commits through: its transaction is still open.
     pub before_commit: Mutex<Option<Look>>,
+    /// Whether a seal hands its `first` another digest than the engine's.
+    pub another_digest: std::sync::atomic::AtomicBool,
+    /// Whether a seal asks its `first` twice, as one that tries again does.
+    pub ask_twice: std::sync::atomic::AtomicBool,
 }
 
 impl Probe {
@@ -185,8 +190,23 @@ impl LakeEngine for Probed {
     fn read(&self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>> {
         self.inner.read(from, limit)
     }
-    fn seal_segment(&self, lease: &Lease) -> Result<Option<SegmentDigest>> {
-        self.inner.seal_segment(lease)
+    fn seal_segment(
+        &self,
+        lease: &Lease,
+        imported: bool,
+        first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
+    ) -> Result<Option<SegmentDigest>> {
+        let other = self.probe.another_digest.load(Ordering::SeqCst);
+        self.inner.seal_segment(lease, imported, &mut |sealed| {
+            let mut sealed = sealed.clone();
+            if other {
+                sealed.digest = Digest("0".repeat(64));
+            }
+            if self.probe.ask_twice.load(Ordering::SeqCst) {
+                first(&sealed)?;
+            }
+            first(&sealed)
+        })
     }
     fn segments(&self) -> Result<Vec<SegmentDigest>> {
         self.inner.segments()

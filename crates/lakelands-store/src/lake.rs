@@ -505,6 +505,19 @@ impl Lake {
         drafts: Vec<Draft>,
         reads: Reads,
     ) -> Result<Vec<Event>> {
+        let (lease, v, events, stored) = self.stamp(w, drafts)?;
+        self.engine.append(&lease, &stored)?;
+        self.landed(w, v, events, reads)
+    }
+
+    /// The events `drafts` become after the tip, as the log's format `v`
+    /// writes them and as the engine stores them, under the writer's
+    /// lease: refused where an append of them would be. Nothing is changed.
+    fn stamp(
+        &self,
+        w: &Writer,
+        drafts: Vec<Draft>,
+    ) -> Result<(Lease, u32, Vec<Event>, Vec<CanonicalEvent>)> {
         let Some(lease) = w.lease.clone() else {
             return Err(unavailable(NO_LEASE));
         };
@@ -560,10 +573,21 @@ impl Lake {
             events.push(event);
             stored.push(canon);
         }
-        self.engine.append(&lease, &stored)?;
-        w.tip = prev_pos.map(|p| (p, prev_hash));
+        Ok((lease, v, events, stored))
+    }
+
+    /// What follows once the engine holds `events`, stamped in format `v`:
+    /// the writer stands on them, and they are folded and published.
+    fn landed(
+        &self,
+        w: &mut Writer,
+        v: u32,
+        events: Vec<Event>,
+        reads: Reads,
+    ) -> Result<Vec<Event>> {
         w.format = v;
         if let Some(last) = events.last() {
+            w.tip = Some((last.position, last.hash.clone()));
             w.last_known_at = w.last_known_at.max(last.known_at);
         }
         // The events are durable whatever the fold answers: its failure is
@@ -1228,8 +1252,9 @@ impl Lake {
         Ok(w.tip.as_ref().map_or(Position::GENESIS, |t| t.0))
     }
 
-    /// Check the hash chain between two positions, and every checkpoint in
-    /// that range against the segments the engine keeps.
+    /// Check the hash chain between two positions, every checkpoint in
+    /// that range against the segments the engine keeps, and that each
+    /// segment after the first begins with one.
     pub fn verify(
         &self,
         from: Option<Position>,
@@ -1244,6 +1269,8 @@ impl Lake {
         let mut before = prev.as_ref().map(|e| (e.position, e.hash.clone()));
         let mut known = prev.map(|e| e.known_at);
         let segments = self.engine.segments()?;
+        // Where a segment after the first begins: behind each sealed one.
+        let begins: BTreeSet<Position> = segments.iter().map(|s| s.last.next()).collect();
         let mut last = None;
         let mut last_v = 0;
         'pages: for page in self.pages(from) {
@@ -1280,6 +1307,12 @@ impl Lake {
                 {
                     check_checkpoint(&e, *through, hash, listed)?;
                     check_segments(listed, &segments, e.position)?;
+                } else if begins.contains(&e.position) {
+                    return Err(unavailable(format!(
+                        "the log is damaged at position {}: a segment begins there, and its \
+                         first event is no checkpoint (`docs/log-format.md` §4.2)",
+                        e.position
+                    )));
                 }
                 before = Some((e.position, e.hash.clone()));
                 last = Some(e);
@@ -1380,7 +1413,8 @@ impl Lake {
         Ok(out)
     }
 
-    /// Seal the active segment and write the checkpoint that opens the next.
+    /// Seal the active segment and write the checkpoint that opens the
+    /// next, as one step.
     pub fn checkpoint(&self) -> Result<Position> {
         // A segment is sealed only over events the projection has folded.
         let mut w = self.for_write()?;
@@ -1391,22 +1425,27 @@ impl Lake {
         let Some((through, hash)) = w.tip.clone() else {
             return Ok(Position::GENESIS);
         };
-        if self.engine.seal_segment(&lease)?.is_none() {
-            return Ok(through);
-        }
-        let segments = self.engine.segments()?;
+        let before = self.engine.segments()?;
         let now = self.clock(&mut w);
-        let events = self.append(
-            &mut w,
-            vec![Draft::system(
-                now,
-                EventBody::Checkpoint {
-                    through,
-                    hash,
-                    segments,
-                },
-            )],
-        )?;
+        // The engine closes the segment and begins the next with the
+        // checkpoint in one step: a checkpoint that fails has sealed
+        // nothing, and is sent again. An engine may ask `first` again.
+        let mut stamped = None;
+        self.engine.seal_segment(&lease, false, &mut |sealed| {
+            let segments = before.iter().chain([sealed]).cloned().collect();
+            let body = EventBody::Checkpoint {
+                through,
+                hash: hash.clone(),
+                segments,
+            };
+            let (_, v, events, stored) = self.stamp(&w, vec![Draft::system(now, body)])?;
+            stamped = Some((v, events));
+            Ok(stored)
+        })?;
+        let Some((v, events)) = stamped else {
+            return Ok(through);
+        };
+        let events = self.landed(&mut w, v, events, Reads::default())?;
         Ok(events.last().map_or(through, |e| e.position))
     }
 

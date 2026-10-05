@@ -129,9 +129,21 @@ pub trait LakeEngine: Send + Sync {
     /// same members, the same bytes.
     fn read(&self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>>;
 
-    /// Close the active segment and start a new one. `None` if the active
-    /// segment is empty.
-    fn seal_segment(&self, lease: &Lease) -> Result<Option<SegmentDigest>>;
+    /// Close the active segment and begin the next with the events `first`
+    /// answers for the closed segment's range and digest, in one step: both
+    /// hold, or the log is as it was, so a segment after the first never
+    /// exists without its first event (`docs/log-format.md` §4.2). The
+    /// events enter as [`append`](Self::append)'s do, or as
+    /// [`import`](Self::import)'s when `imported`; none, or an error from
+    /// `first`, refuses the seal. `None`, and `first` is not asked, if the
+    /// active segment holds no event. An engine that tries its step again
+    /// may ask `first` again.
+    fn seal_segment(
+        &self,
+        lease: &Lease,
+        imported: bool,
+        first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
+    ) -> Result<Option<SegmentDigest>>;
 
     /// Every sealed segment, oldest first.
     fn segments(&self) -> Result<Vec<SegmentDigest>>;

@@ -192,7 +192,14 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   they were before it: the host makes room and the lake's next write goes
   on, on the same handle. One such answer says that its outcome is not
   known: the disk took the write and did not confirm it, and its events
-  are in the log (lakelands#618).
+  are in the log (lakelands#618). The handle's log then holds them and
+  the store's writer does not, so the next write on that handle is
+  refused as not continuing the log, and each one after it: the host
+  opens the lake again, and the handle opened then reads them and writes
+  on. A `checkpoint` that fails has sealed nothing, on every engine: the
+  segment is closed and the next one begun with its checkpoint in one
+  step, so the host sends it again when the cause is gone, and the lake
+  directory verifies meanwhile as before it (lakelands#623).
   In a quiet hour the host can call `LakeStore::compact()` (`lakelands
   compact`) to give back the storage the projection no longer uses; it
   changes no answer and appends nothing, and writes wait while it runs

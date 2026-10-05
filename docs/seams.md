@@ -108,7 +108,7 @@ no check yet.
 | `append(lease, events)` | Append a group of `CanonicalEvent`s, all or none, **durably before returning**: once it returns, the events survive a crash of the process and of the machine. `Unavailable` when `lease` is not the current lease or the handle is read-only. `Invalid` when an event's fence differs from the lease's — except the event at position 0, which carries fence 0 — when the positions do not continue the tip without a gap, or when a `prev` is not the hash before it; nothing of a refused append is kept. An append that answers `Unavailable` because a write failed keeps nothing either: the handle goes on under its lease, and its next append is not written behind what the failed one left. An empty group appends nothing. Stores each event's bytes unchanged and never parses them. |
 | `read(from, limit)` | At most `limit` `CanonicalEvent`s from `from` on, in position order, exactly as appended: the same members, the same bytes. Empty when `from` is past the tip or `limit` is 0. |
 | `import(lease, events)` | Append events carried over from another lake's log, as an import does (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`): as `append`, all or none and durably, except that each event keeps the fence it was written under, 0 at position 0 and never below the fence of the event before it, instead of carrying the lease's. `Invalid` unless the log holds nothing but imported events (it is empty, or every event in it came through `import`), so a lake that was ever appended to is never imported into. Afterwards the next `take_lease` answers a token greater than every fence imported. The store checks, before it imports, that every fence is its writer's (log format §4.1). |
-| `seal_segment(lease)` | Close the active segment at its last event and start a new one at the next position appended; none, and nothing changes, if the active segment is empty. Refused as `append` is for a stale lease or a read-only handle. The store then appends the `checkpoint` as the new segment's first event. |
+| `seal_segment(lease, imported, first)` | Close the active segment at its last event and begin the next with the events `first` answers for the closed segment's range and digest, **in one step: both hold, or the log is as it was.** A segment after the first therefore never exists without its first event, after a failure and after a crash (`docs/log-format.md` §4.2; lakelands#623). The events enter as `append`'s do, or as `import`'s when `imported`; none, events that do not continue the log, or an error from `first` refuse the seal, and nothing is sealed. None, and `first` is not asked, if the active segment is empty; an engine that tries its step again may ask `first` again, and the store answers anew. Refused as `append` is for a stale lease or a read-only handle. The store's `checkpoint` hands the `checkpoint` event so; an import hands each later file's first events, after it has compared the digest with that file's. |
 | `segments` | Every sealed segment's range and digest (`docs/log-format.md` §4.2), oldest first; the ranges start at 0 and follow each other with no gap. |
 | `projection` | The projection's write side. |
 | `view(as_of)` | A read view at `folded_through` (`None`), or as the projection was right after folding `as_of`, served from kept states. `OutOfRange`, with `folded_through` (0 when nothing is folded) as the head, for a position past it. A view keeps answering its own position while the fold moves on. |
@@ -172,7 +172,20 @@ sync after the commit line fails, the group is in the log for every
 handle, the writer's too, and may not outlast a crash; its append
 answers `unavailable` and says so. A segment that ends before what its
 index commits is damage no cut mends: the append, the seal and the next
-writer's lease are refused, naming the file. **The journal:** a writer
+writer's lease are refused, naming the file. **A seal is one rename.**
+It writes the next segment's index whole (its event lines and their
+commit line) and syncs it and its name, then the segment's lines as
+`log/<first>.jsonl.partial`, synced, and renames that to
+`log/<first>.jsonl`. A handle, or a verifier of the directory, that
+lists `log/` before the rename finds the log as it was; one that lists
+it after finds the segment with its events committed in an index that
+was whole before the segment's name existed. A seal that fails before
+the rename removes its two files and answers its error. A crash there
+leaves them: no handle lists either, a seal at that position writes
+over both, and the next writer removes them as it takes the lease (a
+read-only open changes nothing). Where the sync of the name fails after
+the rename, the outcome is not known, as for an append
+(lakelands#623; the engine's `tests/sealed_in_one_step.rs`). **The journal:** a writer
 that gives its lease up (`close`) truncates the projection's journal,
 `projection.db-wal`, which otherwise stays as large as it once grew
 until a `compact`. It does not wait for a reader that holds a snapshot
@@ -744,7 +757,7 @@ holds it to.
 | a held lease is refused at once, naming its holder | engine: `a_held_lease_is_refused_at_once_naming_its_holder` |
 | every take of the lease has a greater fence | engine: `every_take_of_the_lease_has_a_greater_fence` |
 | an append with a gap or a wrong `prev` is refused whole | engine: `an_append_with_a_gap_or_a_wrong_prev_is_refused_whole` |
-| a sealed segment's digest is over its lines; sealing an empty segment answers none | engine: `a_sealed_segment_is_digested_as_its_lines` |
+| a sealed segment's digest is over its lines, and it is what the seal hands `first`; sealing an empty segment answers none and adds nothing | engine: `a_sealed_segment_is_digested_as_its_lines` |
 | a dropped writer releases its lease | engine: `a_dropped_writer_releases_its_lease` |
 | a read-only handle refuses the lease, appends and sealing, and reads | engine: `a_read_only_handle_refuses_the_lease_and_appends` |
 | a read-only open creates nothing and writes no projection | engine: `a_read_only_open_creates_and_changes_nothing` |
@@ -765,6 +778,7 @@ holds it to.
 | `read` past the tip or with `limit` 0 is empty; `tip` of an empty lake is none | engine: `reading_past_the_tip_or_with_limit_zero_answers_nothing` |
 | an event at position 0 with a fence other than 0 is refused | engine: `an_event_at_position_zero_with_a_fence_is_refused` |
 | sealing under a stale lease is refused; two seals list contiguous ranges | engine: `sealing_under_a_stale_lease_is_refused_and_two_seals_list_contiguous_ranges` |
+| a seal begins the next segment with its first events in one step; one that cannot (events that do not continue the log, none, an error from `first`) seals nothing | engine: `a_seal_that_cannot_begin_the_next_segment_leaves_the_log_as_it_was` |
 | `open` of a missing lake is `Unavailable`; `Create` of an existing one opens it | engine: `opening_a_missing_lake_to_read_or_write_is_unavailable_and_create_opens_an_existing_one` |
 | a commit backwards, or with a put past `through`, is `Invalid`; a view does not see an open transaction; a view keeps its position after later commits | engine: `a_commit_backwards_or_with_a_put_past_through_is_invalid`, `a_view_does_not_see_an_open_transaction`, `a_view_keeps_its_position_after_later_commits` |
 | a put of the same thing at the same position replaces it | engine: `a_put_at_the_same_position_replaces_the_state_there` |

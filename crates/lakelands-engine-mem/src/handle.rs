@@ -114,9 +114,14 @@ impl LakeEngine for MemoryLake {
         Ok(lock(&self.shared).log.read(from, limit))
     }
 
-    fn seal_segment(&self, lease: &Lease) -> Result<Option<SegmentDigest>> {
+    fn seal_segment(
+        &self,
+        lease: &Lease,
+        imported: bool,
+        first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
+    ) -> Result<Option<SegmentDigest>> {
         self.writable()?;
-        lock(&self.shared).log.seal(lease)
+        lock(&self.shared).log.seal(lease, imported, first)
     }
 
     fn segments(&self) -> Result<Vec<SegmentDigest>> {

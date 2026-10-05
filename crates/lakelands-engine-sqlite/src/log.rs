@@ -4,9 +4,20 @@
 //! `log/<first position in 20 digits>.jsonl`, each event's canonical bytes
 //! followed by one line feed, nothing else. The last file is the active
 //! segment and takes appends; every other file is sealed and never
-//! changes. Sealing starts the next file, empty, named by the position
-//! its first event will take. A lake directory can therefore be verified
-//! by anyone holding the format, with nothing of this engine.
+//! changes. A lake directory can therefore be verified by anyone holding
+//! the format, with nothing of this engine.
+//!
+//! **A segment after the first comes to exist with its first events in
+//! it.** A seal writes the next segment's index whole, its event lines
+//! and their commit line, and syncs it and its name; then the segment's
+//! lines, under a name no handle and no verifier lists
+//! (`<first>.jsonl.partial`), synced; and the rename to the segment's
+//! name is the step. Whoever lists `log/` before it reads the log as it
+//! was; whoever lists it after finds the segment with its events
+//! committed, so no later segment is ever empty. A seal that fails before
+//! the rename takes its two files away and answers its error. A crash
+//! there leaves them, read by nobody: a seal at that position writes over
+//! both, and the next writer removes them as it takes the lease.
 //!
 //! **The index.** An append also hands the engine each event's position,
 //! id, `prev`, `hash` and fence beside its bytes, and a read must give
@@ -93,6 +104,10 @@ const NEAR: u64 = 8 * 1024;
 
 /// A commit line, from the line feed of the event line it follows.
 const COMMITTED: &[u8] = b"\n[\"c\"]\n";
+
+/// What a segment's file is named instead of `jsonl` until its seal's
+/// rename.
+const PARTIAL: &str = "jsonl.partial";
 
 /// One event's index line, as read from the file.
 #[derive(Clone, Debug)]
@@ -315,14 +330,38 @@ fn index_path(dir: &Path, first: u64) -> PathBuf {
 }
 
 /// Sync a directory, so a file created in it survives a crash.
-fn sync_dir(dir: &Path) -> Result<()> {
+fn sync_dir(dir: &Path) -> io::Result<()> {
     #[cfg(unix)]
-    File::open(dir)
-        .and_then(|d| d.sync_all())
-        .map_err(|e| io_error("syncing", dir, e))?;
+    File::open(dir)?.sync_all()?;
     #[cfg(not(unix))]
     let _ = dir;
     Ok(())
+}
+
+/// The lines `events` add to a segment file from byte `offset` on, and
+/// their index lines, closed by one commit line.
+fn lines_of(events: &[CanonicalEvent], mut offset: u64) -> (Vec<u8>, Vec<u8>) {
+    let (mut lines, mut index) = (Vec::new(), Vec::new());
+    for event in events {
+        lines.extend_from_slice(&event.bytes);
+        lines.push(b'\n');
+        let len = event.bytes.len() as u64;
+        let line = serde_json::json!([
+            "e",
+            event.position.0,
+            event.fence,
+            offset,
+            len,
+            event.id.0,
+            event.prev.0,
+            event.hash.0
+        ]);
+        index.extend_from_slice(line.to_string().as_bytes());
+        index.push(b'\n');
+        offset += len + 1;
+    }
+    index.extend_from_slice(&COMMITTED[1..]);
+    (lines, index)
 }
 
 impl Log {
@@ -346,7 +385,7 @@ impl Log {
         Ok(log)
     }
 
-    /// Create the files of a new, empty segment.
+    /// Create the files of a new lake's first segment, empty.
     fn start_segment(&self, first: u64) -> Result<()> {
         for path in [segment_path(&self.dir, first), index_path(&self.dir, first)] {
             OpenOptions::new()
@@ -356,8 +395,10 @@ impl Log {
                 .and_then(|f| f.sync_all())
                 .map_err(|e| io_error("creating", &path, e))?;
         }
-        sync_dir(&self.dir.join("log"))?;
-        sync_dir(&self.dir.join("index"))
+        ["log", "index"].iter().try_for_each(|sub| {
+            let dir = self.dir.join(sub);
+            sync_dir(&dir).map_err(|e| io_error("syncing", &dir, e))
+        })
     }
 
     /// The first positions of the segment files, in order.
@@ -496,13 +537,7 @@ impl Log {
     /// its own fence, never below the one before it.
     pub(crate) fn append(&mut self, fence: Option<u64>, events: &[CanonicalEvent]) -> Result<()> {
         self.recover()?;
-        let first = self.tip().map_or(0, |(p, _)| p.0 + 1);
-        let prev = self.tip().map_or_else(Digest::zero, |(_, h)| h);
-        let floor = match (fence, first) {
-            (None, 1..) => self.fence_at(first - 1)?,
-            _ => 0,
-        };
-        lakelands_core::engines::append_fault(events, first, prev, fence, floor)?;
+        self.continues(fence, events)?;
         if events.is_empty() {
             return Ok(());
         }
@@ -522,28 +557,7 @@ impl Log {
                 active.first, events[0].position
             )));
         }
-        let mut offset = active.end;
-        let mut lines = Vec::new();
-        let mut index = Vec::new();
-        for event in events {
-            lines.extend_from_slice(&event.bytes);
-            lines.push(b'\n');
-            let len = event.bytes.len() as u64;
-            let line = serde_json::json!([
-                "e",
-                event.position.0,
-                event.fence,
-                offset,
-                len,
-                event.id.0,
-                event.prev.0,
-                event.hash.0
-            ]);
-            index.extend_from_slice(line.to_string().as_bytes());
-            index.push(b'\n');
-            offset += len + 1;
-        }
-        index.extend_from_slice(&COMMITTED[1..]);
+        let (lines, index) = lines_of(events, active.end);
         let written = [(&segment_path, &lines), (&index_path, &index)]
             .into_iter()
             .try_for_each(|(path, bytes)| {
@@ -559,9 +573,21 @@ impl Log {
         let active = self.segments.last_mut().expect("checked above");
         active.index_read += index.len() as u64;
         active.count += events.len() as u64;
-        active.end = offset;
+        active.end += lines.len() as u64;
         active.last_hash = events.last().map(|e| e.hash.0.clone());
         Ok(())
+    }
+
+    /// Refuse `events` unless they continue the log as this handle has
+    /// read it, under `fence` as [`Self::append`] takes it.
+    fn continues(&mut self, fence: Option<u64>, events: &[CanonicalEvent]) -> Result<()> {
+        let first = self.tip().map_or(0, |(p, _)| p.0 + 1);
+        let prev = self.tip().map_or_else(Digest::zero, |(_, h)| h);
+        let floor = match (fence, first) {
+            (None, 1..) => self.fence_at(first - 1)?,
+            _ => 0,
+        };
+        lakelands_core::engines::append_fault(events, first, prev, fence, floor)
     }
 
     /// The error of an append of `events` whose write to `path` failed
@@ -683,8 +709,16 @@ impl Log {
         Ok(out)
     }
 
-    /// Close the active segment, if it holds any event, and start the next.
-    pub(crate) fn seal(&mut self) -> Result<Option<SegmentDigest>> {
+    /// Close the active segment, if it holds any event, and begin the next
+    /// with the events `first` answers for it, under `fence` as
+    /// [`Self::append`] takes it, in one step: the rename that gives the
+    /// next segment its name (module doc). An error before it leaves the
+    /// log as it was.
+    pub(crate) fn seal(
+        &mut self,
+        fence: Option<u64>,
+        first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
+    ) -> Result<Option<SegmentDigest>> {
         self.recover()?;
         let Some(active) = self.segments.last() else {
             return Ok(None);
@@ -698,11 +732,66 @@ impl Log {
             last: Position(last),
             digest: digest.clone(),
         };
-        let next = last + 1;
-        self.start_segment(next)?;
+        let events = lakelands_core::engines::first_of_next(first, &sealed)?;
+        self.continues(fence, &events)?;
+        let (lines, index) = lines_of(&events, 0);
+        let (segment, index_path) = (
+            segment_path(&self.dir, last + 1),
+            index_path(&self.dir, last + 1),
+        );
+        let partial = segment.with_extension(PARTIAL);
+        let write = |path: &Path, bytes: &[u8]| {
+            File::create(path)
+                .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()))
+                .map_err(|e| io_error("writing", path, e))
+        };
+        let (log, beside) = (self.dir.join("log"), self.dir.join("index"));
+        // The index and its name are durable before the segment's name
+        // exists: a segment that is listed has its events committed.
+        let written = write(&index_path, &index)
+            .and_then(|()| sync_dir(&beside).map_err(|e| io_error("syncing", &beside, e)))
+            .and_then(|()| write(&partial, &lines))
+            .and_then(|()| {
+                fs::rename(&partial, &segment).map_err(|e| io_error("renaming", &partial, e))
+            });
+        if let Err(e) = written {
+            let _ = fs::remove_file(&partial);
+            let _ = fs::remove_file(&index_path);
+            return Err(e);
+        }
         self.segments.last_mut().expect("checked above").digest = Some(digest);
         self.refresh()?;
+        sync_dir(&log).map_err(|e| {
+            unavailable(format!(
+                "syncing {} failed: {e}; the next segment is in the log's files and its name's \
+                 sync failed: every handle reads it, and the outcome is not known",
+                log.display()
+            ))
+        })?;
         Ok(Some(sealed))
+    }
+
+    /// Take away what a seal that never reached its rename left behind a
+    /// crash: a segment's lines under their other name, and an index whose
+    /// segment does not exist. No handle reads either. Only the writer
+    /// does this, as it takes the lease.
+    pub(crate) fn sweep(&self) -> Result<()> {
+        let firsts = self.files()?;
+        for sub in ["log", "index"] {
+            let dir = self.dir.join(sub);
+            let listed = fs::read_dir(&dir).map_err(|e| io_error("reading", &dir, e))?;
+            for path in listed.filter_map(|entry| Some(entry.ok()?.path())) {
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default();
+                let of_no_segment = |first: &str| first.parse().is_ok_and(|f| !firsts.contains(&f));
+                if name.ends_with(PARTIAL) || name.strip_suffix(".idx").is_some_and(of_no_segment) {
+                    fs::remove_file(&path).map_err(|e| io_error("removing", &path, e))?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Every sealed segment, oldest first.

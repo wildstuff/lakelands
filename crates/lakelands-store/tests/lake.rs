@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use lakelands_api::engine::{EngineOpener, OpenMode};
-use lakelands_api::event::EventBody;
+use lakelands_api::event::{Digest, EventBody, SegmentDigest};
 use lakelands_api::expr::Condition;
 use lakelands_api::ontology::{
     Assignment, Authority, FieldDecl, FieldType, RelationDecl, Risk, StorageKind, TypeDecl,
@@ -686,8 +686,12 @@ async fn a_migration_covers_retired_records_and_keeps_the_key() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_tampered_checkpoint_is_reported_by_verify() {
+/// `verify` over a lake whose first segment a writer that is not the
+/// store sealed, beginning the next with the event `first` makes of the
+/// tip's position and hash and of every segment sealed, that one included.
+async fn verified_after_a_seal_by_another_writer(
+    first: impl Fn(Position, Digest, Vec<SegmentDigest>) -> EventBody,
+) -> lakelands_api::Result<lakelands_api::Verification> {
     let lake = name();
     let store = open(&lake, OpenMode::Create).await.unwrap();
     let cat = store.catalog(WriteContext::default());
@@ -701,37 +705,67 @@ async fn a_tampered_checkpoint_is_reported_by_verify() {
     store.close().await.unwrap();
     drop((cat, store));
 
-    // A writer that is not the store appends a checkpoint that does not
-    // follow the segment it seals.
     let engine = opener()
         .open(&Location::memory(lake.as_str()), OpenMode::Write)
         .unwrap();
-    let lease = engine.take_lease("tamperer").unwrap();
+    let lease = engine.take_lease("another writer").unwrap();
     let (tip, hash) = engine.tip().unwrap().unwrap();
-    engine.seal_segment(&lease).unwrap().unwrap();
-    let draft = lakelands_store::log::Draft::system(
-        lakelands_api::Timestamp(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_micros() as i64,
-        ),
-        EventBody::Checkpoint {
-            through: Position(tip.0 - 1),
-            hash: hash.clone(),
-            segments: engine.segments().unwrap(),
-        },
-    );
-    let (_, canon) =
-        lakelands_store::log::seal(&lake.as_str().into(), tip.next(), &hash, lease.fence, draft);
-    engine.append(&lease, &[canon]).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    let sealed = engine.seal_segment(&lease, false, &mut |sealed| {
+        let draft = lakelands_store::log::Draft::system(
+            lakelands_api::Timestamp(now.as_micros() as i64),
+            first(tip, hash.clone(), vec![sealed.clone()]),
+        );
+        let (lake, at) = (lake.as_str().into(), tip.next());
+        let (_, canon) = lakelands_store::log::seal(&lake, at, &hash, lease.fence, draft);
+        Ok(vec![canon])
+    });
+    sealed.unwrap().unwrap();
     engine.release_lease(&lease).unwrap();
     drop(engine);
-
     let reader = open(&lake, OpenMode::Read).await.unwrap();
-    let r = reader.verify(None, None).await;
+    reader.verify(None, None).await
+}
+
+/// A checkpoint that does not follow the segment it seals is reported.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tampered_checkpoint_is_reported_by_verify() {
+    let r = verified_after_a_seal_by_another_writer(|tip, hash, segments| EventBody::Checkpoint {
+        through: Position(tip.0 - 1),
+        hash,
+        segments,
+    })
+    .await;
     assert!(
         matches!(&r, Err(Error::Unavailable { message }) if message.contains("checkpoint")),
+        "{r:?}"
+    );
+}
+
+/// A segment after the first begins with a `checkpoint`
+/// (`docs/log-format.md` §4.2): `verify` refuses a log whose second
+/// segment begins with any other event, naming the position, and takes
+/// one that begins with its checkpoint (lakelands#623).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_segment_that_begins_with_no_checkpoint_is_reported_by_verify() {
+    let whole =
+        verified_after_a_seal_by_another_writer(|through, hash, segments| EventBody::Checkpoint {
+            through,
+            hash,
+            segments,
+        })
+        .await;
+    assert!(whole.is_ok(), "{whole:?}");
+    let r = verified_after_a_seal_by_another_writer(|_, _, _| EventBody::LeaseTaken {
+        fence: 2,
+        holder: "another writer".into(),
+    })
+    .await;
+    assert!(
+        matches!(&r, Err(Error::Unavailable { message })
+            if message.contains("a segment begins there") && message.contains("no checkpoint")),
         "{r:?}"
     );
 }

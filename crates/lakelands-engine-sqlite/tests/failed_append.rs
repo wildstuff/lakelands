@@ -23,7 +23,7 @@ use lakelands_api::Location;
 use lakelands_api::engine::{CanonicalEvent, EngineOpener, LakeEngine, Lease, OpenMode};
 use lakelands_api::event::Digest;
 use lakelands_api::id::Position;
-use lakelands_core::conformance::engine::chain;
+use lakelands_core::conformance::engine::{chain, seal};
 use lakelands_engine_sqlite::SqliteOpener;
 use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
 use sha2::{Digest as _, Sha256};
@@ -224,7 +224,8 @@ fn a_seal_cuts_what_lies_past_the_committed_end_before_it_seals() {
     let s = Scene::new("sealed");
     add(&s.segment(), "{\"left\":6}\n{\"le");
     add(&s.index(), &uncommitted(6, 1));
-    let sealed = s.writer.seal_segment(&s.lease).unwrap().unwrap();
+    let next = s.next(1, "the next segment's first");
+    let sealed = seal(s.writer.as_ref(), &s.lease, &next).unwrap().unwrap();
     let file = std::fs::read(s.segment()).unwrap();
     assert_eq!(file, lines(&s.committed));
     let files = lakelands_core::canonical::hex(&Sha256::digest(&file));
@@ -257,7 +258,8 @@ fn a_handle_whose_lease_is_no_longer_the_lakes_cuts_nothing() {
             s.writer.append(&s.lease, &s.next(1, "stale")).is_err(),
             "{lost}"
         );
-        assert!(s.writer.seal_segment(&s.lease).is_err(), "{lost}");
+        let sealed = seal(s.writer.as_ref(), &s.lease, &s.next(1, "stale"));
+        assert!(sealed.is_err(), "{lost}");
         assert_eq!(s.lengths(), in_flight, "{lost}: the stale handle cut");
     }
 }
@@ -273,7 +275,10 @@ fn a_segment_shorter_than_its_index_commits_is_refused_as_damaged() {
     let short = s.lengths();
     for (what, answer) in [
         ("an append", s.writer.append(&s.lease, &s.next(1, "behind"))),
-        ("a seal", s.writer.seal_segment(&s.lease).map(|_| ())),
+        (
+            "a seal",
+            seal(s.writer.as_ref(), &s.lease, &s.next(1, "behind")).map(|_| ()),
+        ),
         ("a release", s.writer.release_lease(&s.lease)),
         ("the next lease", {
             let next = open(&s.dir, OpenMode::Write);

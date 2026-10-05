@@ -21,7 +21,7 @@ use lakelands_api::ontology::StorageKind::Text;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::seam::Seams;
 use lakelands_api::{Error, Location};
-use lakelands_core::conformance::engine::chain;
+use lakelands_core::conformance::engine::{chain, seal};
 use lakelands_core::conformance::fixture::{Lake, source_record, sourced, type_decl};
 use lakelands_engine_sqlite::SqliteOpener;
 use serde_json::json;
@@ -215,9 +215,10 @@ fn a_read_goes_on_past_an_append_and_across_a_seal() {
     // next one grows.
     append(700..800);
     assert_eq!(reader.read(Position(700), 256).unwrap(), events[700..800]);
-    let sealed = writer.seal_segment(&lease).unwrap().unwrap();
+    let sealed = seal(writer.as_ref(), &lease, &events[800..801]);
+    let sealed = sealed.unwrap().unwrap();
     assert_eq!((sealed.first.0, sealed.last.0), (0, 799));
-    append(800..1100);
+    append(801..1100);
     assert_eq!(reader.read(Position(800), 256).unwrap(), events[800..1056]);
     assert_eq!(reader.read(Position(790), 20).unwrap(), events[790..810]);
     assert_eq!(
@@ -228,8 +229,9 @@ fn a_read_goes_on_past_an_append_and_across_a_seal() {
     // again and is sealed before the reader looks: the lines it gained are
     // read all the same, and only then is its index passed by.
     append(1100..1200);
-    let second = writer.seal_segment(&lease).unwrap().unwrap();
-    append(1200..1400);
+    let second = seal(writer.as_ref(), &lease, &events[1200..1201]);
+    let second = second.unwrap().unwrap();
+    append(1201..1400);
     for _ in 0..2 {
         assert_eq!(
             reader.read(Position(1090), 200).unwrap(),
@@ -351,12 +353,11 @@ fn a_handle_passes_by_the_index_of_a_segment_it_has_read_sealed() {
     let writer = open(&dir, OpenMode::Create);
     let lease = writer.take_lease("writer").unwrap();
     let events = chain(0, 2 * SEGMENTS as u64, &Digest::zero(), &lease);
-    for batch in events.chunks(2) {
-        writer.append(&lease, batch).unwrap();
-        writer.seal_segment(&lease).unwrap().unwrap();
+    writer.append(&lease, &events[..2]).unwrap();
+    for batch in events[2..].chunks(2) {
+        seal(writer.as_ref(), &lease, batch).unwrap().unwrap();
     }
     let reader = open(&dir, OpenMode::Read);
-    // The active segment is empty: the tip is the last sealed one's.
     let (last, asked) = counted("syscr", || tip(reader.as_ref()));
     assert_eq!(last, Some(2 * SEGMENTS as u64 - 1));
     assert!(
@@ -449,8 +450,8 @@ fn a_refresh_that_fails_once_leaves_no_segment_passed_by_unread() {
     // The first segment gains two events and is sealed, and the next one
     // takes an event, before the reader looks again.
     writer.append(&lease, &events[10..12]).unwrap();
-    let sealed = writer.seal_segment(&lease).unwrap().unwrap();
-    writer.append(&lease, &events[12..]).unwrap();
+    let sealed = seal(writer.as_ref(), &lease, &events[12..]);
+    let sealed = sealed.unwrap().unwrap();
     // The reader's next look lists the new segment and cannot read the
     // first one's index: a directory stands in its place.
     let (index, aside) = (index(&dir, 0), dir.join("aside.idx"));

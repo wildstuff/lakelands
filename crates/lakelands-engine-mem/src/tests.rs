@@ -155,7 +155,7 @@ fn a_read_only_handle_refuses_the_lease_append_and_seal() {
         Err(Error::Unavailable { .. })
     ));
     assert!(matches!(
-        reader.seal_segment(&lease),
+        reader.seal_segment(&lease, false, &mut |_| Ok(e.clone())),
         Err(Error::Unavailable { .. })
     ));
     assert!(reader.tip().unwrap().is_none());

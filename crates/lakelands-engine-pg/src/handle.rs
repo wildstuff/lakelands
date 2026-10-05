@@ -348,9 +348,14 @@ impl LakeEngine for PgLake {
         log::read(&mut lock(&self.reader), &self.names, from, limit)
     }
 
-    fn seal_segment(&self, lease: &Lease) -> Result<Option<SegmentDigest>> {
+    fn seal_segment(
+        &self,
+        lease: &Lease,
+        imported: bool,
+        first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
+    ) -> Result<Option<SegmentDigest>> {
         let mut db = self.holding(lease, "sealed")?;
-        log::seal(&mut db, &self.names, lease)
+        log::seal(&mut db, &self.names, lease, imported, first)
     }
 
     fn segments(&self) -> Result<Vec<SegmentDigest>> {
