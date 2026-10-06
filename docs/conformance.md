@@ -813,6 +813,7 @@ belongs in the suite, not beside one engine:
 - `a_read_only_open_creates_and_changes_nothing` — 008 and seams §EngineOpener: a reader opens a lake as it is; opening a missing lake read-only makes none, and a read-only handle writes neither the log nor the projection
 - `a_dropped_writer_releases_its_lease` — 008: a lake is closed when its last handle goes, so a writer that ends without closing does not keep every later writer out
 - `a_read_only_handle_refuses_the_lease_and_appends` — 008: any number of readers may open a lake, and none of them can take the lease, append or seal, so only the writer extends the chain
+- `a_handle_that_never_took_the_lease_cannot_append_import_or_seal` — 008: only the handle that took the lease extends the chain; another opened for writing, handed a copy of that lease, is refused an append, an import and a seal, and the writer goes on
 - `an_append_that_returned_is_read_by_the_next_handle` — seams, append: an append is durable before it returns, so the events are there, byte for byte, for a handle opened after the writer's handle was dropped without closing
 
 **projection**

@@ -126,6 +126,12 @@ engine_check!(
 );
 
 engine_check!(
+    /// A handle that never took the lease cannot append, import or seal.
+    UNLEASED_HANDLE = reopening a_handle_that_never_took_the_lease_cannot_append_import_or_seal,
+    "008: only the handle that took the lease extends the chain; another opened for writing, handed a copy of that lease, is refused an append, an import and a seal, and the writer goes on"
+);
+
+engine_check!(
     /// What an append returned from is there for the next handle.
     APPENDED_OUTLIVES_ITS_HANDLE = reopening an_append_that_returned_is_read_by_the_next_handle,
     "seams, append: an append is durable before it returns, so the events are there, byte for byte, for a handle opened after the writer's handle was dropped without closing"
@@ -221,6 +227,53 @@ fn a_read_only_handle_refuses_the_lease_and_appends(
         "the log holds {} events after the reader's refused append; it must hold the writer's 2",
         log.len()
     );
+    Ok(())
+}
+
+fn a_handle_that_never_took_the_lease_cannot_append_import_or_seal(
+    engine: &dyn LakeEngine,
+    harness: &dyn EngineHarness,
+) -> Result<(), Failure> {
+    let lease = engine.take_lease("the writer").must("taking the lease")?;
+    let other = harness
+        .reopen(engine.lake(), OpenMode::Write)
+        .map_err(|e| Failure::new(format!("opening a second handle for writing: {e}")))?;
+    let imported = other.import(&lease, &another_lakes_log());
+    let tip = engine.tip().must("reading the tip")?;
+    ensure!(
+        matches!(imported, Err(Error::Unavailable { .. })) && tip.is_none(),
+        "a handle opened for writing that never took the lease imported under the writer's \
+         lease, answering {imported:?}, and the log ends at {tip:?}; it must be unavailable and \
+         leave the lake empty"
+    );
+    let first = chain(0, 2, &Digest::zero(), &lease);
+    engine.append(&lease, &first).must("appending two events")?;
+    let next = chain(2, 1, &first[1].hash, &lease);
+    let appended = other.append(&lease, &next);
+    ensure!(
+        matches!(appended, Err(Error::Unavailable { .. })),
+        "a handle opened for writing that never took the lease appended under the writer's \
+         lease, answering {appended:?}; it must be unavailable"
+    );
+    let sealed = seal(other.as_ref(), &lease, &next);
+    ensure!(
+        matches!(sealed, Err(Error::Unavailable { .. })),
+        "a handle opened for writing that never took the lease sealed under the writer's \
+         lease, answering {sealed:?}; it must be unavailable"
+    );
+    drop(other);
+    let log = engine.read(Position(0), 10).must("reading the log")?;
+    let sealed = engine.segments().must("listing the segments")?;
+    ensure!(
+        log == first && sealed.is_empty(),
+        "after the other handle's refused append and seal the log holds {} event(s) and {} \
+         sealed segment(s); it must hold the writer's 2 and none",
+        log.len(),
+        sealed.len()
+    );
+    engine
+        .append(&lease, &next)
+        .must("appending under the writer's lease after the other handle was dropped")?;
     Ok(())
 }
 
