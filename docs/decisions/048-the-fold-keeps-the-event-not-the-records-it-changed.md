@@ -47,6 +47,12 @@ keeps the event, as a **step**: what the event does to one record.
   whole. An append's own fold is one transaction, always; an append
   whose fold failed is folded again as a fold of the log, which may
   commit inside it.
+- **A fold of the log makes no call due.** A step hands out the calls
+  it makes due only on an append, as a record's event does (022,
+  extended): a rebuild, an open's catch-up and an import walk the
+  records, leave a field whose output is not recorded waiting, and hold
+  nothing for it. An append whose fold failed is the exception: the
+  fold that catches up over it hands out its calls.
 
 ## Why
 
@@ -72,10 +78,10 @@ the log never stack: the next walk reads the records as put.
 
 ## What it is not
 
-- Not a bound on the calls a recomputation makes due: a function
-  computed outside the lake that is declared again makes one call due
-  for every record without a recorded output, and they are held until
-  they are made.
+- Not a bound on the calls an append's recomputation makes due: a
+  function computed outside the lake that is declared again makes one
+  call due for every record without a recorded output, and they are
+  held until they are made. A fold of the log holds none (above).
 - Not a bound on what an engine holds of an open transaction; that is
   the engine's (`docs/seams.md`, `ProjectionStore`).
 - Not a transaction a page: a page of the log may be folded in several.

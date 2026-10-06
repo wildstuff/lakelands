@@ -152,8 +152,9 @@ write's append and the output's, a reader sees the field cleared with no
 `error` in its metadata. That is how a pending output reads, as against
 a failure (below). When no backing of the kind is bound at that
 moment (a lake reopened without it), nothing is called or recorded, and
-the field stays cleared until it is due again. Opening a lake and
-`rebuild` never call a backing.
+the field stays cleared until it is due again. Opening a lake, an
+import and `rebuild` never call a backing, and make no call due (below,
+extended).
 
 **Filling.** `output_recorded` fills its field when the record is live,
 the field is still computed by that function, and the record's call has
@@ -285,3 +286,32 @@ migration, and it already is one.
 When one request to the backend carries several texts and fails, a
 failure is recorded for each text it carried. The store sends at most a
 fixed number of texts in one request (`docs/seams.md` §EmbedBackend).
+
+## Extended: a fold of the log makes no call due
+
+A call is due to the append that wrote its event, never to a fold of
+the log. An open's catch-up, a `rebuild`, an import and a writer that
+catches up fold events whose appends are over: they read the recorded
+outputs, and a field whose output is not recorded is cleared with no
+`error`, waiting, as `describe` counts it. They hand out no call. The
+field is due again on the next event that touches its record, or at
+`recompute`.
+
+The one exception is an append whose own fold failed. Its events are in
+the log, and its caller was told to send it again under its key. The
+writer remembers where that append begins; the fold that catches up
+hands out the calls of the events from there on, and of nothing before,
+and forgets the position once it has folded them. So the write sent
+again is answered with its fields made, as if its fold had not failed,
+and a catch-up holds at most one append's calls.
+
+**Why.** Every fold used to make the calls due that its events made on
+their append, and an open and a rebuild dropped them at the end. Until
+that end the writer held one call, with its text or its inputs, for
+every embedded or backed write in the log: a rebuild of 100 000
+embedded writes of a 1 000-byte text peaked at 162 to 164 MB, growing
+with the log and with the text; it peaks at 4 MB now. A rebuild that
+stopped was continued by the next write, whose catch-up kept them, so
+that write called the backend for the rest of the log; and the drop at
+a rebuild's end took the calls of a write appended before it and not
+made yet. No caller waited for any call a fold of the log made due.
