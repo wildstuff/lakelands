@@ -366,8 +366,8 @@ impl Lake {
         lakelands_core::lock(&self.embed).clone()
     }
 
-    /// Bind `backend` in place of the one bound now. A batch already
-    /// asking finishes with the backend it took.
+    /// Bind `backend` in place of the one bound now. A batch holds the
+    /// backend it read when it asked, so this reaches the next batch.
     pub fn bind_embed(&self, backend: Arc<dyn EmbedBackend>) {
         *lakelands_core::lock(&self.embed) = Some(backend);
     }

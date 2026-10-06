@@ -520,7 +520,9 @@ A host that already has a store of its own moves in four steps.
   then a due embedding waits, a hybrid search ranks lexically and says
   so, and a declaration that adds an embedding, or changes one's
   `from`, model or dimensions, is refused as `Unbound`; a type stated
-  again as in force, or grown beside its embedding, is admitted. The
+  again as in force, or grown beside its embedding, is admitted, and one
+  grown turns the embedding's recorded failures into waiting fields,
+  their `error` gone, until the bind and `recompute`. The
   bind appends nothing and makes nothing due: after it, call `recompute`
   for each type whose `vector_coverage` shows records due, which also
   calls again for a failure recorded while the model was away. A second
@@ -751,12 +753,14 @@ A host that already has a store of its own moves in four steps.
     group's own end. A view with a `min` or `max` over groups larger
     than the bound, or whose holders leave in bulk, is not worth
     keeping today (lakelands#629).
-  - **A reader with the `restricted` grant** is answered from every
-    kept record of a view at each call, read once and once more for a
-    total, as soon as one group of it reads otherwise for that reader
-    (a restricted record is a member of it). For every other reader,
-    and for that one while no group differs, the page and the count are
-    the engine's.
+  - **A reader with the `restricted` grant** reads the groups whose
+    faces differ (a restricted record is a member of each) beside the
+    engine's page of the others (lakelands#628): a page in key order
+    holds its rows and those groups, a count is the engine's and those
+    groups, and `get` reads its one record. For every other reader, and
+    for that one while no group differs, the page and the count are the
+    engine's alone. A page in another order, an aggregate and a
+    pattern's start read the whole view for every reader (lakelands#668).
   - **Not every view can be kept:** only counts, sums and averages of
     what is certainly a number, and a `min` or `max` of a number or an
     instant under text or reference group fields. The setting's write is

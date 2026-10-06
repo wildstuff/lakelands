@@ -58,8 +58,7 @@ use lakelands_api::query::{
     Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Step, Walk,
 };
 use lakelands_api::read::{
-    After as ReadAfter, AggFunc, Aggregate, Direction, Find, Found, Get, Group, Order, OrderBy,
-    Params, ReadAt,
+    After as ReadAfter, AggFunc, Aggregate, Find, Found, Get, Group, Order, OrderBy, Params, ReadAt,
 };
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposedWrite};
@@ -707,8 +706,16 @@ impl<'a> Reader<'a> {
     /// select itself, and a filter only the store evaluates is applied a
     /// page at a time. A view's records, one per group, are computed first.
     fn count(&self, decl: &TypeDecl, filter: Option<&Expr>) -> Result<u64> {
-        if let Some(stored) = self.kept_page(decl)? {
-            return self.count(&stored, filter);
+        if let Some((stored, whole)) = self.kept(decl)? {
+            // The engine counts the stored records; a group whose whole
+            // face reads otherwise is counted by that face instead.
+            let n = self.count(&stored, filter)?;
+            let passes = |r: &StoredRecord| filter.is_none_or(|e| self.holds(e, &r.fields, None));
+            let differ = self.differing(&stored, &decl.name, whole)?;
+            let own = differ.iter().filter(|(r, _)| passes(r)).count() as u64;
+            let faces = differ.iter().filter_map(|(_, w)| w.as_ref());
+            let faces = faces.filter(|w| passes(w)).count() as u64;
+            return Ok((n + faces).saturating_sub(own));
         }
         if let Some(v) = &decl.view {
             return Ok(self.view_records(decl, v, filter)?.len() as u64);
@@ -935,15 +942,95 @@ impl<'a> Reader<'a> {
         Ok(Some((stored, face == 1 && state.differ > 0)))
     }
 
-    /// The stored type a kept view is read as where the engine's own page
-    /// answers it: its records are the reader's as they stand, with no
-    /// face to take.
-    fn kept_page(&self, decl: &TypeDecl) -> Result<Option<TypeDecl>> {
-        let kept = match &decl.view {
-            Some(v) => self.kept_as(decl, v)?,
-            None => None,
+    /// [`Self::kept_as`] for a type that may be a view.
+    fn kept(&self, decl: &TypeDecl) -> Result<Option<(TypeDecl, bool)>> {
+        match &decl.view {
+            Some(v) => self.kept_as(decl, v),
+            None => Ok(None),
+        }
+    }
+
+    /// The kept records of `view` whose whole face reads otherwise than
+    /// their own fields, found by their mark, each with that face (none
+    /// for a group on the open face alone, and none the reader's pairs do
+    /// not admit: a pair on a measure is judged on both faces, as for a
+    /// view read whole). There are as many as the
+    /// state's `differ`; the text index finds them at the head, and a read
+    /// at an earlier position scans the kept type for them. None unless the
+    /// reader reads the `whole` face.
+    fn differing(
+        &self,
+        stored: &TypeDecl,
+        view: &TypeName,
+        whole: bool,
+    ) -> Result<Vec<(StoredRecord, Option<StoredRecord>)>> {
+        let (true, Some(pairs)) = (whole, self.pairs(&stored.name)) else {
+            return Ok(Vec::new());
         };
-        Ok(kept.filter(|(_, whole)| !whole).map(|(stored, _)| stored))
+        let mut equal = vec![(FieldName::from(kept::DIFFERS), Value::from("1"))];
+        equal.extend(pairs.iter().cloned());
+        let scan = Scan {
+            equal,
+            limit: u32::MAX,
+            valid_at: self.valid_at,
+            restricted: self.who.grants.restricted,
+            ..Default::default()
+        };
+        let rows = self.view.scan(&stored.name, &scan)?;
+        let admitted = |w: &StoredRecord| rights::admitted(&pairs, &w.fields);
+        let face = |r: StoredRecord| (r.clone(), kept::shown(r, view, true).filter(admitted));
+        Ok(rows.into_iter().map(face).collect())
+    }
+
+    /// A page of a kept view as its reader reads it, after `after`: the
+    /// engine's page of the stored records, each of the open face; or, for
+    /// the reader of the whole face, the engine's page of the records whose
+    /// faces do not differ merged in the order with the whole faces of
+    /// those that do (`differ`), filtered here. It holds `want` records and
+    /// those faces.
+    #[allow(clippy::too_many_arguments)]
+    fn kept_rows(
+        &self,
+        stored: &TypeDecl,
+        view: &TypeName,
+        filter: Option<&Expr>,
+        order: &[Order],
+        differ: Option<&[StoredRecord]>,
+        after: Option<SortKey>,
+        want: usize,
+    ) -> Result<Vec<StoredRecord>> {
+        let Some(differ) = differ else {
+            let rows = self.page(stored, filter, order, after, want)?;
+            return Ok((rows.into_iter())
+                .filter_map(|r| kept::shown(r, view, false))
+                .collect());
+        };
+        let path = vec![FieldName::from(kept::DIFFERS)];
+        let same = Expr::IsNull {
+            arg: Box::new(Expr::Path { path }),
+        };
+        let args = filter.cloned().into_iter().chain([same]).collect();
+        let rows = self.page(
+            stored,
+            Some(&Expr::And { args }),
+            order,
+            after.clone(),
+            want,
+        )?;
+        let at = |r: &StoredRecord| (Self::sort_values(order, r), r.key.clone());
+        let later = |r: &&StoredRecord| {
+            filter.is_none_or(|e| self.holds(e, &r.fields, None))
+                && after
+                    .as_ref()
+                    .is_none_or(|a| Self::compare(order, &at(r), a).is_gt())
+        };
+        let mut rows: Vec<StoredRecord> = (rows.into_iter())
+            .filter_map(|r| kept::shown(r, view, true))
+            .chain(differ.iter().filter(later).cloned())
+            .collect();
+        rows.sort_by(|a, b| Self::compare(order, &at(a), &at(b)));
+        rows.truncate(want);
+        Ok(rows)
     }
 
     fn computed_view(
@@ -1212,29 +1299,16 @@ impl<'a> Reader<'a> {
             .collect()
     }
 
-    /// The one ordering: sort values in turn, missing last either way, then
-    /// the key ascending.
+    /// The one ordering, the engines' own: sort values in turn, missing
+    /// last either way, then the key ascending.
     fn compare(order: &[Order], a: &SortKey, b: &SortKey) -> Ordering {
-        for (i, o) in order.iter().enumerate() {
-            let (x, y) = (&a.0[i], &b.0[i]);
-            let c = match (x.is_null(), y.is_null()) {
-                (true, true) => Ordering::Equal,
-                (true, false) => Ordering::Greater,
-                (false, true) => Ordering::Less,
-                (false, false) => {
-                    let c = expr::order::cmp_values(x, y);
-                    if o.dir == Direction::Desc {
-                        c.reverse()
-                    } else {
-                        c
-                    }
-                }
-            };
-            if c != Ordering::Equal {
-                return c;
-            }
+        fn some(v: &Value) -> Option<&Value> {
+            (!v.is_null()).then_some(v)
         }
-        a.1.cmp(&b.1)
+        let keys = order.iter().zip(a.0.iter().zip(&b.0));
+        keys.map(|(o, (x, y))| core_engines::cmp_key(some(x), some(y), o.dir))
+            .find(|c| c.is_ne())
+            .unwrap_or_else(|| a.1.as_str().cmp(b.1.as_str()))
     }
 
     /// The page a read asks for, at most `max` rows: the lake's
@@ -1360,13 +1434,19 @@ impl<'a> Reader<'a> {
             None => asked,
         };
         let row = |r: StoredRecord| ((Self::sort_values(&find.order_by, &r), r.key.clone()), r);
-        let kept = self.kept_page(&decl)?;
-        let mut keyed: Vec<(SortKey, StoredRecord)> = if let Some(stored) = &kept {
+        let mut keyed: Vec<(SortKey, StoredRecord)> = if let Some((stored, whole)) =
+            self.kept(&decl)?
+        {
             // A kept view's page is the engine's, as a stored type's.
-            let after = self.skipped(stored, filter.as_ref(), &find.order_by, after, skip)?;
-            let rows = self.page(stored, filter.as_ref(), &find.order_by, after, limit + 1)?;
-            let shown = (rows.into_iter()).filter_map(|r| kept::shown(r, &decl.name, false));
-            shown.map(row).collect()
+            let faces = self.differing(&stored, &decl.name, whole)?;
+            let faces = faces.into_iter().filter_map(|(_, w)| w);
+            let differ = whole.then(|| faces.collect::<Vec<_>>());
+            let page = |after, want| {
+                let (f, o) = (filter.as_ref(), &find.order_by);
+                self.kept_rows(&stored, &decl.name, f, o, differ.as_deref(), after, want)
+            };
+            let after = Self::skipped(&find.order_by, after, skip, &page)?;
+            page(after, limit + 1)?.into_iter().map(row).collect()
         } else if decl.view.is_some() {
             // A view's records are computed from its source, whole.
             let all = self.records(&decl, filter.as_ref())?;
@@ -1378,8 +1458,9 @@ impl<'a> Reader<'a> {
             keyed.drain(..skip.min(keyed.len()));
             keyed
         } else {
-            let after = self.skipped(&decl, filter.as_ref(), &find.order_by, after, skip)?;
-            let rows = self.page(&decl, filter.as_ref(), &find.order_by, after, limit + 1)?;
+            let page = |after, want| self.page(&decl, filter.as_ref(), &find.order_by, after, want);
+            let after = Self::skipped(&find.order_by, after, skip, &page)?;
+            let rows = page(after, limit + 1)?;
             rows.into_iter().map(row).collect()
         };
         let more = keyed.len() > limit;
@@ -1446,20 +1527,18 @@ impl<'a> Reader<'a> {
         Ok(skip as usize)
     }
 
-    /// The sort position after the first `skip` rows of a stored type in
+    /// The sort position after the first `skip` rows `page` reads in
     /// `order` after `after`, read a page at a time and dropped, so an
     /// offset holds a page whatever it skips.
     fn skipped(
-        &self,
-        decl: &TypeDecl,
-        filter: Option<&Expr>,
         order: &[Order],
         mut after: Option<SortKey>,
         mut skip: usize,
+        page: &impl Fn(Option<SortKey>, usize) -> Result<Vec<StoredRecord>>,
     ) -> Result<Option<SortKey>> {
         while skip > 0 {
             let want = skip.min(COUNT_PAGE);
-            let rows = self.page(decl, filter, order, after.clone(), want)?;
+            let rows = page(after.clone(), want)?;
             if let Some(last) = rows.last() {
                 after = Some((Self::sort_values(order, last), last.key.clone()));
             }
@@ -1581,10 +1660,12 @@ impl<'a> Reader<'a> {
                 key: get.key.clone(),
             },
         };
-        let stored = if let Some(stored) = self.kept_page(&decl)? {
+        let stored = if let Some((stored, whole)) = self.kept(&decl)? {
             let held = self.view.get(&stored.name, &get.key)?;
             let held = held.filter(|r| self.live(&stored, r));
-            held.and_then(|r| kept::shown(r, ty, false))
+            let pairs = self.pairs(&stored.name).unwrap_or_default();
+            let shown = held.and_then(|r| kept::shown(r, ty, whole));
+            shown.filter(|r| rights::admitted(&pairs, &r.fields))
         } else if decl.view.is_some() {
             self.records(&decl, None)?
                 .into_iter()

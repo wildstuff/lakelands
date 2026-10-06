@@ -156,17 +156,53 @@ that already walks the type.
 
 ## What it is not
 
-- **Not the engine's page for every reader.** For a reader without the
-  `restricted` grant, and for one with it while no group reads otherwise
-  on the whole face, the page, the count and the single record of a
-  kept view are the engine's, as a stored type's are; the filter, the
-  order and the masking are the read's own. Once one group's faces
-  differ, a reader with the grant is answered from every kept record of
-  the view at each call, read once and once more for a total: the whole
-  face's fields are inside the record, where the engine neither filters
-  nor orders.
+- **Not the engine's page alone for every reader.** For a reader
+  without the `restricted` grant, and for one with it while no group
+  reads otherwise on the whole face, the page, the count and the single
+  record of a kept view are the engine's, as a stored type's are; the
+  filter, the order and the masking are the read's own. Once groups'
+  faces differ, the reader with the grant is answered the engine's page
+  of the others merged with those groups (below).
+- **Not sub-linear in every read.** A page in another order than the
+  key's, an aggregate and a pattern's start read the whole view for
+  every reader (lakelands#668). A later page of a cursor walk, read as
+  of its first page's position, finds the differing groups by scanning
+  the kept type in key order: its memory is bounded by them, its time
+  goes with the view; the text index that finds them serves the head.
 - **Not kept at any size.** A view with an extreme over groups larger
   than the bound, or whose holders leave in bulk, is not worth keeping:
   each event that takes a holder reads its group under the writer.
 - **Not for every view.** An extreme over a text, a sum over what may
   be a text, a view with a parameter or the clock compute, as before.
+
+## Extended: the whole face is paged by the engine too
+
+A kept record's own fields are its open face. Where the whole face
+reads otherwise, the record holds that face inside its folds and bears
+the mark `sys:differs`; the state counts those groups. So the reader with
+the `restricted` grant reads the whole face as two streams. The engine
+pages the kept records without the mark, restricted ones included,
+under the reader's filter and order: their whole face is their own
+fields. The few with the mark are found by it, each taken whole (a group
+on the open face alone is dropped), filtered and placed by the store,
+and merged into the page by the engines' one ordering. A cursor and an
+`offset` walk the merge. A count is the engine's count of the kept
+records less those with the mark whose own fields pass the filter, plus
+their whole faces that pass. A single record takes its face from its
+own folds.
+
+A page in key order holds its rows and the differing groups; a count is
+the engine's and those groups. The groups that differ are those with a
+restricted member whose faces then read otherwise, which is the rare
+case the counter is kept for; where most groups differ, the merge holds
+most of the view, which is no more than the read held before.
+
+**Why.** Before, once one group's faces differed, the reader with the
+grant was answered from every kept record at each call: at 100 000
+groups a page of 10 took 408 ms and 321 MB on SQLite, and `get` of one
+group 324 ms and 321 MB, against under a millisecond for every other
+reader. That reader is most often the lake's owner. A second stored type
+holding the differing groups' whole faces, paged by the engine as well,
+was weighed and left out: it adds a kept name whose records the fold,
+a rebuild, an import and a purge must put and remove whenever a group
+starts or stops differing, for a set the counter says is small.

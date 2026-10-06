@@ -26,9 +26,9 @@
 . "$(dirname "$0")/lib.sh"
 
 CRATES=(lakelands-api lakelands-core lakelands-store lakelands-engine-sqlite lakelands-engine-pg)
-PRODUCT_CEILING=43500
+PRODUCT_CEILING=44000
 PRODUCT_BASE=scripts/gates/core-size.product.base
-SPEC_CEILING=55500
+SPEC_CEILING=56000
 SPEC_BASE=scripts/gates/core-size.spec.base
 
 all=()

@@ -127,6 +127,7 @@ const SHAPES: &str = r#"
     row a restricted member under an outer where
     put line m1 {"g": "m", "n": "150"}
     put line m2 {"g": "m", "n": "-100"}
+    put line t {"g": "t", "n": "4"}
     hold line m2
     read sums large
     row the restriction is lifted
@@ -479,11 +480,16 @@ async fn twin(store: Arc<dyn LakeStore>, given: Given, table: &str) -> Result<()
     let imported = (given.import)(from, s.lake().clone(), None, Seams::default()).await;
     let opened = |e| Failure::new(format!("importing the export, or opening it to write: {e}"));
     let imported: ImportedLake = imported.map_err(opened)?;
+    // Every door of the owner's continues a cursor after a write, so it
+    // reads the import once it is open to write.
     let read = imported.store.as_ref();
-    let (when, depth) = ("in the imported lake", [2, 1, 1]);
-    copy.everywhere(read, when, depth).await;
+    copy.everywhere(read, "in the imported lake", [1, 1, 1])
+        .await;
     let written = (imported.writer)(imported.store, Seams::default()).await;
-    copy.run(written.map_err(opened)?.as_ref(), then).await;
+    let written = written.map_err(opened)?;
+    let when = "in the imported lake open to write";
+    copy.everywhere(written.as_ref(), when, [2, 0, 0]).await;
+    copy.run(written.as_ref(), then).await;
     let more = copy.red.iter().skip(before);
     let red: Vec<&str> = t.red.iter().chain(more).map(String::as_str).collect();
     ensure!(
@@ -789,6 +795,7 @@ impl Twin {
             ("a reader kept from a field of a merged source", apart),
         ];
         let depth = [depth[0], depth[1], depth[2], depth[2], depth[2]];
+        let own = owner(store);
         let mut differs = None;
         let valid = self.valid_at.as_ref().filter(|_| as_of.is_none());
         for valid in [None].into_iter().chain(valid.map(Some)) {
@@ -798,8 +805,14 @@ impl Twin {
             for ((reader, who), deep) in readers.iter().zip(depth).filter(|r| r.1 > 0) {
                 let deep = deep == 2;
                 for p in views.iter().filter_map(|i| self.pairs.get(*i)).filter(read) {
-                    let kept = said(cat.as_ref(), who, p, "", at, deep).await;
-                    let twin = said(cat.as_ref(), who, p, "_twin", at, deep).await;
+                    let both = (who, &own);
+                    let kept = said(cat.as_ref(), both, p, "", at, deep).await;
+                    let twin = said(cat.as_ref(), both, p, "_twin", at, deep).await;
+                    // A write `said` makes that fails is a door the twin lacks.
+                    let (kept, twin) = match (kept, twin) {
+                        (Ok(kept), Ok(twin)) => (kept, twin),
+                        (Err(f), _) | (_, Err(f)) => (vec![("a write".into(), f.message)], vec![]),
+                    };
                     let doors = 0..kept.len().max(twin.len());
                     let Some(i) = doors.into_iter().find(|i| kept.get(*i) != twin.get(*i)) else {
                         continue;
@@ -939,18 +952,20 @@ async fn says(l: &Lake, view: &str, want: &str) -> Result<(), Failure> {
 
 /// What `who` is answered by the view, or by its twin (`end`), door by
 /// door, with the twin's names read as the view's: `find`; and, `deep`,
-/// a count and `find` by a value of its first group field, two pages by
-/// its last measure, an aggregate of that measure, `get` of a key and of
-/// none, a pattern started on that group, and a walk to it from its
-/// source's records over its derived relation.
+/// a count and `find` by a value of its first group field, every page by
+/// its last measure, the owner writing a setting before each page a
+/// cursor continues, a page of two past an `offset`, `find` by that
+/// measure below 100, an aggregate of it, `get` of a key and of none, a
+/// pattern started on that group, and a walk to it from its source's
+/// records over its derived relation.
 async fn said(
     cat: &dyn Catalog,
-    who: &Principal,
+    (who, own): (&Principal, &Principal),
     p: &Pair,
     end: &str,
     at: ReadAt,
     deep: bool,
-) -> Vec<(String, String)> {
+) -> Result<Vec<(String, String)>, Failure> {
     let name = format!("{}{end}", p.name);
     let ty = TypeName::from(name.as_str());
     let narrow = p.by.as_ref().zip(p.seen.as_ref());
@@ -959,7 +974,7 @@ async fn said(
     let last = p.measures.last().map(String::as_str).unwrap_or_default();
     let folds = [AggFunc::Min, AggFunc::Max, AggFunc::Sum, AggFunc::Avg];
     let folds = folds.map(|f| agg(&format!("{f:?}"), f, Some(last)));
-    let mut finds = vec![("`find`", Find::default()); 5];
+    let mut finds = vec![("`find`", Find::default()); 7];
     finds[1] = ("a count", aggregate(vec![agg("n", AggFunc::Count, None)]));
     finds[1].1.filter = narrow();
     finds[2].0 = "a page by its last measure";
@@ -967,17 +982,34 @@ async fn said(
     (finds[2].1.limit, finds[2].1.total) = (Some(1), true);
     (finds[3].0, finds[3].1.filter) = ("`find` by its group", narrow());
     finds[4] = ("an aggregate", aggregate(folds.to_vec()));
+    finds[5] = ("a page past an offset", finds[2].1.clone());
+    (finds[5].1.limit, finds[5].1.offset) = (Some(2), Some(1));
+    finds[6].0 = "`find` by its last measure";
+    finds[6].1.filter = Some(lakelands_api::expr::Condition::Text(format!(
+        "{last} < 100"
+    )));
     let mut out = Vec::new();
-    for (door, mut find) in finds.into_iter().take(if deep { 5 } else { 1 }) {
-        find.at = at;
-        let reply = cat.find(who, &ty, find.clone()).await;
-        if let Ok(Found::Records { next_cursor, .. }) = reply.as_ref().map(|r| &r.data) {
-            find.cursor = next_cursor.clone().filter(|_| find.limit.is_some());
-        }
-        out.push((door.to_owned(), told(reply)));
-        if find.cursor.is_some() {
-            let next = cat.find(who, &ty, find).await;
-            out.push(("its next page".to_owned(), told(next)));
+    for (door, mut find) in finds.into_iter().take(if deep { 7 } else { 1 }) {
+        (find.at, find.offset) = (at, find.offset.filter(|_| find.cursor.is_none()));
+        let mut door = door.to_owned();
+        for _ in 0..32 {
+            let reply = cat.find(who, &ty, find.clone()).await;
+            let next = match reply.as_ref().map(|r| &r.data) {
+                Ok(Found::Records { next_cursor, .. }) => next_cursor.clone(),
+                _ => None,
+            };
+            out.push((
+                std::mem::replace(&mut door, "its next page".into()),
+                told(reply),
+            ));
+            let Some(next) = next.filter(|_| find.limit == Some(1)) else {
+                break;
+            };
+            (find.cursor, find.offset) = (Some(next), None);
+            let setting = json!({"key": "twin.walk", "value": out.len()});
+            let (ty, key) = (SETTING_TYPE.into(), "twin.walk".into());
+            let wrote = cat.upsert(own, &ty, &key, patch(setting), WriteOpts::default());
+            wrote.await.must("the owner writing `twin.walk`")?;
         }
     }
     let keys = p.keys.iter().take(1).map(String::as_str);
@@ -1002,7 +1034,7 @@ async fn said(
         out.push((door.to_owned(), told(cat.query(who, asked).await)));
     }
     let read = |(door, answer): (String, String)| (door, answer.replace("_twin", ""));
-    out.into_iter().map(read).collect()
+    Ok(out.into_iter().map(read).collect())
 }
 
 /// An answer as a text, or its refusal. A cursor is read as whether there

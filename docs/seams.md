@@ -949,8 +949,9 @@ A lake reads the backend `Seams::embed` brings at open, or the one a
 host binds later on the open lake with `LakeStore::bind_embed`, which
 replaces it whatever its model
 (`docs/decisions/022-functions-are-declarations.md`, extended). A bind
-appends nothing and makes nothing due, and a batch already asking
-finishes with the backend it took. `bind_embed` is the host's alone: the
+appends nothing and makes nothing due. A batch reads the bound backend
+when it asks and holds it until it is answered, so a bind meanwhile
+reaches the next batch. `bind_embed` is the host's alone: the
 network doors answer it `Unbound` as a host operation, no tool of the
 catalog names it (MCP, REST and stdio serve that one catalog), and the
 WIT does not carry it, since a seam is bound by the host, as at `open`,

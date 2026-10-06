@@ -368,8 +368,9 @@ A host binds the embedding backend on an open lake with
 `LakeStore::bind_embed`, in place of the one its open brought or an
 earlier bind, whatever its model. From then on a declaration of its
 model is admitted, an embedding that falls due is made, and a hybrid
-search embeds its text. A batch already asking finishes with the
-backend it took.
+search embeds its text. A batch reads the bound backend when it asks and
+holds it until it is answered, so a bind meanwhile reaches the next
+batch.
 
 **Why.** A host's model can answer later than the host opens its lakes:
 a sidecar that loads slowly, a model still downloading on a fresh
@@ -407,3 +408,8 @@ dimensions change, makes every record due and needs the backend; so
 does `recompute` of the type, whose purpose is the calls. A relation's
 link types and a migration's target are compared the same way, by the
 field's name, so an embedding a migration renames needs the backend.
+A declaration that changes the type and keeps its embedding still
+settles the type again, which calls again for each recorded failure;
+with none bound those calls are dropped, so the fields read as waiting,
+their `error` gone, until a backend is bound and `recompute` makes
+them. `vector_coverage` counts them as due either way.
