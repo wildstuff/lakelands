@@ -109,6 +109,7 @@ macro_rules! door_checks {
             a_view_reads_only_what_its_source_has,
             a_migration_keeps_what_a_view_reads,
             a_declaration_reads_only_what_its_type_has,
+            a_function_over_null_is_null_on_every_lake,
             a_duration_by_a_unit_is_a_number_and_what_never_lands_is_refused,
             recompute_appends_the_function_in_force_again,
             a_set_names_a_set_and_tells_no_more_than_its_filter,
@@ -2689,6 +2690,129 @@ pub async fn a_declaration_reads_only_what_its_type_has(store: Arc<dyn LakeStore
         .declare(owner, serde_json::from_value(fine).expect("a declaration"))
         .await
         .expect("the call's payload and a setting are no fields of the type");
+}
+
+/// A function over a null input is null, as the store has it (lakelands#640;
+/// `docs/decisions/017-one-expression-grammar.md`): every function but
+/// `concat`, which skips a null, and `coalesce`, `if`, which choose. A
+/// required derived field over a null input is refused, naming the field,
+/// and one that comes to a value is written. A verb's `requires` reads the
+/// same way: `not` of null holds, a function of null holds nothing, and a
+/// text function reads a number as its text. The mock computes no derived
+/// field, so its verdict on the write is what can be compared.
+pub async fn a_function_over_null_is_null_on_every_lake(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let (c, owner) = (&f.catalog, &f.cast.owner);
+    // Each over `t`, `n` or `d` left null, and whether it comes to a value.
+    let cases = [
+        ("lower(t)", "text", false),
+        ("upper(t)", "text", false),
+        ("trim(t)", "text", false),
+        ("len(t)", "number", false),
+        ("concat(t, 'x')", "text", true),
+        ("concat(t)", "text", true),
+        ("substr(t, 1)", "text", false),
+        ("substr('abc', n)", "text", false),
+        ("substr('abc', 1, n)", "text", false),
+        ("contains(t, 'a')", "boolean", false),
+        ("contains('abc', t)", "boolean", false),
+        ("starts_with(t, 'a')", "boolean", false),
+        ("starts_with('abc', t)", "boolean", false),
+        ("replace(t, 'a', 'b')", "text", false),
+        ("replace('abc', t, 'b')", "text", false),
+        ("replace('abc', 'a', t)", "text", false),
+        ("matches(t, 'a')", "boolean", false),
+        ("matches('abc', t)", "boolean", false),
+        ("abs(n)", "number", false),
+        ("round(n)", "number", false),
+        ("round(1.5, n)", "number", false),
+        ("floor(n)", "number", false),
+        ("date_bucket(d, 'day')", "date_time", false),
+        ("coalesce(t, 'z')", "text", true),
+        ("if(t = 'a', 'y', 'n')", "text", true),
+        ("n + 1", "number", false),
+        ("-n", "number", false),
+        ("not (t = 'a')", "boolean", true),
+        ("t = 'a'", "boolean", true),
+    ];
+    for (i, (expr, kind, valued)) in cases.into_iter().enumerate() {
+        let name = format!("over_null_{i}");
+        let d = json!({"declare": "type", "name": name, "fields": [
+            {"name": "t", "type": {"kind": "text"}},
+            {"name": "n", "type": {"kind": "number"}},
+            {"name": "d", "type": {"kind": "date_time"}},
+            {"name": "out", "type": {"kind": kind}, "authority": "derived", "derived": expr,
+             "required": true},
+        ]});
+        let d = serde_json::from_value::<Declaration>(d).expect("a declaration");
+        c.declare(owner, d).await.expect("the owner declares it");
+        let wrote = c
+            .upsert(
+                owner,
+                &ty(&name),
+                &key("a"),
+                patch(&[("t", Value::Null)]),
+                WriteOpts::default(),
+            )
+            .await;
+        match (valued, wrote) {
+            (true, Ok(_)) => {}
+            (false, Err(e)) => assert!(
+                matches!(refusal(&e), (Some(n), Refusal::Constraint { .. }) if n.as_str() == "out"),
+                "`{expr}` over null is null, so `out` lacks its value: {e:?}"
+            ),
+            (_, wrote) => panic!("`{expr}` over null: {wrote:?}"),
+        }
+    }
+    let gate = json!({"declare": "type", "name": "gate", "fields": [
+        {"name": "t", "type": {"kind": "text"}},
+        {"name": "n", "type": {"kind": "number"}},
+        {"name": "b", "type": {"kind": "boolean"}},
+        {"name": "s", "type": {"kind": "text"}},
+    ]});
+    let gate = serde_json::from_value::<Declaration>(gate).expect("a declaration");
+    c.declare(owner, gate)
+        .await
+        .expect("the owner declares `gate`");
+    c.upsert(
+        owner,
+        &ty("gate"),
+        &key("a"),
+        patch(&[("n", json!(12))]),
+        WriteOpts::default(),
+    )
+    .await
+    .expect("`n` is 12, `t` and `b` are null");
+    for (verb, requires, holds) in [
+        ("empty", "len(t) = 0", false),
+        ("digits", "len(n) = 2", true),
+        ("unset", "not b", true),
+    ] {
+        let d = json!({"declare": "verb", "name": verb, "on": "gate", "risk": "low",
+                       "requires": requires, "effect": "write",
+                       "set": [{"field": "s", "value": "'x'"}]});
+        let d = serde_json::from_value::<Declaration>(d).expect("a verb");
+        c.declare(owner, d)
+            .await
+            .expect("the owner declares the verb");
+        let called = c
+            .call(
+                owner,
+                &verb.into(),
+                Some(&key("a")),
+                Patch::new(),
+                WriteOpts::default(),
+            )
+            .await;
+        match (holds, called) {
+            (true, Ok(_)) => {}
+            (false, Err(e)) => assert!(
+                matches!(refusal(&e).1, Refusal::Precondition { .. }),
+                "`{requires}` holds nothing over a null `t`: {e:?}"
+            ),
+            (_, called) => panic!("`{requires}`: {called:?}"),
+        }
+    }
 }
 
 /// The days between two instants are their difference divided by a unit
