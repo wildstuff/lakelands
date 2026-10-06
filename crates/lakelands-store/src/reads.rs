@@ -108,6 +108,10 @@ pub struct Reader<'a> {
     bound: RefCell<BTreeMap<TypeName, Bound>>,
     /// The views being computed, outermost first.
     computing: RefCell<Vec<TypeName>>,
+    /// For a read as of a position by a holder of `only`, the reader with
+    /// its grants followed to the head, where a search judges each
+    /// candidate too (051).
+    pub head_who: Option<Principal>,
 }
 
 mod measures;
@@ -339,6 +343,7 @@ impl<'a> Reader<'a> {
             computed: RefCell::default(),
             bound: RefCell::default(),
             computing: RefCell::default(),
+            head_who: None,
         })
     }
 
@@ -487,13 +492,76 @@ impl<'a> Reader<'a> {
         Ok(decl)
     }
 
+    /// The type a read door names, as [`Self::visible_type`], refused where
+    /// its reader's `only` on it cannot be applied (051).
+    fn named_type(&self, ty: &TypeName) -> Result<&TypeDecl> {
+        let decl = self.visible_type(ty)?;
+        rights::check_only(self.who, decl)?;
+        Ok(decl)
+    }
+
     /// Whether the principal may see a stored record at this read, before
-    /// masking: live, restricted only with the grant, valid at `valid_at`
-    /// when asked.
+    /// masking: live, restricted only with the grant, admitted by its
+    /// `only`, valid at `valid_at` when asked. A link record's ends are
+    /// judged a page at a time ([`Self::admitted_ends`]).
     fn live(&self, decl: &TypeDecl, r: &StoredRecord) -> bool {
+        self.live_by(decl, self.pairs(&decl.name).as_deref(), r)
+    }
+
+    /// [`Self::live`] with the pairs of `decl` worked out once for a batch.
+    fn live_by(
+        &self,
+        decl: &TypeDecl,
+        pairs: Option<&[(FieldName, Value)]>,
+        r: &StoredRecord,
+    ) -> bool {
         !r.retired
             && (self.who.grants.restricted || !r.restricted)
+            && pairs.is_some_and(|p| rights::admitted(p, &r.fields))
             && (self.valid_at).is_none_or(|t| valid_time::record_holds(decl, &r.fields, t))
+    }
+
+    /// The pairs a record of `ty` must hold for this reader (051), a kept
+    /// name's those of its view; `None` where a grant they come from
+    /// cannot be applied, which admits nothing.
+    fn pairs(&self, ty: &TypeName) -> Option<Vec<(FieldName, Value)>> {
+        if !rights::holds_only(self.who) {
+            return Some(Vec::new());
+        }
+        let find = |t: &TypeName| self.ontology.ty(t).ok();
+        let pairs = rights::only(self.who, ty, &find).pairs().to_vec();
+        let kept = ty.as_str().strip_prefix(lakelands_api::seam::KEPT_PREFIX);
+        let Some(decl) = find(&kept.map_or_else(|| ty.clone(), TypeName::from)) else {
+            return pairs.is_empty().then_some(pairs);
+        };
+        let source = decl.view.as_ref().and_then(|v| find(&v.source));
+        let mut checked = std::iter::once(decl).chain(source);
+        checked
+            .all(|d| rights::check_only(self.who, d).is_ok())
+            .then_some(pairs)
+    }
+
+    /// Whether a view's records are computed for this reader from the
+    /// admitted records of what it reads, never served kept.
+    fn computes(&self, ty: &TypeName) -> bool {
+        let find = |t: &TypeName| self.ontology.ty(t).ok();
+        let only = rights::only(self.who, ty, &find);
+        matches!(only, rights::Effective::ComputeOnly(_))
+    }
+
+    /// Whether this reader is admitted every record of `decl` as stored.
+    fn whole(&self, decl: &TypeDecl) -> bool {
+        self.pairs(&decl.name).is_some_and(|p| p.is_empty())
+            && rights::held_ends(self.who, decl).is_empty()
+    }
+
+    /// Of link records of `decl`, which have every end this reader holds
+    /// `only` on admitted: each such end type's records read once for the
+    /// batch. Any other type's records all pass.
+    fn admitted_ends(&self, decl: &TypeDecl, rows: &[StoredRecord]) -> Result<Vec<bool>> {
+        ends_admitted(self.view.as_ref(), self.who, decl, rows, |end| {
+            self.pairs(end)
+        })
     }
 
     /// A read's condition with the filter of each set it names in the
@@ -581,6 +649,14 @@ impl<'a> Reader<'a> {
             let (setting, shown) = (self.settings.get(&key), t.view.is_some());
             let declared = |ty: &TypeName| self.ontology.ty(ty).ok();
             t.lifecycle.kept = Some(Kept::by_declaration(view, setting, shown, declared));
+            // To a holder of `only` a view is its own records, never every
+            // owner's groups: whether those are exact is not told (051).
+            if !self.whole(decl) || self.computes(&t.name) {
+                t.lifecycle.kept = Some(Kept::Computed {
+                    why: NotKept::OnlySome,
+                });
+                return;
+            }
             // What the declarations leave open, the view's state at this
             // read answers: the store keeps views.
             let open = Kept::Computed {
@@ -636,9 +712,14 @@ impl<'a> Reader<'a> {
         // by, whose order is checked there: the engine's own count pages by
         // a last key it does not check.
         let kept = lakelands_api::seam::is_kept_name(&decl.name);
-        if let Some(e) = filter.filter(|e| kept || needs_store(e)) {
+        let Some(equal) = self.pairs(&decl.name) else {
+            return Ok(0);
+        };
+        // A link's ends are judged a page at a time, never by the engine.
+        let ends = !rights::held_ends(self.who, decl).is_empty();
+        if ends || filter.is_some_and(|e| kept || needs_store(e)) {
             let mut n = 0;
-            self.each_member(decl, Some(e), COUNT_PAGE, |_| {
+            self.each_member(decl, filter, COUNT_PAGE, |_| {
                 n += 1;
                 Ok(())
             })?;
@@ -646,6 +727,7 @@ impl<'a> Reader<'a> {
         }
         let scan = Scan {
             filter: filter.cloned(),
+            equal,
             valid_at: self.valid_at,
             restricted: self.who.grants.restricted,
             ..Default::default()
@@ -691,8 +773,13 @@ impl<'a> Reader<'a> {
     ) -> Result<Vec<StoredRecord>> {
         let push = filter.filter(|e| !needs_store(e)).cloned();
         let here = filter.filter(|_| push.is_none());
+        let Some(equal) = self.pairs(&decl.name) else {
+            return Ok(Vec::new());
+        };
+        let pairs = equal.clone();
         let mut scan = Scan {
             filter: push,
+            equal,
             order_by: order.to_vec(),
             after: after.map(|(values, key)| After { values, key }),
             limit: u32::try_from(want).unwrap_or(u32::MAX),
@@ -727,8 +814,9 @@ impl<'a> Reader<'a> {
                     key: last.key.clone(),
                 });
             }
-            for r in rows {
-                if self.live(decl, &r)
+            let ends = self.admitted_ends(decl, &rows)?;
+            for (r, _) in rows.into_iter().zip(ends).filter(|(_, ends)| *ends) {
+                if self.live_by(decl, Some(&pairs), &r)
                     && here.is_none_or(|e| self.holds(e, &r.fields, Some(&r.meta)))
                 {
                     out.push(r);
@@ -782,7 +870,17 @@ impl<'a> Reader<'a> {
             Err(e) => Err(e),
         };
         self.computing.borrow_mut().pop();
-        records
+        // A holder is answered the groups its pairs admit (051).
+        let pairs = self.pairs(&decl.name);
+        let admitted = |r: &StoredRecord| {
+            pairs
+                .as_ref()
+                .is_some_and(|p| rights::admitted(p, &r.fields))
+        };
+        records.map(|mut r| {
+            r.retain(admitted);
+            r
+        })
     }
 
     /// A kept view's records at this read, as the fold keeps them, or
@@ -820,7 +918,7 @@ impl<'a> Reader<'a> {
     ) -> Result<Option<(TypeDecl, bool)>> {
         let face = usize::from(self.who.grants.restricted);
         let state = match self.kept_read(&decl.name, v, face)? {
-            Some((state, 0)) if self.valid_at.is_none() => state,
+            Some((state, 0)) if self.valid_at.is_none() && !self.computes(&decl.name) => state,
             _ => return Ok(None),
         };
         self.probe_view(v)?;
@@ -1152,7 +1250,7 @@ impl<'a> Reader<'a> {
 
     /// `find`.
     pub fn find(&self, ty: &TypeName, find: &Find) -> Result<Found> {
-        let decl = self.visible_type(ty)?.clone();
+        let decl = self.named_type(ty)?.clone();
         let params = self.bind_params(&decl, &find.params)?;
         for o in &find.order_by {
             if let Some((field, message)) = o.misfit() {
@@ -1470,7 +1568,7 @@ impl<'a> Reader<'a> {
 
     /// `get`.
     pub fn get(&self, ty: &TypeName, get: &Get) -> Result<Record> {
-        let decl = self.visible_type(ty)?.clone();
+        let decl = self.named_type(ty)?.clone();
         self.bind_params(&decl, &get.params)?;
         let missing = || Error::NotFound {
             missing: Missing::Record {
@@ -1487,7 +1585,11 @@ impl<'a> Reader<'a> {
                 .into_iter()
                 .find(|r| r.key == get.key)
         } else {
-            self.view.get(ty, &get.key)?.filter(|r| self.live(&decl, r))
+            let held: Vec<StoredRecord> = self.view.get(ty, &get.key)?.into_iter().collect();
+            let ends = self.admitted_ends(&decl, &held)?;
+            let mut held = held.into_iter().zip(ends);
+            held.find(|(r, ends)| *ends && self.live(&decl, r))
+                .map(|(r, _)| r)
         };
         stored
             .and_then(|r| rights::visible(self.who, &decl, &r, get.with_meta))
@@ -1511,9 +1613,18 @@ impl<'a> Reader<'a> {
             ..filter.clone()
         })?;
         let me = self.who.writer();
+        // A migration's report counts every owner's records: a holder of
+        // `only` is not listed one (051).
+        let migration = |w: &ProposedWrite| !matches!(w, ProposedWrite::Declare { .. });
+        let migration = |p: &Proposal| {
+            p.write
+                .as_ref()
+                .is_some_and(|w| w.is_schema() && migration(w))
+        };
         let mut mine: Vec<Proposal> = all
             .into_iter()
             .filter(|p| self.who.grants.review || p.proposer == me)
+            .filter(|p| !rights::holds_only(self.who) || !migration(p))
             .collect();
         let verb_on = |v: &VerbName| self.ontology.verb(v).ok().map(|d| d.on.clone());
         // The lake as its reader is described it, and its list of renames,
@@ -1581,18 +1692,32 @@ impl<'a> Reader<'a> {
             let f = t.and_then(|t| Some((t, t.fields.iter().find(|f| &f.name == field)?)));
             f.is_some_and(|(t, f)| rights::field_access(self.who, t, f).reads())
         };
-        // A record the reader is not answered: restricted, without the grant.
+        // A record the reader is not answered: restricted, without the
+        // grant, or one its `only` does not admit, before the write or
+        // after it as proposed (051).
+        let only = |ty: &TypeName, f: &BTreeMap<_, _>| {
+            rights::admitted(&rights::own_only(self.who, ty), f)
+        };
+        let after = |ty: &TypeName, key: &RecordKey, patch: &lakelands_api::Patch| {
+            let stored = self.view.get(ty, key).ok().flatten().filter(|r| !r.retired);
+            let mut fields = stored.map(|r| r.fields).unwrap_or_default();
+            fields.extend(patch.clone());
+            only(ty, &fields)
+        };
+        // Retired or not, as `restricted` is judged.
         let answered = |ty: &TypeName, key: &RecordKey| {
             let stored = self.view.get(ty, key).ok().flatten();
             self.visible_type(ty).is_ok()
-                && (self.who.grants.restricted || !stored.is_some_and(|r| r.restricted))
+                && (self.who.grants.restricted || !stored.as_ref().is_some_and(|r| r.restricted))
+                && stored.is_none_or(|r| only(ty, &r.fields))
         };
         match write {
             // A field the reader may not know of and a masked one both
             // leave the patch: it holds values, and no place for a name.
             ProposedWrite::Upsert { ty, key, patch, .. } => {
+                let admitted = after(ty, key, patch);
                 patch.retain(|field, _| read(ty, field));
-                answered(ty, key)
+                admitted && answered(ty, key)
             }
             ProposedWrite::Retire { ty, key, .. } => answered(ty, key),
             // A payload is what the verb's fields become: whole to a reader
@@ -1661,7 +1786,7 @@ impl<'a> Reader<'a> {
 
     /// `search`.
     pub fn search(&self, s: &Search) -> Result<Hits> {
-        let decl = self.visible_type(&s.ty)?.clone();
+        let decl = self.named_type(&s.ty)?.clone();
         // A view's records are computed on read and no index holds them, so
         // a search could only answer nothing (018).
         if decl.view.is_some() {
@@ -1834,6 +1959,7 @@ impl<'a> Reader<'a> {
         // `VECTOR_LEAVES_THE_NEIGHBOURS`). `SAME_LIST_UNREAD` holds this
         // path to the one that reads.
         let open = self.at_head
+            && self.whole(decl)
             && self.who.grants.restricted
             && filter.is_none()
             && self.valid_at.is_none();
@@ -1925,17 +2051,19 @@ impl<'a> Reader<'a> {
     ) -> Result<Vec<Hit>> {
         // One read for the batch, not one per candidate.
         let keys: Vec<RecordKey> = ranked.iter().map(|(k, _)| k.clone()).collect();
-        let mut stored: BTreeMap<RecordKey, StoredRecord> =
-            (self.view.get_many(&decl.name, &keys)?)
-                .into_iter()
-                .map(|r| (r.key.clone(), r))
-                .collect();
+        let rows = self.view.get_many(&decl.name, &keys)?;
+        let (ends, pairs) = (self.admitted_ends(decl, &rows)?, self.pairs(&decl.name));
+        let at_head = self.head_admitted(decl, &keys)?;
+        let mut stored: BTreeMap<RecordKey, StoredRecord> = (rows.into_iter().zip(ends))
+            .filter(|(r, ends)| *ends && at_head.as_ref().is_none_or(|h| h.contains(&r.key)))
+            .map(|(r, _)| (r.key.clone(), r))
+            .collect();
         let mut hits = Vec::new();
         for (key, score) in ranked {
             let Some(r) = stored.remove(&key) else {
                 continue;
             };
-            if !self.live(decl, &r) {
+            if !self.live_by(decl, pairs.as_deref(), &r) {
                 continue;
             }
             if filter.is_some_and(|e| !self.holds(e, &r.fields, Some(&r.meta))) {
@@ -1946,6 +2074,37 @@ impl<'a> Reader<'a> {
             }
         }
         Ok(hits)
+    }
+
+    /// For a search as of a position by a holder of `only` on `decl`, the
+    /// candidates admitted at the head as well, under the grant followed
+    /// there and by the name the type bears there: a ranking by the text
+    /// and vectors at the head must find no record by another's (051).
+    /// `None` where every candidate passes.
+    fn head_admitted(
+        &self,
+        decl: &TypeDecl,
+        keys: &[RecordKey],
+    ) -> Result<Option<BTreeSet<RecordKey>>> {
+        let Some(who) = self.head_who.as_ref().filter(|_| !self.whole(decl)) else {
+            return Ok(None);
+        };
+        let head = self.lake.engine.view(None)?;
+        let mut name = decl.name.clone();
+        for r in self.lake.renames(Some(head.as_ref()))? {
+            if let Some(to) = r.to.filter(|_| r.at > self.position && r.ty == name) {
+                name = to;
+            }
+        }
+        let pairs = rights::own_only(who, &name);
+        let rows = head.get_many(&name, keys)?;
+        // A link's ends are judged at the head too, under the same grant.
+        let ends = ends_admitted(head.as_ref(), who, decl, &rows, |t| {
+            Some(rights::own_only(who, t))
+        })?;
+        let admitted = (rows.into_iter().zip(ends))
+            .filter(|(r, ends)| *ends && !r.retired && rights::admitted(&pairs, &r.fields));
+        Ok(Some(admitted.map(|(r, _)| r.key).collect()))
     }
 
     /// Refuse a walk over a derived relation around `here` that probes a
@@ -1979,7 +2138,7 @@ impl<'a> Reader<'a> {
         // Its steps as declared: a step naming an inverse is rewritten below.
         let mut p = p.clone();
         let p = &mut p;
-        let start_decl = self.visible_type(&p.start.ty)?.clone();
+        let start_decl = self.named_type(&p.start.ty)?.clone();
         let params = self.bind_params(&start_decl, &p.start.params)?;
         let limit = self.limit(p.limit, measures::is_measure(&p.project))?;
         let max_depth = self.lake.limits.max_depth;
@@ -2506,6 +2665,34 @@ fn derived_edges(
     Ok(all)
 }
 
+/// Of link records of `decl` in `view`, which have every end `who` holds
+/// `only` on admitted by `pairs` (051): each such end type's records read
+/// once for the batch. Any other type's records all pass.
+fn ends_admitted(
+    view: &dyn ProjectionView,
+    who: &Principal,
+    decl: &TypeDecl,
+    rows: &[StoredRecord],
+    pairs: impl Fn(&TypeName) -> Option<Vec<(FieldName, Value)>>,
+) -> Result<Vec<bool>> {
+    let mut out = vec![true; rows.len()];
+    for (field, end) in rights::held_ends(who, decl) {
+        let key = |r: &StoredRecord| r.fields.get(field)?.as_str().map(RecordKey::from);
+        let keys: Vec<RecordKey> = rows.iter().filter_map(key).collect();
+        let Some(pairs) = pairs(end) else {
+            out.fill(false);
+            continue;
+        };
+        let ends = view.get_many(end, &keys)?.into_iter();
+        let admitted = ends.filter(|e| rights::admitted(&pairs, &e.fields));
+        let admitted: BTreeSet<RecordKey> = admitted.map(|e| e.key).collect();
+        for (ok, r) in out.iter_mut().zip(rows) {
+            *ok &= key(r).is_some_and(|k| admitted.contains(&k));
+        }
+    }
+    Ok(out)
+}
+
 /// The walks' view of the lake for one principal: a record is visible when
 /// it is live, not restricted unless the principal may see restricted
 /// records, valid at the read's `valid_at`, and of a type the principal
@@ -2567,10 +2754,13 @@ impl EdgeSource for Visible<'_, '_> {
                     let Some(link) = links.get(&(lt.clone(), lk)) else {
                         continue;
                     };
-                    if link.restricted && !r.who.grants.restricted {
+                    // `only` on the link type admits it by its fields (051).
+                    let decl = r.ontology.ty(&lt);
+                    let restricted = link.restricted && !r.who.grants.restricted;
+                    if decl.as_ref().map_or(restricted, |d| !r.live(d, link)) {
                         continue;
                     }
-                    if let Ok(decl) = r.ontology.ty(&lt) {
+                    if let Ok(decl) = decl {
                         e.fields.retain(|name, _| {
                             decl.fields.iter().any(|f| {
                                 &f.name == name && rights::field_access(r.who, decl, f).reads()
@@ -2595,8 +2785,10 @@ impl EdgeSource for Visible<'_, '_> {
             if describe::one_type(ty, &r.declared(), r.who).is_none() {
                 continue;
             }
-            for rec in r.get_many(ty, &keys)? {
-                if r.live(decl, &rec) {
+            let rows = r.get_many(ty, &keys)?;
+            let (ends, pairs) = (r.admitted_ends(decl, &rows)?, r.pairs(ty));
+            for (rec, _) in rows.into_iter().zip(ends).filter(|(_, ends)| *ends) {
+                if r.live_by(decl, pairs.as_deref(), &rec) {
                     shown.insert((rec.ty, rec.key));
                 }
             }

@@ -84,6 +84,7 @@ fn type_writer(store: &dyn LakeStore, id: &str, ty: &str) -> Principal {
         TypeGrants {
             default: Some(Access::Write),
             fields: Default::default(),
+            ..Default::default()
         },
     );
     principal(store, PrincipalKind::Agent, id, grants)

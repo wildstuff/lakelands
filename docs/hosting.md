@@ -353,6 +353,16 @@ A host that already has a store of its own moves in four steps.
   from the declarations it keeps, not from its log; until a writer has
   opened it once, each read-only open finds them again. See
   `docs/decisions/006-grants-not-roles.md`, extended.
+- **A grant may admit only some records.** `only` on a type, pairs of a
+  text or reference field the principal may read and a text value,
+  admits the records that hold every pair at every read door, and
+  refuses that principal every write that reaches the type and every
+  change of shape: its writes go through the host. `only` is a function
+  of `Principal.id` within a lake: give each owner its own id, and never
+  give one id `only` on some calls and not on others, since a retry is
+  answered its first outcome before the grants are asked. A grant whose
+  pairs cannot be applied refuses the reads that name the type until it
+  is fixed. See `docs/decisions/051-a-grant-may-admit-only-some-records.md`.
 - **What a host reads before it applies a migration.** The preflight's
   report says, each in one member: whether the apply is admitted
   (`lossless`: every value the migration keeps converts, and every

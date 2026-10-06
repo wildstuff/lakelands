@@ -73,6 +73,8 @@ pub fn window(
     let mut duplicates = 0u32;
     for r in records {
         let decl = crate::writes::shown_type(&w.ontology, &r.ty, who)?;
+        // Before the duplicate test, which would tell what the log holds (051).
+        crate::writes::granted(!lakelands_core::rights::only_holder(who, decl))?;
         // The key's form before the door, as `upsert` checks it.
         crate::writes::check_key(&r.key)?;
         // Then the door: a patch that carries a field the source is not

@@ -717,6 +717,7 @@ fn check_references(
     ty: &TypeName,
     key: &RecordKey,
     patch: &Patch,
+    who: &Principal,
 ) -> Result<()> {
     for (name, v) in patch {
         let Some(f) = decl.fields.iter().find(|f| &f.name == name) else {
@@ -729,9 +730,10 @@ fn check_references(
         if target == ty && to == *key {
             continue;
         }
-        let exists = pending
-            .record(view, target, &to)?
-            .is_some_and(|r| !r.retired);
+        // A record a holder of `only` is not admitted is, to it, not there.
+        let only = rights::own_only(who, target);
+        let exists = (pending.record(view, target, &to)?)
+            .is_some_and(|r| !r.retired && rights::admitted(&only, &r.fields));
         if !exists {
             return Err(constraint(
                 Some(name.clone()),
@@ -918,6 +920,8 @@ impl Call<'_> {
         stamp: &dyn Fn(&mut Draft),
     ) -> Result<RecordPlan> {
         let decl = w.ontology.ty(ty)?;
+        // A holder of `only` writes nothing that reaches the type (051).
+        granted(!rights::only_holder(who, decl))?;
         if patch.is_empty() {
             return Err(invalid("nothing to write: the patch carries no field"));
         }
@@ -930,7 +934,7 @@ impl Call<'_> {
             fill_key_fields(w, decl, key, &mut patch, door, who)?;
         }
         check_key_agrees(decl, key, live, &patch)?;
-        check_references(view, pending, decl, ty, key, &patch)?;
+        check_references(view, pending, decl, ty, key, &patch, who)?;
         cas(expected, before.as_ref())?;
         let version = Version(before.as_ref().map_or(0, |b| b.version.0) + 1);
         // Said once, here, of what this writer holds, its own drafts too.
@@ -1260,7 +1264,7 @@ impl Call<'_> {
         }
         let decl = w.ontology.ty(ty)?;
         rights::not_a_view(decl)?;
-        granted(rights::may_retire(self.who, decl))?;
+        granted(rights::may_retire(self.who, decl) && !rights::only_holder(self.who, decl))?;
         let before = live_record(view.as_ref(), ty, key)?;
         cas(opts.expected_version, Some(&before))?;
         let now = self.lake.clock(&mut w);
@@ -1437,7 +1441,8 @@ impl Call<'_> {
         if key.is_some() {
             rights::not_a_view(w.ontology.ty(&decl.on)?)?;
         }
-        granted(self.verb_callable(&decl))?;
+        let held = rights::only_holder(self.who, w.ontology.ty(&decl.on)?);
+        granted(self.verb_callable(&decl) && !held)?;
         if let VerbEffect::External { executor } = &decl.effect {
             bound_executor(self.lake, executor)?;
         }
@@ -1541,6 +1546,7 @@ impl Call<'_> {
             ordinary_door(ty)?;
             shown_type(&w.ontology, ty, self.who)?;
         }
+        granted(!self.reaches_held(&w.ontology, &write)?)?;
         match &mut write {
             ProposedWrite::Upsert {
                 ty,
@@ -1650,6 +1656,21 @@ impl Call<'_> {
         Ok(outcome_of(&events))
     }
 
+    /// Whether a proposed write reaches a type its caller holds `only` on,
+    /// or a shape, which a holder of `only` on any type never changes
+    /// (051). A type the caller is not shown is answered as not there.
+    fn reaches_held(&self, o: &Ontology, write: &ProposedWrite) -> Result<bool> {
+        if !rights::holds_only(self.who) {
+            return Ok(false);
+        }
+        let ty = match write {
+            ProposedWrite::Upsert { ty, .. } | ProposedWrite::Retire { ty, .. } => ty.clone(),
+            ProposedWrite::Call { verb, .. } => self.shown_verb(o, verb)?.on.clone(),
+            _ => return Ok(true),
+        };
+        Ok(rights::only_holder(self.who, shown_type(o, &ty, self.who)?))
+    }
+
     /// `accept`: apply a pending proposal's write, written as the proposer.
     pub fn accept(&self, proposal: &ProposalId) -> Result<(Outcome, Option<External>)> {
         check_context(self.lake, &self.context)?;
@@ -1657,6 +1678,11 @@ impl Call<'_> {
         let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
         let p = find_proposal(view.as_ref(), proposal)?;
+        // Before a retry is answered: an accept sent again would hand a
+        // holder of `only` what an earlier accepter was answered (051).
+        if let Some(write) = &p.write {
+            granted(!self.reaches_held(&w.ontology, write)?)?;
+        }
         if p.state != ProposalState::Pending {
             let again = self.accepted_again(&w, view.as_ref(), proposal)?;
             return Ok((again, None));
@@ -1897,6 +1923,9 @@ impl Call<'_> {
         let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
         let p = find_proposal(view.as_ref(), proposal)?;
+        if let Some(write) = &p.write {
+            granted(!self.reaches_held(&w.ontology, write)?)?;
+        }
         if p.state != ProposalState::Pending {
             return Err(refused(Refusal::Decided));
         }
@@ -1982,7 +2011,7 @@ impl Call<'_> {
     /// `declare`.
     pub fn declare(&self, declaration: Declaration) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
-        granted(self.who.grants.schema)?;
+        granted(self.who.grants.schema && !rights::holds_only(self.who))?;
         self.declare_granted(declaration)
     }
 
@@ -2009,7 +2038,7 @@ impl Call<'_> {
     /// act: nothing is compared, and the log shows it.
     pub fn recompute(&self, what: &Recompute) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
-        granted(self.who.grants.schema)?;
+        granted(self.who.grants.schema && !rights::holds_only(self.who))?;
         let mut w = self.writer()?;
         let declaration = match what {
             Recompute::Function(name) => match w.ontology.functions.get(name) {
@@ -2048,7 +2077,7 @@ impl Call<'_> {
     /// force before it is not appended again (027, extended).
     pub fn apply(&self, mut declarations: Vec<Declaration>) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
-        granted(self.who.grants.schema)?;
+        granted(self.who.grants.schema && !rights::holds_only(self.who))?;
         let mut w = self.writer()?;
         self.redeclared(&w.ontology, &mut declarations)?;
         self.check_bundle(&w.ontology, &declarations)?;
@@ -2360,7 +2389,7 @@ impl Call<'_> {
     /// `add_field`.
     pub fn add_field(&self, ty: &TypeName, field: FieldDecl) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
-        granted(self.who.grants.schema)?;
+        granted(self.who.grants.schema && !rights::holds_only(self.who))?;
         let mut t = shown_type(&self.writer()?.ontology, ty, self.who)?.clone();
         // The field is added to its author's view of the type (027).
         rights::known_fields(self.who, &mut t);
@@ -2390,7 +2419,7 @@ impl Call<'_> {
         view: &dyn ProjectionView,
         m: &Migration,
     ) -> Result<MigrationReport> {
-        granted(self.who.grants.schema)?;
+        granted(self.who.grants.schema && !rights::holds_only(self.who))?;
         let mut m = m.clone();
         self.authored(&w.ontology, &mut m)?;
         let report = self.preflight_plan(w, view, &m, None)?.report;
@@ -2869,7 +2898,7 @@ impl Call<'_> {
     /// refusal, a stale report among them (027, extended).
     pub fn migrate_apply(&self, mut m: Migration, report_id: &str) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
-        granted(self.who.grants.schema)?;
+        granted(self.who.grants.schema && !rights::holds_only(self.who))?;
         let mut w = self.writer()?;
         self.authored(&w.ontology, &mut m)?;
         let view = self.lake.engine.view(None)?;
@@ -3105,7 +3134,7 @@ impl Call<'_> {
     /// was shown: one `declared` at the next version, no record changed.
     pub fn migrate_value_type_apply(&self, to: ValueTypeDecl, report_id: &str) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
-        granted(self.who.grants.schema)?;
+        granted(self.who.grants.schema && !rights::holds_only(self.who))?;
         let mut w = self.writer()?;
         let view = self.lake.engine.view(None)?;
         let report = self.preflight_value_type(&w, view.as_ref(), &to)?;

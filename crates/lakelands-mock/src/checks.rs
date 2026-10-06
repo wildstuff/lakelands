@@ -206,7 +206,9 @@ macro_rules! door_checks {
             degree_and_components_answer_the_graph_in_one_order,
             a_search_over_a_field_the_caller_may_not_read_is_refused_in_every_mode,
             a_search_limited_to_named_fields_matches_and_probes_only_those,
-            a_hybrid_search_fuses_its_text_and_vector_ranks);
+            a_hybrid_search_fuses_its_text_and_vector_ranks,
+            #[own_principals]
+            a_grant_admits_only_the_records_whose_fields_hold_its_values);
     };
     (@each $at:ident, $new:expr, $block_on:path;
         $($(#[$mark:ident])? $name:ident),* $(,)?) => {
@@ -386,6 +388,7 @@ fn invoice_grants(default: Access, fields: &[(&str, Access)]) -> Grants {
                     .iter()
                     .map(|(f, a)| (FieldName::from(*f), *a))
                     .collect(),
+                ..Default::default()
             },
         )]
         .into(),
@@ -435,6 +438,7 @@ impl Cast {
             TypeGrants {
                 default: None,
                 fields: [(FieldName::from("body"), Access::Masked)].into(),
+                ..Default::default()
             },
         );
         let mut tuner = invoice_grants(Access::None, &[("status", Access::Read)]);
@@ -442,6 +446,7 @@ impl Cast {
             let grants = TypeGrants {
                 default: Some(access),
                 fields: Default::default(),
+                ..Default::default()
             };
             tuner.types.insert(TypeName::from(name), grants);
         }
@@ -1997,6 +2002,7 @@ pub async fn a_type_made_of_another_is_shown_only_with_it(store: Arc<dyn LakeSto
             TypeGrants {
                 default: None,
                 fields,
+                ..Default::default()
             },
         );
         g
@@ -2565,6 +2571,7 @@ pub async fn a_proposal_that_waited_hides_by_the_names_in_force(store: Arc<dyn L
     let none = |fields: &[&str], default: Option<Access>| TypeGrants {
         default,
         fields: fields.iter().map(|f| ((*f).into(), Access::None)).collect(),
+        ..Default::default()
     };
     for (on, kept, hidden) in [
         ("pad", none(&["remark"], None), "note"),
@@ -6027,7 +6034,15 @@ pub async fn a_migration_shows_a_field_by_its_shape_to_one_who_does_not_read_it(
     let readers = [Access::Masked, Access::WriteOnly].map(|access| {
         let fields = [("secret".into(), access)].into();
         let default = None;
-        let types = [("badge".into(), TypeGrants { default, fields })].into();
+        let types = [(
+            "badge".into(),
+            TypeGrants {
+                default,
+                fields,
+                ..Default::default()
+            },
+        )]
+        .into();
         let (default, review, schema) = (Access::Read, true, true);
         let rest = Grants::default();
         let grants = Grants {
@@ -6212,6 +6227,7 @@ pub async fn an_aging_rule_moves_what_holds_from_once_a_date(store: Arc<dyn Lake
         TypeGrants {
             default: Some(Access::Write),
             fields: BTreeMap::new(),
+            ..Default::default()
         },
     );
     let rule_writer = Principal {
@@ -7680,6 +7696,7 @@ pub async fn a_type_its_principal_is_shown_is_one_it_may_find_and_get(store: Arc
     let one = |f: &str, a| TypeGrants {
         default: None,
         fields: [(f.into(), a)].into(),
+        ..Default::default()
     };
     let whole = TypeGrants {
         default: Some(Access::Masked),
@@ -7822,6 +7839,7 @@ pub async fn a_sensitive_field_shows_a_field_and_never_a_type(store: Arc<dyn Lak
     let one = |f: &str, a| TypeGrants {
         default: None,
         fields: [(f.into(), a)].into(),
+        ..Default::default()
     };
     let band = |a| one("band", a);
     let of = |id: &str, default, types: &[(&str, TypeGrants)]| {
@@ -8189,6 +8207,7 @@ pub async fn a_retry_is_answered_before_its_writer_is_asked_what_it_is_shown(
     let write = TypeGrants {
         default: Some(Access::Write),
         fields: Default::default(),
+        ..Default::default()
     };
     let granted = Grants {
         types: [(ty("vault"), write)].into(),
@@ -9332,6 +9351,152 @@ pub async fn a_hybrid_search_fuses_its_text_and_vector_ranks(store: Arc<dyn Lake
             other => panic!("{what} must be refused as invalid; it answered {other:?}"),
         }
     }
+}
+
+/// A grant's `only` admits its holder the records whose fields hold its
+/// values alone (051): another's record is not found, `find`, its total,
+/// a walk and a degree over the links answer its own, a proposal on
+/// another's record is listed without its write, every write that reaches
+/// the type is refused as not granted naming no field and appends nothing,
+/// and `describe_type` tells it the pairs.
+pub async fn a_grant_admits_only_the_records_whose_fields_hold_its_values(
+    store: Arc<dyn LakeStore>,
+) {
+    let c = store.catalog(WriteContext::default());
+    let own = &Cast::of(store.lake()).owner;
+    let (opts, none) = (WriteOpts::default, Patch::new);
+    for d in [
+        json!({"declare": "type", "name": "trip", "fields": [
+            {"name": "title", "type": {"kind": "text"}}]}),
+        json!({"declare": "type", "name": "claim", "fields": [
+            {"name": "holder", "type": {"kind": "text"}},
+            {"name": "amount", "type": {"kind": "number"}}],
+            "relations": [{"name": "on_trip", "target": "trip"}]}),
+    ] {
+        let d = serde_json::from_value::<Declaration>(d).expect("a declaration reads");
+        c.declare(own, d).await.expect("the owner declares");
+    }
+    let p = patch(&[("title", json!("rome"))]);
+    c.upsert(own, &ty("trip"), &key("t1"), p, opts())
+        .await
+        .expect("the owner writes `t1`");
+    let (claim, on, t1) = (ty("claim"), "on_trip".into(), key("t1"));
+    for (k, holder) in [("c1", "alice"), ("c2", "bob"), ("c3", "alice")] {
+        let p = patch(&[("holder", json!(holder)), ("amount", json!(10))]);
+        c.upsert(own, &claim, &key(k), p, opts())
+            .await
+            .expect("the owner writes a claim");
+        c.link(own, &claim, &key(k), &on, &t1, none(), opts())
+            .await
+            .expect("the owner links a claim to `t1`");
+    }
+    // Bob proposes to retire his `c2`: alice, a reviewer, is listed it
+    // without its write.
+    let bob = serde_json::from_value(json!({"default": "write"})).expect("grants read");
+    let bob = &principal(store.lake(), PrincipalKind::Agent, "bob", bob);
+    let retire = json!({"write": "retire", "type": "claim", "key": "c2"});
+    let retire = serde_json::from_value(retire).expect("a write reads");
+    c.propose(bob, retire, "bob's".into())
+        .await
+        .expect("bob proposes");
+    let grants = json!({"default": "write", "review": true,
+                        "types": {"claim": {"only": {"holder": "alice"}}}});
+    let grants = serde_json::from_value(grants).expect("grants read");
+    let alice = &principal(store.lake(), PrincipalKind::Agent, "alice", grants);
+    let mut wrong = Vec::new();
+    let other = c.get(alice, &claim, get("c2")).await;
+    if !matches!(other, Err(Error::NotFound { .. })) {
+        wrong.push(format!("`get` of bob's `c2`: {other:?}"));
+    }
+    let find = Find {
+        total: true,
+        ..Find::default()
+    };
+    let found = match c.find(alice, &claim, find).await.map(|r| r.data) {
+        Ok(Found::Records { rows, total, .. }) => {
+            let keys: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
+            format!("{} total={total:?}", keys.join(" "))
+        }
+        other => format!("{other:?}"),
+    };
+    if found != "c1 c3 total=Some(2)" {
+        wrong.push(format!("`find` with its total: {found}"));
+    }
+    let step = Step {
+        relation: on.clone(),
+        walk: Walk::In,
+        ty: None,
+        filter: None,
+        depth: Default::default(),
+    };
+    let walk = Pattern::traverse(ty("trip"), t1.clone(), vec![step]);
+    let degree = Pattern {
+        project: lakelands_api::query::Projection::Degree,
+        ..walk.clone()
+    };
+    for (what, pattern, member, want) in [
+        ("a walk", walk, "claim.key", json!(["c1", "c3"])),
+        ("a degree", degree, "degree", json!([2])),
+    ] {
+        let rows = c.query(alice, pattern).await.map(|r| r.data);
+        let rows = serde_json::to_value(rows.expect("a query answers")).expect("rows read");
+        let mut got: Vec<Value> = (rows["rows"].as_array().into_iter().flatten())
+            .map(|r| r[member].clone())
+            .collect();
+        got.sort_by_key(Value::to_string);
+        if json!(got) != want {
+            wrong.push(format!("{what} from `t1`: {got:?}, not {want}"));
+        }
+    }
+    let head = store.head().await.expect("the head");
+    let c1 = key("c1");
+    let p = || patch(&[("amount", json!(1))]);
+    for (what, answer) in [
+        ("`upsert`", c.upsert(alice, &claim, &c1, p(), opts()).await),
+        ("`retire`", c.retire(alice, &claim, &c1, opts()).await),
+        (
+            "`link`",
+            c.link(alice, &claim, &c1, &on, &t1, none(), opts()).await,
+        ),
+        (
+            "`unlink`",
+            c.unlink(alice, &claim, &c1, &on, &t1, opts()).await,
+        ),
+    ] {
+        if !matches!(
+            answer,
+            Err(Error::Refused {
+                field: None,
+                reason: Refusal::NotGranted
+            })
+        ) {
+            wrong.push(format!("{what} of her own `c1`: {answer:?}"));
+        }
+    }
+    let after = store.head().await.expect("the head");
+    if after != head {
+        wrong.push(format!(
+            "the refused writes moved the head from {head} to {after}"
+        ));
+    }
+    let listed = c.proposals(alice, Default::default()).await;
+    let listed = listed.expect("alice's listing").data;
+    if !listed.iter().all(|p| p.write.is_none() && p.more) || listed.is_empty() {
+        wrong.push(format!(
+            "bob's proposal is listed to alice with its write: {listed:?}"
+        ));
+    }
+    let told = c.describe_type(alice, &claim, ReadAt::default()).await;
+    let may = told.expect("`claim` is described to alice").data.may;
+    let only = serde_json::to_value(&may.only).expect("pairs read");
+    if only != json!({"holder": "alice"}) || may.upsert || may.retire || !may.link.is_empty() {
+        wrong.push(format!("`describe_type` says {may:?}"));
+    }
+    assert!(
+        wrong.is_empty(),
+        "alice is admitted her own claims alone: {}",
+        wrong.join("; ")
+    );
 }
 
 /// A vector field of two dimensions.

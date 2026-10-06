@@ -171,7 +171,7 @@ impl Reader<'_> {
     /// one record a key names, what a search finds, or the records a filter
     /// (or none) selects, read a page at a time.
     fn seeds(&self, p: &Pattern, mut each: impl FnMut(Node) -> Result<()>) -> Result<()> {
-        let decl = self.visible_type(&p.start.ty)?.clone();
+        let decl = self.named_type(&p.start.ty)?.clone();
         let ty = decl.name.clone();
         if let Some(key) = &p.start.key {
             return if self.start_found(p, key)? {

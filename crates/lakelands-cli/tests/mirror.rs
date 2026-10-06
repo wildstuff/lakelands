@@ -107,6 +107,7 @@ fn reader(lake: &dyn LakeStore, restricted: bool) -> Principal {
         TypeGrants {
             default: None,
             fields: [("secret".into(), Access::Masked)].into(),
+            ..Default::default()
         },
     );
     Principal {
@@ -1255,6 +1256,7 @@ async fn a_principal_that_may_not_write_sys_mirror_is_refused_naming_the_grant()
             TypeGrants {
                 default: Some(Access::Read),
                 fields: Default::default(),
+                ..Default::default()
             },
         );
         let why = two.mirror().await.unwrap_err();

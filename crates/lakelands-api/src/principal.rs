@@ -202,6 +202,12 @@ pub struct TypeGrants {
     /// Access per field.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub fields: BTreeMap<FieldName, Access>,
+    /// Only the records whose fields hold all these text values are this
+    /// principal's to read, and it writes nothing that reaches the type or
+    /// a shape; empty, every record. A function of [`Principal::id`]
+    /// within a lake (`docs/decisions/051-a-grant-may-admit-only-some-records.md`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub only: BTreeMap<FieldName, crate::Value>,
 }
 
 impl Grants {
@@ -219,7 +225,8 @@ impl Grants {
 
     /// Whether these grants read every field of every record, withheld
     /// records included: the lake default reads, every type's default and
-    /// every field grant reads, and `restricted` is held. Only such a
+    /// every field grant reads, no type admits only some records, and
+    /// `restricted` is held. Only such a
     /// principal may read the change feed through a door, since the feed
     /// is the log unmasked
     /// (`docs/decisions/037-the-feed-over-a-network-door.md`).
@@ -227,7 +234,9 @@ impl Grants {
         self.restricted
             && self.default.reads()
             && self.types.values().all(|t| {
-                t.default.is_none_or(Access::reads) && t.fields.values().all(|a| a.reads())
+                t.default.is_none_or(Access::reads)
+                    && t.fields.values().all(|a| a.reads())
+                    && t.only.is_empty()
             })
     }
 
@@ -239,11 +248,15 @@ impl Grants {
     /// grant by name on the name borne at `at`. A field's names are replayed
     /// from `list`, one migration's renames at once; a rename continues the
     /// chain of names that ends in its old name, the newest where several
-    /// do, or starts one.
+    /// do, or starts one. A field `only` names is followed the same way:
+    /// its pair holds on the name borne at `at` by every chain that has
+    /// borne it.
     pub fn follow(&mut self, list: &[Renamed], at: Option<Position>) {
         self.follow_names(list, at);
         let lake = self.default;
-        for (ty, held) in self.types.iter_mut().filter(|t| !t.1.fields.is_empty()) {
+        let named =
+            |t: &(&TypeName, &mut TypeGrants)| !t.1.fields.is_empty() || !t.1.only.is_empty();
+        for (ty, held) in self.types.iter_mut().filter(named) {
             let mut chains: Vec<Vec<(&FieldName, Position)>> = Vec::new();
             for r in list.iter().filter(|r| &r.ty == ty) {
                 // Of the chains that end in the old name, the one whose last
@@ -265,9 +278,21 @@ impl Grants {
                 }
             }
             let given = held.fields.clone();
+            let borne_of = |c: &[(&FieldName, Position)]| {
+                c.iter()
+                    .rfind(|c| at.is_none_or(|p| c.1 <= p))
+                    .map_or(c[0].0, |c| c.0)
+                    .clone()
+            };
+            for (name, value) in std::mem::take(&mut held.only) {
+                let borne = chains.iter().filter(|c| c.iter().any(|n| n.0 == &name));
+                let borne: Vec<FieldName> = borne.map(|c| borne_of(c)).collect();
+                for to in if borne.is_empty() { vec![name] } else { borne } {
+                    unite(&mut held.only, to, &value);
+                }
+            }
             for chain in &chains {
-                let borne = chain.iter().rfind(|c| at.is_none_or(|p| c.1 <= p));
-                let borne = borne.map_or(chain[0].0, |c| c.0);
+                let borne = &borne_of(chain);
                 let said = chain.iter().filter(|c| c.0 != borne);
                 let mut said = said.filter_map(|c| given.get(c.0)).peekable();
                 if said.peek().is_some() {
@@ -328,6 +353,9 @@ impl Grants {
                 own.default = Some(defaults.fold(mine, Access::lowest));
             }
             own.fields = fields;
+            for (f, v) in others.iter().flat_map(|t| &t.only) {
+                unite(&mut own.only, f.clone(), v);
+            }
             own
         };
         // For each name borne at `at`: when it was taken, and the entry.
@@ -363,6 +391,16 @@ impl Grants {
                 .unwrap_or(self.default),
             None => self.default,
         }
+    }
+}
+
+/// Adds a pair of `only`: two names that become one with differing values
+/// hold null, which no grant may hold, so the type is refused to the
+/// holder until the host's grants are fixed: never the wider of the two.
+fn unite(only: &mut BTreeMap<FieldName, crate::Value>, f: FieldName, v: &crate::Value) {
+    let held = only.entry(f).or_insert_with(|| v.clone());
+    if held != v {
+        *held = crate::Value::Null;
     }
 }
 

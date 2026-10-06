@@ -482,6 +482,7 @@ fn principals() -> Vec<Entry> {
                 TypeGrants {
                     default: None,
                     fields: [("secret".into(), Access::None)].into(),
+                    ..Default::default()
                 },
             ),
             (
@@ -489,6 +490,7 @@ fn principals() -> Vec<Entry> {
                 TypeGrants {
                     default: Some(Access::None),
                     fields: BTreeMap::new(),
+                    ..Default::default()
                 },
             ),
         ]

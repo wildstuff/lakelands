@@ -45,6 +45,7 @@ fn kept_from(field: &str) -> Principal {
     let held = TypeGrants {
         default: None,
         fields,
+        ..Default::default()
     };
     grants.types.insert("account".into(), held);
     Principal {

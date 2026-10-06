@@ -22,7 +22,10 @@
 //!   the whole write, a field of another authority is refused as the
 //!   wrong door, declaring a `sys.` type is reserved (its records are
 //!   written under grants like any other), and what the principal may
-//!   not see is absent from `describe`, the tools and every read;
+//!   not see is absent from `describe`, the tools and every read; a
+//!   grant's `only` admits its holder the records whose fields hold its
+//!   values alone and refuses it every write that reaches the type or any
+//!   shape (051);
 //! - `declare` refuses a reference to a type the lake does not hold;
 //!   `apply` checks a set as one (a reference may point forward within
 //!   it, tool names are checked over all of it), appends it in one append

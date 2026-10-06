@@ -122,6 +122,7 @@ fn clerk_grants() -> Grants {
                     ("secret".into(), Access::None),
                 ]
                 .into(),
+                ..Default::default()
             },
         )]
         .into(),

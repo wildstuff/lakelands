@@ -53,6 +53,7 @@ fn writer(store: &dyn LakeStore, id: &str, types: &[(&str, Option<Access>, &[&st
         let held = TypeGrants {
             default: *default,
             fields,
+            ..Default::default()
         };
         grants.types.insert((*ty).into(), held);
     }
@@ -335,6 +336,7 @@ async fn a_type_kept_from_its_reader_is_kept_at_every_door(
         let held = TypeGrants {
             default: Some(access),
             fields: Default::default(),
+            ..Default::default()
         };
         let types = types.iter().map(|t| ((*t).into(), held.clone())).collect();
         let grants = Grants {
@@ -404,12 +406,14 @@ async fn a_pattern_names_no_type_its_reader_is_not_shown(
     let none = TypeGrants {
         default: Some(Access::None),
         fields: Default::default(),
+        ..Default::default()
     };
     grants.types.insert("secret".into(), none);
     let fields = [(FieldName::from("x"), Access::None)].into();
     let held = TypeGrants {
         default: Some(Access::Read),
         fields,
+        ..Default::default()
     };
     grants.types.insert("crate".into(), held);
     let who = &principal(store.as_ref(), PrincipalKind::Agent, "rest", grants);

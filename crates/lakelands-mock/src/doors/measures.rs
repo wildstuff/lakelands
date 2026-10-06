@@ -143,9 +143,12 @@ impl<'a> Seen<'a> {
                 None => {
                     let lt = links::name(&owner, &r.name);
                     for rec in self.st.records.values() {
+                        // A link its walker's `only` does not admit is
+                        // not walked (051).
                         if rec.ty != lt
                             || rec.retired
                             || (rec.restricted && !self.who.grants.restricted)
+                            || !self.st.admitted(self.who, rec)
                         {
                             continue;
                         }

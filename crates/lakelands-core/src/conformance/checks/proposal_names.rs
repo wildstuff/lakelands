@@ -119,6 +119,7 @@ fn readers(store: &dyn LakeStore) -> [Principal; 3] {
     let none = |fields: &[&str]| TypeGrants {
         default: fields.is_empty().then_some(Access::None),
         fields: fields.iter().map(|f| ((*f).into(), Access::None)).collect(),
+        ..Default::default()
     };
     let reviewer = |id: &str, types: &[(&str, &[&str])]| {
         let mut who = field_access(store, id, "account", &[("holder", Access::None)]);

@@ -559,6 +559,7 @@ async fn the_number_of_groups_not_exact_is_the_readers_faces_and_behind_the_prob
     let line = lakelands_api::principal::TypeGrants {
         default: None,
         fields: none,
+        ..Default::default()
     };
     blind.grants.types.insert("line".into(), line);
     let said = [&t.owner, &t.plain, &blind].map(|who| t.kept_to(who, "book"));

@@ -41,6 +41,7 @@ mod links;
 mod made_of;
 mod masking;
 mod migrate;
+mod only;
 mod paging;
 mod positions;
 mod proposal_names;
@@ -276,6 +277,13 @@ pub const ALL: &[Check] = &[
     keys::KEY_AND_KEY_FIELDS_AGREE,
     keys::KEY_FIELDS_FROM_THE_KEY,
     restriction::HOLD_WITHHOLDS_AND_KEEPS,
+    only::ONLY_READS,
+    only::ONLY_SEARCH,
+    only::ONLY_VIEWS,
+    only::ONLY_LINKS,
+    only::ONLY_WRITES,
+    only::ONLY_SCHEMA,
+    only::ONLY_GRANT_CHECKED,
     reactions::VERB_WRITE_REACTS,
     reactions::SET_READ_BY_ITS_FILTER,
     set_declared::SET_DECLARED_OVER_RECORDS,

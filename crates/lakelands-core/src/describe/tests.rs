@@ -72,6 +72,7 @@ fn who(fields: &[(&str, Access)]) -> Principal {
                 .iter()
                 .map(|(f, a)| (FieldName::from(*f), *a))
                 .collect(),
+            ..Default::default()
         },
     );
     Principal {

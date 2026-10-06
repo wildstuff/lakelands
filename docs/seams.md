@@ -458,7 +458,9 @@ key order from `after`, so a walk of such pages reads those records a
 batch at a time as it goes and not all of them for each page
 (lakelands#574); a scan with
 `equal` and no limit, a derived relation's matches, reads them the same
-way, a batch at a time. The memory engine keeps no such index and passes
+way, a batch at a time. A reader whose grant admits only some records of
+the type (051) has its pairs added to `equal` on every scan and count
+the store makes, so its reads go by the same index. The memory engine keeps no such index and passes
 over the type's rows. **Its ceilings:** a page in a field's order whose
 scan must hold a text still reads every record holding it and sorts
 them, for each page, whether or not the lake indexes the field; a filter

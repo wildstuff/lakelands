@@ -626,6 +626,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                     TypeGrants {
                         default: Some(Access::Read),
                         fields: [("f".into(), Access::Write)].into(),
+                        only: [("o".into(), json!("a"))].into(),
                     },
                 )]
                 .into(),
@@ -641,6 +642,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 members(&TypeGrants {
                     default: Some(Access::Read),
                     fields: [("f".into(), Access::Write)].into(),
+                    only: [("o".into(), json!("a"))].into(),
                 }),
                 &[],
                 &["type"],
@@ -945,6 +947,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             "type_rights",
             members(&TypeRights {
                 link: vec!["r".into()],
+                only: [("o".into(), json!("a"))].into(),
                 ..TypeRights::default()
             }),
         ),
@@ -1234,7 +1237,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
     units!("walk", Walk, [Out, In, Both]);
     units!("carrier", Carrier, [Via, Links, Derived]);
 
-    fn kept(k: &Kept) -> [NotKept; 4] {
+    fn kept(k: &Kept) -> [NotKept; 5] {
         match k {
             Kept::Kept | Kept::Computed { .. } => {}
         }
@@ -1244,11 +1247,12 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             NotKept::CannotBeKept { reason },
             NotKept::NotWhole { not_exact },
             NotKept::NotKeptHere,
+            NotKept::OnlySome,
         ];
         for why in &all {
             match why {
                 NotKept::NotAsked | NotKept::CannotBeKept { .. } => {}
-                NotKept::NotWhole { .. } | NotKept::NotKeptHere => {}
+                NotKept::NotWhole { .. } | NotKept::NotKeptHere | NotKept::OnlySome => {}
             }
         }
         all

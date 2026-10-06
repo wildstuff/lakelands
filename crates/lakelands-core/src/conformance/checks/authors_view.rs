@@ -159,6 +159,7 @@ async fn a_change_of_shape_never_names_a_field_its_author_may_not_know_of(
     let links = TypeGrants {
         default: None,
         fields: grade,
+        ..Default::default()
     };
     let link_type = link_type_name(&"invoice".into(), &"approved_by".into());
     who.grants.types.insert(link_type, links);

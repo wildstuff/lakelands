@@ -197,6 +197,157 @@ pub fn visible(
     })
 }
 
+/// The pairs `who`'s grant on `ty` admits records by: its `only`, empty
+/// where it admits every record.
+pub fn own_only(who: &Principal, ty: &TypeName) -> Vec<(FieldName, Value)> {
+    let only = who.grants.types.get(ty).map(|t| &t.only);
+    only.into_iter()
+        .flatten()
+        .map(|(f, v)| (f.clone(), v.clone()))
+        .collect()
+}
+
+/// What `only` makes of a type's records for one reader
+/// (`docs/decisions/051-a-grant-may-admit-only-some-records.md`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Effective {
+    /// The records whose fields hold every pair; none: every record.
+    Pairs(Vec<(FieldName, Value)>),
+    /// A view whose records are computed for this reader from the admitted
+    /// records of what it reads, then held to its own pairs.
+    ComputeOnly(Vec<(FieldName, Value)>),
+}
+
+impl Effective {
+    /// The pairs a record of the type must hold.
+    pub fn pairs(&self) -> &[(FieldName, Value)] {
+        match self {
+            Effective::Pairs(p) | Effective::ComputeOnly(p) => p,
+        }
+    }
+
+    /// Whether every record is admitted as it is kept or stored.
+    pub fn whole(&self) -> bool {
+        matches!(self, Effective::Pairs(p) if p.is_empty())
+    }
+}
+
+/// The one effective `only` of a type for `who`; every read asks this and
+/// nothing else. A stored type's is its own pairs. A view's are its own,
+/// plus, where it has one stored source, no merge, and groups by every
+/// field the source's pairs name, the source's pairs on its group fields:
+/// each group's records then share those values, so the admitted records
+/// are the groups that hold them. Otherwise a view that reads a type held
+/// to some records, or a link type whose end type is, is computed from
+/// the admitted records alone. A kept name answers for its view. `find`
+/// answers a type by its name.
+pub fn only<'a>(
+    who: &Principal,
+    ty: &TypeName,
+    find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
+) -> Effective {
+    only_seen(who, ty, find, &mut Vec::new())
+}
+
+fn only_seen<'a>(
+    who: &Principal,
+    ty: &TypeName,
+    find: &dyn Fn(&TypeName) -> Option<&'a TypeDecl>,
+    seen: &mut Vec<TypeName>,
+) -> Effective {
+    let kept = ty.as_str().strip_prefix(lakelands_api::seam::KEPT_PREFIX);
+    let ty = kept.map_or_else(|| ty.clone(), TypeName::from);
+    let mut pairs = own_only(who, &ty);
+    let Some(v) = find(&ty).and_then(|d| d.view.as_deref()) else {
+        return Effective::Pairs(pairs);
+    };
+    if seen.contains(&ty) {
+        return Effective::ComputeOnly(pairs);
+    }
+    seen.push(ty);
+    let sources = std::iter::once(&v.source).chain(v.merge.iter().map(|m| &m.source));
+    let held = |s: &TypeName, seen: &mut Vec<TypeName>| {
+        let e = only_seen(who, s, find, seen);
+        (!e.whole() || find(s).is_some_and(|d| ends_held(who, d))).then_some(e)
+    };
+    let held: Vec<(&TypeName, Effective)> =
+        sources.filter_map(|s| Some((s, held(s, seen)?))).collect();
+    seen.pop();
+    let Some((source, e)) = held.first() else {
+        return Effective::Pairs(pairs);
+    };
+    let stored = find(source).is_some_and(|d| d.view.is_none() && !ends_held(who, d));
+    let grouped = e.pairs().iter().all(|(f, _)| v.group_by.contains(f));
+    match e {
+        Effective::Pairs(p) if v.merge.is_empty() && stored && grouped => {
+            pairs.extend(p.iter().cloned());
+            Effective::Pairs(pairs)
+        }
+        _ => Effective::ComputeOnly(pairs),
+    }
+}
+
+/// Whether a stored record holds every pair.
+pub fn admitted(pairs: &[(FieldName, Value)], fields: &BTreeMap<FieldName, Value>) -> bool {
+    pairs.iter().all(|(f, v)| fields.get(f) == Some(v))
+}
+
+/// The end types of a link type `decl` whose records `who` is admitted
+/// only some of, with the link field that names each: a link record is
+/// withheld unless both its ends are admitted.
+pub fn held_ends<'d>(who: &Principal, decl: &'d TypeDecl) -> Vec<(&'d FieldName, &'d TypeName)> {
+    if !crate::links::is_link_type(&decl.name) {
+        return Vec::new();
+    }
+    let ends = decl
+        .fields
+        .iter()
+        .filter(|f| f.name.as_str() == crate::links::FROM || f.name.as_str() == crate::links::TO);
+    let ends = ends.filter_map(|f| Some((&f.name, f.ty.target.as_ref()?)));
+    ends.filter(|(_, t)| !own_only(who, t).is_empty()).collect()
+}
+
+fn ends_held(who: &Principal, decl: &TypeDecl) -> bool {
+    !held_ends(who, decl).is_empty()
+}
+
+/// Whether every write that reaches `decl`'s records is refused to `who`:
+/// its grant admits only some records of the type, or of an end type of a
+/// link type. Its writes go through the host.
+pub fn only_holder(who: &Principal, decl: &TypeDecl) -> bool {
+    !own_only(who, &decl.name).is_empty() || ends_held(who, decl)
+}
+
+/// Whether `who`'s grant admits only some records of any type: such a
+/// principal changes no shape.
+pub fn holds_only(who: &Principal) -> bool {
+    who.grants.types.values().any(|t| !t.only.is_empty())
+}
+
+/// Refuse a read that names `decl` where `who`'s `only` on it cannot be
+/// applied: a pair on a field the type does not declare, of a kind other
+/// than `text` or `reference`, with a value that is not text, or that the
+/// holder may not read. The refusal names the type, never the field, so a
+/// field the holder may not know of is not told.
+pub fn check_only(who: &Principal, decl: &TypeDecl) -> Result<(), Error> {
+    use lakelands_api::ontology::StorageKind;
+    let applies = |(f, v): &(FieldName, Value)| {
+        let field = decl.fields.iter().find(|d| &d.name == f);
+        field.is_some_and(|d| {
+            matches!(d.ty.kind, StorageKind::Text | StorageKind::Reference)
+                && v.is_string()
+                && field_access(who, decl, d).reads()
+        })
+    };
+    if own_only(who, &decl.name).iter().all(applies) {
+        return Ok(());
+    }
+    Err(crate::invalid(format!(
+        "the grant's `only` on `{}` cannot be applied here; the host's grants need fixing",
+        decl.name
+    )))
+}
+
 /// Refuse a read that probes a field the principal may not read, or a
 /// field the type does not declare. `probed` are the fields a filter,
 /// an ordering or an aggregate touches.

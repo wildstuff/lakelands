@@ -774,7 +774,11 @@ impl Twin {
             let hidden = hidden.map(|m| (m, Access::None));
             let (default, fields) = (None, hidden.into_iter().collect());
             let ty = format!("{}{end}", p.name);
-            let grants = TypeGrants { default, fields };
+            let grants = TypeGrants {
+                default,
+                fields,
+                ..Default::default()
+            };
             partial.grants.types.insert(ty.as_str().into(), grants);
         }
         let readers = [
@@ -918,6 +922,7 @@ async fn says(l: &Lake, view: &str, want: &str) -> Result<(), Failure> {
             NotKept::CannotBeKept { .. } => "cannot be kept",
             NotKept::NotWhole { .. } => "not whole",
             NotKept::NotKeptHere => "not kept here",
+            NotKept::OnlySome => "only some",
         },
         None => "nothing",
     };
