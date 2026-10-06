@@ -372,7 +372,7 @@ impl Catalog for Doors {
                 ..
             },
             Some(embed),
-        ) = (&mut search.mode, &self.lake.seams.embed)
+        ) = (&mut search.mode, self.lake.embed())
         {
             // A field declared as the embedding of a model is searched with
             // that model's vectors only: another bound model, or one making
@@ -682,6 +682,11 @@ impl LakeStore for Store {
     async fn compact(&self) -> Result<CompactReport> {
         let lake = self.lake.clone();
         exec::run(move || lake.compact()).await
+    }
+
+    fn bind_embed(&self, backend: Arc<dyn lakelands_api::seam::EmbedBackend>) -> Result<()> {
+        self.lake.bind_embed(backend);
+        Ok(())
     }
 
     async fn checkpoint(&self) -> Result<Position> {

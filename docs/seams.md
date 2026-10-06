@@ -945,6 +945,17 @@ for what it carries, so that asking again with the same texts would get
 the same answer, and `Unavailable` for anything else: the network, the
 endpoint, its limits, a reply it cannot read.
 
+A lake reads the backend `Seams::embed` brings at open, or the one a
+host binds later on the open lake with `LakeStore::bind_embed`, which
+replaces it whatever its model
+(`docs/decisions/022-functions-are-declarations.md`, extended). A bind
+appends nothing and makes nothing due, and a batch already asking
+finishes with the backend it took. `bind_embed` is the host's alone: the
+network doors answer it `Unbound` as a host operation, no tool of the
+catalog names it (MCP, REST and stdio serve that one catalog), and the
+WIT does not carry it, since a seam is bound by the host, as at `open`,
+and nothing a guest holds can be one.
+
 The store calls the backend for two things.
 
 **A hybrid `search` without a caller's vector** embeds its query text
@@ -988,11 +999,14 @@ record (`docs/decisions/022-functions-are-declarations.md`, extended):
   and the text is sent to the operator's endpoint in any case.
 - It is declared only where the bound backend names the model and
   answers the field's `dimensions`; otherwise the declaration is refused
-  as `Unbound`, naming what it needs. A due embedding whose backend is
+  as `Unbound`, naming what it needs. An embedding the type in force
+  holds with the same `from`, model and dimensions needs no backend,
+  since declared unchanged it makes nothing due; `recompute` of the type
+  always needs one. A due embedding whose backend is
   gone, or names another model or other dimensions, when the call would
   be made is not made; the field waits. It is made when its record is
   written again, or `recompute` names its type, with the backend bound;
-  opening the lake calls nothing. A retried embedding waits the
+  opening the lake calls nothing, and neither does a bind. A retried embedding waits the
   same way: it reads as waiting (no value, no metadata) though the
   log's latest output for its text is still the failure.
 - The text is the `from` fields' values, in declared order, joined with

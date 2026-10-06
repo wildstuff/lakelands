@@ -1946,8 +1946,10 @@ impl Call<'_> {
     }
 
     /// A function computed outside the store is declared only where a
-    /// backing of its kind is bound; replay never asks.
-    fn check_bound(&self, d: &Declaration) -> Result<()> {
+    /// backing of its kind is bound; replay never asks. An embedding is
+    /// compared with the one `in_force` holds, where there is one to
+    /// compare with.
+    fn check_bound(&self, d: &Declaration, in_force: Option<&Ontology>) -> Result<()> {
         // A trigger's ceiling lies within the lake's (021).
         if let Declaration::Trigger(t) = d
             && let Some(m) = t.max_depth
@@ -1971,25 +1973,39 @@ impl Call<'_> {
             });
         }
         if let Declaration::Type(t) = d {
-            self.check_embeddings(t)?;
+            self.check_embeddings(t, in_force)?;
             // A relation's fields embed on its link type's records.
             for lt in links::link_types_of(t) {
-                self.check_embeddings(&lt)?;
+                self.check_embeddings(&lt, in_force)?;
             }
         }
         Ok(())
     }
 
     /// A type's embeddings are declared only where the bound embedding
-    /// backend names their model and makes vectors of their dimensions.
-    fn check_embeddings(&self, t: &TypeDecl) -> Result<()> {
+    /// backend names their model and makes vectors of their dimensions,
+    /// unless `in_force` holds the field with the same embedding: one
+    /// declared unchanged makes nothing due, so a lake with no backend
+    /// bound can still restate or grow the type around it.
+    fn check_embeddings(&self, t: &TypeDecl, in_force: Option<&Ontology>) -> Result<()> {
+        let (bound, mut was) = (self.lake.embed(), None);
         for f in &t.fields {
             let Some(e) = &f.embed else {
                 continue;
             };
             let dimensions = f.ty.dimensions.unwrap_or(0);
-            let bound = self.lake.seams.embed.as_ref();
-            if bound.is_some_and(|b| b.model() == e.model && b.dimensions() == dimensions) {
+            if bound
+                .as_ref()
+                .is_some_and(|b| b.model() == e.model && b.dimensions() == dimensions)
+            {
+                continue;
+            }
+            let was = was.get_or_insert_with(|| in_force.and_then(|o| o.as_declared(&t.name).ok()));
+            let kept = was
+                .iter()
+                .flat_map(|w| &w.fields)
+                .find(|k| k.name == f.name);
+            if kept.is_some_and(|k| k.embed == f.embed && k.ty.dimensions == f.ty.dimensions) {
                 continue;
             }
             let found = match bound {
@@ -2024,7 +2040,7 @@ impl Call<'_> {
         let mut w = self.writer()?;
         self.redeclared(&w.ontology, std::slice::from_mut(&mut declaration))?;
         declare::check_declaration(&w.ontology, &declaration, false)?;
-        self.check_bound(&declaration)?;
+        self.check_bound(&declaration, Some(&w.ontology))?;
         if w.ontology.in_force(&declaration) {
             return Ok(applied(head(&w), None));
         }
@@ -2063,7 +2079,8 @@ impl Call<'_> {
                 Declaration::Type(w.ontology.as_declared(name)?)
             }
         };
-        self.check_bound(&declaration)?;
+        // Its purpose is the calls: it needs the backend whatever is in force.
+        self.check_bound(&declaration, None)?;
         let now = self.lake.clock(&mut w);
         let drafts = self.bundle_drafts(&w, vec![declaration], now, 0)?;
         let events = self.lake.append(&mut w, drafts)?;
@@ -2262,8 +2279,8 @@ impl Call<'_> {
                     probe.put(other.clone(), 0, None);
                 }
             }
-            if let Err(e) =
-                declare::check_declaration(&probe, d, false).and_then(|()| self.check_bound(d))
+            if let Err(e) = declare::check_declaration(&probe, d, false)
+                .and_then(|()| self.check_bound(d, Some(ontology)))
             {
                 problems.push((identities[i].clone(), e));
             }
@@ -2952,7 +2969,7 @@ impl Call<'_> {
                 reason: Refusal::TooLarge { max },
             });
         }
-        self.check_embeddings(&m.to)?;
+        self.check_embeddings(&m.to, Some(&w.ontology))?;
         let report_id = report.report_id;
         let schema_hash = shape::schema_hash(&m.to).map_err(|e| invalid(e.to_string()))?;
         let version = w.ontology.next_version(&Declaration::Type(m.to.clone()));

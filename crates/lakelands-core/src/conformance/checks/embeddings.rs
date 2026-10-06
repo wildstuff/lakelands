@@ -25,8 +25,8 @@ use crate::conformance::backing::{
     EMBED_MODEL, UNREACHABLE, embedded, plug_text, release, unplug_text,
 };
 use crate::conformance::fixture::{
-    Caller, Lake, Must, derived, doors, embedding, field, get_at, head_unmoved, join_all, owner,
-    read, recorded_outputs, refused_on, source_record, sourced, type_decl, value,
+    Caller, Lake, Must, derived, doors, embedding, field, get_at, head_unmoved, join_all,
+    migration, owner, read, recorded_outputs, refused_on, source_record, sourced, type_decl, value,
 };
 use crate::conformance::{Failure, Reopen, backing};
 
@@ -667,22 +667,7 @@ async fn a_hybrid_search_over_an_embedding_the_bound_backend_does_not_make_is_un
         )
         .await
         .map_err(|e| reopen_failed(&format!("with a backend of `{model}`/{dimensions}"), e))?;
-        let got = doors(store.as_ref())
-            .search(
-                &owner(store.as_ref()),
-                Search {
-                    ty: "note".into(),
-                    ..doc_search(SearchMode::Hybrid {
-                        text: "quayside".into(),
-                        field: "vec".into(),
-                        vector: None,
-                        fields: None,
-                        weight: None,
-                        text_weight: None,
-                    })
-                },
-            )
-            .await;
+        let got = quay(store.as_ref()).await;
         // The refusal names both: what the field was declared with, and
         // what is bound.
         let names_both = |seam: &str| {
@@ -777,6 +762,190 @@ async fn a_due_embedding_waits_while_no_backend_makes_it(
         "`recompute` of `note`, its backend bound, makes every waiting `vec`; `other` \
          and `wider` read {other:?} and {wider:?}"
     );
+    Ok(())
+}
+
+check!(
+    /// A backend bound after open serves from then on.
+    EMBED_BOUND_LATE = a_backend_bound_after_open_is_read_from_then_on,
+    "lakelands#641 and seams, EmbedBackend: `bind_embed` on an open lake appends nothing, and from then on a declaration of its model is admitted, a write's embedding is made and a hybrid search embeds its text; a vector that fell due while none was bound waits until `recompute` names its type; a later bind replaces the backend, whatever its model",
+    reopens
+);
+
+check!(
+    /// An embedding kept as it is needs no backend.
+    EMBED_UNBOUND_KEPT = a_declaration_that_keeps_an_embedding_needs_no_backend,
+    "022, extended, and lakelands#641: with no backend bound, a declaration that keeps a type's embedding as in force is admitted (restated, alone or in a set; a field added beside it; a migration), while one that adds an embedding or changes its model, dimensions or `from` is refused as unbound, naming the field, and so is `recompute` of the type",
+    reopens
+);
+
+/// A hybrid search over `note.vec` for "quay", as the owner.
+async fn quay(store: &dyn LakeStore) -> lakelands_api::Result<lakelands_api::query::Hits> {
+    let mode = SearchMode::Hybrid {
+        text: "quay".into(),
+        field: "vec".into(),
+        vector: None,
+        fields: None,
+        weight: None,
+        text_weight: None,
+    };
+    let search = Search {
+        ty: "note".into(),
+        ..doc_search(mode)
+    };
+    doors(store)
+        .search(&owner(store), search)
+        .await
+        .map(|r| r.data)
+}
+
+/// `note` declared with the suite's backend, and the lake opened again
+/// with none bound.
+async fn unbound_notes(
+    store: Arc<dyn LakeStore>,
+    reopen: &Reopen,
+) -> Result<Arc<dyn LakeStore>, Failure> {
+    let store = reopen(store, with_embedder(Some(backing::embedder())))
+        .await
+        .map_err(|e| reopen_failed("with the suite's embedding backend", e))?;
+    notes(store.as_ref()).await?;
+    reopen(store, with_embedder(None))
+        .await
+        .map_err(|e| reopen_failed("with no embedding backend", e))
+}
+
+async fn a_backend_bound_after_open_is_read_from_then_on(
+    store: Arc<dyn LakeStore>,
+    reopen: Reopen,
+) -> Result<(), Failure> {
+    let store = unbound_notes(store, &reopen).await?;
+    let l = Lake::of(store.as_ref());
+    let early = "Bound late early quay";
+    l.upsert("note", "early", json!({"title": early})).await?;
+    let before = quay(store.as_ref())
+        .await
+        .must("a hybrid search with none bound")?;
+    let head = store.head().await.must("reading the head")?;
+    store
+        .bind_embed(backing::embedder())
+        .must("binding the suite's backend")?;
+    let after = store.head().await.must("reading the head")?;
+    ensure!(
+        after == head,
+        "a bind appends nothing; the head moved from {head} to {after}"
+    );
+    l.upsert("note", "late", json!({"title": "Bound late later quay"}))
+        .await?;
+    let searched = quay(store.as_ref())
+        .await
+        .must("a hybrid search once bound")?;
+    let (late, waits) = (
+        vec_of(store.as_ref(), "late").await?,
+        vec_of(store.as_ref(), "early").await?,
+    );
+    ensure!(
+        before.ranked_by.starts_with("lexical")
+            && searched.ranked_by.starts_with("hybrid")
+            && is_east(&late)
+            && waits.is_none(),
+        "a hybrid search ranks lexically with none bound and embeds its text once bound \
+         (they said {:?} and {:?}), and a write's `vec` is made then while `early`, due \
+         before the bind, waits: `late` reads {late:?}, `early` {waits:?}",
+        before.ranked_by,
+        searched.ranked_by
+    );
+    recomputed(&l).await?;
+    let made = vec_of(store.as_ref(), "early").await?;
+    ensure!(
+        is_east(&made) && embedded(early) == 1,
+        "`recompute` of `note` after the bind makes `early`'s `vec` once; it reads \
+         {made:?}, its text sent {} times",
+        embedded(early)
+    );
+    store
+        .bind_embed(backing::embedder_as("another-model", 2))
+        .must("binding a backend of another model")?;
+    let search = quay(store.as_ref()).await;
+    let other = l
+        .try_declare(notes_by(&["title", "body"], "another-model", 2))
+        .await;
+    ensure!(
+        other.is_ok() && is_unbound(&search),
+        "a second bind replaces the first: a search over `note.vec`, of `{EMBED_MODEL}`, \
+         is unbound and `vec` declared with `another-model` is admitted; they answered {} \
+         and {}",
+        answered(&search),
+        answered(&other)
+    );
+    Ok(())
+}
+
+async fn a_declaration_that_keeps_an_embedding_needs_no_backend(
+    store: Arc<dyn LakeStore>,
+    reopen: Reopen,
+) -> Result<(), Failure> {
+    let store = unbound_notes(store, &reopen).await?;
+    let l = Lake::of(store.as_ref());
+    let kept = notes_by(&["title", "body"], EMBED_MODEL, 2);
+    l.declare(kept.clone()).await?;
+    let set = vec![lakelands_api::write::Declaration::Type(kept.clone())];
+    l.cat
+        .apply(&l.own, set)
+        .await
+        .must("applying `note` as in force")?;
+    // Other dimensions reshape the field: a migration, checked the same way.
+    let wider = migration(notes_by(&["title", "body"], EMBED_MODEL, 3));
+    let report = l.cat.migrate(&l.own, wider.clone()).await;
+    let id = report
+        .must("the preflight of `vec` with 3 dimensions")?
+        .data
+        .report_id;
+    let added = notes_with(
+        kept.fields[2].clone(),
+        vec![embedding("vec2", 2, &["body"], EMBED_MODEL)],
+    );
+    let recompute = lakelands_api::write::Recompute::Type("note".into());
+    for (got, named, what) in [
+        (
+            l.try_declare(notes_by(&["title"], EMBED_MODEL, 2)).await,
+            "vec",
+            "`note` with its `from` changed",
+        ),
+        (
+            l.try_declare(notes_by(&["title", "body"], "another-model", 2))
+                .await,
+            "vec",
+            "`note` with its model changed",
+        ),
+        (
+            l.try_declare(added).await,
+            "vec2",
+            "`note` with an embedding added",
+        ),
+        (
+            l.cat.migrate_apply(&l.own, wider, &id).await,
+            "vec",
+            "`vec` migrated to 3 dimensions",
+        ),
+        (
+            l.cat.recompute(&l.own, recompute).await,
+            "vec",
+            "`recompute` of `note`",
+        ),
+    ] {
+        ensure!(
+            matches!(&got, Err(Error::Unbound { seam }) if seam.contains(&format!("`note.{named}`"))),
+            "with none bound, {what} must be refused as unbound, naming `note.{named}`; it \
+             answered {}",
+            answered(&got)
+        );
+    }
+    let tagged = notes_with(
+        kept.fields[2].clone(),
+        vec![field("tag", StorageKind::Text)],
+    );
+    l.declare(tagged).await?;
+    l.migrate(kept).await?;
     Ok(())
 }
 

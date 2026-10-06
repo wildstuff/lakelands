@@ -33,7 +33,7 @@ use lakelands_api::location::{EngineConfig, Limits, Location};
 use lakelands_api::ontology::{StorageKind, TypeDecl};
 use lakelands_api::principal::Renamed;
 use lakelands_api::record::StoredRecord;
-use lakelands_api::seam::Seams;
+use lakelands_api::seam::{EmbedBackend, Seams};
 use lakelands_api::write::{Declaration, Migration, Proposal, ProposalFilter, ProposalState};
 use lakelands_api::{
     Error, FieldName, LakeId, Position, Principal, ProposalId, RecordKey, Refusal, Result,
@@ -109,8 +109,13 @@ pub struct Lake {
     pub id: LakeId,
     /// The engine keeping it.
     pub engine: Arc<dyn LakeEngine>,
-    /// What the host plugged in.
+    /// What the host plugged in. Its `embed` is taken into `embed` at
+    /// open, where a bind replaces it.
     pub seams: Seams,
+    /// The embedding backend bound now: the one the open brought, or the
+    /// last `bind_embed`. A reader clones it and holds no lock across a
+    /// call.
+    embed: Mutex<Option<Arc<dyn EmbedBackend>>>,
     /// Bounds on one call's work.
     pub limits: Limits,
     /// Held while a batch of the lake's owed calls is made: one batch at a
@@ -306,13 +311,14 @@ impl Lake {
     /// anything is read from its log.
     pub(crate) fn assemble(
         location: &Location,
-        seams: Seams,
+        mut seams: Seams,
         engine: Arc<dyn LakeEngine>,
         lease: Option<Lease>,
     ) -> Lake {
         Lake {
             id: location.lake.clone(),
             engine,
+            embed: Mutex::new(seams.embed.take()),
             seams,
             limits: location.limits,
             calls: tokio::sync::Mutex::new(()),
@@ -352,6 +358,17 @@ impl Lake {
             lake: self.id.clone(),
             grants: lakelands_api::Grants::owner(),
         }
+    }
+
+    /// The embedding backend bound now, if any.
+    pub fn embed(&self) -> Option<Arc<dyn EmbedBackend>> {
+        lakelands_core::lock(&self.embed).clone()
+    }
+
+    /// Bind `backend` in place of the one bound now. A batch already
+    /// asking finishes with the backend it took.
+    pub fn bind_embed(&self, backend: Arc<dyn EmbedBackend>) {
+        *lakelands_core::lock(&self.embed) = Some(backend);
     }
 
     /// The writer state, locked.

@@ -477,6 +477,12 @@ fn the_generic_tools_emitted_are_exactly_the_generic_list() {
     let mut listed = GENERIC_TOOLS.to_vec();
     listed.sort();
     assert_eq!(emitted, listed);
+    // A door that binds a seam is the host's, and no tool's.
+    assert!(
+        names(&t).iter().all(|n| !n.contains("bind")),
+        "{:?}",
+        names(&t)
+    );
 }
 
 #[test]

@@ -197,10 +197,14 @@ fn every_door_of_the_crate_is_a_function_of_the_wit_and_no_other() {
         trait_methods(catalog_rs, "Catalog"),
         "the catalog's doors: the `catalog` resource with `query` and `schema`, against `Catalog`"
     );
+    // A door that binds a seam is the host's: the host binds the seams,
+    // as at `open`, and nothing a guest holds can be one.
+    let mut store = trait_methods(catalog_rs, "LakeStore");
+    store.retain(|door| !["bind_embed"].contains(&door.as_str()));
     assert_eq!(
         fns("lake_store"),
-        trait_methods(catalog_rs, "LakeStore"),
-        "the `lake-store` resource against `LakeStore`"
+        store,
+        "the `lake-store` resource against `LakeStore`, less the doors that bind a seam"
     );
     assert_eq!(
         fns("change_feed"),

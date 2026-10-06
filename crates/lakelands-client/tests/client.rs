@@ -460,6 +460,10 @@ async fn every_host_operation_is_unbound_naming_it() {
         ),
         ("compact", remote.compact().await.map(|_| ())),
         (
+            "bind_embed",
+            remote.bind_embed(lakelands_core::conformance::backing::embedder()),
+        ),
+        (
             "position_at",
             remote.position_at(midnight).await.map(|_| ()),
         ),

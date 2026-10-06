@@ -418,6 +418,15 @@ pub trait LakeStore: Send + Sync {
     /// (`docs/decisions/040-maintenance-never-changes-an-answer.md`).
     async fn compact(&self) -> Result<crate::write::CompactReport>;
 
+    /// Bind the embedding backend the lake's declarations, writes and
+    /// searches read from now on, in place of the one bound at open or
+    /// by an earlier bind, whatever its model. Nothing is recorded: the
+    /// binding is the host's configuration, not a fact of the log. What
+    /// fell due while none was bound waits until its record is written
+    /// again or `recompute` names its type
+    /// (`docs/decisions/022-functions-are-declarations.md`, extended).
+    fn bind_embed(&self, backend: Arc<dyn crate::seam::EmbedBackend>) -> Result<()>;
+
     /// Release the lease and flush. The lake is closed when the last
     /// handle is dropped; this makes it explicit.
     async fn close(&self) -> Result<()>;

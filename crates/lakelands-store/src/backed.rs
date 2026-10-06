@@ -647,8 +647,8 @@ fn key(d: &Due) -> Key {
 /// The embedding backend bound here, when it makes the call's model and
 /// dimensions.
 fn embedder(lake: &Lake, call: &Call) -> Option<Arc<dyn EmbedBackend>> {
-    let e = lake.seams.embed.as_ref()?;
-    (model(call) == Some((e.model(), e.dimensions()))).then(|| e.clone())
+    let e = lake.embed()?;
+    (model(call) == Some((e.model(), e.dimensions()))).then_some(e)
 }
 
 /// Whether a backing bound here makes the call.
