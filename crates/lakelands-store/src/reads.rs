@@ -1319,7 +1319,8 @@ impl<'a> Reader<'a> {
             true => limits.max_limit.max(limits.max_graph_nodes),
             false => limits.max_limit,
         };
-        let l = asked.unwrap_or(limits.default_limit);
+        // A read that names no limit asks for nothing out of bounds.
+        let l = asked.unwrap_or(limits.default_limit.min(max));
         if l == 0 || l > max {
             return Err(invalid(format!("a limit is between 1 and {max}")));
         }

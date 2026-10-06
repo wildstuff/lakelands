@@ -458,7 +458,7 @@ impl MockCatalog {
         } else {
             l.max_limit
         };
-        let asked = asked.unwrap_or(l.default_limit);
+        let asked = asked.unwrap_or(l.default_limit.min(max));
         if asked == 0 || asked > max {
             return Err(invalid(format!("a limit is between 1 and {max}")));
         }

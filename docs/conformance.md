@@ -182,6 +182,7 @@ belongs in the suite, not beside one engine:
 - `paging_through_find_visits_every_record_exactly_once` — the read contract: a cursor continues where its page ended, so a page set is a total order with no repeat and no gap
 - `a_page_answers_its_total_and_an_offset_jumps_to_the_walks_slice` — 045 and 029: `total` answers as many records as a full walk finds, for a filter the engine applies and one only the store evaluates, a view and a reader without `restricted`, the same on every page of a cursor walk while another writer writes; `offset` answers the full walk's slice from it, by key, by a field and by a field with an order index, a view too, and its cursor continues the walk; `offset` beside `cursor`, `after` or `aggregate`, and `total` beside `aggregate`, are refused as invalid, and an offset past `max_offset` as too_large naming it
 - `records_without_the_sort_field_are_listed_last_in_either_direction` — the read contract: records without a value for a sort key sort last in either direction; ordering never drops them
+- `a_read_that_names_no_limit_takes_the_smaller_bound` — the location's limits: a read that names no `limit` takes `default_limit`, or `max_limit` where that is smaller, so it is never refused for a bound it did not ask for; a `limit` the caller names above `max_limit` is still refused as invalid
 
 **latest**
 
