@@ -82,6 +82,11 @@ pub struct Writer {
 /// store's own, which no seam records under (`docs/seams.md`).
 pub(crate) const RENAMES: &str = "sys:renames";
 
+/// The prefix of every seam name of the store's own, [`RENAMES`] and the
+/// kept views' among them. A host's seams are named behind their kind's
+/// prefix (`function:`, `embed:`, `verb:`), so no door records under one.
+pub(crate) const OWN_SEAM: &str = "sys:";
+
 /// The lake's list of renames as its output holds it; empty where none is
 /// recorded.
 fn renames_in(recorded: Option<Value>) -> Result<Vec<Renamed>> {
@@ -1003,27 +1008,14 @@ impl Lake {
         owes: bool,
     ) -> Result<()> {
         let projection = self.engine.projection();
-        // A name of the kept form is the store's own, for the records of a
-        // view it keeps: no door declares a type under one or writes its
-        // records, so only a log another build wrote names one, and such
-        // a log is not folded.
-        if let EventBody::Declared {
-            declaration: Declaration::Type(lakelands_api::ontology::TypeDecl { name: ty, .. }),
-            ..
-        }
-        | EventBody::RecordUpserted { ty, .. }
-        | EventBody::RecordIngested { ty, .. }
-        | EventBody::RecordRetired { ty, .. }
-        | EventBody::RecordRestricted { ty, .. }
-        | EventBody::RecordUnrestricted { ty, .. } = &e.body
-            && lakelands_api::seam::is_kept_name(ty)
-        {
+        // A name of the kept form, and a seam that begins `sys:`, are the
+        // store's own, and a view's records are computed: no door declares,
+        // writes or records under the one, nor writes the other, so only a
+        // log another build wrote names them, and such a log is not folded.
+        if let Some(why) = foreign(&w.ontology, &e.body) {
             return Err(unavailable(format!(
-                "the event at position {} declares or writes the type `{ty}`: a name that begins \
-                 `{}` is the store's own, for the records of a view it keeps, and the log is not \
-                 folded past it",
-                e.position,
-                lakelands_api::seam::KEPT_PREFIX
+                "the event at position {} {why}, and the log is not folded past it",
+                e.position
             )));
         }
         projection.mark_applied(&e.id, e.position)?;
@@ -1768,6 +1760,39 @@ pub(crate) fn walk(
     let mut walk = Walk::new(view, ty, retired);
     walk.by_ref().try_for_each(&mut each)?;
     walk.failed()
+}
+
+/// What an event names that only the store's fold makes, said as the
+/// refusal says it: a type of the kept form, an output under a seam of
+/// the store's own, or a record of a view. `None` for every event a door
+/// appends.
+fn foreign(o: &Ontology, body: &EventBody) -> Option<String> {
+    let (ty, declares) = match body {
+        EventBody::OutputRecorded { seam, .. } => {
+            let own = format!("a seam that begins `{OWN_SEAM}` is the store's own");
+            return (seam.starts_with(OWN_SEAM)).then(|| format!("records under `{seam}`: {own}"));
+        }
+        EventBody::Declared {
+            declaration: Declaration::Type(TypeDecl { name, .. }),
+            ..
+        } => (name, true),
+        EventBody::RecordUpserted { ty, .. }
+        | EventBody::RecordIngested { ty, .. }
+        | EventBody::RecordRetired { ty, .. }
+        | EventBody::RecordRestricted { ty, .. }
+        | EventBody::RecordUnrestricted { ty, .. }
+        | EventBody::ObjectSetChanged { ty, .. } => (ty, false),
+        _ => return None,
+    };
+    if lakelands_api::seam::is_kept_name(ty) {
+        return Some(format!(
+            "declares or writes the type `{ty}`: a name that begins `{}` is the store's own, for \
+             the records of a view it keeps",
+            lakelands_api::seam::KEPT_PREFIX
+        ));
+    }
+    let view = !declares && o.ty(ty).is_ok_and(|t| t.view.is_some());
+    view.then(|| format!("writes a record of `{ty}`, a view, whose records are computed"))
 }
 
 /// Whether the fold of an event reads a record: such an event is folded

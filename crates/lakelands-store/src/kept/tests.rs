@@ -715,49 +715,84 @@ async fn a_declaration_that_computes_a_source_again_makes_the_view_again() {
     );
 }
 
-/// A log that declares a type under a kept name, or writes a record of
-/// one, is not folded: no door appends either, and the second would
-/// change a view's kept record behind its state.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_event_that_names_a_kept_name_is_not_folded() {
-    let kept = lakelands_api::seam::kept_name(&"book".into());
-    let declared = EventBody::Declared {
-        declaration: serde_json::from_value(stored(kept.as_str(), &[("kind", "text")]))
-            .expect("a declaration"),
-        schema_hash: None,
-        version: 1,
-    };
-    let retired = EventBody::RecordRetired {
-        ty: kept.clone(),
-        key: "k".into(),
-        version: lakelands_api::Version(2),
-    };
-    let mut said = Vec::new();
-    for (body, what) in [(declared, "declared"), (retired, "retired")] {
+/// Each event, as its JSON, appended raw to a lake of its own that keeps
+/// `book` over `line` and `above` over `book`, is refused, saying what its
+/// `named` says. Both views, the state of `book` and the renames read as
+/// before it.
+async fn not_folded(bodies: &[(Value, &str)]) {
+    for (body, named) in bodies {
+        let what = &body["kind"];
         let mut declarations = vec![stored("line", &[("kind", "text"), ("net", "decimal")])];
         let total = [("total", "sum(net)")];
         declarations.extend(views("book", "line", &["kind"], json!({}), &total));
+        for twin in ["book", "book_twin"] {
+            let mut both = views("above", twin, &[], json!({}), &[("all", "sum(total)")]);
+            declarations.push(both.remove(usize::from(twin != "book")));
+        }
+        declarations.extend(views("loose", "line", &[], json!({}), &[("n", "count()")]));
         let t = Kept::new(declarations).await;
         t.put("line", "a", json!({"kind": "k", "net": "3"})).await;
         t.set("view_kept.book", json!(true)).await;
-        let before = t.same("book", what).await;
+        t.set("view_kept.above", json!(true)).await;
+        let rest = |t: &Kept| format!("{:?} {:?}", t.state("book"), t.lake.renames(None));
+        let seen = [t.same("book", "").await, t.same("above", "").await];
+        let before = rest(&t);
         let folded = {
             let mut w = t.lake.writer();
+            let body = serde_json::from_value(body.clone()).expect("an event");
             let draft = crate::log::Draft::system(t.lake.clock(&mut w), body);
-            t.lake.append(&mut w, vec![draft]).map(|_| ())
+            let folded = t.lake.append(&mut w, vec![draft]);
+            folded.expect_err("not folded").to_string()
         };
-        assert_eq!(
-            t.read(&t.owner, "book").await,
-            before,
-            "{what}: the view as it was"
-        );
-        said.push(folded.map_err(|e| e.to_string()));
+        let own = &t.owner;
+        let now = [t.read(own, "book").await, t.read(own, "above").await];
+        assert_eq!((now, rest(&t)), (seen, before), "{what}: as it was");
+        assert!(folded.contains(named), "{what}: {folded}");
     }
-    let refused = |s: &Result<(), String>| {
-        let named = "`sys:kept.book`: a name that begins `sys:kept.`";
-        s.as_ref().is_err_and(|e| e.contains(named))
-    };
-    assert!(said.iter().all(refused), "{said:?}");
+}
+
+/// A log that declares a type under a kept name, writes a record of one or
+/// moves one into a set is not folded: no door appends any, and the second
+/// would change a view's kept record behind its state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_event_that_names_a_kept_name_is_not_folded() {
+    let k = "sys:kept.book";
+    let named = "`sys:kept.book`: a name that begins `sys:kept.`";
+    let declared = json!({"kind": "declared", "declaration": stored(k, &[]), "version": 1});
+    let retired = json!({"kind": "record_retired", "type": k, "key": "k", "version": 2});
+    let set =
+        json!({"kind": "object_set_changed", "set": "s", "type": k, "key": "k", "joined": true});
+    not_folded(&[(declared, named), (retired, named), (set, named)]).await;
+}
+
+/// An output under a seam of the store's own is not folded: no door
+/// records under one, and the fold would read it as renames, or as a kept
+/// view's state, it never made.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_output_under_a_seam_of_the_stores_own_is_not_folded() {
+    let said = |s| format!("records under `{s}`: a seam that begins `sys:` is the store's own");
+    let output = |seam, input, output| json!({"kind": "output_recorded", "seam": seam, "input": input, "output": output});
+    let zero = json!(lakelands_api::event::Digest::zero());
+    let renames = output(crate::lake::RENAMES, zero, json!([]));
+    let book = json!(crate::backed::digest(&Value::from("book")));
+    let state = json!({"whole": false, "not_exact": [3, 3], "differ": 3});
+    let (r, k) = (said(crate::lake::RENAMES), said(KEPT));
+    not_folded(&[(renames, &r), (output(KEPT, book, state), &k)]).await;
+}
+
+/// A record event, or a set's member, under a view's name is not folded:
+/// a view's records are computed and no door writes one. Under a kept
+/// inner view the record would reach the outer view as a member; under a
+/// view not kept it would wait for the view to be declared a stored type.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_record_of_a_view_is_not_folded() {
+    let said = |ty| format!("writes a record of `{ty}`, a view, whose records are computed");
+    let write = |kind, ty, patch| json!({"kind": kind, "type": ty, "key": "j", "version": 1, "patch": patch, "made": true});
+    let set = json!({"kind": "object_set_changed", "set": "s", "type": "book", "key": "j", "joined": true});
+    let upserted = write("record_upserted", "book", json!({"total": "40"}));
+    let ingested = write("record_ingested", "loose", json!({"n": "7"}));
+    let (book, loose) = (said("book"), said("loose"));
+    not_folded(&[(upserted, &book), (ingested, &loose), (set, &book)]).await;
 }
 
 /// A view without group fields is one record, kept over no member too.
