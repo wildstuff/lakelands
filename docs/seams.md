@@ -1213,8 +1213,9 @@ caught up when `next` is past `head`, and reads on at once until then
 filter that matches nothing and one that matches its checkpoints):
 
 - `events`: at most `limit` events (a `limit` of 0 is read as 1, and one
-  above `FEED_EXAMINED` as `FEED_EXAMINED`) from `from` up to the head, each verified as it is read, in position order,
-  whose kind is one of `filter.kinds` and whose type is one of
+  above `FEED_EXAMINED` as `FEED_EXAMINED`) from `from` up to the head,
+  each verified as it is read, in position order, whose kind is one of
+  `filter.kinds` and whose type is one of
   `filter.types`; an empty list in the filter admits every kind or every
   type. An event has a type when it is a `record_*`, `trigger_fired` or
   `object_set_changed` event, a `declared` type or a `migrated` one (a

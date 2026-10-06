@@ -362,16 +362,18 @@ pub async fn pump(
         }
         watch.advance(generation, batch.next);
         view_at = Some(batch.next);
-        if caught_up(&batch) {
+        if caught_up(&batch, from) {
             wait(&watch, &queue, pause).await;
         }
     }
 }
 
 /// Whether a batch reached the head, so the pump pauses before it polls
-/// again; a batch with no events may stop short of it.
-fn caught_up(batch: &FeedBatch) -> bool {
-    batch.next > batch.head
+/// again; a batch with no events may stop short of it. One whose `next`
+/// did not move from `from` pauses too, rather than poll the same place
+/// at once again.
+fn caught_up(batch: &FeedBatch, from: Position) -> bool {
+    batch.next > batch.head || batch.next == from
 }
 
 /// The lake as its host reads it: every field of every type.
@@ -617,7 +619,8 @@ mod tests {
 
     /// A poll stops after `FEED_EXAMINED` events examined, so a batch with
     /// no events short of the head is not the end of the log: the pump
-    /// reads on at once and pauses only past the head.
+    /// reads on at once and pauses only past the head, or when `next` did
+    /// not move.
     #[test]
     fn an_empty_batch_short_of_the_head_is_not_caught_up() {
         let examined = Position(u64::from(lakelands_api::seam::FEED_EXAMINED));
@@ -626,7 +629,12 @@ mod tests {
             next,
             head,
         };
-        assert!(!caught_up(&batch(examined, Position(10_000))));
-        assert!(caught_up(&batch(Position(10_001), Position(10_000))));
+        let from = Position::GENESIS;
+        assert!(!caught_up(&batch(examined, Position(10_000)), from));
+        assert!(caught_up(&batch(Position(10_001), Position(10_000)), from));
+        assert!(
+            caught_up(&batch(examined, Position(10_000)), examined),
+            "a batch whose `next` did not move pauses"
+        );
     }
 }

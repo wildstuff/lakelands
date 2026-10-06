@@ -255,8 +255,12 @@ named, and nothing from the environment.
 
 - A call as a principal sends that principal's key; a principal the
   client holds no key for is refused before anything is sent.
-- The feed is read as server-sent events until the limit, or until the
-  stream says `: next`; a stream silent for two keep-alives is
+- The feed is read as server-sent events until the limit, at most
+  `FEED_EXAMINED` events as a store's poll answers, or until the
+  stream says `: next`. The server reads on, a bounded poll at a time,
+  and says `: next` only at the head, so a poll over the wire reads to
+  its limit or to the head and may examine more than `FEED_EXAMINED`
+  events. A stream silent for two keep-alives is
   `unavailable`. A stream that keeps talking, in keep-alives or empty
   lines, is not silent and holds a poll open until its limit; the
   caller's own timeout is the bound for that. An ingest is held to the
