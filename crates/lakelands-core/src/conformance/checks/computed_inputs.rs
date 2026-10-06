@@ -25,7 +25,7 @@ use crate::conformance::{Failure, Reopen};
 check!(
     /// A computed field is read as what it is computed from, listed or not.
     COMPUTED_AS_ITS_INPUTS = a_computed_field_is_read_no_further_than_what_it_is_computed_from,
-    "024, extended (lakelands#540): a field computed by an expression, by a function with an expression or by one with a backing, and a field computed from such a field, is not answered to a reader who may not know of a field it is computed from, whether or not `depends_on` lists it: not by `get`, a `where`, an `order_by`, an aggregate, a view's measure, a pattern's projection or a search; a masked input masks it; `describe` shows the completed list, the log holds the declaration as it was sent, and a lake that holds such a field is closed when it is opened again; a function declared again with fewer inputs restricts by those alone, a reader and an author alike; a proposed shape and a relation's link field are held to the same, and a listed proposal's `more` says what was left out of its shape, not what was completed",
+    "024, extended (lakelands#540, lakelands#652): a field computed by an expression (one that uses `previous` or `changed` as well), by a function with an expression or by one with a backing, and a field computed from such a field, is not answered to a reader who may not know of a field it is computed from, whether or not `depends_on` lists it: not by `get`, a `where`, an `order_by`, an aggregate, a view's measure, a pattern's projection or a search; a masked input masks it; `describe` shows the completed list, the log holds the declaration as it was sent, and a lake that holds such a field is closed when it is opened again; a function declared again with fewer inputs restricts by those alone, a reader and an author alike; a proposed shape and a relation's link field are held to the same, and a listed proposal's `more` says what was left out of its shape, not what was completed",
     reopens
 );
 
@@ -117,8 +117,10 @@ async fn x_of(l: &Lake, who: &Principal, ty: &str) -> Result<Option<FieldDescrip
 
 /// Each type, and the computed fields of it a reader kept from `b` must
 /// not be answered.
-const WAYS: [(&str, &[&str]); 7] = [
+const WAYS: [(&str, &[&str]); 9] = [
     ("by_expr", &["x"]),
+    ("by_previous", &["x"]),
+    ("by_changed", &["x"]),
     ("by_function", &["x"]),
     ("by_backing", &["x"]),
     ("chain_in", &["y"]),
@@ -173,9 +175,12 @@ async fn a_computed_field_is_read_no_further_than_what_it_is_computed_from(
     // which lists `x`.
     let upper = || json!({"derived": "upper(b)"});
     let lower = || json!({"derived": "lower(x)"});
+    let derived = |e: &str| json!({ "derived": e });
     let by = |function: &str| json!({"function": function});
     let ways = [
         vec![computed("x", upper(), &[])],
+        vec![computed("x", derived("previous(b)"), &[])],
+        vec![computed("x", derived("if(changed(a), b, b)"), &[])],
         vec![computed("x", by("shout"), &[])],
         vec![computed("x", by("lookup"), &[])],
         vec![computed("x", upper(), &["b"]), computed("y", lower(), &[])],
@@ -191,6 +196,10 @@ async fn a_computed_field_is_read_no_further_than_what_it_is_computed_from(
         l.declare_json(json!({"declare": "type", "name": ty, "fields": all}))
             .await?;
         l.upsert(ty, "1", json!({"a": "1", "b": "Secret"})).await?;
+        // `previous(b)` holds a value once `b` is written again.
+        if ty == "by_previous" {
+            l.upsert(ty, "1", json!({"b": "plain"})).await?;
+        }
         for field in fields {
             let measures = json!([{"name": "m", "expr": format!("max({field})")}]);
             let view = json!({"source": ty, "group_by": ["a"], "measures": measures});

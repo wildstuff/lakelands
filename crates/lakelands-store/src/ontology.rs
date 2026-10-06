@@ -126,13 +126,25 @@ impl Ontology {
     /// it is computed from: what its expression reads, or its function's
     /// inputs. A field is read no further than what it depends on, so a
     /// computed field must list what it hands out, whether or not its
-    /// declaration did (024, extended).
+    /// declaration did (024, extended). An expression whose reads cannot
+    /// be told reads every other field beside it, of its type or of its
+    /// relation: such a field is closed, never open.
     pub fn complete(&self, t: &mut TypeDecl) {
-        // An embedding names what it is made from in `embed.from` already.
-        for f in computed(t).filter(|f| f.embed.is_none()) {
-            let mut reads = crate::backed::computed_reads(self, f).unwrap_or_default();
-            reads.retain(|r| !f.depends_on.contains(r));
-            f.depends_on.extend(reads);
+        let links = t.relations.iter_mut().map(|r| &mut r.fields);
+        for fields in std::iter::once(&mut t.fields).chain(links) {
+            let all: Vec<FieldName> = fields.iter().map(|f| f.name.clone()).collect();
+            // An embedding names what it is made from in `embed.from` already.
+            for f in fields.iter_mut().filter(|f| f.embed.is_none()) {
+                let mut reads = match crate::backed::computed_reads(self, f) {
+                    Some(reads) => reads,
+                    None if f.derived.is_some() => {
+                        all.iter().filter(|n| **n != f.name).cloned().collect()
+                    }
+                    None => continue,
+                };
+                reads.retain(|r| !f.depends_on.contains(r));
+                f.depends_on.extend(reads);
+            }
         }
     }
 

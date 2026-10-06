@@ -363,7 +363,10 @@ fn put(
 
 /// The fields a computed field reads: a derived expression's reads, the
 /// inputs of the function that computes it, or the fields an embedding
-/// is made from. `None` for a field the fold does not compute.
+/// is made from. `None` for a field the fold does not compute, and for an
+/// expression whose reads cannot be told. A derived expression is read as
+/// its declaration is checked, in a write, where `previous` and `changed`
+/// read the field they name.
 pub(crate) fn computed_reads(o: &Ontology, f: &FieldDecl) -> Option<BTreeSet<FieldName>> {
     if let Some(e) = &f.embed {
         return Some(e.from.iter().cloned().collect());
@@ -372,7 +375,7 @@ pub(crate) fn computed_reads(o: &Ontology, f: &FieldDecl) -> Option<BTreeSet<Fie
         return Some(func.decl.inputs.iter().map(|i| i.name.clone()).collect());
     }
     let e = f.derived.as_ref()?;
-    let e = crate::declare::condition(e, lakelands_core::expr::Place::Record, "derived").ok()?;
+    let e = crate::declare::condition(e, lakelands_core::expr::Place::Write, "derived").ok()?;
     Some(lakelands_core::derive::reads(&e))
 }
 
