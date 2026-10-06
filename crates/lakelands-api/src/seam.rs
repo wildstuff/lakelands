@@ -89,8 +89,8 @@ pub trait EmbedBackend: Send + Sync {
 
     /// One vector per text, in order. `Invalid` refuses the request for
     /// what it carries, and the store asks again in halves to find the
-    /// text; any other error is weather, recorded for every text the
-    /// request carried. Any failure reaches the caller of the search that
+    /// text; any other error is weather, recorded for every text of the
+    /// batch not answered yet. Any failure reaches the caller of the search that
     /// asked as `Unavailable`, whatever error the backend answered: the
     /// store never falls back to lexical ranking for a backend that is
     /// bound.

@@ -510,6 +510,20 @@ A host that already has a store of its own moves in four steps.
   is not computed does not, since it computes nothing. From a shell: `lakelands recompute --function
   <name>` or `--type <name>`. See
   `docs/decisions/022-functions-are-declarations.md`.
+- **A write waits for its own calls, not for a backlog (lakelands#642).**
+  A declaration that makes embeddings or calls due over a type answers
+  once its sweep has made them all. A write made meanwhile that makes
+  nothing due answers at once; one that makes a call due waits for the
+  batch in flight and its own (a batch of up to 64 texts, one request or,
+  where the backend refuses texts, up to 127 by its halving; or one
+  function call; and their recordings), and one batch more of what no
+  write waits for any more, not for the backlog. What a declaration
+  whose caller went away (or whose drain failed) still owes advances by
+  one batch with each later write that owes a call, or is made by a
+  `recompute` of the type. A change of an embedding's
+  `model` clears every vector of the type: until the sweep has embedded
+  them again, the type's records are out of vector search, and
+  `vector_coverage` counts them due.
 - **A text the embedding backend refuses fails alone (lakelands#658).**
   The store sends the texts due for one model in batches of up to 64.
   A backend that answers `Invalid` refuses the request for what it
@@ -604,11 +618,13 @@ A host that already has a store of its own moves in four steps.
   and 9 MB on PostgreSQL at both sizes. A bundle of two changed
   functions holds the writer 12 s on SQLite and 21 s on PostgreSQL at
   100 000 records (50 s and 99 s at 400 000), at 4 MB and 11 MB. The
-  time grows with the type's records; the peak does not. Two things
-  still grow with them: the calls an embedding or a function computed outside the lake
-  makes due on that append, one for every record whose output is not
-  recorded, held until they are made; and what the engine holds of an open transaction, which on the
-  memory engine is every put. A rebuild, or an open that catches up,
+  time grows with the type's records; the peak does not. One thing
+  still grows with them: what the engine holds of an open transaction,
+  which on the memory engine is every put. The calls an embedding or a
+  function computed outside the lake makes due on that append do not:
+  the declaration owes one sweep over the type, read after the append
+  a page of 64 records at a time, the writer released between pages
+  (lakelands#609). A rebuild, or an open that catches up,
   commits inside a page of the log after such a declaration, so there
   too each record is computed once for each declaration. Such a fold of
   the log makes no call due and holds none: a rebuild of 100 000

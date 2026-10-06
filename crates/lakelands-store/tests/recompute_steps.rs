@@ -33,10 +33,10 @@ use lakelands_core::conformance::fixture::{
     self, computed_by, derived, embedding, field, patch, type_decl,
 };
 use lakelands_engine_mem::MemoryOpener;
-use lakelands_store::backed::{self, Call};
+use lakelands_store::backed::{self, Call, Of, Owed};
 use lakelands_store::lake::Lake;
 use lakelands_store::log::Draft;
-use probed::{Asked, Probe, ProbedOpener};
+use probed::{Asked, Probe, ProbedOpener, calls};
 use serde_json::{Value, json};
 
 /// A lake on the probed memory engine, written by hand-built events.
@@ -107,7 +107,7 @@ impl Folded {
     /// The calls that are due, taken: cause, type, key, field, the call's
     /// inputs, and whether a recorded failure is called again.
     fn due(&self) -> Vec<(u64, String, String, String, Value, bool)> {
-        let due = std::mem::take(&mut self.lake.writer().due);
+        let due = calls(&self.lake);
         let one = |d: backed::Due| {
             let inputs = match &d.call {
                 Call::Function { call, .. } => call.inputs.clone(),
@@ -434,23 +434,21 @@ fn row_3_an_output_recorded_later_fills_the_record_the_step_cleared() {
         (json!([{"title": "A"}, 1, q[0].0]), None),
         "row 3: as of the `declared` the field is cleared, at the `declared`'s position"
     );
-    let w = l.lake.writer();
-    let lake = |d: &backed::Due| match &d.call {
-        Call::Function { call, .. } => call.lake.to_string(),
-        Call::Embed { .. } => String::new(),
-    };
-    let due: Vec<_> = (w.due.iter())
-        .map(|d| (d.cause, d.key.as_str(), d.context, lake(d)))
+    let owed: Vec<_> = (l.lake.writer().owed.iter())
+        .map(|o| {
+            (
+                o.cause,
+                o.ty.to_string(),
+                o.context,
+                matches!(o.of, Of::Sweep { .. }),
+            )
+        })
         .collect();
-    let made = || (q[0], "a", context(1), "recompute-3".to_owned());
-    // The forced settle clears the filled field and makes its call due;
-    // the pass after it finds the field waiting and makes it due again. So
-    // the fold has it today, and the drain makes one call of the two.
     assert_eq!(
-        due,
-        [made(), made()],
-        "row 3: the step makes the record's call due, with the `declared`'s context and \
-         lake; the later read through the step makes none"
+        owed,
+        [(q[0], "doc".to_owned(), context(1), true)],
+        "row 3: the step leaves its type owed, with the `declared`'s context; the later read \
+         through the step owes nothing"
     );
 }
 
@@ -633,6 +631,26 @@ fn migrated(to: TypeDecl, moves: &[(&str, &str)]) -> EventBody {
         report_id: "by hand".into(),
         rekeyed: moves.iter().map(moved).collect(),
     }
+}
+
+/// A migration whose fold fails carries what is owed once: the fold that
+/// catches up carries it from where the last commit left it.
+#[test]
+fn a_migration_whose_fold_fails_carries_what_is_owed_once() {
+    let l = summing("recompute-carried", &[("doc", "b", "B")]);
+    l.bodies(vec![wrote("doc", "a", 1, json!({"title": "A"}))]);
+    *l.probe.refuse_commit.lock().unwrap() = Some(1);
+    let chained = migrated(summed("doc"), &[("a", "b"), ("b", "c")]);
+    l.try_append(vec![system(chained)])
+        .expect_err("the fold fails");
+    l.bodies(vec![wrote("doc", "z", 1, json!({"title": "Z"}))]);
+    let keys: Vec<String> = (l.lake.writer().owed.iter())
+        .map(|o| match &o.of {
+            Of::Record(key) => key.to_string(),
+            Of::Sweep { .. } => "*".to_owned(),
+        })
+        .collect();
+    assert_eq!(keys, ["b", "z"], "`a`'s entry moves to `b` once");
 }
 
 #[test]
@@ -1414,27 +1432,27 @@ fn the_dues_of_a_commit_inside_a_page_stay_due_when_the_page_fails_after_it() {
             .expect("the mark");
         assert_eq!(folded, Some(Position(w1 - 1)), "{failing} is refused");
         let due = |l: &Folded| -> Vec<(u64, String)> {
-            l.due().into_iter().map(|d| (d.0, d.2)).collect()
+            let owed = std::mem::take(&mut l.lake.writer().owed);
+            let of = |o: &Owed| match &o.of {
+                Of::Record(key) => key.to_string(),
+                Of::Sweep { .. } => "*".to_owned(),
+            };
+            owed.iter().map(|o| (o.cause.0, of(o))).collect()
         };
         let key = |at: u64, key: &str| (at, key.to_owned());
         assert_eq!(
             due(&l),
-            [key(d1, "a"), key(d1, "a"), key(d1, "c")],
-            "{failing} is refused: what the commit inside the page holds stays due, the calls \
-             the flush made; the calls of what was rolled back do not"
+            [key(d1, "*")],
+            "{failing} is refused: what the commit inside the page holds stays owed, the \
+             flush's sweep; what was rolled back does not"
         );
         // The next fold makes the calls of the rest, once.
         let appended = l.try_append(z()).expect("the next fold, and the append");
         assert_eq!(
             due(&l),
-            [
-                key(w1, "w"),
-                key(d2, "a"),
-                key(d2, "c"),
-                key(d2, "w"),
-                key(appended[0].0, "z")
-            ],
-            "after {failing} was refused, the next fold makes due what the rest of the page makes"
+            [key(w1, "w"), key(d2, "*"), key(appended[0].0, "z")],
+            "after {failing} was refused, the next fold leaves owed what the rest of the page \
+             owes"
         );
     }
 }

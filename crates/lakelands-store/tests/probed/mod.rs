@@ -6,7 +6,7 @@
 //! that hands another digest than the engine took or asks twice; and it
 //! counts the rows its scans hand out by type and the reads of a kept
 //! view's state, and keeps the last record put under each kept name and
-//! key.
+//! key. [`calls`] reads what a lake owes as the drain would.
 
 #![allow(dead_code)]
 
@@ -351,4 +351,25 @@ impl EngineOpener for ProbedOpener {
             probe: self.1.clone(),
         }))
     }
+}
+
+/// The calls the lake owes now, entry by entry, a sweep's over every
+/// page; the entries taken.
+pub fn calls(lake: &lakelands_store::lake::Lake) -> Vec<lakelands_store::backed::Due> {
+    use lakelands_store::backed::{Of, page};
+    let owed = std::mem::take(&mut lake.writer().owed);
+    let mut calls = Vec::new();
+    for mut o in owed {
+        loop {
+            let (rows, end) = page(lake, &o).expect("a page");
+            if let (Of::Sweep { after, .. }, Some((key, _))) = (&mut o.of, rows.last()) {
+                *after = Some(key.clone());
+            }
+            calls.extend(rows.into_iter().flat_map(|(_, c)| c).map(|(d, _)| d));
+            if end {
+                break;
+            }
+        }
+    }
+    calls
 }

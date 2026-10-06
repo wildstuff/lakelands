@@ -974,6 +974,7 @@ impl Call<'_> {
                 staged: None,
                 before: None,
                 due: None,
+                waiting: false,
             },
         )?
         .expect("a record event makes a record");
@@ -1092,6 +1093,7 @@ impl Call<'_> {
             staged: None,
             before: None,
             due: None,
+            waiting: false,
         };
         let after = record::apply(&w.ontology, Some(before), &event, &w.settings, outputs)?
             .expect("a retire makes a record");

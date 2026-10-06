@@ -41,7 +41,7 @@ use lakelands_api::{
 };
 use lakelands_core::{shape, unavailable};
 
-use crate::backed::{Due, Outputs, Recorded};
+use crate::backed::{Due, Of, Outputs, Owed, Recorded};
 use crate::kept;
 use crate::log::{self, Draft};
 use crate::ontology::Ontology;
@@ -61,11 +61,15 @@ pub struct Writer {
     pub ontology: Ontology,
     /// The settings at the head.
     pub settings: BTreeMap<String, Value>,
-    /// The calls of backed functions the appends made due and
-    /// [`crate::backed::settle`] has not taken yet. A call is due to the
-    /// append that wrote its event, never to a fold of the log (022,
-    /// extended).
-    pub due: Vec<Due>,
+    /// What the appends left owed to the backings and
+    /// [`crate::backed::settle`] has not recorded yet, in the order handed
+    /// out. It is owed to the append that wrote its event, never to a fold
+    /// of the log (022, extended).
+    pub owed: Vec<Owed>,
+    /// The answers the backings gave, by seam and digest, until they are
+    /// recorded: a batch whose recording failed is recorded from them by
+    /// the next, and its calls are not made again.
+    pub held: BTreeMap<(String, Digest), Value>,
     /// A fold failed after its events were in the log: the projection is
     /// behind the log, and nothing is appended until it has caught up.
     pub behind: bool,
@@ -106,11 +110,12 @@ pub struct Lake {
     pub seams: Seams,
     /// Bounds on one call's work.
     pub limits: Limits,
-    /// Held while the lake's due calls are made: one at a time per lake.
+    /// Held while a batch of the lake's owed calls is made: one batch at a
+    /// time per lake.
     pub calls: tokio::sync::Mutex<()>,
-    /// How many times due calls were drained: a writer that reads it
-    /// before its write knows, after, whether a neighbour made its calls.
-    pub drains: AtomicU64,
+    /// The causes writes wait for in [`crate::backed::settle`], each with
+    /// how many wait: an entry of any other cause is an orphan.
+    pub(crate) waiting: Mutex<BTreeMap<Position, usize>>,
     writer: Mutex<Writer>,
     /// The tip's position and whether the lease is held, as of the last
     /// change the writer made: read without the writer's lock, which an
@@ -142,6 +147,22 @@ pub(crate) fn opener(
         .ok_or_else(|| Error::Unbound {
             seam: format!("the engine `{name}` (no opener for it was passed in)"),
         })
+}
+
+thread_local! {
+    /// The causes of what this thread's appends left owed since [`owing`]
+    /// began.
+    static OWING: RefCell<BTreeSet<Position>> = const { RefCell::new(BTreeSet::new()) };
+}
+
+/// Run a write's `work`, and answer with its result the causes of what
+/// its appends left owed: the entries [`crate::backed::settle`] waits for.
+/// So do those of an append whose fold failed, which the fold that
+/// catches up before the write hands out.
+pub(crate) fn owing<T>(work: impl FnOnce() -> Result<T>) -> Result<(T, BTreeSet<Position>)> {
+    OWING.with(|o| o.borrow_mut().clear());
+    let done = work()?;
+    Ok((done, OWING.with(|o| std::mem::take(&mut *o.borrow_mut()))))
 }
 
 pub(crate) fn wall_clock() -> Timestamp {
@@ -292,14 +313,15 @@ impl Lake {
             seams,
             limits: location.limits,
             calls: tokio::sync::Mutex::new(()),
-            drains: AtomicU64::new(0),
+            waiting: Mutex::new(BTreeMap::new()),
             writer: Mutex::new(Writer {
                 lease,
                 tip: None,
                 last_known_at: Timestamp(i64::MIN),
                 ontology: Ontology::default(),
                 settings: BTreeMap::new(),
-                due: Vec::new(),
+                owed: Vec::new(),
+                held: BTreeMap::new(),
                 behind: false,
                 failed: None,
                 format: LOG_FORMAT_BASE,
@@ -678,7 +700,14 @@ impl Lake {
         };
         let owed = (!of_log).then_some(Position::GENESIS).or(w.failed);
         let projection = self.engine.projection();
-        let mut due = w.due.len();
+        let (start, mut due) = (w.owed.len(), w.owed.len());
+        // A migration carries the entries in place: a fold that fails puts
+        // them back as its last commit left them, for the fold that
+        // catches up to carry once.
+        let carries = events
+            .iter()
+            .any(|e| matches!(e.body, EventBody::Migrated { .. }));
+        let mut kept = carries.then(|| w.owed.clone());
         let mut staged = Staged {
             reads,
             ..Staged::default()
@@ -695,8 +724,11 @@ impl Lake {
                 {
                     drop(view);
                     projection.commit(events[i - 1].position)?;
-                    // What is committed stays due, whatever fails next.
-                    due = w.due.len();
+                    // What is committed stays owed, whatever fails next.
+                    due = w.owed.len();
+                    if let Some(kept) = kept.as_mut() {
+                        kept.clone_from(&w.owed);
+                    }
                     projection.begin()?;
                     staged = Staged::default();
                     view = self.engine.view(None)?;
@@ -711,6 +743,8 @@ impl Lake {
         match result {
             Ok(()) => {
                 w.behind = false;
+                let causes = w.owed[start..].iter().map(|o| o.cause);
+                OWING.with(|o| o.borrow_mut().extend(causes));
                 Ok(())
             }
             Err(e) => {
@@ -718,7 +752,10 @@ impl Lake {
                 // the writer read from it while folding.
                 projection.rollback();
                 w.behind = true;
-                w.due.truncate(due);
+                match kept {
+                    Some(kept) => w.owed = kept,
+                    None => w.owed.truncate(due),
+                }
                 if !of_log {
                     w.failed = Some(events[0].position);
                 }
@@ -877,9 +914,9 @@ impl Lake {
     /// and a record is put, and its vectors indexed, at each step that
     /// changes it: one state a step, as if each had walked at its event.
     /// Nothing of the view is kept, and what the transaction wrote stays
-    /// kept, changed or not. The calls made due by a step whose event is at
-    /// or past `owed` come by step, type and key, a record's fields in the
-    /// order they settle. A step that put nothing is dropped: a later read
+    /// kept, changed or not. A step whose event is at or past `owed`
+    /// leaves a sweep owed of each type of whose records it made a call
+    /// due, by step and type. A step that put nothing is dropped: a later read
     /// through it would change nothing either. Answers whether a step is
     /// kept.
     fn flush(
@@ -895,14 +932,19 @@ impl Lake {
         };
         let pending = std::mem::take(&mut staged.pending);
         let projection = self.engine.projection();
-        let (from, mut put) = (w.due.len(), vec![false; pending.len()]);
-        let mut through = |r: &mut StoredRecord, recorded: &Recorded, due: &mut Vec<Due>| {
-            for (s, put) in pending.iter().zip(&mut put) {
+        let mut put = vec![false; pending.len()];
+        let mut owing: BTreeSet<(usize, TypeName)> = BTreeSet::new();
+        let mut through = |r: &mut StoredRecord, recorded: &Recorded| {
+            for (i, (s, put)) in pending.iter().zip(&mut put).enumerate() {
                 let owes = owed.is_some_and(|p| s.event.position >= p);
-                if let Some(next) = s.apply(r, view, recorded, owes.then_some(&mut *due))? {
+                let mut due: Vec<Due> = Vec::new();
+                if let Some(next) = s.apply(r, view, recorded, owes.then_some(&mut due))? {
                     projection.put_record(&next)?;
                     self.index_vectors(&s.entries, &next)?;
                     (*r, *put) = (next, true);
+                }
+                if !due.is_empty() {
+                    owing.insert((i, r.ty.clone()));
                 }
             }
             Ok(())
@@ -922,7 +964,7 @@ impl Lake {
                     return Ok(());
                 }
                 let mut r = staged.stepped(view, row)?;
-                through(&mut r, &staged.outputs, &mut w.due)
+                through(&mut r, &staged.outputs)
             })?;
         }
         for ty in types {
@@ -930,10 +972,16 @@ impl Lake {
                 .range_mut((ty.clone(), RecordKey::from(""))..)
                 .take_while(|((t, _), _)| t == ty);
             for (_, r) in written {
-                through(r, &staged.outputs, &mut w.due)?;
+                through(r, &staged.outputs)?;
             }
         }
-        w.due[from..].sort_by(|a, b| (a.cause, &a.ty, &a.key).cmp(&(b.cause, &b.ty, &b.key)));
+        for (i, ty) in owing {
+            let sweep = Of::Sweep {
+                after: None,
+                retried: BTreeSet::new(),
+            };
+            w.owed.push(Owed::new(&pending[i].event, ty, sweep));
+        }
         let kept = put.contains(&true);
         let steps = pending.into_iter().zip(put);
         staged
@@ -1132,6 +1180,7 @@ impl Lake {
                     staged.outputs.insert(key, vec![(e.position, list)]);
                 }
                 let step = Migrated::new(&w.ontology, e.position, before, migration, rekeyed);
+                step.carry(&mut w.owed);
                 self.step(w, view, projection, staged, step)?;
             }
             EventBody::RecordUpserted { ty, key, .. }
@@ -1140,14 +1189,20 @@ impl Lake {
             | EventBody::RecordRestricted { ty, key, .. }
             | EventBody::RecordUnrestricted { ty, key, .. } => {
                 let before = staged.record(view, ty, key)?;
+                let mut due = Vec::new();
                 let mut outputs = Outputs {
                     view,
                     staged: Some(&staged.outputs),
                     before: None,
-                    due: owes.then_some(&mut w.due),
+                    due: owes.then_some(&mut due),
+                    waiting: false,
                 };
                 let after =
                     record::apply(&w.ontology, before.as_ref(), e, &w.settings, &mut outputs)?;
+                if !due.is_empty() {
+                    w.owed
+                        .push(Owed::new(e, ty.clone(), Of::Record(key.clone())));
+                }
                 if let Some(after) = after {
                     if ty.as_str() == SETTING_TYPE {
                         match after.fields.get("value").filter(|_| !after.retired) {
@@ -1216,11 +1271,13 @@ impl Lake {
                 if let Some((ty, key, name)) = field
                     && let Some(r) = staged.record(view, ty, key)?
                 {
+                    let mut due = Vec::new();
                     let mut outputs = Outputs {
                         view,
                         staged: Some(&staged.outputs),
                         before: None,
-                        due: owes.then_some(&mut w.due),
+                        due: owes.then_some(&mut due),
+                        waiting: false,
                     };
                     let next = record::fill(
                         &w.ontology,
@@ -1233,6 +1290,10 @@ impl Lake {
                         &w.settings,
                         &mut outputs,
                     )?;
+                    if !due.is_empty() {
+                        w.owed
+                            .push(Owed::new(e, ty.clone(), Of::Record(key.clone())));
+                    }
                     if let Some(next) = next {
                         projection.put_record(&next)?;
                         self.index_vectors(&w.ontology, &next)?;
@@ -1907,6 +1968,7 @@ impl Recomputed {
             staged: Some(recorded),
             before: Some(self.event.position),
             due,
+            waiting: false,
         };
         record::rederive(&self.entries, r, &self.event, &self.settings, &mut outputs)
     }
@@ -2014,6 +2076,25 @@ impl Migrated {
             (r.ty, r.position) = (to.clone(), self.at);
         }
         Ok(r)
+    }
+
+    /// Carry what is owed over the step: a record's entry to its new key,
+    /// an entry of a link type that moved to the type it moved to, and a
+    /// sweep of a type whose keys moved back to its first key.
+    fn carry(&self, owed: &mut [Owed]) {
+        for o in owed {
+            let (before, moves) = (o.clone(), self.moves.get(&o.ty));
+            let restart = moves.is_some() && matches!(o.of, Of::Sweep { .. });
+            match &mut o.of {
+                Of::Record(key) => *key = moves.and_then(|m| m.get(key)).unwrap_or(key).clone(),
+                Of::Sweep { after, .. } if restart => *after = None,
+                Of::Sweep { .. } => {}
+            }
+            o.ty = self.types.get(&o.ty).unwrap_or(&o.ty).clone();
+            if restart || *o != before {
+                o.moved += 1;
+            }
+        }
     }
 
     /// Whether `key` is the new key of a move: a record arrives at it.
