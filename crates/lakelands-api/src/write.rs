@@ -845,7 +845,8 @@ pub struct MigrationReport {
     /// relation's name, with the number of its live links, none for one
     /// not carried by link records. Removal is the migration's intent,
     /// named here before anything is applied; it does not make the report
-    /// lossy.
+    /// lossy. The apply discards what the counts count: a host that tests
+    /// for that reads them, or their sum, [`MigrationReport::discards`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dropped: Vec<(FieldName, u64)>,
     /// The relations the migration renames, each with how its edges are
@@ -876,7 +877,8 @@ pub struct MigrationReport {
     pub restated: Vec<Restated>,
     /// True when every stored value converts without loss, and every
     /// record a re-key moves takes a new key of its own. It speaks of
-    /// stored values: a migration that only restates is lossless.
+    /// stored values: a migration that only restates is lossless. It says
+    /// nothing of what the migration removes, which is `dropped`.
     pub lossless: bool,
     /// Names this report; `migrate_apply` must repeat it. It is the id of
     /// the whole report, whatever its reader is shown of it.
@@ -885,6 +887,14 @@ pub struct MigrationReport {
     /// says so, without a name. A logged and a stored report hold `false`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub more: bool,
+}
+
+impl MigrationReport {
+    /// The stored values and live links the apply discards: the sum of
+    /// `dropped`'s counts. Derived, so nothing on the wire carries it.
+    pub fn discards(&self) -> u64 {
+        self.dropped.iter().map(|(_, n)| n).sum()
+    }
 }
 
 /// How the values of one field convert to its new type.

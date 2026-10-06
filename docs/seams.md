@@ -2072,7 +2072,10 @@ before anything is applied; a field or a relation `to` adds is restated
 from null in each member it states otherwise than a bare declaration,
 its name among them; a `depends_on` the store completes restates nothing.
 `lossless` speaks of stored values: a migration that only restates is
-lossless, and `restated` is where it says what it changes. An entry is
+lossless, and `restated` is where it says what it changes. It says
+nothing of what the migration removes: the apply discards the values
+`dropped` counts, and a host that must know sums them
+(`MigrationReport::discards()` in Rust). An entry is
 answered where its reader may know of the field, as a conversion is, and
 member by member as `describe` shows that field: to one who knows of it
 and does not read it, in `to` or as the type stands, the members of its

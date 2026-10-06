@@ -353,6 +353,21 @@ A host that already has a store of its own moves in four steps.
   from the declarations it keeps, not from its log; until a writer has
   opened it once, each read-only open finds them again. See
   `docs/decisions/006-grants-not-roles.md`, extended.
+- **What a host reads before it applies a migration.** The preflight's
+  report says, each in one member: whether the apply is admitted
+  (`lossless`: every value the migration keeps converts, and every
+  record a re-key moves takes a key of its own; it says nothing of what
+  the migration removes); what goes (`dropped`: each removed field with
+  the records that hold a value, each removed relation with its live
+  links; the apply discards them, so a host that asks "is anything
+  lost?" sums the counts, `MigrationReport::discards()` in Rust); what
+  moves (`rekeyed`, `references`, `sample_collisions`); a relation's
+  rename (`relations`, `carried`, the entry below); and every other
+  member `to` states otherwise (`restated`, the entry after it). A
+  removal is the migration's intent and is consented to by repeating the
+  report's id, so `lossless: true` with a count above zero in `dropped`
+  is an apply that is admitted and discards values. See
+  `docs/decisions/027-shape-changes-are-declared-or-migrated.md`.
 - **A migration may rename a relation, and the relation keeps its
   edges.** `relation_renames` pairs an old name with a new one. A
   relation carried by a `via` field or derived from matching values is

@@ -1214,7 +1214,7 @@ fn generic_tools(lake: &LakeDescription, out: &mut Vec<ToolSpec>) {
             "type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 2}});
         out.push(ToolSpec {
             name: MIGRATE.into(),
-            description: "Change a type's shape (`to`) or tighten a value type (`value_type`), one of the two. Without `report_id` it only reports what would convert or no longer fit; with the id of that report it applies the migration.".into(),
+            description: "Change a type's shape (`to`) or tighten a value type (`value_type`), one of the two. Without `report_id` it only reports what would convert, what would no longer fit and what it drops (`dropped`, each with the records that hold a value); with the id of that report it applies the migration, which discards the values `dropped` counts. `lossless` speaks of what the migration keeps, not of what it drops: sum `dropped`'s counts to know what goes.".into(),
             input_schema: obj(
                 props([
                     ("to", json!({"type": "object"})),

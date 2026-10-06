@@ -382,6 +382,8 @@ interface types {
         to-schema-hash: string,
         records-scanned: u64,
         fields: list<field-conversion>,
+        /// Each removed field or relation, with the records or links
+        /// whose values the apply discards.
         dropped: list<tuple<field-name, u64>>,
         relations: list<relation-rename>,
         carried: list<carried>,
@@ -389,6 +391,8 @@ interface types {
         references: list<reference-rewrite>,
         sample-collisions: list<record-ref>,
         restated: list<restated>,
+        /// Every kept value converts and every moved record gets a key;
+        /// it says nothing of what `dropped` removes.
         lossless: bool,
         report-id: string,
         /// The report holds more than its reader is shown.
