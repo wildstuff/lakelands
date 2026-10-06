@@ -8,8 +8,10 @@
 //! `contains`, `starts_with`, `concat` and `coalesce`, a date-time shifted
 //! by a duration, and `now()` and `today()` where the scope has a clock
 //! (an aging run's date); any other function, `setting()` among them, is
-//! refused by name.
-//! Comparisons with `null` do not hold.
+//! refused by name. As on the store, a function over a null input is null,
+//! known or not, but `concat`, which skips it, and `coalesce`; a text
+//! function reads a number or a boolean as its text.
+//! Comparisons with `null` do not hold; `not` holds of anything but `true`.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -184,7 +186,8 @@ pub(crate) fn eval(e: &Expr, s: &Scope<'_>) -> Result<Value, Error> {
             }
             Value::Bool(false)
         }
-        Expr::Not { arg } => Value::Bool(eval(arg, s)? == Value::Bool(false)),
+        // As the store: `not` holds of anything but `true`, null included.
+        Expr::Not { arg } => Value::Bool(eval(arg, s)? != Value::Bool(true)),
         Expr::In { arg, list } => {
             let v = eval(arg, s)?;
             let mut found = false;
@@ -219,24 +222,21 @@ pub(crate) fn eval(e: &Expr, s: &Scope<'_>) -> Result<Value, Error> {
 }
 
 fn call(func: Func, args: &[Value]) -> Result<Value, Error> {
-    let text = |i: usize| args.get(i).and_then(Value::as_str).unwrap_or_default();
+    // As the store: a function over a null input is null, but `concat`,
+    // which skips it, and `coalesce`, which chooses.
+    if !matches!(func, Func::Concat | Func::Coalesce) && args.iter().any(Value::is_null) {
+        return Ok(Value::Null);
+    }
+    let text = |i: usize| args.get(i).map(as_text).unwrap_or_default();
     let string = |s: String| Value::String(s);
     Ok(match func {
         Func::Lower => string(text(0).to_lowercase()),
         Func::Upper => string(text(0).to_uppercase()),
         Func::Trim => string(text(0).trim().to_owned()),
         Func::Len => Value::from(text(0).chars().count()),
-        Func::Contains => Value::Bool(text(0).contains(text(1))),
-        Func::StartsWith => Value::Bool(text(0).starts_with(text(1))),
-        Func::Concat => string(
-            args.iter()
-                .map(|a| match a {
-                    Value::String(s) => s.clone(),
-                    Value::Null => String::new(),
-                    other => other.to_string(),
-                })
-                .collect(),
-        ),
+        Func::Contains => Value::Bool(text(0).contains(&text(1))),
+        Func::StartsWith => Value::Bool(text(0).starts_with(&text(1))),
+        Func::Concat => string(args.iter().map(as_text).collect()),
         Func::Coalesce => args
             .iter()
             .find(|a| !a.is_null())
@@ -253,6 +253,16 @@ fn call(func: Func, args: &[Value]) -> Result<Value, Error> {
             )));
         }
     })
+}
+
+/// A value as a text function reads it, as the store does: a number or a
+/// boolean as its text, null as nothing.
+fn as_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
 }
 
 fn literal(l: &Literal) -> Value {
