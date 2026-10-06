@@ -132,7 +132,7 @@ pub fn sort_value(record: &StoredRecord, order: &Order) -> Option<Value> {
 
 /// One sort key's order between two optional values: missing last in
 /// either direction.
-fn cmp_key(a: Option<&Value>, b: Option<&Value>, dir: Direction) -> Ordering {
+pub fn cmp_key(a: Option<&Value>, b: Option<&Value>, dir: Direction) -> Ordering {
     match (a, b) {
         (None, None) => Ordering::Equal,
         (None, Some(_)) => Ordering::Greater,

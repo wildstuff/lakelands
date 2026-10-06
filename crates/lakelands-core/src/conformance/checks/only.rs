@@ -22,7 +22,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, field, head_unmoved, principal, searchable, type_decl, vector, view_of,
+    Lake, Must, field, head_unmoved, principal, restrict, searchable, type_decl, vector, view_of,
 };
 
 check!(
@@ -40,7 +40,7 @@ check!(
 check!(
     /// A view is computed for a holder of `only` from its admitted records.
     ONLY_VIEWS = a_view_answers_a_holder_its_own_groups,
-    "051: a view grouped by every field a source's `only` names answers its holder the groups it is admitted, kept or not; one that is not is computed from the admitted records alone, a view over it too; `only` on a view admits its groups by their fields; `describe_type` says `only some` of such a view to its holder"
+    "051: a view grouped by every field a source's `only` names answers its holder the groups it is admitted, kept or not; one that is not is computed from the admitted records alone, a view over it too; `only` on a view admits its groups by their fields; `describe_type` says `only some` of such a view to its holder; a pair on a kept view's measure admits a holder of the `restricted` grant only the groups whose whole face holds it too, through `find`, `total` and `get` (lakelands#628)"
 );
 
 check!(
@@ -420,8 +420,32 @@ async fn a_view_answers_a_holder_its_own_groups(store: Arc<dyn LakeStore>) -> Re
         "carol",
         json!({"default": "read", "types": types}),
     );
-    finds(&l, &carol, HELD_VIEWS, Position::GENESIS).await
+    finds(&l, &carol, HELD_VIEWS, Position::GENESIS).await?;
+    // alice's `tier` is `gold` on the open face and `std` on the whole one,
+    // where her restricted claim is negative.
+    let tier = [("tier", "if(sum(amount) > 12, 'gold', 'std')")];
+    let by = vec![field("owner", Text), field("tier", Text)];
+    l.declare(view_of("tiers", "claim", &["owner"], by, &tier))
+        .await?;
+    l.set("view_kept.tiers", json!(true)).await?;
+    l.upsert("claim", "c4", json!({"owner": "alice", "amount": -10}))
+        .await?;
+    restrict(store.as_ref(), "claim", "c4", "a refund").await?;
+    let types = json!({"tiers": {"only": {"tier": "gold"}}});
+    let grants = json!({"default": "read", "restricted": true, "types": types});
+    let erin = holder(store.as_ref(), "erin", grants);
+    finds(&l, &erin, GOLD, Position::GENESIS).await?;
+    let got = get(&l, &erin, "tiers", "alice", None).await;
+    not_found(
+        "alice's group of `tiers`, `std` on the whole face, to erin",
+        got,
+    )
 }
+
+const GOLD: &str = r#"
+    tiers | `only` on a measure of the whole face | {} | bob
+    tiers | its total | {"total": true} | bob total=1
+"#;
 
 const LINKS: &str = r#"
     sys.link.claim.on_trip | the links | {} | c1:t1 c3:t1

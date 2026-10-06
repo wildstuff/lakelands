@@ -31,8 +31,8 @@
 //! held at the first size by at most a quarter plus 1 MiB. The quarter
 //! absorbs allocator rounding and the vectors a page or a window grows
 //! into. The 1 MiB absorbs a small first size, where fixed costs
-//! dominate. On every engine the operations held here measure the same at
-//! both sizes to within 0.2 MiB, so the slack is kept small: at 4 MiB,
+//! dominate. On memory and SQLite the operations held here measure the
+//! same at both sizes to within 0.3 MiB, so the slack is kept small: at 4 MiB,
 //! an ingest that kept every window's records and a verification that
 //! kept every file it read both passed. An operation that holds the whole range it reads grows about
 //! fourfold and exceeds the tolerance by far, even at the suite's small
@@ -76,9 +76,16 @@
 //! size, so held by the cap. And every record grouped by its site, by
 //! `find`'s aggregate and by a view that is then counted: a group keeps
 //! what its measures fold, never its records, so each holds a batch and
-//! the groups (lakelands#388). A
-//! harness without a meter runs everything else the check claims and
-//! reports the heap as not measured.
+//! the groups (lakelands#388). And the owner's first page of a kept view
+//! in key order while one group's whole face differs from its open one,
+//! which holds the page and that group, not the view (lakelands#628). The
+//! view, a group per record, is fed before the feed and the export, so
+//! each size's import and rebuild fold a view as large: its fold holds
+//! what a page of the log touches. On SQLite import and rebuild hold
+//! 12.2 MiB at both sizes at a page of 1 024 events and 6.1 MiB at 512;
+//! import held 5.7 MiB at the first size with no kept view. A harness
+//! without a meter runs everything else the check claims and reports the
+//! heap as not measured.
 //!
 //! **A reported line.** One more operation is measured against the same
 //! bound and reported, but never fails the check: the same first pages
@@ -89,12 +96,13 @@
 //!
 //! **What a green run does not show.** Two limits of the measurement:
 //!
-//! - The 1 MiB slack hides a hoard below about 175 bytes per record at
-//!   the suite's default sizes: 1 MiB over the 6 000 records between
-//!   2 000 and 8 000. A harness that asks for a smaller first size widens
-//!   that (about 320 bytes per record at 1 100). A hoard of the log's raw
-//!   bytes, about 400 per event, is caught at either. The long run
-//!   (25 000 and 100 000 records) narrows it to about 14 bytes per record.
+//! - The 1 MiB slack hides a hoard below about 87 bytes per record at
+//!   the suite's default sizes: 1 MiB over the 12 000 records added
+//!   between 2 000 and 8 000, a reading and a member of the kept view for
+//!   each. A harness that asks for a smaller first size widens that (about
+//!   160 bytes per record at 1 100). A hoard of the log's raw bytes, about
+//!   400 per event, is caught at either. The long run (25 000 and 100 000)
+//!   narrows it to about 7 bytes per record.
 //! - The meter counts Rust's allocator. SQLite allocates its own heap in
 //!   C, beside it, so a hoard inside the SQLite engine's C code is
 //!   invisible to the check. Each row reports the process's resident
@@ -127,7 +135,7 @@ use lakelands_api::ontology::{
 };
 use lakelands_api::query::{Pattern, Projection, QueryResult, Search, SearchMode, Walk};
 use lakelands_api::read::{AggFunc, Direction, OrderBy};
-use lakelands_api::seam::{FEED_EXAMINED, FeedFilter, SETTING_TYPE, Seams};
+use lakelands_api::seam::{FEED_EXAMINED, FeedFilter, SETTING_TYPE, Seams, VIEW_KEPT_SETTING};
 use lakelands_api::{
     Find, Found, LakeStore, Position, Principal, ReadAt, RecordKey, SourceId, SourceRecord,
     TypeName,
@@ -137,8 +145,8 @@ use sha2::{Digest as _, Sha256};
 
 use crate::conformance::backing::EMBED_MODEL;
 use crate::conformance::fixture::{
-    Lake, Must, agg, aggregate, declare, doors, embedding, field, limits, order, owner, pattern,
-    pause, reason, source_record, sourced, step, type_decl, view_of,
+    Lake, Must, agg, aggregate, declare, doors, embedding, field, ingest, limits, order, owner,
+    pattern, pause, reason, restrict, source_record, sourced, step, type_decl, view_of,
 };
 use crate::conformance::{Failure, Given, Meter, backing, next};
 use crate::export;
@@ -147,7 +155,7 @@ use crate::links::{link_key, link_type_name};
 check!(
     /// A large lake goes through ingest, the feed and export in bounded memory.
     STREAMS = a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it,
-    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification and its import into a new lake, each page of a walk of a type through find, the first pages of a walk ordered by an indexed field, with and without writes between them, each also reading its page and a few rows more, not the type, a rebuild, a reopen, a three-hop walk over link records, a three-hop walk over a derived relation, a hybrid search with k = 10 over every record's vector, without and with a vector index asked for, the ten records of highest degree over the whole type, and components refused at the lake's max_graph_nodes, hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB, and the search answers what it must; and (lakelands#558) a feed poll examines at most FEED_EXAMINED events: one whose filter matches nothing answers none and a next short of the head, and following next reaches it, the checkpoints are each answered once, an event is in the poll whose last examined position it is and not in the one before, and no limit answers more",
+    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification and its import into a new lake, each page of a walk of a type through find, the first pages of a walk ordered by an indexed field, with and without writes between them, each also reading its page and a few rows more, not the type, a rebuild, a reopen, a three-hop walk over link records, a three-hop walk over a derived relation, the owner's page of a kept view, in key order, while one group's whole face differs from its open one (lakelands#628), a hybrid search with k = 10 over every record's vector, without and with a vector index asked for, the ten records of highest degree over the whole type, and components refused at the lake's max_graph_nodes, hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB, and the search answers what it must; and (lakelands#558) a feed poll examines at most FEED_EXAMINED events: one whose filter matches nothing answers none and a next short of the head, and following next reaches it, the checkpoints are each answered once, an event is in the poll whose last examined position it is and not in the one before, and no limit answers more",
     given,
     embedding
 );
@@ -907,6 +915,72 @@ impl Size<'_> {
         Ok(())
     }
 
+    /// The owner's first page, in key order, of `ticks`: a kept view with
+    /// a group for each `tick`, one of which reads otherwise on the whole
+    /// face, where a second member is restricted. It holds the page and
+    /// that group, not the view (lakelands#628). It is fed before the
+    /// feed and the export, so each size's import carries a view as large.
+    async fn whole_face(
+        &mut self,
+        store: &dyn LakeStore,
+        from: u64,
+        records: u64,
+    ) -> Result<(), Failure> {
+        let (cat, own) = (doors(store), self.own.clone());
+        let tick = |key: &str, g: u64| source_record("tick", key, json!({"g": g}));
+        if from == 0 {
+            let ty = type_decl("tick", vec![sourced("g", StorageKind::Number)]);
+            declare(cat.as_ref(), &own, ty).await?;
+            let fields = vec![
+                field("g", StorageKind::Number),
+                field("c", StorageKind::Number),
+            ];
+            let view = view_of("ticks", "tick", &["g"], fields, &[("c", "count()")]);
+            declare(cat.as_ref(), &own, view).await?;
+            let l = Lake::of(store);
+            l.set(&format!("{VIEW_KEPT_SETTING}ticks"), json!(true))
+                .await?;
+            let held = ingest(cat.as_ref(), &own, SOURCE, vec![tick("held", 0)]).await;
+            held.must("feeding a tick")?;
+            restrict(store, "tick", "held", "held").await?;
+        }
+        let ticks = (from..records)
+            .map(|i| tick(&format!("t{i:09}"), i))
+            .collect();
+        ingest(cat.as_ref(), &own, SOURCE, ticks)
+            .await
+            .must("feeding ticks")?;
+        let head = store.head().await.must("reading the head")?;
+        let page = Find {
+            limit: Some(10),
+            ..Find::default()
+        };
+        let (started, m) = (Instant::now(), Measure::start(&self.given.meter, false));
+        let reply = cat.find(&own, &"ticks".into(), page).await;
+        let measured = (m.stop().0, started.elapsed());
+        let reply = reply.must("the owner's first page of `ticks`")?;
+        let Found::Records { rows, .. } = &reply.data else {
+            return Err(Failure::new("a page of `ticks` answered groups"));
+        };
+        let first = rows.first().and_then(|r| r.fields.get("c"));
+        ensure!(
+            rows.len() == 10 && first == Some(&json!(2)),
+            "the owner's page of `ticks` holds ten groups, the first `g` 0 of two members, one \
+             restricted; it held {} and the first counts {first:?}",
+            rows.len()
+        );
+        let what = format!("the owner's page of 10 of {records} kept groups, one differing");
+        self.row(
+            "kept-whole-page",
+            Claim::Held,
+            records,
+            head.0 + 1,
+            what,
+            measured,
+        );
+        Ok(())
+    }
+
     /// Jump to the last page of `reading` with `offset`, asking for its
     /// `total`, measured: the rows skipped are read and dropped a page at
     /// a time, and the total counted a batch at a time, whatever the size
@@ -1043,8 +1117,8 @@ impl Size<'_> {
         let limit = u64::from(limits().max_limit);
         // The store asks the engine for a page and one more row, which
         // tells it whether another page follows, and reads the lake's
-        // settings by key for every read: this check writes three.
-        let asked = limit + 1 + 3;
+        // settings by key for every read: this check writes four.
+        let asked = limit + 1 + 4;
         let live = self.live;
         let sorted = self
             .sorted_walk(store, records, "find-sorted-fallback", None, |_| {
@@ -1733,6 +1807,7 @@ async fn a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_doe
     for records in [first, first * u64::from(GROWTH)] {
         size.ingest(store.as_ref(), from, records - from).await?;
         size.link(store.as_ref(), from, records).await?;
+        size.whole_face(store.as_ref(), from, records).await?;
         let at = store.checkpoint().await.must("taking a checkpoint")?;
         let log = size.feed(store.as_ref(), records).await?;
         bounded(store.as_ref(), &log, at).await?;

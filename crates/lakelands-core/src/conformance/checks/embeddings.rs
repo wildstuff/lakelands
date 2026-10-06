@@ -775,7 +775,7 @@ check!(
 check!(
     /// An embedding kept as it is needs no backend.
     EMBED_UNBOUND_KEPT = a_declaration_that_keeps_an_embedding_needs_no_backend,
-    "022, extended, and lakelands#641: with no backend bound, a declaration that keeps a type's embedding as in force is admitted (restated, alone or in a set; a field added beside it; a migration), while one that adds an embedding or changes its model, dimensions or `from` is refused as unbound, naming the field, and so is `recompute` of the type",
+    "022, extended, and lakelands#641: with no backend bound, a declaration that keeps a type's embedding as in force is admitted (restated, alone or in a set, with a relation whose link type embeds; a field added beside it; a migration), while one that adds an embedding or changes its model, dimensions or `from` is refused as unbound, naming the field, and so is `recompute` of the type",
     reopens
 );
 
@@ -799,8 +799,23 @@ async fn quay(store: &dyn LakeStore) -> lakelands_api::Result<lakelands_api::que
         .map(|r| r.data)
 }
 
-/// `note` declared with the suite's backend, and the lake opened again
-/// with none bound.
+/// `berth`, whose `moors` to `note` carries `near`, the embedding of its
+/// link's `memo`.
+fn berths() -> lakelands_api::ontology::TypeDecl {
+    let mut ty = type_decl("berth", vec![]);
+    let fields = vec![
+        field("memo", StorageKind::Text),
+        embedding("near", 2, &["memo"], EMBED_MODEL),
+    ];
+    ty.relations = vec![lakelands_api::ontology::RelationDecl {
+        fields,
+        ..lakelands_api::ontology::RelationDecl::to("moors", "note")
+    }];
+    ty
+}
+
+/// `note` and `berths` declared with the suite's backend, and the lake
+/// opened again with none bound.
 async fn unbound_notes(
     store: Arc<dyn LakeStore>,
     reopen: &Reopen,
@@ -808,7 +823,7 @@ async fn unbound_notes(
     let store = reopen(store, with_embedder(Some(backing::embedder())))
         .await
         .map_err(|e| reopen_failed("with the suite's embedding backend", e))?;
-    notes(store.as_ref()).await?;
+    notes(store.as_ref()).await?.declare(berths()).await?;
     reopen(store, with_embedder(None))
         .await
         .map_err(|e| reopen_failed("with no embedding backend", e))
@@ -888,6 +903,7 @@ async fn a_declaration_that_keeps_an_embedding_needs_no_backend(
     let l = Lake::of(store.as_ref());
     let kept = notes_by(&["title", "body"], EMBED_MODEL, 2);
     l.declare(kept.clone()).await?;
+    l.declare(berths()).await?;
     let set = vec![lakelands_api::write::Declaration::Type(kept.clone())];
     l.cat
         .apply(&l.own, set)
