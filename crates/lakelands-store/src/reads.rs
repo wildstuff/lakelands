@@ -54,7 +54,6 @@ use lakelands_api::expr::{Expr, Func, Literal};
 use lakelands_api::ontology::{
     FieldType, MatchPair, RelationDecl, StorageKind, TypeDecl, VerbEffect,
 };
-use lakelands_api::principal::Renamed;
 use lakelands_api::query::{
     Edge, Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Step, Walk,
 };
@@ -473,6 +472,12 @@ impl<'a> Reader<'a> {
 
     fn declared(&self) -> Vec<lakelands_api::engine::Declared> {
         self.ontology.declared()
+    }
+
+    /// The declarations in force at `at`, if the lake can be read there.
+    fn ontology_at(&self, at: Position) -> Option<Ontology> {
+        let view = self.lake.engine.view(Some(at)).ok()?;
+        Ontology::at(view.as_ref()).ok()
     }
 
     /// The type, if the principal may see it at all.
@@ -1597,7 +1602,9 @@ impl<'a> Reader<'a> {
     }
 
     /// `proposals`: every proposal for a reviewer, one's own otherwise.
-    pub fn proposals(&self, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
+    /// `asked` is the principal as the call named it, before its grants
+    /// were followed to the read's position.
+    pub fn proposals(&self, filter: &ProposalFilter, asked: &Principal) -> Result<Vec<Proposal>> {
         let limit = self.limit(filter.limit, false)?;
         let offset = match &filter.cursor {
             Some(c) => resume(c, "proposals", None, &Params::new())?.offset as usize,
@@ -1635,17 +1642,19 @@ impl<'a> Reader<'a> {
             let mut logged = p.write.take();
             logged.iter_mut().for_each(|w| self.completed(w));
             let shown = logged.clone();
-            // What the lake renamed while a proposed migration waited.
-            let mut since = Vec::new();
+            // A proposed migration's reader, its grants followed to the
+            // position it was proposed at: what it names, it named then.
+            let mut then = None;
             if let Some(ProposedWrite::Migrate { .. }) = &shown {
                 if renames.get().is_none() {
                     let all = self.lake.renames(Some(self.view.as_ref()))?;
                     let _ = renames.set(all);
                 }
-                let all: &[Renamed] = renames.get().map_or(&[], Vec::as_slice);
-                since.extend(all.iter().filter(|r| r.at > p.position).cloned());
+                let mut who = asked.clone();
+                (who.grants).follow(renames.get().map_or(&[], Vec::as_slice), Some(p.position));
+                then = Some(who);
             }
-            let listing = (&lake, &since[..]);
+            let listing = (&lake, then.as_ref().unwrap_or(self.who), p.position);
             p.write = shown.and_then(|mut w| self.known_shape(&mut w, listing).then_some(w));
             p.more = p.write != logged;
         }
@@ -1685,7 +1694,7 @@ impl<'a> Reader<'a> {
     fn known_shape(
         &self,
         write: &mut ProposedWrite,
-        (lake, since): (&OnceCell<LakeDescription>, &[Renamed]),
+        (lake, then, at): (&OnceCell<LakeDescription>, &Principal, Position),
     ) -> bool {
         let read = |ty: &TypeName, field: &FieldName| {
             let t = self.visible_type(ty).ok();
@@ -1742,19 +1751,36 @@ impl<'a> Reader<'a> {
                     None => self.visible_type(&v.on).is_ok(),
                 }
             }
-            // The report names what the migration does to the type as it
-            // stands, so a name is judged there; the totals, the hashes and
-            // the report's id stay whole. A logged report is lossless, so
-            // it names no record that would not convert or would collide.
+            // The report names what the migration does to the type it was
+            // proposed against, so a name is judged there, with the
+            // reader's grants at the proposal; the totals stay whole. A
+            // logged report is lossless, so it names no record that would
+            // not convert or would collide. Its id is made again at the
+            // head before the proposal.
             ProposedWrite::Migrate { migration, report } => {
                 let Ok(was) = self.visible_type(&migration.to.name) else {
                     return false;
                 };
+                let head = self.ontology.types.get(&migration.to.name);
+                let stale =
+                    head.is_none_or(|e| e.schema_hash != Some(report.from_schema_hash.clone()));
+                // The type it was proposed against, read only where the
+                // reader's grants hide a field; a failed read leaves the
+                // type as it stands.
+                let hides = stale && rights::hides_some(then);
+                let proposed = hides.then(|| self.ontology_at(at)).flatten();
+                let made = proposed
+                    .as_ref()
+                    .and_then(|o| o.ty(&migration.to.name).ok());
+                let made = made.unwrap_or(was);
                 let sees = |ty: &TypeName| self.visible_type(ty).ok();
                 let all = || describe::lake(&self.who.lake, &self.declared(), self.who);
                 let described = || lake.get_or_init(all);
-                rights::shown_report(self.who, was, migration, report, described, sees, answered);
-                rights::known_migration(self.who, was, migration, since);
+                rights::shown_report(then, made, migration, report, described, sees, answered);
+                rights::shown_hashes(then, made, migration, report);
+                let before = Position(at.0.saturating_sub(1));
+                report.report_id = crate::writes::report_id(report, Some(before));
+                rights::known_migration(then, made, migration);
                 true
             }
             // Each declaration as `describe` would show it once the bundle

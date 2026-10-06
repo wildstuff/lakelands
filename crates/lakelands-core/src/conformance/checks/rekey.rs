@@ -992,9 +992,9 @@ async fn a_rekeys_report_counts_a_reference_field_the_migration_renames(
     hid.grants.schema = true;
     let shown = report(&l, &hid, &m).await?;
     ensure!(
-        shown.references.is_empty() && shown.more && shown.report_id == r.report_id,
-        "a reader kept from `up` is shown no entry for it, and that there is more; it was \
-         shown {:?}, more: {}",
+        shown.references.is_empty() && shown.more && shown.report_id != r.report_id,
+        "a reader kept from `up` is shown no entry for it, that there is more, and the id of \
+         what it is shown; it was shown {:?}, more: {}",
         shown.references,
         shown.more
     );

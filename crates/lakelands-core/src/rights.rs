@@ -25,7 +25,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::ontology::{Authority, FieldDecl, TypeDecl};
-use lakelands_api::principal::Renamed;
+use lakelands_api::principal::TypeGrants;
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::{Migration, MigrationReport};
 use lakelands_api::{
@@ -505,17 +505,48 @@ fn no_field(decl: &TypeDecl, name: &FieldName) -> Error {
 /// held through the migration's own renames, of fields and of the link
 /// types its renamed relations move; and a rename only where
 /// `who` may know of the field under both names, the old one in `was`,
-/// the type as it stands. `since` is what the lake's list of renames
-/// gained after the migration was written: a proposal that waited is
-/// judged from the names its old ones bear now.
-pub fn known_migration(who: &Principal, was: &TypeDecl, m: &mut Migration, since: &[Renamed]) {
-    // The migration's own renames, as the fold would record them.
-    let list = Renamed::at_head(since, crate::links::renamed(m, Position(u64::MAX)));
-    let (mut then, mut was) = (who.clone(), was.clone());
-    (then.grants).follow(&list, None);
+/// the type it was written against. A proposal that waited is judged by
+/// the names it was written with: `who` is its reader with the grants
+/// followed to the proposal's position, so a restriction on a name taken
+/// since reaches the name it bore then.
+pub fn known_migration(who: &Principal, was: &TypeDecl, m: &mut Migration) {
+    let (then, mut was) = (following(who, m), was.clone());
     known_fields(who, &mut was);
     described_fields(&then, &mut m.to);
     (m.renames).retain(|(old, new)| holds(&was, old) && holds(&m.to, new));
+}
+
+/// `who` with its grants held through a migration's own renames, as the
+/// fold would record them.
+fn following(who: &Principal, m: &Migration) -> Principal {
+    let mut then = who.clone();
+    (then.grants).follow(&crate::links::renamed(m, Position(u64::MAX)), None);
+    then
+}
+
+/// The schema hash of `t` as `who` is shown it (024, extended): without
+/// the fields it may not know of and a view it is not described; `whole`,
+/// the stored hash, where nothing is left out.
+pub fn shown_hash(who: &Principal, t: &TypeDecl, view_shown: bool, whole: &str) -> String {
+    let mut shown = t.clone();
+    known_fields(who, &mut shown);
+    shown.view = shown.view.filter(|_| view_shown);
+    match shown == *t {
+        true => whole.to_owned(),
+        false => crate::shape::schema_hash(&shown).unwrap_or_default(),
+    }
+}
+
+/// A report's hashes as `who` is shown them, set after [`shown_report`]
+/// decided `more`: `from` of `made`, the type it was made from, `to` with
+/// the grants held through the renames; whole to one not shown the type.
+pub fn shown_hashes(who: &Principal, made: &TypeDecl, m: &Migration, report: &mut MigrationReport) {
+    if report.ty != m.to.name {
+        return;
+    }
+    report.from_schema_hash = shown_hash(who, made, true, &report.from_schema_hash);
+    let then = following(who, m);
+    report.to_schema_hash = shown_hash(&then, &m.to, true, &report.to_schema_hash);
 }
 
 /// `t` as `describe` would show its fields to `who`, a relation's link
@@ -569,6 +600,15 @@ pub fn known_fields(who: &Principal, t: &mut TypeDecl) {
     }
 }
 
+/// Whether `who` may not know of some field: only a `none` its grants
+/// give, to the lake, a type or a field, hides one.
+pub fn hides_some(who: &Principal) -> bool {
+    let (g, none) = (&who.grants, |a: &Access| *a == Access::None);
+    let typed =
+        |t: &TypeGrants| t.default.as_ref().is_some_and(none) || t.fields.values().any(none);
+    none(&g.default) || g.types.values().any(typed)
+}
+
 /// Whether a shape holds what a migration's report names by `name`: a
 /// field, a link field (`relation.field`), or a relation, which a report
 /// lists as dropped by its own name.
@@ -581,8 +621,10 @@ pub fn holds(t: &TypeDecl, name: &FieldName) -> bool {
 }
 
 /// A migration's report as `who` may know it (013, 024 and 027, extended):
-/// every place that answers one calls this. `was` is the type as it
-/// stands, `sees` a type the reader may see, `answered` whether it is
+/// every place that answers one calls this. `was` is the type the report
+/// was made against: as it stands, or, for a listed proposal, as it stood
+/// when proposed, read with `who`'s grants then. `sees` is a type the
+/// reader may see, `answered` whether it is
 /// answered a record. An entry is shown where the reader may see the type
 /// and know of the field: a conversion in the shape the migration leaves,
 /// and by the name it took its values from where it was renamed, as is a
@@ -596,9 +638,9 @@ pub fn holds(t: &TypeDecl, name: &FieldName) -> bool {
 /// field in the shape as it stands, and a renamed relation likewise; a sample key
 /// where the record is answered; a declaration the migration carries
 /// where `described`, the lake as `describe` shows it to the reader,
-/// names it, asked only for a report that carries one. The totals, the
-/// hashes and the id, which names the whole report, stay; `more` says
-/// that something was left out.
+/// names it, asked only for a report that carries one. The totals stay;
+/// `more` says that something was left out. The hashes are
+/// [`shown_hashes`]'s, and the id is made again over what is shown.
 pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDescription>>(
     who: &Principal,
     was: &TypeDecl,
@@ -609,7 +651,7 @@ pub fn shown_report<'a, D: std::borrow::Borrow<lakelands_api::describe::LakeDesc
     answered: impl Fn(&TypeName, &RecordKey) -> bool,
 ) {
     // One who may not see the migrated type is answered no name at all:
-    // the totals, the hashes and the id, and that there is more.
+    // the totals, the hashes, and that there is more.
     if sees(&m.to.name).is_none() {
         (report.ty, report.more) = (TypeName::default(), true);
         report.fields.clear();

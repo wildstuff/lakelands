@@ -357,6 +357,17 @@ A host that already has a store of its own moves in four steps.
   `schema` to a principal it keeps from a field or a type. See
   `docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
   extended.
+- **A schema hash is that of the shape its reader is shown.** A principal
+  kept from a field is answered, by `describe` and in a migration's
+  report, the hash of the type without that field, not the stored one,
+  and so is a host that declares as such a principal. Nothing breaks: a
+  declaration identical to the one in force appends nothing. A hash
+  compares only between readers shown the same shape; the host's own
+  comparison before it applies describes as one shown everything, and
+  the log and the feed carry the whole hash. A report's id is made over
+  the report as its reader is shown it. See
+  `docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+  extended (lakelands#644).
 - **A grant by name holds a field through its renames.** A field's
   access is the lowest of what a principal's grants say under every name
   the field has borne. A restriction follows the field, at the head and

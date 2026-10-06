@@ -440,3 +440,49 @@ field it does not read stays as it is; the list clears a declaration
 only where one is handed out. An author with a field masked is
 therefore answered of its own migration the shape and `more`, not the
 members it never saw.
+
+## Extended: a schema hash is that of the shape its reader is shown (lakelands#644)
+
+A reader rebuilds the declaration it is described (each field's name,
+type and `required`, which `describe` gives even of a masked one, the
+key, the relations and the view) and hashes it with the public
+`schema_hash`. Were it answered the stored hash, the two would differ
+exactly when the type has a field it may not know of, and hashing
+candidate fields would name it.
+
+**The hash is the shown shape's.** Wherever a schema hash is answered,
+it is that of the declaration as its reader is shown it: without the
+fields and link fields it may not know of, and without a view it is not
+described. A masked or write-only field hashes as declared, since the
+hash covers only what its shape alone keeps. Where nothing is left out,
+the answer is the stored hash, byte for byte, so the owner and the host
+see no change. This holds in `describe`, as of a position too, and in a
+migration's report: its preview, its refusal and its proposal's
+listing. In a report, `from` is the shape of the type the report was
+made from, so a proposal made before the type changed is not shown as
+current, and `to` is judged with the grants held through the
+migration's own renames, as its listed `to` is. A listed proposal is
+judged with its reader's grants followed to the proposal's position
+(006), so a field renamed since and hidden under its new name is in
+neither hash. `more` is decided
+before the hashes are set, so it says nothing the hash would.
+
+**The id is made over what is shown.** A report's id names the report
+and the head it was made at, and it is computed over the report as its
+reader is shown it, so the reader can compute it from what it holds and
+learns nothing from it. `migrate_apply` compares the caller's own id;
+an accept compares no id, and a listed proposal's id is made at the
+head before the proposal.
+
+**What stays whole.** The stored report, the accept's comparison (a
+type changed since the proposal, in a hidden field too, refuses it),
+the log's `declared` and `migrated` events and the feed hold the whole
+hash. One version of a type may therefore have several hashes, one per
+shown shape, and a hash compares only between readers shown the same
+shape and across one reader's answers over time; the version moves on
+every change, a hidden one included, which a description already does
+without the hash.
+
+Other parts of `describe` still say that hidden fields exist (whether
+any field is searchable or sourced, a derived relation's pairs); they
+are lakelands#662.

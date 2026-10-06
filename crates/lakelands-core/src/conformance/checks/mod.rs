@@ -70,6 +70,7 @@ mod set_migrated;
 mod set_names;
 mod set_rewritten;
 mod settings;
+mod shown_hash;
 mod streaming;
 mod triggers;
 mod value_types;
@@ -241,6 +242,8 @@ pub const ALL: &[Check] = &[
     proposal_names::NAMES_AS_THE_READERS_VIEW,
     proposal_names::LISTED_AS_SHOWN,
     report_names::REPORT_AS_ITS_READERS_VIEW,
+    shown_hash::HASH_OF_THE_SHOWN_SHAPE,
+    shown_hash::STALE_BY_ITS_NAMES,
     restated::EVERY_MEMBER,
     restated::AS_ITS_READERS,
     schema_proposals::DECLARED_ON_ACCEPT,

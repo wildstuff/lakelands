@@ -18,7 +18,9 @@ use lakelands_api::id::{
 use lakelands_api::ontology::{
     Authority, FieldDecl, RelationDecl, Risk, TypeDecl, VerbDecl, VerbEffect, VerbScope, ViewDecl,
 };
-use lakelands_api::principal::{Access, Principal, PrincipalKind, Renamed, WriteContext};
+use lakelands_api::principal::{
+    Access, Principal, PrincipalKind, Renamed, TypeGrants, WriteContext,
+};
 use lakelands_api::query::{Hit, Hits, Pattern, Projection, QueryResult, Search, SearchMode, Walk};
 use lakelands_api::read::{After, Direction, Find, Found, Get, Order, OrderBy, ReadAt, Reply};
 use lakelands_api::record::{Origin, Patch, Record, SourceRecord, StoredRecord, Value};
@@ -1100,10 +1102,11 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
         relations: d
             .relations
             .iter()
-            .filter(|r| st.visible(who, &r.target).is_some())
+            .filter(|r| st.types.contains_key(&r.target))
             .map(|r| {
-                // A link field the principal may not read is described by
-                // its shape alone, as a type's own field is.
+                // As the store: a relation is described where its target is
+                // declared. A link field the principal may not read is
+                // described by its shape alone, as a type's own field is.
                 let link = crate::links::link_type(&d.name, r);
                 let mut r = r.clone();
                 r.fields.retain(|f| access(who, &link, f) != Access::None);
@@ -1166,7 +1169,12 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
         },
         lifecycle: TypeLifecycle {
             version: t.version,
-            schema_hash: t.schema_hash.clone(),
+            schema_hash: shown_hash(
+                who,
+                d,
+                d.view.as_deref().is_none_or(|v| view_visible(st, who, v)),
+                &t.schema_hash,
+            ),
             sorted,
             indexed,
             kept,
@@ -2216,7 +2224,7 @@ fn plan_propose(
             let head = Position(batch.peek().0.saturating_sub(1));
             let report = preflight(st, head, &migration, who)?;
             if !report.lossless {
-                return Err(lossy(st, who, &migration, report));
+                return Err(lossy(st, who, &migration, head, report));
             }
             ProposedWrite::Migrate {
                 migration,
@@ -2831,11 +2839,17 @@ fn holds(t: &TypeDecl, name: &FieldName) -> bool {
 /// As the store: a migration's report as `who` may know it, wherever one
 /// is answered. An entry is shown where the reader may see the type and
 /// know of the field, a member restated beyond the shape where it reads
-/// the field in `to` and as the type stands; the totals, the hashes and
-/// the id stay, and `more` says that something was left out. The mock
-/// restricts no record, so every sample key is of a record its reader is
-/// answered.
-fn shown_report(st: &State, who: &Principal, m: &Migration, report: &mut MigrationReport) {
+/// the field in `to` and in the type it was made against (`made`, a listed
+/// proposal's, else the type as it stands); the totals stay, and `more`
+/// says that something was left out ([`shown_hashes`] sets the hashes and
+/// the id after it). The mock restricts no record, so every sample key is
+/// of a record its reader is answered.
+fn shown_report(
+    st: &State,
+    who: &Principal,
+    m: &Migration,
+    (report, made): (&mut MigrationReport, Option<&TypeDecl>),
+) {
     // As the store: one who may not see the migrated type is answered no
     // name at all.
     let Some(was) = st.visible(who, &m.to.name) else {
@@ -2851,7 +2865,8 @@ fn shown_report(st: &State, who: &Principal, m: &Migration, report: &mut Migrati
         return;
     };
     let whole = report.clone();
-    let (stands, mut was, mut to) = (&was.decl, was.decl.clone(), m.to.clone());
+    let stands = made.unwrap_or(&was.decl);
+    let (mut was, mut to) = (stands.clone(), m.to.clone());
     known_fields(who, &mut was);
     known_fields(who, &mut to);
     let sourced = |new: &FieldName| {
@@ -2895,11 +2910,25 @@ fn shown_report(st: &State, who: &Principal, m: &Migration, report: &mut Migrati
 
 /// The refusal of a migration that is not lossless, with its report as
 /// the caller may know it.
-fn lossy(st: &State, who: &Principal, m: &Migration, mut report: MigrationReport) -> Error {
-    shown_report(st, who, m, &mut report);
+fn lossy(st: &State, who: &Principal, m: &Migration, head: Position, r: MigrationReport) -> Error {
     refused(Refusal::Migration {
-        report: Box::new(report),
+        report: Box::new(shown(st, who, m, head, r)),
     })
+}
+
+/// As the store: a report as the caller may know it, its hashes and id
+/// those of what it is shown, the report made from the type at the head.
+fn shown(
+    st: &State,
+    who: &Principal,
+    m: &Migration,
+    head: Position,
+    mut report: MigrationReport,
+) -> MigrationReport {
+    shown_report(st, who, m, (&mut report, None));
+    let made = st.types.get(&m.to.name).map_or(&m.to, |t| &t.decl);
+    shown_hashes(who, made, m, (&mut report, head));
+    report
 }
 
 /// As the store: a proposed shape completed, as a shape in force is.
@@ -2926,7 +2955,12 @@ fn completed(st: &State, write: &mut ProposedWrite) {
 /// a read of the record would show it and a name where `describe` would.
 /// False when the reader may see nothing of it. The proposal holds the
 /// completed shape, so a relation's link fields are trimmed too.
-fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite, since: &[Renamed]) -> bool {
+fn known_shape(
+    st: &State,
+    who: &Principal,
+    write: &mut ProposedWrite,
+    (then, made, at): (&Principal, Option<&TypeDecl>, Position),
+) -> bool {
     let seen = |ty: &TypeName| st.visible(who, ty).is_some();
     let read = |ty: &TypeName, f: &FieldName| {
         (st.visible(who, ty)).is_some_and(|t| readable(st, who, t, f).is_ok())
@@ -2964,13 +2998,17 @@ fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite, since: &[
             key.as_ref().map_or(seen(&v.on), |k| answered(&v.on, k))
         }
         // The report names what the migration does to the type as it
-        // stands; its totals, hashes and id stay whole.
+        // stands; its totals stay whole, its hashes are of the shapes the
+        // reader is shown, and its id is made at the head before the
+        // proposal.
         ProposedWrite::Migrate { migration, report } => {
-            if st.visible(who, &migration.to.name).is_none() {
+            let Some(was) = st.visible(who, &migration.to.name) else {
                 return false;
-            }
-            shown_report(st, who, migration, report);
-            known_migration(st, who, migration, since);
+            };
+            shown_report(st, then, migration, (report, made));
+            let before = Position(at.0.saturating_sub(1));
+            shown_hashes(then, made.unwrap_or(&was.decl), migration, (report, before));
+            known_migration(st, then, migration, made);
             true
         }
         // Each declaration as `describe` would show it once the bundle is
@@ -3000,8 +3038,24 @@ fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite, since: &[
 
 /// As the store: a migration that is not in force as `who` may know it,
 /// its shape judged with the grants held through its own renames, and a
-/// rename only where `who` may know of the field under both names.
-fn known_migration(st: &State, who: &Principal, m: &mut Migration, since: &[Renamed]) {
+/// rename only where `who` may know of the field under both names, the
+/// old one in `made`, the type it was proposed against, else at the head.
+fn known_migration(st: &State, who: &Principal, m: &mut Migration, made: Option<&TypeDecl>) {
+    let then = following(who, m);
+    let head = st.types.get(&m.to.name).map(|t| &t.decl);
+    let mut was = made.or(head).cloned();
+    if let Some(was) = &mut was {
+        known_fields(who, was);
+    }
+    described_fields(&then, &mut m.to);
+    let old = |n: &FieldName| was.as_ref().is_none_or(|w| holds(w, n));
+    m.renames
+        .retain(|(from, new)| old(from) && holds(&m.to, new));
+}
+
+/// As the store: `who` with its grants held through a migration's own
+/// renames.
+fn following(who: &Principal, m: &Migration) -> Principal {
     let (at, ty, renames) = (Position(u64::MAX), m.to.name.clone(), m.renames.clone());
     let mut list = vec![Renamed {
         at,
@@ -3015,19 +3069,58 @@ fn known_migration(st: &State, who: &Principal, m: &mut Migration, since: &[Rena
         to: Some(to),
         ..Renamed::default()
     }));
-    // As the store: a proposal that waited is judged from the names its
-    // old ones bear now.
-    let list = Renamed::at_head(since, list);
     let mut then = who.clone();
     (then.grants).follow(&list, None);
-    let mut was = st.types.get(&m.to.name).map(|t| t.decl.clone());
-    if let Some(was) = &mut was {
-        known_fields(who, was);
+    then
+}
+
+/// As the store: whether `who` may not know of some field, which only a
+/// `none` its grants give hides.
+fn hides_some(who: &Principal) -> bool {
+    let (g, none) = (&who.grants, |a: &Access| *a == Access::None);
+    let typed =
+        |t: &TypeGrants| t.default.as_ref().is_some_and(none) || t.fields.values().any(none);
+    none(&g.default) || g.types.values().any(typed)
+}
+
+/// As the store: the schema hash of `t` as `who` is shown it, `whole`
+/// where nothing is left out.
+fn shown_hash(who: &Principal, t: &TypeDecl, view_shown: bool, whole: &str) -> String {
+    let mut shown = t.clone();
+    known_fields(who, &mut shown);
+    shown.view = shown.view.filter(|_| view_shown);
+    match shown == *t {
+        true => whole.to_owned(),
+        false => lakelands_api::shape::schema_hash(&shown).unwrap_or_default(),
     }
-    described_fields(&then, &mut m.to);
-    let old = |n: &FieldName| was.as_ref().is_none_or(|w| holds(w, n));
-    m.renames
-        .retain(|(from, new)| old(from) && holds(&m.to, new));
+}
+
+/// As the store: a report's hashes as `who` is shown them, set after
+/// `more`, `from` of `made`, the type the report was made from; and its
+/// id made again over what it shows at `head`.
+fn shown_hashes(
+    who: &Principal,
+    made: &TypeDecl,
+    m: &Migration,
+    (report, head): (&mut MigrationReport, Position),
+) {
+    if report.ty == m.to.name {
+        report.from_schema_hash = shown_hash(who, made, true, &report.from_schema_hash);
+        let then = following(who, m);
+        report.to_schema_hash = shown_hash(&then, &m.to, true, &report.to_schema_hash);
+    }
+    report.report_id = report_id(report, head);
+}
+
+/// As the store: a report's id, the SHA-256 of what it says to its reader
+/// and where the lake stood, in canonical form.
+fn report_id(report: &MigrationReport, head: Position) -> String {
+    let report = MigrationReport {
+        report_id: String::new(),
+        ..report.clone()
+    };
+    let report = serde_json::to_value(&report).unwrap_or_default();
+    lakelands_api::canonical::sha256_hex(&serde_json::json!({"report": report, "head": head.0}))
 }
 
 /// As the store: whether a proposed declaration is listed to `who`, over
@@ -3354,8 +3447,7 @@ fn preflight(
         carried,
         restated,
     };
-    let seed = serde_json::to_vec(&(&report, head.0, m)).unwrap_or_default();
-    report.report_id = value::hex(&seed, 1);
+    report.report_id = report_id(&report, head);
     Ok(report)
 }
 
@@ -4415,10 +4507,10 @@ impl Catalog for MockCatalog {
                     )));
                 }
                 if !report.lossless {
-                    return Err(lossy(&st, who, &migration, report));
+                    return Err(lossy(&st, who, &migration, head, report));
                 }
                 let mut known = (*migration).clone();
-                known_migration(&st, who, &mut known, &[]);
+                known_migration(&st, who, &mut known, None);
                 renamed = known.renames;
                 let version = st
                     .types
@@ -4514,6 +4606,7 @@ impl Catalog for MockCatalog {
         filter: ProposalFilter,
     ) -> Result<Reply<Vec<Proposal>>> {
         self.admit(who)?;
+        let asked = who;
         let who = &self.followed(who, None);
         let limit = self.limit(filter.limit, false)?;
         let (pinned, offset) = match &filter.cursor {
@@ -4568,10 +4661,27 @@ impl Catalog for MockCatalog {
             let mut logged = p.write.take();
             logged.iter_mut().for_each(|w| completed(&st, w));
             let shown = logged.clone();
-            let since: Vec<Renamed> = (renames.iter().filter(|r| r.at > p.position))
-                .cloned()
-                .collect();
-            p.write = shown.and_then(|mut w| known_shape(&st, who, &mut w, &since).then_some(w));
+            // As the store: a proposed migration is judged with the grants
+            // followed to the position it was proposed at, and a report made
+            // from a type changed since by the type it was made from, where
+            // those grants hide a field.
+            let mut then = asked.clone();
+            then.grants.follow(&renames, Some(p.position));
+            let made = match &logged {
+                Some(ProposedWrite::Migrate { migration, report }) => {
+                    let ty = &migration.to.name;
+                    let head = st.types.get(ty).map(|t| &t.schema_hash);
+                    let stale = head != Some(&report.from_schema_hash) && hides_some(&then);
+                    let then = stale.then(|| self.state_at(&self.log(), Some(p.position)).ok());
+                    let then = then
+                        .flatten()
+                        .and_then(|(_, then)| then.types.get(ty).cloned());
+                    then.map(|t| t.decl)
+                }
+                _ => None,
+            };
+            let listing = (&then, made.as_ref(), p.position);
+            p.write = shown.and_then(|mut w| known_shape(&st, who, &mut w, listing).then_some(w));
             p.more = p.write != logged;
         }
         rows.retain(|p| {
@@ -4756,8 +4866,8 @@ impl Catalog for MockCatalog {
         let (position, st) = self.state_at(&log, None)?;
         let mut migration = migration;
         authored(&st, who, &mut migration)?;
-        let mut data = preflight(&st, position, &migration, who)?;
-        shown_report(&st, who, &migration, &mut data);
+        let data = preflight(&st, position, &migration, who)?;
+        let data = shown(&st, who, &migration, position, data);
         Ok(Reply { position, data })
     }
 
@@ -4854,13 +4964,13 @@ impl Catalog for MockCatalog {
         let mut migration = migration;
         authored(&st, who, &mut migration)?;
         let report = preflight(&st, head, &migration, who)?;
-        if report.report_id != report_id {
+        if shown(&st, who, &migration, head, report.clone()).report_id != report_id {
             return Err(invalid(
                 "the lake moved since this report was made; run the preflight again",
             ));
         }
         if !report.lossless {
-            return Err(lossy(&st, who, &migration, report));
+            return Err(lossy(&st, who, &migration, head, report));
         }
         // As the store: a migration to the type in force appends nothing.
         if unchanged(&st, &migration) {
@@ -4883,7 +4993,7 @@ impl Catalog for MockCatalog {
         let report_id = report.report_id;
         // The answer names each rename as the one answered may know it.
         let mut known = migration.clone();
-        known_migration(&st, who, &mut known, &[]);
+        known_migration(&st, who, &mut known, None);
         let position = batch.push(Draft::new(
             who,
             Origin::System,

@@ -455,9 +455,9 @@ async fn a_trigger_and_a_set_on_the_link_type_follow_the_rename(
         .must("the preflight of one kept from the link type")?
         .data;
     ensure!(
-        trimmed.carried.is_empty() && trimmed.more && trimmed.report_id == report.report_id,
+        trimmed.carried.is_empty() && trimmed.more && trimmed.report_id != report.report_id,
         "one kept from the link type is shown no carried declaration, told there is more, \
-         and given the whole report's id; it is answered {trimmed:?}"
+         and given the id of what it is shown; it is answered {trimmed:?}"
     );
     // Every producer of a report trims it: a proposal's listing too.
     let (migration, whole) = (Box::new(renaming()), Default::default());
