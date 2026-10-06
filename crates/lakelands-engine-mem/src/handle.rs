@@ -4,7 +4,8 @@
 //! Handles to one lake share its state; each handle keeps only its open
 //! mode, its own open transaction and the lease it took, which it gives
 //! up when it is dropped. A handle opened read-only refuses the lease,
-//! every append and every write to the projection.
+//! every append and every write to the projection; one opened for writing
+//! appends and seals only under the lease it took itself.
 
 use std::sync::{Arc, Mutex};
 
@@ -56,6 +57,19 @@ impl MemoryLake {
         }
     }
 
+    /// Refuses an append, an import or a seal through a handle that does
+    /// not hold `lease`: a copy of another handle's lease writes nothing.
+    fn holding(&self, lease: &Lease, what: &str) -> Result<()> {
+        self.writable()?;
+        if lock(&self.held).as_ref() == Some(lease) {
+            return Ok(());
+        }
+        Err(unavailable(format!(
+            "the lease with fence {} is not held by this handle; nothing was {what}",
+            lease.fence
+        )))
+    }
+
     /// Holds a put for the open transaction.
     fn stage(&self, put: Put) -> Result<()> {
         self.writable()?;
@@ -101,12 +115,12 @@ impl LakeEngine for MemoryLake {
     }
 
     fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        self.writable()?;
+        self.holding(lease, "appended")?;
         lock(&self.shared).log.append(lease, events)
     }
 
     fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
-        self.writable()?;
+        self.holding(lease, "imported")?;
         lock(&self.shared).log.import(lease, events)
     }
 
@@ -120,7 +134,7 @@ impl LakeEngine for MemoryLake {
         imported: bool,
         first: &mut dyn FnMut(&SegmentDigest) -> Result<Vec<CanonicalEvent>>,
     ) -> Result<Option<SegmentDigest>> {
-        self.writable()?;
+        self.holding(lease, "sealed")?;
         lock(&self.shared).log.seal(lease, imported, first)
     }
 
