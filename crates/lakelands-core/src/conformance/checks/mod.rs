@@ -474,6 +474,7 @@ pub const ALL: &[Check] = &[
     purge::CO_OWNED_COUNTED,
     purge::BACKED_NO_OWNER,
     purge::INITIAL_NO_OWNER,
+    purge::SHARED_SINCE,
     purge::PREFLIGHT,
     purge::REFERENCES_NAMED,
     purge::ONE_TYPE,
