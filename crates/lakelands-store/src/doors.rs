@@ -87,12 +87,17 @@ impl Doors {
             // The list comes from the view the read reads, so that a rename
             // is in its shape and in its grants, or in neither.
             let view = lake.engine.view(at.as_of)?;
-            let head = at.as_of.is_none().then_some(view.as_ref());
-            // A holder's search as of a position judges at the head too.
+            let shape = lake.shape(view.as_ref())?;
+            let head = at.as_of.is_none().then_some(&shape.renames[..]);
+            // A holder's search as of a position judges at the head too,
+            // its grants followed through the head's shape.
             let to_head = at.as_of.is_some() && rights::holds_only(&who);
-            let head_who = to_head.then(|| lake.followed(who.clone(), None, None));
+            let head_who = to_head.then(|| {
+                let head = lake.shape(lake.engine.view(None)?.as_ref())?;
+                lake.followed(who.clone(), None, Some(&head.renames))
+            });
             let (who, _) = lake.followed(who, at.as_of, head)?;
-            let mut r = Reader::open(&lake, &who, at, view)?;
+            let mut r = Reader::open(&lake, &who, at, view, shape)?;
             r.head_who = head_who.transpose()?.map(|f| f.0);
             let data = f(&r)?;
             Ok(Reply {

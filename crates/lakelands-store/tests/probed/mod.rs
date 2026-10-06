@@ -79,6 +79,13 @@ pub struct Probe {
     pub another_digest: std::sync::atomic::AtomicBool,
     /// How many events the log's reads handed out.
     pub events_read: AtomicUsize,
+    /// How often a view was asked for the declarations in force.
+    pub declarations: AtomicUsize,
+    /// How often a view was asked for the lake's list of renames.
+    pub renames: AtomicUsize,
+    /// A reader to park inside the next `declarations`: it says so on the
+    /// first and waits on the second before it reads.
+    pub park: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
 }
 
 impl Probe {
@@ -120,6 +127,12 @@ impl ProjectionView for ProbedView<'_> {
         self.inner.position()
     }
     fn declarations(&self) -> Result<Vec<Declared>> {
+        self.probe.declarations.fetch_add(1, Ordering::SeqCst);
+        let park = self.probe.park.lock().unwrap().take();
+        if let Some((parked, go)) = park {
+            parked.send(()).unwrap();
+            go.recv().unwrap();
+        }
         self.inner.declarations()
     }
     fn get(&self, ty: &TypeName, key: &RecordKey) -> Result<Option<StoredRecord>> {
@@ -190,6 +203,9 @@ impl ProjectionView for ProbedView<'_> {
     fn output(&self, seam: &str, input: &Digest) -> Result<Option<Value>> {
         if seam == "sys:kept" {
             self.probe.states.fetch_add(1, Ordering::SeqCst);
+        }
+        if seam == "sys:renames" {
+            self.probe.renames.fetch_add(1, Ordering::SeqCst);
         }
         self.inner.output(seam, input)
     }
