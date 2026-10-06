@@ -23,7 +23,7 @@ use crate::conformance::fixture::{
 check!(
     /// A verb runs or waits by its declared risk.
     VERB_BY_RISK = a_low_verb_runs_and_a_higher_one_is_proposed,
-    "013: a `low` verb that writes authored fields runs at once; any other risk is recorded as a proposal and runs only when accepted; a call is refused for its payload before its record, for its record before its version, and a retry answers before the grants (013, extended)"
+    "013: a `low` verb that writes authored fields runs at once; any other risk is recorded as a proposal and runs only when accepted; a call is refused for its payload before its record, for its record before its version, and a retry answers before the grants (013, extended); a payload member the verb does not declare, even a field of its type, is refused naming the verb and the member, not as a field the type lacks (lakelands#656)"
 );
 
 check!(
@@ -200,7 +200,8 @@ async fn a_low_verb_runs_and_a_higher_one_is_proposed(
         expected_version: Some(Version(3)),
         ..WriteOpts::default()
     };
-    let payload = approve(own, "gone", json!({"bogus": 1}), WriteOpts::default()).await;
+    // `invoice` has `status`; `approve`'s payload does not.
+    let payload = approve(own, "gone", json!({"status": 1}), WriteOpts::default()).await;
     let record = approve(own, "gone", json!({}), at).await;
     let once = WriteOpts {
         idempotency_key: Some("once".into()),
@@ -217,12 +218,13 @@ async fn a_low_verb_runs_and_a_higher_one_is_proposed(
     ensure!(
         matches!(
             refused_on(&payload),
-            Some(("bogus", Refusal::Invalid { .. }))
+            Some(("status", Refusal::Invalid { message }))
+                if message.contains("`approve`") && !message.contains("has no field")
         ) && matches!(record, Err(Error::NotFound { .. }))
             && retry.as_ref().ok() == Some(&first),
-        "a payload `approve` does not take, on a key never written, answered {payload:?}; \
-         a call there at a version answered {record:?}; a retry without grants answered \
-         {retry:?} where the first was {first:?}"
+        "a payload member `approve` does not declare, on a key never written, answered \
+         {payload:?}; a call there at a version answered {record:?}; a retry without \
+         grants answered {retry:?} where the first was {first:?}"
     );
     Ok(())
 }

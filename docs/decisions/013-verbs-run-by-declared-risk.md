@@ -362,9 +362,11 @@ checks, the append. Where a step runs "the record checks", they are
 its scope (`invalid`, naming the verb); a verb called on a record of a
 view (`invalid`, 018, extended); the principal may call it
 (`not_granted`); an external verb's executor is bound (`unbound`); the
-payload, field by field in name order (a field the verb does not take
-is `invalid`, a value that does not fit is `constraint`, each naming the
-field), then its required fields (`constraint`); on a record: the record
+payload: a member the verb does not declare (`invalid`, naming the verb
+and the member, as one missing from the payload and never from the type,
+even where the type has a field of that name), then field by field in
+name order a value that does not fit (`constraint`, naming the field),
+then its required fields (`constraint`); on a record: the record
 is live (`not_found`), the expected version (`conflict`), `requires`
 (`precondition`). A `low` verb then computes its assignments (`invalid`,
 naming the verb) and makes its write through the record checks. At any
