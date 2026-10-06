@@ -7261,7 +7261,15 @@ async fn declare_vault(f: &Fixture) {
     let vault = TypeDecl {
         name: "vault".into(),
         key: vec!["code".into()],
-        fields: vec![text("code"), text("state"), number("depth")],
+        fields: vec![
+            text("code"),
+            text("state"),
+            number("depth"),
+            FieldDecl {
+                sensitive: true,
+                ..text("hush")
+            },
+        ],
         field_meta: true,
         ..Default::default()
     };
@@ -7430,7 +7438,10 @@ async fn write_doors(
 /// grant on the view `longest` and none on its source, are answered as on
 /// `ghost`, which is not declared, whatever the patch, the key, the
 /// version or the verb's scope would be told otherwise. A verb on such a
-/// type is a verb that is not declared. Nothing is written.
+/// type is a verb that is not declared. Nothing is written. So at every
+/// door that reads one, its sensitive `hush` notwithstanding
+/// (lakelands#636, lakelands#635): over a network door too, where the
+/// cast is all the resolver knows.
 pub async fn a_type_its_writer_is_not_shown_is_a_type_that_is_not_declared(
     store: Arc<dyn LakeStore>,
 ) {
@@ -7447,8 +7458,10 @@ pub async fn a_type_its_writer_is_not_shown_is_a_type_that_is_not_declared(
     ] {
         let plain =
             |a: &str, names: [&str; 3]| names.iter().fold(a.to_string(), |a, n| a.replace(n, "_"));
-        let there = write_doors(c, who, hidden, "seal", "open").await;
-        let none = write_doors(c, who, "ghost", "haunt", "howl").await;
+        let mut there = write_doors(c, who, hidden, "seal", "open").await;
+        let mut none = write_doors(c, who, "ghost", "haunt", "howl").await;
+        there.extend(read_doors(c, who, hidden).await);
+        none.extend(read_doors(c, who, "ghost").await);
         for ((row, a), (_, b)) in there.iter().zip(&none) {
             let (a, b) = (
                 plain(a, [hidden, "seal", "open"]),
@@ -7488,10 +7501,22 @@ async fn read_doors(c: &Arc<dyn Catalog>, who: &Principal, t: &str) -> Vec<(&'st
         at: at(),
     };
     let from = Pattern::traverse(t.clone(), key("v1"), Vec::new());
+    let total = Find {
+        total: true,
+        ..Find::default()
+    };
+    let count = json!({"aggregate": {"measures": [{"name": "n", "func": "count"}]}});
+    let count: Find = serde_json::from_value(count).expect("a count");
     vec![
         ("describe_type", said(c.describe_type(who, t, at()).await)),
         ("get", said(c.get(who, t, get("v1")).await)),
+        (
+            "get a key no record has",
+            said(c.get(who, t, get("v9")).await),
+        ),
         ("find", said(c.find(who, t, Find::default()).await)),
+        ("find with a total", said(c.find(who, t, total).await)),
+        ("find a count", said(c.find(who, t, count).await)),
         ("find by a field", said(c.find(who, t, noted).await)),
         ("search", said(c.search(who, words).await)),
         ("a pattern", said(c.query(who, from).await)),
