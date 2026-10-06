@@ -269,6 +269,7 @@ fn the_entries_of_a_recomputation_mirror_the_writers_ontology() {
             staged: None,
             before: None,
             due: None,
+            waiting: false,
         };
         record::rederive(o, &r, &event, &BTreeMap::new(), &mut outputs).unwrap()
     };

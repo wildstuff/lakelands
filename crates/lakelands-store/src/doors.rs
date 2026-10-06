@@ -5,6 +5,7 @@
 //! holds no grant here. Engine work goes through [`crate::exec::run`], and
 //! nowhere else.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -31,7 +32,7 @@ use lakelands_core::{invalid, rights, unavailable};
 
 use crate::exec;
 use crate::ingest;
-use crate::lake::Lake;
+use crate::lake::{Lake, owing};
 use crate::reads::Reader;
 use crate::writes::{self, Call, External, MadeDue};
 
@@ -119,11 +120,6 @@ impl Doors {
         .await
     }
 
-    /// How often the lake's due calls were drained, read before a write.
-    fn seen(&self) -> u64 {
-        self.lake.drains.load(std::sync::atomic::Ordering::Acquire)
-    }
-
     /// Make the calls of backed functions the write made due, and answer
     /// its outcome at the position of the last output recorded, from which
     /// the filled fields are visible. Of what the write set off, it names
@@ -136,11 +132,10 @@ impl Doors {
     async fn handed(
         &self,
         who: &Principal,
-        (mut outcome, external): (Outcome, Option<External>),
-        seen: u64,
+        ((mut outcome, external), own): ((Outcome, Option<External>), BTreeSet<Position>),
         by: MadeDue,
     ) -> Result<Outcome> {
-        let last = crate::backed::settle(&self.lake, seen).await;
+        let last = crate::backed::settle(&self.lake, &own).await;
         let last = match &external {
             Some(_) => last.map_err(|e| writes::not_handed(e, true, by))?,
             None => last.unwrap_or(None),
@@ -178,9 +173,8 @@ impl Doors {
     {
         let (doors, who) = (self.clone(), who.clone());
         let task = tokio::spawn(async move {
-            let seen = doors.seen();
-            let made = doors.write(&who, f).await?;
-            doors.handed(&who, made, seen, by).await
+            let made = doors.write(&who, |c| owing(|| f(c))).await?;
+            doors.handed(&who, made, by).await
         });
         let stopped = |e| unavailable(format!("the store's work on this call stopped: {e}"));
         task.await.unwrap_or_else(|e| Err(stopped(e)))
@@ -191,10 +185,9 @@ impl Doors {
     where
         F: FnOnce(&Call<'_>) -> Result<Outcome> + Send + 'static,
     {
-        let seen = self.seen();
-        let outcome = self.write(who, f).await?;
+        let (outcome, own) = self.write(who, |c| owing(|| f(c))).await?;
         let by = MadeDue::Call { keyed: false };
-        self.handed(who, (outcome, None), seen, by).await
+        self.handed(who, ((outcome, None), own), by).await
     }
 
     /// Hand an external verb to its executor and record the answer; the
@@ -636,11 +629,11 @@ impl LakeStore for Store {
 
     async fn age(&self, today: Timestamp) -> Result<AgeReport> {
         let lake = self.lake.clone();
-        let seen = lake.drains.load(std::sync::atomic::Ordering::Acquire);
-        let mut report = exec::run(move || crate::aging::run(&lake, today)).await?;
+        let (mut report, own) =
+            exec::run(move || owing(|| crate::aging::run(&lake, today))).await?;
         // The moves' backed fields settle like any write's; the report
         // names the position from which what they filled is visible.
-        if let Some(last) = crate::backed::settle_after(&self.lake, seen).await {
+        if let Some(last) = crate::backed::settle_after(&self.lake, &own).await {
             report.position = report.position.max(last);
         }
         Ok(report)
@@ -662,14 +655,11 @@ impl LakeStore for Store {
         id: Option<&str>,
     ) -> Result<PurgeReport> {
         let (lake, source, id) = (self.lake.clone(), source.clone(), id.map(str::to_owned));
-        let (ty, seen) = (
-            ty.cloned(),
-            lake.drains.load(std::sync::atomic::Ordering::Acquire),
-        );
+        let ty = ty.cloned();
         let purge = move || crate::purge::run(&lake, &source, ty.as_ref(), id.as_deref());
-        let mut report = exec::run(purge).await?;
+        let (mut report, own) = exec::run(move || owing(purge)).await?;
         // The retirements' backed fields settle like any write's.
-        if let Some(last) = crate::backed::settle_after(&self.lake, seen).await {
+        if let Some(last) = crate::backed::settle_after(&self.lake, &own).await {
             report.position = report.position.max(last);
         }
         Ok(report)

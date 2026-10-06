@@ -23,9 +23,10 @@
 //! `Invalid`, so the store asks again in halves until the text is alone.
 //! A request with a text starting with [`WEATHER`] and none refused is
 //! `Unavailable`, which the store records for every text it had not
-//! answered. A search fails on either. It counts its
-//! calls ([`embed_calls`]) and how often each text was sent
-//! ([`embedded`]); a check uses texts of its own.
+//! answered. A search fails on either. A request with a text starting
+//! with `held-` is counted and held until [`release`] of that text, five
+//! seconds at most. It counts its calls ([`embed_calls`]) and how often
+//! each text was sent ([`embedded`]); a check uses texts of its own.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -144,19 +145,22 @@ impl EmbedBackend for Embedder {
     }
 
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        let mut e = lock(embeds());
-        e.calls += 1;
-        e.sizes
-            .entry(self.model.clone())
-            .or_default()
-            .push(texts.len());
-        for t in texts {
-            *e.texts.entry(t.clone()).or_default() += 1;
+        let refused = {
+            let mut e = lock(embeds());
+            e.calls += 1;
+            e.sizes
+                .entry(self.model.clone())
+                .or_default()
+                .push(texts.len());
+            for t in texts {
+                *e.texts.entry(t.clone()).or_default() += 1;
+            }
+            (texts.iter()).any(|t| t.starts_with(UNREACHABLE) || e.unplugged.contains(t))
+        };
+        if let Some(held) = texts.iter().find(|t| t.starts_with("held-")) {
+            hold(held).await;
         }
-        if texts
-            .iter()
-            .any(|t| t.starts_with(UNREACHABLE) || e.unplugged.contains(t))
-        {
+        if refused {
             return Err(Error::Refused {
                 field: None,
                 reason: lakelands_api::Refusal::Invalid {
@@ -278,9 +282,20 @@ fn released() -> &'static Mutex<BTreeSet<String>> {
     RELEASED.get_or_init(Mutex::default)
 }
 
-/// Let the executor answer the call it holds on the record `key`.
+/// Let the executor answer the call it holds on the record `key`, or the
+/// embedding backend the request it holds for the text `key`.
 pub fn release(key: &str) {
     lock(released()).insert(key.to_owned());
+}
+
+/// Wait until [`release`] of `key`, five seconds at most.
+async fn hold(key: &str) {
+    for _ in 0..1_000 {
+        if lock(released()).contains(key) {
+            break;
+        }
+        crate::conformance::fixture::pause(std::time::Duration::from_millis(5)).await;
+    }
 }
 
 #[async_trait]
@@ -301,12 +316,7 @@ impl lakelands_api::seam::VerbExecutor for Executor {
             )
             .or_default() += 1;
         if let Some(held) = key.as_deref().filter(|k| k.starts_with("held-")) {
-            for _ in 0..1_000 {
-                if lock(released()).contains(held) {
-                    break;
-                }
-                crate::conformance::fixture::pause(std::time::Duration::from_millis(5)).await;
-            }
+            hold(held).await;
         }
         if invocation.payload.get("null") == Some(&Value::Bool(true)) {
             return Ok(Value::Null);

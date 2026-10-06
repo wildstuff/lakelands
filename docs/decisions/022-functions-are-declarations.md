@@ -122,32 +122,41 @@ is cleared and not called, and is settled by the fill that completes
 its input. Its call would otherwise carry an input that is not computed
 yet, and the output would stay recorded under that input for good.
 
-**Calling.** After the append that made calls due, the store calls the
-backings outside the writer lock, one call at a time per lake. Before
-each call it looks again for an output recorded for the same call, so
-one input is never sent twice, not even by two writes that race. An
-answer is held with its due until it is recorded, so a recording that
-fails is made again by the next drain without a second call; the hold
-is the handle's and ends with it, or with a door's call that is dropped
-in the middle of its drain, which loses every due it had taken. A drain
-stops at the due whose recording fails, and that due stays first in
-line: one that fails each time stands before the dues behind it, and
-where no fold failed nothing says so but the fields that wait. It
-records each answer as `output_recorded` naming the field, with `cause`
-the event that made it due and `procedure` the function's name and
-version. The output and everything its fill causes carry the context
+**Calling.** An append that made calls due leaves what owes them in the
+writer's list: the record, or for a declaration that settles a type
+again, one sweep over the type's records. The list holds no call. After
+the append the store reads the calls from the records as they are then,
+and makes them outside the writer lock, a batch at a time per lake: the
+embeddings of one model, at most 64 texts, or one function call. Before
+each call it reads the record again and looks for an output recorded for
+the same call, so one input is never sent twice, not even by two writes
+that race. An answer is held, one per call, until it is recorded, so a
+recording that fails is made again by the next batch without a second
+call; the hold is the handle's and ends with it. An entry leaves the
+list only once its batch is recorded: a drain that fails, or a door's
+call dropped in the middle of its drain, loses nothing, and where no
+fold failed nothing says so but the fields that wait. A sweep reads its
+type a page at a time in key order, the writer released between pages,
+and moves past a record only once its calls are recorded; a migration
+that moves the type's keys starts it again from the first, and a
+record's entry follows its record. The store records each answer as
+`output_recorded` naming the field, with `cause` the event that made it
+due and `procedure` the function's name and version. The output and everything its fill causes carry the context
 of the event that made it due, with the depth unchanged. A write's own
 `trigger_fired` and `object_set_changed` carry the write's context in
 the same way, so a host that acts on one writes one level deeper (021).
 A due issued again while its call was under way finds the output
-recorded; it appends nothing when the output fills nothing new. The store keeps calling
-until no call is due, the calls a fill makes due included.
+recorded; it appends nothing when the output fills nothing new. The calls
+a fill makes due are owed to the write behind the output.
 
-A write that left nothing due, while no call was drained since it
-began, answers its own last event's position without waiting for a
-call under way. Otherwise the door that wrote answers once the lane of
-calls is drained, with the lake's head at that moment: the position from which its filled fields
-are visible, even when a neighbour's drain made its calls. Between the
+A write waits for what it owes, not for what others owe. One that left
+nothing due answers its own last event's position at once, whatever is
+being made beside it. One that made calls due takes the lane of calls
+for one batch at a time, its own entries first, then the rest in the
+order they were handed out, until none of its own is left. It then makes
+one batch of the entries no write waits for any more, and answers with
+the lake's head at that moment: the position from which its filled
+fields are visible, even when a neighbour's batch made its calls. Between the
 write's append and the output's, a reader sees the field cleared with no
 `error` in its metadata. That is how a pending output reads, as against
 a failure (below). When no backing of the kind is bound at that
@@ -295,6 +304,33 @@ requests per text, each waiting the same timeout, so it ends the asking
 and is recorded for every text not answered yet. Telling the two apart
 is the backend's, because an endpoint refuses a whole request without
 naming the input.
+
+## Extended: a write waits for its own calls, and a declaration owes one sweep
+
+The calls are read from the records when they are made, not handed out
+by the fold: an append owes the records it left waiting, and a
+declaration that settles a type again owes one sweep over it, whatever
+the type holds. A write waits for the batch in flight and its own, as
+**Calling** says; the declaration still answers once its sweep is done,
+so what its answer promises is unchanged. An entry whose write no longer
+waits (its drain failed, or its caller went away) is an orphan: each
+later write that owes something makes one batch of orphans after its
+own, so an abandoned sweep advances a batch a write, and a `recompute`
+of its type owes a sweep of its own. A write that caught up over an
+append whose fold failed owes what that append left, as its own.
+
+**Why.** The writer held one call per record and field, each with its
+text or inputs, and a write that found that list not empty, or a drain
+counted since it began, took the whole list and held the lane until it
+was empty. A write made beside a declaration that embeds 2 000 records
+waited 16 to 20 s for the backlog, and beside one over 100 000 records
+about 20 minutes (lakelands#642). The list held 159 MB at 100 000
+records of a 1 000-byte text, and 515 MB where 10 000 records shared 64
+texts at 1 536 dimensions, since each call carried the answer for its
+text (lakelands#609). Now the list holds one entry per written record
+and one per declared type, a batch holds at most 64 calls and one answer
+per call, and no write waits for more than one batch of a backlog it did
+not make.
 
 ## Extended: a fold of the log makes no call due
 

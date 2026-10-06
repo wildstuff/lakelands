@@ -212,15 +212,16 @@ pub fn run(
                 continue;
             }
             let (l, w, s) = (lake.clone(), who.clone(), source.clone());
-            let seen = lake.drains.load(std::sync::atomic::Ordering::Acquire);
-            let mut answer = exec::run(move || window(&l, &w, context, &s, batch)).await;
+            let run = move || crate::lake::owing(|| window(&l, &w, context, &s, batch));
+            let mut answer = exec::run(run).await;
             // The calls the window made due are made before it answers, so
             // its position is one the filled fields are visible from.
-            if let Ok(c) = &mut answer
-                && let Some(last) = crate::backed::settle_after(&lake, seen).await
+            if let Ok((c, own)) = &mut answer
+                && let Some(last) = crate::backed::settle_after(&lake, own).await
             {
                 c.position = c.position.max(last);
             }
+            let answer = answer.map(|(c, _)| c);
             let failed = answer.is_err();
             if tx.send(answer).await.is_err() || failed {
                 return;

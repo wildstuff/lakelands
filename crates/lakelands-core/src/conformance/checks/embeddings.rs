@@ -11,19 +11,22 @@
 //! each text was sent; each check uses texts of its own.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::{Authority, FieldDecl, FieldType, StorageKind};
 use lakelands_api::query::{Search, SearchMode};
 use lakelands_api::seam::Seams;
-use lakelands_api::{Error, LakeStore};
+use lakelands_api::{Error, LakeStore, Outcome};
 use serde_json::{Value, json};
 
 use super::search::doc_search;
-use crate::conformance::backing::{EMBED_MODEL, UNREACHABLE, embedded, plug_text, unplug_text};
+use crate::conformance::backing::{
+    EMBED_MODEL, UNREACHABLE, embedded, plug_text, release, unplug_text,
+};
 use crate::conformance::fixture::{
-    Lake, Must, derived, doors, embedding, field, head_unmoved, owner, read, recorded_outputs,
-    refused_on, source_record, sourced, type_decl, value,
+    Caller, Lake, Must, derived, doors, embedding, field, get_at, head_unmoved, join_all, owner,
+    read, recorded_outputs, refused_on, source_record, sourced, type_decl, value,
 };
 use crate::conformance::{Failure, Reopen, backing};
 
@@ -413,6 +416,219 @@ async fn an_embedded_vector_recomputes_the_derived_fields_that_read_it(
         value(&r, "embedded")
     );
     Ok(())
+}
+
+check!(
+    /// A write beside a backlog waits for its own calls only.
+    EMBED_BESIDE_BACKLOG = a_write_beside_a_backlog_waits_for_the_batch_in_flight_and_its_own,
+    "022, extended, and 008: while the embeddings a declaration made due over a type are being made, a write that owes nothing answers at once, and one that owes a call answers after the batch in flight and its own, its field visible from its answer, while the rest is still being made; the declaration answers once all of it is made, each text once",
+    embedding
+);
+
+check!(
+    /// An abandoned sweep advances a batch with each later write.
+    EMBED_ORPHAN_SWEEP = an_abandoned_sweep_advances_one_batch_with_each_write_that_owes,
+    "022, extended: the embeddings a declaration whose caller went away left due wait for no one; a later write that owes a call answers after its own batch and one batch of them, and each such write advances them by a batch",
+    embedding
+);
+
+check!(
+    /// A re-key during a sweep embeds every record once.
+    EMBED_SWEEP_REKEYED = a_rekey_while_a_type_is_embedded_leaves_every_record_embedded_once,
+    "022, extended, and 027: a re-key that lands while the embeddings a declaration made due over its type are being made answers at once, and every record is then embedded under its new key, each text once",
+    embedding
+);
+
+/// `doc`, keyed by the writer, with `code` and `body`, holding `N` records
+/// fed before it has an embedding: `m000` on, `code` `a000` on. Answers
+/// their texts; the text of each record in `held` starts `held-`, and the
+/// suite's backend holds the request carrying it until it is released.
+async fn backlog(l: &Lake, tag: &str, held: &[usize]) -> Result<Vec<String>, Failure> {
+    l.declare(coded()).await?;
+    let text = |i: usize| match held.contains(&i) {
+        true => format!("held-{tag}-{i}"),
+        false => format!("{tag} {i}"),
+    };
+    let texts: Vec<String> = (0..N).map(text).collect();
+    let record = |(i, t): (usize, &String)| {
+        source_record(
+            "doc",
+            &format!("m{i:03}"),
+            json!({"code": format!("a{i:03}"), "body": t}),
+        )
+    };
+    l.ingest("feed", texts.iter().enumerate().map(record).collect())
+        .await
+        .must("feeding the records")?;
+    Ok(texts)
+}
+
+/// `doc` with `code`, which every record holds, and `body`.
+fn coded() -> lakelands_api::ontology::TypeDecl {
+    let code = FieldDecl {
+        required: true,
+        ..sourced("code", StorageKind::Text)
+    };
+    type_decl("doc", vec![code, sourced("body", StorageKind::Text)])
+}
+
+/// Records [`backlog`] holds: four batches of the store's.
+const N: usize = 200;
+
+/// Whether `done` comes to hold within five seconds.
+async fn came<F: std::future::Future<Output = bool>>(done: impl Fn() -> F) -> bool {
+    for _ in 0..1_000 {
+        if done().await {
+            return true;
+        }
+        crate::conformance::fixture::pause(std::time::Duration::from_millis(5)).await;
+    }
+    false
+}
+
+/// The embedding of `body` added to `doc`, setting `done` once answered.
+fn embedded_over<'a>(l: &'a Lake, done: &'a AtomicBool) -> Caller<'a, Result<(), Failure>> {
+    Box::pin(async move {
+        let vec = embedding("vec", 2, &["body"], EMBED_MODEL);
+        let added = l.cat.add_field(&l.own, &"doc".into(), vec).await;
+        done.store(true, Ordering::Release);
+        added.must("adding `vec` over `doc`").map(drop)
+    })
+}
+
+/// Every record of `doc` holds a vector, and each text was sent once.
+async fn each_once(store: &dyn LakeStore, texts: &[String]) -> Result<(), Failure> {
+    let c = store.vector_coverage(&"doc".into()).await;
+    let c = c.must("asking vector_coverage of `doc`")?;
+    let twice: Vec<&String> = texts.iter().filter(|t| embedded(t) != 1).collect();
+    ensure!(
+        matches!(c.as_slice(), [one] if one.embedded == N as u64 && one.due == 0)
+            && twice.is_empty(),
+        "every one of the {N} records holds its vector and each text was sent once; \
+         vector_coverage answered {c:?}, and these texts were not sent once: {twice:?}"
+    );
+    Ok(())
+}
+
+async fn a_write_beside_a_backlog_waits_for_the_batch_in_flight_and_its_own(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let token = "beside_a_backlog";
+    let l =
+        super::backings::places(store.as_ref(), json!({"token": token, "echo": "code"})).await?;
+    l.declare(type_decl("memo", vec![field("text", StorageKind::Text)]))
+        .await?;
+    let texts = backlog(&l, "beside", &[0, 150]).await?;
+    let done = AtomicBool::new(false);
+    let beside: Caller<'_, Result<(), Failure>> = Box::pin(async {
+        ensure!(
+            came(|| async { embedded(&texts[0]) == 1 }).await,
+            "the first request of `vec`'s backlog never reached the backend"
+        );
+        l.upsert("memo", "m", json!({"text": "aside"})).await?;
+        ensure!(
+            !done.load(Ordering::Acquire) && embedded(&texts[N - 1]) == 0,
+            "a write that owes nothing answers while the backlog's first request is held: \
+             the backlog's last text must not be sent yet, and was sent {} times",
+            embedded(&texts[N - 1])
+        );
+        let before = store.head().await.must("reading the head")?;
+        let own: Caller<'_, Result<Option<Outcome>, Failure>> = Box::pin(async {
+            l.upsert("place", "p1", json!({"code": "AT"}))
+                .await
+                .map(Some)
+        });
+        let freed: Caller<'_, Result<Option<Outcome>, Failure>> = Box::pin(async {
+            let moved = || async { store.head().await.is_ok_and(|h| h > before) };
+            ensure!(came(moved).await, "the write of `p1` was never appended");
+            release(&texts[0]);
+            Ok(None)
+        });
+        let [own, released] = <[_; 2]>::try_from(join_all(vec![own, freed]).await)
+            .map_err(|_| Failure::new("two callers answer two outcomes"))?;
+        let (at, _) = (own?.map(|o| o.position()), released?);
+        let got = l.cat.get(&l.own, &"place".into(), get_at("p1", at)).await;
+        let name = got
+            .must("reading `p1` at its answer")?
+            .data
+            .fields
+            .get("name")
+            .cloned();
+        ensure!(
+            name == Some(json!("AT")) && !done.load(Ordering::Acquire),
+            "a write whose own call is due answers after the batch in flight and its own, \
+             while the backlog waits at its held request: as of its answer {at:?} `name` \
+             reads {name:?}, and the declaration had answered: {}",
+            done.load(Ordering::Acquire)
+        );
+        release(&texts[150]);
+        Ok(())
+    });
+    for r in join_all(vec![embedded_over(&l, &done), beside]).await {
+        r?;
+    }
+    each_once(store.as_ref(), &texts).await
+}
+
+async fn an_abandoned_sweep_advances_one_batch_with_each_write_that_owes(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let token = "abandoned_sweep";
+    let config = json!({"token": token, "echo": "code"});
+    let l = super::backings::places(store.as_ref(), config).await?;
+    let texts = backlog(&l, "abandoned", &[0]).await?;
+    // The declaration's caller goes away while its first request is held.
+    let done = AtomicBool::new(false);
+    let mut declared = embedded_over(&l, &done);
+    std::future::poll_fn(|cx| match declared.as_mut().poll(cx) {
+        _ if embedded(&texts[0]) == 1 => std::task::Poll::Ready(()),
+        std::task::Poll::Ready(_) => std::task::Poll::Ready(()),
+        std::task::Poll::Pending => std::task::Poll::Pending,
+    })
+    .await;
+    drop(declared);
+    release(&texts[0]);
+    let mut covered = Vec::new();
+    for code in ["AT", "BE"] {
+        l.upsert("place", code, json!({"code": code})).await?;
+        let c = store.vector_coverage(&"doc".into()).await;
+        covered.push(c.must("asking vector_coverage of `doc`")?[0].embedded);
+    }
+    ensure!(
+        !done.load(Ordering::Acquire) && covered == [64, 128],
+        "the declaration's caller went away; each later write that owes a call makes its own \
+         and one batch of the 64 records the declaration left, so `doc` holds 64 vectors and \
+         then 128; it held {covered:?}"
+    );
+    Ok(())
+}
+
+async fn a_rekey_while_a_type_is_embedded_leaves_every_record_embedded_once(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let texts = backlog(&l, "rekeyed", &[0]).await?;
+    let done = AtomicBool::new(false);
+    let rekey: Caller<'_, Result<(), Failure>> = Box::pin(async {
+        ensure!(
+            came(|| async { embedded(&texts[0]) == 1 }).await,
+            "the first request of `vec`'s backlog never reached the backend"
+        );
+        let mut to = coded();
+        to.fields.push(embedding("vec", 2, &["body"], EMBED_MODEL));
+        to.key = vec!["code".into()];
+        l.migrate(to).await?;
+        ensure!(
+            !done.load(Ordering::Acquire),
+            "the re-key answers while the backlog's first request is held"
+        );
+        release(&texts[0]);
+        Ok(())
+    });
+    for r in join_all(vec![embedded_over(&l, &done), rekey]).await {
+        r?;
+    }
+    each_once(store.as_ref(), &texts).await
 }
 
 fn with_embedder(embed: Option<Arc<dyn lakelands_api::seam::EmbedBackend>>) -> Seams {

@@ -840,21 +840,22 @@ kind in `Seams::backings`; otherwise the declaration is refused as
 function (`docs/decisions/022-functions-are-declarations.md`, extended):
 
 - The store calls the backing after the append that made a field due,
-  never from the fold, a read, opening a lake or `rebuild`. It calls one
-  backing at a time per lake.
+  never from the fold, a read, opening a lake or `rebuild`. It makes one
+  batch at a time per lake: the embeddings of one model, or one call.
 - It records every answer as `output_recorded`. The answer is keyed by
   the seam `function:<kind>:<function>` and the digest of
   `{ "function", "inputs", "config" }` (`docs/log-format.md` §2.5).
 - It never sends one input to a backing twice: a recorded output is
   read back for every later call with the same input, failures
-  included, and an answer is held with its due from the moment the
+  included, and an answer is held, one per call, from the moment the
   backing gave it until it is recorded, so a recording that fails (for
   one call, or for the first text of a batch of embeddings) is made
-  again by the next drain without a second call. The hold is the
-  handle's, and is lost with what holds it: by a process that ends
-  between an answer and its recording, by a `rebuild` meanwhile, and by
-  a door's call that is dropped in the middle of its drain, which takes
-  every due it had taken with it, answered or not. A field so left
+  again by the next batch without a second call. The hold is the
+  handle's, and is lost with it: by a process that ends between an
+  answer and its recording, and by a `rebuild` meanwhile. A door's call
+  dropped in the middle of its drain loses nothing: what it owed stays
+  owed on the handle, and each later write that drains makes a batch of
+  it after its own. A field so left
   waits until its call is due again (a write to its inputs, or a
   `recompute`), and that input may be called for once more. The one exception is deliberate: declaring the function, or
   a type whose fields it computes, again calls once more for an input
@@ -869,10 +870,12 @@ function (`docs/decisions/022-functions-are-declarations.md`, extended):
   caused by the output.
 - A type's computed fields read one another without a cycle; a
   declaration that closes one is refused.
-- A write whose calls a drain made answers with the lake's head once
-  the calls are made: the position from which its filled fields are
-  visible. A write with nothing due answers at once, with its own last
-  event's position.
+- A write that made calls due answers with the lake's head once its own
+  are made, and one batch of the entries no write waits for any more:
+  the position from which its filled fields are visible. It waits for
+  the batch in flight, its own and that one, not for a backlog another
+  write waits for. A write with nothing due answers at once, with its
+  own last event's position.
 
 A host adds a kind by implementing the trait and passing it in
 `Seams::backings`, with no change to the store.
@@ -1014,7 +1017,8 @@ record (`docs/decisions/022-functions-are-declarations.md`, extended):
 - **At most 64 texts of one model and dimensions go in one request**
   (the store's `EMBED_BATCH`).
   The store never holds more than one batch of vectors at a time,
-  however many records a backfill makes due, so its memory per drain
+  however many records a backfill makes due, and a declaration owes one
+  sweep over its type, not a call per record, so its memory per drain
   stays bounded. The client may split a batch further by its own
   `max_batch`.
 - **A request refused as `Invalid` is asked again in halves**, the first
@@ -1887,10 +1891,10 @@ drain's failure that is no fold's (the recording could not be appended,
 or what the drain decides on could not be read) leaves the writer as it
 was and is answered to no one: what it leaves to see is the field that
 waits, cleared and without `error`, and for an embedding
-`vector_coverage`'s `due`. Either way what was not recorded stays due on
-the handle, with the answer its call was given, and first in line: the
-next write's drain records it, and stops where it fails again, so a due
-that fails each time stands before the dues behind it. One write is
+`vector_coverage`'s `due`. Either way what was not recorded stays owed on
+the handle, with the answer its call was given: each later write that
+drains makes a batch of it after its own, and stops where it fails
+again. One write is
 answered a drain's failure: the call of an external verb and its
 acceptance, whose executor is handed nothing after it (§`VerbExecutor`). Only the lease's holder folds: a
 handle that closed while it was behind folds nothing, clears nothing by

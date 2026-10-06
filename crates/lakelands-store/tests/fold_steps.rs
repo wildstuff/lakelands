@@ -10,6 +10,8 @@
 //! result literally: read by a later event of the transaction, from the
 //! committed head, and as of a step's position.
 
+mod probed;
+
 use std::sync::Arc;
 
 use lakelands_api::engine::OpenMode;
@@ -26,6 +28,7 @@ use lakelands_core::conformance::fixture::{
 use lakelands_engine_mem::MemoryOpener;
 use lakelands_store::lake::Lake;
 use lakelands_store::log::Draft;
+use probed::calls;
 use serde_json::{Value, json};
 
 /// A lake on the memory engine, written by hand-built events.
@@ -561,7 +564,7 @@ fn an_output_fills_the_record_at_its_moved_key() {
         declared(summed()),
         wrote("doc", "a", 1, json!({"title": "A"})),
     ]);
-    let due = l.0.writer().due.pop().expect("the call `a` makes is due");
+    let due = calls(&l.0).pop().expect("the call `a` makes is due");
     let q = l.append(vec![
         migrated(summed(), &[], &[("doc", "a", "b")]),
         EventBody::OutputRecorded {
@@ -589,14 +592,13 @@ fn derived_fields_are_computed_again_over_the_records_as_the_step_left_them() {
         wrote("doc", "a", 1, json!({"title": "A"})),
         wrote("doc", "c", 1, json!({"title": "C"})),
     ]);
-    l.0.writer().due.clear();
+    l.0.writer().owed.clear();
     let q = l.append(vec![
         migrated(summed(), &[], &[("doc", "a", "z")]),
         wrote("doc", "a", 1, json!({"title": "fresh"})),
         function(2),
     ]);
-    let w = l.0.writer();
-    let due: Vec<_> = (w.due.iter())
+    let due: Vec<_> = (calls(&l.0).iter())
         .map(|d| {
             let lakelands_store::backed::Call::Function { call, .. } = &d.call else {
                 panic!("a function's call is due");
