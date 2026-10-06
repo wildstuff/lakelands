@@ -194,6 +194,7 @@ pub const ALL: &[Check] = &[
     migrate::LOSSY_REFUSED,
     migrate::CONVERSIONS_AND_RENAMES,
     made_of::SHOWN_WITH_WHAT_IT_IS_MADE_OF,
+    made_of::KEPT_AT_EVERY_DOOR,
     links::WRITTEN_AND_WALKED,
     links::ONE_PER_PAIR,
     links::UNLINK_KEEPS_HISTORY,
