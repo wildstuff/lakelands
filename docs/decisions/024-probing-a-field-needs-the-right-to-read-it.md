@@ -285,6 +285,16 @@ The rule above then holds as it stands, in every door at once:
   field computed by a backed function that is a value due again where a
   stale one was kept: a host may see more calls of its backing for such
   a field.
+- **An expression is read as it is checked** (lakelands#652). A derived
+  expression is checked as part of a write, where `previous` and
+  `changed` have meaning, and what it reads is told the same way: a
+  field built with `previous(b)` or `changed(b)` is built from `b`. Told
+  as a read outside a write, such an expression had no reads, and the
+  field was read whole by a principal kept from `b`. An expression whose
+  reads cannot be told is completed with every other field beside it, of
+  its type or of its relation: a field whose reads are unknown is
+  closed, never open, so no function that one parse accepts and another
+  refuses can open a field again.
 
 An embedding names what it is made from in `embed.from`, which has no
 unlisted form; it is untouched.
