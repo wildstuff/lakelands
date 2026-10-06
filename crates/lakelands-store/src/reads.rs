@@ -1951,12 +1951,16 @@ impl<'a> Reader<'a> {
     /// Refuse a walk over a derived relation around `here` that probes a
     /// matched field the principal may not read, on either side: an edge
     /// that appears or not answers whether the two values are equal (024,
-    /// 044).
-    fn probe_derived(&self, here: &TypeName, relation: &RelationName) -> Result<()> {
+    /// 044). Only a relation the step walks is probed: its own out of
+    /// `here`, or one into it whose owner the principal is shown, so a
+    /// refusal never names a type it is told is not there (006, extended).
+    fn probe_derived(&self, here: &TypeName, relation: &RelationName, walk: Walk) -> Result<()> {
         for e in self.ontology.types.values() {
             for r in &e.decl.relations {
                 let Some(d) = &r.derived else { continue };
-                if r.name != *relation || (e.decl.name != *here && r.target != *here) {
+                let out = e.decl.name == *here && walk != Walk::In;
+                let inn = r.target == *here && walk != Walk::Out && self.owner_shown(&e.decl);
+                if r.name != *relation || !(out || inn) {
                     continue;
                 }
                 rights::check_probe(self.who, &e.decl, d.pairs.iter().map(|p| &p.from))?;
@@ -1997,7 +2001,7 @@ impl<'a> Reader<'a> {
             };
             self.as_declared(&here, step);
             let reached = self.step_target(&here, &step.relation, step.walk, lenient)?;
-            self.probe_derived(&here, &step.relation)?;
+            self.probe_derived(&here, &step.relation, step.walk)?;
             if let (Some(t), Some(r)) = (&step.ty, &reached)
                 && t != r
             {
@@ -2227,13 +2231,16 @@ impl<'a> Reader<'a> {
     /// Refuse an order or a measure over a path of a pattern's rows whose
     /// field the principal may not read, or that the path's type does not
     /// declare, as `find` refuses one (024, 006). A path that names no
-    /// declared type reads nothing and is left alone.
+    /// declared type, or one the principal is not shown, reads nothing and
+    /// is left alone.
     fn probe_rows(&self, paths: &[String]) -> Result<()> {
         for path in paths {
             let Some((ty, field)) = path.rsplit_once('.') else {
                 continue;
             };
-            if let Ok(decl) = self.ontology.ty(&TypeName::from(ty)) {
+            if let Ok(decl) = self.ontology.ty(&TypeName::from(ty))
+                && self.owner_shown(decl)
+            {
                 rights::check_probe(self.who, decl, [&FieldName::from(field)])?;
             }
         }

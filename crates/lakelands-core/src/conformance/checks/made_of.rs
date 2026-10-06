@@ -7,16 +7,18 @@ use lakelands_api::key::{UNGROUPED, link_key};
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::principal::TypeGrants;
 use lakelands_api::query::{Projection, Search, SearchMode, Walk};
-use lakelands_api::read::{AggFunc, Get};
+use lakelands_api::read::{AggFunc, Aggregate, Get, GroupKey, OrderBy};
 use lakelands_api::write::{ProposalFilter, ProposedWrite, WriteOpts};
-use lakelands_api::{Access, Catalog, Find, Grants, LakeStore, Principal, PrincipalKind, TypeName};
+use lakelands_api::{
+    Access, Catalog, FieldName, Find, Grants, LakeStore, Principal, PrincipalKind, TypeName,
+};
 use serde_json::json;
 
 use super::links::{SEPT, lake, link_ok};
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, agg, aggregate, field, get_at, object_set_on, patch, pattern, principal, step,
-    trigger_on, view_of,
+    Lake, Must, agg, aggregate, field, get_at, object_set_on, order, patch, pattern, principal,
+    step, trigger_on, view_of,
 };
 
 const LINKS: &str = "sys.link.invoice.approved_by";
@@ -31,6 +33,12 @@ check!(
     /// A type kept from its reader is kept at every door, with what is made of it.
     KEPT_AT_EVERY_DOOR = a_type_kept_from_its_reader_is_kept_at_every_door,
     "006, extended (lakelands#636, lakelands#635): to one whose grants give it nothing of a type that declares a sensitive field, the type, the link type of its relation and each view made of it (a count that reads no field, a grouping and a sum that read its fields, a view over that view, and a view that merges it beside a type the reader is shown) answer `describe_type`, `get` of a key that is there and of one that is not, `find`, with a total and with an aggregate, `search` and a pattern, and the type `upsert`, `retire` and `link`, value for value as a name that is not declared, and `describe` and the tools name none of them; so to one with no grant, to one granted to read each view and the link type by name, and to one who reads the whole lake but that type"
+);
+
+check!(
+    /// A pattern names no type its reader is not shown.
+    NAMES_NO_TYPE_NOT_SHOWN = a_pattern_names_no_type_its_reader_is_not_shown,
+    "006, extended, and 024 (lakelands#653, lakelands#654): to one who reads the whole lake but a type, a pattern's order, sum and grouping over a path on that type answer value for value as over a type that is not declared, and a step from a type it is shown, in, either way or measured, over a relation the kept type derives under the name of one the reader is shown answers as before the kept type was declared, as does a step out of a type over its own relation where a type the reader is shown derives one of that name into it from a field the reader may not read"
 );
 
 /// A principal who writes the lake but for these grants by type.
@@ -370,6 +378,99 @@ async fn a_type_kept_from_its_reader_is_kept_at_every_door(
         apart.is_empty() && store.head().await.must("the head")? == head,
         "a type kept from its reader, its link type and each view made of it answer as a name \
          that is not declared, and nothing is written; apart:\n{}",
+        apart.join("\n")
+    );
+    Ok(())
+}
+
+async fn a_pattern_names_no_type_its_reader_is_not_shown(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let x = json!([{"name": "x", "type": {"kind": "text"}}]);
+    let to_box = json!({"name": "to_box", "target": "box"});
+    for d in [
+        json!({"declare": "type", "name": "box", "key": ["x"], "fields": x}),
+        json!({"declare": "type", "name": "item", "fields": x, "relations": [to_box]}),
+    ] {
+        l.declare_json(d).await?;
+    }
+    l.upsert("box", "b1", json!({"x": "b1"})).await?;
+    l.upsert("item", "i1", json!({"x": "b1"})).await?;
+    let mut grants = Grants {
+        default: Access::Read,
+        ..Grants::default()
+    };
+    let none = TypeGrants {
+        default: Some(Access::None),
+        fields: Default::default(),
+    };
+    grants.types.insert("secret".into(), none);
+    let fields = [(FieldName::from("x"), Access::None)].into();
+    let held = TypeGrants {
+        default: Some(Access::Read),
+        fields,
+    };
+    grants.types.insert("crate".into(), held);
+    let who = &principal(store.as_ref(), PrincipalKind::Agent, "rest", grants);
+    let c = l.cat.as_ref();
+    // A step from `box` over `to_box`: in, either way, and measured; and
+    // one out of `item` over its own.
+    let walks = || async {
+        let mut said = Vec::new();
+        for (from, key, walk, project) in [
+            ("box", "b1", Walk::In, Projection::default()),
+            ("box", "b1", Walk::Both, Projection::default()),
+            ("box", "b1", Walk::In, Projection::Degree),
+            ("item", "i1", Walk::Out, Projection::default()),
+        ] {
+            let p = pattern(from, Some(key), vec![step("to_box", walk)], project);
+            said.push(format!("{:?}", c.query(who, p).await.map(|r| r.data)));
+        }
+        said
+    };
+    let before = walks().await;
+    let mut to_box = to_box;
+    to_box["derived"] = json!({"match": [{"from": "x", "to": "x"}]});
+    let secret = json!({"declare": "type", "name": "secret", "fields": x, "relations": [to_box]});
+    l.declare_json(secret).await?;
+    to_box["target"] = json!("item");
+    let crate_ = json!({"declare": "type", "name": "crate", "fields": x, "relations": [to_box]});
+    l.declare_json(crate_).await?;
+    l.upsert("secret", "s1", json!({"x": "b1"})).await?;
+    let mut apart = Vec::new();
+    let after = walks().await;
+    if after != before {
+        apart.push(format!("the steps: {before:?}, then {after:?}"));
+    }
+    // An order, a sum and a grouping over `<ty>.x`, from `item`.
+    let rows = |ty: &'static str| async move {
+        let path = format!("{ty}.x");
+        let mut p = pattern("item", None, Vec::new(), Projection::default());
+        p.order_by = vec![order(&path, OrderBy::Value, Default::default())];
+        let summed = Aggregate {
+            measures: vec![agg("s", AggFunc::Sum, Some(&path))],
+            group_by: Vec::new(),
+        };
+        let grouped = Aggregate {
+            measures: vec![agg("n", AggFunc::Count, None)],
+            group_by: vec![GroupKey::Field(path.as_str().into())],
+        };
+        let mut said = vec![format!("{:?}", c.query(who, p).await.map(|r| r.data))];
+        for a in [summed, grouped] {
+            let p = pattern("item", None, Vec::new(), Projection::Aggregate(a));
+            said.push(format!("{:?}", c.query(who, p).await.map(|r| r.data)));
+        }
+        said
+    };
+    for (a, b) in rows("secret").await.into_iter().zip(rows("ghost").await) {
+        if a.replace("secret", "ghost") != b {
+            apart.push(format!("over `secret.x`: {a}; over `ghost.x`: {b}"));
+        }
+    }
+    ensure!(
+        apart.is_empty(),
+        "a pattern names no type its reader is not shown; apart:\n{}",
         apart.join("\n")
     );
     Ok(())

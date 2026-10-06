@@ -246,6 +246,15 @@ does not exist is told the same of what is made of it.
   reference field alike. A step forward from a type the principal is
   shown to a target it is not is as before: the relation is declared
   where the principal reads it, and the target is not found.
+- **A pattern's probes ask it too (lakelands#653, lakelands#654).** An
+  order, a measure or a grouping over a path `type.field` on a type the
+  principal is not shown reads nothing and is left alone, as a path on
+  a type that is not declared is. A step over a derived relation probes
+  the matched fields of the relations it walks and of no other: its
+  own out of the type it leaves, and one into that type whose owner
+  the principal is shown. A relation a hidden type derives under the
+  same name reaches no record the principal is shown and is not probed,
+  so no refusal names it.
 - **The other end is not asked.** A link's `to` is a key of the target
   type, read by a principal kept from the target as it reads a reference
   field's value in any record.
