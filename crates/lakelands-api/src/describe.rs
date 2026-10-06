@@ -82,7 +82,8 @@ pub struct TypeDescription {
     pub view: Option<ViewDecl>,
     /// Structure: the fields this principal may see, and the relations.
     pub fields: Vec<FieldDescription>,
-    /// Structure: relations to other types.
+    /// Structure: relations to other types, those this principal is
+    /// shown: both their ends and, of a derived one, every matched field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relations: Vec<RelationDecl>,
     /// Access: how records are addressed and read.
@@ -202,7 +203,8 @@ pub struct TypeAccess {
     /// The field holding business end time, if declared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_to: Option<FieldName>,
-    /// Whether `search` covers the type lexically.
+    /// Whether `search` covers the type lexically for this principal: a
+    /// searchable field among those it reads.
     pub searchable: bool,
     /// Whether per-field provenance is kept (`with: meta`).
     pub field_meta: bool,
@@ -236,7 +238,7 @@ pub struct TypeRights {
 /// Where a type's records come from.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TypeLineage {
-    /// Whether any field is fed by a source.
+    /// Whether any field this principal is described is fed by a source.
     pub sourced: bool,
     /// For a view type: the type it is computed from.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -19,7 +19,7 @@ use crate::conformance::fixture::{Lake, Must, describe_type, events_after, field
 check!(
     /// A hash covers the shape its reader is shown.
     HASH_OF_THE_SHOWN_SHAPE = a_schema_hash_is_that_of_the_shape_its_reader_is_shown,
-    "024, extended (lakelands#644): a schema hash answered to a reader is that of the declaration it is shown, without the fields and link fields it may not know of and without a view it is not described, in `describe`, a preview and a listed proposal; `more` is decided before the hashes, a report's id is made over what it shows and the head, the `to` hash is judged through the migration's renames, a stale proposal's `from` is that of the type it was made from; the accept, the log and the owner keep the whole hash"
+    "024, extended (lakelands#644): a schema hash answered to a reader is that of the declaration it is shown, without the fields and link fields it may not know of, the relations it is not shown (lakelands#662) and a view it is not described, in `describe`, a preview and a listed proposal; `more` is decided before the hashes, a report's id is made over what it shows and the head, the `to` hash is judged through the migration's renames, a stale proposal's `from` is that of the type it was made from; the accept, the log and the owner keep the whole hash"
 );
 
 check!(
@@ -109,8 +109,9 @@ async fn a_schema_hash_is_that_of_the_shape_its_reader_is_shown(
     l.upsert("account", "1", one).await?;
     // Kept from `score` and from the link field `since`, with `iban`
     // masked; it reviews and declares. One more, without `schema`, is kept
-    // from `person`, the relation's target, and is described the relation
-    // all the same; with `iban` masked, it is not described the view.
+    // from `person`, the relation's target, and is not described the
+    // relation, nor its hash; with `iban` masked, it is not described the
+    // view.
     let fields = [("score", Access::None), ("iban", Access::Masked)];
     let mut hid = field_access(s, "hid", "account", &fields);
     let since = TypeGrants {
@@ -138,6 +139,12 @@ async fn a_schema_hash_is_that_of_the_shape_its_reader_is_shown(
     ensure!(
         differ.is_empty(),
         "hashes differ from the shapes described: {differ:?}"
+    );
+    let seen = describe_type(l.cat.as_ref(), &far, "account").await?;
+    ensure!(
+        seen.relations.is_empty(),
+        "far, kept from `person`, is not described `kept_by`: {:?}",
+        seen.relations
     );
     let (_, _, v0) = described(&l, &l.own, "account").await?;
     let (h0, _, _) = described(&l, &hid, "account").await?;

@@ -400,8 +400,8 @@ impl State {
     /// field's raise not among them. Anything else is absent, not
     /// forbidden. As the store (006, extended), a type made of another is
     /// shown only with it: a link type with the type that declares its
-    /// relation and a view with each of its sources, whatever a grant on
-    /// its own name says.
+    /// relation and that relation's target, and a view with each of its
+    /// sources, whatever a grant on its own name says.
     pub fn visible(&self, who: &Principal, ty: &TypeName) -> Option<&DeclaredType> {
         let own = |t: &&DeclaredType| {
             let d = &t.decl;
@@ -412,9 +412,14 @@ impl State {
         let (mut asked, mut next) = (vec![ty.clone()], vec![shown]);
         while let Some(t) = next.pop() {
             let owner = crate::links::parts(&t.decl.name).map(|p| p.0);
+            // A link type's `to` names its relation's target.
+            let to = (owner.iter())
+                .flat_map(|_| &t.decl.fields)
+                .find(|f| f.name.as_str() == "to");
+            let target = to.and_then(|f| f.ty.target.as_ref());
             let sources = (t.decl.view.iter())
                 .flat_map(|v| std::iter::once(&v.source).chain(v.merge.iter().map(|m| &m.source)));
-            for n in owner.iter().chain(sources) {
+            for n in owner.iter().chain(target).chain(sources) {
                 let Some(o) = self.types.get(n).filter(|_| !asked.contains(n)) else {
                     continue;
                 };

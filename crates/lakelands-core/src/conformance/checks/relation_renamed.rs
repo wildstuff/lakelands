@@ -200,7 +200,7 @@ async fn a_grant_on_a_link_type_follows_its_relations_rename(
             both
         },
     );
-    // A link type is shown with its owner alone (006, extended).
+    // A link type is shown with its owner and its target (006, extended).
     let mut permitted = permitted;
     let amount = [("amount".into(), Access::Read)].into();
     let of_owner = TypeGrants {
@@ -209,6 +209,11 @@ async fn a_grant_on_a_link_type_follows_its_relations_rename(
         ..Default::default()
     };
     permitted.grants.types.insert("invoice".into(), of_owner);
+    let partner = TypeGrants {
+        default: Some(Access::Read),
+        ..Default::default()
+    };
+    permitted.grants.types.insert("partner".into(), partner);
     let mut red = Vec::new();
     for (what, who, ty, as_of, want) in [
         (

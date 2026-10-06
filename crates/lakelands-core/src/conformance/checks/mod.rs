@@ -517,4 +517,5 @@ pub const ALL: &[Check] = &[
     triggers::TRIGGER_CEILING,
     after::AFTER_RESUMES,
     describe::DESCRIBE_IS_THE_DECLARATION,
+    describe::DESCRIBED_AS_SHOWN,
 ];

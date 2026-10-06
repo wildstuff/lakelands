@@ -12,17 +12,21 @@ type's `valid_from` and `valid_to`, so it probes them as a filter on
 them would: `find`, `get`, `search`, a pattern's start and every type a
 walk reaches (lakelands#372).
 
-A search probes every searchable field of its type, in every mode, and
-the vector field it names. A vector embedded from text encodes that
+A search probes the searchable fields of its type it searches, in every
+mode, and the vector field it names. One that names no fields searches
+the searchable fields its principal reads (lakelands#662): a field it
+sees masked or may not know of is not searched, so it neither refuses
+nor ranks the search, and where every searchable field is hidden from
+it the search answers no hits. A vector embedded from text encodes that
 text, so a vector or hybrid search also probes every field its vector
 is embedded from, even when the principal may read the vector itself.
 A hybrid search that one of these refuses is refused whole, never
 answered from its other half. This tightened in 0.5.0 (lakelands#242).
 
 A lexical or hybrid search may name the searchable fields it matches in
-(`fields`). It then probes those fields instead of every searchable one,
-so a searchable field the principal may not read no longer refuses a
-search that does not name it. Only the text half narrows: the vector of
+(`fields`). It then probes those fields instead of the searchable ones
+it reads, so it may match in a field its reader may not read only by
+naming it, and is then refused. Only the text half narrows: the vector of
 a hybrid search still encodes every field it is embedded from, and is
 probed as above. A named field the principal may not read is refused as
 not granted before its searchability is judged, so the refusal never
@@ -483,6 +487,20 @@ shape and across one reader's answers over time; the version moves on
 every change, a hidden one included, which a description already does
 without the hash.
 
-Other parts of `describe` still say that hidden fields exist (whether
-any field is searchable or sourced, a derived relation's pairs); they
-are lakelands#662.
+The rest of a type's description is computed over the same shown shape
+(lakelands#662). Whether the type is searchable and whether it is
+sourced are said of the fields its reader is described: a field it sees
+masked is described without `searchable` and is searchable to it no
+more, and one it may not know of says nothing. A relation is described
+only to a reader shown both its ends and, for a derived relation, every
+field its match pairs
+(`docs/decisions/006-grants-not-roles.md`, extended). What remains
+says a hidden thing exists, and remains on purpose:
+
+- the version, which moves on every change, as above;
+- the key, the valid times and a relation's `via`, which are the shape
+  and are given of a masked field too;
+- a reference field's target, which is its type: hiding it would make a
+  field's access depend on another type at every read. A host that
+  hides a type grants `none` on the reference fields to it;
+- `may.retire`, which says every field is writable.

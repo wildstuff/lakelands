@@ -369,7 +369,7 @@ async fn a_field_the_principal_may_not_know_of_is_answered_as_one_never_declared
 check!(
     /// A write-only field is written and never read.
     WRITE_ONLY = a_write_only_field_is_written_and_never_shown,
-    "006, extended (lakelands#393): a field granted write_only is written by upsert and retire like a writable one, while get, find, query, search, describe and the tools' read schemas never show it, a filter or a search that probes it is refused not_granted naming it, and the write answers no value; a writable field built from one the principal may not read, write-only or masked, is write-only in turn: written, and probed as not granted, never as undeclared"
+    "006, extended (lakelands#393): a field granted write_only is written by upsert and retire like a writable one, while get, find, query, search, describe and the tools' read schemas never show it, a filter or a search that names it is refused not_granted naming it, and the write answers no value; a writable field built from one the principal may not read, write-only or masked, is write-only in turn: written, and probed as not granted, never as undeclared"
 );
 
 check!(
@@ -634,12 +634,13 @@ async fn a_write_only_field_is_written_and_never_shown(
     // A probe of it is not granted, naming it.
     let probe = find_where("note = 'kept'");
     let filtered = cat.find(&intake, &ty, probe).await.map(drop);
-    let searched = cat.search(&intake, search(None)).await.map(drop);
+    let searched = cat.search(&intake, search(Some(vec!["note".into()])));
+    let searched = searched.await.map(drop);
     let gist = find_where("gist = 'g'");
     let folded = cat.find(&intake, &ty, gist).await.map(drop);
     for (what, field, answer) in [
         ("a filter on `note`", "note", filtered),
-        ("a search of every field", "note", searched),
+        ("a search in `note`", "note", searched),
         ("a filter on `gist`", "gist", folded),
     ] {
         if !matches!(

@@ -541,8 +541,9 @@ fn link_relation(
     relation: &RelationName,
 ) -> Result<lakelands_api::ontology::RelationDecl> {
     // As the store: an undeclared type, or one the principal is not shown,
-    // is not found; a relation it does not carry by link records is
-    // invalid; one the principal may not write the links of is not granted.
+    // is not found; a relation it does not carry by link records, or is
+    // not shown, is invalid; one the principal may not write the links of
+    // is not granted.
     let t = st.visible(who, ty).ok_or_else(|| no_type(ty))?;
     not_a_view(&t.decl)?;
     let r = t
@@ -550,6 +551,7 @@ fn link_relation(
         .relations
         .iter()
         .find(|r| &r.name == relation && r.via.is_none() && r.derived.is_none())
+        .filter(|r| relation_shown(st, who, &t.decl, r))
         .cloned()
         .ok_or_else(|| {
             invalid(format!(
@@ -1049,6 +1051,25 @@ fn callable(st: &State, who: &Principal, v: &VerbDecl) -> bool {
     }
 }
 
+/// As the store: whether `who` is shown relation `r` of `owner`: both ends
+/// shown, and of a derived relation every matched field known on its side.
+pub(crate) fn relation_shown(
+    st: &State,
+    who: &Principal,
+    owner: &TypeDecl,
+    r: &RelationDecl,
+) -> bool {
+    let Some(target) = st.visible(who, &r.target) else {
+        return false;
+    };
+    let known = |t: &TypeDecl, n: &FieldName| {
+        field(t, n).is_some_and(|f| access(who, t, f) != Access::None)
+    };
+    let mut pairs = r.derived.iter().flat_map(|d| &d.pairs);
+    st.visible(who, &owner.name).is_some()
+        && pairs.all(|p| known(owner, &p.from) && known(&target.decl, &p.to))
+}
+
 fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescription {
     let d = &t.decl;
     // A holder of `only` writes nothing that reaches the type (051).
@@ -1061,6 +1082,10 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
             a => Some(FieldDescription::of(f, a)),
         })
         .collect();
+    // As the store: over the fields as shown.
+    let searchable = fields.iter().any(|f| f.searchable);
+    let sourced =
+        (fields.iter()).any(|f| matches!(f.authority, Authority::Source | Authority::Shared));
     let visible = |names: Vec<FieldName>| -> Vec<FieldName> {
         names
             .into_iter()
@@ -1102,10 +1127,10 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
         relations: d
             .relations
             .iter()
-            .filter(|r| st.types.contains_key(&r.target))
+            .filter(|r| relation_shown(st, who, d, r))
             .map(|r| {
-                // As the store: a relation is described where its target is
-                // declared. A link field the principal may not read is
+                // As the store: a relation is described where it is shown.
+                // A link field the principal may not read is
                 // described by its shape alone, as a type's own field is.
                 let link = crate::links::link_type(&d.name, r);
                 let mut r = r.clone();
@@ -1122,7 +1147,7 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
             key: d.key.clone(),
             valid_from: d.valid_from.clone(),
             valid_to: d.valid_to.clone(),
-            searchable: d.fields.iter().any(|f| f.searchable),
+            searchable,
             field_meta: d.field_meta,
         },
         may: TypeRights {
@@ -1137,7 +1162,7 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
                     r.via.is_none()
                         && r.derived.is_none()
                         && r.authority == Authority::Authored
-                        && st.visible(who, &r.target).is_some()
+                        && relation_shown(st, who, d, r)
                 })
                 .filter(|r| {
                     let lt = links::link_type(&d.name, r);
@@ -1161,16 +1186,13 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
             .map(|v| v.name.clone())
             .collect(),
         lineage: TypeLineage {
-            sourced: d
-                .fields
-                .iter()
-                .any(|f| matches!(f.authority, Authority::Source | Authority::Shared)),
+            sourced,
             view_of: d.view.as_ref().map(|v| v.source.clone()),
         },
         lifecycle: TypeLifecycle {
             version: t.version,
             schema_hash: shown_hash(
-                who,
+                (st, who),
                 d,
                 d.view.as_deref().is_none_or(|v| view_visible(st, who, v)),
                 &t.schema_hash,
@@ -2579,17 +2601,32 @@ fn unbound_view(start: &TypeName, reached: &DeclaredType, relation: &RelationNam
 
 /// Reads `to`, a migration's or a redeclaration's shape of the type
 /// declared as `before`, as its author's view, as the store does: a field
-/// `who` may not know of is put back as declared, at its declared place,
-/// and so are such link fields of each relation `to` keeps. A shape that
-/// names one declares it twice, a rename from one is from no field, and a
-/// field one is built from is refused on that field.
+/// `who` may not know of, or a relation it is not shown, is put back as
+/// declared, at its declared place, and so are such link fields of each
+/// relation `to` keeps. A shape that names one declares it twice, a rename
+/// from one is from no field or relation, and a field one reads is
+/// refused on that field.
 fn as_author(
-    who: &Principal,
+    (st, who): (&State, &Principal),
     before: &TypeDecl,
     to: &mut TypeDecl,
     renames: &[(FieldName, FieldName)],
+    relations: &[(RelationName, RelationName)],
 ) -> Result<()> {
     let hidden = |t: &TypeDecl, f: &FieldDecl| access(who, t, f) == Access::None;
+    let unshown = |r: &RelationDecl| !relation_shown(st, who, before, r);
+    for (old, new) in relations {
+        if before
+            .relations
+            .iter()
+            .any(|r| &r.name == old && unshown(r))
+        {
+            return Err(invalid(format!(
+                "renaming relation `{old}` to `{new}`: the first names a relation the type has, \
+                 the second one the new shape has"
+            )));
+        }
+    }
     let on = |f: &FieldName, message: String| Error::Refused {
         field: Some(f.clone()),
         reason: Refusal::Invalid { message },
@@ -2621,14 +2658,29 @@ fn as_author(
             put_back(&link, &old.fields, &mut r.fields);
         }
     }
+    for (i, r) in before
+        .relations
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| unshown(r))
+    {
+        to.relations.insert(i.min(to.relations.len()), r.clone());
+    }
+    // What a relation it is not shown reads: its `via`, its match's own side.
+    let hid = before.relations.iter().filter(|r| unshown(r));
+    let matched = hid.flat_map(|r| {
+        let pairs = r.derived.iter().flat_map(|d| &d.pairs);
+        r.via.iter().chain(pairs.map(|p| &p.from))
+    });
     let mut reads = (unknown.iter().copied())
-        .flat_map(|f| (f.depends_on.iter()).chain(f.embed.iter().flat_map(|e| &e.from)));
+        .flat_map(|f| (f.depends_on.iter()).chain(f.embed.iter().flat_map(|e| &e.from)))
+        .chain(matched);
     match reads.find(|n| field(to, n).is_none()) {
         Some(n) => {
             let ty = &to.name;
             Err(on(
                 n,
-                format!("`{n}` is read by another field of `{ty}` and cannot be removed"),
+                format!("`{n}` is read by another part of `{ty}` and cannot be removed"),
             ))
         }
         None => Ok(()),
@@ -2642,7 +2694,10 @@ fn authored(st: &State, who: &Principal, m: &mut Migration) -> Result<()> {
     }
     reads_as_author(st, who, &[Declaration::Type(m.to.clone())], true)?;
     match st.types.get(&m.to.name) {
-        Some(before) => as_author(who, &before.decl, &mut m.to, &m.renames),
+        Some(before) => {
+            let (renames, relations) = (&m.renames, &m.relation_renames);
+            as_author((st, who), &before.decl, &mut m.to, renames, relations)
+        }
         None => Ok(()),
     }
 }
@@ -2671,16 +2726,28 @@ fn reads_as_author(
     let mut seen = st.clone();
     seen.types.retain(|name, _| shown(name));
     for t in seen.types.values_mut() {
-        known_fields(who, &mut t.decl);
+        known_fields((st, who), &mut t.decl);
     }
     // As the store: what a type's shape names stands as declared, known to
     // its author or not: a key field, a valid time, a relation's `via`.
     let mut shaped = sent.to_vec();
     for d in &mut shaped {
         let Declaration::Type(t) = d else { continue };
+        // As the store: an unchanged reference to a type its author is not
+        // shown stands as declared, left out of both sides.
+        let hides = |x: &TypeName| st.types.contains_key(x) && !seen.types.contains_key(x);
+        let hidden = |f: &FieldDecl| f.ty.target.as_ref().is_some_and(hides);
+        let was = st.types.get(&t.name).map(|w| &w.decl.fields[..]);
+        let unchanged: Vec<FieldDecl> = (t.fields.iter())
+            .filter(|f| hidden(f) && was.unwrap_or_default().contains(f))
+            .cloned()
+            .collect();
         let (Some(was), Some(e)) = (st.types.get(&t.name), seen.types.get_mut(&t.name)) else {
             continue;
         };
+        for fields in [&mut t.fields, &mut e.decl.fields] {
+            fields.retain(|f| !unchanged.contains(f));
+        }
         let via = t.relations.iter().filter_map(|r| r.via.as_ref());
         let named = t
             .key
@@ -2775,16 +2842,17 @@ fn redeclared(st: &State, who: &Principal, declarations: &mut [Declaration]) -> 
         if let Declaration::Type(t) = d
             && let Some(before) = st.types.get(&t.name)
         {
-            as_author(who, &before.decl, t, &[])?;
+            as_author((st, who), &before.decl, t, &[], &[])?;
         }
     }
     Ok(())
 }
 
 /// `t` without the fields `who` may not know of, a relation's link fields
-/// too.
-fn known_fields(who: &Principal, t: &mut TypeDecl) {
+/// too, and without the relations it is not shown.
+fn known_fields((st, who): (&State, &Principal), t: &mut TypeDecl) {
     let whole = t.clone();
+    t.relations.retain(|r| relation_shown(st, who, &whole, r));
     t.fields.retain(|f| access(who, &whole, f) != Access::None);
     for r in &mut t.relations {
         let link = links::link_type(&whole.name, r);
@@ -2794,8 +2862,9 @@ fn known_fields(who: &Principal, t: &mut TypeDecl) {
 
 /// As the store: `t` as `describe` would show its fields to `who`, one it
 /// may not read left with its shape alone; what a listing hands out.
-fn described_fields(who: &Principal, t: &mut TypeDecl) {
+fn described_fields((st, who): (&State, &Principal), t: &mut TypeDecl) {
     let whole = t.clone();
+    t.relations.retain(|r| relation_shown(st, who, &whole, r));
     let shown = |of: &TypeDecl, fields: &mut Vec<FieldDecl>| {
         fields.retain(|f| access(who, of, f) != Access::None);
         let unread = fields.iter_mut().filter(|f| !access(who, of, f).reads());
@@ -2867,8 +2936,8 @@ fn shown_report(
     let whole = report.clone();
     let stands = made.unwrap_or(&was.decl);
     let (mut was, mut to) = (stands.clone(), m.to.clone());
-    known_fields(who, &mut was);
-    known_fields(who, &mut to);
+    known_fields((st, who), &mut was);
+    known_fields((st, who), &mut to);
     let sourced = |new: &FieldName| {
         let mut from = m.renames.iter().filter(|(_, n)| n == new);
         from.all(|(old, _)| holds(&was, old))
@@ -2927,7 +2996,7 @@ fn shown(
 ) -> MigrationReport {
     shown_report(st, who, m, (&mut report, None));
     let made = st.types.get(&m.to.name).map_or(&m.to, |t| &t.decl);
-    shown_hashes(who, made, m, (&mut report, head));
+    shown_hashes((st, who), made, m, (&mut report, head));
     report
 }
 
@@ -3007,7 +3076,12 @@ fn known_shape(
             };
             shown_report(st, then, migration, (report, made));
             let before = Position(at.0.saturating_sub(1));
-            shown_hashes(then, made.unwrap_or(&was.decl), migration, (report, before));
+            shown_hashes(
+                (st, then),
+                made.unwrap_or(&was.decl),
+                migration,
+                (report, before),
+            );
             known_migration(st, then, migration, made);
             true
         }
@@ -3022,7 +3096,7 @@ fn known_shape(
             declarations.retain(|d| listed(&after, who, d));
             for d in declarations.iter_mut() {
                 if let Declaration::Type(t) = d {
-                    described_fields(who, t);
+                    described_fields((&after, who), t);
                 }
             }
             !declarations.is_empty()
@@ -3045,9 +3119,9 @@ fn known_migration(st: &State, who: &Principal, m: &mut Migration, made: Option<
     let head = st.types.get(&m.to.name).map(|t| &t.decl);
     let mut was = made.or(head).cloned();
     if let Some(was) = &mut was {
-        known_fields(who, was);
+        known_fields((st, who), was);
     }
-    described_fields(&then, &mut m.to);
+    described_fields((st, &then), &mut m.to);
     let old = |n: &FieldName| was.as_ref().is_none_or(|w| holds(w, n));
     m.renames
         .retain(|(from, new)| old(from) && holds(&m.to, new));
@@ -3085,9 +3159,14 @@ fn hides_some(who: &Principal) -> bool {
 
 /// As the store: the schema hash of `t` as `who` is shown it, `whole`
 /// where nothing is left out.
-fn shown_hash(who: &Principal, t: &TypeDecl, view_shown: bool, whole: &str) -> String {
+fn shown_hash(
+    (st, who): (&State, &Principal),
+    t: &TypeDecl,
+    view_shown: bool,
+    whole: &str,
+) -> String {
     let mut shown = t.clone();
-    known_fields(who, &mut shown);
+    known_fields((st, who), &mut shown);
     shown.view = shown.view.filter(|_| view_shown);
     match shown == *t {
         true => whole.to_owned(),
@@ -3099,15 +3178,15 @@ fn shown_hash(who: &Principal, t: &TypeDecl, view_shown: bool, whole: &str) -> S
 /// `more`, `from` of `made`, the type the report was made from; and its
 /// id made again over what it shows at `head`.
 fn shown_hashes(
-    who: &Principal,
+    (st, who): (&State, &Principal),
     made: &TypeDecl,
     m: &Migration,
     (report, head): (&mut MigrationReport, Position),
 ) {
     if report.ty == m.to.name {
-        report.from_schema_hash = shown_hash(who, made, true, &report.from_schema_hash);
+        report.from_schema_hash = shown_hash((st, who), made, true, &report.from_schema_hash);
         let then = following(who, m);
-        report.to_schema_hash = shown_hash(&then, &m.to, true, &report.to_schema_hash);
+        report.to_schema_hash = shown_hash((st, &then), &m.to, true, &report.to_schema_hash);
     }
     report.report_id = report_id(report, head);
 }
@@ -3289,12 +3368,21 @@ fn preflight(
                 Declaration::ObjectSet(o) => seen.object_sets.iter().any(|s| s.name == o.name),
                 _ => true,
             };
-            let reader = if shown {
-                d.what()
-            } else {
-                "a declaration".to_owned()
+            // A type by what it is shown of it: a relation it is not shown
+            // reads nothing it is told of.
+            let own = match d {
+                Declaration::Type(t) if shown => {
+                    let mut t = t.clone();
+                    known_fields((st, who), &mut t);
+                    let seen = declaration_reads(st, &Declaration::Type(t), &was.name);
+                    seen.into_iter().find(|n| gone(&n))
+                }
+                _ => shown.then(|| n.clone()),
             };
-            return Err(said(reader, n));
+            return Err(match own {
+                Some(n) => said(d.what(), &n),
+                None => said("a declaration".to_owned(), n),
+            });
         }
     }
     // As the store: and the type it migrates to reads only fields it has.
@@ -3934,6 +4022,7 @@ impl Catalog for MockCatalog {
                 let declared = st.types.values().any(|o| {
                     o.decl.relations.iter().any(|r| {
                         r.name == step.relation
+                            && relation_shown(&st, who, &o.decl, r)
                             && (pattern.project == Projection::Components
                                 || (step.walk != Walk::In && o.decl.name == t.decl.name)
                                 || (step.walk != Walk::Out && r.target == t.decl.name))
@@ -4008,8 +4097,12 @@ impl Catalog for MockCatalog {
             // refused, not answered empty. A step naming a relation's
             // `inverse` walks that relation the other way; a relation
             // declared under the name wins.
+            let shown = |o: &TypeDecl, r: &RelationDecl| relation_shown(&st, who, o, r);
             let forward = |named: &dyn Fn(&RelationDecl) -> bool| {
-                let r = scope_ty.decl.relations.iter().find(|r| named(r))?;
+                let relations = scope_ty.decl.relations.iter();
+                let r = relations
+                    .filter(|r| shown(&scope_ty.decl, r))
+                    .find(|r| named(r))?;
                 let link = links::name(&scope_ty.decl.name, &r.name);
                 Some((
                     r.target.clone(),
@@ -4026,8 +4119,8 @@ impl Catalog for MockCatalog {
                         .iter()
                         .find(|r| r.target == scope_ty.decl.name && named(r))?;
                     // As the store: named from its target's end only to
-                    // one shown the type that declares it (006, extended).
-                    st.visible(who, &o.decl.name)?;
+                    // one shown the relation (006, extended).
+                    shown(&o.decl, r).then_some(())?;
                     let link = links::name(&o.decl.name, &r.name);
                     Some((
                         o.decl.name.clone(),
@@ -4195,13 +4288,13 @@ impl Catalog for MockCatalog {
             embed.into_iter().flat_map(|e| e.from.iter()).chain([*v])
         });
         let searched: Vec<&FieldName> = match text_fields {
-            // Naming none, it reads the searchable fields the caller knows
-            // of; one it may not know of is never searched.
+            // Naming none, it reads the searchable fields the caller reads;
+            // one it may not read is never searched.
             None => t
                 .decl
                 .fields
                 .iter()
-                .filter(|f| f.searchable && access(who, &t.decl, f) != Access::None)
+                .filter(|f| f.searchable && access(who, &t.decl, f).reads())
                 .map(|f| &f.name)
                 .collect(),
             Some([]) => return Err(invalid("`fields` names no field")),

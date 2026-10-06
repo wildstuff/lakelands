@@ -1144,7 +1144,7 @@ impl Call<'_> {
     ) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         ordinary_door(ty)?;
-        if let Some(first) = self.retried_unshown(ty, &opts)? {
+        if let Some(first) = self.retried_unshown(ty, None, &opts)? {
             return Ok(first);
         }
         self.write_record(ty, key, patch, opts, |_, _| Ok(()))
@@ -1196,7 +1196,7 @@ impl Call<'_> {
     pub fn retire(&self, ty: &TypeName, key: &RecordKey, opts: WriteOpts) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         ordinary_door(ty)?;
-        if let Some(first) = self.retried_unshown(ty, &opts)? {
+        if let Some(first) = self.retried_unshown(ty, None, &opts)? {
             return Ok(first);
         }
         self.retire_record(ty, key, opts)
@@ -1214,7 +1214,7 @@ impl Call<'_> {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
-        if let Some(first) = self.retried_unshown(ty, &opts)? {
+        if let Some(first) = self.retried_unshown(ty, Some(relation), &opts)? {
             return Ok(first);
         }
         let (lt, r) = link_relation(&*self.writer()?, ty, relation)?;
@@ -1249,7 +1249,7 @@ impl Call<'_> {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
-        if let Some(first) = self.retried_unshown(ty, &opts)? {
+        if let Some(first) = self.retried_unshown(ty, Some(relation), &opts)? {
             return Ok(first);
         }
         let (lt, _) = link_relation(&*self.writer()?, ty, relation)?;
@@ -1258,13 +1258,26 @@ impl Call<'_> {
 
     /// The first question of `upsert`, `retire`, `link` and `unlink` (006
     /// and 024, extended): a caller not shown `ty` is answered as for a
-    /// type that is not there, before a relation is named or the write is
-    /// judged. Its retry of a write it made is answered that write, as
+    /// type that is not there, and one not shown the relation a link door
+    /// names as for a relation the type does not carry, before the write
+    /// is judged. Its retry of a write it made is answered that write, as
     /// every retry is before the grants are asked.
-    fn retried_unshown(&self, ty: &TypeName, opts: &WriteOpts) -> Result<Option<Outcome>> {
+    fn retried_unshown(
+        &self,
+        ty: &TypeName,
+        relation: Option<&RelationName>,
+        opts: &WriteOpts,
+    ) -> Result<Option<Outcome>> {
         let w = self.writer()?;
-        let Err(gone) = shown_type(&w.ontology, ty, self.who) else {
-            return Ok(None);
+        let find = |n: &TypeName| w.ontology.ty(n).ok();
+        let unshown = |t: &TypeDecl, n: &RelationName| {
+            let mut named = t.relations.iter().filter(|r| &r.name == n);
+            named.any(|r| !describe::relation_shown(t, r, &find, self.who))
+        };
+        let gone = match (shown_type(&w.ontology, ty, self.who), relation) {
+            (Ok(t), Some(n)) if unshown(t, n) => no_link_relation(ty, n),
+            (Ok(_), _) => return Ok(None),
+            (Err(gone), _) => gone,
         };
         let view = self.lake.engine.view(None)?;
         let first = self.replay(&w, &opts.idempotency_key, view.as_ref())?;
@@ -1919,7 +1932,7 @@ impl Call<'_> {
     fn known_renames(&self, o: &Ontology, m: &Migration) -> Vec<(FieldName, FieldName)> {
         let mut m = m.clone();
         if let Ok(was) = o.ty(&m.to.name) {
-            rights::known_migration(self.who, was, &mut m);
+            rights::known_migration(self.who, was, &mut m, &|n| o.ty(n).ok());
         }
         m.renames
     }
@@ -2145,7 +2158,7 @@ impl Call<'_> {
         let mut seen = o.clone();
         (seen.types).retain(|name, _| shown(name));
         for e in seen.types.values_mut().map(Arc::make_mut) {
-            rights::known_fields(self.who, &mut e.decl);
+            rights::known_fields(self.who, &mut e.decl, &|n| o.ty(n).ok());
         }
         // What a type's shape names stands as declared, known to its author
         // or not: a key field, a valid time, a relation's `via`. Both sides
@@ -2153,9 +2166,22 @@ impl Call<'_> {
         let mut shaped = sent.to_vec();
         for d in &mut shaped {
             let Declaration::Type(t) = d else { continue };
+            // An unchanged reference to a type its author is not shown
+            // stands as declared: left out of both sides, it is checked
+            // whole at apply.
+            let hides = |x: &TypeName| o.types.contains_key(x) && !seen.types.contains_key(x);
+            let hidden = |f: &FieldDecl| f.ty.target.as_ref().is_some_and(hides);
+            let was = o.ty(&t.name).map(|w| &w.fields[..]).unwrap_or_default();
+            let unchanged: Vec<FieldDecl> = (t.fields.iter())
+                .filter(|f| hidden(f) && was.contains(f))
+                .cloned()
+                .collect();
             let Some(e) = seen.types.get_mut(&t.name).map(Arc::make_mut) else {
                 continue;
             };
+            for fields in [&mut t.fields, &mut e.decl.fields] {
+                fields.retain(|f| !unchanged.contains(f));
+            }
             let via = t.relations.iter().filter_map(|r| r.via.as_ref());
             let named = t
                 .key
@@ -2240,7 +2266,8 @@ impl Call<'_> {
         match o.types.get(&m.to.name) {
             Some(before) => {
                 let (to, pairs) = (&mut m.to, &m.relation_renames);
-                as_author(self.who, &before.decl, to, &m.renames, pairs)
+                let find = |n: &TypeName| o.ty(n).ok();
+                as_author(self.who, (&before.decl, &find), to, &m.renames, pairs)
             }
             None => Ok(()),
         }
@@ -2260,7 +2287,8 @@ impl Call<'_> {
             let Declaration::Type(t) = d else { continue };
             initials(&after, t);
             if let Some(before) = o.types.get(&t.name) {
-                as_author(self.who, &before.decl, t, &[], &[])?;
+                let find = |n: &TypeName| o.ty(n).ok();
+                as_author(self.who, (&before.decl, &find), t, &[], &[])?;
             }
         }
         Ok(())
@@ -2443,9 +2471,11 @@ impl Call<'_> {
     pub fn add_field(&self, ty: &TypeName, field: FieldDecl) -> Result<Outcome> {
         check_context(self.lake, &self.context)?;
         granted(self.who.grants.schema && !rights::holds_only(self.who))?;
-        let mut t = shown_type(&self.writer()?.ontology, ty, self.who)?.clone();
+        let w = self.writer()?;
+        let mut t = shown_type(&w.ontology, ty, self.who)?.clone();
         // The field is added to its author's view of the type (027).
-        rights::known_fields(self.who, &mut t);
+        rights::known_fields(self.who, &mut t, &|n| w.ontology.ty(n).ok());
+        drop(w);
         if t.fields.iter().any(|f| f.name == field.name) {
             return Err(invalid_field(
                 &field.name,
@@ -2500,7 +2530,7 @@ impl Call<'_> {
         w.ontology.complete(&mut m.to);
         let described = || describe::lake(&self.who.lake, &declared, self.who);
         rights::shown_report(self.who, was, &m, &mut report, described, sees, answered);
-        rights::shown_hashes(self.who, was, &m, &mut report);
+        rights::shown_hashes(self.who, was, &m, &mut report, &|n| w.ontology.ty(n).ok());
         report.report_id = report_id(&report, view.position());
         Ok(report)
     }
@@ -2673,11 +2703,22 @@ impl Call<'_> {
                     continue;
                 };
                 // The reader is named only to an author `describe` shows it
-                // to, as it stands in force; another is told that a
-                // declaration reads the field. The field is one the author
-                // knows of: one hidden from it was put back (`as_author`).
+                // to, as it stands in force, and by what it is shown of it: a
+                // relation it is not shown reads nothing it is told of
+                // (lakelands#662). Another is told that a declaration reads
+                // the field. The field is one the author knows of: one
+                // hidden from it was put back (`as_author`).
                 if describe::shown(&d.declaration, &w.ontology.declared(), self.who) {
-                    return Err(named);
+                    let Declaration::Type(t) = &d.declaration else {
+                        return Err(named);
+                    };
+                    let mut t = t.clone();
+                    rights::known_fields(self.who, &mut t, &|n| w.ontology.ty(n).ok());
+                    let seen = Declaration::Type(t);
+                    let seen = describe::declaration_reads(&seen, &was.name, &|_| None);
+                    if let Some(named) = gone(d.declaration.what(), &seen, was, is) {
+                        return Err(named);
+                    }
                 }
                 gone("a declaration".to_owned(), &reads, was, is).map_or(Ok(()), Err)?;
             }
@@ -3240,24 +3281,27 @@ fn initials(o: &Ontology, t: &mut TypeDecl) {
 }
 
 /// Reads `to`, a migration's or a redeclaration's shape of the type
-/// declared as `before`, as its author's view of the type (027, extended):
-/// a field `who` may not know of was not its to leave out, so it is put
-/// back as declared, at its declared place, and so are such link fields of
-/// each relation `to` keeps or renames. No refusal names one: a rename from it is from
-/// no field, and a field it is built from is refused on that field.
-fn as_author(
+/// declared as `before`, as its author's view of the type (027 and 006,
+/// extended): a field `who` may not know of, or a relation it is not
+/// shown, was not its to leave out, so it is put back as declared, at its
+/// declared place, and so are such link fields of each relation `to`
+/// keeps or renames. No refusal names one: a rename from it is from no
+/// field or relation, and a field it reads is refused on that field.
+/// `find` answers a type by its name.
+fn as_author<'a>(
     who: &Principal,
-    before: &TypeDecl,
+    (before, find): (&TypeDecl, rights::Find<'_, 'a>),
     to: &mut TypeDecl,
     renames: &[(FieldName, FieldName)],
     relations: &[(RelationName, RelationName)],
 ) -> Result<()> {
-    let hidden = |t: &TypeDecl, f: &FieldDecl| rights::field_access(who, t, f) == Access::None;
-    let put_back = |t: &TypeDecl, declared: &[FieldDecl], fields: &mut Vec<FieldDecl>| {
-        for (i, f) in declared.iter().enumerate().filter(|(_, f)| hidden(t, f)) {
-            fields.insert(i.min(fields.len()), f.clone());
+    fn put_back<T: Clone>(declared: &[T], hidden: impl Fn(&T) -> bool, into: &mut Vec<T>) {
+        for (i, x) in declared.iter().enumerate().filter(|(_, x)| hidden(x)) {
+            into.insert(i.min(into.len()), x.clone());
         }
-    };
+    }
+    let hidden = |t: &TypeDecl, f: &FieldDecl| rights::field_access(who, t, f) == Access::None;
+    let unshown = |r: &RelationDecl| !describe::relation_shown(before, r, find, who);
     let unknown: Vec<&FieldDecl> = (before.fields.iter().filter(|f| hidden(before, f))).collect();
     let renamed = |f: &&&FieldDecl| renames.iter().any(|(from, _)| from == &f.name);
     if let Some(f) = unknown.iter().find(renamed) {
@@ -3266,22 +3310,46 @@ fn as_author(
             shape::ShapeError::RenameFromUnknown { from }.to_string(),
         ));
     }
-    put_back(before, &before.fields, &mut to.fields);
+    let mut known = before.clone();
+    known.relations.retain(|r| !unshown(r));
+    let from_unshown = |(old, _): &&(RelationName, RelationName)| {
+        (before.relations.iter()).any(|r| &r.name == old && unshown(r))
+    };
+    if let Some(pair) = relations.iter().find(from_unshown) {
+        let (to, relation_renames) = (to.clone(), vec![pair.clone()]);
+        let m = Migration {
+            to,
+            renames: Vec::new(),
+            relation_renames,
+        };
+        return Err(invalid(
+            m.renamed_relations(&known).err().unwrap_or_default(),
+        ));
+    }
+    put_back(&before.fields, |f| hidden(before, f), &mut to.fields);
     for r in &mut to.relations {
         // A renamed relation is the one it was, under its old name.
         let was = relations.iter().find(|(_, new)| new == &r.name);
         let name = was.map_or(&r.name, |(old, _)| old);
         if let Some(old) = before.relations.iter().find(|o| &o.name == name) {
             let link = links::link_type(&before.name, old);
-            put_back(&link, &old.fields, &mut r.fields);
+            put_back(&old.fields, |f| hidden(&link, f), &mut r.fields);
         }
     }
+    put_back(&before.relations, unshown, &mut to.relations);
+    // What a relation it is not shown reads: its `via`, its match's own side.
+    let hid = before.relations.iter().filter(|r| unshown(r));
+    let matched = hid.flat_map(|r| {
+        let pairs = r.derived.iter().flat_map(|d| &d.pairs);
+        r.via.iter().chain(pairs.map(|p| &p.from))
+    });
     let mut reads = (unknown.iter().copied())
-        .flat_map(|f| (f.depends_on.iter()).chain(f.embed.iter().flat_map(|e| &e.from)));
+        .flat_map(|f| (f.depends_on.iter()).chain(f.embed.iter().flat_map(|e| &e.from)))
+        .chain(matched);
     match reads.find(|n| !to.fields.iter().any(|t| &t.name == *n)) {
         Some(n) => {
             let ty = &to.name;
-            let why = format!("`{n}` is read by another field of `{ty}` and cannot be removed");
+            let why = format!("`{n}` is read by another part of `{ty}` and cannot be removed");
             Err(invalid_field(n, why))
         }
         None => Ok(()),
@@ -3358,6 +3426,14 @@ fn ordinary_door(ty: &TypeName) -> Result<()> {
     Ok(())
 }
 
+/// The answer for a relation `ty` does not carry by link records, which is
+/// also the answer for one the caller is not shown.
+fn no_link_relation(ty: &TypeName, relation: &RelationName) -> Error {
+    invalid(format!(
+        "`{ty}` has no relation `{relation}` carried by link records"
+    ))
+}
+
 /// The relation carried by link records that `ty` declares as `relation`,
 /// with its link type.
 fn link_relation(
@@ -3371,11 +3447,7 @@ fn link_relation(
         .relations
         .iter()
         .find(|r| &r.name == relation && links::carried_by_links(r))
-        .ok_or_else(|| {
-            invalid(format!(
-                "`{ty}` has no relation `{relation}` carried by link records"
-            ))
-        })?;
+        .ok_or_else(|| no_link_relation(ty, relation))?;
     let lt = links::link_type_name(ty, relation);
     w.ontology.ty(&lt)?;
     Ok((lt, r.clone()))

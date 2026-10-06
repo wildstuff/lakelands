@@ -25,7 +25,7 @@ check!(
 check!(
     /// Named fields lift the probe of the fields not named.
     FIELDS_LIFT_THE_PROBE = a_search_limited_to_readable_fields_is_answered_beside_a_masked_one,
-    "024: a search that names `fields` probes only those, so a searchable field the principal may not read no longer refuses it when it is not named; the field stays masked in every hit"
+    "024: a search that names `fields` probes only those, and one that names none searches the searchable fields its principal reads, so a searchable field the principal may not read neither refuses nor ranks a search that does not name it; the field stays masked in every hit"
 );
 
 check!(
@@ -179,12 +179,11 @@ async fn a_search_limited_to_readable_fields_is_answered_beside_a_masked_one(
 ) -> Result<(), Failure> {
     accounts(store.as_ref()).await?;
     let reader = masking(store.as_ref(), "secret");
-    refused(
+    let every = answer(
         store.as_ref(),
         &reader,
-        doc_search(SearchMode::lexical("harbour quayside")),
-        "secret",
-        "a search in every searchable field, by a reader who sees `secret` only masked,",
+        SearchMode::lexical("harbour quayside"),
+        "the reader's search naming no field",
     )
     .await?;
     let note = answer(
@@ -198,6 +197,11 @@ async fn a_search_limited_to_readable_fields_is_answered_beside_a_masked_one(
         scored(&note) == [("b", 2.0), ("a", 1.0)],
         "the reader's search in `note` answered {:?}; it must answer as the owner's does",
         scored(&note)
+    );
+    ensure!(
+        scored(&every) == scored(&note),
+        "a search naming no field, by a reader who sees `secret` only masked, searches          `note` alone; it answered {:?}",
+        scored(&every)
     );
     let a = &note.hits[1].record;
     ensure!(

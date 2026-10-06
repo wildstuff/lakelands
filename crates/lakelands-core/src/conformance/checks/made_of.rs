@@ -26,7 +26,7 @@ const LINKS: &str = "sys.link.invoice.approved_by";
 check!(
     /// A type made of another is shown only with it.
     SHOWN_WITH_WHAT_IT_IS_MADE_OF = a_type_made_of_another_is_shown_only_with_it,
-    "006, extended (lakelands#595): a link type is shown to a principal only where the type that declares its relation is, and a view only where its source is, whatever a grant on its own name says: to one kept from a type, `describe` names neither a link type of it, nor a set or a trigger on that, nor a view over either, a proposed trigger on the link type is not listed, and `describe_type`, `find`, `get` and `search` of the link type, a read of the view, a walk over the relation from the type, `link` and `unlink`, over a relation the type has or one it has not, answer as for a type that is not there; a step from the target by the inverse of a relation of that type, carried by links or by a reference field, answers as a relation that is not there; a principal who reads one field of the owner is shown them all, and one kept from the link type by its own grant is kept from the view over it and walks the edge"
+    "006, extended (lakelands#595): a link type is shown to a principal only where the type that declares its relation is, and a view only where its source is, whatever a grant on its own name says: to one kept from a type, `describe` names neither a link type of it, nor a set or a trigger on that, nor a view over either, a proposed trigger on the link type is not listed, and `describe_type`, `find`, `get` and `search` of the link type, a read of the view, a walk over the relation from the type, `link` and `unlink`, over a relation the type has or one it has not, answer as for a type that is not there; a link type is made of its relation's target too (lakelands#662), so to one kept from the target the walk over the relation, `link` and `unlink` answer as for a relation that is not there, and a link sent again answers the first; a step from the target by the inverse of a relation of that type, carried by links or by a reference field, answers as a relation that is not there; a principal who reads one field of the owner is shown them all, and one kept from the link type by its own grant is kept from the view over it and walks the edge"
 );
 
 check!(
@@ -38,7 +38,7 @@ check!(
 check!(
     /// A pattern names no type its reader is not shown.
     NAMES_NO_TYPE_NOT_SHOWN = a_pattern_names_no_type_its_reader_is_not_shown,
-    "006, extended, and 024 (lakelands#653, lakelands#654): to one who reads the whole lake but a type, a pattern's order, sum and grouping over a path on that type answer value for value as over a type that is not declared, and a step from a type it is shown, in, either way or measured, over a relation the kept type derives under the name of one the reader is shown answers as before the kept type was declared, as does a step out of a type over its own relation where a type the reader is shown derives one of that name into it from a field the reader may not read"
+    "006, extended, and 024 (lakelands#653, lakelands#654): to one who reads the whole lake but a type, a pattern's order, sum and grouping over a path on that type answer value for value as over a type that is not declared, and a step from a type it is shown, in, either way or measured, over a relation the kept type derives under the name of one the reader is shown answers as before the kept type was declared, as does a step out of a type over its own relation, or either way (lakelands#662), where a type the reader is shown derives one of that name into it from a field the reader may not read"
 );
 
 /// A principal who writes the lake but for these grants by type.
@@ -117,10 +117,11 @@ async fn a_type_made_of_another_is_shown_only_with_it(
     let given = writer(s, "given", &given);
     let some = writer(s, "some", &[("invoice", none, &["amount"])]);
     let closed = writer(s, "closed", &[(LINKS, none, &[])]);
+    let away = writer(s, "away", &[("partner", none, &[])]);
     let (c, ty) = (l.cat.as_ref(), LINKS.into());
     let (invoice, relation) = ("invoice".into(), "approved_by".into());
     let mut told = Vec::new();
-    for who in [&apart, &given, &some, &closed] {
+    for who in [&apart, &given, &some, &closed, &away] {
         let lake = c.describe(who, Default::default()).await;
         let lake = json!(lake.must("describing the lake")?.data).to_string();
         let listed = c.proposals(who, ProposalFilter::default()).await;
@@ -178,6 +179,20 @@ async fn a_type_made_of_another_is_shown_only_with_it(
             }
         };
         let (from, to, opts) = ("i2".into(), "p2".into(), WriteOpts::default());
+        // "no relation" where it is, to the letter, the link doors' answer
+        // for a relation the type does not carry.
+        let nothing = link("invoice", "nothing")
+            .await
+            .err()
+            .map(|e| e.to_string());
+        let carried = |answer: lakelands_api::Result<_>| match answer {
+            Err(e @ lakelands_api::Error::Refused { .. })
+                if Some(e.to_string().replace("approved_by", "nothing")) == nothing =>
+            {
+                "no relation"
+            }
+            other => short(other),
+        };
         let doors = [
             short(c.describe_type(who, &ty, Default::default()).await),
             short(c.find(who, &ty, Find::default()).await),
@@ -188,8 +203,8 @@ async fn a_type_made_of_another_is_shown_only_with_it(
             walk("invoice", "i1", "approved_by").await,
             walk("partner", "p1", "approved").await,
             walk("partner", "p1", "noted").await,
-            short(link("invoice", "approved_by").await),
-            short(c.unlink(who, &invoice, &from, &relation, &to, opts).await),
+            carried(link("invoice", "approved_by").await),
+            carried(c.unlink(who, &invoice, &from, &relation, &to, opts).await),
             short(link("invoice", "nothing").await),
             short(link("nowhere", "approved_by").await),
         ];
@@ -227,11 +242,47 @@ async fn a_type_made_of_another_is_shown_only_with_it(
          found, not found, not found, not found, not found, answers, answers, answers, answers, \
          refused, refused, refused, not found"
             .to_owned(),
+        // Kept from the relation's target: the link type is made of it too.
+        format!(
+            "away: named false, the set false, the trigger false, the proposed one false; {}, \
+             answers, no relation, not found, not found, no relation, no relation, refused, not \
+             found",
+            gone(5)
+        ),
     ];
     ensure!(
         told == want,
-        "a type made of another is shown with it alone; the four are told:\n{}",
+        "a type made of another is shown with it alone; the five are told:\n{}",
         told.join("\n")
+    );
+    // A link sent again after a grant was taken away answers the first.
+    let key = Some(lakelands_api::IdempotencyKey::from("again"));
+    let again = |who: Principal| {
+        let (opts, key) = (WriteOpts::default(), key.clone());
+        let opts = WriteOpts {
+            idempotency_key: key,
+            ..opts
+        };
+        let (by, i2, p2) = (relation.clone(), "i2".into(), "p2".into());
+        let ty = invoice.clone();
+        async move {
+            c.link(&who, &ty, &i2, &by, &p2, Default::default(), opts)
+                .await
+        }
+    };
+    let first = again(writer(s, "late", &[])).await.must("the first link")?;
+    let sent = again(writer(s, "late", &[("partner", none, &[])])).await;
+    // Its position and version; what it set off is named as to any reader.
+    let at = |o: &lakelands_api::write::Outcome| match o {
+        lakelands_api::write::Outcome::Applied {
+            position, version, ..
+        } => Some((*position, *version)),
+        _ => None,
+    };
+    ensure!(
+        at(&first).is_some() && sent.as_ref().ok().and_then(at) == at(&first),
+        "a link sent again after its writer was kept from `partner` answers the first, \
+         {first:?}; it answered {sent:?}"
     );
     Ok(())
 }
@@ -427,6 +478,7 @@ async fn a_pattern_names_no_type_its_reader_is_not_shown(
             ("box", "b1", Walk::Both, Projection::default()),
             ("box", "b1", Walk::In, Projection::Degree),
             ("item", "i1", Walk::Out, Projection::default()),
+            ("item", "i1", Walk::Both, Projection::default()),
         ] {
             let p = pattern(from, Some(key), vec![step("to_box", walk)], project);
             said.push(format!("{:?}", c.query(who, p).await.map(|r| r.data)));
@@ -442,6 +494,7 @@ async fn a_pattern_names_no_type_its_reader_is_not_shown(
     let crate_ = json!({"declare": "type", "name": "crate", "fields": x, "relations": [to_box]});
     l.declare_json(crate_).await?;
     l.upsert("secret", "s1", json!({"x": "b1"})).await?;
+    l.upsert("crate", "c1", json!({"x": "b1"})).await?;
     let mut apart = Vec::new();
     let after = walks().await;
     if after != before {

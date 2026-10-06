@@ -63,7 +63,7 @@ use lakelands_api::read::{
 use lakelands_api::record::StoredRecord;
 use lakelands_api::write::{Declaration, Proposal, ProposalFilter, ProposedWrite};
 use lakelands_api::{
-    Access, Cursor, Error, FieldName, Missing, Position, Principal, Record, RecordKey, Refusal,
+    Cursor, Error, FieldName, Missing, Position, Principal, Record, RecordKey, Refusal,
     RelationName, Result, Timestamp, TypeName, Value, VerbName,
 };
 use lakelands_core::expr::{self, Place, RecordScope, aggregate};
@@ -1858,10 +1858,13 @@ impl<'a> Reader<'a> {
                 let all = || describe::lake(&self.who.lake, &self.declared(), self.who);
                 let described = || lake.get_or_init(all);
                 rights::shown_report(then, made, migration, report, described, sees, answered);
-                rights::shown_hashes(then, made, migration, report);
+                // One listing: its `to` hash is that of the `to` it lists.
+                let listing = proposed.as_ref().unwrap_or(&self.ontology);
+                let find = |n: &TypeName| listing.ty(n).ok();
+                rights::shown_hashes(then, made, migration, report, &find);
                 let before = Position(at.0.saturating_sub(1));
                 report.report_id = crate::writes::report_id(report, Some(before));
-                rights::known_migration(then, made, migration);
+                rights::known_migration(then, made, migration, &find);
                 true
             }
             // Each declaration as `describe` would show it once the bundle
@@ -1875,7 +1878,7 @@ impl<'a> Reader<'a> {
                 declarations.retain(|d| describe::listed(d, &declared, self.who));
                 for d in declarations.iter_mut() {
                     if let Declaration::Type(t) = d {
-                        rights::described_fields(self.who, t);
+                        rights::described_fields(self.who, t, &|n| after.ty(n).ok());
                     }
                 }
                 !declarations.is_empty()
@@ -1917,10 +1920,10 @@ impl<'a> Reader<'a> {
         };
         rights::check_search(self.who, &decl, text_fields, &vector_fields)?;
         // A search that names no fields reads only the searchable fields
-        // the principal knows of (024); none hidden, it reads them all.
+        // the principal reads (024); none hidden or masked, it reads them all.
         let known: Vec<FieldName>;
         let hidden = (decl.fields.iter())
-            .any(|f| f.searchable && rights::field_access(self.who, &decl, f) == Access::None);
+            .any(|f| f.searchable && !rights::field_access(self.who, &decl, f).reads());
         let text_fields = match text_fields {
             None if hidden => {
                 known = rights::searched_fields(self.who, &decl).cloned().collect();
@@ -2217,25 +2220,20 @@ impl<'a> Reader<'a> {
     /// Refuse a walk over a derived relation around `here` that probes a
     /// matched field the principal may not read, on either side: an edge
     /// that appears or not answers whether the two values are equal (024,
-    /// 044). Only a relation the step walks is probed: its own out of
-    /// `here`, or one into it whose owner the principal is shown, so a
-    /// refusal never names a type it is told is not there (006, extended).
+    /// 044). Only a relation the step walks and the principal is shown is
+    /// probed, so a refusal never names a type or a field it is told is
+    /// not there (006, extended): what remains is a masked field.
     fn probe_derived(&self, here: &TypeName, relation: &RelationName, walk: Walk) -> Result<()> {
-        for e in self.ontology.types.values() {
-            for r in &e.decl.relations {
-                let Some(d) = &r.derived else { continue };
-                let out = e.decl.name == *here && walk != Walk::In;
-                let inn = r.target == *here && walk != Walk::Out && self.owner_shown(&e.decl);
-                if r.name != *relation || !(out || inn) {
-                    continue;
-                }
-                rights::check_probe(self.who, &e.decl, d.pairs.iter().map(|p| &p.from))?;
-                rights::check_probe(
-                    self.who,
-                    self.ontology.ty(&r.target)?,
-                    d.pairs.iter().map(|p| &p.to),
-                )?;
+        for (t, r) in self.shown_relations(Some(here)) {
+            let Some(d) = &r.derived else { continue };
+            let out = t.name == *here && walk != Walk::In;
+            let inn = r.target == *here && walk != Walk::Out;
+            if r.name != *relation || !(out || inn) {
+                continue;
             }
+            rights::check_probe(self.who, t, d.pairs.iter().map(|p| &p.from))?;
+            let target = self.ontology.ty(&r.target)?;
+            rights::check_probe(self.who, target, d.pairs.iter().map(|p| &p.to))?;
         }
         Ok(())
     }
@@ -2521,12 +2519,24 @@ impl<'a> Reader<'a> {
         describe::one_type(&owner.name, &self.declared(), self.who).is_some()
     }
 
+    /// The relations the principal is shown (`describe::relation_shown`)
+    /// with their owners: those that leave or reach `around`, or all.
+    /// A relation it is not shown is one no type declares, at every step,
+    /// inverse name and edge.
+    fn shown_relations(&self, around: Option<&TypeName>) -> Vec<(&TypeDecl, &RelationDecl)> {
+        let find = |n: &TypeName| self.ontology.ty(n).ok();
+        let near =
+            |t: &TypeDecl, r: &RelationDecl| around.is_none_or(|a| &t.name == a || &r.target == a);
+        let types = self.ontology.types.values().map(|e| &e.decl);
+        let all = types.flat_map(|t| t.relations.iter().map(move |r| (t, r)));
+        all.filter(|(t, r)| near(t, r) && describe::relation_shown(t, r, &find, self.who))
+            .collect()
+    }
+
     /// Whether a type the principal is shown declares a relation of this
     /// name, so that a step over it from elsewhere walks nothing.
     fn out_any(&self, relation: &RelationName) -> bool {
-        let named = |t: &TypeDecl| t.relations.iter().any(|r| &r.name == relation);
-        let mut types = self.ontology.types.values().map(|e| &e.decl);
-        types.any(|t| named(t) && self.owner_shown(t))
+        (self.shown_relations(None).iter()).any(|(_, r)| &r.name == relation)
     }
 
     /// Rewrite a step naming a relation's `inverse` to that relation,
@@ -2535,7 +2545,6 @@ impl<'a> Reader<'a> {
     /// relation declared under the name wins, so a step is read as an
     /// inverse only when it walks no relation of that name from `here`.
     fn as_declared(&self, here: &TypeName, step: &mut Step) {
-        let types = || self.ontology.types.values().map(|e| &e.decl);
         let (name, walk) = (&step.relation, step.walk);
         // Whether a relation leaves `here` (out) or reaches it (in) by the
         // way the step walks.
@@ -2547,18 +2556,13 @@ impl<'a> Reader<'a> {
             Walk::Both => Walk::Both,
         };
         let walked = |t: &TypeDecl, r: &RelationDecl, w: Walk| leaves(t, w) || reaches(r, w);
-        let shown = |t: &TypeDecl| &t.name == here || self.owner_shown(t);
-        if types().any(|t| {
-            let named = |r: &RelationDecl| &r.name == name && walked(t, r, walk);
-            t.relations.iter().any(named) && shown(t)
-        }) {
+        let shown = self.shown_relations(Some(here));
+        if (shown.iter()).any(|(t, r)| &r.name == name && walked(t, r, walk)) {
             return;
         }
-        let inverse = types().find_map(|t| {
-            let named =
-                |r: &&RelationDecl| r.inverse.as_ref() == Some(name) && walked(t, r, flipped);
-            t.relations.iter().find(named).filter(|_| shown(t))
-        });
+        let inverse = (shown.iter())
+            .find(|(t, r)| r.inverse.as_ref() == Some(name) && walked(t, r, flipped))
+            .map(|(_, r)| r);
         if let Some(r) = inverse {
             step.relation = r.name.clone();
             step.walk = flipped;
@@ -2573,17 +2577,14 @@ impl<'a> Reader<'a> {
         walk: Walk,
         lenient: bool,
     ) -> Result<Option<TypeName>> {
-        let decl = self.ontology.ty(here)?;
-        let out = decl
-            .relations
-            .iter()
-            .find(|r| &r.name == relation)
-            .map(|r| r.target.clone());
-        let reaches = |r: &RelationDecl| &r.name == relation && &r.target == here;
-        let mut owners = self.ontology.types.values().map(|e| &e.decl);
-        let inn = owners
-            .find(|t| t.relations.iter().any(reaches) && self.owner_shown(t))
-            .map(|t| t.name.clone());
+        self.ontology.ty(here)?;
+        let shown = self.shown_relations(Some(here));
+        let out = (shown.iter())
+            .find(|(t, r)| &t.name == here && &r.name == relation)
+            .map(|(_, r)| r.target.clone());
+        let inn = (shown.iter())
+            .find(|(_, r)| &r.name == relation && &r.target == here)
+            .map(|(t, _)| t.name.clone());
         let found = match walk {
             Walk::Out => out,
             Walk::In => inn,
@@ -2700,10 +2701,14 @@ fn derived_edges(
     r: &Reader<'_>,
     ty: &TypeName,
     keys: &[RecordKey],
-    relation: Option<&RelationName>,
+    (relation, shown): (Option<&RelationName>, &[(&TypeDecl, &RelationDecl)]),
     walk: Walk,
 ) -> Result<Vec<Vec<Edge>>> {
-    let wanted = |x: &RelationDecl| x.derived.is_some() && relation.is_none_or(|n| *n == x.name);
+    // A relation the walker is not shown is never matched (006, extended).
+    let wanted = |x: &RelationDecl| {
+        (x.derived.is_some() && relation.is_none_or(|n| *n == x.name))
+            && shown.iter().any(|(_, s)| std::ptr::eq(*s, x))
+    };
     let owned: Vec<&RelationDecl> = match (walk, r.ontology.ty(ty)) {
         (Walk::Out | Walk::Both, Ok(t)) => t.relations.iter().filter(|x| wanted(x)).collect(),
         _ => Vec::new(),
@@ -2817,10 +2822,12 @@ impl EdgeSource for Visible<'_, '_> {
         walk: Walk,
     ) -> Result<Vec<Vec<Edge>>> {
         let r = self.reader;
+        let shown = r.shown_relations(Some(ty));
         let mut lists = ProjectionView::edges(r.view.as_ref(), ty, keys, relation, walk)?;
-        for (list, derived) in lists
-            .iter_mut()
-            .zip(derived_edges(r, ty, keys, relation, walk)?)
+        for (list, derived) in
+            lists
+                .iter_mut()
+                .zip(derived_edges(r, ty, keys, (relation, &shown), walk)?)
         {
             list.extend(derived);
         }
