@@ -28,8 +28,9 @@ use crate::write::{Declaration, Migration, ProposedWrite};
 /// declaration; version 8 a view's `params` and a call of `param`, and a
 /// verb on its type; version 9 a view's `merge`; version 10 a proposed
 /// tightening of a value type; version 11 a call of `floor` in a
-/// declaration (`docs/log-format.md` §6).
-pub const LOG_FORMAT_VERSION: u32 = 11;
+/// declaration; version 12 a declaration `with_the_set`
+/// (`docs/log-format.md` §6).
+pub const LOG_FORMAT_VERSION: u32 = 12;
 
 /// The version a lake is created with and writes until it needs a newer
 /// one: a lake that never re-keys a type stays at version 1, byte for
@@ -144,6 +145,11 @@ pub enum EventBody {
         schema_hash: Option<String>,
         /// The declaration's version after this event (1 for new).
         version: u32,
+        /// Whether another declaration of the same set follows in this
+        /// append: the records the set computes again are computed once,
+        /// at its last declaration (format version 12).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        with_the_set: bool,
     },
     /// A type changed shape; its stored records follow in the fold.
     Migrated {

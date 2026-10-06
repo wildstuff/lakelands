@@ -119,6 +119,7 @@ fn a_version_2_event_that_carries_upstream_or_declares_date_bucket_is_refused() 
         .unwrap(),
         schema_hash: None,
         version: 1,
+        with_the_set: false,
     });
     for (d, what) in [
         (ingested, "carries `upstream`"),

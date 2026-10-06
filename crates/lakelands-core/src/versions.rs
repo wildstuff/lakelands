@@ -34,6 +34,7 @@
 //!   a proposed `migrate` whose report holds `restated`; and a
 //!   declaration with a field that declares `initial`, in the places 5
 //!   names.
+//! - **12**: what [`TWELFTH`] lists: a `declared` event `with_the_set`.
 //!
 //! The store writes every event of one append at the greatest of the
 //! lake's version and what [`needed`] answers for each event of the
@@ -48,7 +49,10 @@ use lakelands_api::write::{Declaration, ProposedWrite};
 /// The lowest format version that can carry `body`, with `upstream` or
 /// without it.
 pub fn needed(body: &EventBody, upstream: bool) -> u32 {
-    if eleventh(body).is_some() {
+    if carried(TWELFTH, body).is_some() {
+        return 12;
+    }
+    if carried(ELEVENTH, body).is_some() {
         return 11;
     }
     if let EventBody::WriteProposed { write, .. } = body
@@ -118,6 +122,13 @@ pub const ELEVENTH: &[Added] = &[
         "declares an `initial` value",
     ),
 ];
+
+/// What format version 12 added, as [`ELEVENTH`] lists 11's: below 12 a
+/// set's records were computed again at each of its declarations.
+pub const TWELFTH: &[Added] = &[(
+    |body| matches!(body, EventBody::Declared { with_the_set, .. } if *with_the_set),
+    "declares `with_the_set`",
+)];
 
 /// Whether the event proposes a migration whose report says what its `to`
 /// states otherwise: below 11 no report does, and a reader there would
@@ -192,9 +203,9 @@ fn by_a_width(e: &Expr) -> bool {
     matches!(e, Expr::Call { func: Func::DateBucket, args } if args.len() == 3)
 }
 
-/// What `body` carries that format version 11 added, if anything.
-pub fn eleventh(body: &EventBody) -> Option<&'static str> {
-    let added = ELEVENTH.iter().find(|(carries, _)| carries(body));
+/// What `body` carries of what a format version `added`, if anything.
+pub fn carried(added: &[Added], body: &EventBody) -> Option<&'static str> {
+    let added = added.iter().find(|(carries, _)| carries(body));
     added.map(|(_, what)| *what)
 }
 
@@ -293,7 +304,8 @@ pub fn below(event: &Event) -> Option<String> {
     if event.v >= need {
         return None;
     }
-    let what = if let Some(what) = eleventh(&event.body) {
+    let added = carried(TWELFTH, &event.body).or_else(|| carried(ELEVENTH, &event.body));
+    let what = if let Some(what) = added {
         what.to_owned()
     } else if need == 10 {
         "proposes a value type's tightening".to_owned()

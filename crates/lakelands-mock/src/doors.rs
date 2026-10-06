@@ -494,6 +494,7 @@ impl MockCatalog {
                 declaration,
                 schema_hash,
                 version,
+                with_the_set: false,
             },
         ));
         for d in links {
@@ -523,6 +524,7 @@ fn link_drafts(st: &State, who: &Principal, d: &Declaration) -> Vec<Draft> {
                     declaration,
                     schema_hash,
                     version,
+                    with_the_set: false,
                 },
             )
         })
@@ -2383,6 +2385,7 @@ fn set_drafts(st: &State, who: &Principal, declarations: Vec<Declaration>) -> Ve
                 declaration,
                 schema_hash,
                 version,
+                with_the_set: false,
             },
         ));
         out.extend(links);
@@ -4456,6 +4459,7 @@ impl Catalog for MockCatalog {
                     declaration,
                     schema_hash,
                     version,
+                    with_the_set: false,
                 };
                 let mut d = Draft::new(&proposer, Origin::System, body);
                 d.cause = Some(accepted);
@@ -4667,6 +4671,7 @@ impl Catalog for MockCatalog {
             declaration,
             schema_hash,
             version,
+            with_the_set: false,
         };
         let position = batch.push(Draft::new(who, Origin::System, body));
         self.commit(&mut log, batch);
@@ -4724,6 +4729,7 @@ impl Catalog for MockCatalog {
                 ),
                 version: t.version + 1,
                 declaration: Declaration::Type(decl),
+                with_the_set: false,
             },
         ));
         self.commit(&mut log, batch);
@@ -4819,6 +4825,7 @@ impl Catalog for MockCatalog {
                 declaration,
                 schema_hash,
                 version,
+                with_the_set: false,
             },
         ));
         self.commit(&mut log, batch);
@@ -4921,6 +4928,7 @@ impl Catalog for MockCatalog {
                 declaration,
                 schema_hash,
                 version,
+                with_the_set: false,
             };
             batch.push(Draft::new(who, Origin::System, body));
         }
@@ -4932,6 +4940,7 @@ impl Catalog for MockCatalog {
                 declaration,
                 schema_hash,
                 version,
+                with_the_set: false,
             };
             batch.push(Draft::new(who, Origin::System, body));
         }

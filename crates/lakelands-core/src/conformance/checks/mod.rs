@@ -296,6 +296,7 @@ pub const ALL: &[Check] = &[
     link_triggers::LINK_TRIGGER_FIRES,
     link_triggers::VIA_LINK_TYPE_REFUSED,
     bundles::BUNDLE_WHOLE,
+    bundles::SET_COMPUTES_ONCE,
     versions::CAS_ACROSS_RETIREMENT,
     references::REFERENCE_MUST_RESOLVE,
     references::REFERENCE_WITHIN_A_WINDOW,

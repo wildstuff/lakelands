@@ -40,6 +40,7 @@ async fn a_verb_on_a_record_of_a_view_from_an_older_lake_is_refused_at_the_call(
                 declaration: Declaration::Type(t),
                 schema_hash: Some(hash),
                 version: 1,
+                with_the_set: false,
             }
         };
         let invoice = type_decl(
@@ -69,6 +70,7 @@ async fn a_verb_on_a_record_of_a_view_from_an_older_lake_is_refused_at_the_call(
                 declaration: poke,
                 schema_hash: None,
                 version: 1,
+                with_the_set: false,
             },
         ];
         let mut prev = Digest::zero();

@@ -22,6 +22,9 @@ The files:
 - `expected.json`: every event's hash and id and how the id was made
   (`random`, `ingest` or `authored`), the declared types' schema hashes,
   and each segment's digest.
+- `v12.json`: version 12's addition after `v11.json`'s position 30: a
+  `declared` function that carries `with_the_set`; and `negatives`, the
+  line written as version 11, which a reader refuses.
 - `v11.json`: version 11's additions after `v10.json`'s position 22, one
   line each: a `declared` type whose derived field calls `floor`, one
   whose derived field calls `date_bucket` by a width, an object set

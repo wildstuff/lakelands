@@ -55,6 +55,7 @@ async fn a_lake_made_before_aging_gains_the_rule_type_on_its_next_open_for_writi
                     declaration: Declaration::Type(setting),
                     schema_hash: Some(hash),
                     version: 1,
+                    with_the_set: false,
                 },
             ),
         ];

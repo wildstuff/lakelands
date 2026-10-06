@@ -84,6 +84,7 @@ fn declared(decl: TypeDecl) -> EventBody {
         schema_hash: Some(lakelands_core::shape::schema_hash(&decl).expect("a schema hash")),
         declaration: Declaration::Type(decl),
         version: 1,
+        with_the_set: false,
     }
 }
 
@@ -490,6 +491,7 @@ fn memberships_move_with_the_keys_through_two_steps() {
             declaration: object_set_on("kept", "doc", "title = 'k'"),
             schema_hash: None,
             version: 1,
+            with_the_set: false,
         },
         wrote("doc", "a", 1, json!({"title": "k"})),
         wrote("doc", "b", 1, json!({"title": "k"})),
@@ -546,6 +548,7 @@ fn function(version: u32) -> EventBody {
         declaration: serde_json::from_value(f).expect("a function"),
         schema_hash: None,
         version,
+        with_the_set: false,
     }
 }
 

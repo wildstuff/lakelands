@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use lakelands_api::engine::{EngineOpener, OpenMode};
 use lakelands_api::event::{EventBody, Procedure};
-use lakelands_api::ontology::StorageKind::{Decimal, Number, Text};
+use lakelands_api::ontology::StorageKind::{Boolean, Decimal, Number, Text};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::record::{FieldMeta, Origin, StoredRecord, Upstream};
 use lakelands_api::seam::{FunctionBacking, FunctionCall, Seams};
@@ -197,6 +197,7 @@ fn declared(decl: TypeDecl, version: u32) -> EventBody {
         schema_hash: Some(lakelands_core::shape::schema_hash(&decl).expect("a schema hash")),
         declaration: Declaration::Type(decl),
         version,
+        with_the_set: false,
     }
 }
 
@@ -205,6 +206,7 @@ fn declaration(d: Value, version: u32) -> EventBody {
         declaration: serde_json::from_value(d).expect("a declaration"),
         schema_hash: None,
         version,
+        with_the_set: false,
     }
 }
 
@@ -1477,5 +1479,252 @@ fn a_type_declared_again_with_one_more_plain_field_is_not_walked() {
         (scans(&l.probe.take()), l.state(None, "doc", &key(7))),
         (3, json!([{"n": 7, "twice": 14, "plus": 8}, 1, q[0].0])),
         "a derived field more computes the type again"
+    );
+}
+
+/// `body`, a `declared`, as one of a set that goes on in its append.
+fn going_on(body: EventBody) -> EventBody {
+    match body {
+        EventBody::Declared {
+            declaration,
+            schema_hash,
+            version,
+            ..
+        } => EventBody::Declared {
+            declaration,
+            schema_hash,
+            version,
+            with_the_set: true,
+        },
+        other => other,
+    }
+}
+
+/// `tripled` with `moved`, which says whether the fold's last computation
+/// changed `y`.
+fn tripled_moved() -> TypeDecl {
+    let mut t = tripled();
+    let moved = derived("moved", Boolean, "changed(y)", &["y"]);
+    t.fields.push(moved);
+    t
+}
+
+/// The lake of rows 22 and 23: `f`, `g`, `h`, `doc` as `tripled_moved`,
+/// and `MANY` records; then `f`, `g` and `h` declared again in one append,
+/// as a set when `set`. Answers the lake, the positions of the records'
+/// writes and of the three declarations.
+fn three_again(name: &str, set: bool) -> (Folded, Vec<Position>, Vec<Position>) {
+    let l = Folded::new(name);
+    let mut load = vec![
+        expr("f", 1, "n * 2"),
+        expr("g", 1, "n + 1"),
+        expr("h", 1, "n + 5"),
+        declared(tripled_moved(), 1),
+    ];
+    load.extend((1..=MANY).map(|i| wrote("doc", &key(i), 1, json!({"n": i}))));
+    let written = l.bodies(load).split_off(4);
+    l.probe.take();
+    let mark = |b: EventBody| if set { going_on(b) } else { b };
+    let q = l.bodies(vec![
+        mark(expr("f", 2, "n * 3")),
+        mark(expr("g", 2, "n + 2")),
+        expr("h", 2, "n + 6"),
+    ]);
+    (l, written, q)
+}
+
+#[test]
+fn row_22_a_set_computes_its_records_again_once_at_its_last_declaration() {
+    let (l, written, q) = three_again("recompute-22", true);
+    let asked = l.probe.take();
+    for i in 1..=MANY {
+        let k = key(i);
+        let w = written[usize::try_from(i - 1).expect("an index")].0;
+        let at = |p: usize| l.state(Some(q[p]), "doc", &k);
+        let before = json!({"n": i, "x": i * 2, "y": i + 1, "z": i + 5, "moved": true});
+        assert_eq!(
+            [at(0), at(1), at(2)],
+            [
+                json!([before, 1, w]),
+                json!([before, 1, w]),
+                json!([{"n": i, "x": i * 3, "y": i + 2, "z": i + 6, "moved": true}, 1, q[2].0])
+            ],
+            "row 22: `{k}` is as before the set at its first two declarations, and takes all \
+             three functions at its last"
+        );
+    }
+    let meta = |name: &str| l.meta(None, "doc", &key(1), name).expect("provenance");
+    for name in ["x", "y", "z"] {
+        let m = meta(name);
+        assert_eq!(
+            (m.position, m.procedure_version.as_deref()),
+            (q[2], Some("2")),
+            "row 22: `{name}` takes the set's last declaration and its function's version"
+        );
+    }
+    assert_eq!(
+        scans(&asked),
+        3,
+        "row 22: a set of three functions of one type of {MANY} records reads its three pages \
+         once"
+    );
+}
+
+#[test]
+fn row_23_a_field_that_reads_its_change_is_computed_once_over_the_set() {
+    let (each, _, _) = three_again("recompute-23-each", false);
+    let (set, _, _) = three_again("recompute-23-set", true);
+    let moved =
+        |l: &Folded| l.record(None, "doc", &key(1)).expect("the record").fields["moved"].clone();
+    assert_eq!(
+        (moved(&each), moved(&set)),
+        (json!(false), json!(true)),
+        "row 23: computed at each declaration, `changed(y)` reads `h`'s, which leaves `y`; \
+         computed once over the set, it reads the set's, which changed `y`"
+    );
+}
+
+#[test]
+fn row_24_a_page_of_a_rebuild_never_ends_inside_a_set() {
+    let (l, _) = doubling("recompute-24", &[("a", 1), ("b", 2), ("c", 3)]);
+    let n = 1_100u32;
+    let mut set: Vec<EventBody> = (2..=n).map(|v| going_on(expr("f", v, "n * 3"))).collect();
+    set.push(expr("f", n + 1, "n * 4"));
+    let q = l.bodies(set);
+    let live = l.history(&KEYS[..3]);
+    l.probe.take();
+    let head = l.lake.head();
+    assert_eq!(l.lake.rebuild().expect("the rebuild"), head);
+    assert_eq!(
+        l.history(&KEYS[..3]),
+        live,
+        "row 24: every position answers as the live lake did"
+    );
+    assert_eq!(
+        commits(&l.probe.take()),
+        [head],
+        "row 24: the first page of the log ends inside a set of {} declarations, so it reads \
+         on to the set's end, and commits once",
+        q.len()
+    );
+}
+
+#[test]
+fn row_25_a_log_that_ends_inside_a_set_is_not_folded() {
+    let (l, _) = doubling("recompute-25", &[("a", 1)]);
+    let now = l.lake.clock(&mut l.lake.writer());
+    let refused = l.try_append(vec![Draft::system(now, going_on(expr("f", 2, "n * 3")))]);
+    let why = refused
+        .expect_err("the fold refuses a log that ends inside a set")
+        .to_string();
+    assert!(
+        why.contains("the log ends inside a set of declarations"),
+        "row 25: the refusal says why: {why}"
+    );
+}
+
+#[test]
+fn row_26_a_set_makes_one_call_due_for_a_record_at_its_last_declaration() {
+    let l = summing("recompute-26", &[("doc", "a", "A")]);
+    let failure = json!({"error": "boom"});
+    l.bodies(vec![output(json!(1), "A", failure, Some(("doc", "a")))]);
+    l.due();
+    let q = l.bodies(vec![
+        going_on(http(2, json!(1))),
+        declared(summed("doc"), 2),
+    ]);
+    assert_eq!(
+        l.due(),
+        [(
+            q[1].0,
+            "doc".into(),
+            "a".into(),
+            "sum".into(),
+            json!({"title": "A"}),
+            true
+        )],
+        "row 26: a set that declares `f` and `doc` again makes `doc` `a`'s call due once, \
+         caused by the set's last declaration, and calls its recorded failure again once"
+    );
+}
+
+#[test]
+fn row_27_a_kept_view_over_a_set_is_made_once_after_it() {
+    let (l, _) = doubling("recompute-27", &[("a", 1), ("b", 2), ("c", 3)]);
+    let total = json!({"declare": "type", "name": "total", "key": ["n"],
+        "fields": [{"name": "n", "type": {"kind": "number"}},
+                   {"name": "t", "type": {"kind": "number"}}],
+        "view": {"source": "doc", "group_by": ["n"],
+                 "measures": [{"name": "t", "expr": "sum(twice)"}]}});
+    let asking = "view_kept.total";
+    let setting = json!({"key": asking, "value": true});
+    l.bodies(vec![
+        declaration(total, 1),
+        wrote(lakelands_api::seam::SETTING_TYPE, asking, 1, setting),
+    ]);
+    l.probe.take();
+    let q = l.bodies(vec![
+        going_on(declared(doubled_plus("n + 1"), 2)),
+        expr("f", 2, "n * 3"),
+    ]);
+    let kept = lakelands_api::seam::kept_name(&"total".into());
+    let puts = |at: Position| {
+        let asked = l.probe.take();
+        let of = |a: &&Asked| matches!(a, Asked::Put(ty, _, p) if *ty == kept && *p == at);
+        let n = asked.iter().filter(of).count();
+        l.probe.asked.lock().expect("the probe").extend(asked);
+        n
+    };
+    assert_eq!(
+        (puts(q[0]), puts(q[1])),
+        (3, 3),
+        "row 27: the set's first declaration ends the view's three records, and the view is \
+         made once, after the set's records are computed again, not again from the records \
+         before the set"
+    );
+    let t = |n: i64| {
+        l.record(None, kept.as_str(), &n.to_string())
+            .map(|r| r.fields["t"].clone())
+    };
+    assert_eq!(
+        [t(1), t(2), t(3)],
+        [Some(json!(3)), Some(json!(6)), Some(json!(9))],
+        "row 27: the view's records sum the set's `twice`"
+    );
+}
+
+#[test]
+fn row_28_a_page_never_ends_inside_a_set_among_its_object_sets_memberships() {
+    let l = many("recompute-28", |i| i);
+    let joined = |i: i64| EventBody::ObjectSetChanged {
+        set: "pos".into(),
+        ty: "doc".into(),
+        key: key(i).as_str().into(),
+        joined: true,
+    };
+    let pos = json!({"declare": "object_set", "name": "pos", "of": "doc", "where": "n > 0"});
+    // As `apply` drafts it: the set's memberships after its declaration,
+    // more than a page of them, none marked; `g` the set's last.
+    let mut set = vec![
+        going_on(expr("f", 2, "n * 3")),
+        going_on(declaration(pos, 1)),
+    ];
+    set.extend((1..=MANY).map(joined));
+    set.push(expr("g", 1, "n + 1"));
+    l.bodies(set);
+    let keys = [("doc", "k0005"), ("doc", "k2500")];
+    let live = l.history(&keys);
+    let head = l.lake.head();
+    assert_eq!(l.lake.rebuild().expect("the rebuild"), head);
+    assert_eq!(
+        l.history(&keys),
+        live,
+        "row 28: a page of the rebuild that would end among the set's {MANY} memberships reads \
+         on to the set's last declaration, so every position answers as the live lake did"
+    );
+    assert_eq!(
+        l.record(None, "doc", "k0005").expect("the record").fields["twice"],
+        json!(15),
+        "row 28: `twice` takes the set's `f` once, at its last declaration"
     );
 }

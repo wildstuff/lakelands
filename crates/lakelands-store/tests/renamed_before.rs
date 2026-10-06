@@ -87,6 +87,7 @@ async fn a_lake_made_before_renames_were_recorded_holds_a_grant_through_them() {
         schema_hash: lakelands_core::shape::schema_hash(&t).ok(),
         declaration: Declaration::Type(t),
         version,
+        with_the_set: false,
     };
     let now = Timestamp(1_790_000_000_000_000);
     let made = {
@@ -120,6 +121,7 @@ async fn a_lake_made_before_renames_were_recorded_holds_a_grant_through_them() {
                     declaration,
                     schema_hash,
                     version,
+                    ..
                 } => p.put_declaration(declaration, *version, schema_hash.as_deref(), position),
                 EventBody::Migrated {
                     migration,

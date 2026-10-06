@@ -1043,6 +1043,7 @@ async fn waiting(name: &str, dir: &std::path::Path) -> (Arc<Probe>, MemoryOpener
         schema_hash: Some(lakelands_core::shape::schema_hash(&note(more)).unwrap()),
         declaration: Declaration::Type(note(more)),
         version,
+        with_the_set: false,
     };
     let wrote = |key: &str| EventBody::RecordUpserted {
         ty: "note".into(),
@@ -1271,6 +1272,7 @@ fn an_append_decided_by_a_writer_that_is_behind_is_refused() {
         schema_hash: Some(lakelands_core::shape::schema_hash(&doc("n + 1")).unwrap()),
         declaration: Declaration::Type(doc("n + 1")),
         version: 1,
+        with_the_set: false,
     };
     let mut w = lake.for_write().unwrap();
     let load = draft(&mut w, declared);

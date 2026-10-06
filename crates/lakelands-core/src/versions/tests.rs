@@ -10,6 +10,7 @@ fn declared(declaration: Declaration) -> EventBody {
         declaration,
         schema_hash: None,
         version: 1,
+        with_the_set: false,
     }
 }
 
@@ -130,6 +131,7 @@ fn annotations_anywhere_in_a_declaration_need_format_5() {
         })),
         schema_hash: None,
         version: 1,
+        with_the_set: false,
     };
     assert_eq!(needed(&plain, false), 1, "an empty map is no annotation");
 }
@@ -458,4 +460,21 @@ fn a_proposed_migration_whose_report_restates_needs_format_11_and_says_so_below_
     let plain = event_json(4, proposed(None));
     let written = serde_json::to_string(&plain).unwrap();
     assert!(needed(&plain.body, false) == 4 && !written.contains("restated"));
+}
+
+#[test]
+fn a_declaration_with_the_set_needs_format_12_and_says_so_below_it() {
+    let f = json!({"declare": "function", "name": "f", "backing": "expr", "expr": "n * 2",
+                   "inputs": [{"name": "n", "type": {"kind": "number"}}]});
+    let body = |set: bool| {
+        json!({"kind": "declared", "declaration": f, "version": 1,
+                                  "with_the_set": set})
+    };
+    let alone = json!({"kind": "declared", "declaration": f, "version": 1});
+    assert_eq!(needed(&event_json(12, body(true)).body, false), 12);
+    assert_eq!(needed(&event_json(12, alone).body, false), 1);
+    assert_eq!(
+        below(&event_json(11, body(true))).as_deref(),
+        Some("a format 11 event declares `with_the_set`, which format 12 added")
+    );
 }

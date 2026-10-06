@@ -170,6 +170,7 @@ impl MockLake {
                 ),
                 declaration: lakelands_api::write::Declaration::Type(t),
                 version: 1,
+                with_the_set: false,
             }));
         }
         mock.shared

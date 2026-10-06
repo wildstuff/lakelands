@@ -44,6 +44,7 @@ async fn a_set_in_force_through_a_reference_stays_and_is_judged_when_declared_ag
         schema_hash,
         declaration,
         version: 1,
+        with_the_set: false,
     };
     let of = |t: TypeDecl| {
         let hash = lakelands_core::shape::schema_hash(&t).ok();
