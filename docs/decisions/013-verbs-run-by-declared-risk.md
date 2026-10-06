@@ -110,10 +110,11 @@ is recorded, the retry is `applied` with it, `null` included. Where none
 is, the retry is refused as `unanswered`, never `applied`: one sentence,
 true whichever way the position got there, says that the call is in the
 log at that position, that no answer is recorded and that the retry
-runs nothing; that a call still running will have its answer recorded
-and a retry then answers it; and that a call whose first answer said its
-executor was not handed it is called again under another key or with
-none, or proposed again. A retry may not tell the two apart, and the
+runs nothing; that a call still running, or whose answer is held, will
+have its answer recorded and a retry then answers it, unless the handle
+that ran it is dropped or loses its lease first; and that a call whose
+first answer said its executor was not handed it is called again under
+another key or with none, or proposed again. A retry may not tell the two apart, and the
 caller may: it was given the first answer.
 
 The answer is found by a seek, not by a read of the log after the call.
@@ -129,6 +130,29 @@ told by what the acceptance appended (a write verb's write follows its
 call, caused by it), whatever was declared since: an external call is
 answered as a retry of a call is, and any other acceptance is
 `decided`.
+
+## Extended: an executor's answer is held until it is recorded (lakelands#646)
+
+An executor's answer whose append the engine refuses `unavailable`, or
+that a writer which cannot catch up with its log cannot append, is not
+lost to the handle that ran it: the writer holds it, and the next
+write that takes the writer appends it, the oldest first, before it is
+decided. A call sent again under its key therefore records the held
+answer and is answered it; a neighbour's write, an ingest, an aging run,
+a purge, the drain and the preflights of `migrate` and
+`migrate_value_type` record it too, since each takes the writer; a
+preflight that does moves the head, so a purge's run is then refused
+until its preflight is run again, as after any neighbour's write. The
+first answer says so: the answer is held and recorded before the next
+write, and sent again under its key, or accepted again, the call answers
+it. A held answer leaves the writer once the engine holds it, before it
+is folded, so a fold that fails is told as any append's is, and the
+write that recorded it catches up before it is decided. One that is
+refused again stays held and stops no other write: nothing in the log
+depends on it. Any other refusal is answered and the answer is not held.
+The answer stays where the handle is: closed or dropped before a write
+records it, or its lease lost, the handle loses it, and a retry is then
+`unanswered`; the first answer carried the output.
 
 Handing a position out again where no answer is recorded was weighed
 and not built. It would change what an executor is promised, once per

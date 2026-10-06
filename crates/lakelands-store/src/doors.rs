@@ -236,14 +236,15 @@ impl Doors {
         };
         let lake = self.lake.clone();
         let recorded = output.clone();
-        let at = exec::run(move || writes::record_output(&lake, &ext, &input, output)).await;
-        // The executor ran: where its answer reached the log, a retry
-        // answers it; where it did not, it is lost but for this sentence.
-        let at = at.map_err(|e| match e {
+        let at = exec::run(move || Ok(writes::record_output(&lake, &ext, &input, output))).await?;
+        // The executor ran: where its answer reached the log or is held, a
+        // retry answers it; where neither, it is lost but for this sentence.
+        let at = at.map_err(|(e, held)| match e {
             Error::Unavailable { message } => unavailable(format!(
                 "{} answered this call with {recorded}, and recording its answer failed: \
-                 {message}",
-                lakelands_api::error::THE_EXECUTOR
+                 {message}{}",
+                lakelands_api::error::THE_EXECUTOR,
+                writes::held(by, held)
             )),
             e => e,
         })?;
