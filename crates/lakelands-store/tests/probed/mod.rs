@@ -50,6 +50,12 @@ pub struct Probe {
     pub asked: Mutex<Vec<Asked>>,
     /// A commit to refuse: the n-th from now, counted from 1.
     pub refuse_commit: Mutex<Option<usize>>,
+    /// An append to refuse: the n-th from now, counted from 1, as invalid
+    /// where `refuse_as_invalid`.
+    pub refuse_append: Mutex<Option<usize>>,
+    /// Whether a refused append lands first: the engine holds its events
+    /// and answers a failure.
+    pub lands: std::sync::atomic::AtomicBool,
     /// A `begin` to refuse: the n-th from now, counted from 1.
     pub refuse_begin: Mutex<Option<usize>>,
     /// Whether a refused `begin` is answered as invalid, not unavailable.
@@ -206,6 +212,20 @@ impl LakeEngine for Probed {
         self.inner.tip()
     }
     fn append(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {
+        if Probe::refused(&self.probe.refuse_append) {
+            if self.probe.lands.load(Ordering::SeqCst) {
+                self.inner.append(lease, events)?;
+            }
+            let message = "the append was refused (planted)".to_owned();
+            if self.probe.refuse_as_invalid.load(Ordering::SeqCst) {
+                let reason = lakelands_api::Refusal::Invalid { message };
+                return Err(Error::Refused {
+                    field: None,
+                    reason,
+                });
+            }
+            return Err(Error::Unavailable { message });
+        }
         self.inner.append(lease, events)
     }
     fn import(&self, lease: &Lease, events: &[CanonicalEvent]) -> Result<()> {

@@ -600,6 +600,16 @@ A host that already has a store of its own moves in four steps.
   the lake's description to name it to its writer: where that read
   fails, the write is answered the read's error. Each is in the log and
   folded, and a write sent again under its key is answered its position.
+  An executor's answer whose append fails `unavailable`, or that a
+  writer which cannot catch up cannot append, is held by the handle that
+  ran it and recorded by its next write; the call's answer says so, and
+  the retry under its key answers it. It is lost when the handle is
+  closed or dropped before a write records it (the server ends so), and
+  on PostgreSQL when a lost connection loses the lease: a retry is then
+  `unanswered`, and the first answer carried the output. A host that
+  needs more gives the executor its own record of what it did, keyed by
+  the call's position (`VerbInvocation.position`). See
+  `docs/decisions/013-verbs-run-by-declared-risk.md`, extended.
 - **A declaration that recomputes a type is a step for a quiet moment.**
   A function declared again with a change, or a type declared again with
   another derived expression, computes the derived fields of every live record

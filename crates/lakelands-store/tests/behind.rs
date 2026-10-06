@@ -565,8 +565,13 @@ async fn pay_verb(l: &Lake, risk: Risk) {
 
 /// A call of `pay` on `a` under the key `k1`, its answer as it came.
 async fn pay(l: &Lake) -> lakelands_api::Result<Outcome> {
+    pay_under(l, "k1").await
+}
+
+/// A call of `pay` on `a` under `key`, its answer as it came.
+async fn pay_under(l: &Lake, key: &str) -> lakelands_api::Result<Outcome> {
     let opts = WriteOpts {
-        idempotency_key: Some("k1".into()),
+        idempotency_key: Some(key.into()),
         ..WriteOpts::default()
     };
     let (pay, a) = ("pay".into(), "a".into());
@@ -1260,4 +1265,225 @@ fn an_append_decided_by_a_writer_that_is_behind_is_refused() {
         let held = view.get(&"doc".into(), &key.into()).unwrap();
         assert!(held.is_some(), "`{key}` is folded");
     }
+}
+
+/// The executor's answers the log holds, by the position each answers.
+async fn outputs(store: &Arc<dyn LakeStore>) -> Vec<Option<Position>> {
+    let all = FeedFilter::default();
+    let polled = store.feed().poll(Position(0), &all, 1000).await.unwrap();
+    let answers = polled.events.iter();
+    let answers = answers.filter(|e| matches!(e.body, EventBody::OutputRecorded { .. }));
+    answers.map(|e| e.cause).collect()
+}
+
+/// The next call's executor refuses the engine's next append, its
+/// answer's, as `invalid` or after it landed where `probe` says so.
+fn refuses_its_append(counting: &Counting, probe: &Arc<Probe>) {
+    let probe = probe.clone();
+    let plant = move || *probe.refuse_append.lock().unwrap() = Some(1);
+    *counting.arm.lock().unwrap() = Some(Box::new(plant));
+}
+
+/// What a call whose answer is held says after the executor's answer.
+const HELD: &str = "the answer is held and recorded before the next write";
+
+/// Row 23 (lakelands#646). The executor answered and the append of its
+/// answer was refused: the call says the answer and that it is held. Sent
+/// again under its key, the call records the held answer and answers it;
+/// unkeyed, a neighbour's write records it, caused by the call; accepted,
+/// accepting again answers it. The executor is handed each call once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_answer_whose_append_was_refused_is_held_until_recorded() {
+    let counting = Arc::new(Counting::default());
+    let (store, probe, _) = bound("held-keyed", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    payable(&l, Risk::Low).await;
+    refuses_its_append(&counting, &probe);
+    let said = unavailable(pay(&l).await);
+    let again = "sent again under its key, the call answers it";
+    assert!(
+        said.contains("{\"ran\":1}") && said.ends_with(&format!("{HELD}; {again}")),
+        "{said}"
+    );
+    assert_eq!(ran(pay(&l).await).1, Some(json!({"ran": 1})), "the retry");
+
+    let (store, probe, _) = bound("held-unkeyed", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    payable(&l, Risk::Low).await;
+    refuses_its_append(&counting, &probe);
+    let (verb, a) = ("pay".into(), "a".into());
+    let called = l.cat.call(
+        &l.own,
+        &verb,
+        Some(&a),
+        patch(json!({})),
+        WriteOpts::default(),
+    );
+    let said = unavailable(called.await);
+    assert!(said.ends_with(HELD), "a call without a key: {said}");
+    let at = Position(store.head().await.unwrap().0);
+    applied(write(&l, "b", 2, None).await);
+    assert_eq!(
+        outputs(&store).await,
+        [Some(at)],
+        "recorded by the next write, caused by the call"
+    );
+
+    let (store, probe, _) = bound("held-accepted", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    payable(&l, Risk::High).await;
+    let Ok(Outcome::Proposed { proposal, .. }) = pay(&l).await else {
+        panic!("a high verb is proposed");
+    };
+    refuses_its_append(&counting, &probe);
+    let said = unavailable(l.cat.accept(&l.own, &proposal).await);
+    let again = "accepted again, the proposal answers it";
+    assert!(
+        said.ends_with(&format!("{HELD}; {again}")),
+        "an acceptance: {said}"
+    );
+    let accepted = l.cat.accept(&l.own, &proposal).await;
+    assert_eq!(ran(accepted).1, Some(json!({"ran": 3})), "accepted again");
+    assert_eq!(
+        counting.handed.load(Ordering::SeqCst),
+        3,
+        "each handed once"
+    );
+}
+
+/// Row 24. A held answer whose append is refused again stops no other
+/// write: the write goes on, and the answer goes in once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_held_answer_refused_again_stops_no_other_write() {
+    let counting = Arc::new(Counting::default());
+    let (store, probe, _) = bound("held-again", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    payable(&l, Risk::Low).await;
+    refuses_its_append(&counting, &probe);
+    unavailable(pay(&l).await);
+    *probe.refuse_append.lock().unwrap() = Some(1);
+    applied(write(&l, "b", 2, None).await);
+    assert_eq!(ran(pay(&l).await).1, Some(json!({"ran": 1})), "the retry");
+    assert_eq!(outputs(&store).await.len(), 1, "recorded once");
+}
+
+/// Row 25. An engine that holds the answer's append and answers a failure:
+/// the held answer, stamped at the tip the writer still stands on, is
+/// refused by the engine and not appended twice. Opened again, the lake
+/// holds the answer once, and the retry answers it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_held_answer_the_engine_already_holds_is_not_appended_twice() {
+    let counting = Arc::new(Counting::default());
+    let (store, probe, opener) = bound("held-landed", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    payable(&l, Risk::Low).await;
+    probe.lands.store(true, Ordering::SeqCst);
+    refuses_its_append(&counting, &probe);
+    unavailable(pay(&l).await);
+    let _ = write(&l, "b", 2, None).await;
+    drop((l, store));
+    let seams = Seams {
+        engines: vec![Arc::new(opener)],
+        ..Seams::default()
+    };
+    let store = lakelands_store::open(Location::memory("held-landed"), seams, OpenMode::Write);
+    let store = store.await.expect("the lake opened again");
+    assert_eq!(
+        outputs(&store).await.len(),
+        1,
+        "the answer is in the log once"
+    );
+    assert_eq!(
+        ran(pay(&Lake::of(store.as_ref())).await).1,
+        Some(json!({"ran": 1}))
+    );
+}
+
+/// Row 26. An append refused otherwise than `unavailable` holds nothing:
+/// the call is answered that refusal, later writes are their own, and a
+/// retry finds no answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_answer_refused_otherwise_is_not_held() {
+    let counting = Arc::new(Counting::default());
+    let (store, probe, _) = bound("held-invalid", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    payable(&l, Risk::Low).await;
+    probe.refuse_as_invalid.store(true, Ordering::SeqCst);
+    refuses_its_append(&counting, &probe);
+    let said = format!("{:?}", pay(&l).await);
+    assert!(
+        said.contains("refused (planted)") && !said.contains(HELD),
+        "{said}"
+    );
+    applied(write(&l, "b", 2, None).await);
+    unanswered(pay(&l).await);
+    assert!(
+        outputs(&store).await.is_empty(),
+        "nothing held, nothing recorded"
+    );
+}
+
+/// Row 27. The writer falls behind while the executor runs, and cannot
+/// catch up when the answer comes: the answer is held all the same, the
+/// call says so, and the retry under its key, which catches up, records it
+/// and answers it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_answer_is_held_when_the_writer_cannot_catch_up() {
+    let counting = Counting::gated();
+    let (store, probe, _) = bound("held-behind", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    payable(&l, Risk::Low).await;
+    let caller = Lake::of(store.as_ref());
+    let call = tokio::spawn(async move { pay(&caller).await });
+    counting.held().await;
+    *probe.refuse_commit.lock().unwrap() = Some(1);
+    unavailable(write(&l, "b", 2, None).await);
+    *probe.refuse_begin.lock().unwrap() = Some(1);
+    counting.gate.as_ref().unwrap().notify_one();
+    let said = unavailable(call.await.unwrap());
+    let again = "sent again under its key, the call answers it";
+    assert!(
+        said.contains("could not catch up") && said.ends_with(&format!("{HELD}; {again}")),
+        "{said}"
+    );
+    assert_eq!(ran(pay(&l).await).1, Some(json!({"ran": 1})), "the retry");
+    assert_eq!(counting.handed.load(Ordering::SeqCst), 1, "handed once");
+    // Stamped when it is appended, it is known no earlier than what precedes it.
+    let (feed, all) = (store.feed(), FeedFilter::default());
+    let events = feed.poll(Position(0), &all, 1000).await.unwrap().events;
+    let at = events
+        .iter()
+        .position(|e| matches!(e.body, EventBody::OutputRecorded { .. }));
+    let (before, answer) = (&events[at.unwrap() - 1], &events[at.unwrap()]);
+    assert!(
+        answer.known_at >= before.known_at,
+        "{answer:?} after {before:?}"
+    );
+}
+
+/// Row 28. The next write records a held answer and that answer's fold is
+/// refused: the write catches up before it is decided, so a call under
+/// another key goes on and runs once, and its retry answers what it ran.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_held_answer_whose_fold_fails_leaves_the_writer_caught_up() {
+    let counting = Arc::new(Counting::default());
+    let (store, probe, _) = bound("held-fold", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    payable(&l, Risk::Low).await;
+    refuses_its_append(&counting, &probe);
+    unavailable(pay(&l).await);
+    *probe.refuse_commit.lock().unwrap() = Some(1);
+    let first = ran(pay_under(&l, "k2").await);
+    assert_eq!(first.1, Some(json!({"ran": 2})), "the call under `k2` runs");
+    assert_eq!(ran(pay_under(&l, "k2").await), first, "its retry");
+    assert_eq!(
+        ran(pay(&l).await).1,
+        Some(json!({"ran": 1})),
+        "`k1`'s retry"
+    );
+    assert_eq!(
+        counting.handed.load(Ordering::SeqCst),
+        2,
+        "each handed once"
+    );
 }

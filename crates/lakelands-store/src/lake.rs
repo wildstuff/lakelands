@@ -80,6 +80,9 @@ pub struct Writer {
     /// The log format version the lake writes: the version of its last
     /// event, raised by an append that needs a newer one, never lowered.
     pub format: u32,
+    /// The executors' answers whose append failed `unavailable`, oldest
+    /// first: the next write appends them before it is decided (013).
+    pub answers: Vec<Draft>,
 }
 
 /// The seam name the lake's renames are recorded under, as one output: the
@@ -325,6 +328,7 @@ impl Lake {
                 behind: false,
                 failed: None,
                 format: LOG_FORMAT_BASE,
+                answers: Vec::new(),
             }),
             head: AtomicU64::new(0),
             walked: OnceLock::new(),
@@ -362,22 +366,56 @@ impl Lake {
     /// Everything that decides a write takes the writer here;
     /// [`Self::append_after`] refuses one that is behind. Only the lease's
     /// holder folds: a handle that gave its lease up while it was behind
-    /// folds nothing and is refused here, as its append would be.
+    /// folds nothing and is refused here, as its append would be. A held
+    /// answer goes in first; failing again, it stops no write, and one
+    /// whose fold fails is caught up from as any other.
     pub fn for_write(&self) -> Result<MutexGuard<'_, Writer>> {
         let mut w = self.writer();
-        if w.behind {
-            if w.lease.is_none() {
-                return Err(unavailable(NO_LEASE));
-            }
-            self.refold(&mut w).map_err(|e| {
-                unavailable(format!(
-                    "the lake's projection is behind its log and could not catch up; nothing \
-                     was appended ({})",
-                    crate::backed::why(&e)
-                ))
-            })?;
-        }
+        self.caught_up(&mut w)?;
+        let _ = self.record_held(&mut w, None);
+        self.caught_up(&mut w)?;
         Ok(w)
+    }
+
+    /// Fold a writer that is behind from the projection's mark, or refuse.
+    fn caught_up(&self, w: &mut Writer) -> Result<()> {
+        if !w.behind {
+            return Ok(());
+        }
+        if w.lease.is_none() {
+            return Err(unavailable(NO_LEASE));
+        }
+        self.refold(w).map_err(|e| {
+            unavailable(format!(
+                "the lake's projection is behind its log and could not catch up; nothing was \
+                 appended ({})",
+                crate::backed::why(&e)
+            ))
+        })
+    }
+
+    /// Append the answers held on the writer, the oldest first, then `d`,
+    /// and answer `d`'s (013). A draft leaves `answers` once the engine holds
+    /// it, before its fold; one refused `unavailable` before that is held,
+    /// any other refusal drops it. Only `d`'s refusal is answered.
+    pub(crate) fn record_held(&self, w: &mut Writer, d: Option<Draft>) -> Result<Vec<Event>> {
+        let mut answer = Ok(Vec::new());
+        for mut d in std::mem::take(&mut w.answers).into_iter().chain(d) {
+            d.known_at = self.clock(w);
+            let stamped = self.stamp(w, vec![d.clone()]);
+            let held = stamped.and_then(|(lease, v, events, stored)| {
+                self.engine.append(&lease, &stored).map(|()| (v, events))
+            });
+            answer = match held {
+                Ok((v, events)) => self.landed(w, v, events, Reads::default()),
+                Err(e) => {
+                    w.answers
+                        .extend(matches!(e, Error::Unavailable { .. }).then_some(d));
+                    Err(e)
+                }
+            };
+        }
+        answer
     }
 
     /// The next `known_at`: the wall clock, never before the last event's.

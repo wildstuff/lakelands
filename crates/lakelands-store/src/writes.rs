@@ -3424,6 +3424,17 @@ pub(crate) enum MadeDue {
     Accepted,
 }
 
+/// What a call whose executor's answer is `held` says after the answer.
+pub(crate) fn held(by: MadeDue, held: bool) -> String {
+    let again = match by {
+        MadeDue::Call { keyed: false } => "",
+        MadeDue::Call { keyed: true } => "; sent again under its key, the call answers it",
+        MadeDue::Accepted => "; accepted again, the proposal answers it",
+    };
+    let said = format!("; the answer is held and recorded before the next write{again}");
+    if held { said } else { String::new() }
+}
+
 /// The answer to a call of an external verb, or to its acceptance, that
 /// failed where `not_run` holds: its append is in the log and not folded,
 /// or what comes before its hand-out failed (the drain, the read of its
@@ -3471,9 +3482,10 @@ fn unanswered(at: Position, accepted: bool) -> Error {
     refused(Refusal::Unanswered {
         message: format!(
             "{what} is in the log at position {at}, and no answer of the verb's executor is \
-             recorded for it, so this retry runs nothing; if the call is still running, its \
-             answer will be recorded and a retry then answers it; if its first answer said \
-             that the verb's executor was not handed the call, {again}"
+             recorded for it, so this retry runs nothing; if the call is still running, or its \
+             answer is held, its answer will be recorded and a retry then answers it, unless \
+             the handle that ran it is dropped or loses its lease first; if its first answer \
+             said that the verb's executor was not handed the call, {again}"
         ),
     })
 }
@@ -3496,20 +3508,21 @@ pub struct External {
     pub position: Position,
 }
 
-/// Record an executor's answer, as `output_recorded`.
+/// Record an executor's answer, as `output_recorded`, after the answers
+/// held before it ([`Lake::record_held`]). A refusal says whether the
+/// answer is held: the next write records it.
 pub fn record_output(
     lake: &Lake,
     ext: &External,
     input: &Value,
     output: Value,
-) -> Result<Position> {
-    let mut w = lake.for_write()?;
-    let now = lake.clock(&mut w);
-    let d = Draft {
+) -> std::result::Result<Position, (Error, bool)> {
+    let id = log::output_id(&lake.id, ext.position);
+    let draft = Draft {
         cause: Some(ext.position),
-        id: Some(log::output_id(&lake.id, ext.position)),
+        id: Some(id.clone()),
         ..Draft::system(
-            now,
+            Timestamp(i64::MIN),
             EventBody::OutputRecorded {
                 seam: format!("verb:{}:{}", ext.executor, ext.verb),
                 input: Digest(lakelands_core::canonical::sha256_hex(input)),
@@ -3518,8 +3531,18 @@ pub fn record_output(
             },
         )
     };
-    let events = lake.append(&mut w, vec![d])?;
-    Ok(events[0].position)
+    // A writer that cannot catch up holds the answer for the next write.
+    let mut w = match lake.for_write() {
+        Ok(w) => w,
+        Err(e) => {
+            lake.writer().answers.push(draft);
+            return Err((e, true));
+        }
+    };
+    match lake.record_held(&mut w, Some(draft)) {
+        Ok(events) => Ok(events[0].position),
+        Err(e) => Err((e, w.answers.iter().any(|d| d.id.as_ref() == Some(&id)))),
+    }
 }
 
 /// A host-side retention hold (`LakeStore::restrict` / `unrestrict`).
