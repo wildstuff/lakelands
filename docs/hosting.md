@@ -548,6 +548,83 @@ A host that already has a store of its own moves in four steps.
   embedding or a field of a function computed outside the lake is never
   such a type: the store walks its records at every declaration of it,
   whatever changed.
+- **A view that is read often may be kept.** A view's read walks its
+  source: seconds at a hundred thousand records. The setting
+  `view_kept.<type>` asks the fold to keep the view's records in the
+  projection, and a read of the view then reads those, at the head and
+  at every position from the setting on
+  (`docs/decisions/049-a-view-the-fold-keeps.md`). What it costs and
+  where it does not hold:
+  - **Turning it on is a step for a quiet moment:** the fold of the
+    setting's write walks the view's sources once under the writer and
+    holds the folds of every group until that append ends, so a view
+    grouped by a nearly unique field holds about as many as its source
+    has records.
+  - **Every write to a source puts one state more** for each group it
+    touches in each kept view, for good. An append reads the state of
+    the kept views that read a type it wrote, one read each, and of no
+    other; a lake with no `view_kept.` setting reads none.
+  - **The view is made again,** by the same walk, by a declaration of
+    the view or of a source, by a declaration that computes a source's
+    records again (a function they call, declared again with a change),
+    by a migration that reaches a source's records, and by a write of a
+    setting its expressions name. Declare and migrate as for any large
+    type: in a quiet moment. After a declaration that computes records
+    again the view is made once those records are put: a read as of a
+    position in between computes.
+  - **A read computes, as before,** when it names a valid time, when it
+    is as of a position before the view was made, and while a group of
+    the view is not exact for its reader: a measure that fails over it,
+    or an extreme that was given up (below). `describe_type` then says
+    `not_whole` with the number of such groups, to a principal the
+    view's read would answer.
+  - **A write that takes an extreme's holder away reads its group
+    again,** in its own append and under the writer: the live records
+    that hold the group's values, 8 192 at most. The bound is one for
+    the group over all the view's sources, and a record the view's
+    `where` leaves out counts in it. An append whose n events each take
+    a holder away reads up to n times that: an aging run that moves the
+    oldest record of 1 000 groups of 5 000 under `min(date)` reads 5
+    million records in its append. Such a step is one for a quiet
+    moment, as a migration is. Three reads cost more than the bound
+    lets one expect:
+    - **A view over a kept view** reads, beside the inner records of
+      the group's values, every inner record whose whole face reads
+      otherwise than its own (a restricted member of its group makes it
+      so), whatever its group, and each counts in the bound: an outer
+      group of three members is given up once the inner view has about
+      8 190 such records, and until then every such reread reads them
+      all.
+    - **A view grouped by more than one field** is looked up by its
+      first text field alone: a view grouped by `country, city` reads
+      every record of the country for a reread of one city, on the
+      memory engine every record of the source. Those are read and not
+      handed to the fold, and the bound does not count them.
+    - **After a migration's step in the same append** every lookup
+      walks the source whole.
+  - **A group past that bound is given up:** its extreme is kept no
+    more, the view computes for the readers it concerns, and
+    `describe_type` says `not_whole` with the group counted. Nothing
+    mends it by itself, and the fold goes on keeping the view's other
+    records meanwhile, at a state for each write: a reader whose face
+    of the group is exact, one without the `restricted` grant where the
+    group was given up on the whole face alone, is answered from them.
+    What mends it is what makes the view again
+    (above), or writing its setting `false` and then `true`; or the
+    group's own end. A view with a `min` or `max` over groups larger
+    than the bound, or whose holders leave in bulk, is not worth
+    keeping today (lakelands#629).
+  - **A reader with the `restricted` grant** is answered from every
+    kept record of a view at each call, read once and once more for a
+    total, as soon as one group of it reads otherwise for that reader
+    (a restricted record is a member of it). For every other reader,
+    and for that one while no group differs, the page and the count are
+    the engine's.
+  - **Not every view can be kept:** only counts, sums and averages of
+    what is certainly a number, and a `min` or `max` of a number or an
+    instant under text or reference group fields. The setting's write is
+    refused otherwise and says which measure. `describe_type` says for a
+    view whether it is kept, and why not.
 - **A kept view is made to be read at the head.** The records of a
   view kept as its sources are written (the setting `view_kept.<view>`)
   are put again at every write to their group, and SQLite and

@@ -252,9 +252,7 @@ pub struct TypeLifecycle {
     pub indexed: Vec<FieldName>,
     /// For a view: whether its records are kept, by its `view_kept.<type>`
     /// setting, or computed at each read, and why. Like `sorted` and
-    /// `indexed` it describes the projection, not the log: which groups of
-    /// a kept view wait to be read again may differ after a rebuild, the
-    /// view's answers never.
+    /// `indexed` it describes the projection, not the log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kept: Option<Kept>,
 }
@@ -289,10 +287,11 @@ pub enum NotKept {
     },
     /// Its records are not whole.
     NotWhole {
-        /// The groups whose kept record is not exact.
+        /// The groups whose kept record is not exact, for this reader: a
+        /// measure fails over the group, which mends when its cause
+        /// leaves, or an extreme was given up, which only what makes the
+        /// view again mends.
         not_exact: u64,
-        /// The groups that wait to be read again.
-        waiting: u64,
     },
     /// Its records are not kept at this position, or by this lake.
     NotKeptHere,

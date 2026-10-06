@@ -11,15 +11,17 @@
 //! in them, and the owner as of the end of the row before; at a `read`
 //! line every door of the views it names, for the owner and, while a
 //! record is restricted, for that reader; at the table's end every door
-//! of every view for a reader kept from a field of it. Then the lake is
+//! of every view for a reader kept from a field of it, for one kept from
+//! a field it reads of its source, whom both refuse where the view is
+//! grouped, and for one kept from a group field of a merged source. Then the lake is
 //! exported, rebuilt, compacted and imported: after the rebuild and in
 //! the imported lake the owner reads every door of every view, each time
-//! the three readers find their records, and the owner as of every row's
+//! the five readers find their records, and the owner as of every row's
 //! end; and the lines after `then` are sent to the lake and to its copy.
 //!
-//! On a lake that keeps no view both compute, and a table holds its `is`
-//! and `says` lines alone: the tables are what a lake that keeps views is
-//! held to, each row red where its kept records answer something else.
+//! A lake is held to keep: a `says` line is exact, so a table is red at
+//! its first `says ... kept` on a lake that keeps no view, and each row is
+//! red where a kept record answers something else than its twin.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -46,28 +48,28 @@ use crate::conformance::{Failure, Given, ImportedLake};
 check!(
     /// A kept view of each shape is its twin.
     KEPT_SHAPES = a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes,
-    "the `view_kept.` setting, by a twin: a view named by a `view_kept.` setting and the same view under no setting answer alike, in the records the owner finds after each event and a reader without the `restricted` grant at each row's end, as of the row before, and, where the table reads, through every door of a view (`find`, a count and `find` by a text group field, two pages in an order, an aggregate, `get` of a key and of none, a pattern's start and a walk over a derived relation); at the table's end for a reader kept from a field of the view, and a reference and a link to its records; then after a rebuild, a compact and an import, and for the events sent after them; so a grouped view, one with a `where`, an ungrouped one, one with a merged source and one over a kept view, asked for before the view it reads, while members arrive, change, move to another group and leave, a member is restricted under the outer view's `where`, and every member of an ungrouped view is",
+    "the `view_kept.` setting, by a twin: a view named by a `view_kept.` setting and the same view under no setting answer alike, in the records the owner finds after each event and a reader without the `restricted` grant at each row's end, as of the row before, and, where the table reads, through every door of a view (`find`, a count and `find` by a text group field, two pages in an order, an aggregate, `get` of a key and of none, a pattern's start and a walk over a derived relation); at the table's end for a reader kept from a field of the view, for one kept from a field it reads of its source and for one kept from a group field of a merged source, and a reference and a link to its records; then after a rebuild, a compact and an import, and for the events sent after them; so a grouped view, one with a `where`, an ungrouped one, one with a merged source, one over a kept view, asked for before the view it reads, and one grouped by a field a recorded output fills, while members arrive, change, move to another group, to none and leave, a member is restricted under the outer view's `where`, and every member of an ungrouped view is",
     given
 );
 
 check!(
     /// A kept measure is its twin's whatever it folds.
     KEPT_VALUES = a_kept_measure_answers_as_its_twin_whatever_values_it_folds,
-    "the `view_kept.` setting, by a twin read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: an extreme whose holder leaves, equal values at two keys and an equal value written over the holder, which reads as written; a sum whose large member leaves, and sums of `5` and `0.00` in both key orders; a setting written over a group whose measure divides by zero, after which the next write is accepted and the view is refused as its twin is until the member changes; and `max(known_at(n))`, null in both",
+    "the `view_kept.` setting, by a twin read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: an extreme whose holder leaves, equal values at two keys and an equal value written over the holder, which reads as written; a group's values under a number and a decimal group field, written and fed, where `1.0` and `1.00` are two groups of a decimal and one of a number; the holder of an outer view's extreme leaving a group whose other member is in it on the whole face alone; a sum whose large member leaves, and sums of `5` and `0.00` in both key orders; a setting written over a group whose measure divides by zero, after which the next write is accepted and the view is refused as its twin is until the member changes; and `max(known_at(n))`, null in both",
     given
 );
 
 check!(
     /// A kept view is its twin while what it is kept by changes.
     KEPT_POSITIONS = a_kept_view_answers_as_its_twin_at_every_position_and_under_every_setting,
-    "the `view_kept.` setting, by a twin read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: the kept view and its twin answer alike while a setting its `where` names is written, restricted, lifted, retired and written again, and one a measure's argument names; while its own setting is retired under a kept view over it, written `false` and written again; while it is declared with a parameter, which `describe_type` says cannot be kept, and without one, and again with another `where`; and its source is migrated; a read at a valid time answers what the twin computes there; `describe_type` says `not_asked` of a view no setting holds for, never `kept` of a view over one that is not, and `not_asked` of every twin",
+    "the `view_kept.` setting, by a twin read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: the kept view and its twin answer alike while a setting its `where` names is written, restricted, lifted, retired and written again, and one a measure's argument names; while its own setting is retired under a kept view over it, written `false` and written again; while a `view_kept.` setting that the `where` of another view names is written; while it is declared with a parameter, which `describe_type` says cannot be kept, and without one, and again with another `where`; while a function a field of its source calls is declared again, and the source with another derived expression, each computing the source's records again, after which it is kept; and its source is migrated; a read at a valid time answers what the twin computes there; `describe_type` says `not_asked` of a view no setting holds for, never `kept` of a view over one that is not, and `not_asked` of every twin",
     given
 );
 
 check!(
     /// A kept extreme is its twin when its holders are moved in one event.
     KEPT_RUNS = a_kept_extreme_answers_as_its_twin_when_a_run_or_a_re_key_moves_its_holders,
-    "the `view_kept.` setting, by a twin read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: a kept `min` and `max` answer as their twins after one aging run takes the holders of nine groups out of the view's `where`, after a purge retires the holders of nine groups, and after a re-key moves a holder to a greater key and the keys of the records that refer to it in the same event; and after the appends that follow each",
+    "the `view_kept.` setting, by a twin read as `a_kept_view_of_each_shape_answers_every_read_as_its_twin_computes` reads its own: a kept `min` and `max` answer as their twins after one aging run takes the holders of nine groups out of the view's `where`, after a purge retires the holders of nine groups, and after a re-key moves a holder to a greater key and the keys of the records that refer to it in the same event, `describe_type` saying `kept` after each, since every group is read again in the fold of the event that took its holder; and after the appends that follow each",
     given
 );
 
@@ -81,6 +83,9 @@ const SHAPES: &str = r#"
     view net = line by g:text | total:decimal=sum(n); credited:decimal; left:decimal=total - credited | {"merge": [{"source": "credit", "group_by": ["g"], "measures": [{"name": "credited", "expr": "sum(n)"}]}]}
     view large = sums by g:text | c:number=count(); held:decimal=sum(total) | {"where": "total > 100"}
     view lone = odd by | c:number=count(); total:decimal=sum(n)
+    declare {"declare": "function", "name": "echo", "backing": "conformance", "inputs": [{"name": "g", "type": {"kind": "text"}}], "config": {"token": "view_kept", "echo": "g"}}
+    declare {"declare": "type", "name": "tagged", "fields": [{"name": "g", "type": {"kind": "text"}}, {"name": "tag", "type": {"kind": "text"}, "authority": "derived", "function": "echo", "depends_on": ["g"]}]}
+    view tags = tagged by tag:text | c:number=count()
     row a view is made over the records its source holds
     put line a {"g": "x", "n": "1.50"}
     put line b {"g": "x", "n": "2.5"}
@@ -106,6 +111,19 @@ const SHAPES: &str = r#"
     retire line b
     put credit s {"g": "z", "n": "2"}
     is net x 4,1,3; z 0,2,-2
+    row a member of no group arrives, joins a group and leaves it for none
+    put line n {"n": "9"}
+    put line n {"g": "z"}
+    is sums x 1,4,4; z 1,9,9
+    put line n {"g": null}
+    is sums x 1,4,4
+    row a group field is filled by a recorded output
+    set view_kept.tags true
+    put tagged t1 {"g": "p"}
+    put tagged t2 {"g": "p"}
+    put tagged t3 {"g": "q"}
+    says tags kept
+    is tags p 2; q 1
     row a restricted member under an outer where
     put line m1 {"g": "m", "n": "150"}
     put line m2 {"g": "m", "n": "-100"}
@@ -135,6 +153,17 @@ const VALUES: &str = r#"
     view ends = line by g:text | low:decimal=min(n); high:decimal=max(n)
     view rate = part by g:text | total:decimal=sum(n); parts:decimal=sum(z); per:decimal=total / parts
     view seen = part by g:text | at:date_time=max(known_at(n))
+    type gauge g:text n:decimal m:number
+    view heat = gauge by g:text | t:number=sum(n)
+    view byheat = heat by t:number | c:number=count()
+    view bym = gauge by m:number | c:number=count()
+    view byn = gauge by n:decimal | c:number=count()
+    declare {"declare": "type", "name": "fed", "fields": [{"name": "g", "type": {"kind": "text"}, "authority": "source"}, {"name": "n", "type": {"kind": "decimal"}, "authority": "source"}, {"name": "m", "type": {"kind": "number"}, "authority": "source"}]}
+    view fbym = fed by m:number | c:number=count()
+    view fbyn = fed by n:decimal | c:number=count()
+    type order c:text amount:decimal
+    view spend = order by c:text | total:decimal=sum(amount); tier:text=if(sum(amount) > 1000, 'gold', 'std')
+    view tiers = spend by tier:text | most:decimal=max(total)
     row an extreme whose holder leaves, and equal values at two keys
     put line d {"g": "w", "n": "7"}
     put line e {"g": "w", "n": "7"}
@@ -177,6 +206,42 @@ const VALUES: &str = r#"
     row an argument is read without its provenance
     set view_kept.seen true
     is seen f -; h -
+    row a number group field holds one value whatever its writer wrote, written and fed; a decimal's scales are two groups
+    put gauge b {"g": "m", "n": "1", "m": 1}
+    set view_kept.heat true
+    set view_kept.byheat true
+    set view_kept.bym true
+    set view_kept.byn true
+    put gauge z {"g": "z", "n": "1.0", "m": 1.0}
+    read heat byheat bym byn
+    put gauge a {"g": "a", "n": "1.00", "m": 1.0}
+    read heat byheat bym byn
+    retire gauge b
+    read heat byheat bym byn
+    is bym 1 2
+    is byn 1.0 1; 1.00 1
+    set view_kept.fbym true
+    set view_kept.fbyn true
+    feed meter fed b {"g": "m", "n": "1", "m": 1}
+    feed meter fed z {"g": "z", "n": "1.0", "m": 1.0}
+    read fbym fbyn
+    feed meter fed a {"g": "a", "n": "1.00", "m": 1.0}
+    read fbym fbyn
+    retire fed b
+    read fbym fbyn
+    is fbym 1 2
+    is fbyn 1.0 1; 1.00 1
+    row an outer extreme's holder leaves a group its other member is in on the whole face alone
+    put order c1 {"c": "C", "amount": "500"}
+    put order c2 {"c": "C", "amount": "1000"}
+    hold order c2
+    put order d1 {"c": "D", "amount": "2000"}
+    set view_kept.spend true
+    set view_kept.tiers true
+    says tiers kept
+    retire order d1
+    says tiers kept
+    read tiers
     then
     row the lake goes on after it
     put line e {"n": "1"}
@@ -190,7 +255,11 @@ const POSITIONS: &str = r#"
     view book = sale by g:text | c:number=count(); gross:decimal=sum(round(net * setting('fx'), 2)) | {"where": "net > setting('floor')"}
     view shelf = book by g:text | books:number=count(); most:decimal=max(gross)
     view tally = sale by g:text | c:number=count()
+    view gated = sale by g:text | c:number=count() | {"where": "setting('view_kept.tally') = true"}
     view owed = contract by debtor:text | due:decimal=sum(amount)
+    declare {"declare": "function", "name": "scaled", "backing": "expr", "expr": "net * 2", "inputs": [{"name": "net", "type": {"kind": "decimal"}}]}
+    declare {"declare": "type", "name": "item", "fields": [{"name": "g", "type": {"kind": "text"}}, {"name": "net", "type": {"kind": "decimal"}}, {"name": "gross", "type": {"kind": "decimal"}, "authority": "derived", "function": "scaled"}, {"name": "fee", "type": {"kind": "decimal"}, "authority": "derived", "derived": "net + 1"}]}
+    view stock = item by g:text | total:decimal=sum(gross); fees:decimal=sum(fee)
     row a view and a view over it are kept from their settings on
     set floor 1
     set fx 2
@@ -231,6 +300,14 @@ const POSITIONS: &str = r#"
     set view_kept.book false
     says book not asked
     set view_kept.book true
+    row a setting that asks for a view is a setting a where may name
+    set view_kept.gated true
+    says gated kept
+    read gated
+    set view_kept.tally false
+    read gated
+    set view_kept.tally true
+    says gated kept
     row a parameter is declared and taken away
     view tally = sale by g:text | c:number=count() | {"params": [{"name": "over", "kind": "decimal"}], "where": "net > param('over')"}
     says tally cannot be kept
@@ -242,6 +319,17 @@ const POSITIONS: &str = r#"
     view tally = sale by g:text | c:number=count() | {"where": "net > 2"}
     says tally kept
     is tally a 1; b 2; c 1
+    row a declaration computes a source's records again
+    put item i1 {"g": "k", "net": "3"}
+    put item i2 {"g": "k", "net": "4"}
+    set view_kept.stock true
+    is stock k 14,9
+    declare {"declare": "function", "name": "scaled", "backing": "expr", "expr": "net * 3", "inputs": [{"name": "net", "type": {"kind": "decimal"}}]}
+    says stock kept
+    is stock k 21,9
+    declare {"declare": "type", "name": "item", "fields": [{"name": "g", "type": {"kind": "text"}}, {"name": "net", "type": {"kind": "decimal"}}, {"name": "gross", "type": {"kind": "decimal"}, "authority": "derived", "function": "scaled"}, {"name": "fee", "type": {"kind": "decimal"}, "authority": "derived", "derived": "net + 2"}]}
+    says stock kept
+    is stock k 21,11
     row a source is migrated
     migrate {"name": "sale", "fields": [{"name": "g", "type": {"kind": "text"}}, {"name": "net", "type": {"kind": "decimal"}}]}
     row a read at a valid time
@@ -275,7 +363,7 @@ const RUNS: &str = r#"
     set view_kept.oldest true
     says oldest kept
     age 2026-03-01T00:00:00Z
-    says oldest not whole
+    says oldest kept
     read oldest
     put bill more {"site": "s1", "due": "2026-05-01T00:00:00Z", "status": "open"}
     says oldest kept
@@ -284,7 +372,7 @@ const RUNS: &str = r#"
     9* feed erp lead l#b {"site": "s#", "score": "5"}
     set view_kept.best true
     purge crm
-    says best not whole
+    says best kept
     read best
     feed erp lead more {"site": "s1", "score": "9"}
     says best kept
@@ -340,6 +428,8 @@ struct Pair {
     /// Its first group field, and a value a record of it has there.
     by: Option<String>,
     seen: Option<String>,
+    /// Its merged sources, each with its first group field.
+    merged: Vec<(String, String)>,
     measures: Vec<String>,
     /// Every key a record of it has had.
     keys: BTreeSet<String>,
@@ -587,7 +677,14 @@ impl Twin {
         let settings = spec.split("setting('").skip(1);
         reads.extend(settings.filter_map(|s| Some(setting(s.split('\'').next()?))));
         let merged = rest["merge"].as_array().into_iter().flatten();
-        reads.extend(merged.filter_map(|m| Some(m["source"].as_str()?.to_owned())));
+        let first = |m: &Value| {
+            Some((
+                m["source"].as_str()?.into(),
+                m["group_by"][0].as_str()?.into(),
+            ))
+        };
+        let merged: Vec<(String, String)> = merged.filter_map(first).collect();
+        reads.extend(merged.iter().map(|m| m.0.clone()));
         let mut fields = kinds(&by.join(" "));
         fields.extend(measures.iter().flat_map(|(f, _)| kinds(f)));
         let called = |f: &str| f.split(':').next().unwrap_or_default().to_owned();
@@ -616,7 +713,7 @@ impl Twin {
             let measures = measures.iter().map(|(f, _)| called(f)).collect();
             let (seen, keys, asked) = Default::default();
             #[rustfmt::skip]
-            self.pairs.push(Pair { name, source, over, reads, by, seen, measures, keys, asked });
+            self.pairs.push(Pair { name, source, over, reads, by, seen, merged, measures, keys, asked });
         }
         Ok(declared)
     }
@@ -642,10 +739,12 @@ impl Twin {
 
     /// Fails the row unless each of these views answers as its twin
     /// does, as of `as_of`, and at the head at the table's valid time
-    /// too. `depth` is what each of the three readers reads: nothing,
-    /// the view's records, or every door. They are the owner, a reader
-    /// without the `restricted` grant and one kept from each view's first
-    /// measure.
+    /// too. `depth` is what each of the readers reads: nothing, the
+    /// view's records, or every door. They are the owner, a reader
+    /// without the `restricted` grant, one kept from each view's first
+    /// measure and, reading as far as that one, one kept from the field
+    /// a view groups by in each stored type that is a view's source and
+    /// one kept from the first group field of each merged source.
     async fn same(
         &mut self,
         store: &dyn LakeStore,
@@ -655,7 +754,21 @@ impl Twin {
         depth: [u8; 3],
     ) {
         let cat = doors(store);
-        let mut partial = reads_all(store, "partial");
+        let (mut partial, mut blind) = (reads_all(store, "partial"), reads_all(store, "blind"));
+        let mut apart = reads_all(store, "apart");
+        for (source, field) in self.pairs.iter().flat_map(|p| &p.merged) {
+            let source = apart
+                .grants
+                .types
+                .entry(source.as_str().into())
+                .or_default();
+            source.fields.insert(field.as_str().into(), Access::None);
+        }
+        for p in self.pairs.iter().filter(|p| !p.over) {
+            let source = blind.grants.types.entry(p.source.as_str().into());
+            let hidden = p.by.iter().map(|f| (f.as_str().into(), Access::None));
+            source.or_default().fields.extend(hidden);
+        }
         for (p, end) in self.pairs.iter().flat_map(|p| [(p, ""), (p, "_twin")]) {
             let hidden = p.measures.first().map(|m| m.as_str().into());
             let hidden = hidden.map(|m| (m, Access::None));
@@ -668,7 +781,10 @@ impl Twin {
             ("the owner", owner(store)),
             ("a reader without `restricted`", reads_all(store, "plain")),
             ("a reader kept from a field of it", partial),
+            ("a reader kept from a field of its source", blind),
+            ("a reader kept from a field of a merged source", apart),
         ];
+        let depth = [depth[0], depth[1], depth[2], depth[2], depth[2]];
         let mut differs = None;
         let valid = self.valid_at.as_ref().filter(|_| as_of.is_none());
         for valid in [None].into_iter().chain(valid.map(Some)) {
@@ -793,8 +909,7 @@ fn kinds(fields: &str) -> Vec<Value> {
 }
 
 /// Fails unless `describe_type` says `want` of the view's keeping, and
-/// `not asked` of its twin's. A lake that keeps no view says
-/// `not kept here` of every view it is asked to keep that can be.
+/// `not asked` of its twin's.
 async fn says(l: &Lake, view: &str, want: &str) -> Result<(), Failure> {
     let said = |kept: &Option<Kept>| match kept {
         Some(Kept::Kept) => "kept",
@@ -809,9 +924,8 @@ async fn says(l: &Lake, view: &str, want: &str) -> Result<(), Failure> {
     let kept = l.describe_type(view).await?.lifecycle.kept;
     let twin = l.describe_type(&format!("{view}_twin")).await?;
     let twin = twin.lifecycle.kept;
-    let here = ["kept", "not whole"].contains(&want) && said(&kept) == "not kept here";
     ensure!(
-        (said(&kept) == want || here) && said(&twin) == "not asked",
+        said(&kept) == want && said(&twin) == "not asked",
         "`describe_type` must say `{want}` of `{view}` and `not asked` of its twin; it says \
          {kept:?} and {twin:?}"
     );

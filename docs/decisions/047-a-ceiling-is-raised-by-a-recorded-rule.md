@@ -77,6 +77,10 @@ The core's budgets are four:
 
 **The twenty-seventh raise:** the specification, from 51 000 to 51 500 lines, by slot a's word under the rule, for the rows of a migration's report that says every difference between the declaration in force and its `to` (lakelands#554: every member of a declaration changed alone, the report as each reader may know it from every place that answers one, a field its reader does not read by its shape alone, and the accept): 607 lines as measured, on a develop that lakelands#562 left 301 under the ceiling, 306 over it.
 
+**The twenty-eighth raise:** the product code, from 41 000 to 42 500 lines, by slot a's word under the rule, for the store's part of a kept view (lakelands#575: the fold keeps one record a group and a state of counters, and the read answers them where the state says they are the computation's own): 1 299 lines as measured after 105 were cut and what waited was taken out, on a develop that lakelands#554 left 256 under the ceiling, 1 043 over it, so the next 500 that holds it is 42 500.
+
+**The twenty-ninth raise:** the specification, from 51 500 to 52 500 lines, by slot a's word under the rule, for the rows of the store's kept view (lakelands#575: a view's state and the number of its kept records after each event, which no answer shows, and the twin's lines for what plants and a review showed it blind to, two readers kept from a field a view reads among them): 1 021 lines as measured, on a develop that stood 194 under the ceiling, 827 over it, so the next 500 that holds them is 52 500.
+
 ## Why
 
 The budgets keep the core small enough for one reader to hold. They have done that: four diets took out about 5 000 lines without losing a check.

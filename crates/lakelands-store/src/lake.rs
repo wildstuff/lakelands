@@ -42,6 +42,7 @@ use lakelands_api::{
 use lakelands_core::{shape, unavailable};
 
 use crate::backed::{Due, Outputs, Recorded};
+use crate::kept;
 use crate::log::{self, Draft};
 use crate::ontology::Ontology;
 use crate::record;
@@ -169,6 +170,18 @@ pub fn settings_in(view: &dyn ProjectionView) -> Result<BTreeMap<String, Value>>
         .into_iter()
         .filter_map(|r| Some((r.key.to_string(), r.fields.get("value")?.clone())))
         .collect())
+}
+
+/// What the kept views' hooks are handed in the fold of one event.
+macro_rules! kept_at {
+    ($w:expr, $view:expr, $projection:expr) => {
+        kept::At {
+            view: $view,
+            projection: $projection,
+            ontology: &$w.ontology,
+            settings: &$w.settings,
+        }
+    };
 }
 
 impl Lake {
@@ -662,7 +675,8 @@ impl Lake {
             projection.begin()?;
             let mut view = self.engine.view(None)?;
             for (i, e) in events.iter().enumerate() {
-                if reads_a_record(&e.body) && self.flush(w, view.as_ref(), &mut staged)? && of_log {
+                let read = reads_a_record(&e.body);
+                if read && self.flush(w, view.as_ref(), &mut staged, &events[..i])? && of_log {
                     drop(view);
                     projection.commit(events[i - 1].position)?;
                     // What is committed stays due, whatever fails next.
@@ -673,7 +687,7 @@ impl Lake {
                 }
                 self.fold(w, view.as_ref(), &mut staged, e)?;
             }
-            self.flush(w, view.as_ref(), &mut staged).map(drop)
+            self.flush(w, view.as_ref(), &mut staged, events).map(drop)
         })()
         .and_then(|()| projection.commit(last.position));
         match result {
@@ -851,10 +865,11 @@ impl Lake {
         w: &mut Writer,
         view: &dyn ProjectionView,
         staged: &mut Staged,
+        folded: &[Event],
     ) -> Result<bool> {
-        if staged.pending.is_empty() {
+        let (false, Some(last)) = (staged.pending.is_empty(), folded.last()) else {
             return Ok(false);
-        }
+        };
         let pending = std::mem::take(&mut staged.pending);
         let projection = self.engine.projection();
         let (from, mut put) = (w.due.len(), vec![false; pending.len()]);
@@ -900,6 +915,7 @@ impl Lake {
         staged
             .steps
             .extend(steps.filter_map(|(s, put)| put.then(|| Step::Recomputed(Box::new(s)))));
+        kept::made(&kept_at!(w, view, projection), staged, last.position)?;
         Ok(kept)
     }
 
@@ -963,6 +979,29 @@ impl Lake {
         e: &Event,
     ) -> Result<()> {
         let projection = self.engine.projection();
+        // A name of the kept form is the store's own, for the records of a
+        // view it keeps: no door declares a type under one or writes its
+        // records, so only a log another build wrote names one, and such
+        // a log is not folded.
+        if let EventBody::Declared {
+            declaration: Declaration::Type(lakelands_api::ontology::TypeDecl { name: ty, .. }),
+            ..
+        }
+        | EventBody::RecordUpserted { ty, .. }
+        | EventBody::RecordIngested { ty, .. }
+        | EventBody::RecordRetired { ty, .. }
+        | EventBody::RecordRestricted { ty, .. }
+        | EventBody::RecordUnrestricted { ty, .. } = &e.body
+            && lakelands_api::seam::is_kept_name(ty)
+        {
+            return Err(unavailable(format!(
+                "the event at position {} declares or writes the type `{ty}`: a name that begins \
+                 `{}` is the store's own, for the records of a view it keeps, and the log is not \
+                 folded past it",
+                e.position,
+                lakelands_api::seam::KEPT_PREFIX
+            )));
+        }
         projection.mark_applied(&e.id, e.position)?;
         match &e.body {
             EventBody::LakeCreated { .. }
@@ -1102,6 +1141,8 @@ impl Lake {
                     }
                     projection.put_record(&after)?;
                     self.index_vectors(&w.ontology, &after)?;
+                    let before = before.as_ref();
+                    kept::note(&kept_at!(w, view, projection), staged, before, &after)?;
                     staged.put(after);
                 }
             }
@@ -1179,12 +1220,13 @@ impl Lake {
                     if let Some(next) = next {
                         projection.put_record(&next)?;
                         self.index_vectors(&w.ontology, &next)?;
+                        kept::note(&kept_at!(w, view, projection), staged, Some(&r), &next)?;
                         staged.put(next);
                     }
                 }
             }
         }
-        Ok(())
+        kept::settle(&kept_at!(w, view, projection), staged, e)
     }
 
     /// Keep the engine's vector index in step with a record's vector
@@ -1968,11 +2010,12 @@ impl Migrated {
 #[derive(Default)]
 pub struct Staged {
     /// The records this transaction wrote, each under the key and in the
-    /// state it has now; never an ended key.
+    /// state it has now: ended only where the fold ended a kept view's
+    /// record, which `each` and `matching` leave out.
     records: BTreeMap<(TypeName, RecordKey), StoredRecord>,
     /// The steps this transaction folded and kept, in the order of their
     /// events.
-    steps: Vec<Step>,
+    pub(crate) steps: Vec<Step>,
     /// The recomputations whose records are not walked yet: every
     /// `declared` that recomputes since the last event that read a record.
     pending: Vec<Recomputed>,
@@ -1985,6 +2028,8 @@ pub struct Staged {
     pub outputs: Recorded,
     /// Set memberships put in this append, by set, type and key.
     members: BTreeMap<(String, TypeName, RecordKey), bool>,
+    /// The views the lake keeps, as this append works on them.
+    pub(crate) kept: crate::kept::Views,
 }
 
 impl Staged {
@@ -2037,6 +2082,86 @@ impl Staged {
             (ty, key) = (s.types.get(ty).unwrap_or(ty), s.moved(ty, key));
         }
         self.records.contains_key(&(ty.clone(), key.clone()))
+    }
+
+    /// Every record of `ty` as the append leaves it so far, ended ones
+    /// left out, handed to `each` one at a time: the view's, a page at a
+    /// time, each taken through the append's steps, then what the append
+    /// wrote. Nothing of the walk is held.
+    pub(crate) fn each(
+        &self,
+        view: &dyn ProjectionView,
+        ty: &TypeName,
+        mut each: impl FnMut(StoredRecord) -> Result<()>,
+    ) -> Result<()> {
+        let known = self.known(ty);
+        walk(view, known, true, |row| {
+            let stepped = match self.wrote(known, &row.key) {
+                true => None,
+                false => Some(self.stepped(view, row)?).filter(|r| &r.ty == ty),
+            };
+            stepped.map_or(Ok(()), &mut each)
+        })?;
+        (self.of_type(ty).filter(|r| !r.is_ended()).cloned()).try_for_each(each)
+    }
+
+    /// The live records of `ty` whose fields hold every value of `equal`,
+    /// as the append leaves them so far, handed to `each` until it answers
+    /// false: the view's by the engine's lookup, a page at a time, then
+    /// what the append wrote; after a kept step, by a walk of the type,
+    /// which goes on to its end once `each` has answered false.
+    pub(crate) fn matching(
+        &self,
+        view: &dyn ProjectionView,
+        ty: &TypeName,
+        equal: &[(FieldName, Value)],
+        mut each: impl FnMut(&StoredRecord) -> bool,
+    ) -> Result<bool> {
+        let holds = |r: &StoredRecord| {
+            !r.retired && !r.is_ended() && equal.iter().all(|(f, v)| r.fields.get(f) == Some(v))
+        };
+        // A kept step moved what the view holds: every record of the type
+        // as the steps leave it, the lookup's own answer among them.
+        if !self.steps.is_empty() {
+            let mut all = true;
+            self.each(view, ty, |r| {
+                all = all && (!holds(&r) || each(&r));
+                Ok(())
+            })?;
+            return Ok(all);
+        }
+        let mut walk = Walk::new(view, ty, false);
+        walk.scan.equal = equal.to_vec();
+        let mut unwritten = walk.by_ref().filter(|r| !self.wrote(ty, &r.key));
+        let all = unwritten.all(|r| each(&r));
+        walk.failed()?;
+        Ok(all && self.of_type(ty).filter(|r| holds(r)).all(each))
+    }
+
+    /// Whether a recomputation of the records of `ty` is pending: their
+    /// derived fields are not what the declarations in force compute.
+    pub(crate) fn recomputes(&self, ty: &TypeName) -> bool {
+        let pending = |s: &Recomputed| s.entries.types.contains_key(ty);
+        self.pending.iter().any(pending)
+    }
+
+    /// The types whose records the append's last step reached: the
+    /// migrated one, those with moved keys or references to them, and the
+    /// link types records moved between.
+    pub(crate) fn stepped_types(&self) -> BTreeSet<TypeName> {
+        let Some(s) = self.steps.last().and_then(Step::migrated) else {
+            return BTreeSet::new();
+        };
+        let reached = s.decls.keys().chain(s.types.keys()).chain(s.types.values());
+        reached.chain([&s.migration.to.name]).cloned().collect()
+    }
+
+    /// The records of one type written in this append.
+    pub fn of_type<'a>(&'a self, ty: &'a TypeName) -> impl Iterator<Item = &'a StoredRecord> + 'a {
+        self.records
+            .range((ty.clone(), RecordKey::from(""))..)
+            .take_while(move |((t, _), _)| t == ty)
+            .map(|(_, r)| r)
     }
 
     /// Put a set membership, and remember it: the view a fold of several
