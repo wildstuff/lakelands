@@ -801,6 +801,7 @@ interface types {
         nodes: list<%record>,
         edges: list<edge>,
         truncated: bool,
+        next-cursor: option<cursor>,
     }
 
     variant query-result {

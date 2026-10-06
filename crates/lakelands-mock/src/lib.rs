@@ -64,7 +64,8 @@
 //! declares them at every writer's open), re-keys no type (a migration
 //! that changes a type's key fields is refused as invalid), binds no verb executor
 //! (an external verb is refused as `unbound` when called), does not aggregate,
-//! walks relations one hop over reference fields only, ranks search by
+//! walks relations one hop over reference fields only and answers them as
+//! rows (never a graph or a path), ranks search by
 //! word count or cosine, and evaluates the expression functions listed in
 //! its `expr` module and no others (so `setting()` in an aging rule's
 //! `when` is refused here, though the store takes it). Its clock is deterministic: an event's

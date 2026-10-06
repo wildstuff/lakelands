@@ -199,7 +199,9 @@ impl Pattern {
     /// graph. The steps it builds are one walk over any of the relations,
     /// not a chain: a planner reads a pattern whose projection is
     /// [`Projection::Graph`] and whose steps all start at depth 0 as one
-    /// multi-relation walk.
+    /// multi-relation walk, each relation in its own step's direction to
+    /// its own step's `max`; any other graph pattern is a chain, walked as
+    /// its rows are.
     pub fn subgraph(
         ty: TypeName,
         key: RecordKey,
@@ -220,7 +222,7 @@ impl Pattern {
     }
 
     /// The shortest walk from one record to another over the given
-    /// relations.
+    /// relations, walked both ways; none given walks none.
     pub fn path(
         from: (TypeName, RecordKey),
         to: (TypeName, RecordKey),
@@ -253,6 +255,9 @@ pub enum QueryResult {
         edges: Vec<Edge>,
         /// Whether the limit cut the graph short.
         truncated: bool,
+        /// Where the next page starts, exactly when `truncated`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next_cursor: Option<Cursor>,
     },
     /// Aggregates over the matches.
     Groups {

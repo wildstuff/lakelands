@@ -2252,7 +2252,14 @@ impl<'a> Reader<'a> {
         let mut types = vec![start_decl.name.clone()];
         let mut filters = Vec::new();
         let measure = measures::is_measure(&p.project);
-        let lenient = matches!(p.project, Projection::Graph | Projection::Components);
+        // A graph whose steps all start at depth 0 is one walk over any of
+        // their relations from the start (018): a step's relation may be
+        // declared by a type another step reaches. Any other is a chain.
+        let chain = p.steps.iter().any(|s| s.depth.min > 0);
+        let lenient = match p.project {
+            Projection::Graph => !chain,
+            _ => p.project == Projection::Components,
+        };
         for (i, step) in p.steps.iter_mut().enumerate() {
             // A measure's steps are the relations around its records, each
             // read from the start, not a chain.
@@ -2262,7 +2269,11 @@ impl<'a> Reader<'a> {
                 types.last().expect("the start is in").clone()
             };
             self.as_declared(&here, step);
-            let reached = self.step_target(&here, &step.relation, step.walk, lenient)?;
+            let reached = if measure || chain {
+                self.step_target(&here, &step.relation, step.walk, lenient)?
+            } else {
+                self.neighbour_target(i, step)?
+            };
             self.probe_derived(&here, &step.relation, step.walk)?;
             if let (Some(t), Some(r)) = (&step.ty, &reached)
                 && t != r
@@ -2297,7 +2308,38 @@ impl<'a> Reader<'a> {
         if measure {
             return self.measure(p, limit);
         }
+        // What a pattern says and an arm cannot honour is refused, not
+        // passed over: a path is a graph of one walk from one start.
+        if p.to.is_some() && p.project != Projection::Graph {
+            return Err(invalid(
+                "a pattern with `to` answers the walk to it as a graph; ask `project` `graph`",
+            ));
+        }
+        if p.to.is_some() && chain {
+            return Err(invalid(
+                "a pattern with `to` walks its steps as one walk from its start; every step's \
+                 depth starts at 0",
+            ));
+        }
+        // A cursor is checked before any arm answers: a path and an
+        // aggregate hand out none, so every cursor is another read's there.
+        let offset = offset(p.cursor.as_ref(), p, &params)?;
         let hidden = Visible { reader: self };
+        // Whether a record reached over step `i` is kept and walked from:
+        // it is of the step's `type`, and its `where`, read against the type
+        // the step reaches, holds of it.
+        let keep = |i: usize, node: &lakelands_core::graph::Node| -> Result<bool> {
+            if p.steps[i].ty.as_ref().is_some_and(|t| *t != node.0) {
+                return Ok(false);
+            }
+            let Some(f) = &filters[i] else {
+                return Ok(true);
+            };
+            Ok(node.0 == types[i + 1]
+                && self
+                    .get_one(&node.0, &node.1)?
+                    .is_some_and(|r| self.holds(f, &r.fields, Some(&r.meta))))
+        };
         // The start.
         let starts: Vec<StoredRecord> = if let Some(key) = &p.start.key {
             if self.start_found(p, key)? {
@@ -2314,62 +2356,43 @@ impl<'a> Reader<'a> {
             let f = self.record_filter(&start_decl, p.start.filter.as_ref(), "start where")?;
             self.records(&start_decl, f.as_ref())?
         };
-        let relations: Vec<RelationName> = p.steps.iter().map(|s| s.relation.clone()).collect();
-        // A path.
+        let from: Vec<lakelands_core::graph::Node> = starts
+            .iter()
+            .map(|s| (s.ty.clone(), s.key.clone()))
+            .collect();
+        // A path, from its one start.
         if let Some((to_ty, to_key)) = &p.to {
-            let depth = p.steps.iter().map(|s| s.depth.max).max().unwrap_or(1);
-            let mut nodes = Vec::new();
-            let mut edges = Vec::new();
-            if let Some(start) = starts.first() {
-                let from = (start.ty.clone(), start.key.clone());
-                if let Some(path) = graph::shortest_path(
-                    &hidden,
-                    &from,
-                    &(to_ty.clone(), to_key.clone()),
-                    &relations,
-                    Walk::Both,
-                    depth,
-                    max_depth,
-                )? {
-                    nodes = path.nodes;
-                    edges = path.edges;
+            let (nodes, edges) = match from.as_slice() {
+                [] => (Vec::new(), Vec::new()),
+                [one] => {
+                    let to = (to_ty.clone(), to_key.clone());
+                    graph::shortest_path(&hidden, one, &to, &p.steps, max_depth, keep)?
+                        .map_or_else(Default::default, |path| (path.nodes, path.edges))
                 }
-            }
-            return self.graph_result(nodes, edges, false);
+                more => {
+                    return Err(invalid(format!(
+                        "a path has one start, and this pattern's start names {} records",
+                        more.len()
+                    )));
+                }
+            };
+            return self.graph_result(nodes, edges, None);
         }
-        // A subgraph.
+        // A graph: several starts are one walk, each record at the fewest
+        // hops any start reaches it in, ordered by (depth, type, key) as
+        // one walk orders what it reaches (026, 029), a page at a time.
         if p.project == Projection::Graph {
-            let depth = p.steps.iter().map(|s| s.depth.max).max().unwrap_or(0);
-            let walk = p.steps.first().map_or(Walk::Both, |s| s.walk);
-            // Several starts merge into one walk: each record at the fewest
-            // hops any start reaches it in, ordered by (depth, type, key) as
-            // one walk orders what it reaches (026, 029).
-            let mut depth_of: BTreeMap<lakelands_core::graph::Node, u32> = BTreeMap::new();
-            let mut edges = Vec::new();
-            let mut truncated = false;
-            for start in &starts {
-                let g = graph::subgraph(
-                    &hidden,
-                    &(start.ty.clone(), start.key.clone()),
-                    &relations,
-                    walk,
-                    depth,
-                    limit,
-                    max_depth,
-                )?;
-                truncated |= g.truncated;
-                for r in g.nodes {
-                    let d = depth_of.entry(r.node).or_insert(r.depth);
-                    *d = (*d).min(r.depth);
-                }
-                edges.extend(g.edges);
-            }
-            let mut nodes: Vec<(u32, lakelands_core::graph::Node)> =
-                depth_of.into_iter().map(|(n, d)| (d, n)).collect();
-            nodes.sort();
-            let nodes = nodes.into_iter().map(|(_, n)| n).collect();
-            core_engines::order_edges(&mut edges);
-            return self.graph_result(nodes, edges, truncated);
+            let walk = if chain {
+                graph::spanned
+            } else {
+                graph::subgraph
+            };
+            let g = walk(&hidden, &from, &p.steps, max_depth, offset, limit, keep)?;
+            let next = g
+                .truncated
+                .then(|| self.page_cursor(p, offset + limit, params));
+            let nodes = g.nodes.into_iter().map(|r| r.node).collect();
+            return self.graph_result(nodes, g.edges, next);
         }
         // Rows are ordered and measured by their paths, `type.field`: each
         // probes its field as `find`'s order and aggregate do (024), so an
@@ -2390,20 +2413,11 @@ impl<'a> Reader<'a> {
         self.probe_rows(&paths)?;
         // Rows: one per match.
         let mut rows: Vec<BTreeMap<String, Value>> = Vec::new();
-        for start in &starts {
-            let from = (start.ty.clone(), start.key.clone());
-            let keep = |i: usize, node: &lakelands_core::graph::Node| -> Result<bool> {
-                let Some(f) = &filters[i] else {
-                    return Ok(true);
-                };
-                Ok(self
-                    .get_one(&node.0, &node.1)?
-                    .is_some_and(|r| self.holds(f, &r.fields, Some(&r.meta))))
-            };
-            let t = graph::traverse(&hidden, &from, &p.steps, max_depth, usize::MAX, keep)?;
+        for from in &from {
+            let t = graph::traverse(&hidden, from, &p.steps, max_depth, usize::MAX, keep)?;
             for binding in t.bindings {
                 let mut row = BTreeMap::new();
-                self.bind(&mut row, &from)?;
+                self.bind(&mut row, from)?;
                 for r in &binding {
                     self.bind(&mut row, &r.node)?;
                 }
@@ -2450,7 +2464,6 @@ impl<'a> Reader<'a> {
             })
             .collect();
         keyed.sort_by(|a, b| Self::compare(&order, &a.0, &b.0));
-        let offset = offset(p.cursor.as_ref(), p, &params)?;
         let rows = keyed.into_iter().map(|(_, r)| r).collect();
         Ok(self.rows_page(p, rows, offset, limit, params))
     }
@@ -2567,6 +2580,32 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// The type a neighbourhood's step reaches, wherever its relation is
+    /// declared: its target walked out, its owner walked in. A step that
+    /// reaches several types and reads a `where` names its `type`, since
+    /// the `where` is read against one.
+    fn neighbour_target(&self, i: usize, step: &Step) -> Result<Option<TypeName>> {
+        let mut reached = BTreeSet::new();
+        for (t, r) in self.shown_relations(None) {
+            if r.name == step.relation {
+                (step.walk != Walk::In).then(|| reached.insert(r.target.clone()));
+                (step.walk != Walk::Out).then(|| reached.insert(t.name.clone()));
+            }
+        }
+        if step.ty.is_some() || reached.len() < 2 {
+            return Ok(step.ty.clone().or_else(|| reached.pop_first()));
+        }
+        match &step.filter {
+            None => Ok(None),
+            Some(_) => Err(invalid(format!(
+                "step {} over `{}` reaches several types and reads a `where`; name the step's \
+                 `type`",
+                i + 1,
+                step.relation
+            ))),
+        }
+    }
+
     /// The type a step over `relation` reaches from `here`, walking `walk`.
     fn step_target(
         &self,
@@ -2622,7 +2661,7 @@ impl<'a> Reader<'a> {
         &self,
         nodes: Vec<lakelands_core::graph::Node>,
         edges: Vec<Edge>,
-        truncated: bool,
+        next_cursor: Option<Cursor>,
     ) -> Result<QueryResult> {
         let mut records = Vec::new();
         for node in &nodes {
@@ -2631,7 +2670,8 @@ impl<'a> Reader<'a> {
         Ok(QueryResult::Graph {
             nodes: records,
             edges,
-            truncated,
+            truncated: next_cursor.is_some(),
+            next_cursor,
         })
     }
 }

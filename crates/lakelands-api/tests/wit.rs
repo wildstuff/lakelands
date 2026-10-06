@@ -1488,6 +1488,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     nodes: vec![],
                     edges: vec![],
                     truncated: false,
+                    next_cursor: None,
                 },
                 QueryResult::Groups { rows: vec![] },
             ],

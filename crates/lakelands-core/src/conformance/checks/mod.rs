@@ -31,6 +31,7 @@ mod fields;
 mod filters;
 mod fusion;
 mod graph_measures;
+mod graph_steps;
 mod host_cause;
 mod ingest;
 mod initial;
@@ -357,6 +358,11 @@ pub const ALL: &[Check] = &[
     graph_measures::GRAPH_TOO_LARGE,
     graph_measures::MEASURE_REFUSALS,
     graph_measures::MEASURE_IN_ONE_PAGE,
+    graph_steps::GRAPH_PAGES,
+    graph_steps::GRAPH_CURSORS,
+    graph_steps::GRAPH_STEPS,
+    graph_steps::PATH_STEPS,
+    graph_steps::GRAPH_RIGHTS,
     search::SEARCH_FOLLOWS_TEXT,
     search::WITHHELD_NEVER_HITS,
     search::VECTOR_LEAVES_THE_NEIGHBOURS,

@@ -10,7 +10,7 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
-use lakelands_api::query::{Edge, Walk};
+use lakelands_api::query::{Depth, Edge, Step, Walk};
 use lakelands_api::{RecordKey, RelationName, Result, TypeName};
 
 use super::{EdgeSource, Node};
@@ -44,6 +44,24 @@ pub(in crate::graph) fn link(from: Node, relation: &str, to: Node) -> Edge {
         to,
         fields: BTreeMap::new(),
     }
+}
+
+/// One walk over `relations`, each walked `walk` up to `max` hops.
+pub(in crate::graph) fn over(relations: &[&str], walk: Walk, max: u32) -> Vec<Step> {
+    let depth = Depth { min: 0, max };
+    let step = |r: &&str| Step {
+        relation: RelationName::new(*r),
+        walk,
+        ty: None,
+        filter: None,
+        depth,
+    };
+    relations.iter().map(step).collect()
+}
+
+/// A `keep` that keeps every record.
+pub(in crate::graph) fn every(_: usize, _: &Node) -> Result<bool> {
+    Ok(true)
 }
 
 /// The keys of a list of records.

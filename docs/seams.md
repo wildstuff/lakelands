@@ -553,6 +553,20 @@ reads the declaring types and link types there whole, for every page of
 records the walk reaches, so a walk into the past costs the relation's
 records per page of each hop. The heap is held by the suite; the time is reported.
 
+**A graph's pages.** A pattern query projected as `graph` and cut by
+its `limit` is continued by its `next_cursor`, as rows are
+(`docs/decisions/018-one-pattern-query.md`). Every page walks again, at
+the cursor's position: a neighbourhood (every step from depth 0) as deep
+as the page's last record, a chain whole, as a page of rows walks its
+pattern whole. A hub of 10 000 records at a limit of 1 000, release
+build, on a machine of 16 cores at a load of 5 to 6: the eleven pages
+of its graph took 1.1 to 1.2 s together on SQLite (about 0.1 s each),
+and 0.7 to 0.8 s on the memory engine, against 3.1 s and 0.8 s for the
+ten pages of its rows (lakelands#556). **Its ceiling:** a page costs
+the walk to its last depth, so the pages of a wide graph that lie at
+increasing depths each cost the walks before them, as each page of
+rows costs its whole walk.
+
 **The whole-graph measures.** A pattern query projected as `degree` or
 `components` asks nothing new of an engine: the store asks `edges` of
 the records it measures a page at a time, as a walk does
