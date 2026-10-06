@@ -487,6 +487,21 @@ A host that already has a store of its own moves in four steps.
   is not computed does not, since it computes nothing. From a shell: `lakelands recompute --function
   <name>` or `--type <name>`. See
   `docs/decisions/022-functions-are-declarations.md`.
+- **One text the embedding backend refuses fails its whole batch
+  (lakelands#658).** The store sends the texts due for one model in
+  batches of up to 64, and when a request fails it records the failure
+  for every text the request carried. So a backend that refuses a whole
+  request for one input (an HTTP 400 for one text over its length
+  limit, say) fails the good texts sent beside it. The failure is
+  recorded for each of those texts, and an output is read back for its
+  text lake-wide: a later record that writes one of them is answered
+  the failure without a call. `get` shows the backend's message in the
+  field's `error`, and `vector_coverage` counts each such record as
+  due. `recompute`, and a declaration that walks the type, batch the
+  refused text with the others again and fail them again. A host
+  recovers by changing the refused text in its record, then calling
+  `recompute` of the type; a record whose own text changes is embedded
+  on that write.
 - **A write that changes nothing is still a write.** An upsert of the
   values a record already holds appends an event and raises the version:
   it says who vouches for the values and when, a trigger reacts to it,

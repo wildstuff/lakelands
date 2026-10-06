@@ -1,4 +1,4 @@
-package lakelands:data@0.9.0;
+package lakelands:data@0.10.0;
 
 /// A component that uses lakes its host keeps.
 world client {
