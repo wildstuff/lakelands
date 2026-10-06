@@ -21,7 +21,8 @@ use serde_json::{Value, json};
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
     Lake, Must, computed_by, count_view, derived, events_after, field, get_at, head_unmoved,
-    ingest, invalid_naming, pattern, reason, source_record, sourced, step, trigger_on, type_decl,
+    ingest, invalid_naming, pattern, reason, refused_on, source_record, sourced, step, trigger_on,
+    type_decl,
 };
 use crate::links::{link_key, link_type_name};
 
@@ -701,6 +702,41 @@ async fn a_field_that_declares_initial_makes_no_owner(
         "a field that declares `initial` makes no owner: `o3`'s note alone refuses the purge \
          ({whole}: {refused:?}), and without it the purge takes all three and names the two an \
          author moved, as its preflight does; it answered {report:?} after {before:?}"
+    );
+    Ok(())
+}
+
+check!(
+    /// A field declared `shared` since takes a source's ingest, and its purge.
+    SHARED_SINCE = a_field_declared_shared_since_is_ingested_and_purged_with_its_source,
+    "039 and 016 (lakelands#611): an authored field declared again as `shared`, with no migration, takes an ingest under a source, and that source's purge takes the record it brought in and leaves the records an author wrote before"
+);
+
+async fn a_field_declared_shared_since_is_ingested_and_purged_with_its_source(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    l.declare(type_decl("sample", vec![field("title", StorageKind::Text)]))
+        .await?;
+    l.upsert("sample", "s1", json!({"title": "by hand"}))
+        .await?;
+    let seeded = || vec![source_record("sample", "s2", json!({"title": "seeded"}))];
+    let refused = ingest(l.cat.as_ref(), &l.own, "samples", seeded()).await;
+    let authored = matches!(refused_on(&refused), Some(("title", Refusal::WrongDoor)));
+    let mut title = field("title", StorageKind::Text);
+    title.authority = Authority::Shared;
+    l.declare(type_decl("sample", vec![title])).await?;
+    feed(&l, "samples", seeded()).await?;
+    let report = purge(store.as_ref(), "samples").await?;
+    let (by_hand, seeded) = (
+        live(&l, "sample", "s1").await?,
+        live(&l, "sample", "s2").await?,
+    );
+    ensure!(
+        authored && per(&report) == [("sample", 1)] && by_hand && !seeded,
+        "an authored `title` refuses an ingest ({authored}: {refused:?}); declared `shared`, it \
+         takes one under `samples`, whose purge retires `s2` alone and leaves `s1`, written by \
+         an author before; the purge answered {report:?}, `s1` live {by_hand}, `s2` live {seeded}"
     );
     Ok(())
 }

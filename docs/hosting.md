@@ -179,6 +179,19 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   report names the source's records in other types that still refer
   into what went, and the id is of that purge alone. A view, and a type
   that keeps no per-field provenance, are refused there.
+  Rows that one act should remove, such as samples seeded beside a
+  lake's own data, are written through `ingest` under a source id of
+  their own, into fields declared `shared` (lakelands#611). An authored
+  field refuses an ingest, and no write option, idempotency key or
+  principal puts a source on an authored write. An authored field
+  becomes `shared` by a declaration, with no migration; the values
+  written before stay authored and outside the purge. `shared` means the
+  later position wins: a source that delivers a record again after an
+  author changed it writes over the change, so a host that lets people
+  edit seeded rows stops feeding them. An author's later write makes the
+  record co-owned while a value from the source remains in it, and the
+  purge is refused whole; once none remains, the record is the author's
+  and the purge leaves it.
   A lake's log is exported with `lakelands_store::export::write(store,
   dir)` (`lakelands export --to <dir>`) as files that verify without
   Lakelands (`docs/decisions/030-a-lake-directory-verifies-without-its-engine.md`);
