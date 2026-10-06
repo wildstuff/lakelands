@@ -33,7 +33,7 @@ use crate::exec;
 use crate::ingest;
 use crate::lake::Lake;
 use crate::reads::Reader;
-use crate::writes::{self, Call, External};
+use crate::writes::{self, Call, External, MadeDue};
 
 /// Open a lake at a location. The host passes the engines it compiled in
 /// (and any seams it binds) in `seams`; the store depends on no engine.
@@ -66,6 +66,7 @@ pub struct Store {
 }
 
 /// The doors of one lake, bound to a host's write context.
+#[derive(Clone)]
 pub struct Doors {
     lake: Arc<Lake>,
     context: WriteContext,
@@ -133,11 +134,11 @@ impl Doors {
         who: &Principal,
         (mut outcome, external): (Outcome, Option<External>),
         seen: u64,
-        accepted: bool,
+        by: MadeDue,
     ) -> Result<Outcome> {
         let last = crate::backed::settle(&self.lake, seen).await;
         let last = match &external {
-            Some(_) => last.map_err(|e| writes::not_handed(e, true, accepted))?,
+            Some(_) => last.map_err(|e| writes::not_handed(e, true, by))?,
             None => last.unwrap_or(None),
         };
         let named = matches!(&outcome, Outcome::Applied { set_off, .. } if set_off.names_any());
@@ -157,9 +158,28 @@ impl Doors {
             }
         }
         match external {
-            Some(ext) => Ok(writes::with_output(outcome, self.execute(ext).await?)),
+            Some(ext) => Ok(writes::with_output(outcome, self.execute(ext, by).await?)),
             None => Ok(outcome),
         }
+    }
+
+    /// A write that can make an external verb due, with its drain, its
+    /// hand-out and the recording of the answer, run in a task of its own
+    /// that the caller awaits: a caller who goes away, as a request whose
+    /// client closed its connection does, does not stop it between the
+    /// call's append and its answer's recording.
+    async fn detached<F>(&self, who: &Principal, by: MadeDue, f: F) -> Result<Outcome>
+    where
+        F: FnOnce(&Call<'_>) -> Result<(Outcome, Option<External>)> + Send + 'static,
+    {
+        let (doors, who) = (self.clone(), who.clone());
+        let task = tokio::spawn(async move {
+            let seen = doors.seen();
+            let made = doors.write(&who, f).await?;
+            doors.handed(&who, made, seen, by).await
+        });
+        let stopped = |e| unavailable(format!("the store's work on this call stopped: {e}"));
+        task.await.unwrap_or_else(|e| Err(stopped(e)))
     }
 
     /// A write whose outcome is [`Doors::handed`]'s.
@@ -169,13 +189,17 @@ impl Doors {
     {
         let seen = self.seen();
         let outcome = self.write(who, f).await?;
-        self.handed(who, (outcome, None), seen, false).await
+        let by = MadeDue::Call { keyed: false };
+        self.handed(who, (outcome, None), seen, by).await
     }
 
     /// Hand an external verb to its executor and record the answer; the
     /// recorded output is returned, `{"error": …}` when the executor failed.
-    async fn execute(&self, ext: External) -> Result<(Position, serde_json::Value)> {
-        let executor = writes::bound_executor(&self.lake, &ext.executor)?.clone();
+    /// A failure before the hand-out is [`writes::not_handed`]'s.
+    async fn execute(&self, ext: External, by: MadeDue) -> Result<(Position, serde_json::Value)> {
+        let not_handed = |e| writes::not_handed(e, true, by);
+        let executor = writes::bound_executor(&self.lake, &ext.executor).map_err(not_handed)?;
+        let executor = executor.clone();
         // The executor is the host's own code: it receives the record whole,
         // unmasked by the grants of whoever made the verb due. The caller
         // sees only the outcome and the recorded output. A verb on its type
@@ -189,7 +213,12 @@ impl Doors {
                     params: Default::default(),
                 };
                 let host = self.lake.system("host");
-                Some(self.get(&host, &ext.ty, get).await?.data)
+                Some(
+                    self.get(&host, &ext.ty, get)
+                        .await
+                        .map_err(not_handed)?
+                        .data,
+                )
             }
             None => None,
         };
@@ -210,7 +239,17 @@ impl Doors {
         };
         let lake = self.lake.clone();
         let recorded = output.clone();
-        let at = exec::run(move || writes::record_output(&lake, &ext, &input, output)).await?;
+        let at = exec::run(move || writes::record_output(&lake, &ext, &input, output)).await;
+        // The executor ran: where its answer reached the log, a retry
+        // answers it; where it did not, it is lost but for this sentence.
+        let at = at.map_err(|e| match e {
+            Error::Unavailable { message } => unavailable(format!(
+                "{} answered this call with {recorded}, and recording its answer failed: \
+                 {message}",
+                lakelands_api::error::THE_EXECUTOR
+            )),
+            e => e,
+        })?;
         Ok((at, recorded))
     }
 }
@@ -311,11 +350,11 @@ impl Catalog for Doors {
         opts: WriteOpts,
     ) -> Result<Outcome> {
         let (verb, key) = (verb.clone(), key.cloned());
-        let seen = self.seen();
-        let called = self
-            .write(who, move |c| c.call(&verb, key.as_ref(), payload, opts))
-            .await?;
-        self.handed(who, called, seen, false).await
+        let by = MadeDue::Call {
+            keyed: opts.idempotency_key.is_some(),
+        };
+        let call = move |c: &Call<'_>| c.call(&verb, key.as_ref(), payload, opts);
+        self.detached(who, by, call).await
     }
 
     async fn query(&self, who: &Principal, pattern: Pattern) -> Result<Reply<QueryResult>> {
@@ -392,9 +431,8 @@ impl Catalog for Doors {
 
     async fn accept(&self, who: &Principal, proposal: &ProposalId) -> Result<Outcome> {
         let p = proposal.clone();
-        let seen = self.seen();
-        let accepted = self.write(who, move |c| c.accept(&p)).await?;
-        self.handed(who, accepted, seen, true).await
+        let accept = move |c: &Call<'_>| c.accept(&p);
+        self.detached(who, MadeDue::Accepted, accept).await
     }
 
     async fn reject(

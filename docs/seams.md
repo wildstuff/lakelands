@@ -1107,25 +1107,51 @@ extended). The verb
 is not run again for that position. A host that wants a retry calls the verb again, which is a new
 position.
 
-A call retried with the same idempotency key runs nothing and answers
-the first outcome: the position that made the verb due, the recorded
-output and its position. The output's `input` digest holds the record as the executor was
-given it, which a retry cannot rebuild, so the retry finds the output as
-the `output_recorded` caused by that position, among the 4,096 events
-after it. An output not among them (not recorded yet, or recorded after
-the lake took that many other events while the executor ran) is answered
-as none; the position stands, and nothing runs again. That holds also
-for a call whose own fold failed, which no executor was handed: the
-store's answer to that call says so in its sentence (the verb's executor
-was not handed this call, and sending it again under its key will not
-run it), the retry is answered the position with no output, and the host
-calls the verb again. An acceptance whose fold failed is answered the
-same in its own words (the proposal is decided, so accepting it again
-will not run it), and sent again it is `decided`. The executor is handed
-nothing either where the drain of due calls before the hand-out failed:
-the writer may be behind then, and the executor's answer could not be
-recorded. The call, folded at its position, is answered that drain's
-failure with the same sentence, and the host calls the verb again.
+A call retried with the same idempotency key runs nothing: a position
+reaches its executor at most once. The retry answers the first outcome,
+the position that made the verb due, with the recorded output and its
+position, found by a seek of the id the output is recorded under
+(`docs/log-format.md` §3), however far the log has grown since. An
+executor that answered `null` has answered, and the network doors carry
+it as `"output": null`. Where no answer is recorded,
+the retry is refused as `unanswered`, never `applied`: the call is in
+the log at the position its sentence names, and the retry runs nothing.
+If the call is still running, its answer will be recorded and a retry
+then answers it; if its first answer said that its executor was not
+handed the call, the host calls the verb again under another key or with
+none. A retry through `upsert`, `retire`, `link` or `unlink` under the
+key of such a call is answered alike. An accept sent again answers by
+the verb as it stood at the acceptance, whatever is declared since: a
+call of an external verb is answered as a retry of a call is, with
+"propose the call again" in the place of "call the verb again", and any
+other is `decided`.
+
+A call whose own fold failed is in the log, and no executor was handed
+it: the store's answer to that call says so in its sentence (the verb's
+executor was not handed this call, and sending it again under its key
+will not run it: call the verb again under another key or with none; a
+call without a key is told to call the verb again). An acceptance whose
+fold failed is answered the same in its own words (the proposal is
+decided, so accepting it again will not run it: propose the call again);
+the proposal is spent. The executor is handed nothing either where the
+drain of due calls before the hand-out failed: the writer may be behind
+then, and the executor's answer could not be recorded. Nor is it where
+the read of the record for the executor fails, or finds it retired since
+the call. The call, folded at its position, is answered that failure as
+`unavailable` with the same sentence. Where the executor answered and
+the recording of its answer failed, the call is answered that failure,
+saying the executor answered and with what: an answer that reached the
+log is answered to a retry once the next write has folded it, and one
+that did not is lost but for that sentence, and its retry is
+`unanswered`. The network doors know these answers by their words
+(`THE_EXECUTOR` in the contract's errors) and never advise a retry:
+sent again without its key, a call whose executor answered would run
+twice.
+
+The append, the drain, the hand-out and the recording run in a task of
+their own, which the door awaits: a caller who goes away, as a request
+whose client closed its connection does, stops none of them, and the
+answer is recorded for its retry.
 
 There is no default: a verb whose executor is not bound is refused as
 `Unbound`, never faked. The store checks it when the verb is called or

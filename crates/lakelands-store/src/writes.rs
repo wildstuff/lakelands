@@ -66,10 +66,6 @@ use crate::log::{self, Draft};
 use crate::ontology::Ontology;
 use crate::record;
 
-/// How many events after an external verb's call a retry reads for the
-/// output recorded for it.
-const RETRY_REACH: u32 = 4_096;
-
 /// A set membership that changes: the set, the record's type and its key
 /// (after the migration, when one changes it), and whether it joined.
 type Change = (String, TypeName, RecordKey, bool);
@@ -290,36 +286,75 @@ impl Call<'_> {
         if events.is_empty() {
             return Ok(None);
         }
-        let mut outcome = outcome_of(&events);
-        // An external verb answered with its executor's output, recorded in
-        // a later append that other writes may precede: a retry answers
-        // that output too, at the verb's own position.
-        let external = events.iter().any(|e| {
-            e.position == outcome.position() && matches!(e.body, EventBody::VerbCalled { .. })
-        });
-        if external && let Some(found) = self.recorded_output(outcome.position())? {
-            outcome = with_output(outcome, found);
+        let outcome = outcome_of(&events);
+        // An external verb is answered its executor's answer, recorded in
+        // a later append that other writes may precede.
+        match called_out(&events, &outcome) {
+            Some(at) => self.recorded(view, outcome, at, false).map(Some),
+            None => Ok(Some(outcome)),
         }
-        Ok(Some(outcome))
     }
 
-    /// The output recorded for the external verb called at `called`, and
-    /// its position: the `output_recorded` that event caused, among the
-    /// [`RETRY_REACH`] events after it. Its `input` digest holds the record
-    /// as the executor was given it, which a retry cannot rebuild to look
-    /// it up by digest; the read is bounded so that a retry never reads to
-    /// the head of a large lake (`docs/seams.md` §`VerbExecutor`).
-    fn recorded_output(&self, called: Position) -> Result<Option<(Position, Value)>> {
-        let events = self.lake.read_events(called.next(), RETRY_REACH)?;
-        Ok(events.into_iter().find_map(|e| match e.body {
-            EventBody::OutputRecorded { seam, output, .. }
-                if e.cause == Some(called) && seam.starts_with("verb:") =>
+    /// An external verb's outcome with the answer of its executor to the
+    /// event at `due`, found by a seek of the id it is recorded under
+    /// (`docs/log-format.md` §3), however far the log has grown since.
+    /// With no answer recorded, the retry runs nothing and is refused as
+    /// `unanswered`: the call, or its acceptance, is in the log.
+    fn recorded(
+        &self,
+        view: &dyn ProjectionView,
+        outcome: Outcome,
+        due: Position,
+        accepted: bool,
+    ) -> Result<Outcome> {
+        let found = match view.applied(&log::output_id(&self.lake.id, due))? {
+            Some(at) => self.lake.read_events(at, 1)?.pop(),
+            None => None,
+        };
+        // The id is the store's to derive; a foreign log may hold it on
+        // another event.
+        match found
+            .filter(|e| e.cause == Some(due))
+            .map(|e| (e.position, e.body))
+        {
+            Some((at, EventBody::OutputRecorded { seam, output, .. }))
+                if seam.starts_with("verb:") =>
             {
-                Some((e.position, output))
+                Ok(with_output(outcome, (at, output)))
             }
-            _ => None,
-        }))
+            _ => Err(unanswered(due, accepted)),
+        }
     }
+
+    /// An accept sent again: a call of a verb that was external when it
+    /// was accepted is answered as a retry of a call is, whatever the verb
+    /// is declared as since; anything else is `decided`. The acceptance is
+    /// found by a seek of its id.
+    fn accepted_again(
+        &self,
+        w: &Writer,
+        view: &dyn ProjectionView,
+        proposal: &ProposalId,
+    ) -> Result<Outcome> {
+        let decided = || refused(Refusal::Decided);
+        let at = view.applied(&log::accepted_id(&self.lake.id, proposal))?;
+        let Some(at) = at else { return Err(decided()) };
+        let reach = 3 + w.ontology.triggers.len() + w.ontology.object_sets.len();
+        let events = self.lake.read_events(at, reach as u32)?;
+        let outcome = outcome_of(&events);
+        match called_out(&events, &outcome) {
+            Some(_) => self.recorded(view, outcome, at, true),
+            None => Err(decided()),
+        }
+    }
+}
+
+/// The position of the call an outcome answers, where it is the call of a
+/// verb that reaches outside the lake: a write verb's outcome is its write.
+fn called_out(events: &[Event], outcome: &Outcome) -> Option<Position> {
+    let at = outcome.position();
+    let called = |e: &Event| e.position == at && matches!(e.body, EventBody::VerbCalled { .. });
+    events.iter().any(called).then_some(at)
 }
 
 /// An outcome with an external verb's recorded output in it, and the
@@ -1461,7 +1496,9 @@ impl Call<'_> {
         let due = matches!(decl.effect, VerbEffect::External { .. })
             && matches!(drafts[0].body, EventBody::VerbCalled { .. });
         let appended = self.lake.append(&mut w, drafts);
-        let events = appended.map_err(|e| not_handed(e, due && w.behind, false))?;
+        let keyed = opts.idempotency_key.is_some();
+        let by = MadeDue::Call { keyed };
+        let events = appended.map_err(|e| not_handed(e, due && w.behind, by))?;
         let outcome = outcome_of(&events);
         let external = match (&decl.effect, decl.risk, &events[0].body) {
             (VerbEffect::External { executor }, Risk::Low, EventBody::VerbCalled { .. }) => {
@@ -1621,7 +1658,8 @@ impl Call<'_> {
         let view = self.lake.engine.view(None)?;
         let p = find_proposal(view.as_ref(), proposal)?;
         if p.state != ProposalState::Pending {
-            return Err(refused(Refusal::Decided));
+            let again = self.accepted_again(&w, view.as_ref(), proposal)?;
+            return Ok((again, None));
         }
         // A change of the ontology is the lake's `schema` grant's to make:
         // the accepter holds it as well as `review` (013, extended).
@@ -1636,13 +1674,16 @@ impl Call<'_> {
         // The write was checked under the proposer's grants when it was
         // proposed; it is applied as the proposer, with what was checked.
         let proposer = self.lake.system(p.proposer.clone());
-        let accepted = self.draft(
-            now,
-            Origin::Authored,
-            EventBody::WriteAccepted {
-                proposal: proposal.clone(),
-            },
-        );
+        let accepted = Draft {
+            id: Some(log::accepted_id(&self.lake.id, proposal)),
+            ..self.draft(
+                now,
+                Origin::Authored,
+                EventBody::WriteAccepted {
+                    proposal: proposal.clone(),
+                },
+            )
+        };
         let accepted_at = position_after(&w, 0);
         let mut drafts = vec![accepted];
         let as_proposer = |mut d: Draft| {
@@ -1810,7 +1851,8 @@ impl Call<'_> {
         }
         drop(view);
         let appended = self.lake.append(&mut w, drafts);
-        let events = appended.map_err(|e| not_handed(e, external.is_some() && w.behind, true))?;
+        let by = MadeDue::Accepted;
+        let events = appended.map_err(|e| not_handed(e, external.is_some() && w.behind, by))?;
         Ok((self.answered(&events, renamed), external))
     }
 
@@ -3338,27 +3380,71 @@ pub fn cardinality_among(
     Ok(())
 }
 
-/// The answer to a call of an external verb, or to its acceptance when
-/// `accepted`, that failed where `not_run` holds: its append is in the
-/// log and not folded, or the drain before its hand-out failed. The
-/// store's sentence for the failure, and that the verb's executor was not
-/// handed the call. Sent again under its key, the call is answered its
-/// position and runs nothing, and a proposal accepted again is decided;
-/// the host calls the verb again, which is a new position.
-pub(crate) fn not_handed(e: Error, not_run: bool, accepted: bool) -> Error {
-    let again = match accepted {
-        true => "the proposal is decided, so accepting it again",
-        false => "sending it again under its key",
+/// What made an external verb due: a call, under a key or with none, or
+/// an acceptance.
+#[derive(Clone, Copy)]
+pub(crate) enum MadeDue {
+    /// A call.
+    Call {
+        /// Whether it bore an idempotency key.
+        keyed: bool,
+    },
+    /// A proposal's acceptance.
+    Accepted,
+}
+
+/// The answer to a call of an external verb, or to its acceptance, that
+/// failed where `not_run` holds: its append is in the log and not folded,
+/// or what comes before its hand-out failed (the drain, the read of its
+/// record). The store's sentence for the failure, and that the verb's
+/// executor was not handed the call: sent again under its key, the call
+/// runs nothing, and neither does a proposal accepted again, so the host
+/// calls the verb again under another key or with none, or proposes the
+/// call again. A failure that is not `unavailable` (the record retired
+/// since the call) is said in the same words.
+pub(crate) fn not_handed(e: Error, not_run: bool, by: MadeDue) -> Error {
+    let what = match by {
+        MadeDue::Call { keyed: false } => ": call the verb again",
+        MadeDue::Call { keyed: true } => {
+            ", and sending it again under its key will not run it: call the verb again under \
+             another key or with none"
+        }
+        MadeDue::Accepted => {
+            ", and the proposal is decided, so accepting it again will not run it: propose \
+             the call again"
+        }
     };
-    match e {
-        Error::Unavailable { message } if not_run => Error::Unavailable {
-            message: format!(
-                "{message}; the verb's executor was not handed this call, and {again} will \
-                 not run it: call the verb again"
-            ),
-        },
-        e => e,
-    }
+    let message = match e {
+        e if !not_run => return e,
+        Error::Unavailable { message } => message,
+        e => e.to_string(),
+    };
+    let executor = lakelands_api::error::THE_EXECUTOR;
+    lakelands_core::unavailable(format!(
+        "{message}; {executor} was not handed this call{what}"
+    ))
+}
+
+/// A retry of a call of an external verb made due at `at`, or of its
+/// acceptance when `accepted`, that finds no answer of its executor
+/// recorded: it runs nothing, and says so in one sentence true whichever
+/// way the call got there.
+fn unanswered(at: Position, accepted: bool) -> Error {
+    let (what, again) = match accepted {
+        true => ("the acceptance", "propose the call again"),
+        false => (
+            "the call",
+            "call the verb again under another key or with none",
+        ),
+    };
+    refused(Refusal::Unanswered {
+        message: format!(
+            "{what} is in the log at position {at}, and no answer of the verb's executor is \
+             recorded for it, so this retry runs nothing; if the call is still running, its \
+             answer will be recorded and a retry then answers it; if its first answer said \
+             that the verb's executor was not handed the call, {again}"
+        ),
+    })
 }
 
 /// An external verb that ran, to be handed to its executor; the store
@@ -3390,6 +3476,7 @@ pub fn record_output(
     let now = lake.clock(&mut w);
     let d = Draft {
         cause: Some(ext.position),
+        id: Some(log::output_id(&lake.id, ext.position)),
         ..Draft::system(
             now,
             EventBody::OutputRecorded {

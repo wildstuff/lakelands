@@ -1040,6 +1040,7 @@ interface types {
         too-large(u32),
         migration(migration-report),
         decided,
+        unanswered(string),
         out-of-range(position),
     }
 

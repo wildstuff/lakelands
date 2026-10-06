@@ -516,7 +516,7 @@ fn write_opts(p: &mut Map<String, Value>) {
     p.insert(
         "idempotency_key".into(),
         json!({"type": "string",
-               "description": "A retry with the same key is a no-op answering the first outcome."}),
+               "description": "A retry with the same key appends nothing and answers the first outcome; for a verb that reaches outside the lake, its executor's recorded answer, or the refusal `unanswered` while none is recorded."}),
     );
 }
 

@@ -138,6 +138,10 @@ async fn every_error_comes_back_as_the_error_the_server_answered() {
         ),
         (409, refused(None, Refusal::Decided)),
         (
+            409,
+            refused(None, Refusal::Unanswered { message: message() }),
+        ),
+        (
             422,
             refused(None, Refusal::OutOfRange { head: Position(7) }),
         ),
@@ -771,4 +775,108 @@ async fn what_a_path_or_a_header_cannot_carry_is_refused_before_sending() {
         );
     }
     assert_eq!(taken.load(Ordering::SeqCst), 0, "nothing was sent");
+}
+
+/// An executor that answers `null`, holding its first call until it is
+/// let go.
+#[derive(Default)]
+struct Null {
+    ran: AtomicUsize,
+    go: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl lakelands_api::seam::VerbExecutor for Null {
+    fn name(&self) -> &str {
+        "null"
+    }
+
+    async fn execute(
+        &self,
+        _: &lakelands_api::seam::VerbInvocation,
+    ) -> lakelands_api::Result<serde_json::Value> {
+        self.ran.fetch_add(1, Ordering::SeqCst);
+        while !self.go.load(Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        Ok(serde_json::Value::Null)
+    }
+}
+
+/// An executor's answer of `null` comes back over the wire as an answer:
+/// the call and its retry under its key are `applied` with `"output":
+/// null`. Sent again while the executor still runs, the call is 409
+/// `unanswered`, with the door's advice.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_answer_of_null_comes_back_and_a_call_still_running_is_409() {
+    let null = Arc::new(Null::default());
+    let seams = lakelands_api::seam::Seams {
+        engines: vec![Arc::new(lakelands_engine_mem::MemoryOpener::new())],
+        executors: vec![null.clone()],
+        ..Default::default()
+    };
+    let location = lakelands_api::Location::memory("nulls");
+    let create = lakelands_api::engine::OpenMode::Create;
+    let store = lakelands_store::open(location, seams, create)
+        .await
+        .unwrap();
+    let lake = store.lake().clone();
+    let cat = store.catalog(WriteContext::default());
+    for d in [
+        json!({"declare": "type", "name": "job", "fields": [{"name": "n", "type": {"kind": "text"}}]}),
+        json!({"declare": "verb", "name": "dispatch", "on": "job", "risk": "low",
+               "effect": "external", "executor": "null"}),
+    ] {
+        cat.declare(&owner(&lake), serde_json::from_value(d).unwrap())
+            .await
+            .unwrap();
+    }
+    let (job, a) = (TypeName::from("job"), RecordKey::from("a"));
+    let opts = WriteOpts::default();
+    cat.upsert(&owner(&lake), &job, &a, patch(&[("n", json!("x"))]), opts)
+        .await
+        .unwrap();
+    let (addr, keys) = common::serve(store).await;
+    let remote = Arc::new(common::remote(addr, &lake, keys));
+    let call = || {
+        let remote = remote.clone();
+        let lake = lake.clone();
+        async move {
+            let opts = WriteOpts {
+                idempotency_key: Some("once".into()),
+                ..WriteOpts::default()
+            };
+            let c = remote.catalog(WriteContext::default());
+            let (verb, a) = ("dispatch".into(), RecordKey::from("a"));
+            c.call(&owner(&lake), &verb, Some(&a), patch(&[]), opts)
+                .await
+        }
+    };
+    let first = tokio::spawn(call());
+    while null.ran.load(Ordering::SeqCst) == 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let request = format!(
+        "POST /lakes/{lake}/verbs/dispatch/a HTTP/1.1\r\nhost: {addr}\r\nconnection: close\r\n\
+         authorization: Bearer k-owner\r\nidempotency-key: once\r\n\
+         content-type: application/json\r\ncontent-length: 2\r\n\r\n{{}}"
+    );
+    s.write_all(request.as_bytes()).await.unwrap();
+    let mut raw = String::new();
+    s.read_to_string(&mut raw).await.unwrap();
+    let (head, body) = raw.split_once("\r\n\r\n").unwrap();
+    let body: serde_json::Value = serde_json::from_str(body).unwrap();
+    assert!(head.starts_with("HTTP/1.1 409"), "{head}");
+    assert_eq!(body["reason"]["refusal"], "unanswered", "{body}");
+    let todo = "a retry under this key runs nothing: if the call's executor is still running";
+    assert!(body["todo"].as_str().unwrap().starts_with(todo), "{body}");
+    null.go.store(true, Ordering::SeqCst);
+    let first = first.await.unwrap().unwrap();
+    assert!(
+        matches!(&first, lakelands_api::Outcome::Applied { output: Some(o), .. } if o.is_null()),
+        "{first:?}"
+    );
+    assert_eq!(call().await.unwrap(), first, "the retry answers the first");
+    assert_eq!(null.ran.load(Ordering::SeqCst), 1, "run once");
 }

@@ -15,7 +15,8 @@ Every failure is one of five errors, and the set is closed:
   field, a reserved name, a request that does not fit the lake's map, a
   broken constraint or precondition, a reaction chain too deep, a
   migration that would lose information, a proposal already decided, a
-  position outside the log);
+  retry of a call of an external verb whose executor's answer is not
+  recorded, a position outside the log);
 - `not_found`: a type, record, verb or proposal does not exist at the
   position read;
 - `conflict`: the record is not at the version the write expected;

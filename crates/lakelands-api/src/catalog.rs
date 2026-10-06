@@ -128,8 +128,9 @@ pub trait Catalog: Send + Sync {
     /// or is proposed by its declared risk. A verb whose effect reaches outside the lake answers,
     /// when it runs, `Applied` with its executor's recorded `output` —
     /// `{"error": "<text>"}` when the executor failed, since the verb's
-    /// position is real either way. A retry answered from its idempotency
-    /// key carries no `output`; the recorded one is in the log.
+    /// position is real either way. A retry under its idempotency key runs
+    /// nothing: it answers that recorded `output`, or, where none is
+    /// recorded, is refused as `unanswered`.
     async fn call(
         &self,
         who: &Principal,
@@ -154,7 +155,9 @@ pub trait Catalog: Send + Sync {
     /// whole then, and a reviewer applies exactly what was checked. At
     /// acceptance the store checks again only what can have moved since —
     /// the type's shape and the record's version. An accepted external
-    /// verb answers its executor's recorded `output`, as `call` does.
+    /// verb answers its executor's recorded `output`, as `call` does, and
+    /// so does the accept sent again; any other accept sent again is
+    /// `decided`.
     async fn accept(&self, who: &Principal, proposal: &ProposalId) -> Result<Outcome>;
 
     /// Reject a proposal. Nothing is written but the rejection, and the

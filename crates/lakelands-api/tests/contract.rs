@@ -22,6 +22,7 @@ fn intent(e: &Error) -> &'static str {
             Refusal::TooLarge { .. } => "a graph measure would reach past the lake's ceiling",
             Refusal::Migration { .. } => "a migration would lose information",
             Refusal::Decided => "the proposal is already decided",
+            Refusal::Unanswered { .. } => "an external call has no recorded answer; nothing ran",
             Refusal::OutOfRange { .. } => "the position is past the head",
         },
         Error::NotFound { missing } => match missing {

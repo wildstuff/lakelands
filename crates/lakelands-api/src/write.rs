@@ -26,7 +26,10 @@ pub struct WriteOpts {
     pub expected_version: Option<Version>,
     /// Make a retry of this write a no-op: a second write with the same
     /// key from the same principal answers the first write's outcome and
-    /// appends nothing. The key is recorded in the log.
+    /// appends nothing. For a call of a verb that reaches outside the
+    /// lake, that outcome carries its executor's recorded answer; while
+    /// none is recorded the retry is refused as `unanswered`. The key is
+    /// recorded in the log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<IdempotencyKey>,
 }
@@ -46,8 +49,13 @@ pub enum Outcome {
         /// For a verb whose effect reaches outside the lake: its executor's
         /// recorded output, `{"error": "<text>"}` when the executor failed.
         /// The position is real either way; the verb is not run again for
-        /// it. `None` for every other write.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// it. `None` for every other write; an answer of `null` is
+        /// `Some(Null)`, and read back so.
+        #[serde(
+            default,
+            deserialize_with = "present",
+            skip_serializing_if = "Option::is_none"
+        )]
         output: Option<serde_json::Value>,
         /// What the write set off beyond the event it is visible from.
         #[serde(flatten)]
@@ -69,6 +77,12 @@ pub enum Outcome {
         /// policy of the lake).
         why: String,
     },
+}
+
+/// A member that is there, `null` included: an executor's answer of `null`
+/// is an answer, and only an absent `output` is none.
+fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<serde_json::Value>, D::Error> {
+    serde::Deserialize::deserialize(d).map(Some)
 }
 
 /// What a write set off: the reactions in its own append, and an external

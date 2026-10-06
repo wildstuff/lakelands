@@ -92,18 +92,51 @@ lakelands#305).
 
 A call whose own fold failed is in the log, and no executor was handed
 it. The store does not answer that call as if it were: its sentence
-says that the verb's executor was not handed the call and that sending
-it again under its key will not run it, and the retry answers the
-position with no output. The host calls the verb again, a new position.
-An acceptance is answered so in its own words (the proposal is decided,
-and accepting it again will not run it). The same holds where the call's
-own fold succeeded and the drain of due calls before the hand-out
-failed: an executor is handed a call only when its answer can be
-recorded, and after such a drain the writer may be behind.
-Whether a retry may ever hand such a position to an executor is not
-decided here: it would change what an executor is promised (once per
-position), and under which declaration, by whose grant and on which
-handle it would run are questions of their own (lakelands#616).
+says that the verb's executor was not handed the call, that sending it
+again under its key will not run it, and to call the verb again under
+another key or with none. An acceptance is answered so in its own words
+(the proposal is decided, accepting it again will not run it, and the
+call is proposed again). The same holds where the call's own fold
+succeeded and the drain of due calls before the hand-out failed: an
+executor is handed a call only when its answer can be recorded, and
+after such a drain the writer may be behind.
+
+## Extended: a retry never hands a position out again (lakelands#616)
+
+A position reaches its executor at most once, and a retry runs nothing:
+a call sent again under its key, or an acceptance sent again, answers
+by what is recorded for its position. Where an answer of the executor
+is recorded, the retry is `applied` with it, `null` included. Where none
+is, the retry is refused as `unanswered`, never `applied`: one sentence,
+true whichever way the position got there, says that the call is in the
+log at that position, that no answer is recorded and that the retry
+runs nothing; that a call still running will have its answer recorded
+and a retry then answers it; and that a call whose first answer said its
+executor was not handed it is called again under another key or with
+none, or proposed again. A retry may not tell the two apart, and the
+caller may: it was given the first answer.
+
+The answer is found by a seek, not by a read of the log after the call.
+It is recorded under an id derived from the lake and the position that
+made the verb due, and an acceptance under one derived from the lake
+and its proposal (`docs/log-format.md` §3), so what a retry reads under
+the writer's lock does not grow with the log. Before this, a retry read
+up to 4,096 events after the call: 74 to 90 ms on a lake of 5,000 events
+against 0.1 to 1 ms for the seek, on the three engines.
+
+An accept sent again answers by the verb as it stood at the acceptance,
+told by what the acceptance appended (a write verb's write follows its
+call, caused by it), whatever was declared since: an external call is
+answered as a retry of a call is, and any other acceptance is
+`decided`.
+
+Handing a position out again where no answer is recorded was weighed
+and not built. It would change what an executor is promised, once per
+position, to once per position unless the store asks again; and under
+which declaration, by whose grant, on which handle and while which other
+hand-out still runs it would happen are each a rule a host would have to
+read. A host that needs it carries its effect under a key of its own and
+calls the verb again.
 
 ## Extended: who sees which proposals
 

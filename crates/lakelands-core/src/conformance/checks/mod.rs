@@ -450,6 +450,8 @@ pub const ALL: &[Check] = &[
     proposals::RETRY_EXTERNAL_PAST_HOST,
     proposals::RETRY_WRITE_PAST_HOST,
     proposals::RETRY_PROPOSED_PAST_ACCEPT,
+    proposals::ACCEPT_AGAIN,
+    proposals::UNANSWERED,
     verbs_on_type::ON_TYPE_RUNS,
     verbs_on_type::ON_TYPE_PROPOSED,
     verbs_on_type::VERB_EVENTS_UNTYPED,

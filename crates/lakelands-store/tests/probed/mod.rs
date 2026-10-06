@@ -71,6 +71,8 @@ pub struct Probe {
     pub before_commit: Mutex<Option<Look>>,
     /// Whether a seal hands its `first` another digest than the engine's.
     pub another_digest: std::sync::atomic::AtomicBool,
+    /// How many events the log's reads handed out.
+    pub events_read: AtomicUsize,
 }
 
 impl Probe {
@@ -210,7 +212,11 @@ impl LakeEngine for Probed {
         self.inner.import(lease, events)
     }
     fn read(&self, from: Position, limit: u32) -> Result<Vec<CanonicalEvent>> {
-        self.inner.read(from, limit)
+        let read = self.inner.read(from, limit)?;
+        self.probe
+            .events_read
+            .fetch_add(read.len(), Ordering::SeqCst);
+        Ok(read)
     }
     fn seal_segment(
         &self,
