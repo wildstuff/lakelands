@@ -550,6 +550,7 @@ belongs in the suite, not beside one engine:
 **bundles**
 
 - `a_bundle_with_forward_references_is_applied_whole_or_not_at_all` — 028: apply validates a set of declarations together, so a reference may point forward within it, and appends all of it in one append or none of it
+- `a_set_computes_its_records_again_once_at_its_last_declaration` — 028, extended (lakelands#605): a set of declarations, applied or an accepted proposal, computes the records it changes once, as its last declaration leaves the lake: a read inside the set finds them as before it, a field reading `changed()` or `previous()` reads the whole set's change, and a type that adds a relation first does not end the set early
 
 **references**
 

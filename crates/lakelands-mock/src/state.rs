@@ -79,6 +79,7 @@ impl State {
                 declaration,
                 schema_hash,
                 version,
+                ..
             } => {
                 if let Some(k) = decl_key(declaration) {
                     self.decl_versions.insert(k, *version);

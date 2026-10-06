@@ -711,6 +711,40 @@ fn the_version_11_lines_recompute_and_each_written_as_version_10_is_refused() {
 }
 
 #[test]
+fn the_version_12_line_recomputes_and_written_as_version_11_is_refused() {
+    let v12 = read_json("v12.json");
+    let mut prev = read_json("v11.json")["hashes"][7]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for line in v12["lines"].as_array().unwrap() {
+        let line = line.as_str().unwrap();
+        let value: Value = serde_json::from_str(line).unwrap();
+        let event: Event = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(
+            canonical::of(&event),
+            line.as_bytes(),
+            "the contract writes it as the line"
+        );
+        let mut body = value;
+        body.as_object_mut().unwrap().remove("hash");
+        assert_eq!(sha(&canonical::to_vec(&body)), event.hash.0);
+        assert_eq!(event.prev.0, prev, "it follows the event before it");
+        let needed = lakelands_core::versions::needed(&event.body, false);
+        assert_eq!((event.v, needed), (12, 12));
+        prev = event.hash.0;
+    }
+    let hashes = v12["hashes"].as_array().unwrap();
+    assert_eq!(prev, hashes.last().unwrap().as_str().unwrap());
+    for negative in v12["negatives"].as_array().unwrap() {
+        let negative: Event = serde_json::from_str(negative.as_str().unwrap()).unwrap();
+        assert_eq!(negative.v, 11);
+        let why = lakelands_core::versions::below(&negative).expect("refused");
+        assert!(why.contains("format 12 added"), "{why}");
+    }
+}
+
+#[test]
 fn the_version_9_view_that_merges_recomputes_and_a_version_8_one_is_refused() {
     let v8 = read_json("v8.json");
     let v9 = read_json("v9.json");

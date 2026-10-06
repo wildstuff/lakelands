@@ -41,6 +41,7 @@ async fn a_declaration_the_log_holds_is_folded_as_before_and_judged_when_declare
         schema_hash: lakelands_core::shape::schema_hash(&t).ok(),
         declaration: Declaration::Type(t),
         version: 1,
+        with_the_set: false,
     };
     {
         let engine = opener

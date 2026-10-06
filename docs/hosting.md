@@ -635,23 +635,28 @@ A host that already has a store of its own moves in four steps.
   record it changes and keeps none: it holds the declaration, not the
   records, so what it holds does not grow with the type
   (`docs/decisions/048-the-fold-keeps-the-event-not-the-records-it-changed.md`).
-  A bundle that declares several functions of one type again reads the
-  type once and computes each record once for each of them. At 100 000
+  A set that declares several functions of one type again, applied or
+  accepted as a proposal, reads the type once and computes and puts each
+  record once, at the set's last declaration (log format 12): at 2 000
+  records of 52 fields, a set of 50 such functions takes 0.56 ms a
+  record on SQLite, where computing it again at each declaration took
+  24.6 ms (lakelands#605). A read at a position inside the set finds
+  the records as before it. At 100 000
   records of four small fields, one of them derived
   (`tests/recomputed.rs` in the SQLite and PostgreSQL engines, by
   hand), the writer is held 4.1 to 4.5 s on SQLite and 13.3 to 14 s on
   PostgreSQL, whichever of the two is declared again, and about 20 s
   and 51 to 56 s at 400 000; the peak of the append is 3 MB on SQLite
-  and 9 MB on PostgreSQL at both sizes. A bundle of two changed
-  functions holds the writer 12 s on SQLite and 21 s on PostgreSQL at
-  100 000 records (50 s and 99 s at 400 000), at 4 MB and 11 MB. The
-  time grows with the type's records; the peak does not. One thing
-  still grows with them: what the engine holds of an open transaction,
-  which on the memory engine is every put. The calls an embedding or a
-  function computed outside the lake makes due on that append do not:
-  the declaration owes one sweep over the type, read after the append
-  a page of 64 records at a time, the writer released between pages
-  (lakelands#609). A rebuild, or an open that catches up,
+  and 9 MB on PostgreSQL at both sizes. Before format 12, a bundle of
+  two changed functions held the writer 12 s on SQLite and 21 s on
+  PostgreSQL at 100 000 records (50 s and 99 s at 400 000), at 4 MB and
+  11 MB. The time grows with the type's records; the peak does not. One
+  thing still grows with them: what the engine holds of an open
+  transaction, which on the memory engine is every put. The calls an
+  embedding or a function computed outside the lake makes due on that
+  append do not: the declaration owes one sweep over the type, read
+  after the append a page of 64 records at a time, the writer released
+  between pages (lakelands#609). A rebuild, or an open that catches up,
   commits inside a page of the log after such a declaration, so there
   too each record is computed once for each declaration. Such a fold of
   the log makes no call due and holds none: a rebuild of 100 000

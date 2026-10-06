@@ -291,6 +291,7 @@ impl Lake {
                         declaration: Declaration::Type(t),
                         schema_hash: Some(hash),
                         version: 1,
+                        with_the_set: false,
                     },
                 ));
             }
@@ -768,6 +769,15 @@ impl Lake {
             ..Staged::default()
         };
         let result = (|| {
+            // Only a damaged log ends inside a set: an append holds its set
+            // whole, and a page of the log never ends inside one.
+            if open_set(events) {
+                return Err(unavailable(format!(
+                    "the log ends inside a set of declarations, at position {}: the set's \
+                     last declaration is missing",
+                    last.position
+                )));
+            }
             // A `begin` that is refused leaves the writer behind like any
             // other failure of the fold: the events are in the log.
             projection.begin()?;
@@ -785,7 +795,11 @@ impl Lake {
                         kept.clone_from(&w.owed);
                     }
                     projection.begin()?;
-                    staged = Staged::default();
+                    // No door drafts one inside a set; a foreign log may.
+                    staged = Staged {
+                        with_the_set: std::mem::take(&mut staged.with_the_set),
+                        ..Staged::default()
+                    };
                     view = self.engine.view(None)?;
                 }
                 let owes = owed.is_some_and(|p| e.position >= p);
@@ -968,6 +982,7 @@ impl Lake {
     /// entries and settings and the outputs recorded before its own event,
     /// and a record is put, and its vectors indexed, at each step that
     /// changes it: one state a step, as if each had walked at its event.
+    /// A set of declarations is one step, at its last (`with_the_set`).
     /// Nothing of the view is kept, and what the transaction wrote stays
     /// kept, changed or not. A step whose event is at or past `owed`
     /// leaves a sweep owed of each type of whose records it made a call
@@ -1132,6 +1147,7 @@ impl Lake {
                 declaration,
                 schema_hash,
                 version,
+                with_the_set,
             } => {
                 // What computes a type's derived fields: its derived
                 // expressions, the functions its fields name and what its
@@ -1188,6 +1204,14 @@ impl Lake {
                     schema_hash.as_deref(),
                     e.position,
                 )?;
+                // A declaration of a set that goes on computes nothing yet:
+                // what it would compute again is computed at the set's last
+                // declaration, once, as that event leaves the ontology.
+                staged.with_the_set.extend(rederive);
+                let rederive = match with_the_set {
+                    true => Vec::new(),
+                    false => Vec::from_iter(std::mem::take(&mut staged.with_the_set)),
+                };
                 // A redeclared function, or revised derived expressions,
                 // compute every live record's derived fields again, as of
                 // this event: what that reads is kept as it stands now, and
@@ -1760,10 +1784,19 @@ impl Iterator for Pages<'_> {
 
     fn next(&mut self) -> Option<Result<Vec<Event>>> {
         let at = self.at.take()?;
-        let page = match self.lake.read_events(at, PAGE) {
+        let mut page = match self.lake.read_events(at, PAGE) {
             Ok(page) => page,
             Err(e) => return Some(Err(e)),
         };
+        // A page never ends inside a set of declarations: its commit would
+        // be a head where half the set is in force.
+        while let Some(last) = page.last().filter(|_| open_set(&page)) {
+            match self.lake.read_events(last.position.next(), PAGE) {
+                Ok(more) if more.is_empty() => break,
+                Ok(more) => page.extend(more),
+                Err(e) => return Some(Err(e)),
+            }
+        }
         self.at = Some(page.last()?.position.next());
         Some(Ok(page))
     }
@@ -1909,6 +1942,17 @@ fn foreign(o: &Ontology, body: &EventBody) -> Option<String> {
     }
     let view = !declares && o.ty(ty).is_ok_and(|t| t.view.is_some());
     view.then(|| format!("writes a record of `{ty}`, a view, whose records are computed"))
+}
+
+/// Whether `events` end inside a set of declarations: their last
+/// `declared` goes on in its append. The events a declaration of the set
+/// drafts after it, an object set's changed memberships, carry no mark.
+fn open_set(events: &[Event]) -> bool {
+    let declared = events.iter().rev().find_map(|e| match e.body {
+        EventBody::Declared { with_the_set, .. } => Some(with_the_set),
+        _ => None,
+    });
+    declared == Some(true)
 }
 
 /// Whether the fold of an event reads a record: such an event is folded
@@ -2202,6 +2246,9 @@ pub struct Staged {
     /// The recomputations whose records are not walked yet: every
     /// `declared` that recomputes since the last event that read a record.
     pending: Vec<Recomputed>,
+    /// The types the declarations of a set that goes on compute again:
+    /// computed at the set's last declaration.
+    with_the_set: BTreeSet<TypeName>,
     /// What the fold and the decision before it read from the projection.
     reads: Reads,
     /// Proposals changed in this append.
@@ -2325,7 +2372,7 @@ impl Staged {
     /// derived fields are not what the declarations in force compute.
     pub(crate) fn recomputes(&self, ty: &TypeName) -> bool {
         let pending = |s: &Recomputed| s.entries.types.contains_key(ty);
-        self.pending.iter().any(pending)
+        self.pending.iter().any(pending) || self.with_the_set.contains(ty)
     }
 
     /// The types whose records the append's last step reached: the

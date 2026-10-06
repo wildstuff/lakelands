@@ -2314,6 +2314,13 @@ impl Call<'_> {
         let mut drafts = Vec::with_capacity(declarations.len());
         // A set is decided over the sets it names as the bundle leaves them.
         let (mut after, mut decided) = (w.ontology.clone(), Vec::new());
+        // Only a function, or a type the lake holds, computes records again
+        // when it is declared: a set without one is written as before.
+        let computes = declarations.iter().any(|d| match d {
+            Declaration::Function(_) => true,
+            Declaration::Type(t) => w.ontology.types.contains_key(&t.name),
+            _ => false,
+        });
         let sets = |d: &&Declaration| matches!(d, Declaration::ObjectSet(_));
         for d in declarations.iter().filter(sets) {
             after.put(d.clone(), 0, None);
@@ -2340,9 +2347,21 @@ impl Call<'_> {
                     declaration,
                     schema_hash,
                     version,
+                    with_the_set: false,
                 },
             ));
             drafts.extend(with);
+        }
+        // Every `declared` of such a set but the last, the link types the
+        // system declares with a type among them, says that the set goes
+        // on: the records it computes again are computed once, at its end.
+        let last = drafts
+            .iter()
+            .rposition(|d| matches!(d.body, EventBody::Declared { .. }));
+        for d in &mut drafts[..last.unwrap_or(0)] {
+            if let EventBody::Declared { with_the_set, .. } = &mut d.body {
+                *with_the_set = computes;
+            }
         }
         Ok(drafts)
     }
@@ -3293,6 +3312,7 @@ fn system_declared(o: &Ontology, declaration: Declaration, now: Timestamp) -> Re
         declaration,
         schema_hash,
         version,
+        with_the_set: false,
     };
     Ok(Draft::system(now, body))
 }

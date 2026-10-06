@@ -39,6 +39,25 @@ keeps the event, as a **step**: what the event does to one record.
   record is said for each kind where the fold decides it; a new kind
   does not compile until it is said. A step that put no record is
   dropped.
+- **A set computes its records again once, at its last declaration**
+  (extended, lakelands#605). A set of declarations that holds a function,
+  or a type the lake held before it, says so in the log: every `declared`
+  of it but the last carries `with_the_set` (`docs/log-format.md` §2.3,
+  format 12), the link types the system declares among them too. Such a
+  `declared` leaves no step; what it would compute again is carried to
+  the set's last `declared`, whose one step computes all of it with the
+  ontology and settings as the whole set leaves them. Each record is
+  computed once and put once, at that position, and its fields take that
+  event's provenance with each function's own version. A view the lake
+  keeps over such a type waits for the set's end as it waits for a
+  pending step, and is made once, from the records the step put.
+  A page of a fold of the log never ends inside a set: while the page's
+  last `declared` carries `with_the_set`, it reads on to the set's last
+  declaration, past the memberships an object set of the set changed,
+  which carry no mark. A log that ends so is damaged, and its fold is
+  refused. A foreign log, which no write path drafts, may also make a
+  record read inside a set commit in the middle of a page; the set's list
+  is carried across that commit, but a restart after it may lose it.
 - **A fold of the log ends its transaction after a flush that kept a
   step.** A rebuild, an open's catch-up and an import fold a page of
   1 024 events; such a page commits through the last event folded and
@@ -69,7 +88,15 @@ computation, and a rebuild, which folds many appends as one page, leaves
 what the appends left.
 
 Walking at the flush, not at each event, keeps the time what it was: k
-recomputations a record for k declarations of one bundle. Steps stacked
+recomputations a record for k declarations of one bundle. A set does
+better by being one act: `apply` already answers the position of its
+last declaration as the one from which all of it is in force, and k
+states of a record, each a whole record put and indexed, made a set of
+k functions of one type cost k² a record (lakelands#605: 24.6 ms a
+record at k = 50, against 0.56 ms computed once). The fold cannot find
+an append's end in the log, and a rebuild's page may end anywhere, so
+the log carries where a set goes on, and a page reads on to its end:
+the state a commit makes visible is never half a set. Steps stacked
 on one another would cost k² over two, since each later walk would
 apply every earlier step to every row again; a bundle of functions of
 one type, and a rebuild of several appends that each change a function,
@@ -101,3 +128,11 @@ the log never stack: the next walk reads the records as put.
   at every declaration of it, whatever changed (022, extended).
 - Not a second computation. The walk, the records the transaction wrote
   and a later read all take a record through the same step.
+- Not a state inside a set. A read as of a position inside a set finds
+  the records as they were before it, and the declarations as each was
+  declared up to that position. A field that reads `changed()` or
+  `previous()` reads the whole set's change, and a value type declared
+  later in the set counts for every field: a format-12 log computes
+  these as one act, where a log below 12 computed them at each
+  declaration and left the last declaration's answer. A set of new
+  types, triggers or verbs computes nothing and carries no mark.

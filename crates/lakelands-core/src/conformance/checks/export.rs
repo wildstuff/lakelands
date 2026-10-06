@@ -718,6 +718,19 @@ async fn exported_lake(
     crate::conformance::fixture::ingest(cat.as_ref(), own, "mirror", vec![read_from])
         .await
         .must("ingesting `s1` with an upstream")?;
+    // Format version 12: a set that computes records again, a function
+    // and the type in force whose field it computes, appended as one.
+    let set = [
+        json!({"declare": "function", "name": "tick_at", "backing": "expr", "expr": "at",
+               "inputs": [{"name": "at", "type": {"kind": "date_time"}}]}),
+        json!({"declare": "type", "name": "tick", "fields": [
+            {"name": "at", "type": {"kind": "date_time"}},
+            {"name": "again", "type": {"kind": "date_time"}, "authority": "derived",
+             "function": "tick_at", "depends_on": ["at"]}]}),
+    ];
+    let set = set.map(|d| serde_json::from_value(d).expect("a declaration"));
+    let applied = cat.apply(own, set.into()).await;
+    applied.must("applying `tick_at` and `tick`")?;
     crate::conformance::fixture::two_makes(&l).await?;
     let earlier = store.head().await.must("reading the head")?;
     store.checkpoint().await.must("checkpointing")?;
