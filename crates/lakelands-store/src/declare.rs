@@ -37,8 +37,8 @@ use std::collections::BTreeSet;
 use lakelands_api::expr::kind::{self, Kind};
 use lakelands_api::expr::{Condition, Expr, Func};
 use lakelands_api::ontology::{
-    Authority, Derived, FieldDecl, RelationDecl, StorageKind, TypeDecl, ValueTypeDecl, VerbEffect,
-    VerbScope, ViewDecl,
+    Authority, Derived, FieldDecl, OnInputChange, RelationDecl, StorageKind, TypeDecl,
+    ValueTypeDecl, VerbEffect, VerbScope, ViewDecl,
 };
 use lakelands_api::tools::name_problems;
 use lakelands_api::write::{Declaration, ObjectSetDecl};
@@ -409,8 +409,49 @@ pub fn evaluates(e: &Expr, decl: &TypeDecl, at: &str) -> Result<Option<Kind>> {
     kind::of(e, &field).map_err(|why| invalid(format!("{at}: {why}")))
 }
 
-fn field_type(o: &Ontology, owner: &str, f: &FieldDecl, pending: &TypeName) -> Result<()> {
+/// A declared `initial` value stands on an authored field of a type's own
+/// alone, and is a value a write of the field would take
+/// (`docs/decisions/050-a-field-declares-its-initial-value.md`).
+fn initial(o: &Ontology, owner: &str, f: &FieldDecl, of: Option<&TypeDecl>) -> Result<()> {
+    let Some(v) = &f.initial else {
+        return Ok(());
+    };
+    let names = |t: &TypeDecl| t.relations.iter().any(|r| r.via.as_ref() == Some(&f.name));
+    let why = match of {
+        None => "only a field of a type declares one",
+        Some(t) if t.view.is_some() => "a view's records are computed, and none is created",
+        Some(_) if !f.authority.is_authored() || f.derived.is_some() => {
+            "only a field its authors alone write takes one, not one a source writes or the \
+             fold computes"
+        }
+        Some(t) if t.key.contains(&f.name) => "a key's field is given by the record's key",
+        Some(t) if f.ty.kind == StorageKind::Reference || names(t) => {
+            "a field that names a record is checked against that record by the door that \
+             writes it"
+        }
+        Some(_) if f.on_input_change == OnInputChange::Clear => {
+            "its inputs would clear it at their next change"
+        }
+        Some(t) => {
+            let patch = [(f.name.clone(), v.clone())].into();
+            return crate::writes::check_values(o, t, &patch, std::slice::from_ref(f)).map(drop);
+        }
+    };
+    let at = format!("{owner}, field `{}` declares an `initial` value", f.name);
+    Err(invalid_field(&f.name, format!("{at}: {why}")))
+}
+
+/// `of` is the type a field is one of, `None` for a relation's field, a
+/// verb's payload and a function's input, which declare no `initial`.
+fn field_type(
+    o: &Ontology,
+    owner: &str,
+    f: &FieldDecl,
+    pending: &TypeName,
+    of: Option<&TypeDecl>,
+) -> Result<()> {
     name("field", f.name.as_str())?;
+    initial(o, owner, f, of)?;
     let ty = &f.ty;
     let wrong = |m: &str| invalid_field(&f.name, format!("{owner}, field `{}`: {m}", f.name));
     match (ty.kind, &ty.target, ty.dimensions) {
@@ -496,7 +537,7 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
                 format!("{owner} declares `{}` twice", f.name),
             ));
         }
-        field_type(o, &owner, f, &t.name)?;
+        field_type(o, &owner, f, &t.name, Some(t))?;
         if let Some(func) = f
             .function
             .as_ref()
@@ -648,6 +689,7 @@ fn type_decl(o: &Ontology, t: &TypeDecl) -> Result<()> {
                 &format!("{owner}, relation `{}`", r.name),
                 f,
                 &links::link_type_name(&t.name, &r.name),
+                None,
             )?;
         }
     }
@@ -1011,7 +1053,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                 )));
             }
             for f in &v.payload {
-                field_type(o, &format!("verb `{}`, payload", v.name), f, &v.on)?;
+                field_type(o, &format!("verb `{}`, payload", v.name), f, &v.on, None)?;
             }
             if let Some(r) = &v.requires {
                 condition(r, Place::Record, &format!("verb `{}`, requires", v.name))?;
@@ -1144,6 +1186,7 @@ pub fn check_declaration(o: &Ontology, d: &Declaration, who_is_system: bool) -> 
                     &format!("function `{}`, input", f.name),
                     input,
                     &TypeName::from(""),
+                    None,
                 )?;
             }
             match (f.backing.as_str(), &f.expr) {

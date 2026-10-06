@@ -31,6 +31,12 @@
 //!   from a recorded output or cleared until one is recorded
 //!   ([`crate::backed`]).
 //!
+//! - **Initial values.** The event that makes a record (none was live
+//!   under the key) fills each field that declares `initial` and holds no
+//!   value after the patch, with `origin: initial` and the event's
+//!   position, time and writer
+//!   (`docs/decisions/050-a-field-declares-its-initial-value.md`).
+//!
 //! A record written again after it was retired starts from no fields, and
 //! its version continues from the retired one.
 
@@ -40,9 +46,8 @@ use lakelands_api::event::{Event, EventBody};
 use lakelands_api::ontology::TypeDecl;
 use lakelands_api::record::{FieldMeta, Origin, StoredRecord};
 use lakelands_api::{FieldName, Result, Value};
-use lakelands_core::derive;
 use lakelands_core::rights::Door;
-use lakelands_core::unavailable;
+use lakelands_core::{derive, unavailable, value};
 
 use crate::backed::{self, Outputs};
 use crate::ontology::Ontology;
@@ -129,6 +134,31 @@ pub fn apply(
         }
         written.insert(name.clone());
         meta.insert(name.clone(), meta_of(event, event.origin));
+    }
+    // A record that comes to exist takes each declared `initial` value the
+    // creating event left out: the door judges the record with it, and the
+    // fold computes from it, as it computes every field at a create (050).
+    if live_before.is_none() {
+        for f in raw.fields.iter().filter(|f| f.initial.is_some()) {
+            if fields.contains_key(&f.name) {
+                continue;
+            }
+            let (v, vt) = (
+                f.initial.as_ref().expect("initial"),
+                f.ty.value_type.as_ref(),
+            );
+            let vt = vt.and_then(|n| ontology.value_types.get(n.as_str()));
+            let v = value::check(v, &f.ty, vt.map(|e| &e.decl)).unwrap_or_else(|_| v.clone());
+            fields.insert(f.name.clone(), v);
+            let of_the_event = FieldMeta {
+                upstream: None,
+                seen_at: None,
+                source: None,
+                procedure_version: None,
+                ..meta_of(event, Origin::Initial)
+            };
+            meta.insert(f.name.clone(), of_the_event);
+        }
     }
 
     compute(

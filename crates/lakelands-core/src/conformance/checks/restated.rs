@@ -32,7 +32,7 @@ check!(
 check!(
     /// What a migration restates is shown as its fields are, and holds.
     AS_ITS_READERS = what_a_migration_restates_is_shown_as_its_fields_are_and_holds_at_the_accept,
-    "027, 024 and 013, extended (lakelands#554): a `to` that leaves out `sensitive`, `searchable` and the labels is lossless and its report restates each; an entry is answered where its reader may know of the field, a renamed field's where it may know of the name it had, in a proposal's listing and in the refusal of an accept that is not lossless, with `more`, and an author kept from a field restates nothing of it; one who knows of a field or a link field and does not read it, in `to` or as the type stands, is answered its shape alone, `sensitive` and no label, description, annotation, `searchable` or expression, in its own preflight, in a listing and in a refusal, and in the `to` and the types a listing hands it; the `write_proposed` event carries the report whole in the feed and in an export, and without the member where nothing is restated; an accept is refused where the type gained a mark the proposal's report does not restate",
+    "027, 024 and 013, extended (lakelands#554): a `to` that leaves out `sensitive`, `searchable` and the labels is lossless and its report restates each; an entry is answered where its reader may know of the field, a renamed field's where it may know of the name it had, in a proposal's listing and in the refusal of an accept that is not lossless, with `more`, and an author kept from a field restates nothing of it; one who knows of a field or a link field and does not read it, in `to` or as the type stands, is answered its shape alone, `sensitive` and no label, description, annotation, `searchable`, initial value or expression, in its own preflight, in a listing and in a refusal, and in the `to` and the types a listing hands it; the `write_proposed` event carries the report whole in the feed and in an export, and without the member where nothing is restated; an accept is refused where the type gained a mark the proposal's report does not restate",
     scratch
 );
 
@@ -59,7 +59,7 @@ type Kind = (&'static str, Vec<&'static str>, fn(&str) -> bool);
 fn kinds() -> [Kind; 3] {
     [
         ("the type", members!(TypeDecl { name, key, fields, relations, view, valid_from, valid_to, language, field_meta, description, label, annotations }), |t| t == "-"),
-        ("a field", members!(FieldDecl { name, ty, required, authority, derived, function, depends_on, on_input_change, sensitive, searchable, description, label, embed, annotations }), |t| t != "-" && !RELATIONS.contains(&t)),
+        ("a field", members!(FieldDecl { name, ty, required, authority, derived, function, depends_on, on_input_change, initial, sensitive, searchable, description, label, embed, annotations }), |t| t != "-" && !RELATIONS.contains(&t)),
         ("a relation", members!(RelationDecl { name, target, cardinality, inverse, via, fields, authority, description, annotations, derived }), |t| RELATIONS.contains(&t)),
     ]
 }
@@ -91,6 +91,7 @@ loud depends_on null nothing
 made function "hush" restated
 verdict depends_on ["body"] restated
 verdict on_input_change "keep" restated
+title initial null restated
 secret sensitive null restated
 secret searchable null restated
 secret description null restated
@@ -164,11 +165,12 @@ fn note() -> Value {
         "derived": {"match": [{"from": "code", "to": "name"}]},
     });
     let required = |n: &str| json!({"name": n, "type": {"kind": "text"}, "required": true});
+    let title = json!({"name": "title", "type": {"kind": "text"}, "initial": "untitled"});
     json!({
         "name": "note", "key": ["code"], "valid_from": "since", "valid_to": "until",
         "language": "de", "field_meta": false, "description": "A note.", "label": "Note",
         "annotations": marks,
-        "fields": [required("code"), required("other"), text("title"), text("body"),
+        "fields": [required("code"), required("other"), title, text("body"),
                    at("since"), at("until"), secret, verdict, loud, made, near, to("owner"),
                    to("keeper")],
         "relations": [owned_by, read_by, same],
@@ -300,13 +302,14 @@ async fn a_migration_reports_every_member_its_to_states_otherwise(
         }
     }
     // `describe` shows a field one does not read by its shape alone.
-    let masked = ["secret", "loud", "made", "near"].map(|f| (f, Access::Masked));
+    let masked = ["secret", "loud", "made", "near", "title"].map(|f| (f, Access::Masked));
     let who = field_access(store.as_ref(), "dim", "note", &masked);
     let shown = describe_type(l.cat.as_ref(), &who, "note").await?;
     let unread = [
         "derived",
         "function",
         "depends_on",
+        "initial",
         "description",
         "label",
         "embed",

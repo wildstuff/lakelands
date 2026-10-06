@@ -5,10 +5,11 @@
 
 use lakelands_api::error::{Error, Missing, Refusal, Result};
 use lakelands_api::event::EventBody;
-use lakelands_api::id::{Position, SourceId, TypeName, Version};
+use lakelands_api::id::{FieldName, Position, SourceId, TypeName, Version};
+use lakelands_api::ontology::TypeDecl;
 use lakelands_api::principal::WriteContext;
 use lakelands_api::record::{Origin, StoredRecord};
-use lakelands_api::write::{PurgeReference, PurgeReport, RecordRef, TypeRetired};
+use lakelands_api::write::{PurgeMoved, PurgeReference, PurgeReport, RecordRef, TypeRetired};
 
 use crate::state::State;
 use crate::{Batch, Draft, Log, Shared};
@@ -21,8 +22,11 @@ fn brought_by(r: &StoredRecord, source: &SourceId) -> bool {
     })
 }
 
-fn co_owned(r: &StoredRecord, source: &SourceId) -> bool {
-    r.fields.keys().any(|f| {
+/// As the store (050): a field that declares an `initial` value makes no
+/// owner, whoever wrote it last.
+fn co_owned(decl: &TypeDecl, r: &StoredRecord, source: &SourceId) -> bool {
+    let starts = |f: &FieldName| crate::state::field(decl, f).is_some_and(|d| d.initial.is_some());
+    r.fields.keys().filter(|f| !starts(f)).any(|f| {
         r.meta.get(f).is_some_and(|m| match m.origin {
             Origin::Authored => true,
             Origin::Source => m.source.as_ref() != Some(source),
@@ -82,6 +86,7 @@ fn plan<'s>(
 ) -> Result<(Vec<&'s StoredRecord>, PurgeReport)> {
     let only = ty.map(|t| named(st, t)).transpose()?;
     let mut report = PurgeReport {
+        moved: Vec::new(),
         source: source.clone(),
         ty: ty.cloned(),
         retired: 0,
@@ -106,7 +111,7 @@ fn plan<'s>(
             .values()
             .filter(|r| &r.ty == name && !r.retired && brought_by(r, source))
         {
-            if co_owned(r, source) {
+            if co_owned(&t.decl, r, source) {
                 others.push(format!("`{}` `{}`", r.ty, r.key));
             } else {
                 purged.push(r);
@@ -134,7 +139,34 @@ fn plan<'s>(
             }),
         }
         report.retired += 1;
+        // What an author wrote in a record the purge takes is a field with
+        // an `initial` value, counted per type and field.
+        for f in r.fields.keys() {
+            if r.meta.get(f).is_none_or(|m| m.origin != Origin::Authored) {
+                continue;
+            }
+            let at = report
+                .moved
+                .iter()
+                .position(|m| m.ty == r.ty && &m.field == f);
+            let at = at.unwrap_or_else(|| {
+                report.moved.push(PurgeMoved {
+                    ty: r.ty.clone(),
+                    field: f.clone(),
+                    records: 0,
+                    first: Vec::new(),
+                });
+                report.moved.len() - 1
+            });
+            report.moved[at].records += 1;
+            if report.moved[at].first.len() < NAMED {
+                report.moved[at].first.push(r.key.clone());
+            }
+        }
     }
+    report
+        .moved
+        .sort_by(|a, b| (&a.ty, &a.field).cmp(&(&b.ty, &b.field)));
     let taken = |ty: &TypeName, key: Option<&str>| {
         key.is_some_and(|k| purged.iter().any(|p| &p.ty == ty && p.key.as_str() == k))
     };

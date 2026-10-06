@@ -25,6 +25,9 @@ pub enum Origin {
     Derived,
     /// The store itself: declarations, leases, checkpoints, triggers.
     System,
+    /// The field's declared `initial` value, filled when the record came
+    /// to exist: no writer chose it.
+    Initial,
 }
 
 /// The provenance of one field of one record

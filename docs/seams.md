@@ -1506,7 +1506,9 @@ idempotent: declaring again is a new version and has meaning (a
 recorded failure is retried once; 022), so the
 host first compares what it would apply with what the lake holds
 (`describe` answers each declaration whole, and each type's version
-and schema hash) and applies only what differs. The vocabulary's
+and schema hash) and applies only what differs. The hash does not cover
+everything a declaration says (a field's `initial`, its description), so
+the host compares the declaration itself. The vocabulary's
 types are declared by the open; everything else is the host's apply.
 
 The vocabulary is consulted every time a lake is opened for writing:

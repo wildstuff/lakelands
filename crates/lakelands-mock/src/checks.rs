@@ -144,6 +144,9 @@ macro_rules! door_checks {
             #[own_principals]
             a_retry_is_answered_before_its_writer_is_asked_what_it_is_shown,
             a_record_event_says_whether_it_made_the_record,
+            a_required_field_is_judged_over_the_record_whole,
+            #[host_ops]
+            a_field_that_declares_initial_makes_no_owner,
             an_embedding_is_unbound_where_no_backend_is_bound,
             a_link_to_no_live_record_or_over_no_link_relation_is_refused,
             every_door_refuses_a_view_alike,
@@ -255,6 +258,7 @@ fn text(name: &str) -> FieldDecl {
         function: None,
         depends_on: Vec::new(),
         on_input_change: OnInputChange::Keep,
+        initial: None,
         sensitive: false,
         searchable: false,
         description: None,
@@ -876,6 +880,7 @@ fn as_declared(f: &lakelands_api::describe::FieldDescription) -> FieldDecl {
         function: f.function.clone(),
         depends_on: f.depends_on.clone(),
         on_input_change: f.on_input_change,
+        initial: f.initial.clone(),
         sensitive: f.sensitive,
         searchable: f.searchable,
         description: f.description.clone(),
@@ -7860,6 +7865,185 @@ pub async fn a_record_event_says_whether_it_made_the_record(store: Arc<dyn LakeS
         "INV-2:2",
     ];
     assert_eq!(said, [&want[..], &["INV-3:1 made", "INV-3:2"]].concat());
+}
+
+/// A required field is judged over the record whole, as the write leaves
+/// it, whichever door writes the field: an ingest that leaves a required
+/// authored field without a value is refused on it, and so is an upsert
+/// that leaves a required `source` field without one, or a required
+/// derived field whose expression reads null; a field that declares
+/// `initial` is filled where the write makes its record, and the record
+/// is made. A tightening of its value type the `initial` no longer fits
+/// counts it a misfit and is not applied. A migration that makes a field required over a record without
+/// a value counts the record and is not applied (050).
+pub async fn a_required_field_is_judged_over_the_record_whole(store: Arc<dyn LakeStore>) {
+    let c = store.catalog(WriteContext::default());
+    let own = Cast::of(store.lake()).owner;
+    let src =
+        |n: &str, kind: &str| json!({"name": n, "type": {"kind": kind}, "authority": "source"});
+    let required = |mut f: serde_json::Value| {
+        f["required"] = json!(true);
+        f
+    };
+    let state = json!({"name": "state", "type": {"kind": "text"}, "required": true});
+    let note = json!({"name": "note", "type": {"kind": "text"}});
+    let twice = json!({"name": "twice", "type": {"kind": "number"}, "required": true,
+        "authority": "derived", "derived": "n * 2", "depends_on": ["n"]});
+    let status = json!({"declare": "value_type", "name": "status", "kind": "text",
+        "one_of": ["new", "paid"]});
+    let status = serde_json::from_value(status).expect("a value type");
+    c.declare(&own, status).await.expect("declaring `status`");
+    for d in [
+        json!({"name": "order", "key": ["id"],
+            "fields": [required(src("id", "text")), src("total", "number"), state.clone()]}),
+        json!({"name": "ticket", "key": ["id"],
+            "fields": [required(src("id", "text")), src("total", "number"),
+                       {"name": "state", "type": {"kind": "text", "value_type": "status"},
+                        "required": true, "initial": "new"}]}),
+        json!({"name": "memo", "fields": [required(src("total", "number")), note.clone()]}),
+        json!({"name": "tally", "fields": [{"name": "n", "type": {"kind": "number"}}, twice,
+            note.clone()]}),
+        json!({"name": "task", "fields": [note.clone()]}),
+    ] {
+        let d = serde_json::from_value(d).expect("a type");
+        c.declare(&own, Declaration::Type(d))
+            .await
+            .expect("declaring");
+    }
+    let narrower = |one_of: &[&str]| -> lakelands_api::ontology::ValueTypeDecl {
+        let d = json!({"name": "status", "kind": "text", "one_of": one_of});
+        serde_json::from_value(d).expect("a value type")
+    };
+    let report = c.migrate_value_type(&own, narrower(&["paid"])).await;
+    let report = report.expect("the preflight").data;
+    let id = report.report_id.clone();
+    let misfits: Vec<_> = (report.fields.iter())
+        .map(|u| (u.field.as_str(), u.misfits))
+        .collect();
+    assert_eq!(
+        (report.fits, misfits),
+        (false, vec![("state", 1)]),
+        "{report:?}"
+    );
+    let applied = c
+        .migrate_value_type_apply(&own, narrower(&["paid"]), &id)
+        .await;
+    assert!(applied.is_err(), "`initial` would not fit: {applied:?}");
+    let ingest = async |t: &str, k: &str| {
+        let record = SourceRecord {
+            upstream: None,
+            ty: ty(t),
+            key: key(k),
+            fields: patch(&[("id", json!(k)), ("total", json!(1))]),
+            seen_at: None,
+        };
+        let mut acks = (c
+            .ingest(&own, &"erp".into(), stream::of(vec![record]))
+            .await)
+            .expect("the stream opens");
+        stream::collect(&mut acks).await.pop().expect("an answer")
+    };
+    let upsert = async |t: &str, k: &str, pairs: &[(&str, Value)]| {
+        c.upsert(&own, &ty(t), &key(k), patch(pairs), WriteOpts::default())
+            .await
+    };
+    let on = |e: &Error, name: &str| {
+        matches!(refusal(e), (Some(f), Refusal::Constraint { message })
+            if f.as_str() == name && message.contains(name))
+    };
+    let e = ingest("order", "o1")
+        .await
+        .expect_err("no value for `state`");
+    assert!(on(&e, "state"), "an ingest without `state`: {e:?}");
+    for pairs in [
+        &[("state", json!("paid"))][..],
+        &[("state", Value::Null)][..],
+    ] {
+        let e = upsert("order", "o1", pairs).await;
+        assert!(
+            e.is_err(),
+            "no `order` `o1` was made, and {pairs:?} makes none: {e:?}"
+        );
+    }
+    ingest("ticket", "t1").await.expect("`state` is filled");
+    let t1 = c
+        .get(&own, &ty("ticket"), get("t1"))
+        .await
+        .expect("`t1` reads");
+    assert_eq!(field(&t1.data, "state"), Some(&json!("new")), "{t1:?}");
+    let e = upsert("memo", "m1", &[("note", json!("hi"))])
+        .await
+        .expect_err("no `total`");
+    assert!(on(&e, "total"), "an upsert without `total`: {e:?}");
+    let e = upsert("tally", "s1", &[("note", json!("hi"))]).await;
+    let e = e.expect_err("`twice` reads null");
+    assert!(on(&e, "twice"), "an upsert whose `twice` reads null: {e:?}");
+    upsert("task", "k1", &[("note", json!("hi"))])
+        .await
+        .expect("writing `k1`");
+    let to = json!({"name": "task", "fields": [note, state]});
+    let m = lakelands_api::write::Migration {
+        to: serde_json::from_value(to).expect("a type"),
+        renames: Vec::new(),
+        relation_renames: Vec::new(),
+    };
+    let report = c
+        .migrate(&own, m.clone())
+        .await
+        .expect("the preflight")
+        .data;
+    let counted = report
+        .fields
+        .iter()
+        .map(|f| (f.field.as_str(), f.not_convertible));
+    assert_eq!(counted.collect::<Vec<_>>(), [("state", 1)], "{report:?}");
+    let applied = c.migrate_apply(&own, m, &report.report_id).await;
+    assert!(
+        applied.is_err(),
+        "a lossy migration is not applied: {applied:?}"
+    );
+}
+
+/// A field that declares `initial` makes no owner, whoever wrote it last
+/// (050): a typed purge takes the record an author moved it on, and names
+/// it in `moved`.
+pub async fn a_field_that_declares_initial_makes_no_owner(store: Arc<dyn LakeStore>) {
+    let c = store.catalog(WriteContext::default());
+    let own = Cast::of(store.lake()).owner;
+    let d = json!({"name": "ticket", "fields": [
+        {"name": "total", "type": {"kind": "number"}, "authority": "source"},
+        {"name": "state", "type": {"kind": "text"}, "initial": "new"}]});
+    let d = Declaration::Type(serde_json::from_value(d).expect("a type"));
+    c.declare(&own, d).await.expect("declaring");
+    let erp = SourceId::from("erp");
+    for k in ["t1", "t2"] {
+        let fields = patch(&[("total", json!(1))]);
+        let record = SourceRecord {
+            upstream: None,
+            ty: ty("ticket"),
+            key: key(k),
+            fields,
+            seen_at: None,
+        };
+        let acks = c.ingest(&own, &erp, stream::of(vec![record])).await;
+        stream::collect(&mut acks.expect("the stream opens"))
+            .await
+            .pop()
+            .expect("an answer")
+            .expect("ingested");
+    }
+    let moved = patch(&[("state", json!("paid"))]);
+    (c.upsert(&own, &ty("ticket"), &key("t1"), moved, WriteOpts::default())
+        .await)
+        .expect("an author moves `t1`");
+    let purged = store.purge_source(&erp, Some(&ty("ticket")), None).await;
+    let purged = purged.expect("`state` makes no owner");
+    let moved = json!([{"type": "ticket", "field": "state", "records": 1, "first": ["t1"]}]);
+    assert_eq!(
+        (purged.retired, json!(purged.moved)),
+        (2, moved),
+        "{purged:?}"
+    );
 }
 
 /// A retry of a write is answered that write before its writer is asked

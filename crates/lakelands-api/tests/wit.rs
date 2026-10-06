@@ -244,6 +244,7 @@ fn field_decl() -> FieldDecl {
         function: Some("g".into()),
         depends_on: vec!["e".into()],
         on_input_change: OnInputChange::Clear,
+        initial: Some(serde_json::json!("new")),
         sensitive: true,
         searchable: true,
         description: Some("d".into()),
@@ -504,6 +505,7 @@ fn field_description() -> FieldDescription {
         function: Some("g".into()),
         depends_on: vec!["e".into()],
         on_input_change: OnInputChange::Keep,
+        initial: Some(serde_json::json!("new")),
         filterable: true,
         searchable: true,
         sensitive: true,
@@ -546,6 +548,15 @@ fn type_description() -> TypeDescription {
             indexed: vec!["embedding".into()],
             kept: Some(Kept::Kept),
         },
+    }
+}
+
+fn purge_moved() -> lakelands_api::write::PurgeMoved {
+    lakelands_api::write::PurgeMoved {
+        ty: "order".into(),
+        field: "state".into(),
+        records: 1,
+        first: vec!["o1".into()],
     }
 }
 
@@ -1084,10 +1095,12 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
                 unsearched: vec![],
                 position: Position(3),
                 references: vec![purge_reference()],
+                moved: vec![purge_moved()],
                 report_id: "r".into(),
             }),
         ),
         ("purge_reference", members(&purge_reference())),
+        ("purge_moved", members(&purge_moved())),
         (
             "vector_coverage",
             members(&lakelands_api::read::VectorCoverage {
@@ -1198,7 +1211,11 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
     );
     units!("risk", Risk, [Low, Medium, High]);
     units!("verb_scope", VerbScope, [Record, Type]);
-    units!("origin", Origin, [Source, Authored, Derived, System]);
+    units!(
+        "origin",
+        Origin,
+        [Source, Authored, Derived, System, Initial]
+    );
     units!("direction", Direction, [Asc, Desc]);
     units!("order_by", OrderBy, [Value, KnownAt, SeenAt, Latest]);
     units!("agg_func", AggFunc, [Count, Sum, Min, Max, Avg]);

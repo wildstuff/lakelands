@@ -139,3 +139,17 @@ stays the way to take a source back. What changed is that the report
 now says what a purge strands, so a host that takes one type back is
 told which of the source's other records still point there, and
 decides. A purge is still not a door.
+
+## Extended: a field that declares an initial value makes no owner
+
+A field that declares `initial` co-owns nothing, whoever wrote it last
+(`docs/decisions/050-a-field-declares-its-initial-value.md`). It is
+there because its record is, and the record is there because the source
+brought it: an author who moved the state did not bring the record, and
+when the source is taken back the state goes with it. A whole purge and
+a typed one ask the same rule. The report says what went: `moved`
+holds, per type and field, how many records the purge takes whose such
+field an author had written, and the first ten by key; it is left out
+when empty, and the preflight says the same. Every other authored field
+co-owns as before, so a record where a person wrote anything else still
+refuses the purge whole.

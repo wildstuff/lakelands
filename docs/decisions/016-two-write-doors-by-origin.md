@@ -170,3 +170,14 @@ record and checks nothing further; then the record checks from the
 empty patch on, the expected version excepted. The two cardinality
 steps answer alike, and are stated, not checked.
 
+## Extended: the one value the fold writes that no door admitted
+
+The authority line holds for what an event carries. One value crosses
+it where the fold applies a write, not in the event: a field that
+declares `initial` is filled when its record is made, also by an ingest
+that may not carry the field
+(`docs/decisions/050-a-field-declares-its-initial-value.md`). The event
+stays as the door wrote it, so the content id and the duplicate test
+read the same patch as before, and a delivery of the same content is
+still a duplicate. A door judges `required` over the record as the fold
+will leave it, filled values included.

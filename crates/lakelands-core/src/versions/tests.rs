@@ -362,6 +362,48 @@ fn a_record_event_that_carries_made_needs_format_11_and_says_so_below_it() {
 }
 
 #[test]
+fn a_declared_initial_value_needs_format_11_and_says_so_below_it() {
+    let f = |initial: bool| {
+        let mut f = json!({"name": "f", "type": {"kind": "text"}});
+        if initial {
+            f["initial"] = json!("new");
+        }
+        f
+    };
+    // Wherever a field is declared, though only a type's own may hold it.
+    let places = |i: bool| {
+        [
+            json!({"declare": "type", "name": "t", "fields": [f(i)]}),
+            json!({"declare": "type", "name": "t", "fields": [],
+                   "relations": [{"name": "r", "target": "t", "fields": [f(i)]}]}),
+            json!({"declare": "verb", "name": "v", "on": "t", "risk": "low", "payload": [f(i)],
+                   "effect": "write", "set": [{"field": "f", "value": "'x'"}]}),
+            json!({"declare": "function", "name": "g", "backing": "expr", "expr": "f",
+                   "inputs": [f(i)]}),
+        ]
+    };
+    for (with, without) in places(true).iter().zip(&places(false)) {
+        assert_eq!(needed(&declared_event(11, with).body, false), 11, "{with}");
+        assert_eq!(
+            needed(&declared_event(1, without).body, false),
+            1,
+            "{without}"
+        );
+        assert_eq!(
+            below(&declared_event(10, with)).as_deref(),
+            Some("a format 10 event declares an `initial` value, which format 11 added")
+        );
+    }
+    let to = json!({"name": "t", "fields": [f(true)]});
+    let migrated = json!({"kind": "migrated", "migration": {"to": to}, "version": 2,
+                          "schema_hash": "0", "report_id": "r"});
+    assert_eq!(needed(&event_json(11, migrated).body, false), 11);
+    let declare = json!({"write": "declare", "declarations": [places(true)[0]]});
+    let proposed = json!({"kind": "write_proposed", "proposal": "p", "write": declare, "why": "w"});
+    assert_eq!(needed(&event_json(11, proposed).body, false), 11);
+}
+
+#[test]
 fn a_write_of_a_view_kept_setting_needs_format_11_and_says_so_below_it() {
     let record = |kind: &str, key: &str| {
         let patch = json!({"key": key, "value": true});

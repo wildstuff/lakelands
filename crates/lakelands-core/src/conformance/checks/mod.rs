@@ -33,6 +33,7 @@ mod fusion;
 mod graph_measures;
 mod host_cause;
 mod ingest;
+mod initial;
 mod keys;
 mod latest;
 mod link_triggers;
@@ -195,6 +196,8 @@ pub const ALL: &[Check] = &[
     migrate::CONVERSIONS_AND_RENAMES,
     made_of::SHOWN_WITH_WHAT_IT_IS_MADE_OF,
     made_of::KEPT_AT_EVERY_DOOR,
+    initial::FILLED_AT_CREATION,
+    initial::DECLARED,
     links::WRITTEN_AND_WALKED,
     links::ONE_PER_PAIR,
     links::UNLINK_KEEPS_HISTORY,
@@ -465,6 +468,7 @@ pub const ALL: &[Check] = &[
     concurrency::AGE_UNDER_WRITES,
     purge::CO_OWNED_COUNTED,
     purge::BACKED_NO_OWNER,
+    purge::INITIAL_NO_OWNER,
     purge::PREFLIGHT,
     purge::REFERENCES_NAMED,
     purge::ONE_TYPE,

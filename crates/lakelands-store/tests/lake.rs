@@ -69,6 +69,7 @@ fn field(name: &str, kind: StorageKind) -> FieldDecl {
         function: None,
         depends_on: vec![],
         on_input_change: Default::default(),
+        initial: None,
         sensitive: false,
         searchable: false,
         description: None,

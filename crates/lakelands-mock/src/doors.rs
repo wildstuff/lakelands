@@ -698,6 +698,7 @@ fn check_declaration(st: &State, who: &Principal, d: &Declaration) -> Result<()>
     if let Some(fault) = d.annotation_fault() {
         return Err(fault.into());
     }
+    check_initial(st, d)?;
     if let Declaration::Type(t) = d {
         embeddings(t)?;
         // As the store: a derived field's expression can be evaluated, and
@@ -1650,28 +1651,97 @@ fn with_key_fields(
     }
 }
 
-/// Refuse a record that would lack a required field its door writes.
+/// Refuse a record that would lack a value for a required field, as the
+/// store does: over the record whole as the write leaves it, whichever
+/// door writes the field, with the `initial` values a create fills (050).
+/// A derived field is judged by its expression where the mock evaluates
+/// it; one computed by a function is not judged here.
 fn check_required(
     t: &DeclaredType,
-    before: Option<&StoredRecord>,
+    before: Option<&BTreeMap<FieldName, Value>>,
     patch: &Patch,
-    door: Origin,
 ) -> Result<()> {
-    for f in &t.decl.fields {
-        if !f.required || !door_writes(door, f.authority) {
-            continue;
+    let mut after = before.cloned().unwrap_or_default();
+    for (f, v) in patch {
+        after.insert(f.clone(), v.clone());
+    }
+    for f in t.decl.fields.iter().filter(|_| before.is_none()) {
+        if let Some(v) = f
+            .initial
+            .as_ref()
+            .filter(|_| after.get(&f.name).is_none_or(Value::is_null))
+        {
+            after.insert(f.name.clone(), v.clone());
         }
-        let has = match patch.get(&f.name) {
-            Some(v) => !v.is_null(),
-            None => before.is_some_and(|r| r.fields.contains_key(&f.name)),
+    }
+    for f in t
+        .decl
+        .fields
+        .iter()
+        .filter(|f| f.required && f.function.is_none())
+    {
+        let scope = Scope {
+            ty: t.decl.name.as_str(),
+            fields: &after,
+            payload: None,
+            now: None,
+        };
+        let has = match f
+            .derived
+            .as_ref()
+            .map(|c| expr::eval(&expr::typed(c)?, &scope))
+        {
+            Some(computed) => computed.map_or(true, |v| !v.is_null()),
+            None => after.get(&f.name).is_some_and(|v| !v.is_null()),
         };
         if !has {
-            return Err(on(
-                &f.name,
-                Refusal::Constraint {
-                    message: format!("`{}` is required", f.name),
-                },
-            ));
+            let message = format!("`{}` requires a value for `{}`", t.decl.name, f.name);
+            return Err(on(&f.name, Refusal::Constraint { message }));
+        }
+    }
+    Ok(())
+}
+
+/// As the store (050): `initial` stands on an authored field of a type's
+/// own alone, with a value a write of the field would take.
+fn check_initial(st: &State, d: &Declaration) -> Result<()> {
+    let refuse = |f: &FieldDecl, why: &str| {
+        let message = format!("field `{}` declares an `initial` value: {why}", f.name);
+        Err(on(&f.name, Refusal::Invalid { message }))
+    };
+    let elsewhere: Vec<&FieldDecl> = match d {
+        Declaration::Type(t) => t.relations.iter().flat_map(|r| &r.fields).collect(),
+        Declaration::Verb(v) => v.payload.iter().collect(),
+        Declaration::Function(f) => f.inputs.iter().collect(),
+        _ => Vec::new(),
+    };
+    if let Some(f) = elsewhere.into_iter().find(|f| f.initial.is_some()) {
+        return refuse(f, "only a field of a type declares one");
+    }
+    let Declaration::Type(t) = d else {
+        return Ok(());
+    };
+    for f in &t.fields {
+        let Some(v) = &f.initial else {
+            continue;
+        };
+        let names = t.relations.iter().any(|r| r.via.as_ref() == Some(&f.name));
+        if t.view.is_some() {
+            return refuse(f, "a view's records are computed, and none is created");
+        } else if f.authority != Authority::Authored || f.derived.is_some() {
+            return refuse(f, "only a field its authors alone write takes one");
+        } else if t.key.contains(&f.name) {
+            return refuse(f, "a key's field is given by the record's key");
+        } else if f.ty.target.is_some() || names {
+            return refuse(
+                f,
+                "a field that names a record is checked by the door that writes it",
+            );
+        } else if f.on_input_change == lakelands_api::ontology::OnInputChange::Clear {
+            return refuse(f, "its inputs would clear it at their next change");
+        }
+        if let Some(message) = value::misfit(&f.ty, v, &st.value_types) {
+            return Err(on(&f.name, Refusal::Constraint { message }));
         }
     }
     Ok(())
@@ -1831,7 +1901,7 @@ fn plan_upsert(
     )?;
     // After the key fields are filled: a key field may be a reference too.
     check_references(st, t, &patch, &BTreeMap::new())?;
-    check_required(t, st.live(ty, key), &patch, Origin::Authored)?;
+    check_required(t, st.live(ty, key).map(|r| &r.fields), &patch)?;
     let version = Version(actual.0 + 1);
     let mut d = Draft::new(
         who,
@@ -2028,8 +2098,8 @@ fn tightening(
     let report = crate::valuetypes::preflight(st, head, to)?;
     if !report.fits {
         return Err(invalid(format!(
-            "value type `{}` is not tightened: {} stored value(s) would not fit it; change \
-             them first.",
+            "value type `{}` is not tightened: {} stored value(s) or a field's declared \
+             `initial` would not fit it; change them first.",
             to.name, report.misfits
         )));
     }
@@ -3086,27 +3156,35 @@ fn preflight(
         .values()
         .filter(|r| &r.ty == ty && !r.retired)
         .collect();
+    // As the store: a field is checked when its type changes, and when it
+    // becomes required or is added as required, where a record without a
+    // value does not convert; in the new fields' name order.
     let mut fields = Vec::new();
-    for old in &t.decl.fields {
-        let Some(new) = field(&m.to, &renamed(&old.name)) else {
-            continue;
-        };
-        if new.ty == old.ty {
+    let mut to: Vec<&FieldDecl> = m.to.fields.iter().collect();
+    to.sort_by(|a, b| a.name.cmp(&b.name));
+    for new in to {
+        let old = t
+            .decl
+            .fields
+            .iter()
+            .find(|old| renamed(&old.name) == new.name);
+        let retyped = old.is_some_and(|old| old.ty != new.ty);
+        if !retyped && !(new.required && !old.is_some_and(|old| old.required)) {
             continue;
         }
         let mut conv = FieldConversion {
             field: new.name.clone(),
-            from: old.ty.clone(),
+            from: old.map_or(&new.ty, |old| &old.ty).clone(),
             to: new.ty.clone(),
             convertible: 0,
             not_convertible: 0,
             sample_keys: Vec::new(),
         };
         for r in &live {
-            match r.fields.get(&old.name) {
-                None => {}
+            match old.and_then(|old| r.fields.get(&old.name)) {
+                None if !new.required => {}
                 Some(v) if value::convert(v, &new.ty).is_some() => conv.convertible += 1,
-                Some(_) => {
+                _ => {
                     conv.not_convertible += 1;
                     if conv.sample_keys.len() < 5 {
                         conv.sample_keys.push(r.key.clone());
@@ -4634,7 +4712,8 @@ impl Catalog for MockCatalog {
         }
         if !report.fits {
             return Err(invalid(format!(
-                "value type `{}` is not tightened: {} stored value(s) would not fit it",
+                "value type `{}` is not tightened: {} stored value(s) or a field's declared \
+                 `initial` would not fit it",
                 to.name, report.misfits
             )));
         }
@@ -4932,7 +5011,7 @@ fn plan_window(
         }
         // A record earlier in this window counts as there.
         check_references(st, t, &fields, &w.versions)?;
-        check_required(t, st.live(&r.ty, &r.key), &fields, Origin::Source)?;
+        check_required(t, now.as_ref(), &fields)?;
         // As the store: a record this window made is there for its next one.
         let made = now.is_none();
         let mut after = now.unwrap_or_default();

@@ -281,6 +281,22 @@ impl Lake {
     }
 }
 
+/// Two records of `mark`, each made under its own declaration of `flag`'s
+/// `initial`, `false` then `true`: a fold of many events at once, a
+/// rebuild's or an import's, answers each as made (050).
+pub async fn two_makes(l: &Lake) -> Result<(), Failure> {
+    for (initial, key) in [(false, "m1"), (true, "m2")] {
+        l.declare_json(
+            serde_json::json!({"declare": "type", "name": "mark", "fields": [
+            {"name": "n", "type": {"kind": "text"}},
+            {"name": "flag", "type": {"kind": "boolean"}, "initial": initial}]}),
+        )
+        .await?;
+        l.upsert("mark", key, serde_json::json!({"n": key})).await?;
+    }
+    Ok(())
+}
+
 /// A principal of the lake with the given grants.
 pub fn principal(
     store: &dyn LakeStore,

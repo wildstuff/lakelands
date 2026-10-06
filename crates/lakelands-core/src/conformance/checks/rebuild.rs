@@ -23,7 +23,7 @@ use crate::conformance::fixture::{
 check!(
     /// A rebuilt projection answers every read as before.
     REBUILD_ANSWERS_AS_BEFORE = a_rebuilt_projection_answers_every_read_as_the_live_one_did,
-    "001, 040 and the engine seam: a projection rebuilt from the log is the one it replaces, byte for byte, at the head and as of every earlier position, a type migration that converts records and a re-key that rewrites references to moved keys included"
+    "001, 040 and the engine seam: a projection rebuilt from the log is the one it replaces, byte for byte, at the head and as of every earlier position, the `initial` values the fold filled (050), a type migration that converts records and a re-key that rewrites references to moved keys included"
 );
 
 check!(
@@ -73,12 +73,16 @@ async fn a_rebuilt_projection_answers_every_read_as_the_live_one_did(
     let Lake { own, .. } = &l;
 
     let gross = derived("gross", StorageKind::Decimal, "amount * 1.19", &["amount"]);
+    // A field the fold fills when a record comes to exist (050).
+    let mut state = field("state", StorageKind::Text);
+    state.initial = Some(json!("open"));
     let invoice = type_decl(
         "invoice",
         vec![
             field("partner", StorageKind::Text),
             field("amount", StorageKind::Decimal),
             gross,
+            state,
         ],
     );
     l.declare(invoice).await?;
