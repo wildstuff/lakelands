@@ -172,6 +172,9 @@ impl LakeStore for Store {
     async fn compact(&self) -> Result<lakelands_api::write::CompactReport> {
         self.inner.compact().await
     }
+    fn bind_embed(&self, backend: Arc<dyn lakelands_api::seam::EmbedBackend>) -> Result<()> {
+        self.inner.bind_embed(backend)
+    }
     async fn vector_coverage(
         &self,
         ty: &lakelands_api::TypeName,

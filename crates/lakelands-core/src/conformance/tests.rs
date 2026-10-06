@@ -167,6 +167,9 @@ impl LakeStore for DownStore {
     fn feed(&self) -> Arc<dyn ChangeFeed> {
         Arc::new(DownFeed)
     }
+    fn bind_embed(&self, _: Arc<dyn lakelands_api::seam::EmbedBackend>) -> Result<()> {
+        Err(down())
+    }
     refuse!(head<>() -> Position);
     refuse!(verify<>(from: Option<Position>, through: Option<Position>) -> Verification);
     refuse!(rebuild<>() -> Position);

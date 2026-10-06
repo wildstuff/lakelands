@@ -808,6 +808,33 @@ async fn a_held_failure_is_called_again_by_a_declaration_that_retries() {
     }
 }
 
+/// Row 12c (the review of pull request 673, point 1). A write whose own
+/// call is recorded answers a head where its field is visible, though the
+/// orphan batch it makes after it fails: that failure is the drain's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failing_orphan_batch_is_not_the_failure_of_a_write_whose_calls_are_done() {
+    let counting = Arc::new(Counting::default());
+    let (store, probe, _) = bound("behind-orphan-fails", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    summed(&l).await;
+    // `a`'s answer is held, not recorded: an orphan once its write is done.
+    let view = probe.clone();
+    let plant = move || *view.refuse_view.lock().unwrap() = Some(1);
+    *counting.arm.lock().unwrap() = Some(Box::new(plant));
+    applied(write(&l, "a", 1, None).await);
+    // `b`'s recording commits; the orphan's, the next, is refused.
+    let commit = probe.clone();
+    let plant = move || *commit.refuse_commit.lock().unwrap() = Some(2);
+    *counting.arm.lock().unwrap() = Some(Box::new(plant));
+    let (at, _) = applied(write(&l, "b", 2, None).await);
+    let left = *probe.refuse_commit.lock().unwrap();
+    assert_eq!(
+        (left, state(&l, "b", Some(at)).await[0].clone()),
+        (None, json!({"n": 2, "sum": 7})),
+        "the orphan's recording refused, and `b`'s field at the head it answered"
+    );
+}
+
 /// Row 12b (lakelands#609). A declaration over a type leaves one sweep
 /// owed, not a call per record: records sharing 64 texts are embedded by
 /// one request of the 64, and every record is filled.

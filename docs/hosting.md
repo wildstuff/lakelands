@@ -82,7 +82,9 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   embeds the text after the write, records each vector in the log
   (`output_recorded`) and reads it back on replay, one call per text and
   model. Such a field is declared only where the bound backend names its
-  model and dimensions. Change the model or the fields it is made from by
+  model and dimensions, unless the type in force holds it unchanged. A
+  backend that comes up after the open is bound then with
+  `LakeStore::bind_embed`. Change the model or the fields it is made from by
   declaring the type again. Every live record is then embedded again, and
   a declaration also retries recorded failures. See `docs/seams.md`
   §`EmbedBackend`.
@@ -497,6 +499,21 @@ A host that already has a store of its own moves in four steps.
   the inputs `describe` shows or without them. A declaration's version
   counts its changes. See
   `docs/decisions/027-shape-changes-are-declared-or-migrated.md`.
+- **A model that comes up after the open is bound then (lakelands#641).**
+  A host whose embedding model answers later than it opens its lakes (a
+  sidecar loading, a model downloading) opens them without one and
+  calls `LakeStore::bind_embed` once the model answers; no reopen. Until
+  then a due embedding waits, a hybrid search ranks lexically and says
+  so, and a declaration that adds an embedding, or changes one's
+  `from`, model or dimensions, is refused as `Unbound`; a type stated
+  again as in force, or grown beside its embedding, is admitted. The
+  bind appends nothing and makes nothing due: after it, call `recompute`
+  for each type whose `vector_coverage` shows records due, which also
+  calls again for a failure recorded while the model was away. A second
+  bind replaces the first, whatever its model; a field of the old model
+  then waits, and a search over it is refused as `Unbound`, until its
+  type is declared with the new one. Over the network doors `bind_embed`
+  answers `Unbound`: binding is the host's.
 - **`recompute` is how a host computes again.** It names a function, or
   a type with an embedding or a field of a function with a backing, and
   does three things a declaration in force no longer does: it calls

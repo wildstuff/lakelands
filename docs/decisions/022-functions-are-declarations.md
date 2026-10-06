@@ -275,7 +275,8 @@ A vector field may declare that it is the embedding of text fields of
 its record: `embed: { from: [fields…], model }`. It is computed like a
 field computed by a backed function, and follows every rule above:
 - It is declared only where an embedding backend naming its model and
-  its dimensions is bound, and refused as `unbound` otherwise.
+  its dimensions is bound, and refused as `unbound` otherwise, unless
+  the type in force holds it unchanged (below).
 - It stands in the one reads-graph, reading its `from` fields.
 - The fold makes it due when its text changes, when it is waiting, or
   when what computes it is declared again.
@@ -360,3 +361,49 @@ stopped was continued by the next write, whose catch-up kept them, so
 that write called the backend for the rest of the log; and the drop at
 a rebuild's end took the calls of a write appended before it and not
 made yet. No caller waited for any call a fold of the log made due.
+
+## Extended: a backend bound after open
+
+A host binds the embedding backend on an open lake with
+`LakeStore::bind_embed`, in place of the one its open brought or an
+earlier bind, whatever its model. From then on a declaration of its
+model is admitted, an embedding that falls due is made, and a hybrid
+search embeds its text. A batch already asking finishes with the
+backend it took.
+
+**Why.** A host's model can answer later than the host opens its lakes:
+a sidecar that loads slowly, a model still downloading on a fresh
+install. The host cannot hold its lakes closed until then, since it
+would hold every tenant's data, and it cannot reopen a lake whose
+handle its feeds and contexts hold and whose open holds the writer
+lease. Without a bind, a lake opened in that window had no backend for
+the life of its process: its records got no vector and its search
+answered lexically until a restart.
+
+The bind is not recorded. The fold never reads the binding: what falls
+due is decided from the log alone, and each vector names its model in
+its seam. The binding is the host's configuration, as an executor's is
+(013, extended).
+
+The bind makes nothing due. What fell due while none was bound waits,
+with no error, until its record is written again or `recompute` names
+its type, which the host calls for each type `vector_coverage` shows
+due. `recompute` is the act the log shows; a bind that made calls by
+itself would make calls no event gives a reason for, and could not tell
+a failure recorded while the backend was away from one that is final.
+
+A second bind replaces the first, whatever its model, so a host moves
+from one model to another without a reopen. A field of the old model
+then waits, and a hybrid search over it is refused as unbound, until
+its type is declared with the new model.
+
+A declaration needs the backend only for what it makes due. An
+embedding the type in force holds with the same `from`, model and
+dimensions is admitted with none bound, or another bound: declared
+unchanged it makes nothing due. So a host that states its types at
+every start, or adds a field beside an embedding, is not refused while
+its model is not up. An embedding added, or one whose `from`, model or
+dimensions change, makes every record due and needs the backend; so
+does `recompute` of the type, whose purpose is the calls. A relation's
+link types and a migration's target are compared the same way, by the
+field's name, so an embedding a migration renames needs the backend.

@@ -269,6 +269,10 @@ impl LakeStore for RemoteLake {
         Err(host_only("compact"))
     }
 
+    fn bind_embed(&self, _: Arc<dyn lakelands_api::seam::EmbedBackend>) -> Result<()> {
+        Err(host_only("bind_embed"))
+    }
+
     /// Nothing is held but pooled connections, which close with the
     /// last handle.
     async fn close(&self) -> Result<()> {

@@ -424,6 +424,13 @@ impl LakeStore for MockLake {
         Ok(Vec::new())
     }
 
+    fn bind_embed(&self, _: Arc<dyn lakelands_api::seam::EmbedBackend>) -> Result<()> {
+        // The mock refuses every embedding field, so it has nothing to bind.
+        Err(lakelands_api::Error::Unbound {
+            seam: "an embedding backend (the mock refuses every embedding field)".into(),
+        })
+    }
+
     async fn compact(&self) -> Result<lakelands_api::write::CompactReport> {
         // The mock keeps no storage beside its log: nothing to reclaim.
         Ok(lakelands_api::write::CompactReport {

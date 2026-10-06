@@ -458,6 +458,8 @@ pub const ALL: &[Check] = &[
     backings::FAILURE_RETRIED,
     embeddings::EMBED_SEARCH_OTHER_BACKEND,
     embeddings::EMBED_WAITS,
+    embeddings::EMBED_BOUND_LATE,
+    embeddings::EMBED_UNBOUND_KEPT,
     embeddings::EMBED_RULES,
     embeddings::EMBED_BATCH,
     proposals::EXECUTOR_RECORDED,
