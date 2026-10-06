@@ -1738,7 +1738,9 @@ async fn bounded(store: &dyn LakeStore, log: &Log, at: Position) -> Result<(), F
             100 => (vec![], polls == log.events.div_ceil(bound)),
             _ => (
                 found.clone(),
-                found.len() as u64 == log.checkpoints && found.contains(&at),
+                found.len() as u64 == log.checkpoints
+                    && found.contains(&at)
+                    && found.is_sorted_by(|a, b| a < b),
             ),
         };
         ensure!(

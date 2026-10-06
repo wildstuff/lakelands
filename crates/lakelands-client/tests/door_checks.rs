@@ -2,8 +2,9 @@
 //! a fresh in-memory store per check, served by `serve_http` on
 //! loopback, with a resolver whose entries are the checks' cast, each
 //! principal with its grants and the key `k-<id>`, and a `RemoteLake`
-//! keyed by those ids. The checks that call a host operation are marked
-//! so in `door_checks!` and are ignored here, each saying why.
+//! keyed by those ids. The checks that call a host operation, and those
+//! that read where one in-process feed poll stops (`in_process_feed`),
+//! are marked so in `door_checks!` and are ignored here, each saying why.
 
 mod common;
 

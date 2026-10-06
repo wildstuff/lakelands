@@ -316,6 +316,32 @@ async fn a_new_endpoint_starting_at_the_head_skips_the_past() {
     assert_eq!(f.requests().len(), 1);
 }
 
+/// A poll examines at most `FEED_EXAMINED` events, so an endpoint whose
+/// events are far apart reads on past a poll that answered none: the round
+/// says more is waiting, and the next one delivers.
+#[tokio::test]
+async fn a_sparse_endpoint_reads_on_past_a_bounded_poll() {
+    let store = lake().await;
+    for i in 0..4_200 {
+        set(store.as_ref(), &format!("o{i}"), "open").await;
+    }
+    set(store.as_ref(), "i1", "overdue").await;
+    let f = fake(&[]).await;
+    let dir = root();
+    let lake = lake_id(store.as_ref());
+    let c = config(json!({"url": f.url(), "lakes": [lake.as_str()]}));
+    let mut d = deliverers(&c, &dir, &lake).unwrap().pop().unwrap();
+    assert!(
+        d.round(store.as_ref()).await.unwrap(),
+        "a poll that stopped short of the head with no events wants another"
+    );
+    assert!(f.requests().is_empty());
+    assert!(!d.round(store.as_ref()).await.unwrap());
+    let bodies = f.bodies();
+    assert_eq!(bodies.len(), 1, "{bodies:?}");
+    assert!(bodies[0].contains("\"overdue\""), "{}", bodies[0]);
+}
+
 /// A sleep that returns at once and keeps what it was asked to wait.
 fn recording() -> (lakelands_backings::deliver::Sleep, Arc<Mutex<Vec<u64>>>) {
     let waits = Arc::new(Mutex::new(Vec::new()));

@@ -430,8 +430,9 @@ impl Deliverer {
             .poll(from, &filter, self.batch)
             .await
             .map_err(|e| format!("the feed failed: {e}"))?;
-        // A poll may stop short of the head with no events: read on.
-        let more = batch.next <= batch.head;
+        // A poll may stop short of the head with no events: read on, unless
+        // it did not move.
+        let more = batch.next <= batch.head && batch.next > from;
         for event in &batch.events {
             if self.wanted(event) {
                 self.deliver(event).await;

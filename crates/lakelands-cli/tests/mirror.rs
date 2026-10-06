@@ -583,6 +583,30 @@ async fn a_record_crosses_as_the_connections_source_and_what_it_may_not_read_sta
     }
 }
 
+/// A poll examines at most `FEED_EXAMINED` events, so a mirror whose types
+/// change rarely reads on past a poll that answered none, and the change
+/// after a long run of another type's writes crosses in the same settle.
+#[tokio::test]
+async fn a_mirror_reads_on_past_a_bounded_poll() {
+    let mut source = source_types();
+    source.push(decl(
+        json!({"declare": "type", "name": "visit", "fields": [text("text", "authored")]}),
+    ));
+    let two = Two::with("reads-on", &Engine::Memory, source, target_types()).await;
+    let mut m = two.mirror().await.unwrap();
+    settle(&mut m).await;
+    for i in 0..4_200 {
+        two.upsert("visit", &format!("v{i}"), json!({"text": "seen"}))
+            .await;
+    }
+    two.upsert("partner", "acme", json!({"name": "acme"})).await;
+    settle(&mut m).await;
+    assert!(
+        two.copy("partner", "acme").await.is_some(),
+        "the change after 4 200 writes of an unmirrored type crossed"
+    );
+}
+
 #[tokio::test]
 async fn a_held_record_crosses_only_to_a_mirror_that_may_see_held_records() {
     for engine in engines() {

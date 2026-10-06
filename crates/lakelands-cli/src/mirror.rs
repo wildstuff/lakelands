@@ -968,8 +968,9 @@ impl Mirror {
             .poll(Position(from), &filter, self.batch)
             .await
             .map_err(|e| format!("the source's feed failed: {e}"))?;
-        // A poll may stop short of the head with no events: read on.
-        let more = batch.next <= batch.head;
+        // A poll may stop short of the head with no events: read on, unless
+        // it did not move.
+        let more = batch.next <= batch.head && batch.next.0 > from;
         let mut run = Run::default();
         for e in &batch.events {
             let Some(ty) = type_of(&e.body) else {
