@@ -237,11 +237,20 @@ impl LakeStore for RemoteLake {
         Err(host_only("age"))
     }
 
-    async fn purge_source(&self, _source: &SourceId, _id: Option<&str>) -> Result<PurgeReport> {
+    async fn purge_source(
+        &self,
+        _source: &SourceId,
+        _ty: Option<&TypeName>,
+        _id: Option<&str>,
+    ) -> Result<PurgeReport> {
         Err(host_only("purge_source"))
     }
 
-    async fn purge_preflight(&self, _source: &SourceId) -> Result<PurgeReport> {
+    async fn purge_preflight(
+        &self,
+        _source: &SourceId,
+        _ty: Option<&TypeName>,
+    ) -> Result<PurgeReport> {
         Err(host_only("purge_preflight"))
     }
 

@@ -69,6 +69,12 @@ The core's budgets are four:
 
 **The twenty-third raise:** the specification, from 50 000 to 50 500 lines, by slot a's word under the rule, for the engines of the kept view (lakelands#575: SQLite and PostgreSQL read a view's kept name by statements of its own, and one engine row holds that the same states answer alike under a kept name and under an ordinary one): 183 lines as measured, on a develop that stood 33 under the ceiling, 150 over it.
 
+**The twenty-fourth raise:** the product code, from 40 000 to 40 500 lines, by slot a's word under the rule, for the open of a SQLite lake (lakelands#564: an open reads the end of each segment's log index and not the index, a read finds its first line by halving the index, and a handle passes by the index of a segment it has read sealed): 126 lines as measured, on a develop that stood 110 under the ceiling, 16 over it.
+
+**The twenty-fifth raise:** the product code, from 40 500 to 41 000 lines, by slot a's word under the rule, for a purge that names one type (lakelands#562, asked by a host's integration: the purge and its preflight take one optional type, read that type and the link types of its relations, judge co-ownership there alone, refuse a type they cannot take from, and give a preflight an id of its own): 69 lines as measured, on a develop that stood 27 under the ceiling, 42 over it.
+
+**The twenty-sixth raise:** the specification, from 50 500 to 51 000 lines, by slot a's word under the rule, for the rows of the same pull request: what a typed purge takes and leaves, co-ownership in the named type alone, the links of the named type's relations, the id of the source, the type and the head, and the refusal of a type it cannot take from: 225 lines as measured after 53 were cut, on a develop that stood 26 under the ceiling, 199 over it.
+
 ## Why
 
 The budgets keep the core small enough for one reader to hold. They have done that: four diets took out about 5 000 lines without losing a check.
@@ -76,7 +82,7 @@ The budgets keep the core small enough for one reader to hold. They have done th
 **A ceiling that can never move makes the wrong trade**, though, when the code that needs the room is the code that matters most. A check that pins a rights rule is exactly what a host relies on when it moves its data onto a lake. If the only ways to fit it are to weaken it or to drop a feature a host needs, the budget has stopped protecting the reader and started costing them.
 
 **A raise must cost something to ask for**, so that it is never the easy way out of a diet. That is why it needs a decisive reason, cutting first and a size that is measured. And it must stay visible after the fact. That is why it needs a row a reader finds in one place, and a gate that refuses a number which grew without one.
-**The twenty-fourth raise:** the product code, from 40 000 to 40 500 lines, by slot a's word under the rule, for the open of a SQLite lake (lakelands#564: an open reads the end of each segment's log index and not the index, a read finds its first line by halving the index, and a handle passes by the index of a segment it has read sealed): 126 lines as measured, on a develop that stood 110 under the ceiling, 16 over it.
+
 
 ## What it is not
 

@@ -671,7 +671,7 @@ async fn the_targets_own_type_refers_to_a_copy_and_purging_the_connection_remove
         .expect("a reference to the copy names a live record");
         let report = two
             .main
-            .purge_source(&SourceId::from(SOURCE), None)
+            .purge_source(&SourceId::from(SOURCE), None, None)
             .await
             .unwrap();
         assert!(two.copy("customer", "c1").await.is_none());

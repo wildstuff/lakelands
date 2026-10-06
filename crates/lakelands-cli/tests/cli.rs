@@ -768,7 +768,7 @@ fn purge_retires_what_a_source_brought_in_and_prints_its_position() {
         let id = id.unwrap_or_else(|| panic!("{backend:?}: {} {}", seen.out, seen.err));
         let stale = sh.run(&["purge", "--source", "bank", "--report", "another"]);
         assert!(
-            stale.code != 0 && stale.err.contains("moved"),
+            stale.code != 0 && stale.err.contains("preflight again"),
             "{}",
             stale.err
         );
@@ -783,6 +783,66 @@ fn purge_retires_what_a_source_brought_in_and_prints_its_position() {
         );
         let empty = sh.run(&["purge", "--source", ""]);
         assert_eq!((empty.code, empty.out.as_str()), (2, ""), "{}", empty.err);
+    }
+}
+
+/// `--type` narrows a purge to one type: each closing line names the type,
+/// the preflight's id is of that purge alone, and the source's records in
+/// its other types stay.
+#[test]
+fn purge_of_one_type_names_the_type_in_its_lines() {
+    const TYPES: [(&str, &str); 2] = [
+        (
+            "types/payer.yaml",
+            "name: payer\nfields:\n  name: { type: text, authority: source }\n",
+        ),
+        (
+            "types/payee.yaml",
+            "name: payee\nfields:\n  name: { type: text, authority: source }\n",
+        ),
+    ];
+    for backend in BACKENDS {
+        let sh = Shell::on("purge-type", backend);
+        sh.lake();
+        let applied = sh.run(&["apply", &sh.bundle("types", &TYPES)]);
+        assert_eq!(applied.code, 0, "{backend:?}: {}", applied.err);
+        let rows = sh.file(
+            "bank.ndjson",
+            "{\"type\": \"payer\", \"key\": \"p1\", \"fields\": {\"name\": \"Ada\"}}\n\
+             {\"type\": \"payee\", \"key\": \"q1\", \"fields\": {\"name\": \"Bo\"}}\n",
+        );
+        let fed = sh.run(&["ingest", &rows, "--source", "bank"]);
+        assert_eq!(fed.code, 0, "{backend:?}: {}", fed.err);
+        let id = |seen: Said, said: &str| match seen.out.strip_prefix(said) {
+            Some(id) => id.trim().to_owned(),
+            None => panic!("{backend:?}: {} {}", seen.out, seen.err),
+        };
+        let whole = id(
+            sh.run(&["purge", "--source", "bank", "--preflight"]),
+            "payee: would retire 1\npayer: would retire 1\nbank: preflight at position 7; purge with --report ",
+        );
+        let of = ["purge", "--source", "bank", "--type", "payer"];
+        let typed = id(
+            sh.run(&[&of[..], &["--preflight"]].concat()),
+            "payer: would retire 1\nbank in payer: preflight at position 7; purge with --report ",
+        );
+        // The report of the source whole is not of this purge.
+        let other = sh.run(&[&of[..], &["--report", &whole]].concat());
+        assert!(
+            other.code != 0 && other.err.contains("not of this purge"),
+            "{backend:?}: {} {}",
+            other.out,
+            other.err
+        );
+        ok(
+            &sh.run(&[&of[..], &["--report", &typed]].concat()),
+            "payer: retired 1\npurged bank from payer through position 8\n",
+        );
+        ok(&sh.run(&of), "nothing to retire for bank in payer\n");
+        ok(
+            &sh.run(&["purge", "--source", "bank"]),
+            "payee: retired 1\npurged bank through position 9\n",
+        );
     }
 }
 

@@ -11,6 +11,12 @@
 //! per-field provenance cannot be read this way; it is not searched, and
 //! the report names it.
 //!
+//! A purge may name one type. It then reads that type and the link types
+//! of the relations it declares, and judges co-ownership there alone: the
+//! unit that is never split is the record, not the source. A type it
+//! cannot purge from is refused, where the purge of a source whole passes
+//! over it.
+//!
 //! [`run`] holds the writer's lock for the whole purge and appends one
 //! `record_retired` per record, each reacting as a `retire` does, in one
 //! append: the act is one. That append is held in memory before it lands.
@@ -62,18 +68,41 @@ fn co_owned(r: &StoredRecord, source: &SourceId) -> bool {
     })
 }
 
-/// What a purge of `source` takes at `view`: its records, in type then
-/// key order, and the types it could not search. One co-owned record
-/// refuses it whole. The purge and its preflight both select here.
+/// The types a purge from `ty` reads: `ty` and the link types of the
+/// relations it declares, whose records are nothing without its own. A
+/// type that holds no records, or cannot say who brought them in, is
+/// refused.
+fn named(ontology: &Ontology, ty: &TypeName) -> Result<BTreeSet<TypeName>> {
+    let decl = ontology.ty(ty)?;
+    if decl.view.is_some() {
+        return Err(invalid(format!(
+            "`{ty}` is a view; it holds no records a purge could take"
+        )));
+    }
+    if !decl.field_meta {
+        return Err(invalid(format!(
+            "`{ty}` keeps no per-field provenance; a purge cannot read who brought its records in"
+        )));
+    }
+    let links = (decl.relations.iter()).map(|r| links::link_type_name(ty, &r.name));
+    Ok(links.chain([ty.clone()]).collect())
+}
+
+/// What a purge of `source` takes at `view`, from `ty` alone where one is
+/// named: its records, in type then key order, and the types it could
+/// not search. One co-owned record refuses it whole. The purge and its
+/// preflight both select here.
 fn selection(
     view: &dyn ProjectionView,
     ontology: &Ontology,
     source: &SourceId,
+    ty: Option<&TypeName>,
 ) -> Result<(Vec<StoredRecord>, Vec<TypeName>)> {
+    let only = ty.map(|t| named(ontology, t)).transpose()?;
     let (mut purged, mut unsearched, mut shared) = (Vec::new(), Vec::new(), Vec::new());
     for (name, entry) in &ontology.types {
         let decl = &entry.decl;
-        if decl.view.is_some() {
+        if decl.view.is_some() || only.as_ref().is_some_and(|o| !o.contains(name)) {
             continue;
         }
         if !decl.field_meta {
@@ -94,8 +123,9 @@ fn selection(
     if !shared.is_empty() {
         let n = shared.len();
         shared.truncate(NAMED);
+        let from = ty.map(|t| format!(" from `{t}`")).unwrap_or_default();
         return Err(invalid(format!(
-            "the purge of `{source}` is refused whole: {n} record(s) it brought in were also \
+            "the purge of `{source}`{from} is refused whole: {n} record(s) it brought in were also \
              written by another hand (a principal, or another source), and a purge never \
              half-removes a record; retire them or clear those fields, then purge again. \
              First: {}",
@@ -112,7 +142,7 @@ fn selection(
 fn report<'a>(
     view: &dyn ProjectionView,
     ontology: &'a Ontology,
-    source: &SourceId,
+    (source, ty): (&SourceId, Option<&TypeName>),
     purged: &[StoredRecord],
     unsearched: Vec<TypeName>,
 ) -> Result<PurgeReport> {
@@ -186,6 +216,7 @@ fn report<'a>(
     references.sort_by(|a, b| (&a.ty, &a.relation).cmp(&(&b.ty, &b.relation)));
     Ok(PurgeReport {
         source: source.clone(),
+        ty: ty.cloned(),
         retired: purged.len() as u32,
         types,
         unsearched,
@@ -195,28 +226,35 @@ fn report<'a>(
     })
 }
 
-/// The id of the preflight of a purge of `source` read at `head`: the
-/// report is a function of the two, so a purge that repeats it at
-/// another head is stale.
-fn id(source: &SourceId, head: Option<Position>) -> String {
-    let head = head.map_or(0, |p| p.0);
-    lakelands_core::canonical::sha256_hex(&serde_json::json!({"purge": source, "head": head}))
+/// The id of the preflight of a purge of `source`, from `ty` where one is
+/// named, read at `head`: the report is a function of the three, so a
+/// purge that repeats it at another head, or is another purge, does not
+/// fit it.
+fn id(source: &SourceId, ty: Option<&TypeName>, head: Option<Position>) -> String {
+    let of = serde_json::json!({"purge": source, "type": ty, "head": head.map_or(0, |p| p.0)});
+    lakelands_core::canonical::sha256_hex(&of)
 }
 
 /// What [`run`] would do, appending nothing, under the id a purge may
 /// repeat.
-pub fn preflight(lake: &Lake, source: &SourceId) -> Result<PurgeReport> {
+pub fn preflight(lake: &Lake, source: &SourceId, ty: Option<&TypeName>) -> Result<PurgeReport> {
     let view = lake.engine.view(None)?;
     let ontology = Ontology::at(view.as_ref())?;
-    let (purged, unsearched) = selection(view.as_ref(), &ontology, source)?;
-    let mut report = report(view.as_ref(), &ontology, source, &purged, unsearched)?;
-    report.report_id = id(source, view.position());
+    let (purged, unsearched) = selection(view.as_ref(), &ontology, source, ty)?;
+    let mut report = report(view.as_ref(), &ontology, (source, ty), &purged, unsearched)?;
+    report.report_id = id(source, ty, view.position());
     Ok(report)
 }
 
-/// Retire every live record `source` brought in, in one append; with a
-/// preflight's `report_id`, only if the lake has not moved since.
-pub fn run(lake: &Lake, source: &SourceId, report_id: Option<&str>) -> Result<PurgeReport> {
+/// Retire every live record `source` brought in, into `ty` alone where
+/// one is named, in one append; with a preflight's `report_id`, only if
+/// that report is of this purge and the lake has not moved since.
+pub fn run(
+    lake: &Lake,
+    source: &SourceId,
+    ty: Option<&TypeName>,
+    report_id: Option<&str>,
+) -> Result<PurgeReport> {
     let system = lake.system("lakelands");
     let call = Call {
         lake,
@@ -226,13 +264,19 @@ pub fn run(lake: &Lake, source: &SourceId, report_id: Option<&str>) -> Result<Pu
     };
     let mut w = lake.for_write()?;
     let view = lake.engine.view(None)?;
-    if report_id.is_some_and(|given| given != id(source, view.position())) {
+    if report_id.is_some_and(|given| given != id(source, ty, view.position())) {
         return Err(invalid(
-            "the lake moved since that preflight report; run the preflight again",
+            "that report is not of this purge at this head; run the preflight again",
         ));
     }
-    let (purged, unsearched) = selection(view.as_ref(), &w.ontology, source)?;
-    let mut report = report(view.as_ref(), &w.ontology, source, &purged, unsearched)?;
+    let (purged, unsearched) = selection(view.as_ref(), &w.ontology, source, ty)?;
+    let mut report = report(
+        view.as_ref(),
+        &w.ontology,
+        (source, ty),
+        &purged,
+        unsearched,
+    )?;
     let now = lake.clock(&mut w);
     let mut pending = Pending::default();
     let mut drafts = Vec::new();

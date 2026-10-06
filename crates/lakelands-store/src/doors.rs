@@ -604,16 +604,28 @@ impl LakeStore for Store {
         Ok(report)
     }
 
-    async fn purge_preflight(&self, source: &SourceId) -> Result<PurgeReport> {
-        let (lake, source) = (self.lake.clone(), source.clone());
-        exec::run(move || crate::purge::preflight(&lake, &source)).await
+    async fn purge_preflight(
+        &self,
+        source: &SourceId,
+        ty: Option<&TypeName>,
+    ) -> Result<PurgeReport> {
+        let (lake, source, ty) = (self.lake.clone(), source.clone(), ty.cloned());
+        exec::run(move || crate::purge::preflight(&lake, &source, ty.as_ref())).await
     }
 
-    async fn purge_source(&self, source: &SourceId, id: Option<&str>) -> Result<PurgeReport> {
+    async fn purge_source(
+        &self,
+        source: &SourceId,
+        ty: Option<&TypeName>,
+        id: Option<&str>,
+    ) -> Result<PurgeReport> {
         let (lake, source, id) = (self.lake.clone(), source.clone(), id.map(str::to_owned));
-        let seen = lake.drains.load(std::sync::atomic::Ordering::Acquire);
-        let mut report =
-            exec::run(move || crate::purge::run(&lake, &source, id.as_deref())).await?;
+        let (ty, seen) = (
+            ty.cloned(),
+            lake.drains.load(std::sync::atomic::Ordering::Acquire),
+        );
+        let purge = move || crate::purge::run(&lake, &source, ty.as_ref(), id.as_deref());
+        let mut report = exec::run(purge).await?;
         // The retirements' backed fields settle like any write's.
         if let Some(last) = crate::backed::settle_after(&self.lake, seen).await {
             report.position = report.position.max(last);

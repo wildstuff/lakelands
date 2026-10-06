@@ -1865,8 +1865,8 @@ which the verifiers check (`docs/log-format.md` §1.3). It is no door's
 yet, only the host's: `lakelands-client` answers it `unbound`, naming it
 (client test: `every_host_operation_is_unbound_naming_it`).
 
-`LakeStore::purge_source(source)` retires every live record one source
-brought in, across every type it reached, restricted records and the
+`LakeStore::purge_source(source, None, None)` retires every live record
+one source brought in, across every type it reached, restricted records and the
 source's link records included, in one append
 (`docs/decisions/039-a-source-is-retracted-as-one.md`). It answers the
 records retired per type, the types it did not search, and the head
@@ -1892,10 +1892,35 @@ after its append (the head as it stood when nothing was appended):
   large append and a long hold of the writer. A host that cannot afford
   it retires by type through the doors instead.
 
+`purge_source` and `purge_preflight` take one optional type. Without it
+the purge is the one above. With it, the purge is of what the source
+brought into that type, and everything it says is said of that selection
+alone (039, extended):
+
+- It reads the named type and the link types of the relations that type
+  declares, and no other. Co-ownership is judged there alone: a co-owned
+  record in another type of the source does not hold the purge, one in
+  the named type refuses it whole.
+- The report names its type. What it lists as referring into the purge
+  now includes the source's own records in its other types, and a link
+  of another type's relation that ends at a record it took: they stay.
+- A type it cannot take from is refused, where the purge of the source
+  whole passes over it: not found for a name that is no declared type,
+  invalid, saying why, for a view and for a type declared without
+  per-field provenance. A typed report names no type as not searched.
+- A preflight's id is of the source, the type and the head. The id of
+  the source whole does not fit a purge from one type, nor the reverse,
+  and an id that does not fit is refused as invalid in one sentence,
+  whether the lake moved or the id is another purge's.
+
 `lakelands purge --source <id>` prints one line per type
 (`<type>: retired N`), one per type not searched, and
 `purged <id> through position P`; when the source brought in nothing
 still live, it prints `nothing to retire for <id>` and appends nothing.
+With `--type <type>` the closing lines name both:
+`purged <id> from <type> through position P`,
+`nothing to retire for <id> in <type>`, and the preflight's
+`<id> in <type>: preflight at position P; purge with --report <report>`.
 The suite's `purge` checks hold the sentences about what a purge retires
 and refuses on every engine; the lines `lakelands purge` prints are held
 by the CLI's tests.

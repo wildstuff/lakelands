@@ -547,7 +547,7 @@ impl Twin {
                 fed.must("feeding a record")?;
             }
             ("purge", ..) => {
-                let purged = store.purge_source(&SourceId::from(rest), None).await;
+                let purged = store.purge_source(&SourceId::from(rest), None, None).await;
                 purged.must("purging a source")?;
             }
             ("valid_at", Ok(p), _) => self.valid_at = Some((instant(p[0])?, p[1].to_owned())),

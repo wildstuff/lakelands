@@ -25,7 +25,7 @@ use lakelands_api::error::{Error, Missing, Refusal};
 use lakelands_api::event::EventBody;
 use lakelands_api::expr::Condition;
 use lakelands_api::id::{
-    Cursor, FieldName, LakeId, Position, RecordKey, TypeName, VerbName, Version,
+    Cursor, FieldName, LakeId, Position, RecordKey, SourceId, TypeName, VerbName, Version,
 };
 use lakelands_api::location::Limits;
 use lakelands_api::ontology::{
@@ -180,6 +180,8 @@ macro_rules! door_checks {
             #[host_ops] an_aging_rule_moves_what_holds_from_once_a_date,
             #[host_ops] a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_record,
             #[host_ops] a_purge_preflight_names_what_the_purge_strands_and_its_id_goes_stale,
+            #[host_ops] a_purge_that_names_a_type_takes_what_the_source_brought_into_it_alone,
+            #[host_ops] a_typed_purge_has_an_id_of_its_own_and_refuses_a_type_it_cannot_take_from,
             a_value_type_is_loosened_by_declare_and_tightened_by_its_preflight,
             a_sort_index_setting_names_declared_scalar_fields_and_describe_shows_them,
             a_vector_index_setting_names_vector_fields_and_search_says_it_ranked_by_the_index,
@@ -6073,8 +6075,8 @@ pub async fn an_aging_rule_moves_what_holds_from_once_a_date(store: Arc<dyn Lake
 
 /// A preflight appends nothing and says what the purge would retire and
 /// which live records outside it refer into it; a purge that repeats its
-/// id is refused once the lake has moved, and purges under a fresh one,
-/// naming the same records
+/// id is refused once the lake has moved, as not of this purge at this
+/// head, and purges under a fresh one, naming the same records
 /// (`docs/decisions/039-a-source-is-retracted-as-one.md`, extended).
 pub async fn a_purge_preflight_names_what_the_purge_strands_and_its_id_goes_stale(
     store: Arc<dyn LakeStore>,
@@ -6130,7 +6132,7 @@ pub async fn a_purge_preflight_names_what_the_purge_strands_and_its_id_goes_stal
     .await
     .unwrap();
     let head = store.head().await.unwrap();
-    let seen = store.purge_preflight(&"crm".into()).await.unwrap();
+    let seen = store.purge_preflight(&"crm".into(), None).await.unwrap();
     let named = |r: &lakelands_api::write::PurgeReport| -> Vec<(String, u64, Vec<String>)> {
         (r.references.iter())
             .map(|f| {
@@ -6161,11 +6163,11 @@ pub async fn a_purge_preflight_names_what_the_purge_strands_and_its_id_goes_stal
     bill("b3", "p1").await;
     let head = store.head().await.unwrap();
     let stale = store
-        .purge_source(&"crm".into(), Some(&seen.report_id))
+        .purge_source(&"crm".into(), None, Some(&seen.report_id))
         .await;
     assert!(
         matches!(&stale, Err(Error::Refused { field: None, reason: Refusal::Invalid { message } })
-            if message.contains("moved")),
+            if message.contains("not of this purge at this head")),
         "{stale:?}"
     );
     assert_eq!(
@@ -6173,9 +6175,9 @@ pub async fn a_purge_preflight_names_what_the_purge_strands_and_its_id_goes_stal
         head,
         "a stale purge appends nothing"
     );
-    let again = store.purge_preflight(&"crm".into()).await.unwrap();
+    let again = store.purge_preflight(&"crm".into(), None).await.unwrap();
     let done = store
-        .purge_source(&"crm".into(), Some(&again.report_id))
+        .purge_source(&"crm".into(), None, Some(&again.report_id))
         .await
         .unwrap();
     assert_eq!((done.retired, named(&done)), (1, named(&again)), "{done:?}");
@@ -6233,7 +6235,7 @@ pub async fn a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_rec
     )
     .await
     .unwrap();
-    let report = store.purge_source(&"crm".into(), None).await.unwrap();
+    let report = store.purge_source(&"crm".into(), None, None).await.unwrap();
     assert_eq!(report.retired, 2, "{report:?}");
     assert_eq!(report.position, store.head().await.unwrap());
     let live = |k: &'static str| {
@@ -6243,7 +6245,7 @@ pub async fn a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_rec
     };
     assert!(!live("p1").await && !live("p2").await && live("p3").await);
     let head = store.head().await.unwrap();
-    let again = store.purge_source(&"crm".into(), None).await.unwrap();
+    let again = store.purge_source(&"crm".into(), None, None).await.unwrap();
     assert_eq!((again.retired, again.position), (0, head));
     // A record a principal also wrote refuses the whole purge.
     feed(&["p4", "p5"]).await;
@@ -6257,7 +6259,7 @@ pub async fn a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_rec
     .await
     .unwrap();
     let head = store.head().await.unwrap();
-    let refused = store.purge_source(&"crm".into(), None).await;
+    let refused = store.purge_source(&"crm".into(), None, None).await;
     assert!(
         matches!(&refused, Err(Error::Refused { field: None, reason: Refusal::Invalid { message } })
             if message.contains("p4") && !message.contains("p5") && message.contains("another hand")),
@@ -6310,9 +6312,215 @@ pub async fn a_purge_retires_what_one_source_brought_in_and_refuses_a_shared_rec
     source("erp", patch(&[("name", json!("p7"))])).await;
     source("crm", patch(&[("city", json!("Oslo"))])).await;
     source("crm", patch(&[("city", Value::Null)])).await;
-    let report = store.purge_source(&"crm".into(), None).await.unwrap();
+    let report = store.purge_source(&"crm".into(), None, None).await.unwrap();
     assert_eq!(report.retired, 1, "{report:?}");
     assert!(!live("p4").await && live("p5").await && live("p7").await);
+}
+
+/// The lake of the typed purge's checks: `crm` brought in the partners
+/// `p1` and `p2`, the bill `b1` that names `p1` in a field, and the link
+/// of `bill`'s source relation from `b1` to `p2`; `erp` brought in the
+/// partner `p3`.
+async fn purge_lake(store: &Arc<dyn LakeStore>) -> (Arc<dyn Catalog>, Principal) {
+    let c = store.catalog(WriteContext::default());
+    let own = Cast::of(store.lake()).owner;
+    for d in [
+        json!({"declare": "type", "name": "partner",
+            "fields": [{"name": "name", "type": {"kind": "text"}, "authority": "source"}]}),
+        json!({"declare": "type", "name": "bill",
+            "fields": [{"name": "partner_id", "type": {"kind": "text"}, "authority": "source"},
+                       {"name": "note", "type": {"kind": "text"}}],
+            "relations": [{"name": "billed_to", "target": "partner", "via": "partner_id"},
+                          {"name": "seen_by", "target": "partner", "cardinality": "many_to_many",
+                           "authority": "source"}]}),
+    ] {
+        c.declare(&own, serde_json::from_value(d).unwrap())
+            .await
+            .unwrap();
+    }
+    for (source, t, k, fields) in [
+        ("crm", "partner", "p1", json!({"name": "Harbor"})),
+        ("crm", "partner", "p2", json!({"name": "Quay"})),
+        ("erp", "partner", "p3", json!({"name": "Pier"})),
+        ("crm", "bill", "b1", json!({"partner_id": "p1"})),
+        (
+            "crm",
+            "sys.link.bill.seen_by",
+            "b1:p2",
+            json!({"from": "b1", "to": "p2"}),
+        ),
+    ] {
+        let record = SourceRecord {
+            upstream: None,
+            ty: ty(t),
+            key: key(k),
+            fields: serde_json::from_value(fields).unwrap(),
+            seen_at: None,
+        };
+        let mut acks = c
+            .ingest(&own, &source.into(), stream::of(vec![record]))
+            .await
+            .unwrap();
+        let said = stream::collect(&mut acks).await;
+        assert!(
+            said.iter().all(Result::is_ok),
+            "feeding `{t}` `{k}`: {said:?}"
+        );
+    }
+    (c, own)
+}
+
+/// A purge that names a type takes what the source brought into that type
+/// and the links of the relations it declares, and nothing else: another
+/// source's records of the type and the source's records of its other
+/// types stay, and those that refer into the purge are named; a record
+/// another hand also wrote refuses it only in the named type
+/// (`docs/decisions/039-a-source-is-retracted-as-one.md`, extended).
+pub async fn a_purge_that_names_a_type_takes_what_the_source_brought_into_it_alone(
+    store: Arc<dyn LakeStore>,
+) {
+    let (c, own) = purge_lake(&store).await;
+    let (crm, partner, bill) = (SourceId::from("crm"), ty("partner"), ty("bill"));
+    let note = |v: Value| {
+        let (c, own) = (c.clone(), own.clone());
+        async move {
+            let fields = patch(&[("note", v)]);
+            c.upsert(&own, &ty("bill"), &key("b1"), fields, WriteOpts::default())
+                .await
+                .unwrap();
+        }
+    };
+    let live = |t: &'static str, k: &'static str| {
+        let (c, own) = (c.clone(), own.clone());
+        async move { c.get(&own, &ty(t), get(k)).await.is_ok() }
+    };
+    // `b1` is also a person's: that refuses a purge from `bill`, and does
+    // not hold a purge from `partner`.
+    note(json!("called")).await;
+    let head = store.head().await.unwrap();
+    let refused = store.purge_source(&crm, Some(&bill), None).await;
+    let seen = store.purge_preflight(&crm, Some(&bill)).await;
+    for e in [refused.unwrap_err(), seen.unwrap_err()] {
+        assert!(invalid_naming(&e, &["`b1`", "from `bill`"]), "{e:?}");
+    }
+    assert_eq!(store.head().await.unwrap(), head);
+    let report = store.purge_source(&crm, Some(&partner), None).await;
+    let report = report.unwrap();
+    let per = |r: &lakelands_api::write::PurgeReport| {
+        let mut per: Vec<_> = (r.types.iter())
+            .map(|t| (t.ty.to_string(), t.retired))
+            .collect();
+        per.sort();
+        per
+    };
+    let named: Vec<_> = (report.references.iter())
+        .map(|f| {
+            let first = f.first.iter().map(|k| format!("{} {}", k.ty, k.key));
+            (
+                format!("{}.{}", f.ty, f.relation),
+                f.records,
+                first.collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    let want = vec![
+        ("bill.billed_to".to_owned(), 1, vec!["bill b1".to_owned()]),
+        (
+            "bill.seen_by".to_owned(),
+            1,
+            vec!["sys.link.bill.seen_by b1:p2".to_owned()],
+        ),
+    ];
+    assert_eq!(
+        (report.ty.as_ref(), report.retired, per(&report)),
+        (Some(&partner), 2, vec![("partner".to_owned(), 2)]),
+        "{report:?}"
+    );
+    assert_eq!(
+        (named, report.unsearched.len()),
+        (want, 0),
+        "what `crm` keeps in `bill` refers into the purge and is named: {report:?}"
+    );
+    assert!(!live("partner", "p1").await && !live("partner", "p2").await);
+    assert!(
+        live("partner", "p3").await
+            && live("bill", "b1").await
+            && live("sys.link.bill.seen_by", "b1:p2").await,
+        "another source's partner, and the bill and the link of `bill`'s relation, stay"
+    );
+    // Once `b1` is the source's alone, the purge from `bill` takes it and
+    // the link its relation carries.
+    note(Value::Null).await;
+    let report = store.purge_source(&crm, Some(&bill), None).await;
+    let report = report.unwrap();
+    let both = vec![
+        ("bill".to_owned(), 1),
+        ("sys.link.bill.seen_by".to_owned(), 1),
+    ];
+    assert_eq!((report.retired, per(&report)), (2, both), "{report:?}");
+    assert!(!live("bill", "b1").await && !live("sys.link.bill.seen_by", "b1:p2").await);
+}
+
+/// A preflight's id is of the source, the type and the head: the id of
+/// the source whole and the id of the source from one type do not fit
+/// each other's purge. A type a purge cannot take from is refused, not
+/// passed over: not found when it is not declared, invalid when it is a
+/// view or keeps no per-field provenance
+/// (`docs/decisions/039-a-source-is-retracted-as-one.md`, extended).
+pub async fn a_typed_purge_has_an_id_of_its_own_and_refuses_a_type_it_cannot_take_from(
+    store: Arc<dyn LakeStore>,
+) {
+    let (c, own) = purge_lake(&store).await;
+    for d in [
+        json!({"declare": "type", "name": "log_line", "field_meta": false,
+            "fields": [{"name": "text", "type": {"kind": "text"}, "authority": "source"}]}),
+        json!({"declare": "type", "name": "partners",
+            "fields": [{"name": "n", "type": {"kind": "number"}}],
+            "view": {"source": "partner", "measures": [{"name": "n", "expr": "count()"}]}}),
+    ] {
+        c.declare(&own, serde_json::from_value(d).unwrap())
+            .await
+            .unwrap();
+    }
+    let (crm, partner) = (SourceId::from("crm"), ty("partner"));
+    let head = store.head().await.unwrap();
+    let whole = store.purge_preflight(&crm, None).await.unwrap();
+    let typed = store.purge_preflight(&crm, Some(&partner)).await.unwrap();
+    assert_ne!(whole.report_id, typed.report_id);
+    assert_eq!(
+        (whole.retired, typed.retired),
+        (4, 2),
+        "{whole:?} {typed:?}"
+    );
+    for (t, id) in [(None, &typed.report_id), (Some(&partner), &whole.report_id)] {
+        let e = store.purge_source(&crm, t, Some(id)).await.unwrap_err();
+        assert!(
+            invalid_naming(&e, &["not of this purge at this head"]),
+            "{e:?}"
+        );
+    }
+    for (t, why) in [
+        ("log_line", "keeps no per-field provenance"),
+        ("partners", "is a view"),
+    ] {
+        let refused = store.purge_source(&crm, Some(&ty(t)), None).await;
+        let seen = store.purge_preflight(&crm, Some(&ty(t))).await;
+        for e in [refused.unwrap_err(), seen.unwrap_err()] {
+            assert!(invalid_naming(&e, &[t, why]), "{e:?}");
+        }
+    }
+    let none = store.purge_source(&crm, Some(&ty("nothing")), None).await;
+    assert!(matches!(none, Err(Error::NotFound { .. })), "{none:?}");
+    assert_eq!(store.head().await.unwrap(), head, "nothing is appended");
+    let done = store
+        .purge_source(&crm, Some(&partner), Some(&typed.report_id))
+        .await
+        .unwrap();
+    assert_eq!(
+        (done.retired, done.ty.as_ref()),
+        (2, Some(&partner)),
+        "{done:?}"
+    );
 }
 
 /// A value type is loosened by `declare`; a tightening is refused there,

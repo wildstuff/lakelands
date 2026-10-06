@@ -381,16 +381,18 @@ impl LakeStore for MockLake {
     async fn purge_source(
         &self,
         source: &SourceId,
+        ty: Option<&lakelands_api::TypeName>,
         id: Option<&str>,
     ) -> Result<lakelands_api::write::PurgeReport> {
-        purge::run(&self.shared, &mut self.shared.log(), source, id)
+        purge::run(&self.shared, &mut self.shared.log(), source, ty, id)
     }
 
     async fn purge_preflight(
         &self,
         source: &SourceId,
+        ty: Option<&lakelands_api::TypeName>,
     ) -> Result<lakelands_api::write::PurgeReport> {
-        purge::preflight(&self.shared.log(), source)
+        purge::preflight(&self.shared.log(), source, ty)
     }
 
     async fn position_at(&self, known_at: Timestamp) -> Result<Option<Position>> {
