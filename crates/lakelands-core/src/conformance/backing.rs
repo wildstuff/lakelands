@@ -19,9 +19,11 @@
 //! the checks that ask for it. Its model is [`EMBED_MODEL`], its vectors
 //! have two dimensions, and every text becomes `(1, 0)`. A call fails
 //! when one of its texts starts with [`UNREACHABLE`], or was unplugged
-//! ([`unplug_text`], until [`plug_text`]). It fails with a refusal, not
-//! `Unavailable`: whatever a backend answers as a failure, the store makes
-//! a search unavailable and records a failure for each text. It counts its
+//! ([`unplug_text`], until [`plug_text`]): it refuses the request as
+//! `Invalid`, so the store asks again in halves until the text is alone.
+//! A request with a text starting with [`WEATHER`] and none refused is
+//! `Unavailable`, which the store records for every text it had not
+//! answered. A search fails on either. It counts its
 //! calls ([`embed_calls`]) and how often each text was sent
 //! ([`embedded`]); a check uses texts of its own.
 
@@ -105,8 +107,11 @@ pub fn plug(token: &str) {
 /// The model the suite's embedding backend names.
 pub const EMBED_MODEL: &str = "conformance-embed";
 
-/// A text the suite's embedding backend fails on.
+/// A text the suite's embedding backend refuses.
 pub const UNREACHABLE: &str = "unreachable";
+
+/// A text the suite's embedding backend answers `Unavailable` for.
+pub const WEATHER: &str = "weather";
 
 #[derive(Default)]
 struct Embeds {
@@ -157,6 +162,11 @@ impl EmbedBackend for Embedder {
                 reason: lakelands_api::Refusal::Invalid {
                     message: format!("`{}` cannot be reached", self.model),
                 },
+            });
+        }
+        if texts.iter().any(|t| t.starts_with(WEATHER)) {
+            return Err(Error::Unavailable {
+                message: format!("`{}` is down", self.model),
             });
         }
         let dimensions = self.dimensions as usize;

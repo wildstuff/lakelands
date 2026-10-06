@@ -19,10 +19,12 @@
 //! redirect followed, TLS trusting the configured bundle or the system's,
 //! and a timeout over each whole request.
 //!
-//! Every failure is [`Error::Unavailable`], naming the endpoint's host,
-//! port and path and what went wrong, and nothing else: never the key,
-//! the texts, the request or the reply, since the texts are a caller's
-//! query and an `Unavailable` reaches every caller. Embedding no text
+//! A `400`, `413` or `422` refuses the request for what it carries, and
+//! is answered as `Invalid`, so the store asks again in halves; every
+//! other failure is [`Error::Unavailable`]. Either names the endpoint's
+//! host, port and path and what went wrong, and nothing else: never the
+//! key, the texts, the request or the reply, since the texts are a
+//! caller's query and a failure reaches every caller. Embedding no text
 //! makes no request.
 
 use std::path::{Path, PathBuf};
@@ -209,6 +211,19 @@ impl Embed {
             .map_err(|f| match f {
                 Failure::Refused(why) | Failure::Failed(why) | Failure::Body(why) => {
                     self.failed(why)
+                }
+                // Refused for what the request carries: asking with the
+                // same texts again gets the same answer.
+                Failure::Status(status) if matches!(status.as_u16(), 400 | 413 | 422) => {
+                    Error::Refused {
+                        field: None,
+                        reason: lakelands_api::Refusal::Invalid {
+                            message: format!(
+                                "the embedding endpoint {}: it answered {status}",
+                                self.target.shown()
+                            ),
+                        },
+                    }
                 }
                 Failure::Status(status) => {
                     self.failed(Failure::status_sentence(status, "the embedding client"))

@@ -289,6 +289,15 @@ async fn every_wrong_answer_is_unavailable_naming_the_host_and_the_kind_only() {
             }),
         ),
         ("redirect", Box::new(|_| Some(("302 Found", String::new())))),
+        (
+            "401",
+            Box::new(|_| Some(("401 Unauthorized", String::new()))),
+        ),
+        ("404", Box::new(|_| Some(("404 Not Found", String::new())))),
+        (
+            "429",
+            Box::new(|_| Some(("429 Too Many Requests", String::new()))),
+        ),
         ("within 1s", Box::new(|_| None)),
         (
             "not an embeddings answer",
@@ -351,6 +360,40 @@ async fn every_wrong_answer_is_unavailable_naming_the_host_and_the_kind_only() {
         );
         assert!(!why.contains(secret), "{kind}: {why}");
         assert!(started.elapsed().as_secs() < 4, "{kind}: the timeout holds");
+    }
+}
+
+/// A request refused for what it carries is `Invalid`, so the store asks
+/// again in halves; it says no more than any other failure.
+#[tokio::test]
+async fn a_request_refused_for_what_it_carries_is_invalid() {
+    let secret = "secret-query";
+    for status in [
+        "400 Bad Request",
+        "413 Payload Too Large",
+        "422 Unprocessable Entity",
+    ] {
+        let f = fake(Box::new(move |_| {
+            Some((status, "{\"error\": \"secret-query\"}".into()))
+        }))
+        .await;
+        match client(config(f.endpoint()))
+            .embed(&[secret.to_owned()])
+            .await
+        {
+            Err(Error::Refused {
+                reason: lakelands_api::Refusal::Invalid { message },
+                ..
+            }) => {
+                let at = format!("127.0.0.1:{}/v1/embeddings", f.port);
+                assert!(
+                    message.contains(status) && message.contains(&at),
+                    "{message}"
+                );
+                assert!(!message.contains(secret), "{message}");
+            }
+            other => panic!("{status}: expected `Invalid`, got {other:?}"),
+        }
     }
 }
 

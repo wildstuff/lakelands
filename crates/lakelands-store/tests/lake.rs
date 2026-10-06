@@ -2110,7 +2110,8 @@ async fn a_backfill_sends_each_distinct_text_once_in_batches_of_at_most_sixty_fo
     }
 }
 
-/// A request that fails records a failure for each text it carried.
+/// A request that fails with weather (`Unavailable`) is not halved: it
+/// records the failure for each text it carried.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_failed_request_records_a_failure_for_each_text() {
     let lake = name();

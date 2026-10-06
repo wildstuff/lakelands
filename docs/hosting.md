@@ -487,21 +487,23 @@ A host that already has a store of its own moves in four steps.
   is not computed does not, since it computes nothing. From a shell: `lakelands recompute --function
   <name>` or `--type <name>`. See
   `docs/decisions/022-functions-are-declarations.md`.
-- **One text the embedding backend refuses fails its whole batch
-  (lakelands#658).** The store sends the texts due for one model in
-  batches of up to 64, and when a request fails it records the failure
-  for every text the request carried. So a backend that refuses a whole
-  request for one input (an HTTP 400 for one text over its length
-  limit, say) fails the good texts sent beside it. The failure is
-  recorded for each of those texts, and an output is read back for its
-  text lake-wide: a later record that writes one of them is answered
-  the failure without a call. `get` shows the backend's message in the
-  field's `error`, and `vector_coverage` counts each such record as
-  due. `recompute`, and a declaration that walks the type, batch the
-  refused text with the others again and fail them again. A host
-  recovers by changing the refused text in its record, then calling
-  `recompute` of the type; a record whose own text changes is embedded
-  on that write.
+- **A text the embedding backend refuses fails alone (lakelands#658).**
+  The store sends the texts due for one model in batches of up to 64.
+  A backend that answers `Invalid` refuses the request for what it
+  carries, and the store asks again in halves until the refused text is
+  alone: only that text records the refusal, and the texts beside it are
+  embedded. Any other error is weather and is recorded for every text
+  not answered yet; `recompute` retries them. The shipped client answers
+  `400`, `413` and `422` as `Invalid`. A host's own backend that answers
+  everything `Unavailable` keeps the old behaviour, a whole batch failed
+  for one text. An endpoint that answers `400` to every request (a
+  model name it does not know, say) costs 127 requests per batch of 64,
+  each text recorded as failed alone; fix the configuration, then
+  `recompute`. Two limits of the client remain: it splits a batch by its
+  own `max_batch`, so a halving sends again the requests that had
+  succeeded; and a fault in one item of a `2xx` reply (wrong dimensions,
+  a value that is not finite, a wrong count) is `Unavailable` and still
+  fails the texts beside it.
 - **A write that changes nothing is still a write.** An upsert of the
   values a record already holds appends an event and raises the version:
   it says who vouches for the values and when, a trigger reacts to it,

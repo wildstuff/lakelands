@@ -23,7 +23,8 @@
 //! `embed:<model>`. With no text, the field is cleared and keeps its
 //! metadata without an `error`, and nothing is due. The drain sends the
 //! due texts of one model in batches of at most [`EMBED_BATCH`], and
-//! records each vector on its own.
+//! records each vector on its own. A batch the backend refuses for what
+//! it carries is asked again in halves, so a text it refuses fails alone.
 //!
 //! **Failure.** A backing that fails is recorded as `{"error": "<why>"}`.
 //! That output, or one that is not a value of the field's type, clears the
@@ -40,7 +41,7 @@ use lakelands_api::engine::ProjectionView;
 use lakelands_api::event::{Digest, Event, EventBody, Procedure};
 use lakelands_api::ontology::{EmbedDecl, FieldDecl, TypeDecl};
 use lakelands_api::record::{FieldMeta, Origin, Patch};
-use lakelands_api::seam::FunctionCall;
+use lakelands_api::seam::{EmbedBackend, FunctionCall};
 use lakelands_api::write::FunctionDecl;
 use lakelands_api::{FieldName, LakeId, Position, RecordKey, Result, TypeName, Value};
 use lakelands_core::unavailable;
@@ -784,9 +785,9 @@ async fn settle_one(lake: &Arc<Lake>, drain: &mut Drain, d: &mut Due) -> Result<
 /// one request, and record each vector for the field it fills. A due whose
 /// output is recorded meanwhile is filled from it; one whose record moved
 /// on is dropped. Nothing is called when the bound backend is gone or names
-/// another model or other dimensions: the fields wait. A request that
-/// fails records the failure for each text it carried. Every due the
-/// request answered holds its answer before the first is recorded.
+/// another model or other dimensions: the fields wait. A failure is
+/// recorded as [`embed_each`] answers it. Every due the batch answered
+/// holds its answer before the first is recorded.
 async fn settle_embeddings(lake: &Arc<Lake>, drain: &mut Drain, batch: &mut [Due]) -> Result<()> {
     let mut asked: Vec<usize> = Vec::new();
     // The calls this batch makes: every due of one of them waits for its
@@ -841,21 +842,7 @@ async fn settle_embeddings(lake: &Arc<Lake>, drain: &mut Drain, batch: &mut [Due
             texts.push(text.clone());
         }
     }
-    let outputs: Vec<Value> = match backend.embed(&texts).await {
-        Ok(vectors) if vectors.len() == texts.len() => vectors
-            .iter()
-            .map(|v| serde_json::to_value(v).expect("a vector serialises"))
-            .collect(),
-        Ok(vectors) => {
-            let why = format!(
-                "the embedding backend `{model}` answered {} vectors for {} texts",
-                vectors.len(),
-                texts.len()
-            );
-            vec![json!({ "error": why }); texts.len()]
-        }
-        Err(e) => vec![json!({ "error": why(&e) }); texts.len()],
-    };
+    let outputs = embed_each(backend.as_ref(), &texts).await;
     // The first due of a text records its output; a later due of the same
     // text in the batch records it again only if it fills something.
     for i in &asked {
@@ -867,6 +854,59 @@ async fn settle_embeddings(lake: &Arc<Lake>, drain: &mut Drain, batch: &mut [Due
         record_async(lake, d, outputs[at[&d.input]].clone(), known).await?;
     }
     Ok(())
+}
+
+/// The output of each text, in order. A request of several texts that the
+/// backend refuses for what it carries (`Invalid`) is asked again as two
+/// halves, the first first, so only a text refused alone records the
+/// refusal. Any other failure, and an answer with the wrong number of
+/// vectors, is weather: it ends the asking and is the output of every
+/// text not answered yet.
+async fn embed_each(backend: &dyn EmbedBackend, texts: &[String]) -> Vec<Value> {
+    use lakelands_api::{Error, Refusal};
+    let mut out: Vec<Option<Value>> = vec![None; texts.len()];
+    // The spans still to ask, the next on top.
+    let mut spans: Vec<_> = std::iter::once(0..texts.len()).collect();
+    let mut weather = Value::Null;
+    while let Some(span) = spans.pop() {
+        let (from, to) = (span.start, span.end);
+        let answer = backend.embed(&texts[span.clone()]).await.and_then(|v| {
+            (v.len() == to - from).then_some(v).ok_or_else(|| {
+                unavailable(format!(
+                    "the embedding backend `{}` answered other than {} vectors",
+                    backend.model(),
+                    to - from
+                ))
+            })
+        });
+        match answer {
+            Ok(vectors) => {
+                for (slot, v) in out[span].iter_mut().zip(vectors) {
+                    *slot = Some(serde_json::to_value(v).expect("a vector serialises"));
+                }
+            }
+            Err(
+                e @ Error::Refused {
+                    reason: Refusal::Invalid { .. },
+                    ..
+                },
+            ) => {
+                let half = from + (to - from) / 2;
+                if half == from {
+                    out[from] = Some(json!({ "error": why(&e) }));
+                } else {
+                    spans.extend([half..to, from..half]);
+                }
+            }
+            Err(e) => {
+                weather = json!({ "error": why(&e) });
+                break;
+            }
+        }
+    }
+    out.into_iter()
+        .map(|o| o.unwrap_or_else(|| weather.clone()))
+        .collect()
 }
 
 /// A backing's failure, in its own words.

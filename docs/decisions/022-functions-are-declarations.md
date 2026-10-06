@@ -283,9 +283,18 @@ change to `from` or `model` is a redeclaration of the type, which makes
 the field due on every live record. Only a change of `dimensions` is a
 migration, and it already is one.
 
-When one request to the backend carries several texts and fails, a
-failure is recorded for each text it carried. The store sends at most a
-fixed number of texts in one request (`docs/seams.md` §EmbedBackend).
+The store sends at most a fixed number of texts in one request
+(`docs/seams.md` §EmbedBackend), and a failure is recorded per text, so
+it has to be one the text earned. The backend says which kind it is. A
+request refused for what it carries (`Invalid`) is asked again in
+halves, and a refusal is recorded only for a text refused alone: one
+text an endpoint will not take never fails the others beside it, which
+would otherwise hold that failure lake-wide and fail again at every
+retry. Any other failure is weather: halving it would cost nearly two
+requests per text, each waiting the same timeout, so it ends the asking
+and is recorded for every text not answered yet. Telling the two apart
+is the backend's, because an endpoint refuses a whole request without
+naming the input.
 
 ## Extended: a fold of the log makes no call due
 
