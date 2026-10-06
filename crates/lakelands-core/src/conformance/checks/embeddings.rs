@@ -20,7 +20,7 @@ use lakelands_api::{Error, LakeStore};
 use serde_json::{Value, json};
 
 use super::search::doc_search;
-use crate::conformance::backing::{EMBED_MODEL, embedded, plug_text, unplug_text};
+use crate::conformance::backing::{EMBED_MODEL, UNREACHABLE, embedded, plug_text, unplug_text};
 use crate::conformance::fixture::{
     Lake, Must, derived, doors, embedding, field, head_unmoved, owner, read, recorded_outputs,
     refused_on, source_record, sourced, type_decl, value,
@@ -724,6 +724,112 @@ async fn no_request_carries_more_than_sixty_four_texts(
         sizes.iter().all(|n| *n <= 64) && sizes.iter().sum::<usize>() == 150,
         "declaring the embedding made 150 distinct texts due at once; every request carries at most 64 of them and \
          all 150 are sent once; the requests carried {sizes:?}"
+    );
+    Ok(())
+}
+
+check!(
+    /// A refused text fails alone.
+    EMBED_REFUSED_ALONE = a_text_the_backend_refuses_fails_alone_in_its_batch,
+    "lakelands#658 and seams, EmbedBackend: a request the backend refuses for what it carries is asked again in halves, so only the text refused alone records the refusal and the others in its batch are embedded; a later record with one of their texts reads its vector, and `recompute` sends the refused text alone",
+    embedding
+);
+
+check!(
+    /// Weather is not narrowed.
+    EMBED_WEATHER = weather_fails_every_text_its_request_had_not_answered,
+    "lakelands#658 and seams, EmbedBackend: a failure that is not a refusal ends the asking and is recorded for every text not answered yet, while the texts answered before it keep their vectors and a text refused alone its refusal",
+    embedding
+);
+
+/// Declare `pier` with records of `titles` (`p0`, `p1`, …), then its
+/// embedding, which makes every title due in one batch: the requests made.
+async fn piers(l: &Lake, titles: &[String]) -> Result<usize, Failure> {
+    let title = || sourced("title", StorageKind::Text);
+    l.declare(type_decl("pier", vec![title()])).await?;
+    let records = titles.iter().enumerate();
+    let records =
+        records.map(|(n, t)| source_record("pier", &format!("p{n}"), json!({"title": t})));
+    l.ingest("piers", records.collect())
+        .await
+        .must("ingesting piers")?;
+    let before = backing::embed_calls();
+    let vec = embedding("vec", 2, &["title"], EMBED_MODEL);
+    l.declare(type_decl("pier", vec![title(), vec])).await?;
+    Ok(backing::embed_calls() - before)
+}
+
+/// What each pier's `vec` reads: `east`, or the error its metadata carries.
+async fn pier_vecs(store: &dyn LakeStore, n: usize) -> Result<Vec<String>, Failure> {
+    let mut out = Vec::new();
+    for key in (0..n).map(|n| format!("p{n}")) {
+        let r = read(doors(store).as_ref(), &owner(store), "pier", &key).await?;
+        let east = is_east(&value(&r, "vec").cloned()).then(|| "east".to_owned());
+        out.push(
+            r.meta
+                .get("vec")
+                .and_then(|m| m.error.clone())
+                .or(east)
+                .unwrap_or_default(),
+        );
+    }
+    Ok(out)
+}
+
+async fn a_text_the_backend_refuses_fails_alone_in_its_batch(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    let mut titles: Vec<String> = (0..8).map(|n| format!("Refusal pier {n}")).collect();
+    titles[5] = format!("{UNREACHABLE} pier");
+    let calls = piers(&l, &titles).await?;
+    let got = pier_vecs(store.as_ref(), 8).await?;
+    let failed: Vec<_> = got.iter().map(|g| g != "east").collect();
+    ensure!(
+        calls == 7 && failed == [false, false, false, false, false, true, false, false],
+        "of eight texts in one batch the backend refuses `p5`'s: halving takes 1 + 2 × 3 = 7 \
+         requests, `p5` holds the refusal and the other seven a vector; {calls} requests, \
+         and the piers read {got:?}"
+    );
+    let before = backing::embed_calls();
+    let again = source_record("pier", "p8", json!({"title": titles[0]}));
+    l.ingest("piers", vec![again])
+        .await
+        .must("ingesting `p8`")?;
+    let p8 = pier_vecs(store.as_ref(), 9).await?.pop();
+    let sent = embedded(&titles[5]);
+    let what = lakelands_api::write::Recompute::Type("pier".into());
+    l.cat
+        .recompute(&l.own, what)
+        .await
+        .must("computing `pier` again")?;
+    let calls = backing::embed_calls() - before;
+    ensure!(
+        p8.as_deref() == Some("east") && calls == 1 && embedded(&titles[5]) == sent + 1,
+        "a later record with `p0`'s text reads its vector without a call, and `recompute` \
+         sends the refused text alone: one request in all, not {calls}; `p8` reads {p8:?}"
+    );
+    Ok(())
+}
+
+async fn weather_fails_every_text_its_request_had_not_answered(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use crate::conformance::backing::WEATHER;
+    let l = Lake::of(store.as_ref());
+    let titles = ["Weather pier 0", UNREACHABLE, WEATHER, "Weather pier 3"];
+    let titles = titles.map(|t| format!("{t} quay"));
+    let calls = piers(&l, &titles).await?;
+    let got = pier_vecs(store.as_ref(), 4).await?;
+    ensure!(
+        calls == 5
+            && got[0] == "east"
+            && got[1].contains("cannot be reached")
+            && got[2..].iter().all(|g| g.contains("is down")),
+        "`p1`'s text is refused and `p2`'s meets weather: the halves are asked, `p0` is \
+         embedded, `p1` holds its refusal, and the weather of `p2`'s request is recorded for \
+         `p2` and `p3` without narrowing it, in 5 requests; {calls} requests, and the piers \
+         read {got:?}"
     );
     Ok(())
 }

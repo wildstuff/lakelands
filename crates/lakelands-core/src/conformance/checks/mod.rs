@@ -361,6 +361,8 @@ pub const ALL: &[Check] = &[
     embeddings::EMBED_NO_TEXT,
     embeddings::EMBED_FAILURE_RETRIED,
     embeddings::EMBED_FILL_REACTS,
+    embeddings::EMBED_REFUSED_ALONE,
+    embeddings::EMBED_WEATHER,
     rebuild::INDEXES_AFTER_REBUILD,
     rebuild::ONE_JSON_FORM,
     ingest::DUPLICATE_ACROSS_WINDOWS,

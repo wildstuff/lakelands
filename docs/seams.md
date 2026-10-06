@@ -935,7 +935,10 @@ environment.
 ## `EmbedBackend`
 
 `model()`, `dimensions()`, `embed(texts) -> vectors`, one vector per
-text, in order.
+text, in order. A backend answers `Invalid` when it refuses the request
+for what it carries, so that asking again with the same texts would get
+the same answer, and `Unavailable` for anything else: the network, the
+endpoint, its limits, a reply it cannot read.
 
 The store calls the backend for two things.
 
@@ -1011,8 +1014,15 @@ record (`docs/decisions/022-functions-are-declarations.md`, extended):
   The store never holds more than one batch of vectors at a time,
   however many records a backfill makes due, so its memory per drain
   stays bounded. The client may split a batch further by its own
-  `max_batch`. A batch that fails, in any of its requests, records a
-  failure for each text it carried.
+  `max_batch`.
+- **A request refused as `Invalid` is asked again in halves**, the first
+  half first, until each refused text is alone, and only a text refused
+  alone records the refusal (lakelands#658). The others in its batch are
+  embedded. One refused text in 64 costs 13 requests, all 64 refused cost
+  127; a request that succeeds costs nothing more. Any other failure, and
+  an answer with the wrong number of vectors, ends the asking: it is
+  recorded for every text of the batch not answered yet, and the texts
+  answered before it keep their vectors.
 
 There is no default backend: without one, `search` ranks lexically and
 over vectors callers supply, and says in its answer which ranking it
@@ -1070,10 +1080,15 @@ bound.
   followed, `https` trusting `ca_file` or the system bundle, a reply
   limit, and a timeout covering each whole request, connecting
   included.
-- Every failure is `Unavailable`, naming the endpoint's host, port and
-  path and what went wrong. It never carries the key, the texts, the
-  request, the reply or a path on the server: the texts are a caller's
-  query, and an `Unavailable` reaches every caller.
+- A `400`, `413` or `422` is `Invalid`: the endpoint refuses what the
+  request carries. Every other failure is `Unavailable`, a `404` and a
+  `429` included. Either names the endpoint's host, port and path and
+  what went wrong. It never carries the key, the texts, the request, the
+  reply or a path on the server: the texts are a caller's query, and a
+  failure reaches every caller. A fault in one item of a `2xx` reply (its
+  dimensions, a value that is not finite, the number of items) is
+  `Unavailable` and fails the texts beside it. Halving sends again the
+  client's requests of a batch that had already succeeded.
 - Embedding no text makes no request.
 
 ## `VerbExecutor`
