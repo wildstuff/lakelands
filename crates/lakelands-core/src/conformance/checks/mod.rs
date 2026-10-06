@@ -196,6 +196,7 @@ pub const ALL: &[Check] = &[
     migrate::CONVERSIONS_AND_RENAMES,
     made_of::SHOWN_WITH_WHAT_IT_IS_MADE_OF,
     made_of::KEPT_AT_EVERY_DOOR,
+    made_of::NAMES_NO_TYPE_NOT_SHOWN,
     initial::FILLED_AT_CREATION,
     initial::DECLARED,
     links::WRITTEN_AND_WALKED,
