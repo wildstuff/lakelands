@@ -153,30 +153,27 @@ impl FieldDescription {
     /// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
     pub fn of(decl: &FieldDecl, access: Access) -> FieldDescription {
         use crate::ontology::StorageKind::{Bytes, Json, Vector};
-        let hidden = FieldDescription {
-            name: decl.name.clone(),
-            ty: decl.ty.clone(),
+        let mut decl = decl.clone();
+        if !access.reads() {
+            decl.shape_alone();
+        }
+        FieldDescription {
+            filterable: access.reads() && !matches!(decl.ty.kind, Bytes | Json | Vector),
+            name: decl.name,
+            ty: decl.ty,
             required: decl.required,
             authority: decl.authority,
             access,
+            derived: decl.derived,
+            function: decl.function,
+            depends_on: decl.depends_on,
             on_input_change: decl.on_input_change,
-            sensitive: decl.sensitive,
-            ..FieldDescription::default()
-        };
-        if !access.reads() {
-            return hidden;
-        }
-        FieldDescription {
-            derived: decl.derived.clone(),
-            function: decl.function.clone(),
-            depends_on: decl.depends_on.clone(),
-            filterable: !matches!(decl.ty.kind, Bytes | Json | Vector),
             searchable: decl.searchable,
-            description: decl.description.clone(),
-            label: decl.label.clone(),
-            embed: decl.embed.clone(),
-            annotations: decl.annotations.clone(),
-            ..hidden
+            sensitive: decl.sensitive,
+            description: decl.description,
+            label: decl.label,
+            embed: decl.embed,
+            annotations: decl.annotations,
         }
     }
 

@@ -29,8 +29,9 @@
 //!   `date_bucket` by a width or `in_set` in any expression it keeps, in
 //!   the places 5 names; a migration that renames a relation
 //!   (`relation_renames`), in a `migrated` event or a proposed `migrate`;
-//!   a write of a `view_kept.<type>` setting, made or proposed; and a
-//!   `record_upserted` or `record_ingested` event that carries `made`.
+//!   a write of a `view_kept.<type>` setting, made or proposed; a
+//!   `record_upserted` or `record_ingested` event that carries `made`; and
+//!   a proposed `migrate` whose report holds `restated`.
 //!
 //! The store writes every event of one append at the greatest of the
 //! lake's version and what [`needed`] answers for each event of the
@@ -106,7 +107,22 @@ pub const ELEVENTH: &[Added] = &[
     (renames_a_relation, "renames a relation"),
     (writes_a_kept_setting, "writes a `view_kept.` setting"),
     (says_it_made, "carries `made`"),
+    (
+        reports_restated,
+        "proposes a migration whose report holds `restated`",
+    ),
 ];
+
+/// Whether the event proposes a migration whose report says what its `to`
+/// states otherwise: below 11 no report does, and a reader there would
+/// take the proposal for one that restates nothing.
+fn reports_restated(body: &EventBody) -> bool {
+    use ProposedWrite::Migrate;
+    let EventBody::WriteProposed { write, .. } = body else {
+        return false;
+    };
+    matches!(write, Migrate { report, .. } if !report.restated.is_empty())
+}
 
 /// Whether a record event says its write found no live record under the
 /// key. Below 11 no event says so, and absence tells nothing there.

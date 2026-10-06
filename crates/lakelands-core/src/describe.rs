@@ -575,14 +575,7 @@ fn relation_description(t: &TypeName, r: &RelationDecl, who: &Principal) -> Rela
         .retain(|f| field_access(who, &link, f) != Access::None);
     for f in &mut r.fields {
         if !field_access(who, &link, f).reads() {
-            f.derived = None;
-            f.function = None;
-            f.depends_on.clear();
-            f.searchable = false;
-            f.description = None;
-            f.label = None;
-            f.embed = None;
-            f.annotations.clear();
+            f.shape_alone();
         }
     }
     r

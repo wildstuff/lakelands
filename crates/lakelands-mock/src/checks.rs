@@ -175,6 +175,9 @@ macro_rules! door_checks {
             schema_hashes_and_proposal_ids_have_the_stores_form,
             links_are_written_walked_and_held_to_their_relation,
             a_relation_declared_again_with_another_target_reshapes_its_links,
+            a_migration_restates_what_its_to_states_otherwise,
+            #[own_principals]
+            a_migration_shows_a_field_by_its_shape_to_one_who_does_not_read_it,
             a_migration_keeps_a_field_its_author_may_not_know_of,
             a_migration_migrates_and_declares_its_link_types_in_its_append,
             #[host_ops] an_aging_rule_moves_what_holds_from_once_a_date,
@@ -5782,6 +5785,147 @@ pub async fn a_relation_declared_again_with_another_target_reshapes_its_links(
             if message.contains("sys.link.doc.signed_by")),
         "{refused:?}"
     );
+}
+
+/// A migration's report restates what its `to` states otherwise than the
+/// declaration in force and lists a removed relation that holds no link;
+/// and an accept does not take away a mark set since the proposal
+/// (`docs/decisions/027-shape-changes-are-declared-or-migrated.md`,
+/// extended).
+pub async fn a_migration_restates_what_its_to_states_otherwise(store: Arc<dyn LakeStore>) {
+    let c = store.catalog(WriteContext::default());
+    let cast = Cast::of(store.lake());
+    let own = &cast.owner;
+    let text = |n: &str| json!({"name": n, "type": {"kind": "text"}});
+    let badge = |fields: Value, relations: Value| json!({"declare": "type", "name": "badge", "fields": fields, "relations": relations});
+    let mut secret = text("secret");
+    (secret["sensitive"], secret["label"]) = (json!(true), json!("Secret"));
+    let pair = json!({"match": [{"from": "nick", "to": "nick"}]});
+    let twin = json!([{"name": "twin", "target": "badge", "derived": pair}]);
+    let mut declared = badge(json!([secret, text("nick")]), twin);
+    let declare = |d: &Value| c.declare(own, serde_json::from_value(d.clone()).unwrap());
+    declare(&declared).await.unwrap();
+    let mut to = badge(json!([text("secret"), text("alias")]), json!([]));
+    to.as_object_mut().unwrap().remove("declare");
+    let bare = lakelands_api::write::Migration {
+        to: serde_json::from_value(to).unwrap(),
+        renames: vec![("nick".into(), "alias".into())],
+        relation_renames: Vec::new(),
+    };
+    let report = c.migrate(own, bare.clone()).await.unwrap().data;
+    let entry = |field: &str, member: &str, was: Value, to: Value| json!({"field": field, "member": member, "was": was, "to": to});
+    let restated = json!([
+        entry("secret", "label", json!("Secret"), json!(null)),
+        entry("secret", "sensitive", json!(true), json!(false)),
+        entry("alias", "name", json!("nick"), json!("alias")),
+    ]);
+    assert_eq!(json!(report.restated), restated);
+    assert_eq!(report.dropped, [("twin".into(), 0)]);
+    assert!(report.lossless && report.fields.is_empty(), "{report:?}");
+    // Proposed, and `nick` declared sensitive since: the accept is refused.
+    let (migration, report) = (Box::new(bare), Default::default());
+    let write = ProposedWrite::Migrate { migration, report };
+    let proposed = c.propose(own, write, "why".into()).await.unwrap();
+    let Outcome::Proposed { proposal, .. } = proposed else {
+        panic!("a proposal is due: {proposed:?}");
+    };
+    declared["fields"][1]["sensitive"] = json!(true);
+    declare(&declared).await.unwrap();
+    let stale = c.accept(own, &proposal).await;
+    assert!(
+        matches!(&stale, Err(Error::Refused { reason: Refusal::Invalid { message }, .. })
+            if message.contains("changed since")),
+        "{stale:?}"
+    );
+}
+
+/// One who knows of a field and does not read it is answered its shape
+/// alone of a migration and of a proposed declaration: `sensitive`, and
+/// no label, in its own preflight, in a refusal's report and in the `to`
+/// and the type a listing hands it
+/// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+/// extended).
+pub async fn a_migration_shows_a_field_by_its_shape_to_one_who_does_not_read_it(
+    store: Arc<dyn LakeStore>,
+) {
+    let c = store.catalog(WriteContext::default());
+    let own = &Cast::of(store.lake()).owner;
+    let field = |n: &str, kind: &str, label: &str, sensitive: bool| json!({"name": n, "type": {"kind": kind}, "label": label, "sensitive": sensitive});
+    let badge = |fields: Value| json!({"name": "badge", "fields": fields});
+    let secret = field("secret", "text", "Secret", true);
+    let mut declared = badge(json!([secret, field("nick", "text", "Nick", false)]));
+    declared["declare"] = json!("type");
+    let declare = |d: &Value| serde_json::from_value::<Declaration>(d.clone()).unwrap();
+    c.declare(own, declare(&declared)).await.unwrap();
+    // `secret` loses its mark and takes another label; `nick` would not convert.
+    let hidden = field("secret", "text", "Hidden", false);
+    let to = badge(json!([hidden, field("nick", "number", "Nick", false)]));
+    let m = lakelands_api::write::Migration {
+        to: serde_json::from_value(to).unwrap(),
+        renames: vec![],
+        relation_renames: Vec::new(),
+    };
+    let more = json!({"name": "more", "type": {"kind": "text"}});
+    declared["fields"].as_array_mut().unwrap().push(more);
+    let mut ids = Vec::new();
+    let (migration, report) = (Box::new(m.clone()), Default::default());
+    let migrate = ProposedWrite::Migrate { migration, report };
+    let declarations = vec![declare(&declared)];
+    for write in [migrate, ProposedWrite::Declare { declarations }] {
+        let proposed = c.propose(own, write, "why".into()).await.unwrap();
+        let Outcome::Proposed { proposal, .. } = proposed else {
+            panic!("a proposal is due: {proposed:?}");
+        };
+        ids.push(proposal);
+    }
+    let listed = |who: Principal| {
+        let c = store.catalog(WriteContext::default());
+        async move {
+            let all = c.proposals(&who, ProposalFilter::default()).await;
+            json!(all.unwrap().data).to_string()
+        }
+    };
+    let mark = "{\"field\":\"secret\",\"member\":\"sensitive\",\"to\":false,\"was\":true}";
+    let whole = listed(own.clone()).await;
+    let labels = ["\"Secret\"", "\"Hidden\""];
+    assert!(labels.iter().all(|l| whole.contains(l)), "{whole}");
+    let readers = [Access::Masked, Access::WriteOnly].map(|access| {
+        let fields = [("secret".into(), access)].into();
+        let default = None;
+        let types = [("badge".into(), TypeGrants { default, fields })].into();
+        let (default, review, schema) = (Access::Read, true, true);
+        let rest = Grants::default();
+        let grants = Grants {
+            default,
+            types,
+            review,
+            schema,
+            ..rest
+        };
+        principal(store.lake(), PrincipalKind::Agent, "unread", grants)
+    });
+    let mut answers = Vec::new();
+    for who in &readers {
+        let own = c.migrate(who, m.clone()).await.unwrap().data;
+        answers.push(("the preview", json!(own).to_string()));
+    }
+    // Written since: a `nick` that is no number, so an accept is refused.
+    let nick = patch(&[("nick", json!("x"))]);
+    c.upsert(own, &ty("badge"), &key("b1"), nick, WriteOpts::default())
+        .await
+        .unwrap();
+    for who in readers {
+        let refused = c.accept(&who, &ids[0]).await;
+        let Err(e) = &refused else {
+            panic!("a refusal is due: {refused:?}");
+        };
+        answers.push(("the refusal", json!(refusal(e).1).to_string()));
+        answers.push(("the listing", listed(who).await));
+    }
+    let shape = |a: &str| a.contains(mark) && a.contains("\"more\":true");
+    let whole = |a: &str| labels.iter().any(|l| a.contains(l));
+    answers.retain(|(_, a)| !shape(a) || whole(a));
+    assert!(answers.is_empty(), "the shape alone is due in {answers:?}");
 }
 
 /// A migration that changes a relation's fields migrates that relation's

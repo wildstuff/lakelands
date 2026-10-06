@@ -42,8 +42,8 @@ use lakelands_api::seam::{FeedBatch, FeedFilter};
 use lakelands_api::write::{
     AgeReport, Carried, Carrier, CompactReport, Declaration, FieldConversion, FunctionDecl,
     Migration, MigrationReport, Misfit, ObjectSetDecl, Proposal, ProposalFilter, ProposalState,
-    ProposedWrite, PurgeReport, RecordRef, ReferenceRewrite, Rekeyed, RelationRename, RuleRun,
-    TypeRetired, ValueTypeReport, ValueTypeUse,
+    ProposedWrite, PurgeReport, RecordRef, ReferenceRewrite, Rekeyed, RelationRename, Restated,
+    RuleRun, TypeRetired, ValueTypeReport, ValueTypeUse,
 };
 use lakelands_api::{
     Access, After, Committed, Cursor, Error, FieldMeta, Find, Found, Get, Grants, Missing, Origin,
@@ -440,6 +440,12 @@ fn migration_report() -> MigrationReport {
             ty: "invoice".into(),
             key: "k".into(),
         }],
+        restated: vec![Restated {
+            field: Some("f".into()),
+            member: "sensitive".into(),
+            was: json!(true),
+            to: json!(null),
+        }],
         lossless: true,
         report_id: "r".into(),
         more: true,
@@ -705,6 +711,7 @@ fn every_mirrored_record_has_the_fields_of_its_struct() {
             members(&migration_report().relations[0].clone()),
         ),
         ("carried", members(&migration_report().carried[0].clone())),
+        ("restated", members(&migration_report().restated[0].clone())),
         ("upstream", members(&upstream())),
         ("field_meta", members(&field_meta())),
         ("record", members(&record())),

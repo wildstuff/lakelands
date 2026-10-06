@@ -476,7 +476,8 @@ def main():
                 lambda e: "in_set(" in e["body"].get("declaration", {}).get("where", ""),
                 lambda e: bool(e["body"].get("migration", {}).get("relation_renames")),
                 lambda e: e["body"].get("type") == "sys.setting" and e["body"].get("key", "").startswith("view_kept."),
-                lambda e: e["body"].get("kind") in ("record_upserted", "record_ingested") and e["body"].get("made") is True]
+                lambda e: e["body"].get("kind") in ("record_upserted", "record_ingested") and e["body"].get("made") is True,
+                lambda e: bool(e["body"].get("write", {}).get("report", {}).get("restated"))]
     for line, want in zip(v11["lines"], v11["hashes"]):
         event = json.loads(line)
         check(canonical(event) == line.encode("utf-8"), f"v11.json: position {event['position']} is canonical")

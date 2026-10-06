@@ -56,6 +56,7 @@ mod rekey;
 mod relation_renamed;
 mod renamed_grants;
 mod report_names;
+mod restated;
 mod restriction;
 mod retire;
 mod schema;
@@ -234,6 +235,8 @@ pub const ALL: &[Check] = &[
     proposal_names::NAMES_AS_THE_READERS_VIEW,
     proposal_names::LISTED_AS_SHOWN,
     report_names::REPORT_AS_ITS_READERS_VIEW,
+    restated::EVERY_MEMBER,
+    restated::AS_ITS_READERS,
     schema_proposals::DECLARED_ON_ACCEPT,
     schema_proposals::SCHEMA_TO_ACCEPT,
     schema_proposals::MIGRATION_PREFLIGHTED_AGAIN,

@@ -75,6 +75,8 @@ The core's budgets are four:
 
 **The twenty-sixth raise:** the specification, from 50 500 to 51 000 lines, by slot a's word under the rule, for the rows of the same pull request: what a typed purge takes and leaves, co-ownership in the named type alone, the links of the named type's relations, the id of the source, the type and the head, and the refusal of a type it cannot take from: 225 lines as measured after 53 were cut, on a develop that stood 26 under the ceiling, 199 over it.
 
+**The twenty-seventh raise:** the specification, from 51 000 to 51 500 lines, by slot a's word under the rule, for the rows of a migration's report that says every difference between the declaration in force and its `to` (lakelands#554: every member of a declaration changed alone, the report as each reader may know it from every place that answers one, a field its reader does not read by its shape alone, and the accept): 607 lines as measured, on a develop that lakelands#562 left 301 under the ceiling, 306 over it.
+
 ## Why
 
 The budgets keep the core small enough for one reader to hold. They have done that: four diets took out about 5 000 lines without losing a check.

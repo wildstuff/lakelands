@@ -108,7 +108,7 @@ check!(
 check!(
     /// A re-declared relation that reshapes its links is a migration.
     REDECLARED_TARGET = a_relation_declared_again_with_another_target_is_a_migration,
-    "027 and 035, extended: a relation removed by migrate keeps its links, and the preflight lists it under `dropped` with the number of its live links, or not at all when none is live; declaring it again with another target would reshape them, and is refused, naming the link type"
+    "027 and 035, extended: a relation removed by migrate keeps its links, and the preflight lists it under `dropped` with the number of its live links, none when none is live (lakelands#554); declaring it again with another target would reshape them, and is refused, naming the link type"
 );
 
 check!(
@@ -770,9 +770,9 @@ async fn a_relation_declared_again_with_another_target_is_a_migration(
     link_ok(&l, "i2", "p2", json!({})).await?;
     let linked = dropped().await?;
     ensure!(
-        unlinked.is_empty() && linked == [("approved_by".into(), 2)],
+        unlinked == [("approved_by".into(), 0)] && linked == [("approved_by".into(), 2)],
         "removing `approved_by` takes its live links from the head: the preflight must list it \
-         under `dropped` with its 2 live links, and not at all while its only link is unlinked; \
+         under `dropped` with its 2 live links, and with none while its only link is unlinked; \
          it listed {linked:?} and {unlinked:?}"
     );
     // The relation removed: a migration, which keeps its links.

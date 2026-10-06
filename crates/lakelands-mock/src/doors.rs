@@ -1090,14 +1090,7 @@ fn describe_type(st: &State, who: &Principal, t: &DeclaredType) -> TypeDescripti
                 r.fields.retain(|f| access(who, &link, f) != Access::None);
                 for f in &mut r.fields {
                     if !access(who, &link, f).reads() {
-                        f.derived = None;
-                        f.function = None;
-                        f.depends_on.clear();
-                        f.searchable = false;
-                        f.description = None;
-                        f.label = None;
-                        f.embed = None;
-                        f.annotations.clear();
+                        f.shape_alone();
                     }
                 }
                 r
@@ -2670,6 +2663,39 @@ fn known_fields(who: &Principal, t: &mut TypeDecl) {
     }
 }
 
+/// As the store: `t` as `describe` would show its fields to `who`, one it
+/// may not read left with its shape alone; what a listing hands out.
+fn described_fields(who: &Principal, t: &mut TypeDecl) {
+    let whole = t.clone();
+    let shown = |of: &TypeDecl, fields: &mut Vec<FieldDecl>| {
+        fields.retain(|f| access(who, of, f) != Access::None);
+        let unread = fields.iter_mut().filter(|f| !access(who, of, f).reads());
+        unread.for_each(FieldDecl::shape_alone);
+    };
+    shown(&whole, &mut t.fields);
+    for r in &mut t.relations {
+        shown(&links::link_type(&whole.name, r), &mut r.fields);
+    }
+}
+
+/// As the store: whether `t` declares `name`, a field or a link field
+/// (`relation.field`), as one `who` may not read.
+fn unread(who: &Principal, t: &TypeDecl, name: &FieldName) -> bool {
+    let link = |(r, f): (&str, _)| {
+        let r = t.relations.iter().find(|x| x.name.as_str() == r)?;
+        Some((links::link_type(&t.name, r), f))
+    };
+    let (of, name) = match name.as_str().split_once('.') {
+        Some(named) => match link(named) {
+            Some((of, name)) => (std::borrow::Cow::Owned(of), name),
+            None => return false,
+        },
+        None => (std::borrow::Cow::Borrowed(t), name.as_str()),
+    };
+    let found = of.fields.iter().find(|f| f.name.as_str() == name);
+    found.is_some_and(|f| !access(who, &of, f).reads())
+}
+
 /// Whether a shape holds what a migration's report names by `name`: a
 /// field, a link field (`relation.field`), or a relation, which a report
 /// lists as dropped by its own name.
@@ -2683,9 +2709,11 @@ fn holds(t: &TypeDecl, name: &FieldName) -> bool {
 
 /// As the store: a migration's report as `who` may know it, wherever one
 /// is answered. An entry is shown where the reader may see the type and
-/// know of the field; the totals, the hashes and the id stay, and `more`
-/// says that something was left out. The mock restricts no record, so
-/// every sample key is of a record its reader is answered.
+/// know of the field, a member restated beyond the shape where it reads
+/// the field in `to` and as the type stands; the totals, the hashes and
+/// the id stay, and `more` says that something was left out. The mock
+/// restricts no record, so every sample key is of a record its reader is
+/// answered.
 fn shown_report(st: &State, who: &Principal, m: &Migration, report: &mut MigrationReport) {
     // As the store: one who may not see the migrated type is answered no
     // name at all.
@@ -2698,10 +2726,11 @@ fn shown_report(st: &State, who: &Principal, m: &Migration, report: &mut Migrati
         report.rekeyed.clear();
         report.references.clear();
         report.sample_collisions.clear();
+        report.restated.clear();
         return;
     };
     let whole = report.clone();
-    let (mut was, mut to) = (was.decl.clone(), m.to.clone());
+    let (stands, mut was, mut to) = (&was.decl, was.decl.clone(), m.to.clone());
     known_fields(who, &mut was);
     known_fields(who, &mut to);
     let sourced = |new: &FieldName| {
@@ -2716,6 +2745,15 @@ fn shown_report(st: &State, who: &Principal, m: &Migration, report: &mut Migrati
     report
         .fields
         .retain(|c| holds(&to, &c.field) && sourced(&c.field));
+    let read = |f: &FieldName| {
+        let had = m.renames.iter().find(|(_, new)| new == f);
+        !unread(who, &m.to, f) && !unread(who, stands, had.map_or(f, |(old, _)| old))
+    };
+    report.restated.retain(|r| {
+        let shape = !FieldDecl::UNREAD.contains(&r.member.as_str());
+        let shown = |f| holds(&to, f) && sourced(f) && (shape || read(f));
+        r.field.as_ref().is_none_or(shown)
+    });
     report.dropped.retain(|(f, _)| holds(&was, f));
     // As the store: a renamed relation as a dropped one, by the name it
     // had; a carried declaration where `describe` names it.
@@ -2814,7 +2852,7 @@ fn known_shape(st: &State, who: &Principal, write: &mut ProposedWrite, since: &[
             declarations.retain(|d| listed(&after, who, d));
             for d in declarations.iter_mut() {
                 if let Declaration::Type(t) = d {
-                    known_fields(who, t);
+                    described_fields(who, t);
                 }
             }
             !declarations.is_empty()
@@ -2854,7 +2892,7 @@ fn known_migration(st: &State, who: &Principal, m: &mut Migration, since: &[Rena
     if let Some(was) = &mut was {
         known_fields(who, was);
     }
-    known_fields(&then, &mut m.to);
+    described_fields(&then, &mut m.to);
     let old = |n: &FieldName| was.as_ref().is_none_or(|w| holds(w, n));
     m.renames
         .retain(|(from, new)| old(from) && holds(&m.to, new));
@@ -3141,21 +3179,23 @@ fn preflight(
         });
     }
     let carried = carried(st, m).iter().map(carried_entry).collect();
-    // A relation the migration removes takes its live links from the
-    // head: it is listed with their number, as the store lists it.
-    for lt in links::of(&t.decl) {
-        let live = st
-            .records
-            .values()
-            .filter(|r| r.ty == lt.name && !r.retired);
-        let relation = links::parts(&lt.name).map(|(_, r)| r);
-        if let (Some(r), n @ 1..) = (relation, live.count() as u64)
-            && !m.to.relations.iter().any(|kept| kept.name == r)
-            && !pairs.iter().any(|(was, _)| was.name == r)
+    // A relation the migration removes is listed as the store lists it:
+    // with the number of its live links at the head, none for one not
+    // carried by link records.
+    for r in &t.decl.relations {
+        let lt = links::name(ty, &r.name);
+        let live = st.records.values().filter(|x| x.ty == lt && !x.retired);
+        if !m.to.relations.iter().any(|kept| kept.name == r.name)
+            && !pairs.iter().any(|(was, _)| was.name == r.name)
         {
-            dropped.push((FieldName::from(r.as_str()), n));
+            dropped.push((FieldName::from(r.name.as_str()), live.count() as u64));
         }
     }
+    // As the store: what `to` states otherwise, both shapes completed.
+    let (mut was, mut is) = (t.decl.clone(), m.clone());
+    st.complete(&mut was);
+    st.complete(&mut is.to);
+    let restated = is.restated(&was);
     let mut report = MigrationReport {
         ty: ty.clone(),
         from_schema_hash: t.schema_hash.clone(),
@@ -3172,6 +3212,7 @@ fn preflight(
         more: false,
         relations,
         carried,
+        restated,
     };
     let seed = serde_json::to_vec(&(&report, head.0, m)).unwrap_or_default();
     report.report_id = value::hex(&seed, 1);
@@ -4197,6 +4238,12 @@ impl Catalog for MockCatalog {
                 }
                 let head = Position(accepted.0.saturating_sub(1));
                 let report = preflight(&st, head, &migration, who)?;
+                // As the store: nor does it take away a mark set since.
+                if report.restated != shown.restated {
+                    return Err(invalid(format!(
+                        "`{ty}` changed since this migration was proposed; propose it again"
+                    )));
+                }
                 if !report.lossless {
                     return Err(lossy(&st, who, &migration, report));
                 }
