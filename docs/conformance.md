@@ -438,7 +438,12 @@ belongs in the suite, not beside one engine:
 
 **report names**
 
-- `a_migrations_report_is_answered_as_its_reader_may_know_it` — 013, 024 and 027, extended (lakelands#531): a migration's report names a conversion, a dropped field, a re-keyed type, a rewritten reference and a colliding key only where its reader may see the type and know of the field, and a sample key only of a record it is answered, in the refusal of an accept, of `migrate_apply` and of `propose` and in a preview, an author's own too; `more` says that the report holds more, and one who may see everything reads it whole without it; the id stays the whole report's, so a preview read trimmed is applied by it; a relation the migration removes is listed as dropped to one who sees the type
+- `a_migrations_report_is_answered_as_its_reader_may_know_it` — 013, 024 and 027, extended (lakelands#531): a migration's report names a conversion, a dropped field, a re-keyed type, a rewritten reference and a colliding key only where its reader may see the type and know of the field, and a sample key only of a record it is answered, in the refusal of an accept, of `migrate_apply` and of `propose` and in a preview, an author's own too; `more` says that the report holds more, and one who may see everything reads it whole without it; the id is made over what the reader is shown, so a preview read trimmed is applied by it (lakelands#644); a relation the migration removes is listed as dropped to one who sees the type
+
+**shown hash**
+
+- `a_schema_hash_is_that_of_the_shape_its_reader_is_shown` — 024, extended (lakelands#644): a schema hash answered to a reader is that of the declaration it is shown, without the fields and link fields it may not know of and without a view it is not described, in `describe`, a preview and a listed proposal; `more` is decided before the hashes, a report's id is made over what it shows and the head, the `to` hash is judged through the migration's renames, a stale proposal's `from` is that of the type it was made from; the accept, the log and the owner keep the whole hash
+- `a_stale_proposal_is_judged_by_the_names_it_was_made_with` — 024 and 006, extended (lakelands#644): a proposed migration made while a field bore its old name, listed after the field was renamed and is hidden under its new name, names it in neither its `to`, its report nor its hashes, and says `more`: the reader's grants are followed to the proposal's position
 
 **restated**
 

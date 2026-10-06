@@ -248,7 +248,10 @@ pub struct TypeLineage {
 pub struct TypeLifecycle {
     /// The declaration's version: one more for every change to it.
     pub version: u32,
-    /// Identifies the shape (`docs/decisions/007-schema-hash-covers-shape.md`).
+    /// Identifies the shape (`docs/decisions/007-schema-hash-covers-shape.md`)
+    /// as its reader is shown it: a reader kept from a field is answered
+    /// the hash without it, so a hash compares only between readers shown
+    /// the same shape.
     pub schema_hash: String,
     /// The fields the lake keeps an order index for, by its
     /// `sort_index.<type>` setting: a `find` ordered first by one of them

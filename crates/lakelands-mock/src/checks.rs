@@ -39,8 +39,8 @@ use lakelands_api::record::{Origin, Patch, Record, SourceRecord, Value};
 use lakelands_api::seam::FeedFilter;
 use lakelands_api::tools::{Door, tools};
 use lakelands_api::write::{
-    Declaration, FunctionDecl, ObjectSetDecl, Outcome, ProposalFilter, ProposalState,
-    ProposedWrite, Recompute, WriteOpts,
+    Declaration, FunctionDecl, Migration, MigrationReport, ObjectSetDecl, Outcome, ProposalFilter,
+    ProposalState, ProposedWrite, Recompute, WriteOpts,
 };
 use lakelands_api::{Catalog, LakeStore, WriteContext};
 use serde_json::json;
@@ -177,6 +177,8 @@ macro_rules! door_checks {
             a_reference_key_field_filled_from_the_key_must_name_a_live_record,
             key_components_and_source_ids_use_each_values_one_form,
             schema_hashes_and_proposal_ids_have_the_stores_form,
+            #[own_principals]
+            a_reader_is_answered_the_hash_of_the_shape_it_is_described,
             links_are_written_walked_and_held_to_their_relation,
             a_relation_declared_again_with_another_target_reshapes_its_links,
             a_migration_restates_what_its_to_states_otherwise,
@@ -2528,34 +2530,41 @@ pub async fn a_renamed_relation_keeps_its_edges(store: Arc<dyn LakeStore>) {
 }
 
 /// A proposed migration that renames a field and a relation waits while
-/// the owner renames both otherwise. Listed to a reviewer kept from the
-/// field, or from the relation's link field, by a grant on the name in
-/// force, its shape holds neither (lakelands#594), on the mock as on the
-/// store.
+/// the owner renames both otherwise, and `aside`, which the proposal retypes.
+/// Listed to a reviewer kept from a field, or from the relation's link
+/// field, by a grant on the name in force, its shape holds none of them
+/// (lakelands#594, lakelands#644), on the mock as on the store.
 pub async fn a_proposal_that_waited_hides_by_the_names_in_force(store: Arc<dyn LakeStore>) {
     use lakelands_api::write::Migration;
     let f = setup(store).await;
     let owner = &f.cast.owner;
-    let pad = |field: &str, relation: &str| -> lakelands_api::ontology::TypeDecl {
+    let pad = |field: &str, relation: &str, aside: &str| -> lakelands_api::ontology::TypeDecl {
         let text = |n: &str| json!({"name": n, "type": {"kind": "text"}});
         let cites = json!({"name": relation, "target": "pad", "cardinality": "many_to_many",
             "fields": [text("why")]});
         serde_json::from_value(
-            json!({"name": "pad", "fields": [text(field)], "relations": [cites]}),
+            json!({"name": "pad", "fields": [text(field), text(aside)], "relations": [cites]}),
         )
         .expect("a type")
     };
     let declared = f
         .catalog
-        .declare(owner, Declaration::Type(pad("memo", "cites")));
+        .declare(owner, Declaration::Type(pad("memo", "cites", "aside")));
     declared.await.expect("declaring `pad`");
-    let renames = |field: &str, relation: &str| Migration {
-        to: pad(field, relation),
-        renames: vec![("memo".into(), field.into())],
+    let renames = |field: &str, relation: &str, aside: &str| Migration {
+        to: pad(field, relation, aside),
+        renames: [("memo", field), ("aside", aside)]
+            .into_iter()
+            .filter(|(old, new)| old != new)
+            .map(|(old, new)| (old.into(), new.into()))
+            .collect(),
         relation_renames: vec![("cites".into(), relation.into())],
     };
+    // The proposal also retypes `aside`, so its report converts it.
+    let mut proposal = renames("note", "quotes", "aside");
+    proposal.to.fields[1].ty = FieldType::kind(StorageKind::Number);
     let write = ProposedWrite::Migrate {
-        migration: Box::new(renames("note", "quotes")),
+        migration: Box::new(proposal),
         report: Default::default(),
     };
     let waits = f.catalog.propose(owner, write, "other names".into()).await;
@@ -2563,7 +2572,7 @@ pub async fn a_proposal_that_waited_hides_by_the_names_in_force(store: Arc<dyn L
         Outcome::Proposed { proposal, .. } => proposal,
         other => panic!("a proposed migration is answered {other:?}"),
     };
-    let now = renames("remark", "refers");
+    let now = renames("remark", "refers", "margin");
     let report = f.catalog.migrate(owner, now.clone()).await;
     let id = report.expect("the preflight").data.report_id;
     let applied = f.catalog.migrate_apply(owner, now, &id).await;
@@ -2575,6 +2584,7 @@ pub async fn a_proposal_that_waited_hides_by_the_names_in_force(store: Arc<dyn L
     };
     for (on, kept, hidden) in [
         ("pad", none(&["remark"], None), "note"),
+        ("pad", none(&["margin"], None), "aside"),
         ("sys.link.pad.refers", none(&["why"], None), "why"),
         ("sys.link.pad.refers", none(&[], Some(Access::None)), "why"),
     ] {
@@ -5444,7 +5454,7 @@ pub async fn schema_hashes_and_proposal_ids_have_the_stores_form(store: Arc<dyn 
         label: None,
     };
     f.catalog
-        .declare(&f.cast.owner, Declaration::Type(open_by_partner))
+        .declare(&f.cast.owner, Declaration::Type(open_by_partner.clone()))
         .await
         .expect("the owner declares a view");
     let described = f
@@ -5456,6 +5466,36 @@ pub async fn schema_hashes_and_proposal_ids_have_the_stores_form(store: Arc<dyn 
         serde_json::to_value(&described.data).unwrap()["lifecycle"]["schema_hash"],
         "9d89b4ed75c087e803c3e7e8265443c00af7af43a32ad629b02e0f6da7414032",
         "a view type hashes over its conditions' typed form, to the same digest everywhere"
+    );
+    // A report's id is the SHA-256 of the report, its id left empty, and
+    // the head, in canonical form.
+    let tally = |fields: Vec<FieldDecl>| TypeDecl {
+        name: "tally".into(),
+        key: Vec::new(),
+        fields,
+        view: None,
+        ..open_by_partner.clone()
+    };
+    let owner = &f.cast.owner;
+    let declared = f
+        .catalog
+        .declare(owner, Declaration::Type(tally(vec![text("n")])));
+    declared.await.expect("the owner declares a type");
+    let m = Migration {
+        to: tally(vec![text("n"), text("note")]),
+        renames: Vec::new(),
+        relation_renames: Vec::new(),
+    };
+    let preview = f.catalog.migrate(owner, m).await.expect("a preview");
+    let report = MigrationReport {
+        report_id: String::new(),
+        ..preview.data.clone()
+    };
+    let made = json!({"report": report, "head": preview.position.0});
+    assert_eq!(
+        preview.data.report_id,
+        lakelands_api::canonical::sha256_hex(&made),
+        "a report's id is the SHA-256 of the report and the head"
     );
 
     f.write(&f.cast.owner, "INV-1", &[("status", json!("approved"))])
@@ -5522,6 +5562,74 @@ pub async fn schema_hashes_and_proposal_ids_have_the_stores_form(store: Arc<dyn 
         propose(Some("pay-once")).await.1,
         by_key,
         "a retry under the same key names the same proposal"
+    );
+}
+
+/// A reader kept from a field, or from a relation's target, is answered
+/// the hash of the declaration it is described, in `describe` and in its
+/// preview, and its preview's id is of what it is shown
+/// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`,
+/// extended).
+pub async fn a_reader_is_answered_the_hash_of_the_shape_it_is_described(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    // The clerk is kept from `secret`, the stranger from `partner`, the
+    // relation's target: each is answered the hash of what it is described.
+    let mut clerk = f.cast.clerk.clone();
+    clerk.grants.schema = true;
+    let mut seen = Vec::new();
+    for who in [&f.cast.owner, &clerk, &f.cast.stranger] {
+        let d = (f
+            .catalog
+            .describe_type(who, &ty(INVOICE), ReadAt::default())
+            .await)
+            .unwrap()
+            .data;
+        let field = |f: &lakelands_api::describe::FieldDescription| json!({"name": f.name, "type": f.ty, "required": f.required});
+        let fields: Vec<_> = d.fields.iter().map(field).collect();
+        let t = json!({"name": d.name, "key": d.access.key, "fields": fields,
+            "relations": d.relations, "view": d.view});
+        let t: TypeDecl = serde_json::from_value(t).unwrap();
+        let rebuilt = lakelands_api::shape::schema_hash(&t).unwrap();
+        assert_eq!(
+            d.lifecycle.schema_hash, rebuilt,
+            "{} is answered the hash of what it is described",
+            who.id
+        );
+        seen.push((rebuilt, t));
+    }
+    let hash = "b63567bce0ec4046d82237cc2fab92986b6a01b1a58afeb0a7b5beb29b0a4693";
+    assert_eq!(seen[0].0, hash, "the owner is answered the whole hash");
+    assert_ne!(seen[1].0, hash, "the clerk's shape is not the whole one");
+    // Its preview of the shape it is described: both hashes are that one's,
+    // and its id is not the owner's.
+    let to = Migration {
+        to: seen[1].1.clone(),
+        renames: Vec::new(),
+        relation_renames: Vec::new(),
+    };
+    // The owner's is the same migration, `secret` as the clerk's is put back.
+    let mut whole = to.clone();
+    let secret = seen[0]
+        .1
+        .fields
+        .iter()
+        .find(|x| x.name.as_str() == "secret");
+    whole.to.fields.extend(secret.cloned());
+    let shown = f.catalog.migrate(&clerk, to).await.unwrap().data;
+    let whole = f.catalog.migrate(&f.cast.owner, whole).await.unwrap().data;
+    assert_eq!(
+        (&shown.records_scanned, &shown.restated, shown.more),
+        (&whole.records_scanned, &whole.restated, false),
+        "the clerk and the owner preview one migration"
+    );
+    assert_eq!(
+        (&shown.from_schema_hash, &shown.to_schema_hash),
+        (&seen[1].0, &seen[1].0),
+        "the clerk's preview is answered the hashes of its shape"
+    );
+    assert_ne!(
+        shown.report_id, whole.report_id,
+        "the clerk's id is of what it is shown"
     );
 }
 

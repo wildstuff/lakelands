@@ -846,9 +846,10 @@ pub struct MigrationReport {
     /// a reader who may not see the type.
     #[serde(rename = "type")]
     pub ty: TypeName,
-    /// The schema hash before.
+    /// The schema hash before, of the shape the reader is shown, as
+    /// `describe` answers it.
     pub from_schema_hash: String,
-    /// The schema hash after.
+    /// The schema hash after, of the shape the reader is shown.
     pub to_schema_hash: String,
     /// Records examined.
     pub records_scanned: u64,
@@ -895,7 +896,9 @@ pub struct MigrationReport {
     /// nothing of what the migration removes, which is `dropped`.
     pub lossless: bool,
     /// Names this report; `migrate_apply` must repeat it. It is the id of
-    /// the whole report, whatever its reader is shown of it.
+    /// the report as its reader is shown it and of the head it was made
+    /// at: the SHA-256 of `{"report": …, "head": …}` in canonical form,
+    /// the report with this member empty.
     pub report_id: String,
     /// Whether the report holds more than this reader is shown: an answer
     /// says so, without a name. A logged and a stored report hold `false`.

@@ -822,6 +822,21 @@ fn head(w: &Writer) -> Position {
     w.tip.as_ref().map_or(Position::GENESIS, |t| t.0)
 }
 
+/// A migration report's id: named by what it says to its reader and where
+/// the lake stood, so that an apply after the lake moved is refused, and
+/// computed by its reader from what it holds, which names nothing hidden
+/// (024, extended).
+pub(crate) fn report_id(report: &MigrationReport, head: Option<Position>) -> String {
+    let report = MigrationReport {
+        report_id: String::new(),
+        ..report.clone()
+    };
+    lakelands_core::canonical::sha256_hex(&serde_json::json!({
+        "report": serde_json::to_value(&report).expect("a report serialises"),
+        "head": head.map_or(0, |p| p.0),
+    }))
+}
+
 /// The next position in an append that already holds `n` drafts.
 pub(crate) fn position_after(w: &Writer, n: usize) -> Position {
     let first = w.tip.as_ref().map_or(Position::GENESIS, |t| t.0.next());
@@ -1904,7 +1919,7 @@ impl Call<'_> {
     fn known_renames(&self, o: &Ontology, m: &Migration) -> Vec<(FieldName, FieldName)> {
         let mut m = m.clone();
         if let Ok(was) = o.ty(&m.to.name) {
-            rights::known_migration(self.who, was, &mut m, &[]);
+            rights::known_migration(self.who, was, &mut m);
         }
         m.renames
     }
@@ -2466,8 +2481,8 @@ impl Call<'_> {
 
     /// A report as the caller may know it (013, 024 and 027, extended):
     /// wherever one is answered or refuses a write, its reader is a reader
-    /// like any other, the author of its own preview too. The id stays the
-    /// whole report's, so a preview read trimmed is applied by it.
+    /// like any other, the author of its own preview too. Its id is made
+    /// over what it is shown, and an apply compares that.
     fn shown(
         &self,
         w: &Writer,
@@ -2485,6 +2500,8 @@ impl Call<'_> {
         w.ontology.complete(&mut m.to);
         let described = || describe::lake(&self.who.lake, &declared, self.who);
         rights::shown_report(self.who, was, &m, &mut report, described, sees, answered);
+        rights::shown_hashes(self.who, was, &m, &mut report);
+        report.report_id = report_id(&report, view.position());
         Ok(report)
     }
 
@@ -2885,15 +2902,8 @@ impl Call<'_> {
         report.references = plan.references.clone();
         report.sample_collisions = plan.collisions.clone();
         report.lossless &= plan.lossless;
-        // Named by what it says, the moves it would make and where the lake
-        // stood: an apply after the lake moved is refused.
         let listed = plan.listed();
-        report.report_id = String::new();
-        report.report_id = lakelands_core::canonical::sha256_hex(&serde_json::json!({
-            "report": serde_json::to_value(&report).expect("a report serialises"),
-            "rekeyed": serde_json::to_value(&listed).expect("moves serialise"),
-            "head": view.position().map_or(0, |p| p.0),
-        }));
+        report.report_id = report_id(&report, view.position());
         // A record of another type whose reference to a moved key the fold
         // rewrites: decided for the sets whose filter reads that field, a
         // page of the type at a time.
@@ -2942,7 +2952,7 @@ impl Call<'_> {
         let view = self.lake.engine.view(None)?;
         let now = self.lake.clock(&mut w);
         let plan = self.preflight_plan(&w, view.as_ref(), &m, Some(now))?;
-        if plan.report.report_id != report_id {
+        if self.shown(&w, &m, plan.report.clone())?.report_id != report_id {
             return Err(invalid(
                 "the lake moved since that preflight report; run the preflight again",
             ));

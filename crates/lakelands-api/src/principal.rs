@@ -167,32 +167,6 @@ pub struct Renamed {
     pub to: Option<TypeName>,
 }
 
-impl Renamed {
-    /// The entries of a migration written before the lake's entries
-    /// `since`, each begun at the name its old one bears after them: a
-    /// link type's by the entries of the second kind, a field's by its
-    /// type's. A proposal that waited while its relation or its field was
-    /// renamed is so judged by the grants on the name in force
-    /// (lakelands#594).
-    pub fn at_head(since: &[Renamed], mut entries: Vec<Renamed>) -> Vec<Renamed> {
-        for e in &mut entries {
-            for r in since {
-                match &r.to {
-                    Some(now) if r.ty == e.ty && e.to.is_some() => e.ty = now.clone(),
-                    None if r.ty == e.ty && e.to.is_none() => {
-                        for (from, _) in &mut e.renames {
-                            let named = r.renames.iter().find(|(old, _)| old == from);
-                            *from = named.map_or(from.clone(), |(_, now)| now.clone());
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        entries
-    }
-}
-
 /// The grants of one principal on one type.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeGrants {

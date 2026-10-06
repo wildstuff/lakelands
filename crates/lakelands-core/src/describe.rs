@@ -533,16 +533,16 @@ fn type_description(
         }
         _ => None,
     });
+    let view = (t.view.clone()).filter(|v| view_visible(v, declared, who));
+    // The hash of the shape as it is shown (024, extended).
+    let whole = d.schema_hash.as_deref().unwrap_or_default();
+    let schema_hash = crate::rights::shown_hash(who, t, view.is_some(), whole);
     Some(TypeDescription {
         name: t.name.clone(),
         description: t.description.clone(),
         label: t.label.clone(),
         language: t.language.clone(),
-        view: t
-            .view
-            .clone()
-            .filter(|v| view_visible(v, declared, who))
-            .map(|v| *v),
+        view: view.map(|v| *v),
         annotations: t.annotations.clone(),
         relations: t
             .relations
@@ -568,7 +568,7 @@ fn type_description(
         },
         lifecycle: TypeLifecycle {
             version: d.version,
-            schema_hash: d.schema_hash.clone().unwrap_or_default(),
+            schema_hash,
             sorted: vec![],
             indexed: vec![],
             kept: None,

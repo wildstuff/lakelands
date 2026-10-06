@@ -448,7 +448,10 @@ impl Catalog for Doors {
         who: &Principal,
         filter: ProposalFilter,
     ) -> Result<Reply<Vec<Proposal>>> {
-        self.read(who, filter.at, move |r| r.proposals(&filter))
+        // A proposed migration is judged with the grants as they stood
+        // where it was proposed: the listing follows them there.
+        let asked = who.clone();
+        self.read(who, filter.at, move |r| r.proposals(&filter, &asked))
             .await
     }
 
