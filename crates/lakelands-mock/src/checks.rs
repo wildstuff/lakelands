@@ -36,7 +36,7 @@ use lakelands_api::principal::{Access, Grants, Principal, PrincipalKind, TypeGra
 use lakelands_api::query::{Pattern, Search, SearchMode, Step, VectorTerm, Walk};
 use lakelands_api::read::{After, Direction, Find, Found, Get, Order, OrderBy, ReadAt};
 use lakelands_api::record::{Origin, Patch, Record, SourceRecord, Value};
-use lakelands_api::seam::FeedFilter;
+use lakelands_api::seam::{FEED_EXAMINED, FeedFilter};
 use lakelands_api::tools::{Door, tools};
 use lakelands_api::write::{
     Declaration, FunctionDecl, ObjectSetDecl, Outcome, ProposalFilter, ProposalState,
@@ -70,6 +70,11 @@ use crate::stream;
 /// A check marked `#[own_principals]` makes principals beside the cast,
 /// which the resolver behind a network door does not know: it is ignored
 /// there too, saying why, and runs on every lake reached in process.
+///
+/// A check marked `#[in_process_feed]` reads where one feed poll stops,
+/// which holds for a lake's own feed. Over a network door the server's
+/// stream reads on to a match or to the head, a bounded poll at a time
+/// (`docs/seams.md` §`ChangeFeed`), so it is ignored there, saying why.
 ///
 /// A check marked `#[views]` reads a view's computed records, which the
 /// mock does not compute. Given `mock` after `$block_on`, as the mock's
@@ -165,6 +170,8 @@ macro_rules! door_checks {
             a_principal_of_another_lake_is_refused,
             the_feed_is_the_log_by_position,
             the_feed_filtered_by_key_answers_those_records_events,
+            #[in_process_feed]
+            a_feed_poll_examines_at_most_the_bound,
             a_step_over_an_undeclared_relation_is_refused,
             a_step_naming_an_inverse_walks_the_relation_the_other_way,
             a_dependent_field_declared_clear_is_cleared_with_its_input,
@@ -226,6 +233,13 @@ macro_rules! door_checks {
     (@one remote, $new:expr, $block_on:path, [own_principals] $name:ident) => {
         #[test]
         #[ignore = "makes principals of its own, which a network door's resolver does not know"]
+        fn $name() {
+            $block_on($crate::checks::$name(($new)()));
+        }
+    };
+    (@one remote, $new:expr, $block_on:path, [in_process_feed] $name:ident) => {
+        #[test]
+        #[ignore = "reads where one poll stops; the server's stream reads on to a match or the head"]
         fn $name() {
             $block_on($crate::checks::$name(($new)()));
         }
@@ -4759,6 +4773,78 @@ pub async fn the_feed_is_the_log_by_position(store: Arc<dyn LakeStore>) {
     // suite's to claim, on every engine
     // (`rebuilding_the_projection_changes_nothing_in_the_feed`): a rebuild
     // is the host's, and no door serves it.
+}
+
+/// A poll examines at most `FEED_EXAMINED` events (lakelands#558): one
+/// that matches nothing answers no events and `next` at the bound, short
+/// of the head, and following `next` reaches the head; a match at the last
+/// position a poll examines is in it, and not in the poll that stops just
+/// before it; and no `limit` answers more than the bound.
+pub async fn a_feed_poll_examines_at_most_the_bound(store: Arc<dyn LakeStore>) {
+    let f = setup(store).await;
+    let from = f.head().await.next();
+    let records = (0..4200).map(|i| SourceRecord {
+        upstream: None,
+        ty: ty(INVOICE),
+        key: key(&format!("B-{i}")),
+        fields: patch(&[("amount", json!(format!("{i}.00")))]),
+        seen_at: None,
+    });
+    let (bank, records) = ("bank".into(), stream::of(records.collect()));
+    let ingested = f.catalog.ingest(&f.cast.importer, &bank, records).await;
+    let acks = stream::collect(&mut ingested.unwrap()).await;
+    assert!(acks.iter().all(Result::is_ok), "{acks:?}");
+    let (feed, bound) = (f.store.feed(), u64::from(FEED_EXAMINED));
+    let filter = |kinds: &[&str], keys: &[&str]| FeedFilter {
+        kinds: kinds.iter().map(|k| (*k).to_owned()).collect(),
+        keys: keys.iter().map(|k| key(k)).collect(),
+        ..FeedFilter::default()
+    };
+    let none = filter(&["trigger_fired"], &[]);
+    let (mut at, mut polls) = (from, 0);
+    loop {
+        let b = feed.poll(at, &none, 100).await.unwrap();
+        assert!(b.events.is_empty());
+        assert_eq!(
+            b.next.0,
+            (at.0 + bound).min(b.head.0 + 1),
+            "a poll from {at}"
+        );
+        (at, polls) = (b.next, polls + 1);
+        if at > b.head {
+            break;
+        }
+    }
+    assert_eq!(polls, (at.0 - from.0).div_ceil(bound));
+    let last = filter(&[], &["B-4199"]);
+    let (mut at, mut p) = (from, None);
+    while p.is_none() {
+        let b = feed.poll(at, &last, 1).await.unwrap();
+        p = b.events.first().map(|e| e.position);
+        assert!(
+            p.is_some() || b.next <= b.head,
+            "`B-4199`'s event is in the log"
+        );
+        at = b.next;
+    }
+    let p = p.expect("found");
+    let mut b = feed.poll(Position(p.0 + 1 - bound), &last, u32::MAX).await;
+    assert_eq!(
+        b.as_ref().unwrap().events.last().map(|e| e.position),
+        Some(p)
+    );
+    assert_eq!(b.as_ref().unwrap().next, p.next());
+    b = feed.poll(Position(p.0 - bound), &last, u32::MAX).await;
+    assert!(b.as_ref().unwrap().events.is_empty());
+    assert_eq!(b.unwrap().next, p);
+    let all = feed
+        .poll(from, &FeedFilter::default(), u32::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        (all.events.len() as u64, all.next.0),
+        (bound, from.0 + bound)
+    );
 }
 
 /// The feed filtered by key answers only the events of those records, in

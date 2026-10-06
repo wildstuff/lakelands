@@ -127,7 +127,7 @@ use lakelands_api::ontology::{
 };
 use lakelands_api::query::{Pattern, Projection, QueryResult, Search, SearchMode, Walk};
 use lakelands_api::read::{AggFunc, Direction, OrderBy};
-use lakelands_api::seam::{FeedFilter, SETTING_TYPE, Seams};
+use lakelands_api::seam::{FEED_EXAMINED, FeedFilter, SETTING_TYPE, Seams};
 use lakelands_api::{
     Find, Found, LakeStore, Position, Principal, ReadAt, RecordKey, SourceId, SourceRecord,
     TypeName,
@@ -147,7 +147,7 @@ use crate::links::{link_key, link_type_name};
 check!(
     /// A large lake goes through ingest, the feed and export in bounded memory.
     STREAMS = a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_does_not_grow_with_it,
-    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification and its import into a new lake, each page of a walk of a type through find, the first pages of a walk ordered by an indexed field, with and without writes between them, each also reading its page and a few rows more, not the type, a rebuild, a reopen, a three-hop walk over link records, a three-hop walk over a derived relation, a hybrid search with k = 10 over every record's vector, without and with a vector index asked for, the ten records of highest degree over the whole type, and components refused at the lake's max_graph_nodes, hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB, and the search answers what it must",
+    "016, the change feed and 030: ingest reads its source only as windows commit, and ingest, the feed read from the start, an export with its verification and its import into a new lake, each page of a walk of a type through find, the first pages of a walk ordered by an indexed field, with and without writes between them, each also reading its page and a few rows more, not the type, a rebuild, a reopen, a three-hop walk over link records, a three-hop walk over a derived relation, a hybrid search with k = 10 over every record's vector, without and with a vector index asked for, the ten records of highest degree over the whole type, and components refused at the lake's max_graph_nodes, hold as much memory at four times a lake's size as at its first size, give or take a quarter and 1 MiB, and the search answers what it must; and (lakelands#558) a feed poll examines at most FEED_EXAMINED events: one whose filter matches nothing answers none and a next short of the head, and following next reaches it, the checkpoints are each answered once, an event is in the poll whose last examined position it is and not in the one before, and no limit answers more",
     given,
     embedding
 );
@@ -1626,6 +1626,86 @@ impl Size<'_> {
     }
 }
 
+/// A poll examines at most [`FEED_EXAMINED`] events. A filter that
+/// matches nothing moves `next` by the bound a poll and reaches the head
+/// in as many polls as the bound goes into the log; the checkpoints,
+/// further apart than the bound, are each answered once by following
+/// `next`; the checkpoint `at` is in the poll whose last event it is and
+/// not in the one that stops just before it; and no `limit` answers more.
+async fn bounded(store: &dyn LakeStore, log: &Log, at: Position) -> Result<(), Failure> {
+    let (feed, bound) = (store.feed(), u64::from(FEED_EXAMINED));
+    let kind = |k: &str| FeedFilter {
+        kinds: vec![k.into()],
+        ..FeedFilter::default()
+    };
+    let (none, checkpoints) = (kind("trigger_fired"), kind("checkpoint"));
+    for (filter, limit) in [(&none, 100), (&checkpoints, 1)] {
+        let (mut from, mut polls, mut found) = (Position::GENESIS, 0, Vec::new());
+        loop {
+            let b = feed
+                .poll(from, filter, limit)
+                .await
+                .must("polling the feed")?;
+            let to = (from.0 + bound).min(b.head.0 + 1);
+            ensure!(
+                b.next.0 <= to && (b.next.0 == to || !b.events.is_empty()),
+                "a poll from {from} with {filter:?} answered {} events and next {}; it examines \
+                 up to {to}, the bound of {bound} or the head, unless it finds its limit first",
+                b.events.len(),
+                b.next
+            );
+            found.extend(b.events.iter().map(|e| e.position));
+            (from, polls) = (b.next, polls + 1);
+            if from > b.head {
+                break;
+            }
+        }
+        let (want, said) = match limit {
+            100 => (vec![], polls == log.events.div_ceil(bound)),
+            _ => (
+                found.clone(),
+                found.len() as u64 == log.checkpoints && found.contains(&at),
+            ),
+        };
+        ensure!(
+            said && found == want,
+            "following the feed with {filter:?} answered {found:?} in {polls} polls over {} \
+             events; a poll examines at most {bound} events and the log holds {} checkpoints",
+            log.events,
+            log.checkpoints
+        );
+    }
+    if at.0 >= bound {
+        let at_end = feed.poll(Position(at.0 + 1 - bound), &checkpoints, u32::MAX);
+        let at_end = at_end.await.must("polling up to the checkpoint")?;
+        let short = feed.poll(Position(at.0 - bound), &checkpoints, u32::MAX);
+        let short = short.await.must("polling short of the checkpoint")?;
+        ensure!(
+            at_end.events.last().map(|e| e.position) == Some(at)
+                && at_end.next == at.next()
+                && !short.events.iter().any(|e| e.position == at)
+                && short.next == at,
+            "the checkpoint at {at} is the last event a poll {bound} events before it examines, \
+             and the next poll's first; they answered next {} and {}",
+            at_end.next,
+            short.next
+        );
+    }
+    let every = FeedFilter::default();
+    let all = feed.poll(Position::GENESIS, &every, u32::MAX).await;
+    let all = all.must("polling the feed with no limit")?;
+    let n = bound.min(log.events);
+    ensure!(
+        all.events.len() as u64 == n && all.next.0 == n,
+        "a poll from 0 with a limit of {} answers {n} events and next {n}, the bound; it \
+         answered {} and next {}",
+        u32::MAX,
+        all.events.len(),
+        all.next
+    );
+    Ok(())
+}
+
 /// The report file, beside the check's scratch directory.
 fn report_file(scratch: &Path) -> PathBuf {
     scratch.with_extension("jsonl")
@@ -1653,8 +1733,9 @@ async fn a_large_lake_goes_through_ingest_the_feed_and_export_in_memory_that_doe
     for records in [first, first * u64::from(GROWTH)] {
         size.ingest(store.as_ref(), from, records - from).await?;
         size.link(store.as_ref(), from, records).await?;
-        store.checkpoint().await.must("taking a checkpoint")?;
+        let at = store.checkpoint().await.must("taking a checkpoint")?;
         let log = size.feed(store.as_ref(), records).await?;
+        bounded(store.as_ref(), &log, at).await?;
         let dir = given.scratch.join(format!("export-{records}"));
         size.export(store.as_ref(), records, &log, &dir).await?;
         size.find_walk(store.as_ref(), records).await?;

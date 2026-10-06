@@ -15,7 +15,7 @@ use lakelands_api::id::{Position, RecordKey, SourceId, TypeName, Version};
 use lakelands_api::location::Limits;
 use lakelands_api::read::Get;
 use lakelands_api::record::SourceRecord;
-use lakelands_api::seam::FeedFilter;
+use lakelands_api::seam::{FEED_EXAMINED, FeedFilter};
 use lakelands_api::write::{MigrationReport, WriteOpts};
 use lakelands_api::{LakeId, LakeStore, Principal, Timestamp, WriteContext};
 use lakelands_client::{ApiKey, RemoteConfig, RemoteLake};
@@ -372,6 +372,56 @@ async fn poll_reads_what_the_stores_own_feed_reads() {
     assert_eq!(positions.last(), Some(&written.position()));
     assert_eq!(next.next, Position(written.position().0 + 1));
     assert_eq!(remote.head().await.unwrap(), written.position());
+}
+
+/// A poll over the wire whose filter matches nothing reaches the head and
+/// ends: the server reads the log a bounded poll at a time
+/// (lakelands#558). No `limit` answers more than the bound, as on the
+/// store's own feed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_poll_over_the_wire_that_matches_nothing_reaches_the_head() {
+    let store = common::memory_lake("finance", Limits::default()).await;
+    let (addr, keys) = common::serve(store.clone()).await;
+    let remote: Arc<dyn LakeStore> = Arc::new(common::remote(addr, store.lake(), keys));
+    let f = setup(store.clone()).await;
+    let records = (0..4200).map(|i| SourceRecord {
+        upstream: None,
+        ty: "invoice".into(),
+        key: RecordKey::from(format!("B-{i}").as_str()),
+        fields: patch(&[("amount", json!(format!("{i}.00")))]),
+        seen_at: None,
+    });
+    let records = lakelands_mock::stream::of(records.collect());
+    let bank = SourceId::from("bank");
+    let mut acks = f
+        .catalog
+        .ingest(&f.cast.importer, &bank, records)
+        .await
+        .unwrap();
+    let acks = lakelands_mock::stream::collect(&mut acks).await;
+    assert!(acks.iter().all(Result::is_ok), "{acks:?}");
+    let head = store.head().await.unwrap();
+    assert!(head.0 > u64::from(FEED_EXAMINED));
+    let none = FeedFilter {
+        kinds: vec!["trigger_fired".into()],
+        ..FeedFilter::default()
+    };
+    let polled = remote.feed().poll(Position(0), &none, 10).await.unwrap();
+    assert!(polled.events.is_empty());
+    assert_eq!((polled.next, polled.head), (head.next(), head));
+    let all = FeedFilter::default();
+    let ours = remote
+        .feed()
+        .poll(Position(0), &all, u32::MAX)
+        .await
+        .unwrap();
+    let theirs = store
+        .feed()
+        .poll(Position(0), &all, u32::MAX)
+        .await
+        .unwrap();
+    assert_eq!(ours.events.len() as u32, FEED_EXAMINED);
+    assert_eq!(ours, theirs);
 }
 
 /// An export through a client is the served store's own, byte for byte:

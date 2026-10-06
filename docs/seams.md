@@ -1203,10 +1203,17 @@ extended).
 `poll(from, filter, limit) -> batch` and `ack(consumer, through)`. The
 feed is the log filtered by kind and type, read from a position
 (`docs/decisions/004-the-change-feed-is-the-log.md`). `poll` answers at
-once, possibly empty, never waiting for new events:
+once, possibly empty, never waiting for new events. It stops at `limit`
+matches, at the head, or once it has examined `FEED_EXAMINED` (4 096,
+`lakelands_api::seam`) events, matched or not, whichever comes first,
+and answers `next` there. So a poll may answer no events with `next` at
+or below `head`: an empty batch is not the end of the log. A consumer is
+caught up when `next` is past `head`, and reads on at once until then
+(suite: `STREAMS`, which follows the feed of its large lake with a
+filter that matches nothing and one that matches its checkpoints):
 
-- `events`: at most `limit` events (a `limit` of 0 is read as 1) from
-  `from` up to the head, each verified as it is read, in position order,
+- `events`: at most `limit` events (a `limit` of 0 is read as 1, and one
+  above `FEED_EXAMINED` as `FEED_EXAMINED`) from `from` up to the head, each verified as it is read, in position order,
   whose kind is one of `filter.kinds` and whose type is one of
   `filter.types`; an empty list in the filter admits every kind or every
   type. An event has a type when it is a `record_*`, `trigger_fired` or
@@ -1239,7 +1246,9 @@ once, possibly empty, never waiting for new events:
     `a_key_filter_does_not_follow_a_rekey`).
 
   A key filter reads the log from `from` as every filter does, so one
-  record's history asked for from position 0 reads the whole log.
+  record's history asked for from position 0 reads the whole log, a
+  bounded poll at a time; an index of the log by kind, type or key would
+  take that away (lakelands#678).
   `lakelands-client` refuses a filter with keys as invalid, naming
   `keys`, until the REST feed takes them.
 
@@ -1256,6 +1265,11 @@ once, possibly empty, never waiting for new events:
   reads the record as of the position before.
 - `next`: the position after the last event examined, matched or not,
   which is where the next poll starts.
+  `lakelands-client`'s `poll` answers at most `FEED_EXAMINED` events as
+  well, but the server's stream behind it reads on to a match or to the
+  head, one bounded poll at a time, so a remote poll whose filter matches
+  little may examine up to the head on the server. The stream's
+  `: next` keeps its meaning: caught up.
 - `head`: the lake's last position when the poll began.
 
 The consumer keeps the position it has read up to. The store's own feed

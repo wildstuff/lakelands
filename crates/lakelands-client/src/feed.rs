@@ -15,7 +15,7 @@ use hyper::Method;
 use lakelands_api::error::{Error, Result};
 use lakelands_api::event::Event;
 use lakelands_api::id::Position;
-use lakelands_api::seam::{ChangeFeed, FeedBatch, FeedFilter};
+use lakelands_api::seam::{ChangeFeed, FEED_EXAMINED, FeedBatch, FeedFilter};
 
 use crate::wire::{Call, Wire, enc, position_of};
 
@@ -158,6 +158,9 @@ impl ChangeFeed for RemoteFeed {
             });
         }
         let key = wire.feed_key()?;
+        // As the store's poll, at most `FEED_EXAMINED` events; the server
+        // examines up to the head, one bounded poll at a time.
+        let limit = limit.min(FEED_EXAMINED);
         let words = |w: &[String]| enc(&w.join(","));
         let mut query = format!("from={}", from.0);
         if !filter.kinds.is_empty() {

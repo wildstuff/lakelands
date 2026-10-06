@@ -642,17 +642,34 @@ pub async fn log_events(
     events_from(store, Position::GENESIS).await
 }
 
-/// The lake's events from `from` on, oldest first: up to 10 000.
+/// The lake's events from `from` on, oldest first.
 pub async fn events_from(
     store: &dyn LakeStore,
     from: Position,
 ) -> Result<Vec<lakelands_api::event::Event>, Failure> {
-    let all = lakelands_api::seam::FeedFilter::default();
-    let polled = store.feed().poll(from, &all, 10_000).await;
-    Ok(polled.must(&format!("reading the log from {from}"))?.events)
+    followed(store, from, &lakelands_api::seam::FeedFilter::default()).await
 }
 
-/// The lake's events after `after`, oldest first: up to 10 000.
+/// The events `filter` admits from `from` to the head, oldest first: the
+/// feed followed by `next`, since a poll examines a bounded part of it.
+pub async fn followed(
+    store: &dyn LakeStore,
+    mut from: Position,
+    filter: &lakelands_api::seam::FeedFilter,
+) -> Result<Vec<lakelands_api::event::Event>, Failure> {
+    let mut events = Vec::new();
+    loop {
+        let polled = store.feed().poll(from, filter, u32::MAX).await;
+        let batch = polled.must(&format!("reading the feed from {from} with {filter:?}"))?;
+        events.extend(batch.events);
+        if batch.next > batch.head || batch.next == from {
+            return Ok(events);
+        }
+        from = batch.next;
+    }
+}
+
+/// The lake's events after `after`, oldest first.
 pub async fn events_after(
     store: &dyn LakeStore,
     after: Position,
@@ -735,10 +752,7 @@ pub async fn outputs_from(
         kinds: vec!["output_recorded".into()],
         ..Default::default()
     };
-    let polled = store.feed().poll(from, &outputs, u32::MAX).await;
-    Ok(polled
-        .must("reading the recorded outputs from the feed")?
-        .events)
+    followed(store, from, &outputs).await
 }
 
 /// A view `name` over `invoice`, keyed by `partner`: `total` the sum of

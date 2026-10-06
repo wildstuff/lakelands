@@ -101,7 +101,10 @@ way: the doors hold the `PrincipalResolver`, and the store provides the
   `docs/decisions/013-verbs-run-by-declared-risk.md`.
 - **`ChangeFeed`.** The host reads the store's feed: the log, filtered
   by kind and type, from a position; each poll answers at once with the
-  position to poll from next. It acknowledges on its own side. The host keeps the
+  position to poll from next. A poll examines at most `FEED_EXAMINED`
+  (4 096) events, so it may answer none short of the head: the host is
+  caught up when `next` is past `head`, not when a batch is empty. It
+  acknowledges on its own side. The host keeps the
   position it has read up to; the store keeps no consumer state. A relay onto a message bus is the
   host's code, never Lakelands'; the dedup key of a change is
   `{lake}:{position}`. For webhooks, `lakelands serve` has a consumer of

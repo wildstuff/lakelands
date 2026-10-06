@@ -17,7 +17,9 @@ use lakelands_api::location::Location;
 use lakelands_api::ontology::{FieldDecl, ValueTypeDecl};
 use lakelands_api::principal::WriteContext;
 use lakelands_api::query::{Hits, Pattern, QueryResult, Search};
-use lakelands_api::seam::{ChangeFeed, FeedBatch, FeedFilter, Seams, VerbInvocation};
+use lakelands_api::seam::{
+    ChangeFeed, FEED_EXAMINED, FeedBatch, FeedFilter, Seams, VerbInvocation,
+};
 use lakelands_api::write::{
     AgeReport, CompactReport, Declaration, Migration, MigrationReport, Outcome, Proposal,
     ProposalFilter, ProposedWrite, PurgeReport, Recompute, ValueTypeReport, WriteOpts,
@@ -748,15 +750,17 @@ impl ChangeFeed for Feed {
             let want = limit.max(1) as usize;
             let mut events = Vec::new();
             let mut next = from;
-            // Read in batches, and stop at `limit` matches or the head:
-            // nothing past the last position examined is read or verified.
-            'read: while next <= head && events.len() < want {
-                let batch = lake.read_events(next, want.clamp(64, 1024) as u32)?;
+            // Read in batches to `limit` matches or to `last`, the head or the
+            // bound: nothing past the last position examined is read or verified.
+            let last = Position(from.0.saturating_add(u64::from(FEED_EXAMINED) - 1)).min(head);
+            'read: while next <= last && events.len() < want {
+                let room = (last.0 - next.0 + 1).min(want.clamp(64, 1024) as u64);
+                let batch = lake.read_events(next, room as u32)?;
                 if batch.is_empty() {
                     break;
                 }
                 for e in batch {
-                    if e.position > head {
+                    if e.position > last {
                         break 'read;
                     }
                     next = e.position.next();

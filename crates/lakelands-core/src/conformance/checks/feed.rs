@@ -13,7 +13,7 @@ use serde_json::json;
 
 use crate::conformance::Failure;
 use crate::conformance::fixture::{
-    Lake, Must, field_access, log_events, patch, source_record, sourced, type_of, upsert,
+    Lake, Must, field_access, followed, log_events, patch, source_record, sourced, type_of, upsert,
     write_verb,
 };
 
@@ -82,12 +82,7 @@ async fn invoices(store: &dyn LakeStore) -> Result<Lake, Failure> {
 }
 
 async fn all_events(store: &dyn LakeStore, from: Position) -> Result<Vec<Event>, Failure> {
-    Ok(store
-        .feed()
-        .poll(from, &FeedFilter::default(), u32::MAX)
-        .await
-        .must("reading the feed")?
-        .events)
+    followed(store, from, &FeedFilter::default()).await
 }
 
 check!(
@@ -560,12 +555,7 @@ fn filter(kinds: &[&str], types: &[&str], keys: &[&str]) -> FeedFilter {
 }
 
 async fn polled(store: &dyn LakeStore, filter: FeedFilter) -> Result<Vec<Event>, Failure> {
-    Ok(store
-        .feed()
-        .poll(Position::GENESIS, &filter, 10_000)
-        .await
-        .must(&format!("reading the feed with {filter:?}"))?
-        .events)
+    followed(store, Position::GENESIS, &filter).await
 }
 
 /// Whether an event is about the record `key` of one of `types` (any type
