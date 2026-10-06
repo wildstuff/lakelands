@@ -1333,6 +1333,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
             | Refusal::TooLarge { .. }
             | Refusal::Migration { .. }
             | Refusal::Decided
+            | Refusal::Unanswered { .. }
             | Refusal::OutOfRange { .. } => {}
         }
     }
@@ -1354,6 +1355,7 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
                     report: Box::new(migration_report()),
                 },
                 Refusal::Decided,
+                Refusal::Unanswered { message: message() },
                 Refusal::OutOfRange { head: Position(1) },
             ],
             Some("refusal"),

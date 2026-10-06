@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use lakelands_api::error::{Error, Refusal};
+use lakelands_api::error::{Error, Refusal, THE_EXECUTOR};
 
 /// A failure, for a person.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,6 +80,14 @@ impl From<Error> for Failure {
                     "fix the records the report names, then run the migration again".to_owned()
                 }
                 Refusal::Decided => "list the proposals to see how it was decided".to_owned(),
+                // Waiting helps only a call whose executor still runs.
+                Refusal::Unanswered { .. } => {
+                    "a retry under this key runs nothing: if the call's executor is still \
+                     running, retry once it has answered; if the first answer said its executor \
+                     was not handed the call, call the verb again under another key or with \
+                     none, or propose the call again"
+                        .to_owned()
+                }
                 Refusal::OutOfRange { head } => format!("ask for a position at or before {head}"),
             },
             Error::NotFound { .. } => {
@@ -94,6 +102,13 @@ impl From<Error> for Failure {
                 "nothing was written; this cannot run until the lake's operator binds it in the host's configuration"
                     .to_owned()
             }
+            // A call of an external verb that failed around its hand-out:
+            // sent again as it was, it could run twice, or run nothing.
+            Error::Unavailable { message } if message.contains(THE_EXECUTOR) => {
+                "the call is in the log: do what the message says, and call the verb again only \
+                 where it says the executor was not handed the call"
+                    .to_owned()
+            }
             Error::Unavailable { .. } => {
                 "wait and retry, or check that no other process holds the lake".to_owned()
             }
@@ -102,5 +117,29 @@ impl From<Error> for Failure {
             what: e.to_string(),
             todo,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A call of an external verb that failed around its hand-out, in the
+    /// store's words (`writes::not_handed`, the recording's failure), is
+    /// not advised to retry; another `unavailable` is.
+    #[test]
+    fn a_call_that_failed_around_its_hand_out_is_not_advised_to_retry() {
+        let executor = THE_EXECUTOR;
+        for said in [
+            format!("the commit failed; {executor} was not handed this call: call the verb again"),
+            format!("{executor} answered this call with null, and recording its answer failed: x"),
+        ] {
+            let todo = Failure::from(Error::Unavailable { message: said }).todo;
+            assert!(!todo.contains("retry"), "{todo}");
+        }
+        let other = Failure::from(Error::Unavailable {
+            message: "held".into(),
+        });
+        assert!(other.todo.starts_with("wait and retry"), "{}", other.todo);
     }
 }

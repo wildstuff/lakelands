@@ -513,15 +513,28 @@ So the separators are unambiguous.
   `procedure.name` is `aging:<rule>`, so a reader recognises it. The
   store appends nothing for a transition whose id is already in the
   lake: aging a date twice writes it once.
+- **A verb's recorded answer**: `SHA-256("lakelands:output:v1" ‖ 0x00 ‖
+  lake ‖ 0x00 ‖ position)`, where `position` is that of the event that
+  made the verb due (its `verb_called`, or the `write_accepted` of its
+  acceptance), in decimal digits. Such an event is the `output_recorded`
+  of a verb's executor; a position has one. A retry under the call's key
+  finds the answer by this id, however far the log has grown.
+- **An acceptance**: `SHA-256("lakelands:accepted:v1" ‖ 0x00 ‖ lake ‖
+  0x00 ‖ proposal)`, the `write_accepted` of that proposal; a proposal is
+  accepted once, and an accept sent again finds it by this id.
 - **Every other event**: any id not used before in the lake. Lakelands'
   store derives it as `SHA-256("lakelands:event:v1" ‖ 0x00 ‖ lake ‖ 0x00
   ‖ position)`, the position in decimal digits: a position is used once
   in a lake, so the id is unique without a source of randomness. A
   reader never recomputes these ids; it only requires them unique.
 
-The aging id is a new derivation for an event kind version 1 already
-has; it adds no kind, member or encoding, so the format version stays 1
-(§6). A reader that does not recompute it still reads the event.
+The aging, answer and acceptance ids are new derivations for event kinds
+version 1 already has; they add no kind, member or encoding, so the
+format version stays 1 (§6). A reader that does not recompute them still
+reads the event. In a lake written before them, a verb's answers and the
+acceptances stand under positional ids: a retry there finds no answer and
+is refused as `unanswered`, and an accept sent again is `decided`;
+nothing runs twice.
 
 The events a store appends as consequences of one write (a verb's
 writes, a fired trigger, an accepted proposal's write) take positional

@@ -8,7 +8,9 @@ use std::sync::Arc;
 use lakelands_api::event::EventBody;
 use lakelands_api::ontology::StorageKind;
 use lakelands_api::write::{ProposalFilter, ProposalState, ProposedWrite};
-use lakelands_api::{Error, LakeStore, Outcome, Position, ProposalId, Refusal, Version, WriteOpts};
+use lakelands_api::{
+    Error, LakeStore, Outcome, Position, ProposalId, RecordKey, Refusal, Version, WriteOpts,
+};
 use serde_json::json;
 
 use crate::conformance::Failure;
@@ -684,7 +686,7 @@ check!(
     /// An external verb's output is recorded and the verb runs once; a
     /// retry answers the first call's outcome, its position and output.
     EXECUTOR_RECORDED = an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_position,
-    "seams, VerbExecutor, and 013: `describe` says the bound executor is bound; the executor's answer is recorded as output_recorded caused by the event that made the verb due and returned in the outcome's output; a failure is recorded as {\"error\": …} at a real position; a retry of the same call answers the first outcome, its position and output, and like a rebuild runs nothing again"
+    "seams, VerbExecutor, and 013: `describe` says the bound executor is bound; the executor's answer is recorded as output_recorded caused by the event that made the verb due and returned in the outcome's output; a failure is recorded as {\"error\": …} at a real position; a retry of the same call answers the first outcome, its position and output, `null` included, and like a rebuild runs nothing again"
 );
 
 async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_position(
@@ -698,7 +700,8 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
         .await?;
     l.declare_json(json!({
         "declare": "verb", "name": "dispatch", "on": "job", "risk": "low",
-        "payload": [{"name": "fail", "type": {"kind": "boolean"}}],
+        "payload": [{"name": "fail", "type": {"kind": "boolean"}},
+                    {"name": "null", "type": {"kind": "boolean"}}],
         "effect": "external", "executor": EXECUTOR}))
         .await?;
     let said = l.executor_of("dispatch").await?;
@@ -767,6 +770,21 @@ async fn an_external_verbs_output_or_failure_is_recorded_and_it_runs_once_per_po
         executed(key)
     );
 
+    // An answer of `null` is an answer: a retry answers it.
+    let null = WriteOpts {
+        idempotency_key: Some(IdempotencyKey::from("dispatch-null")),
+        ..WriteOpts::default()
+    };
+    let first = dispatch(json!({"null": true}), null.clone()).await;
+    let again = dispatch(json!({"null": true}), null).await;
+    ensure!(
+        matches!(&first, Ok(Outcome::Applied { output: Some(o), .. }) if o.is_null())
+            && again == first
+            && executed(key) == 2,
+        "an executor that answered `null` is answered: the call and its retry answer \
+         `applied` with that output, run once; they answered {first:?} and {again:?}"
+    );
+
     let failed = dispatch(json!({"fail": true}), WriteOpts::default())
         .await
         .must("calling `dispatch` so that its executor fails")?;
@@ -817,6 +835,19 @@ check!(
     /// acceptance too.
     RETRY_PROPOSED_PAST_ACCEPT = a_retried_proposed_call_answers_its_proposal_after_it_is_accepted,
     "013 and 015: a retry of a call that was proposed answers the proposal, its first outcome, after the proposal was accepted and a host write named the accepted call as its cause"
+);
+
+check!(
+    /// An accept sent again answers by the verb as it stood at the
+    /// acceptance.
+    ACCEPT_AGAIN = an_accept_sent_again_answers_by_the_verb_as_it_was_accepted,
+    "013, extended (lakelands#616): an accept sent again for a call of an external verb answers the first acceptance, its recorded output included, and runs nothing, whatever the verb is declared as since; for a write verb it is `decided`, though the verb is declared external since"
+);
+
+check!(
+    /// A call sent again while its executor still runs is `unanswered`.
+    UNANSWERED = a_call_sent_again_while_its_executor_runs_is_unanswered,
+    "013, extended (lakelands#616): while the executor of an external call still runs, the call sent again under its key, through `call`, `upsert`, `link`, `unlink` or `propose`, runs nothing and is refused as `unanswered`, naming the call's position, and so is the accept sent again while the executor of an accepted call runs; once the executor has answered, each answers the first outcome, its output included"
 );
 
 /// A host's write of `job` `key`, naming `cause` as what it follows from.
@@ -960,6 +991,196 @@ async fn a_retried_proposed_call_answers_its_proposal_after_it_is_accepted(
         again == first,
         "a retry of a proposed call answers the proposal, {first:?}, after its acceptance and a \
          host write naming the accepted call; it answered {again:?}"
+    );
+    Ok(())
+}
+
+async fn an_accept_sent_again_answers_by_the_verb_as_it_was_accepted(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use crate::conformance::backing::executed;
+    let l = jobs(store.as_ref(), "medium", "again-ext").await?;
+    let verb = |name: &str, effect: serde_json::Value| {
+        let mut verb = json!({"declare": "verb", "name": name, "on": "job", "risk": "medium"});
+        if let (Some(v), Some(e)) = (verb.as_object_mut(), effect.as_object()) {
+            v.extend(e.clone());
+        }
+        verb
+    };
+    let write = json!({"effect": "write", "set": [{"field": "status", "value": "'held'"}]});
+    let external = json!({"effect": "external", "executor": EXECUTOR});
+    l.declare_json(verb("hold", write.clone())).await?;
+    l.upsert("job", "again-write", json!({"status": "open"}))
+        .await?;
+    let review = reviewer(store.as_ref(), false);
+    // Each row: the verb, its record, and what it is declared as after
+    // the acceptance.
+    for (name, key, effect) in [
+        ("ship_medium", "again-ext", write),
+        ("hold", "again-write", external),
+    ] {
+        let first = call_once(&l, name, Some(key), &format!("{name}-again")).await;
+        let (_, id) = proposal(&first.must(name)?)?;
+        let first = l.cat.accept(&review, &id).await.must("accepting")?;
+        let ran = executed(key);
+        l.declare_json(verb(name, effect)).await?;
+        let again = l.cat.accept(&review, &id).await;
+        let ok = match &first {
+            Outcome::Applied {
+                output: Some(_), ..
+            } => again.as_ref() == Ok(&first),
+            _ => matches!(reason(&again), Some(Refusal::Decided)),
+        };
+        ensure!(
+            ok && executed(key) == ran && executed("again-ext") == 1,
+            "an accept sent again answers the first acceptance of an external call, its output \
+             included, and `decided` for a write verb, by `{name}` as it was accepted, and runs \
+             nothing: accepted {first:?}, sent again {again:?}, run {} times",
+            executed(key)
+        );
+    }
+    Ok(())
+}
+
+/// The answers of one caller of a check: what it sent, and the answer.
+type Tries<'a> = Vec<(&'a str, lakelands_api::Result<Outcome>)>;
+
+async fn a_call_sent_again_while_its_executor_runs_is_unanswered(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    use crate::conformance::backing::{executed, release};
+    use crate::conformance::fixture::{Caller, join_all, pause};
+    let l = Lake::of(store.as_ref());
+    l.declare_json(json!({"declare": "type", "name": "held",
+        "fields": [{"name": "n", "type": {"kind": "text"}}],
+        "relations": [{"name": "next", "target": "held"}]}))
+        .await?;
+    for risk in ["low", "medium"] {
+        l.declare_json(
+            json!({"declare": "verb", "name": format!("run_{risk}"), "on": "held",
+            "risk": risk, "effect": "external", "executor": EXECUTOR}),
+        )
+        .await?;
+    }
+    let (ty, call, accept): (_, RecordKey, RecordKey) =
+        ("held".into(), "held-call".into(), "held-accept".into());
+    for key in [&call, &accept] {
+        l.upsert("held", key.as_str(), json!({"n": "a"})).await?;
+    }
+    let (cat, own, next) = (l.cat.as_ref(), &l.own, &"next".into());
+    let (low, payload) = ("run_low".into(), || patch(json!({})));
+    let n = || patch(json!({"n": "b"}));
+    let opts = |key: Option<&str>| WriteOpts {
+        idempotency_key: key.map(Into::into),
+        ..WriteOpts::default()
+    };
+    let proposed = |verb: &str, key: &RecordKey, once| ProposedWrite::Call {
+        verb: verb.into(),
+        key: Some(key.clone()),
+        payload: payload(),
+        opts: opts(once),
+    };
+    let first = cat.propose(own, proposed("run_medium", &accept, None), "held".into());
+    let (_, id) = proposal(&first.await.must("proposing `run_medium`")?)?;
+    let review = reviewer(store.as_ref(), false);
+    // Wait until the executor holds the call on `key`.
+    let held = |key: &'static str| async move {
+        for _ in 0..1_000 {
+            if executed(key) == 1 {
+                return;
+            }
+            pause(std::time::Duration::from_millis(5)).await;
+        }
+    };
+    let once = || opts(Some("held-once"));
+    let callers: Vec<Caller<'_, Tries<'_>>> = vec![
+        Box::pin(async {
+            let first = cat.call(own, &low, Some(&call), payload(), once()).await;
+            vec![("the call", first)]
+        }),
+        Box::pin(async {
+            held("held-call").await;
+            let tries = vec![
+                (
+                    "call",
+                    cat.call(own, &low, Some(&call), payload(), once()).await,
+                ),
+                ("upsert", cat.upsert(own, &ty, &call, n(), once()).await),
+                (
+                    "link",
+                    cat.link(own, &ty, &call, next, &accept, payload(), once())
+                        .await,
+                ),
+                (
+                    "unlink",
+                    cat.unlink(own, &ty, &call, next, &accept, once()).await,
+                ),
+                ("propose", {
+                    let again = proposed("run_low", &call, Some("held-once"));
+                    cat.propose(own, again, "again".into()).await
+                }),
+            ];
+            release("held-call");
+            tries
+        }),
+        Box::pin(async { vec![("the acceptance", cat.accept(&review, &id).await)] }),
+        Box::pin(async {
+            held("held-accept").await;
+            let again = cat.accept(&review, &id).await;
+            release("held-accept");
+            vec![("accept", again)]
+        }),
+    ];
+    let answered = join_all(callers).await;
+    for (firsts, tries) in [(&answered[0], &answered[1]), (&answered[2], &answered[3])] {
+        let (what, first) = &firsts[0];
+        let Ok(
+            first @ Outcome::Applied {
+                output: Some(_),
+                position,
+                ..
+            },
+        ) = first
+        else {
+            return Err(Failure::new(format!(
+                "{what} of an external verb answers `applied` with its output; it answered \
+                 {first:?}"
+            )));
+        };
+        // An acceptance is named by its own position, before its call's.
+        let at = match *what {
+            "the call" => format!("at position {position},"),
+            _ => "at position ".to_owned(),
+        };
+        for (door, again) in tries {
+            let said = match again {
+                Err(Error::Refused {
+                    reason: Refusal::Unanswered { message },
+                    ..
+                }) => message,
+                _ => "",
+            };
+            ensure!(
+                said.contains(&at),
+                "sent again through `{door}` while the executor runs, {what} is refused as \
+                 `unanswered`, naming its {at}; it answered {again:?}"
+            );
+        }
+        let again = match *what {
+            "the call" => cat.call(own, &low, Some(&call), payload(), once()).await,
+            _ => cat.accept(&review, &id).await,
+        };
+        ensure!(
+            again.as_ref() == Ok(first),
+            "once the executor answered, {what} sent again answers its first outcome {first:?}; \
+             it answered {again:?}"
+        );
+    }
+    ensure!(
+        executed("held-call") == 1 && executed("held-accept") == 1,
+        "the executor runs once for each position, not for a retry: it ran {} and {} times",
+        executed("held-call"),
+        executed("held-accept")
     );
     Ok(())
 }

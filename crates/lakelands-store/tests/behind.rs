@@ -580,16 +580,36 @@ fn ran(outcome: lakelands_api::Result<Outcome>) -> (u64, Option<Value>) {
     }
 }
 
+/// The sentence of a retry refused as `unanswered`.
+fn unanswered<T: std::fmt::Debug>(outcome: lakelands_api::Result<T>) -> String {
+    match outcome {
+        Err(Error::Refused {
+            reason: Refusal::Unanswered { message },
+            ..
+        }) => message,
+        other => panic!("the retry must be refused as `unanswered`: {other:?}"),
+    }
+}
+
+/// What the store says of an external verb whose executor it did not hand
+/// the call: by a call under a key, and by an acceptance.
+const NOT_HANDED: &str = "the verb's executor was not handed this call, and sending it again \
+                          under its key will not run it: call the verb again under another key \
+                          or with none";
+const NOT_HANDED_ACCEPTED: &str = "the verb's executor was not handed this call, and the \
+                                   proposal is decided, so accepting it again will not run it: \
+                                   propose the call again";
+
 /// Row 10. The call of an external verb whose fold failed is in the log
-/// and its executor was not handed it: the store's sentence says so, and
-/// that the call sent again under its key will not run it. Sent again it
-/// is answered its position with no output, and the executor is handed
-/// nothing. The same sentence for an acceptance, which sent again is
-/// `decided`.
+/// and its executor was not handed it: the store's sentence says so, that
+/// the call sent again under its key will not run it, and to call the verb
+/// again under another key or with none; a call without a key is told to
+/// call it again. Sent again under its key, through `call`, `upsert` or
+/// `retire`, it is refused as `unanswered`, naming its position, and the
+/// executor is handed nothing. An acceptance whose fold failed says to
+/// propose the call again, and sent again it is refused so too.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_call_of_an_external_verb_whose_fold_failed_says_its_executor_was_not_handed_it() {
-    let not_handed = "the verb's executor was not handed this call, and sending it again under \
-                      its key will not run it: call the verb again";
     let counting = Arc::new(Counting::default());
     let (store, probe, _) = bound("behind-verb", counting.clone()).await;
     let l = Lake::of(store.as_ref());
@@ -597,10 +617,37 @@ async fn a_call_of_an_external_verb_whose_fold_failed_says_its_executor_was_not_
     *probe.refuse_commit.lock().unwrap() = Some(1);
     let said = unavailable(pay(&l).await);
     assert!(said.contains("is not folded yet"), "{said}");
-    assert!(said.ends_with(not_handed), "a call: {said}");
-    let (at, output) = ran(pay(&l).await);
-    assert_eq!(output, None, "the call sent again has no output");
-    assert!(said.contains(&format!("from position {at} ")), "{said}");
+    assert!(said.ends_with(NOT_HANDED), "a call: {said}");
+    let at = said
+        .split("from position ")
+        .nth(1)
+        .and_then(|s| s.split(' ').next());
+    let at = format!(
+        "at position {},",
+        at.expect("the sentence names the position")
+    );
+    let (doc, a) = ("doc".into(), "a".into());
+    let k1 = WriteOpts {
+        idempotency_key: Some("k1".into()),
+        ..WriteOpts::default()
+    };
+    for again in [
+        pay(&l).await,
+        write(&l, "a", 2, Some("k1")).await,
+        l.cat.retire(&l.own, &doc, &a, k1).await,
+    ] {
+        let said = unanswered(again);
+        let what = "call the verb again under another key or with none";
+        assert!(said.contains(&at) && said.ends_with(what), "{said}");
+    }
+    *probe.refuse_commit.lock().unwrap() = Some(1);
+    let (pay_verb, unkeyed) = ("pay".into(), WriteOpts::default());
+    let called = l
+        .cat
+        .call(&l.own, &pay_verb, Some(&a), patch(json!({})), unkeyed);
+    let said = unavailable(called.await);
+    let not_handed = "the verb's executor was not handed this call: call the verb again";
+    assert!(said.ends_with(not_handed), "a call without a key: {said}");
 
     let (store, probe, _) = bound("behind-accept", counting.clone()).await;
     let l = Lake::of(store.as_ref());
@@ -610,20 +657,9 @@ async fn a_call_of_an_external_verb_whose_fold_failed_says_its_executor_was_not_
     };
     *probe.refuse_commit.lock().unwrap() = Some(1);
     let said = unavailable(l.cat.accept(&l.own, &proposal).await);
-    let accepted = not_handed.replace(
-        "sending it again under its key",
-        "the proposal is decided, so accepting it again",
-    );
-    assert!(said.ends_with(&accepted), "an acceptance: {said}");
-    let decided = l.cat.accept(&l.own, &proposal).await;
-    let refused = matches!(
-        &decided,
-        Err(Error::Refused {
-            reason: Refusal::Decided,
-            ..
-        })
-    );
-    assert!(refused, "{decided:?}");
+    assert!(said.ends_with(NOT_HANDED_ACCEPTED), "an acceptance: {said}");
+    let said = unanswered(l.cat.accept(&l.own, &proposal).await);
+    assert!(said.ends_with("propose the call again"), "{said}");
     assert_eq!(
         counting.handed.load(Ordering::SeqCst),
         0,
@@ -739,13 +775,11 @@ async fn an_answer_whose_recording_failed_is_recorded_without_a_second_call() {
 /// Row 13. An external verb's executor is handed nothing after a drain
 /// that failed: the call and the acceptance are answered the drain's
 /// failure with the sentence of a verb that was not run, each in its own
-/// words. The call sent again is answered its position with no output,
-/// the acceptance sent again is `decided`, and the one call handed is the
-/// backing's, made due by catching up over a write whose fold failed.
+/// words. Each sent again is refused as `unanswered`, and the one call
+/// handed is the backing's, made due by catching up over a write whose
+/// fold failed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_external_verb_is_handed_nothing_after_a_drain_that_failed() {
-    let not_handed = "the verb's executor was not handed this call, and";
-    let not_run = "will not run it: call the verb again";
     for risk in [Risk::Low, Risk::High] {
         let counting = Arc::new(Counting::default());
         let (store, probe, _) = bound(&format!("behind-hand-{risk:?}"), counting.clone()).await;
@@ -760,33 +794,22 @@ async fn an_external_verb_is_handed_nothing_after_a_drain_that_failed() {
         *probe.refuse_commit.lock().unwrap() = Some(1);
         unavailable(write(&l, "b", 2, None).await);
         counting.refuses_its_recording(&probe);
-        let (said, again) = match proposed {
+        let (said, not_handed) = match proposed {
             None => {
                 let said = unavailable(pay(&l).await);
-                assert_eq!(ran(pay(&l).await).1, None, "sent again: no output");
-                (said, "sending it again under its key")
+                unanswered(pay(&l).await);
+                (said, NOT_HANDED)
             }
             Some(proposed) => {
                 let Ok(Outcome::Proposed { proposal, .. }) = proposed else {
                     panic!("a high verb is proposed: {proposed:?}");
                 };
                 let said = unavailable(l.cat.accept(&l.own, &proposal).await);
-                let decided = l.cat.accept(&l.own, &proposal).await;
-                let refused = matches!(
-                    &decided,
-                    Err(Error::Refused {
-                        reason: Refusal::Decided,
-                        ..
-                    })
-                );
-                assert!(refused, "{decided:?}");
-                (said, "the proposal is decided, so accepting it again")
+                unanswered(l.cat.accept(&l.own, &proposal).await);
+                (said, NOT_HANDED_ACCEPTED)
             }
         };
-        assert!(
-            said.ends_with(&format!("{not_handed} {again} {not_run}")),
-            "{risk:?}: {said}"
-        );
+        assert!(said.ends_with(not_handed), "{risk:?}: {said}");
         assert_eq!(
             counting.handed.load(Ordering::SeqCst),
             2,
@@ -794,6 +817,147 @@ async fn an_external_verb_is_handed_nothing_after_a_drain_that_failed() {
         );
         assert_eq!(state(&l, "b", None).await[0], json!({"n": 2, "sum": 7}));
     }
+}
+
+/// Row 19. The executor answered and the fold of its answer's recording
+/// failed: the call is answered that failure, saying the executor
+/// answered, and the answer is in the log. Sent again under its key, the
+/// call answers that answer and hands nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_answer_whose_recording_was_not_folded_is_answered_to_the_retry() {
+    let counting = Arc::new(Counting::default());
+    let (store, probe, _) = bound("behind-recorded", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    payable(&l, Risk::Low).await;
+    counting.refuses_its_recording(&probe);
+    let said = unavailable(pay(&l).await);
+    let answered = "the verb's executor answered this call with {\"ran\":1}, and recording its \
+                    answer failed: ";
+    assert!(said.starts_with(answered), "{said}");
+    assert_eq!(ran(pay(&l).await).1, Some(json!({"ran": 1})));
+    assert_eq!(counting.handed.load(Ordering::SeqCst), 1, "handed once");
+}
+
+/// Row 20. A retry of an external call seeks its answer: it reads the
+/// call's own append and the answer, not the log that grew after them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_retry_of_an_external_call_reads_no_more_as_the_log_grows() {
+    let counting = Arc::new(Counting::default());
+    let (store, probe, _) = bound("behind-seek", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    payable(&l, Risk::Low).await;
+    let first = ran(pay(&l).await);
+    for n in 0..64 {
+        applied(write(&l, "b", n, None).await);
+    }
+    let before = probe.events_read.load(Ordering::SeqCst);
+    assert_eq!(ran(pay(&l).await), first, "the retry answers the first");
+    let read = probe.events_read.load(Ordering::SeqCst) - before;
+    assert!(read <= 8, "the retry read {read} events of the log");
+}
+
+/// Row 21. The caller of an external verb went away while its executor
+/// ran: the answer is recorded all the same, and the call sent again under
+/// its key answers it, handed once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_answer_of_a_call_whose_caller_went_away_is_recorded() {
+    let counting = Counting::gated();
+    let (store, _, _) = bound("behind-gone", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    payable(&l, Risk::Low).await;
+    let gone = Lake::of(store.as_ref());
+    let gone = tokio::spawn(async move { pay(&gone).await });
+    counting.held().await;
+    gone.abort();
+    counting.gate.as_ref().unwrap().notify_one();
+    let mut again = pay(&l).await;
+    for _ in 0..5_000 {
+        if !matches!(
+            &again,
+            Err(Error::Refused {
+                reason: Refusal::Unanswered { .. },
+                ..
+            })
+        ) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        again = pay(&l).await;
+    }
+    assert_eq!(ran(again).1, Some(json!({"ran": 1})));
+    assert_eq!(counting.handed.load(Ordering::SeqCst), 1, "handed once");
+}
+
+/// Row 22. The record a call names is retired between the call's append
+/// and its hand-out (the call waits behind a neighbour's drain): the
+/// executor is handed nothing, the call is answered so, and sent again
+/// under its key it is `unanswered`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_whose_record_was_retired_before_its_hand_out_is_not_handed() {
+    let counting = Counting::gated();
+    let (store, _, _) = bound("behind-retired", counting.clone()).await;
+    let l = Arc::new(Lake::of(store.as_ref()));
+    summed(&l).await;
+    pay_verb(&l, Risk::Low).await;
+    let spawn = |what: &'static str| {
+        let l = l.clone();
+        tokio::spawn(async move {
+            let (doc, a) = ("doc".into(), "a".into());
+            match what {
+                "a" => write(&l, what, 1, None).await,
+                "b" => write(&l, what, 2, None).await,
+                "pay" => pay(&l).await,
+                _ => l.cat.retire(&l.own, &doc, &a, WriteOpts::default()).await,
+            }
+        })
+    };
+    // `a`'s drain holds the lane at the gate; `b`'s due waits behind it.
+    let drain = spawn("a");
+    counting.held().await;
+    let b = spawn("b");
+    until_async(|| async { state(&l, "b", None).await != json!("absent") }).await;
+    let called = spawn("pay");
+    until_async(|| async {
+        let all = FeedFilter::default();
+        let events = store
+            .feed()
+            .poll(Position(0), &all, 100)
+            .await
+            .unwrap()
+            .events;
+        events
+            .iter()
+            .any(|e| matches!(e.body, EventBody::VerbCalled { .. }))
+    })
+    .await;
+    let retired = spawn("retire");
+    until_async(|| async { state(&l, "a", None).await == json!("absent") }).await;
+    counting.gate.as_ref().unwrap().notify_one();
+    for done in [drain, b, retired] {
+        done.await.unwrap().expect("the neighbours' writes");
+    }
+    let said = unavailable(called.await.unwrap());
+    assert!(said.contains("there is no `doc` with key `a`"), "{said}");
+    assert!(said.ends_with(NOT_HANDED), "{said}");
+    let said = unanswered(pay(&l).await);
+    assert!(said.ends_with("under another key or with none"), "{said}");
+    assert_eq!(
+        counting.handed.load(Ordering::SeqCst),
+        2,
+        "the backing's two calls"
+    );
+}
+
+/// Wait until `done` answers true, for a row that needs another task to
+/// have got somewhere it can only read.
+async fn until_async<F: std::future::Future<Output = bool>>(done: impl Fn() -> F) {
+    for _ in 0..5_000 {
+        if done().await {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    panic!("waited five seconds");
 }
 
 /// `note` with `text`, which either door writes, and `vec`, its embedding

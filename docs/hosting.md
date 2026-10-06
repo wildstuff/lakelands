@@ -523,8 +523,10 @@ A host that already has a store of its own moves in four steps.
   outcome; one without a key writes a second time. For a verb that
   reaches outside the lake the answer says one thing more: its executor
   was not handed the call, and sending it again under its key will not
-  run it (the retry is answered the call's position with no output). The
-  host calls the verb again. The kind is the same as for a write that never
+  run it (the retry is refused as `unanswered`: a retry is answered
+  `applied` only with an answer of the executor that is recorded). The
+  host calls the verb again under another key or with none; a proposal
+  accepted so is spent, and the call is proposed again. The kind is the same as for a write that never
   reached the log, and a caller cannot tell the two apart by it, over a
   network door least of all: a host that must not write twice gives its
   writes a key. When the calls a write made due cannot be recorded, an
@@ -537,8 +539,9 @@ A host that already has a store of its own moves in four steps.
   of a verb that reaches outside the lake, and its acceptance: where the
   calls due before the hand-out could not be recorded, the executor is
   handed nothing and the answer is `unavailable` with the sentence about
-  the executor (an acceptance's says that the proposal is decided, and
-  that accepting it again will not run the verb). And a write that set
+  the executor (an acceptance's says that the proposal is decided, that
+  accepting it again will not run the verb, and to propose the call
+  again). And a write that set
   something off (a trigger fired, a set joined or left), which reads
   the lake's description to name it to its writer: where that read
   fails, the write is answered the read's error. Each is in the log and

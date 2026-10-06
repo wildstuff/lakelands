@@ -7,7 +7,9 @@
 //! lives in `lakelands_api::key`, where a host reaches it too.
 
 use lakelands_api::event::EventId;
-use lakelands_api::{IdempotencyKey, LakeId, Patch, Position, RecordKey, SourceId, TypeName};
+use lakelands_api::{
+    IdempotencyKey, LakeId, Patch, Position, ProposalId, RecordKey, SourceId, TypeName,
+};
 use sha2::{Digest as _, Sha256};
 
 use crate::canonical;
@@ -67,6 +69,27 @@ pub fn aging_id(
         ty.as_str().as_bytes(),
         key.as_str().as_bytes(),
         date.to_string().as_bytes(),
+    ])
+}
+
+/// The id of the answer recorded for the external verb the event at
+/// `position` made due (`docs/log-format.md` §3): a retry finds it by a
+/// seek, however far the log has grown since.
+pub fn output_id(lake: &LakeId, position: Position) -> EventId {
+    id_of(&[
+        b"lakelands:output:v1",
+        lake.as_str().as_bytes(),
+        position.0.to_string().as_bytes(),
+    ])
+}
+
+/// The id of a proposal's acceptance (`docs/log-format.md` §3): an accept
+/// sent again finds the acceptance by a seek.
+pub fn accepted_id(lake: &LakeId, proposal: &ProposalId) -> EventId {
+    id_of(&[
+        b"lakelands:accepted:v1",
+        lake.as_str().as_bytes(),
+        proposal.as_str().as_bytes(),
     ])
 }
 

@@ -1552,7 +1552,7 @@ pub async fn a_verb_on_its_type_has_a_tool_without_a_key(store: Arc<dyn LakeStor
 /// `invalid`, and so is no key to a verb on a record, each naming the
 /// verb. Without a key, a principal who is shown the type and may not
 /// write it is `not_granted`, and with no executor bound the call is
-/// `unbound`.
+/// `unbound`, sent again under its key too: no answer is looked for.
 /// Nothing is appended.
 pub async fn a_verb_on_its_type_is_called_without_a_key(store: Arc<dyn LakeStore>) {
     let f = setup(store).await;
@@ -1604,10 +1604,16 @@ pub async fn a_verb_on_its_type_is_called_without_a_key(store: Arc<dyn LakeStore
     .await
     .expect_err("the auditor reads partners and may not write them");
     assert_eq!(refusal(&e).1, &Refusal::NotGranted, "{e:?}");
-    let e = call(owner.clone(), "register", None, WriteOpts::default())
-        .await
-        .expect_err("no lake here binds the executor `crm`");
-    assert!(matches!(e, Error::Unbound { .. }), "{e:?}");
+    let keyed = WriteOpts {
+        idempotency_key: Some("register-once".into()),
+        ..WriteOpts::default()
+    };
+    for opts in [WriteOpts::default(), keyed.clone(), keyed] {
+        let e = call(owner.clone(), "register", None, opts)
+            .await
+            .expect_err("no lake here binds the executor `crm`");
+        assert!(matches!(e, Error::Unbound { .. }), "{e:?}");
+    }
     let proposed = ProposedWrite::Call {
         verb: "register".into(),
         key: None,

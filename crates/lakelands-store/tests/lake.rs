@@ -2396,21 +2396,19 @@ impl lakelands_api::seam::VerbExecutor for Gate {
     }
 }
 
-/// A retry looks for the call's output among the 4,096 events after the
-/// call; an output recorded further on is answered as none, the position
-/// stands, and nothing runs again (`docs/seams.md`, `VerbExecutor`). The
-/// reach is the store's constant (`RETRY_REACH` in `writes.rs`), the same
-/// on every engine, which is why this is a store test on the memory
-/// engine. A store that blocks fails the test at the time limit instead of
+/// A retry while the executor runs is refused as `unanswered` and hands
+/// nothing; once the answer is recorded, a retry answers it however far
+/// the log has grown since the call: the old reach of 4,096 events is
+/// passed. A store that blocks fails the test at the time limit instead of
 /// hanging it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_retry_past_the_reach_answers_the_position_without_the_output() {
-    tokio::time::timeout(std::time::Duration::from_secs(120), retry_past_the_reach())
+async fn a_retry_answers_the_recorded_output_however_far_behind() {
+    tokio::time::timeout(std::time::Duration::from_secs(120), retry_far_behind())
         .await
-        .expect("the retry past the reach finishes within two minutes");
+        .expect("the retry far behind finishes within two minutes");
 }
 
-async fn retry_past_the_reach() {
+async fn retry_far_behind() {
     let lake = name();
     let gate = Arc::new(Gate {
         entered: tokio::sync::Notify::new(),
@@ -2456,7 +2454,22 @@ async fn retry_past_the_reach() {
         })
     };
     gate.entered.notified().await;
-    // The lake takes more than the reach of other events while the
+    let running = cat
+        .call(
+            &o,
+            &"pay".into(),
+            Some(&"i1".into()),
+            patch(json!({})),
+            key.clone(),
+        )
+        .await;
+    assert!(
+        matches!(&running, Err(lakelands_api::Error::Refused {
+            reason: lakelands_api::Refusal::Unanswered { message }, ..
+        }) if message.contains("is still running")),
+        "a retry while the executor runs is `unanswered`: {running:?}"
+    );
+    // The lake takes more than the old reach of other events while the
     // executor runs, so its output lands past it.
     for n in 0..4_100 {
         cat.upsert(
@@ -2486,10 +2499,9 @@ async fn retry_past_the_reach() {
         .call(&o, &"pay".into(), Some(&"i1".into()), patch(json!({})), key)
         .await
         .unwrap();
-    assert!(
-        matches!(&again, Outcome::Applied { position: p, output: None, .. } if p == position),
-        "past the reach, a retry answers the call's position {position} with no output: \
-         {again:?}"
+    assert_eq!(
+        again, first,
+        "a retry answers the call's position {position} and its output"
     );
     assert_eq!(
         gate.calls.load(std::sync::atomic::Ordering::SeqCst),

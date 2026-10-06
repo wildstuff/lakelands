@@ -68,7 +68,9 @@ impl Draft {
     }
 }
 
-pub use lakelands_core::log::{aging_id, authored_id, ingest_id, positional_id};
+pub use lakelands_core::log::{
+    accepted_id, aging_id, authored_id, ingest_id, output_id, positional_id,
+};
 
 fn hash_without_hash(event: &Event) -> Digest {
     let mut value = serde_json::to_value(event).expect("an event serialises to JSON");
