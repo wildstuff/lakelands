@@ -257,6 +257,13 @@ import and a mirror carry the event as it is. An event below version 11
 carries none, and there its absence says nothing: a reader tells a
 first creation by `version` 1 and nothing more.
 
+No record event, and no `object_set_changed`, names a view, whose
+records are computed, or a name that begins `sys:kept.`, under which the
+store keeps a view's records
+(`docs/decisions/049-a-view-the-fold-keeps.md`); no `declared` declares a
+type of that form. No door writes one, and a log that holds one is not
+folded past it.
+
 `version` is the record's version after the event: 1 for the first event
 that writes a key, one more for every later event that changes it. A
 retired key that is written again continues its count.
@@ -395,6 +402,11 @@ for a verb, `{ "verb", "record", "payload", "position" }`, `record`
 null for a verb called on its type. Two calls with
 the same `seam` and `input` are the same call, and a replay reads the
 recorded output for it.
+
+A seam that begins `sys:` is the store's own: the store keeps a kept
+view's state and the lake's renames under such names in its projection,
+never in the log. No `output_recorded` names one, and a log that holds
+one is not folded past it.
 
 A function's `inputs` hold every input the function declares, by name,
 with the record's value of the field of that name, `null` where the

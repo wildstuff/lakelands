@@ -26,7 +26,10 @@ would have to reproduce one.
   `sys:kept.<view>`, which holds a character no type name may. No write,
   link, walk, preflight or fold reaches them by a type's name: a
   reference to a view is refused kept or not, as before. Only the view's
-  own read asks for that name.
+  own read asks for that name. Its state is recorded under the seam
+  `sys:kept`, and every seam beginning `sys:` is the store's own. A log
+  that names either, or writes a record of a view, comes from no door
+  and is not folded past that event (lakelands#621).
 - **One record a group, with its folds.** A kept record holds the
   group's fields as the view's record holds them, and beside them, in a
   field no read answers, what the group keeps in place of its members
