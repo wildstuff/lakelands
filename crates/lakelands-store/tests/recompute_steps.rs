@@ -1609,6 +1609,97 @@ fn row_24_a_page_of_a_rebuild_never_ends_inside_a_set() {
     );
 }
 
+/// The lake of rows 29 and 30: two sets back to back. The first is of
+/// functions that carry the mark, then an object set, its last `declared`,
+/// at `close`, and the object set's three memberships; the second of
+/// `second` such functions and one more. Answers the lake and the first
+/// set's last position.
+fn two_sets(name: &str, close: u64, second: u64) -> (Folded, Position) {
+    let (l, _) = doubling(name, &[("a", 1), ("b", 2), ("c", 3)]);
+    let going = close - (l.lake.head().0 + 1);
+    let v = |v: u64| u32::try_from(v).expect("a version");
+    let functions =
+        |from: u64, n: u64| (from..from + n).map(move |i| going_on(expr("f", v(i), "n * 3")));
+    let pos = json!({"declare": "object_set", "name": "pos", "of": "doc", "where": "n > 0"});
+    let mut first: Vec<EventBody> = functions(2, going).collect();
+    first.push(declaration(pos, 1));
+    first.extend(["a", "b", "c"].map(|k| EventBody::ObjectSetChanged {
+        set: "pos".into(),
+        ty: "doc".into(),
+        key: k.into(),
+        joined: true,
+    }));
+    let end = *l.bodies(first).last().expect("the first set");
+    assert_eq!(end, Position(close + 3), "the set closes at {close}");
+    let mut set: Vec<EventBody> = functions(going + 2, second).collect();
+    set.push(expr("f", v(going + second + 2), "n * 4"));
+    l.bodies(set);
+    (l, end)
+}
+
+/// A rebuild of `l`, checked against the live lake: its commits, and the
+/// events the log's reads handed out by each.
+fn rebuilt(l: &Folded) -> (Vec<Position>, Vec<(Position, u64)>) {
+    let live = l.history(&KEYS[..3]);
+    l.probe.take();
+    let (probe, read) = (l.probe.clone(), Arc::new(Mutex::new(Vec::new())));
+    let into = read.clone();
+    let was = probe.events_read.load(std::sync::atomic::Ordering::SeqCst);
+    *l.probe.before_commit.lock().unwrap() = Some(Box::new(move |through| {
+        let n = probe.events_read.load(std::sync::atomic::Ordering::SeqCst) - was;
+        into.lock().unwrap().push((through, n as u64));
+    }));
+    let head = l.lake.head();
+    assert_eq!(l.lake.rebuild().expect("the rebuild"), head);
+    *l.probe.before_commit.lock().unwrap() = None;
+    assert_eq!(
+        l.history(&KEYS[..3]),
+        live,
+        "every position answers as the live lake did"
+    );
+    let read = read.lock().unwrap().clone();
+    (commits(&l.probe.take()), read)
+}
+
+#[test]
+fn row_29_a_page_of_a_rebuild_reads_on_only_to_the_end_of_its_set() {
+    // The chunk the first page reads on closes the first set, at 1 200,
+    // and goes on into the second, three pages long.
+    let (l, first) = two_sets("recompute-29", 1_200, 3 * 1_024);
+    let (commits, read) = rebuilt(&l);
+    // Each page reads what it holds and at most a chunk more, read again
+    // by the next page.
+    let mut at = (0, 0);
+    for &(through, n) in &read {
+        let (held, reads) = (through.0 + 1 - at.0, n - at.1);
+        assert!(
+            reads <= held + 1_024,
+            "row 29: the page through {through} holds {held} events and read {reads}: it reads \
+             on only to the end of its set, and at most a chunk beyond it"
+        );
+        at = (through.0 + 1, n);
+    }
+    assert_eq!(
+        commits,
+        [first, l.lake.head()],
+        "row 29: the first set is the first page, the second set the second"
+    );
+}
+
+#[test]
+fn row_30_a_page_whose_set_closes_at_a_chunks_end_reads_on_for_its_memberships() {
+    // The first set's last `declared` is the last event of the chunk the
+    // first page reads on; its memberships begin the next chunk.
+    let (l, first) = two_sets("recompute-30", 2 * 1_024 - 1, 10);
+    let (commits, _) = rebuilt(&l);
+    assert_eq!(
+        commits,
+        [first, l.lake.head()],
+        "row 30: the first page reads on past the chunk for the set's memberships, so no \
+         commit falls between a declaration and the memberships it changed"
+    );
+}
+
 #[test]
 fn row_25_a_log_that_ends_inside_a_set_is_not_folded() {
     let (l, _) = doubling("recompute-25", &[("a", 1)]);
