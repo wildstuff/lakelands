@@ -230,6 +230,18 @@ impl KeptFolds {
     pub fn waits(&self) -> bool {
         self.waits
     }
+
+    /// The group could not be read again: what waited is not exact for
+    /// as long as the group has a record.
+    pub fn give_up(&mut self) {
+        self.lost |= std::mem::take(&mut self.waits);
+    }
+
+    /// Given up, or a count went below nothing: not exact, and nothing
+    /// reads the group again, for as long as it has a record.
+    pub fn lost(&self) -> bool {
+        self.lost
+    }
 }
 
 /// A member: its key and its fields.

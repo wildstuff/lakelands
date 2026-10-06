@@ -17,6 +17,7 @@ pub mod doors;
 pub mod exec;
 pub mod import;
 pub mod ingest;
+mod kept;
 pub mod lake;
 pub mod log;
 pub mod ontology;

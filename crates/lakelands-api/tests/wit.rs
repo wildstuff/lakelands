@@ -1221,11 +1221,11 @@ fn every_mirrored_enum_has_the_cases_of_its_type() {
         match k {
             Kept::Kept | Kept::Computed { .. } => {}
         }
-        let (reason, not_exact, waiting) = (None, 0, 0);
+        let (reason, not_exact) = (None, 0);
         let all = [
             NotKept::NotAsked,
             NotKept::CannotBeKept { reason },
-            NotKept::NotWhole { not_exact, waiting },
+            NotKept::NotWhole { not_exact },
             NotKept::NotKeptHere,
         ];
         for why in &all {

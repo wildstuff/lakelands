@@ -3,7 +3,10 @@
 //! type to fail, the scans, the puts of records and the commits in the
 //! order they came, a commit, a `begin` or a view to refuse, a look at
 //! the lake before each commit, while its transaction is open, and a seal
-//! that hands another digest than the engine took or asks twice.
+//! that hands another digest than the engine took or asks twice; and it
+//! counts the rows its scans hand out by type and the reads of a kept
+//! view's state, and keeps the last record put under each kept name and
+//! key.
 
 #![allow(dead_code)]
 
@@ -55,6 +58,14 @@ pub struct Probe {
     pub begins: AtomicUsize,
     /// A view to refuse: the n-th asked for from now, counted from 1.
     pub refuse_view: Mutex<Option<usize>>,
+    /// Whether a scan of a view's kept records is handed out reversed.
+    pub reversed: std::sync::atomic::AtomicBool,
+    /// The rows the scans of each type handed out, in all.
+    pub rows: Mutex<std::collections::BTreeMap<TypeName, usize>>,
+    /// How many times a kept view's state was read (`sys:kept`).
+    pub states: AtomicUsize,
+    /// The last record put under each kept name and key.
+    pub kept: Mutex<std::collections::BTreeMap<(TypeName, RecordKey), StoredRecord>>,
     /// Called before each commit reaches the engine, with the position it
     /// commits through: its transaction is still open.
     pub before_commit: Mutex<Option<Look>>,
@@ -121,8 +132,18 @@ impl ProjectionView for ProbedView<'_> {
         }
         drop(fail);
         self.probe.asked(Asked::Scan(ty.clone()));
-        let rows = self.inner.scan(ty, scan)?;
+        let mut rows = self.inner.scan(ty, scan)?;
         self.probe.most.fetch_max(rows.len(), Ordering::SeqCst);
+        *self
+            .probe
+            .rows
+            .lock()
+            .unwrap()
+            .entry(ty.clone())
+            .or_default() += rows.len();
+        if self.probe.reversed.load(Ordering::SeqCst) && lakelands_api::seam::is_kept_name(ty) {
+            rows.reverse();
+        }
         Ok(rows)
     }
     fn count(&self, ty: &TypeName, scan: &Scan) -> Result<u64> {
@@ -159,6 +180,9 @@ impl ProjectionView for ProbedView<'_> {
         self.inner.applied(id)
     }
     fn output(&self, seam: &str, input: &Digest) -> Result<Option<Value>> {
+        if seam == "sys:kept" {
+            self.probe.states.fetch_add(1, Ordering::SeqCst);
+        }
         self.inner.output(seam, input)
     }
 }
@@ -272,7 +296,15 @@ impl ProjectionStore for Probed {
     }
     fn put_record(&self, record: &StoredRecord) -> Result<()> {
         let (ty, key) = (record.ty.clone(), record.key.clone());
-        self.probe.asked(Asked::Put(ty, key, record.position));
+        self.probe
+            .asked(Asked::Put(ty.clone(), key.clone(), record.position));
+        if lakelands_api::seam::is_kept_name(&ty) {
+            self.probe
+                .kept
+                .lock()
+                .unwrap()
+                .insert((ty, key), record.clone());
+        }
         self.inner.projection().put_record(record)
     }
     fn put_proposal(&self, proposal: &Proposal, at: Position) -> Result<()> {

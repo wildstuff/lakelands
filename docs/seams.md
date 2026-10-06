@@ -1598,13 +1598,30 @@ type's, whether its records are kept, or computed at each read and why:
 `not_asked`; `cannot_be_kept`, with the sentence the setting's refusal
 says, to a principal who is shown the view as declared and to no other,
 since it names what the view reads; `not_whole`, with the number of
-groups whose kept record is not exact and of those that wait to be read
-again; or `not_kept_here`, which is also what a lake that keeps no view
-(the mock) answers for a view that is asked for and can be kept. Like
-`sorted` and `indexed`, `kept` describes the projection and not the log,
-and is not among the answers a rebuild must repeat: which groups wait at
-a position may differ between a live fold and a rebuilt one, and no
-answer of the view does, since a read computes where a group waits.
+groups whose kept record is not exact for the reader (a measure that
+fails over one, which mends when its cause leaves, or an extreme given
+up, which only what makes the view again mends); or `not_kept_here`,
+which is also
+what a lake that keeps no view (the mock) answers for a view that is
+asked for and can be kept. Like `sorted` and `indexed`, `kept` describes
+the projection and not the log; a rebuild leaves the state the live
+appends left, since the fold decides everything of a kept view in the
+fold of one event, but for the make after a declaration that computes a
+source's records again, which stands where those records are put and
+may come at a later position in a rebuild: as of a position between,
+`kept` may then say `not_kept_here` where the live lake said `kept`,
+and every read of the view's records answers alike (lakelands#631).
+
+The store keeps such a view in its fold
+(`docs/decisions/049-a-view-the-fold-keeps.md`): the view's records are
+put in the projection under a name of the store's own,
+`sys:kept.<view>`, and its state under the seam name `sys:kept`, neither
+of which a type or a seam of a host can bear, and a read of the view
+answers them where the state at its position says they are the
+computation's own. There `describe_type` answers `kept`, `not_whole`
+with its number for the reader's face, or `not_kept_here` as of a
+position before the view was made and to a principal the view's read
+would refuse, who is told nothing of its groups.
 
 A `sys.aging_rule` record is one **aging rule**: on a date, move a field
 of every record of a type from one value to another when a condition

@@ -62,7 +62,7 @@ fn same_lake(lake: &Lake, who: &Principal) -> Result<()> {
 
 /// The store facade of one lake.
 pub struct Store {
-    lake: Arc<Lake>,
+    pub(crate) lake: Arc<Lake>,
 }
 
 /// The doors of one lake, bound to a host's write context.
