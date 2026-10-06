@@ -1377,23 +1377,26 @@ fn the_dues_of_a_commit_inside_a_page_stay_due_when_the_page_fails_after_it() {
         ("the `begin` after the commit", 1),
     ] {
         // `a` holds a filled `sum`, `c` waits. `f` is declared again with
-        // another call, a record is written, and `f` is declared again.
+        // another call, a record is written, and `f` is declared again, in
+        // one append whose fold fails at its commit: the lake is behind its
+        // log, and the fold that catches up hands out that append's calls.
         let l = summing(
             &format!("recompute-dues-{plant}"),
             &[("doc", "a", "A"), ("doc", "c", "C")],
         );
-        let at = |key| l.record(None, "doc", key).expect("the record").position.0;
-        let (pa, pc) = (at("a"), at("c"));
         l.bodies(vec![output(json!(1), "A", json!("S"), Some(("doc", "a")))]);
-        let d1 = l.bodies(vec![http(2, json!(2))])[0].0;
-        let w1 = l.bodies(vec![wrote("doc", "w", 1, json!({"title": "W"}))])[0].0;
-        let d2 = l.bodies(vec![http(3, json!(3))])[0].0;
-        // A rebuild that fails leaves the lake behind its log, with nothing
-        // folded: the next append folds the log first, and keeps its dues.
+        l.due();
         *l.probe.refuse_commit.lock().unwrap() = Some(1);
-        l.lake.rebuild().expect_err("the rebuild fails");
-        assert_eq!(l.due(), [], "a rebuild keeps no dues");
-        // That fold commits inside the page, before the write, and then
+        let three = [
+            http(2, json!(2)),
+            wrote("doc", "w", 1, json!({"title": "W"})),
+            http(3, json!(3)),
+        ];
+        let failed = l.try_append(three.into_iter().map(system).collect());
+        failed.expect_err("the append's fold fails");
+        let d2 = l.lake.engine.tip().expect("the tip").expect("a tip").0.0;
+        let (d1, w1) = (d2 - 2, d2 - 1);
+        // That catch-up commits inside the page, before the write, and then
         // fails: at the page's last commit, or at the `begin` after the
         // commit inside it.
         match plant {
@@ -1416,15 +1419,9 @@ fn the_dues_of_a_commit_inside_a_page_stay_due_when_the_page_fails_after_it() {
         let key = |at: u64, key: &str| (at, key.to_owned());
         assert_eq!(
             due(&l),
-            [
-                key(pa, "a"),
-                key(pc, "c"),
-                key(d1, "a"),
-                key(d1, "a"),
-                key(d1, "c")
-            ],
-            "{failing} is refused: what the commit inside the page holds stays due, the \
-             writes' calls and those the flush made; the calls of what was rolled back do not"
+            [key(d1, "a"), key(d1, "a"), key(d1, "c")],
+            "{failing} is refused: what the commit inside the page holds stays due, the calls \
+             the flush made; the calls of what was rolled back do not"
         );
         // The next fold makes the calls of the rest, once.
         let appended = l.try_append(z()).expect("the next fold, and the append");

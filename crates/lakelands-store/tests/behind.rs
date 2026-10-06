@@ -2,7 +2,8 @@
 //! events are durable and the projection does not hold them. It catches up
 //! before the next write is decided, a fold that cannot begin leaves it
 //! behind like any other that fails, and an append that was decided
-//! without catching up is refused.
+//! without catching up is refused. A fold of the log makes no call due but
+//! those of an append whose fold failed (lakelands#604).
 //!
 //! Each row writes through the doors of a lake on the memory engine behind
 //! the wrapper of `probed`, which refuses the `begin`, the commit or the
@@ -793,6 +794,268 @@ async fn an_external_verb_is_handed_nothing_after_a_drain_that_failed() {
         );
         assert_eq!(state(&l, "b", None).await[0], json!({"n": 2, "sum": 7}));
     }
+}
+
+/// `note` with `text`, which either door writes, and `vec`, its embedding
+/// by the model `m`; `more` adds the field `m`.
+fn note(more: bool) -> TypeDecl {
+    let mut text = field("text", Text);
+    text.authority = Authority::Shared;
+    let mut fields = vec![text, embedding("vec", 2, &["text"], "m")];
+    fields.extend(more.then(|| field("m", Number)));
+    type_decl("note", fields)
+}
+
+/// An upsert of `note` `key` with `text`, under an idempotency key or none.
+async fn noted(l: &Lake, key: &str, under: Option<&str>) -> lakelands_api::Result<Outcome> {
+    let opts = WriteOpts {
+        idempotency_key: under.map(Into::into),
+        ..WriteOpts::default()
+    };
+    let (note, text) = ("note".into(), patch(json!({"text": key})));
+    l.cat.upsert(&l.own, &note, &key.into(), text, opts).await
+}
+
+/// `note` `key`'s embedding, `None` while it waits.
+async fn vec_of(l: &Lake, key: &str) -> Option<Value> {
+    let got = l.cat.get(&l.own, &"note".into(), get_at(key, None)).await;
+    got.expect("the note").data.fields.get("vec").cloned()
+}
+
+/// The lake `name` on `opener` with `counting` bound as its embedding
+/// backend.
+async fn embedded(
+    name: &str,
+    opener: MemoryOpener,
+    counting: &Arc<Counting>,
+) -> Arc<dyn LakeStore> {
+    let seams = Seams {
+        engines: vec![Arc::new(opener)],
+        embed: Some(counting.clone()),
+        ..Seams::default()
+    };
+    let opened = lakelands_store::open(Location::memory(name), seams, OpenMode::Write).await;
+    opened.expect("the lake, for writing")
+}
+
+/// A log of `note`, three notes and `note` declared again, which makes
+/// every embedding due again, appended by a writer that drains nothing:
+/// no output is recorded. A rebuild then stops at its first commit, so the
+/// projection holds nothing, the writer is closed, and the log is exported
+/// to `dir`.
+async fn waiting(name: &str, dir: &std::path::Path) -> (Arc<Probe>, MemoryOpener) {
+    let (probe, opener) = (Arc::new(Probe::default()), MemoryOpener::new());
+    let seams = || Seams {
+        engines: vec![Arc::new(ProbedOpener(opener.clone(), probe.clone()))],
+        ..Seams::default()
+    };
+    let location = Location::memory(name);
+    let lake = lakelands_store::lake::Lake::open(&location, seams(), OpenMode::Create).unwrap();
+    let declared = |more, version| EventBody::Declared {
+        schema_hash: Some(lakelands_core::shape::schema_hash(&note(more)).unwrap()),
+        declaration: Declaration::Type(note(more)),
+        version,
+    };
+    let wrote = |key: &str| EventBody::RecordUpserted {
+        ty: "note".into(),
+        key: key.into(),
+        version: Version(1),
+        patch: patch(json!({"text": key})),
+        made: true,
+    };
+    let bodies = [declared(false, 1), wrote("a"), wrote("b"), wrote("c")];
+    for body in bodies.into_iter().chain([declared(true, 2)]) {
+        let mut w = lake.for_write().unwrap();
+        let one = vec![Draft::system(lake.clock(&mut w), body)];
+        lake.append(&mut w, one).expect("the append");
+    }
+    let made = lake.writer().due.len();
+    assert_eq!(made, 6, "each write's call, and each again");
+    lake.close().expect("the writer closes");
+    let store = lakelands_store::open(location.clone(), seams(), OpenMode::Read).await;
+    let _ = std::fs::remove_dir_all(dir);
+    let store = store.expect("a reader");
+    lakelands_core::export::write(store.as_ref(), dir)
+        .await
+        .expect("the export");
+    let lake = lakelands_store::lake::Lake::open(&location, seams(), OpenMode::Write).unwrap();
+    *probe.refuse_commit.lock().unwrap() = Some(1);
+    lake.rebuild().expect_err("the rebuild stops");
+    lake.close().expect("the writer closes");
+    (probe, opener)
+}
+
+/// Row 14. A fold of the log makes no call due (lakelands#604): a writer
+/// that opens over the whole log, its rebuild and an import hold none, and
+/// the backend is called for nothing of the log. The next write on the
+/// import is the one call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fold_of_the_log_makes_no_call_due() {
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("behind-of-the-log-{}", std::process::id()));
+    let (_, opener) = waiting("behind-of-the-log", &dir).await;
+    let counting = Arc::new(Counting::default());
+    let seams = |opener: MemoryOpener| Seams {
+        engines: vec![Arc::new(opener)],
+        embed: Some(counting.clone()),
+        ..Seams::default()
+    };
+    let location = Location::memory("behind-of-the-log");
+    let lake = lakelands_store::lake::Lake::open(&location, seams(opener), OpenMode::Write);
+    let lake = lake.expect("a writer folds the whole log");
+    assert_eq!(lake.writer().due.len(), 0, "opened");
+    lake.rebuild().expect("a rebuild");
+    assert_eq!(lake.writer().due.len(), 0, "rebuilt");
+    lake.close().expect("the writer closes");
+    let other = MemoryOpener::new();
+    let imported = lakelands_store::import(location, seams(other.clone()), dir.clone()).await;
+    imported.expect("the import");
+    let store = embedded("behind-of-the-log", other, &counting).await;
+    let l = Lake::of(store.as_ref());
+    applied(noted(&l, "z", None).await);
+    assert_eq!(*counting.texts.lock().unwrap(), [vec!["z".to_owned()]]);
+    assert_eq!(vec_of(&l, "a").await, None, "`a` waits");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Row 15. A rebuild that stops is continued by the next write, and that
+/// write's catch-up makes no call due: the backend is called for the write
+/// alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_write_that_continues_a_stopped_rebuild_calls_for_itself_alone() {
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("behind-stopped-{}", std::process::id()));
+    let (probe, opener) = waiting("behind-stopped", &dir).await;
+    let _ = std::fs::remove_dir_all(&dir);
+    let counting = Arc::new(Counting::default());
+    let probed = ProbedOpener(opener, probe.clone());
+    let seams = Seams {
+        engines: vec![Arc::new(probed)],
+        embed: Some(counting.clone()),
+        ..Seams::default()
+    };
+    let opened = lakelands_store::open(Location::memory("behind-stopped"), seams, OpenMode::Write);
+    let store = opened.await.expect("the lake, for writing");
+    *probe.refuse_commit.lock().unwrap() = Some(1);
+    store.rebuild().await.expect_err("the rebuild stops");
+    let l = Lake::of(store.as_ref());
+    applied(noted(&l, "z", None).await);
+    assert_eq!(*counting.texts.lock().unwrap(), [vec!["z".to_owned()]]);
+    assert_eq!(vec_of(&l, "z").await, Some(json!([1, 0])));
+    assert_eq!(vec_of(&l, "a").await, None, "`a` waits");
+}
+
+/// Row 16. The one fold of the log that makes calls due is the one that
+/// folds an append whose own fold failed: an embedded write whose commit
+/// is refused, sent again under its key, is answered the first write's
+/// outcome with its embedding made, by one call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_write_sent_again_after_its_fold_failed_has_its_call_made() {
+    let counting = Arc::new(Counting::default());
+    let (store, probe, _) = bound("behind-owed", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    l.declare(note(false)).await.unwrap();
+    *probe.refuse_commit.lock().unwrap() = Some(1);
+    unavailable(noted(&l, "a", Some("k1")).await);
+    let (_, version) = applied(noted(&l, "a", Some("k1")).await);
+    assert_eq!(version, Some(Version(1)), "the first write's outcome");
+    let all = FeedFilter::default();
+    let polled = store.feed().poll(Position(0), &all, 100).await.unwrap();
+    let wrote = |e: &&lakelands_api::event::Event| matches!(&e.body, EventBody::RecordUpserted { ty, .. } if ty.as_str() == "note");
+    let wrote = polled.events.iter().filter(wrote).count();
+    assert_eq!(wrote, 1, "the retry appended nothing");
+    assert_eq!(vec_of(&l, "a").await, Some(json!([1, 0])));
+    assert_eq!(counting.handed.load(Ordering::SeqCst), 1, "one call");
+}
+
+/// Row 17. A rebuild leaves the calls of a write before it to that write:
+/// a write appended while a neighbour's call holds the lane, then a
+/// rebuild, then the lane freed: its call is made.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rebuild_leaves_a_writes_calls_to_it() {
+    let counting = Counting::gated();
+    let (store, _, _) = bound("behind-rebuilt-under", counting.clone()).await;
+    let l = Lake::of(store.as_ref());
+    summed(&l).await;
+    let writes = |key: &'static str, n| {
+        let l = Lake::of(store.as_ref());
+        tokio::spawn(async move { write(&l, key, n, None).await })
+    };
+    let first = writes("a", 1);
+    counting.held().await;
+    let second = writes("b", 2);
+    while log(&store, "b").await.0.is_empty() {
+        tokio::task::yield_now().await;
+    }
+    store.rebuild().await.expect("a rebuild");
+    counting.gate.as_ref().unwrap().notify_one();
+    applied(first.await.unwrap());
+    applied(second.await.unwrap());
+    assert_eq!(
+        counting.handed.load(Ordering::SeqCst),
+        2,
+        "one call for each record"
+    );
+    assert_eq!(state(&l, "b", None).await[0], json!({"n": 2, "sum": 7}));
+}
+
+/// The backing kind `later`, bound only where it is declared.
+struct Later;
+
+#[async_trait]
+impl FunctionBacking for Later {
+    fn kind(&self) -> &str {
+        "later"
+    }
+
+    async fn call(&self, _: &FunctionCall) -> lakelands_api::Result<Value> {
+        Ok(json!(0))
+    }
+}
+
+/// Row 18. An output's fill in a fold of the log makes no call due: `sum`
+/// is filled from its recorded output, and `twice`, which reads it and
+/// whose backing the writer does not bind, waits. A writer that opens
+/// over the whole log holds no call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fill_in_a_fold_of_the_log_makes_no_call_due() {
+    let (probe, opener) = (Arc::new(Probe::default()), MemoryOpener::new());
+    let counting = Arc::new(Counting::default());
+    let seams = |later: bool| {
+        let mut backings: Vec<Arc<dyn FunctionBacking>> = vec![counting.clone()];
+        backings.extend(later.then(|| Arc::new(Later) as Arc<dyn FunctionBacking>));
+        Seams {
+            engines: vec![Arc::new(ProbedOpener(opener.clone(), probe.clone()))],
+            backings,
+            ..Seams::default()
+        }
+    };
+    let location = Location::memory("behind-filled");
+    let store = lakelands_store::open(location.clone(), seams(true), OpenMode::Create).await;
+    let store = store.expect("a new lake");
+    let l = Lake::of(store.as_ref());
+    for (name, backing, input) in [("f", "counting", "n"), ("h", "later", "sum")] {
+        let f = json!({"declare": "function", "name": name, "backing": backing,
+                       "inputs": [{"name": input, "type": {"kind": "number"}}]});
+        l.declare_json(f).await.unwrap();
+    }
+    let sum = computed_by("sum", Number, "f", &["n"]);
+    let twice = computed_by("twice", Number, "h", &["sum"]);
+    let doc = type_decl("doc", vec![field("n", Number), sum, twice]);
+    l.declare(doc).await.unwrap();
+    store.close().await.expect("the handle closes");
+    let store = lakelands_store::open(location.clone(), seams(false), OpenMode::Write).await;
+    let store = store.expect("the lake, without `later`");
+    let l = Lake::of(store.as_ref());
+    applied(write(&l, "a", 1, None).await);
+    let a = state(&l, "a", None).await;
+    assert_eq!(a[0], json!({"n": 1, "sum": 7}), "`twice` waits");
+    *probe.refuse_commit.lock().unwrap() = Some(1);
+    store.rebuild().await.expect_err("the rebuild stops");
+    store.close().await.expect("the handle closes");
+    let lake = lakelands_store::lake::Lake::open(&location, seams(false), OpenMode::Write);
+    let lake = lake.expect("a writer folds the whole log");
+    assert_eq!(lake.writer().due.len(), 0, "opened");
 }
 
 /// Row 5. An append decided under a writer that is behind and was not

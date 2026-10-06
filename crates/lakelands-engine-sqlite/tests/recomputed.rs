@@ -6,7 +6,9 @@
 //! record, and a type with no derived field declared again. For several
 //! (lakelands#523): a bundle of 50 changed functions of one type, a bundle
 //! of two, a bundle of a function and the type that uses it, and a rebuild
-//! of ten appends that each change a function. By hand: `cargo test
+//! of ten appends that each change a function. And a rebuild of a log of
+//! embedded writes, which holds no call for them (lakelands#604). By
+//! hand: `cargo test
 //! --release -p lakelands-engine-sqlite --test recomputed -- --ignored
 //! --nocapture`.
 
@@ -19,8 +21,9 @@ use lakelands_api::engine::OpenMode;
 use lakelands_api::ontology::StorageKind::{Decimal, Number, Text};
 use lakelands_api::seam::Seams;
 use lakelands_api::write::Declaration;
+use lakelands_core::conformance::backing::embedder_as;
 use lakelands_core::conformance::fixture::{
-    Lake, computed_by, derived, source_record, sourced, type_decl,
+    Lake, computed_by, derived, embedding, source_record, sourced, type_decl,
 };
 use lakelands_engine_sqlite::SqliteOpener;
 use peak_alloc::PeakAlloc;
@@ -211,11 +214,41 @@ async fn several(store: &dyn LakeStore, which: Several) {
     );
 }
 
-/// A cell: one declaration, or several.
+/// The cell of lakelands#604: a record whose text of 1 000 bytes is
+/// embedded, written once for each record a window of 1 000 at a time, its
+/// embeddings made; then a rebuild, which reads them from the log and
+/// holds no call.
+async fn embedded(store: &dyn LakeStore) {
+    let l = Lake::of(store);
+    let fields = vec![
+        sourced("n", Number),
+        sourced("body", Text),
+        embedding("v", 8, &["body"], "m"),
+    ];
+    l.declare(type_decl("note", fields)).await.unwrap();
+    let memo = "a memo of some length, as a note's is; ".repeat(26);
+    let body = |i: u64| format!("{i:08} {memo}");
+    for from in (0..records()).step_by(1_000) {
+        let window = (from..(from + 1_000).min(records())).map(|i| {
+            let fields = json!({"n": i, "body": &body(i)[..1_000]});
+            source_record("note", &format!("n{i:08}"), fields)
+        });
+        l.ingest("load", window.collect()).await.unwrap();
+    }
+    let rebuilt = store.rebuild();
+    measured("a rebuild of embedded writes", rebuilt)
+        .await
+        .unwrap();
+    let read = l.read("note", "n00000007").await.unwrap();
+    assert!(read.fields.contains_key("v"), "the embedding is read back");
+}
+
+/// A cell: one declaration, or several, or the embedded writes.
 #[derive(Clone, Copy)]
 enum Cell {
     One((bool, bool, bool)),
     Several(Several),
+    Embedded,
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -230,6 +263,7 @@ async fn recomputing_a_hundred_thousand_records() {
         Cell::Several(Several::Functions(2)),
         Cell::Several(Several::FunctionAndType),
         Cell::Several(Several::Rebuilt),
+        Cell::Embedded,
     ];
     // All, or the one `LAKELANDS_TEST_CELLS` numbers from 0.
     let only = std::env::var("LAKELANDS_TEST_CELLS").ok();
@@ -241,6 +275,7 @@ async fn recomputing_a_hundred_thousand_records() {
         let _ = std::fs::remove_dir_all(&dir);
         let seams = Seams {
             engines: vec![Arc::new(SqliteOpener)],
+            embed: Some(embedder_as("m", 8)),
             ..Seams::default()
         };
         let location = lakelands_api::Location::sqlite("bills", &dir);
@@ -250,6 +285,7 @@ async fn recomputing_a_hundred_thousand_records() {
         match which {
             Cell::One(one) => cell(store.as_ref(), one).await,
             Cell::Several(more) => several(store.as_ref(), more).await,
+            Cell::Embedded => embedded(store.as_ref()).await,
         }
         store.close().await.unwrap();
         let _ = std::fs::remove_dir_all(&dir);

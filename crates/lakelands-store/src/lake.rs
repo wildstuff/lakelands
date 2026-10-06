@@ -62,11 +62,17 @@ pub struct Writer {
     /// The settings at the head.
     pub settings: BTreeMap<String, Value>,
     /// The calls of backed functions the appends made due and
-    /// [`crate::backed::settle`] has not taken yet.
+    /// [`crate::backed::settle`] has not taken yet. A call is due to the
+    /// append that wrote its event, never to a fold of the log (022,
+    /// extended).
     pub due: Vec<Due>,
     /// A fold failed after its events were in the log: the projection is
     /// behind the log, and nothing is appended until it has caught up.
     pub behind: bool,
+    /// The first position of an append whose fold failed: the fold that
+    /// catches up hands out the calls of its events from there on, and
+    /// forgets it once it has folded them.
+    pub failed: Option<Position>,
     /// The log format version the lake writes: the version of its last
     /// event, raised by an append that needs a newer one, never lowered.
     pub format: u32,
@@ -290,6 +296,7 @@ impl Lake {
                 settings: BTreeMap::new(),
                 due: Vec::new(),
                 behind: false,
+                failed: None,
                 format: LOG_FORMAT_BASE,
             }),
             head: AtomicU64::new(0),
@@ -391,8 +398,6 @@ impl Lake {
         if w.lease.is_some() {
             let from = folded.map_or(Position::GENESIS, Position::next);
             self.fold_from(&mut w, from)?;
-            // Opening a lake never calls a backing.
-            w.due.clear();
             self.publish(&w);
         } else {
             // A read-only handle reads what the writer folded: its head is
@@ -659,10 +664,14 @@ impl Lake {
     /// it holds a second flush, events that read records between two runs
     /// of declarations: that flush applies the first's kept steps to every
     /// row again. No door drafts such an append.
+    ///
+    /// An append hands out the calls its events make due; a fold of the
+    /// log hands out only those of an append whose fold failed.
     fn fold_all(&self, w: &mut Writer, events: &[Event], reads: Reads, of_log: bool) -> Result<()> {
         let Some(last) = events.last() else {
             return Ok(());
         };
+        let owed = (!of_log).then_some(Position::GENESIS).or(w.failed);
         let projection = self.engine.projection();
         let mut due = w.due.len();
         let mut staged = Staged {
@@ -675,8 +684,10 @@ impl Lake {
             projection.begin()?;
             let mut view = self.engine.view(None)?;
             for (i, e) in events.iter().enumerate() {
-                let read = reads_a_record(&e.body);
-                if read && self.flush(w, view.as_ref(), &mut staged, &events[..i])? && of_log {
+                if reads_a_record(&e.body)
+                    && self.flush(w, view.as_ref(), &mut staged, &events[..i], owed)?
+                    && of_log
+                {
                     drop(view);
                     projection.commit(events[i - 1].position)?;
                     // What is committed stays due, whatever fails next.
@@ -685,9 +696,11 @@ impl Lake {
                     staged = Staged::default();
                     view = self.engine.view(None)?;
                 }
-                self.fold(w, view.as_ref(), &mut staged, e)?;
+                let owes = owed.is_some_and(|p| e.position >= p);
+                self.fold(w, view.as_ref(), &mut staged, e, owes)?;
             }
-            self.flush(w, view.as_ref(), &mut staged, events).map(drop)
+            self.flush(w, view.as_ref(), &mut staged, events, owed)
+                .map(drop)
         })()
         .and_then(|()| projection.commit(last.position));
         match result {
@@ -701,6 +714,9 @@ impl Lake {
                 projection.rollback();
                 w.behind = true;
                 w.due.truncate(due);
+                if !of_log {
+                    w.failed = Some(events[0].position);
+                }
                 if let Ok(view) = self.engine.view(None) {
                     if let Ok(o) = Ontology::at(view.as_ref()) {
                         w.ontology = o;
@@ -856,16 +872,18 @@ impl Lake {
     /// and a record is put, and its vectors indexed, at each step that
     /// changes it: one state a step, as if each had walked at its event.
     /// Nothing of the view is kept, and what the transaction wrote stays
-    /// kept, changed or not. The calls made due come by step, type and key,
-    /// a record's fields in the order they settle. A step that put nothing
-    /// is dropped: a later read through it would change nothing either.
-    /// Answers whether a step is kept.
+    /// kept, changed or not. The calls made due by a step whose event is at
+    /// or past `owed` come by step, type and key, a record's fields in the
+    /// order they settle. A step that put nothing is dropped: a later read
+    /// through it would change nothing either. Answers whether a step is
+    /// kept.
     fn flush(
         &self,
         w: &mut Writer,
         view: &dyn ProjectionView,
         staged: &mut Staged,
         folded: &[Event],
+        owed: Option<Position>,
     ) -> Result<bool> {
         let (false, Some(last)) = (staged.pending.is_empty(), folded.last()) else {
             return Ok(false);
@@ -875,7 +893,8 @@ impl Lake {
         let (from, mut put) = (w.due.len(), vec![false; pending.len()]);
         let mut through = |r: &mut StoredRecord, recorded: &Recorded, due: &mut Vec<Due>| {
             for (s, put) in pending.iter().zip(&mut put) {
-                if let Some(next) = s.apply(r, view, recorded, Some(due))? {
+                let owes = owed.is_some_and(|p| s.event.position >= p);
+                if let Some(next) = s.apply(r, view, recorded, owes.then_some(&mut *due))? {
                     projection.put_record(&next)?;
                     self.index_vectors(&s.entries, &next)?;
                     (*r, *put) = (next, true);
@@ -929,7 +948,8 @@ impl Lake {
     /// nothing is appended until the next fold (the catch-up before a
     /// write, a `rebuild`, or the next open's) has continued from there.
     /// Every read is answered at or before `folded_through`, so no read
-    /// sees half a transaction.
+    /// sees half a transaction. A fold that reaches the tip has handed out
+    /// the calls of an append whose fold had failed.
     fn fold_from(&self, w: &mut Writer, from: Position) -> Result<()> {
         let folded = (|| {
             for page in self.pages(from) {
@@ -946,6 +966,8 @@ impl Lake {
             let through = self.engine.projection().folded_through().ok().flatten();
             self.head
                 .store(through.map_or(0, |p| p.0), Ordering::Release);
+        } else {
+            w.failed = None;
         }
         folded
     }
@@ -970,13 +992,15 @@ impl Lake {
         Ok(())
     }
 
-    /// What one event does to the projection.
+    /// What one event does to the projection; the calls it makes due are
+    /// handed out when it `owes` them.
     fn fold(
         &self,
         w: &mut Writer,
         view: &dyn ProjectionView,
         staged: &mut Staged,
         e: &Event,
+        owes: bool,
     ) -> Result<()> {
         let projection = self.engine.projection();
         // A name of the kept form is the store's own, for the records of a
@@ -1128,7 +1152,7 @@ impl Lake {
                     view,
                     staged: Some(&staged.outputs),
                     before: None,
-                    due: Some(&mut w.due),
+                    due: owes.then_some(&mut w.due),
                 };
                 let after =
                     record::apply(&w.ontology, before.as_ref(), e, &w.settings, &mut outputs)?;
@@ -1204,7 +1228,7 @@ impl Lake {
                         view,
                         staged: Some(&staged.outputs),
                         before: None,
-                        due: Some(&mut w.due),
+                        due: owes.then_some(&mut w.due),
                     };
                     let next = record::fill(
                         &w.ontology,
@@ -1284,11 +1308,9 @@ impl Lake {
         w.settings = BTreeMap::new();
         // A page at a time: a rebuild that stops is continued by the next
         // fold from where it committed, as a failed fold is.
-        let folded = self.fold_from(&mut w, Position::GENESIS);
-        // A rebuild reads the recorded outputs; it never calls a backing,
-        // whether it finished or stopped.
-        w.due.clear();
-        folded?;
+        // It reads the recorded outputs and makes no call due but a failed
+        // append's; the calls a write before it made due stay that write's.
+        self.fold_from(&mut w, Position::GENESIS)?;
         // Everything the log holds is folded again: the head is its tip.
         self.publish(&w);
         Ok(w.tip.as_ref().map_or(Position::GENESIS, |t| t.0))

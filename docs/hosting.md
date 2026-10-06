@@ -536,11 +536,16 @@ A host that already has a store of its own moves in four steps.
   100 000 records (50 s and 99 s at 400 000), at 4 MB and 11 MB. The
   time grows with the type's records; the peak does not. Two things
   still grow with them: the calls an embedding or a function computed outside the lake
-  makes due, one for every record whose output is not recorded, held
-  until they are made; and what the engine holds of an open transaction, which on the
+  makes due on that append, one for every record whose output is not
+  recorded, held until they are made; and what the engine holds of an open transaction, which on the
   memory engine is every put. A rebuild, or an open that catches up,
   commits inside a page of the log after such a declaration, so there
-  too each record is computed once for each declaration. A type
+  too each record is computed once for each declaration. Such a fold of
+  the log makes no call due and holds none: a rebuild of 100 000
+  embedded writes of a 1 000-byte text peaks at 4 MB on SQLite, where it
+  held every write's call and peaked at 163 MB before
+  (`tests/recomputed.rs` in the SQLite engine, by hand;
+  `docs/decisions/022-functions-are-declarations.md`, extended). A type
   declared again that computes nothing (its description changed, say,
   or a field that is not computed was added) costs one pass of the
   engine over its records at the commit, a page at a time: 1.3 to 2.1 s
