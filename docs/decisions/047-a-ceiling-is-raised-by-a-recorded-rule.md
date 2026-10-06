@@ -81,6 +81,8 @@ The core's budgets are four:
 
 **The twenty-ninth raise:** the specification, from 51 500 to 52 500 lines, by slot a's word under the rule, for the rows of the store's kept view (lakelands#575: a view's state and the number of its kept records after each event, which no answer shows, and the twin's lines for what plants and a review showed it blind to, two readers kept from a field a view reads among them): 1 021 lines as measured, on a develop that stood 194 under the ceiling, 827 over it, so the next 500 that holds them is 52 500.
 
+**The thirtieth raise:** the specification, from 52 500 to 53 000 lines, by slot a's word under the rule, for the rows of an initial value (lakelands#551: the event that makes a record fills each field that declares `initial`, its refusals, the hash, and a purge that takes a record whose state an author moved): 444 lines as measured after 15 were cut, on a develop that stood 173 under the ceiling, 271 over it, so the next 500 that holds them is 53 000.
+
 ## Why
 
 The budgets keep the core small enough for one reader to hold. They have done that: four diets took out about 5 000 lines without losing a check.

@@ -165,6 +165,7 @@ impl<'a> Lower<'a> {
             function: body.function,
             depends_on,
             on_input_change: body.on_input_change,
+            initial: body.initial,
             sensitive: body.sensitive,
             searchable: body.searchable,
             description: body.description,

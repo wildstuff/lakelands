@@ -6,7 +6,9 @@
 //! of them came from the source. It is co-owned when a field that holds a value came from
 //! another hand, a principal's authored write or another source; a
 //! derived or system value (a computed field, a backed output, an aging
-//! move) is the lake's own and makes no owner. One co-owned record
+//! move) is the lake's own and makes no owner, and neither does a field
+//! that declares an `initial` value: the report's `moved` counts the
+//! records taken with an author's write in one. One co-owned record
 //! refuses the whole purge, and nothing is appended. A type that keeps no
 //! per-field provenance cannot be read this way; it is not searched, and
 //! the report names it.
@@ -21,11 +23,12 @@
 //! `record_retired` per record, each reacting as a `retire` does, in one
 //! append: the act is one. That append is held in memory before it lands.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use lakelands_api::engine::ProjectionView;
+use lakelands_api::ontology::TypeDecl;
 use lakelands_api::record::{Origin, StoredRecord, Value};
-use lakelands_api::write::{PurgeReference, PurgeReport, RecordRef, TypeRetired};
+use lakelands_api::write::{PurgeMoved, PurgeReference, PurgeReport, RecordRef, TypeRetired};
 use lakelands_api::{
     FieldName, Position, RecordKey, RelationName, Result, SourceId, TypeName, WriteContext,
 };
@@ -57,9 +60,16 @@ fn brought_by(r: &StoredRecord, source: &SourceId) -> bool {
 
 /// Whether a field of `r` that holds a value came from another hand than
 /// `source`: a principal's write, or another source. A field cleared since
-/// holds no value and co-owns nothing.
-fn co_owned(r: &StoredRecord, source: &SourceId) -> bool {
-    r.fields.keys().any(|f| {
+/// holds no value and co-owns nothing, and neither does one that declares
+/// an `initial` value, whoever wrote it last: it is there because the
+/// record is (`docs/decisions/050-a-field-declares-its-initial-value.md`).
+fn co_owned(decl: &TypeDecl, r: &StoredRecord, source: &SourceId) -> bool {
+    let starts = |f: &FieldName| {
+        decl.fields
+            .iter()
+            .any(|d| &d.name == f && d.initial.is_some())
+    };
+    r.fields.keys().filter(|f| !starts(f)).any(|f| {
         r.meta.get(f).is_some_and(|m| match m.origin {
             Origin::Authored => true,
             Origin::Source => m.source.as_ref() != Some(source),
@@ -113,7 +123,7 @@ fn selection(
             if !brought_by(&r, source) {
                 continue;
             }
-            if co_owned(&r, source) {
+            if co_owned(decl, &r, source) {
                 shared.push(format!("`{}` `{}`", r.ty, r.key));
             } else {
                 purged.push(r);
@@ -155,6 +165,25 @@ fn report<'a>(
                 ty: r.ty.clone(),
                 retired: 1,
             }),
+        }
+    }
+    // What an author wrote in a record the purge takes is a field with an
+    // `initial` value: any other would have refused the purge.
+    let mut moved: BTreeMap<(&TypeName, &FieldName), PurgeMoved> = BTreeMap::new();
+    for r in purged {
+        let authored =
+            |f: &&FieldName| r.meta.get(*f).is_some_and(|m| m.origin == Origin::Authored);
+        for f in r.fields.keys().filter(authored) {
+            let m = moved.entry((&r.ty, f)).or_insert_with(|| PurgeMoved {
+                ty: r.ty.clone(),
+                field: f.clone(),
+                records: 0,
+                first: Vec::new(),
+            });
+            m.records += 1;
+            if m.first.len() < NAMED {
+                m.first.push(r.key.clone());
+            }
         }
     }
     let inside = |target: &TypeName, v: Option<&Value>| {
@@ -222,6 +251,7 @@ fn report<'a>(
         unsearched,
         position: view.position().unwrap_or(Position::GENESIS),
         references,
+        moved: moved.into_values().collect(),
         report_id: String::new(),
     })
 }

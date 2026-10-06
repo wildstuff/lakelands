@@ -79,6 +79,7 @@ pub(super) struct FieldBody {
     pub depends_on: OneOrMany,
     #[serde(default)]
     pub on_input_change: OnInputChange,
+    pub initial: Option<serde_json::Value>,
     #[serde(default)]
     pub sensitive: bool,
     #[serde(default)]

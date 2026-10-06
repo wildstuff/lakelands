@@ -134,14 +134,14 @@ impl State {
                 key,
                 version,
                 patch,
-                ..
+                made,
             }
             | EventBody::RecordIngested {
                 ty,
                 key,
                 version,
                 patch,
-                ..
+                made,
             } => {
                 if matches!(e.body, EventBody::RecordIngested { .. }) {
                     self.ingested.insert(e.id.clone());
@@ -161,6 +161,11 @@ impl State {
                         restricted: false,
                     });
                 let field_meta = decl.as_ref().is_none_or(|d| d.field_meta);
+                // As the store: a record made again starts from no fields.
+                if *made {
+                    rec.fields.clear();
+                    rec.meta.clear();
+                }
                 let mut changed = Vec::new();
                 for (f, v) in patch {
                     if rec.fields.get(f) != Some(v) && !(v.is_null() && !rec.fields.contains_key(f))
@@ -175,6 +180,31 @@ impl State {
                         if field_meta {
                             rec.meta.insert(f.clone(), meta_of(e));
                         }
+                    }
+                }
+                // As the store (050): the event that makes a record fills
+                // each declared `initial` value its patch left out, with
+                // the origin `initial` and nothing of a source.
+                for f in decl.iter().flat_map(|d| &d.fields).filter(|_| *made) {
+                    let Some(v) = f
+                        .initial
+                        .as_ref()
+                        .filter(|_| !rec.fields.contains_key(&f.name))
+                    else {
+                        continue;
+                    };
+                    rec.fields
+                        .insert(f.name.clone(), crate::value::canonical(&f.ty, v));
+                    if field_meta {
+                        let filled = FieldMeta {
+                            origin: Origin::Initial,
+                            upstream: None,
+                            seen_at: None,
+                            source: None,
+                            procedure_version: None,
+                            ..meta_of(e)
+                        };
+                        rec.meta.insert(f.name.clone(), filled);
                     }
                 }
                 // A dependent field declared `clear` is cleared in the

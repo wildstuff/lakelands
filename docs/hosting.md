@@ -482,6 +482,18 @@ A host that already has a store of its own moves in four steps.
   Opening a lake for writing appends one `lease_taken`, which carries
   the token every later event of that writer bears; a reader appends
   none.
+- **A required field a source does not write takes `initial`.** A type
+  a source feeds may hold a field the source knows nothing of, such as a
+  state the lake's own users move. Declared `required` alone, no door
+  can make its record: the ingest may not carry the field, and an
+  author's write comes after the record exists. Declare it with
+  `initial`, a literal: the write that makes the record fills it at
+  version 1, with `origin: initial`, and the host needs no second
+  append. The filled value makes no owner: a purge of the source takes
+  the record with the state an author moved, and names it in `moved`. A
+  record retired and made again starts again from the initial value, and
+  a trigger sees a create. Changing `initial` later changes no stored
+  record. See `docs/decisions/050-a-field-declares-its-initial-value.md`.
 - **A write answered `unavailable` may be in the log.** The store
   appends a write durably, then folds it. When the fold fails (the
   projection's transaction cannot begin or commit: a busy SQLite file, a

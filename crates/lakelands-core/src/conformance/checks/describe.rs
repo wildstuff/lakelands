@@ -32,7 +32,7 @@ use crate::conformance::fixture::{
 check!(
     /// `describe` answers the declaration whole.
     DESCRIBE_IS_THE_DECLARATION = describe_answers_the_declaration_whole,
-    "014 and 024: for the owner, a described type projects back onto its declaration byte for byte — every field's function, embedding, searchable, sensitive, label and description, and the type's label, language and view; a masked field shows its shape only; functions, triggers, object sets and views are answered as declared, to a principal who reads every field they name or holds the schema grant, as in force at the read position; a type that is shown is one its principal may find and get, also where every field is masked",
+    "014 and 024: for the owner, a described type projects back onto its declaration byte for byte — every field's function, embedding, initial value, searchable, sensitive, label and description, and the type's label, language and view; a masked field shows its shape only, without its initial value (050); functions, triggers, object sets and views are answered as declared, to a principal who reads every field they name or holds the schema grant, as in force at the read position; a type that is shown is one its principal may find and get, also where every field is masked",
     embedding
 );
 
@@ -51,6 +51,7 @@ fn ledger() -> TypeDecl {
     title.required = true;
     let mut body = described("body", "Body", StorageKind::Text);
     body.searchable = true;
+    body.initial = Some(serde_json::json!("none"));
     let net = described("net", "Net", StorageKind::Number);
     let mut gross = described("gross", "Gross", StorageKind::Number);
     gross.authority = Authority::Derived;
@@ -72,6 +73,7 @@ fn ledger() -> TypeDecl {
     });
     let mut salary = described("salary", "Salary", StorageKind::Number);
     salary.sensitive = true;
+    salary.initial = Some(serde_json::json!(0));
     let mut bonus = described("bonus", "Bonus", StorageKind::Number);
     bonus.authority = Authority::Derived;
     bonus.function = Some("tenth".into());
@@ -158,6 +160,7 @@ fn field_projected(f: &FieldDescription) -> FieldDecl {
         function: f.function.clone(),
         depends_on: f.depends_on.clone(),
         on_input_change: f.on_input_change,
+        initial: f.initial.clone(),
         sensitive: f.sensitive,
         searchable: f.searchable,
         description: f.description.clone(),

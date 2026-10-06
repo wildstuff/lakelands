@@ -807,6 +807,72 @@ async fn triggers_and_set_changes_are_told_only_to_a_principal_who_reads_the_who
     }
 }
 
+/// The write that made a record changed every field the fold filled with
+/// its `initial` value (050): a principal granted `state` alone is told
+/// of the create whose patch named another field, and not of a later
+/// write of that field. One who reads `state` masked is not shown that it
+/// declares `initial`, and is told of `state` by a patch that names it;
+/// one who may write `state` and not read it, and reads `total`, is told
+/// of the create as a change of `total` alone.
+#[tokio::test]
+async fn a_create_is_told_as_a_change_of_each_field_it_filled() {
+    for backend in BACKENDS {
+        let store = common::lake_on(backend).await;
+        declare(
+            store.as_ref(),
+            json!({"declare": "type", "name": "order", "fields": [
+                {"name": "total", "type": {"kind": "number"}},
+                {"name": "state", "type": {"kind": "text"}, "initial": "new"}]}),
+        )
+        .await;
+        let granted = |id: &str, access: Access| Principal {
+            kind: PrincipalKind::Agent,
+            id: id.into(),
+            lake: "finance".into(),
+            grants: Grants {
+                default: Access::None,
+                types: [(
+                    "order".into(),
+                    TypeGrants {
+                        default: None,
+                        fields: [("state".into(), access)].into(),
+                    },
+                )]
+                .into(),
+                ..Grants::default()
+            },
+        };
+        let mut clerk = Stdio::open(store.clone(), granted("clerk", Access::Read)).await;
+        let mut dim = Stdio::open(store.clone(), granted("dim", Access::Masked)).await;
+        let mut pen = granted("pen", Access::WriteOnly);
+        let order = pen.grants.types.values_mut().next().expect("granted");
+        order.fields.insert("total".into(), Access::Read);
+        let mut pen = Stdio::open(store.clone(), pen).await;
+        for s in [&mut clerk, &mut dim, &mut pen] {
+            s.call("subscribe", json!({"kinds": ["record_upserted"]}))
+                .await;
+        }
+        let made = write(store.as_ref(), "order", "o1", json!({"total": 1})).await;
+        write(store.as_ref(), "order", "o1", json!({"total": 2})).await;
+        let paid = write(store.as_ref(), "order", "o1", json!({"state": "paid"})).await;
+        let (state, total) = (json!(["state"]), json!(["total"]));
+        for (s, want, told) in [
+            (&mut clerk, made, &state),
+            (&mut dim, paid, &state),
+            (&mut pen, made, &total),
+        ] {
+            let m = s.change().await;
+            assert_eq!(
+                (&m["params"]["position"], &m["params"]["fields"]),
+                (&json!(want), told),
+                "{backend:?}: {m}"
+            );
+        }
+        let m = clerk.change().await;
+        assert_eq!(m["params"]["position"], json!(paid), "{backend:?}: {m}");
+    }
+}
+
 /// An output a function backing records fills its field: a change of that
 /// field, told with its name. The mock binds no backing, so this runs on
 /// the store.

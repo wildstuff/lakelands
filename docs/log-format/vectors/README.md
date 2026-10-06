@@ -29,9 +29,10 @@ The files:
   migration renames a relation (`relation_renames`), a
   `record_upserted` of a `view_kept.` setting, which is its first
   version and so carries `made`, and a `record_upserted` at version 4
-  that carries `made`, a record made again, and a `write_proposed`
-  whose proposed migration's report holds `restated`; and `negatives`,
-  each line written as version 10, which a reader refuses.
+  that carries `made`, a record made again, a `write_proposed` whose
+  proposed migration's report holds `restated`, and a `declared` type
+  whose field declares `initial`; and `negatives`, each line written as
+  version 10, which a reader refuses.
 - `v10.json`: two events after `v9.json`'s position 20: a `declared`
   value type `slip_state`, still version 9, and a version-10
   `write_proposed` whose write is `migrate_value_type`, the value type

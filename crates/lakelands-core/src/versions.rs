@@ -30,8 +30,10 @@
 //!   the places 5 names; a migration that renames a relation
 //!   (`relation_renames`), in a `migrated` event or a proposed `migrate`;
 //!   a write of a `view_kept.<type>` setting, made or proposed; a
-//!   `record_upserted` or `record_ingested` event that carries `made`; and
-//!   a proposed `migrate` whose report holds `restated`.
+//!   `record_upserted` or `record_ingested` event that carries `made`;
+//!   a proposed `migrate` whose report holds `restated`; and a
+//!   declaration with a field that declares `initial`, in the places 5
+//!   names.
 //!
 //! The store writes every event of one append at the greatest of the
 //! lake's version and what [`needed`] answers for each event of the
@@ -40,7 +42,7 @@
 
 use lakelands_api::event::{Event, EventBody};
 use lakelands_api::expr::{Condition, Expr, Func};
-use lakelands_api::ontology::{VerbEffect, VerbScope};
+use lakelands_api::ontology::{FieldDecl, VerbEffect, VerbScope};
 use lakelands_api::write::{Declaration, ProposedWrite};
 
 /// The lowest format version that can carry `body`, with `upstream` or
@@ -111,6 +113,10 @@ pub const ELEVENTH: &[Added] = &[
         reports_restated,
         "proposes a migration whose report holds `restated`",
     ),
+    (
+        |body| any_declaration(body, declares_initial),
+        "declares an `initial` value",
+    ),
 ];
 
 /// Whether the event proposes a migration whose report says what its `to`
@@ -122,6 +128,19 @@ fn reports_restated(body: &EventBody) -> bool {
         return false;
     };
     matches!(write, Migrate { report, .. } if !report.restated.is_empty())
+}
+
+/// Whether a declaration holds a field that declares `initial`, wherever
+/// a field is declared: a type's, a relation's, a verb's payload's, a
+/// function's input.
+fn declares_initial(d: &Declaration) -> bool {
+    let any = |fs: &[FieldDecl]| fs.iter().any(|f| f.initial.is_some());
+    match d {
+        Declaration::Type(t) => any(&t.fields) || t.relations.iter().any(|r| any(&r.fields)),
+        Declaration::Verb(v) => any(&v.payload),
+        Declaration::Function(f) => any(&f.inputs),
+        _ => false,
+    }
 }
 
 /// Whether a record event says its write found no live record under the
@@ -313,12 +332,17 @@ pub fn below(event: &Event) -> Option<String> {
 /// `cause` inside `context`, since a host's cause is the envelope's
 /// (`docs/decisions/021-the-write-context-belongs-to-the-host.md`); and
 /// `upstream` on any kind but `record_ingested`, since only a source's
-/// record is read from another lake (`docs/log-format.md` §1.1). No door
-/// puts either there; a reader holds the rule for a log written by
-/// something else.
+/// record is read from another lake (`docs/log-format.md` §1.1); and the
+/// origin `initial`, a field's provenance alone, never an event's
+/// (`docs/decisions/050-a-field-declares-its-initial-value.md`). No door
+/// puts any there; a reader holds the rule for a log written by something
+/// else.
 pub fn misplaced(event: &Event) -> Option<String> {
     if event.context.cause.is_some() {
         return Some("`context` carries `cause`, which the envelope carries".to_owned());
+    }
+    if event.origin == lakelands_api::record::Origin::Initial {
+        return Some("the envelope carries the origin `initial`, a field's alone".to_owned());
     }
     let kind = event_kind(&event.body);
     (event.upstream.is_some() && !matches!(event.body, EventBody::RecordIngested { .. })).then(

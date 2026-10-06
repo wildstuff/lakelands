@@ -71,3 +71,15 @@ writer states, and it has the same standing as `seen_at`: nothing checks
 it against the other lake. A later write of the field without it leaves
 the field without it. It is a log format version 3 member
 (`docs/log-format.md` §1.1, §6; lakelands#174).
+
+## Extended: a value no writer chose
+
+A field that declares `initial` is filled by the fold when its record
+is made without a value for it
+(`docs/decisions/050-a-field-declares-its-initial-value.md`). Its
+`origin` is `initial`, a fifth member of the closed set: not `system`,
+which an aging move writes on the same lifecycle fields, so a reader
+tells the value a record started with from one the lake moved since.
+It takes the creating event's `known_at`, `position` and `writer`, and
+nothing of a source: no `source`, `seen_at`, `upstream` or
+`procedure_version`, since the value came from the declaration.

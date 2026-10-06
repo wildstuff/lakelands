@@ -55,6 +55,7 @@ async fn a_lake_directory_verifies_from_its_segment_files_alone() {
         function: None,
         depends_on: vec![],
         on_input_change: Default::default(),
+        initial: None,
         sensitive: false,
         searchable: true,
         description: None,

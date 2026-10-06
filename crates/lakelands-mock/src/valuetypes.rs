@@ -126,11 +126,15 @@ pub(crate) fn preflight(st: &State, head: Position, to: &ValueTypeDecl) -> Resul
         let records: Vec<_> = st.records.values().filter(|r| &r.ty == name).collect();
         report.records_scanned += records.len() as u64;
         for f in uses {
+            // An `initial` the new declaration refuses is a misfit of its
+            // field, counted as the store counts it.
+            let initial = f.initial.as_ref();
+            let unfit = initial.is_some_and(|v| value::misfit(&f.ty, v, &types).is_some());
             let mut used = ValueTypeUse {
                 ty: name.clone(),
                 field: f.name.clone(),
                 values_scanned: 0,
-                misfits: 0,
+                misfits: u64::from(unfit),
             };
             for r in &records {
                 let Some(v) = r.fields.get(&f.name).filter(|v| !v.is_null()) else {

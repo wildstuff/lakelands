@@ -653,6 +653,59 @@ async fn a_value_a_backing_filled_makes_no_owner(store: Arc<dyn LakeStore>) -> R
 }
 
 check!(
+    /// A field that declares `initial` makes no owner.
+    INITIAL_NO_OWNER = a_field_that_declares_initial_makes_no_owner,
+    "039, extended, and 050 (lakelands#551): a field that declares `initial` makes no owner, whoever wrote it last: a record whose such field an author moved goes with its source's purge, whole or of one type, and the preflight and the purge name in `moved`, per type and field, how many such records they take and their first keys; another authored field still refuses the purge whole"
+);
+
+async fn a_field_that_declares_initial_makes_no_owner(
+    store: Arc<dyn LakeStore>,
+) -> Result<(), Failure> {
+    let l = Lake::of(store.as_ref());
+    l.declare_json(json!({"declare": "type", "name": "order", "fields": [
+        {"name": "total", "type": {"kind": "number"}, "authority": "source"},
+        {"name": "state", "type": {"kind": "text"}, "initial": "new"},
+        {"name": "note", "type": {"kind": "text"}}]}))
+        .await?;
+    let orders = ["o1", "o2", "o3"].map(|k| source_record("order", k, json!({"total": 1})));
+    feed(&l, "erp", orders.into()).await?;
+    let others = ["o4", "o5"].map(|k| source_record("order", k, json!({"total": 2})));
+    feed(&l, "crm", others.into()).await?;
+    for key in ["o1", "o4"] {
+        l.upsert("order", key, json!({"state": "paid"})).await?;
+    }
+    let kept = json!({"state": "paid", "note": "kept"});
+    l.upsert("order", "o3", kept).await?;
+    let typed = purge_from(store.as_ref(), "crm", "order").await;
+    let typed = typed.must("the purge of `crm` from `order`")?;
+    let erp = SourceId::from("erp");
+    let refused = store.purge_source(&erp, None, None).await;
+    let whole = matches!(reason(&refused), Some(Refusal::Invalid { message })
+        if message.contains("1 record(s)") && message.contains("`o3`"));
+    l.upsert("order", "o3", json!({"note": null})).await?;
+    let before = store.purge_preflight(&erp, None).await;
+    let before = before.must("the preflight")?;
+    let report = purge(store.as_ref(), "erp").await?;
+    let moved =
+        |n, first| json!([{"type": "order", "field": "state", "records": n, "first": first}]);
+    ensure!(
+        typed.retired == 2 && json!(typed.moved) == moved(1, json!(["o4"])),
+        "a typed purge asks what a whole one asks: `crm`'s purge from `order` takes `o4`, \
+         whose state an author moved, and names it in `moved`; it answered {typed:?}"
+    );
+    ensure!(
+        whole
+            && report.retired == 3
+            && json!(report.moved) == moved(2, json!(["o1", "o3"]))
+            && before.moved == report.moved,
+        "a field that declares `initial` makes no owner: `o3`'s note alone refuses the purge \
+         ({whole}: {refused:?}), and without it the purge takes all three and names the two an \
+         author moved, as its preflight does; it answered {report:?} after {before:?}"
+    );
+    Ok(())
+}
+
+check!(
     /// A preflight says what the purge would do, and the purge may hold to it.
     PREFLIGHT = a_preflight_appends_nothing_and_a_purge_that_repeats_its_id_is_stale_once_the_lake_moved,
     "039, extended: `purge_preflight` appends nothing and answers the report the purge then answers, under an id; it is refused as the purge is for a co-owned record; a purge that repeats the id is refused as invalid, appending nothing, once the lake has moved or when the id is another source's, and otherwise purges"

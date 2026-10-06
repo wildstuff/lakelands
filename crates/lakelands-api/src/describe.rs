@@ -123,6 +123,9 @@ pub struct FieldDescription {
     pub depends_on: Vec<FieldName>,
     /// What happens to it when an input changes.
     pub on_input_change: OnInputChange,
+    /// The value it takes when its record comes to exist without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial: Option<serde_json::Value>,
     /// Whether `where` and `order_by` may use it.
     pub filterable: bool,
     /// Whether full-text search covers it.
@@ -148,8 +151,8 @@ impl FieldDescription {
     /// The description of a declared field for a principal with `access`.
     /// A masked field answers its shape only — name, type, whether it is
     /// required and sensitive, its authority and what an input change does
-    /// to it — never what it is computed from, what it means or how the
-    /// host marked it
+    /// to it — never what it is computed from, what it starts as, what it
+    /// means or how the host marked it
     /// (`docs/decisions/024-probing-a-field-needs-the-right-to-read-it.md`).
     pub fn of(decl: &FieldDecl, access: Access) -> FieldDescription {
         use crate::ontology::StorageKind::{Bytes, Json, Vector};
@@ -168,6 +171,7 @@ impl FieldDescription {
             function: decl.function,
             depends_on: decl.depends_on,
             on_input_change: decl.on_input_change,
+            initial: decl.initial,
             searchable: decl.searchable,
             sensitive: decl.sensitive,
             description: decl.description,

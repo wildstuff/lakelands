@@ -88,3 +88,16 @@ pull them in unnoticed. A type whose annotations alone change keeps its
 schema hash, and its version counts the change like a changed
 description. Carrying annotations in the log is a new member, so it is
 format version 5 (`docs/log-format.md` §6).
+
+## Extended: a field's initial value is not shape
+
+A field may declare `initial`, the value its record takes when it is
+made without one
+(`docs/decisions/050-a-field-declares-its-initial-value.md`). It acts
+once, at a make, and changes neither how a stored record is stored nor
+how it is validated, so the hash leaves it out, like a description. Were
+it hashed, a principal who reads the field masked, and is shown
+everything else the hash covers, could try values until the hash
+matched. A host that decides whether to send a declaration again
+compares the declaration, which `describe` answers it whole, to learn of
+a changed `initial`.

@@ -905,6 +905,9 @@ async fn a_second_source_for_a_type_and_a_way_back_are_refused_naming_both() {
     }
 }
 
+/// A target type declares only fields its source writes: an authored
+/// field is refused at start, one that declares `initial` too, so no
+/// window meets a value the target's fold filled (050).
 #[tokio::test]
 async fn a_target_type_the_source_does_not_own_whole_is_refused_at_start() {
     for engine in engines() {
@@ -918,6 +921,17 @@ async fn a_target_type_the_source_does_not_own_whole_is_refused_at_start() {
                     f
                 },
                 "`customer.remark` is written by the authority `authored`",
+            ),
+            (
+                "initial",
+                {
+                    let mut f = copy_fields();
+                    let mut stage = text("stage", "authored");
+                    stage["initial"] = json!("lead");
+                    f.push(stage);
+                    f
+                },
+                "`customer.stage` is written by the authority `authored`",
             ),
             (
                 "masked",

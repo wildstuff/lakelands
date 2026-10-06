@@ -2131,6 +2131,7 @@ impl Call<'_> {
             shown_type(o, &m.to.name, self.who)?;
         }
         self.reads_as_author(o, &[Declaration::Type(m.to.clone())], true)?;
+        initials(o, &mut m.to);
         match o.types.get(&m.to.name) {
             Some(before) => {
                 let (to, pairs) = (&mut m.to, &m.relation_renames);
@@ -2144,10 +2145,16 @@ impl Call<'_> {
     /// author's view of it ([`as_author`]).
     fn redeclared(&self, o: &Ontology, declarations: &mut [Declaration]) -> Result<()> {
         self.reads_as_author(o, declarations, false)?;
+        // An `initial` is read against the value types the set declares.
+        let mut after = o.clone();
+        let types = declarations
+            .iter()
+            .filter(|d| matches!(d, Declaration::ValueType(_)));
+        types.for_each(|d| after.put(d.clone(), 0, None));
         for d in declarations {
-            if let Declaration::Type(t) = d
-                && let Some(before) = o.types.get(&t.name)
-            {
+            let Declaration::Type(t) = d else { continue };
+            initials(&after, t);
+            if let Some(before) = o.types.get(&t.name) {
                 as_author(self.who, &before.decl, t, &[], &[])?;
             }
         }
@@ -2996,12 +3003,19 @@ impl Call<'_> {
             // tally and its first misfits, as many as the report still has
             // room for; they are joined in the fields' order afterwards, so
             // the report lists a field's misfits before the next field's.
+            // An `initial` value no door would take is never filled (050):
+            // it is a misfit of its field, told as a stored one is, by its
+            // count alone to one who does not read the field.
             let room = 10 - report.first.len();
+            let unfit = |f: &FieldDecl, v: &Value| {
+                let patch: Patch = [(f.name.clone(), v.clone())].into();
+                check_values(&probe, decl, &patch, &decl.fields).is_err()
+            };
             let tally = |f: &&FieldDecl| ValueTypeUse {
                 ty: name.clone(),
                 field: f.name.clone(),
                 values_scanned: 0,
-                misfits: 0,
+                misfits: u64::from(f.initial.as_ref().is_some_and(|v| unfit(f, v))),
             };
             let mut used: Vec<(ValueTypeUse, Vec<Misfit>)> =
                 uses.iter().map(|f| (tally(f), Vec::new())).collect();
@@ -3083,10 +3097,27 @@ fn fits(report: ValueTypeReport, named: bool) -> Result<ValueTypeReport> {
         false => String::new(),
     };
     Err(invalid(format!(
-        "value type `{}` is not tightened: {} stored value(s) would not fit it; change them \
-         first.{first}",
+        "value type `{}` is not tightened: {} stored value(s) or a field's declared \
+         `initial` would not fit it; change them first.{first}",
         report.value_type, report.misfits
     )))
+}
+
+/// Each `initial` of `t` in the one form a write of its field stores, so
+/// that two spellings of one value are one declaration (050). A value the
+/// check refuses is left as sent, for the check to refuse.
+fn initials(o: &Ontology, t: &mut TypeDecl) {
+    for f in &mut t.fields {
+        let vt =
+            f.ty.value_type
+                .as_ref()
+                .and_then(|n| o.value_types.get(n.as_str()));
+        if let Some(v) = &mut f.initial
+            && let Ok(one) = value::check(v, &f.ty, vt.map(|e| &e.decl))
+        {
+            *v = one;
+        }
+    }
 }
 
 /// Reads `to`, a migration's or a redeclaration's shape of the type

@@ -982,6 +982,12 @@ pub struct PurgeReport {
     /// are left out.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<PurgeReference>,
+    /// Per type and field, in that order, the records retired whose field
+    /// with a declared `initial` value an author had written: the purge
+    /// takes them with what was written there. Fields with none are left
+    /// out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub moved: Vec<PurgeMoved>,
     /// Names a preflight's report; `purge_source` may repeat it. Empty on
     /// a purge's own report.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -1001,6 +1007,21 @@ pub struct PurgeReference {
     /// The first of them in key order, at most ten: the referring records
     /// of a `via` relation, the link records of one carried by links.
     pub first: Vec<RecordRef>,
+}
+
+/// The records a purge takes whose one field with a declared `initial`
+/// value an author had written.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PurgeMoved {
+    /// The type.
+    #[serde(rename = "type")]
+    pub ty: TypeName,
+    /// The field.
+    pub field: FieldName,
+    /// How many of the purge's records an author wrote it on.
+    pub records: u64,
+    /// The first of them in key order, at most ten.
+    pub first: Vec<RecordKey>,
 }
 
 /// The records a purge retired in one type.
@@ -1050,7 +1071,8 @@ pub struct ValueTypeUse {
     pub field: FieldName,
     /// Values stored in it.
     pub values_scanned: u64,
-    /// Values the new declaration would refuse.
+    /// Values the new declaration would refuse: stored ones, and the
+    /// field's declared `initial`.
     pub misfits: u64,
 }
 

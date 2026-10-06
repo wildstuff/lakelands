@@ -149,6 +149,10 @@ interface types {
         function: option<string>,
         depends-on: list<field-name>,
         on-input-change: on-input-change,
+        /// The value the field takes when its record comes to exist and
+        /// the creating write gives it none; on an authored field of a
+        /// type's own alone.
+        initial: option<json>,
         sensitive: bool,
         searchable: bool,
         description: option<string>,
@@ -410,7 +414,9 @@ interface types {
     // Records
     // ------------------------------------------------------------------
 
-    enum origin { source, authored, derived, system }
+    /// `initial`: the field's declared initial value, filled when the
+    /// record came to exist.
+    enum origin { source, authored, derived, system, initial }
 
     /// Where values read from another lake's log came from: that lake and
     /// the position of the event there whose state they are (log format
@@ -895,6 +901,8 @@ interface types {
         function: option<string>,
         depends-on: list<field-name>,
         on-input-change: on-input-change,
+        /// The value it takes when its record comes to exist without one.
+        initial: option<json>,
         filterable: bool,
         searchable: bool,
         sensitive: bool,
@@ -1091,7 +1099,18 @@ interface types {
         unsearched: list<type-name>,
         position: position,
         references: list<purge-reference>,
+        moved: list<purge-moved>,
         report-id: string,
+    }
+
+    /// The records a purge takes whose one field with a declared
+    /// `initial` value an author had written: how many, and the first ten
+    /// keys.
+    record purge-moved {
+        %type: type-name,
+        field: field-name,
+        records: u64,
+        first: list<record-key>,
     }
 
     /// The live records outside a purge that refer into it over one

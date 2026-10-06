@@ -19,7 +19,12 @@
 //!   retirement). It names the position, the kind, the type, the key and,
 //!   for a write, the changed fields the principal is shown (masked ones
 //!   by name, hidden ones not at all); a write with none left is not
-//!   sent. Never a value.
+//!   sent. Never a value. The write that made the record (its event says
+//!   `made`) changed the fields its patch names and every field of the
+//!   type that declares an `initial` value: the fold filled those the
+//!   patch left out. Which fields declare one is read from the
+//!   principal's own description, so a field it reads masked, whose
+//!   `initial` it is not shown, is told by its patch alone.
 //! - **`trigger_fired` and `object_set_changed`** say that a condition
 //!   held for the record, and a trigger's guard or a set's filter may read
 //!   any field of its type. So they are told only to a principal who reads
@@ -41,12 +46,14 @@
 //!
 //! **What one change costs.** Each change a session is told costs one
 //! read: the record at the event's position, which decides whether the
-//! principal may see it then. The fields a type shows the principal, and
-//! whether it reads the type whole, are read once per type and kept for
-//! the pump's life. A declaration or migration of anything, or a pass that
-//! does not go on where the last one ended, drops them: the pump reads the
-//! feed in order and never filters declarations out, so no stale view
-//! outlives the declaration that changed it. The principal and its grants
+//! principal may see it then. The fields a type shows the principal,
+//! which of them it is shown declare an `initial` value, and whether it
+//! reads the type whole are read once per type and kept for the pump's
+//! life.
+//! A declaration or migration of anything, or a pass that does not go on
+//! where the last one ended, drops them: the pump reads the feed in order
+//! and never filters declarations out, so no stale view outlives the
+//! declaration that changed it. The principal and its grants
 //! are fixed for the session the pump belongs to, so the view needs no
 //! other invalidation — and must never be shared across sessions.
 //!
@@ -386,12 +393,21 @@ struct View<'a> {
     catalog: &'a dyn Catalog,
     who: &'a Principal,
     host: &'a Principal,
-    /// The field names shown to the principal, by type, since the last
+    /// The field names shown to the principal, and those of them it is
+    /// shown declare an `initial` value, by type, since the last
     /// declaration the pump passed.
-    shown: BTreeMap<TypeName, Vec<String>>,
+    shown: BTreeMap<TypeName, Shown>,
     /// Whether the principal reads every field of a type in full, by type,
     /// since the last declaration the pump passed.
     whole: BTreeMap<TypeName, bool>,
+}
+
+/// The field names a type shows the principal, and those of them it is
+/// shown declare an `initial` value.
+#[derive(Clone)]
+struct Shown {
+    fields: Vec<String>,
+    initial: Vec<String>,
 }
 
 impl<'a> View<'a> {
@@ -416,6 +432,11 @@ impl<'a> View<'a> {
         let at = e.position;
         let mut extra = Map::new();
         let mut condition = false;
+        let made = matches!(
+            e.body,
+            EventBody::RecordUpserted { made: true, .. }
+                | EventBody::RecordIngested { made: true, .. }
+        );
         let (ty, key, fields, read_at) = match &e.body {
             EventBody::RecordUpserted { ty, key, patch, .. }
             | EventBody::RecordIngested { ty, key, patch, .. } => (
@@ -488,11 +509,20 @@ impl<'a> View<'a> {
         }
         let fields = match fields {
             None => None,
-            Some(changed) => {
+            Some(mut changed) => {
                 let shown = match self.shown(ty, read_at).await {
                     Ok(s) => s,
                     Err(seen) => return seen,
                 };
+                // The event that made the record gave each field that
+                // declares `initial` its value too, by its patch or by the
+                // fill, which no patch names.
+                if made {
+                    changed.extend(shown.initial);
+                    changed.sort();
+                    changed.dedup();
+                }
+                let shown = shown.fields;
                 let kept: Vec<String> = changed.into_iter().filter(|f| shown.contains(f)).collect();
                 if kept.is_empty() {
                     return Seen::Hidden;
@@ -515,8 +545,9 @@ impl<'a> View<'a> {
     }
 
     /// The field names of `ty` the principal is shown at `at`: those it
-    /// may read, and the masked ones by name.
-    async fn shown(&mut self, ty: &TypeName, at: Position) -> Result<Vec<String>, Seen> {
+    /// may read, and the masked ones by name; and those of them whose
+    /// `initial` value it is shown.
+    async fn shown(&mut self, ty: &TypeName, at: Position) -> Result<Shown, Seen> {
         if let Some(s) = self.shown.get(ty) {
             return Ok(s.clone());
         }
@@ -525,13 +556,12 @@ impl<'a> View<'a> {
             .describe_type(self.who, ty, as_of(at))
             .await
             .map_err(|e| failed(&e))?;
-        let s: Vec<String> = d
-            .data
-            .fields
-            .iter()
-            .filter(|f| f.access.appears())
-            .map(|f| f.name.to_string())
-            .collect();
+        let appears = d.data.fields.iter().filter(|f| f.access.appears());
+        let name = |f: &lakelands_api::describe::FieldDescription| f.name.to_string();
+        let s = Shown {
+            fields: appears.clone().map(name).collect(),
+            initial: appears.filter(|f| f.initial.is_some()).map(name).collect(),
+        };
         self.shown.insert(ty.clone(), s.clone());
         Ok(s)
     }
